@@ -73,6 +73,10 @@ the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/REA
   `tb token <provider>` to comment, push and assign reviewers.
 - **Jira** (optional): REST API with your token. Tickets for tasks and backlog issues, epics for goals, and
   status moves as work starts, reaches review and merges.
+- **Days** (⌘4): any day's timeline (each project's tasks, commits, PRs, questions and how many terminals ran),
+  its week next to the week before, how long tasks took, how long they waited on you, and hours saved against the
+  agents' own `tb done --human` estimates. Settings ▸ History sets how long it's kept: every event for 90 days, then
+  a small summary per day for a year (cleaned up nightly).
 - **Work hours** and **usage**: outside the hours (or with the 5-hour usage used up) nothing new starts, and
   idle task terminals are closed so they don't sit on a stale conversation; they restart from their handoff.
 - Every task also has a plain-text copy at `~/.config/taskboard/tasks/T<n>.md`.

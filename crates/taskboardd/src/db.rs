@@ -104,11 +104,46 @@ CREATE INDEX IF NOT EXISTS attachments_goal ON attachments(goal_id);
 CREATE TABLE IF NOT EXISTS task_terminals(
   task_id INT NOT NULL, session_id TEXT NOT NULL, why TEXT, at TEXT, PRIMARY KEY(task_id, session_id));
 
+CREATE TABLE IF NOT EXISTS task_states(
+  id INTEGER PRIMARY KEY, task_id INT, at TEXT, status TEXT, needs_reason TEXT, failed INT, project TEXT);
+CREATE INDEX IF NOT EXISTS task_states_at ON task_states(at);
+CREATE INDEX IF NOT EXISTS task_states_task ON task_states(task_id, at);
+
+CREATE TABLE IF NOT EXISTS day_stats(
+  date TEXT NOT NULL, project TEXT NOT NULL, data TEXT, at TEXT, PRIMARY KEY(date, project));
+
+CREATE INDEX IF NOT EXISTS events_at ON events(at);
+
+-- Every change of a task's status, for the Days page's timeline (`days.rs`). A trigger, so no
+-- path that moves a task can forget it. Every status change goes through `board::update_task`,
+-- which stamps `updated_at`.
+CREATE TRIGGER IF NOT EXISTS task_states_update AFTER UPDATE OF status, needs_reason ON tasks
+  WHEN NEW.status IS NOT OLD.status OR (NEW.status = 'needs' AND NEW.needs_reason IS NOT OLD.needs_reason)
+  BEGIN INSERT INTO task_states(task_id, at, status, needs_reason, failed, project)
+    VALUES(NEW.id, COALESCE(NEW.updated_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      NEW.status, NEW.needs_reason, NEW.failed, NEW.project); END;
+CREATE TRIGGER IF NOT EXISTS task_states_insert AFTER INSERT ON tasks
+  BEGIN INSERT INTO task_states(task_id, at, status, needs_reason, failed, project)
+    VALUES(NEW.id, COALESCE(NEW.created_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      NEW.status, NEW.needs_reason, NEW.failed, NEW.project); END;
+
 CREATE TRIGGER IF NOT EXISTS sessions_status_at AFTER UPDATE OF status ON sessions
   WHEN NEW.status IS NOT OLD.status
   BEGIN UPDATE sessions SET status_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END;
 CREATE TRIGGER IF NOT EXISTS sessions_status_at_new AFTER INSERT ON sessions
   BEGIN UPDATE sessions SET status_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END;
+"#;
+
+/// Tasks from before `task_states` existed get their start and their current status, so the Days
+/// page can draw them.
+const BACKFILL_STATES: &str = r#"
+INSERT INTO task_states(task_id, at, status, needs_reason, failed, project)
+  SELECT id, started_at, 'working', NULL, 0, project FROM tasks
+  WHERE started_at IS NOT NULL AND status != 'working' AND id NOT IN (SELECT task_id FROM task_states);
+INSERT INTO task_states(task_id, at, status, needs_reason, failed, project)
+  SELECT id, COALESCE(CASE WHEN status = 'working' THEN started_at END, finished_at, updated_at, created_at),
+    status, needs_reason, failed, project FROM tasks
+  WHERE id NOT IN (SELECT task_id FROM task_states WHERE status = tasks.status);
 "#;
 
 /// Columns added since the first schema, which `CREATE TABLE IF NOT EXISTS` won't add to an older board.
@@ -117,6 +152,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("sessions", "api_error_kind", "TEXT"),
     ("sessions", "api_error_at", "TEXT"),
     ("sessions", "api_error_tries", "INT DEFAULT 0"),
+    ("tasks", "human_min", "INT"),
 ];
 
 fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
@@ -189,6 +225,7 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
         add_columns(&conn)?;
+        conn.execute_batch(BACKFILL_STATES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }
 

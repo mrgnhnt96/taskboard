@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -231,6 +231,10 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             issue_detail(app, i)
         }
         ("POST", ["report"]) => reports::handle(app, body.clone(), false),
+        ("GET", ["days"]) => days::page(app, query.get("date").map(|s| s.as_str()), query.get("hide").map(|s| s.as_str())),
+        ("GET", ["history"]) => days::history(app),
+        ("POST", ["history"]) => days::set_history(app, body),
+        ("POST", ["history", "cleanup"]) => days::cleanup(app),
         ("GET", ["hours"]) => Ok(hours::state(app)),
         ("POST", ["hours"]) => set_hours(app, body),
         ("GET", ["usage"]) => Ok(usage::state(app)),

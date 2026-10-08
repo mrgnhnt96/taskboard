@@ -307,6 +307,43 @@ account = {"id": "github"|"bitbucket"|"slack", "label": str, "connected": bool,
            "gh": bool, "setup": str|null}                    // github: false + "brew install gh" when gh is missing (only the browser sign-in and import need it)
 ```
 
+### `GET /days`
+
+Query: `date=YYYY-MM-DD` (default today; a later day is read as today), `hide=a,b` (projects left out of
+every number). Everything the Days page shows: the day, its week (Monday to Sunday) and the week before.
+A past day is worked out once from `task_states` (every status change, kept by a trigger), the task log and
+the backlog, and kept in `day_stats` (one row per project), so it outlives the cleanup of its events.
+```
+{"date": "YYYY-MM-DD", "today": "YYYY-MM-DD", "is_today": bool, "now": iso, "day_start": iso,
+ "from_hour": int, "to_hour": int,          // the timeline's hours: work hours, widened to cover the day's work
+ "projects": [str],                         // every project the page knows, hidden ones too (palette order)
+ "hidden": [str], "oldest": "YYYY-MM-DD"|null,
+ "day": totals + {
+   "peak_slots": int, "peak_first": int|null,      // ten-minute slots at the peak, and the first one
+   "running": [int; 144], "hourly": [int; 24],     // terminals working per ten minutes; marks per hour
+   "lanes": [{"project": str,
+              "bars": [{"task": int, "ref": "T12", "title": str, "from": iso, "to": iso, "open": bool,
+                        "kind": "working"|"needs"|"done"|"failed"|"lost"|"stopped"}],
+              "marks": [{"at": iso, "kind": "commit"|"question"|"pr"|"done"|"found", "task": int, "ref": str, "text": str}]}],
+   "waits": [{"task": int, "ref": str, "at": iso, "min": float, "open": bool, "reason": str, "text": str, "title": str, "project": str}],
+   "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}]},
+ "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, Monday first
+ "last_week": [same],
+ "week_tasks": [{"task", "ref", "title", "project", "work_min", "wait_min", "state", "date"}],   // ≤ 12, longest first
+ "week_task_median": float,                 // minutes, finished tasks of the week
+ "usual": {"days": int, "agent_min", "done", "prs", "wait_min", "human_min", "wait_each": float}}   // medians of the 14 days before, days with work only
+totals = {"agent_min", "human_min", "est_agent_min", "done", "prs", "commits", "wait_min", "questions": float,
+          "peak": int, "by_project": {project: agent_min}}
+```
+`human_min` adds up the `tb done --human` estimates of the tasks finished that day; `est_agent_min` is the
+agents' whole working time on those same tasks, so hours saved is `human_min - est_agent_min`.
+
+### `GET /history`
+
+How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, "detail_choices": [30, 90, 180, 365],
+"summary_choices": [180, 365, 730, 0], "events": int, "events_bytes": int, "summaries": int, "summaries_bytes": int,
+"last_cleanup": iso|null, "oldest": "YYYY-MM-DD"|null}`. `summary_days` 0 keeps day summaries always. Sizes are estimates.
+
 ---
 
 ## Shared objects
@@ -434,6 +471,12 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off"}` | Sent on every change in the hours menu. `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
 | `POST /alerts/:id/dismiss` | `{}` | |
+
+### History
+| Path | Body | Notes |
+|---|---|---|
+| `POST /history` | `{detail_days?: 30\|90\|180\|365, summary_days?: 180\|365\|730\|0}` | Answers `GET /history`. |
+| `POST /history/cleanup` | `{}` | Runs the nightly cleanup now: events, status changes and terminal lines of finished tasks older than `detail_days` (each day's summary is kept first), day summaries older than `summary_days`. Answers `{"removed": {"events", "status_changes", "terminal_lines", "day_rows"}, "history": …}`. |
 
 ### Accounts
 Every one answers with `GET /accounts`'s `{"accounts": […]}`.

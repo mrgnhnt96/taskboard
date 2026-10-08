@@ -908,6 +908,14 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if !pr_arg.is_empty() && find_pr(&pr_arg).is_none() {
         return err(400, "That isn't a pull request link (GitHub, GitLab or Bitbucket).");
     }
+    let human = r.b("human");
+    let human_min = match human.trim() {
+        "" => None,
+        h => Some(parse_minutes(h).ok_or_else(|| ApiError::new(400, "Give the human estimate as a length of time, like 3h, 90m or 1h30m."))?),
+    };
+    if let Some(m) = human_min {
+        board::update_task(r.app, t.id(), fields!["human_min" => m])?;
+    }
     if let Some(pr) = pr {
         prflow::link_pr(r.app, &t, &pr, &r.name())?;
     }

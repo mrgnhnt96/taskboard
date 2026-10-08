@@ -135,6 +135,30 @@ pub fn local_clock(s: Option<&str>) -> String {
     }
 }
 
+/// Minutes in a length of time an agent wrote: `3h`, `90m`, `1h30m`, `1.5h`, `2 hours`, or a bare
+/// number of minutes. `None` when it isn't one, or is zero or more than a month.
+pub fn parse_minutes(text: &str) -> Option<i64> {
+    static PART: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s*(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m)?\s*").unwrap());
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut total = 0.0;
+    while !rest.is_empty() {
+        let c = PART.captures(rest)?;
+        let n: f64 = c[1].parse().ok()?;
+        let unit = c.get(2).map(|u| u.as_str().to_lowercase()).unwrap_or_default();
+        total += n * match unit.chars().next() {
+            Some('d') => 8.0 * 60.0,
+            Some('h') => 60.0,
+            _ => 1.0,
+        };
+        rest = &rest[c[0].len()..];
+    }
+    let m = total.round() as i64;
+    (m > 0 && m <= 31 * 24 * 60).then_some(m)
+}
+
 pub fn prefix(kind: &str) -> &'static str {
     match kind {
         "task" => "T",
@@ -447,6 +471,19 @@ mod tests {
         assert_eq!(twelve_hour("15:00"), "3pm");
         assert_eq!(twelve_hour("06:30"), "6:30am");
         assert_eq!(twelve_hour("00:00"), "12am");
+    }
+
+    #[test]
+    fn minutes() {
+        assert_eq!(parse_minutes("3h"), Some(180));
+        assert_eq!(parse_minutes("90m"), Some(90));
+        assert_eq!(parse_minutes("1h30m"), Some(90));
+        assert_eq!(parse_minutes("1.5h"), Some(90));
+        assert_eq!(parse_minutes("2 hours"), Some(120));
+        assert_eq!(parse_minutes("45"), Some(45));
+        assert_eq!(parse_minutes("1d"), Some(480));
+        assert_eq!(parse_minutes("soon"), None);
+        assert_eq!(parse_minutes("0h"), None);
     }
 
     #[test]

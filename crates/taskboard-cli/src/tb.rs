@@ -77,6 +77,9 @@ enum Cmd {
         /// The PR this task opened (or put its link in the summary)
         #[arg(long)]
         pr: Option<String>,
+        /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d
+        #[arg(long)]
+        human: Option<String>,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -611,8 +614,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             res
         }
-        Cmd::Done { summary, pr, t } => {
-            c.run_report("tb.done", json!({"summary": summary, "pr": pr}), t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")))
+        Cmd::Done { summary, pr, human, t } => {
+            c.run_report("tb.done", json!({"summary": summary, "pr": pr, "human": human}), t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")))
         }
         Cmd::Fail { reason, t } => {
             c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.", v["task"].as_str().unwrap_or("")))

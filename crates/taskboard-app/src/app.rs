@@ -26,6 +26,7 @@ pub enum Page {
     Goal(String),
     Backlog,
     Sessions,
+    Days,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -59,6 +60,8 @@ pub struct Data {
     pub sessions: Option<Value>,
     pub closed: Option<Value>,
     pub session: Option<Value>,
+    /// `GET /days` for the Days page.
+    pub days: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `backlogErr`, `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -73,6 +76,7 @@ pub struct Errs {
     pub backlog: Option<String>,
     pub sessions: Option<String>,
     pub session: Option<String>,
+    pub days: Option<String>,
 }
 
 /// The board's filters (sent with `GET /state`).
@@ -164,6 +168,7 @@ pub struct MainWindow {
     pub task_panel: ui::task_panel::State,
     pub issue_panel: ui::issue_panel::State,
     pub hours: ui::hours::State,
+    pub days: ui::days::State,
     pub sidebar: ui::sidebar::State,
     /// The sidebar's width while it's being dragged.
     pub sidebar_width: f32,
@@ -198,6 +203,7 @@ impl MainWindow {
             task_panel: Default::default(),
             issue_panel: Default::default(),
             hours: Default::default(),
+            days: Default::default(),
             sidebar: Default::default(),
             sidebar_width: ui::sidebar::rail_width(),
             goals_loaded: false,
@@ -209,6 +215,7 @@ impl MainWindow {
             m.page = match p.as_str() {
                 "backlog" => Page::Backlog,
                 "sessions" => Page::Sessions,
+                "days" => Page::Days,
                 g if g.starts_with('G') => Page::Goal(g.into()),
                 _ => Page::Board,
             };
@@ -341,6 +348,7 @@ impl MainWindow {
             }
             ("backlog", _) => self.go(Page::Backlog, cx),
             ("sessions", _) => self.go(Page::Sessions, cx),
+            ("days", _) => self.go(Page::Days, cx),
             _ => self.go(Page::Board, cx),
         }
     }
@@ -579,6 +587,7 @@ struct Wants {
     backlog_q: Option<Vec<(&'static str, String)>>,
     sessions: bool,
     session: Option<String>,
+    days_q: Option<Vec<(&'static str, String)>>,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -594,6 +603,7 @@ struct Got {
     sessions: Option<Answer>,
     closed: Option<Value>,
     session: Option<(String, Answer)>,
+    days: Option<Answer>,
 }
 
 impl Wants {
@@ -616,6 +626,7 @@ impl Wants {
             backlog_q: (m.page == Page::Backlog).then(|| m.backlog.query()),
             sessions: m.page == Page::Sessions,
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
+            days_q: (m.page == Page::Days).then(|| m.days.query()),
         }
     }
 
@@ -633,6 +644,7 @@ impl Wants {
             sessions: if self.sessions { get("sessions", &[("project", "all".into())]) } else { None },
             closed: if self.sessions { get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok) } else { None },
             session: self.session.and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
+            days: self.days_q.and_then(|q| get("days", &q)),
             state,
         }
     }
@@ -694,6 +706,11 @@ impl Got {
         if self.closed.is_some() {
             d.closed = self.closed;
         }
+        if let Some(v) = self.days {
+            if m.page == Page::Days {
+                land(&mut d.days, &mut d.errs.days, v, |v| v);
+            }
+        }
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
                 // `sessionsLoads`: a failed fetch for another terminal than the one shown clears it.
@@ -723,7 +740,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, NewTask, NewGoal, NewIssue, GoBoard, GoBacklog, GoSessions, Refresh]);
+actions!(taskboard, [CloseOverlay, NewTask, NewGoal, NewIssue, GoBoard, GoBacklog, GoSessions, GoDays, Refresh]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -734,6 +751,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-1", GoBoard, Some("MainWindow")),
         KeyBinding::new("cmd-2", GoBacklog, Some("MainWindow")),
         KeyBinding::new("cmd-3", GoSessions, Some("MainWindow")),
+        KeyBinding::new("cmd-4", GoDays, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
     ]);
 }
@@ -750,6 +768,7 @@ impl Render for MainWindow {
             Page::Goal(_) => ui::goal::render(self, window, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
+            Page::Days => ui::days::render(self, window, cx),
         };
         let panel = match self.panel.clone() {
             Some(Panel::Task { .. }) => Some(ui::task_panel::render(self, window, cx)),
@@ -787,6 +806,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &GoBoard, _, cx| m.go(Page::Board, cx)))
             .on_action(cx.listener(|m, _: &GoBacklog, _, cx| m.go(Page::Backlog, cx)))
             .on_action(cx.listener(|m, _: &GoSessions, _, cx| m.go(Page::Sessions, cx)))
+            .on_action(cx.listener(|m, _: &GoDays, _, cx| m.go(Page::Days, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .relative()
             .flex()
@@ -831,6 +851,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Goal(_) => "Goals",
         Page::Backlog => "Backlog",
         Page::Sessions => "Sessions",
+        Page::Days => "Days",
         Page::Board => "Task board",
     };
     if needs > 0 { format!("({needs}) {base}") } else { base.to_string() }

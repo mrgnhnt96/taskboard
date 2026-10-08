@@ -55,6 +55,85 @@ pub fn seed(app: &App) -> Result<()> {
                     "snapshot" => jdumps(&json!({"task": "T1 · Add the WebAuthn registration endpoint", "branch": "feature/passkeys"})),
                     "created_at" => now, "updated_at" => now],
         )?;
+        seed_today(app, &[(t1, "done"), (t2, "working"), (t3, "needs")])?;
+        seed_history(app)?;
         Ok(())
     })
+}
+
+/// Today's sample tasks started a few hours ago, not the second the board was seeded.
+fn seed_today(app: &App, tasks: &[(i64, &str)]) -> Result<()> {
+    let now = now_ts();
+    let start = crate::days::today().and_hms_opt(0, 0, 0).and_then(|n| chrono::TimeZone::from_local_datetime(&chrono::Local, &n).earliest()).map(|t| t.timestamp() as f64).unwrap_or(now);
+    let at = |hours_ago: f64| iso((now - hours_ago * 3600.0).max(start + 60.0));
+    for (i, (id, status)) in tasks.iter().enumerate() {
+        app.db.x("DELETE FROM task_states WHERE task_id = ?", p![id])?;
+        let begun = 3.0 - i as f64 * 0.6;
+        app.db.insert("task_states", fields!["task_id" => id, "at" => at(begun), "status" => "working", "failed" => 0, "project" => "webapp"])?;
+        match *status {
+            "done" => {
+                app.db.insert("task_states", fields!["task_id" => id, "at" => at(1.0), "status" => "done", "failed" => 0, "project" => "webapp"])?;
+                app.db.x("UPDATE tasks SET human_min = 360 WHERE id = ?", p![id])?;
+            }
+            "needs" => {
+                app.db.insert("task_states", fields!["task_id" => id, "at" => at(0.6), "status" => "needs", "needs_reason" => "question", "failed" => 0, "project" => "webapp"])?;
+                app.db.insert("events", fields!["task_id" => id, "at" => at(0.6), "who" => "T3", "kind" => "question", "text" => "Asked: Should removing the last passkey require a password re-check?"])?;
+            }
+            _ => {}
+        }
+        for k in 0..3 {
+            app.db.insert("events", fields!["task_id" => id, "at" => at(begun - 0.3 - k as f64 * 0.5), "who" => "T", "kind" => "commit", "text" => "Committed: Work in progress"])?;
+        }
+    }
+    Ok(())
+}
+
+/// Two weeks of finished sample work, so the Days page has history to show.
+fn seed_history(app: &App) -> Result<()> {
+    let titles = [
+        ("webapp", "Remember the last sign-in method"),
+        ("api", "Rate-limit the token endpoint"),
+        ("webapp", "Fix the avatar upload on Safari"),
+        ("api", "Add pagination to the audit log"),
+        ("webapp", "Dark mode for the settings page"),
+        ("api", "Retry webhook deliveries with backoff"),
+    ];
+    let today = crate::days::today();
+    let mut n = 0usize;
+    for back in 1..=16i64 {
+        let day = today - chrono::Duration::days(back);
+        if matches!(chrono::Datelike::weekday(&day), chrono::Weekday::Sat | chrono::Weekday::Sun) {
+            continue;
+        }
+        let Some(start) = day.and_hms_opt(9, 0, 0).and_then(|d| chrono::TimeZone::from_local_datetime(&chrono::Local, &d).earliest()) else { continue };
+        let base = start.timestamp() as f64;
+        for k in 0..(2 + back as usize % 3) {
+            let (project, title) = titles[n % titles.len()];
+            n += 1;
+            let from = base + (k as f64 * 1.7 + (back % 2) as f64 * 0.5) * 3600.0;
+            let to = from + (1.0 + ((back as usize + k) % 4) as f64 * 0.6) * 3600.0;
+            let id = app.db.insert(
+                "tasks",
+                fields!["title" => title, "detail" => "Sample work.", "project" => project, "status" => "done", "created_at" => iso(from - 600.0),
+                        "updated_at" => iso(to), "started_at" => iso(from), "finished_at" => iso(to), "summary" => "Done.",
+                        "human_min" => (((to - from) / 60.0) * (2.5 + (n % 4) as f64 * 0.5)).round() as i64],
+            )?;
+            app.db.x("DELETE FROM task_states WHERE task_id = ?", p![id])?;
+            app.db.insert("task_states", fields!["task_id" => id, "at" => iso(from), "status" => "working", "failed" => 0, "project" => project])?;
+            if n % 3 == 0 {
+                let ask = from + (to - from) * 0.5;
+                app.db.insert("task_states", fields!["task_id" => id, "at" => iso(ask), "status" => "needs", "needs_reason" => "question", "failed" => 0, "project" => project])?;
+                app.db.insert("task_states", fields!["task_id" => id, "at" => iso((ask + 600.0 + (n % 4) as f64 * 240.0).min(to - 300.0)), "status" => "working", "failed" => 0, "project" => project])?;
+                app.db.insert("events", fields!["task_id" => id, "at" => iso(ask), "who" => "T", "kind" => "question", "text" => "Asked: Which way should this go?"])?;
+            }
+            app.db.insert("task_states", fields!["task_id" => id, "at" => iso(to), "status" => "done", "failed" => 0, "project" => project])?;
+            for c in 0..(1 + n % 3) {
+                app.db.insert("events", fields!["task_id" => id, "at" => iso(from + 900.0 + c as f64 * 1200.0), "who" => "T", "kind" => "commit", "text" => "Committed: Sample change"])?;
+            }
+            if n % 2 == 0 {
+                app.db.insert("events", fields!["task_id" => id, "at" => iso(to - 300.0), "who" => "T", "kind" => "status", "text" => format!("Linked PR #{} (acme/{project})", 100 + n)])?;
+            }
+        }
+    }
+    Ok(())
 }

@@ -47,26 +47,30 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) -> Option<WindowHandle<Sett
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sec {
     Accounts,
+    History,
 }
 
-const SECS: [Sec; 1] = [Sec::Accounts];
+const SECS: [Sec; 2] = [Sec::Accounts, Sec::History];
 
 impl Sec {
     fn label(self) -> &'static str {
         match self {
             Sec::Accounts => "Accounts",
+            Sec::History => "History",
         }
     }
 
     fn about(self) -> &'static str {
         match self {
             Sec::Accounts => "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers.",
+            Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
         }
     }
 
     fn glyph(self) -> &'static str {
         match self {
             Sec::Accounts => "@",
+            Sec::History => "◷",
         }
     }
 }
@@ -119,6 +123,10 @@ pub struct SettingsWindow {
     opened_code: Option<String>,
     /// GitHub's device page was opened for this code.
     browser_opened: bool,
+    /// `GET /history`, a call in flight, and the line under its card.
+    history: Option<Value>,
+    history_busy: bool,
+    history_note: Option<(String, bool)>,
 }
 
 impl SettingsWindow {
@@ -145,8 +153,12 @@ impl SettingsWindow {
             slack_token: Input::secret(cx, "xoxp-… or xoxb-…"),
             opened_code: None,
             browser_opened: false,
+            history: None,
+            history_busy: false,
+            history_note: None,
         };
         s.load(false, cx);
+        s.load_history(cx);
         cx.spawn(async move |this, cx| {
             let mut tick = 0u32;
             loop {
@@ -162,6 +174,53 @@ impl SettingsWindow {
         })
         .detach();
         s
+    }
+
+    fn load_history(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("history", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(v) = r {
+                    s.history = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `POST history` (a setting) or `history/cleanup`; both answer with the History state.
+    fn post_history(&mut self, path: &'static str, body: Value, cx: &mut Context<Self>) {
+        if self.history_busy {
+            return;
+        }
+        self.history_busy = true;
+        self.history_note = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.post(path, body) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.history_busy = false;
+                match r {
+                    Ok(v) if path == "history/cleanup" => {
+                        let n = &v["removed"];
+                        let total = ["events", "status_changes", "terminal_lines"].iter().map(|k| n[k].as_i64().unwrap_or(0)).sum::<i64>();
+                        let days = n["day_rows"].as_i64().unwrap_or(0);
+                        s.history_note = Some((
+                            if total + days == 0 { "Nothing was old enough to remove.".into() } else { format!("Removed {total} old events and {days} day summaries.") },
+                            false,
+                        ));
+                        s.history = Some(v["history"].clone());
+                    }
+                    Ok(v) => s.history = Some(v),
+                    Err(e) => s.history_note = Some((e.message, true)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn account(&self, id: &str) -> Value {
@@ -329,6 +388,7 @@ impl Render for SettingsWindow {
         let t = cx.global::<Theme>().clone();
         let body = match self.view {
             Sec::Accounts => self.accounts_page(&t, window, cx).into_any_element(),
+            Sec::History => self.history_page(&t, cx).into_any_element(),
         };
         div()
             .id("settings-root")
@@ -364,7 +424,7 @@ impl SettingsWindow {
         for sec in SECS {
             let on = self.view == sec;
             // amber count: accounts whose sign-in stopped working or lacks scopes
-            let n = self.accounts.iter().filter(|a| needs_owner(a)).count();
+            let n = if sec == Sec::Accounts { self.accounts.iter().filter(|a| needs_owner(a)).count() } else { 0 };
             let hover = t.panel_2;
             list = list.child(
                 div()
@@ -444,7 +504,7 @@ impl SettingsWindow {
                     .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::BOLD).truncate().child(self.view.label()))
                     .child(div().text_size(px(12.5)).line_height(px(17.)).text_color(t.muted).child(self.view.about())),
             )
-            .child(
+            .when(self.view == Sec::Accounts, |d| d.child(
                 div()
                     .id("agent-commands")
                     .flex()
@@ -466,7 +526,7 @@ impl SettingsWindow {
                     }))
                     .child(div().font_family(t.mono_font.clone()).text_color(if on { t.accent } else { t.muted }).child("</>"))
                     .child("Agent commands"),
-            )
+            ))
     }
 
     fn accounts_page(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -789,6 +849,69 @@ impl SettingsWindow {
                         .child(if copied { "Copied" } else { "Copy" }),
                 ),
         )
+    }
+}
+
+// ------------------------------------------------------------------ history
+
+/// "30 days", "6 months", "1 year", "Always".
+fn days_label(n: i64) -> String {
+    match n {
+        0 => "Always".into(),
+        365 => "1 year".into(),
+        730 => "2 years".into(),
+        n if n % 30 == 0 && n >= 180 => format!("{} months", n / 30),
+        n => format!("{n} days"),
+    }
+}
+
+/// "4.2 MB", "820 KB".
+fn bytes_label(b: i64) -> String {
+    if b >= 1_000_000 { format!("{:.1} MB", b as f64 / 1_000_000.0) } else { format!("{} KB", (b as f64 / 1000.0).ceil() as i64) }
+}
+
+impl SettingsWindow {
+    fn history_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = div().id("history-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let Some(h) = self.history.clone() else {
+            return list.child(kit::empty(t, "Asking the board…"));
+        };
+        let pick = |key: &'static str, label: &str, note: &str, first: bool, cx: &mut Context<Self>| {
+            let choices: Vec<i64> = h[format!("{key}_choices")].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
+            let cur = h[key].as_i64().unwrap_or(0);
+            let labels: Vec<String> = choices.iter().map(|n| days_label(*n)).collect();
+            let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            let on = choices.iter().position(|n| *n == cur).unwrap_or(usize::MAX);
+            let control = kit::seg(t, &format!("hist-{key}"), &refs, on, |i, item| {
+                let n = choices[i];
+                item.on_click(cx.listener(move |s, _, _, cx| s.post_history("history", json!({key: n}), cx)))
+            });
+            line(t, &format!("hist-{key}-row"), first, false, label, note, None).child(controls().child(control))
+        };
+        let detail = pick("detail_days", "Keep every event for", "Commits, questions, checkpoints and status changes of finished tasks: the marks on a day's timeline and its task log.", true, cx);
+        let summary = pick("summary_days", "Keep day summaries for", "One small record per day and project: the timeline bars and totals the week views use.", false, cx);
+        let i = |k: &str| h[k].as_i64().unwrap_or(0);
+        let used = line(
+            t,
+            "hist-used",
+            false,
+            false,
+            "Space used",
+            &format!("{} events ({}) and {} day summaries ({})", i("events"), bytes_label(i("events_bytes")), i("summaries"), bytes_label(i("summaries_bytes"))),
+            None,
+        );
+        let last = h["last_cleanup"].as_str().map(crate::fmt::full_time).unwrap_or_else(|| "not yet".into());
+        let button = if self.history_busy {
+            kit::disabled(kit::btn_small(t, "hist-clean", "Cleaning up…"))
+        } else {
+            kit::btn_small(t, "hist-clean", "Clean up now").on_click(cx.listener(|s, _, _, cx| s.post_history("history/cleanup", json!({}), cx)))
+        };
+        let clean = line(t, "hist-clean-row", false, false, "Cleanup", &format!("Runs every night after 3 AM. Last run: {last}."), None).child(controls().child(button));
+        let mut card = kit::card(t).overflow_hidden().child(detail).child(summary).child(used).child(clean);
+        if let Some((text, bad)) = &self.history_note {
+            card = card.child(row(t, "hist-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
+        }
+        list.child(card)
     }
 }
 

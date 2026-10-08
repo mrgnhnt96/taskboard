@@ -1125,7 +1125,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .gap(px(2.))
         .child(nav_item(&t, "board", "Board", Some(i(counts, "needs")), true, page == Page::Board).on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))))
         .child(nav_item(&t, "backlog", "Backlog", Some(i(counts, "open_issues")), false, page == Page::Backlog).on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx))))
-        .child(nav_item(&t, "sessions", "Sessions", Some(sessions), false, page == Page::Sessions).on_click(cx.listener(|m, _, _, cx| m.go(Page::Sessions, cx))));
+        .child(nav_item(&t, "sessions", "Sessions", Some(sessions), false, page == Page::Sessions).on_click(cx.listener(|m, _, _, cx| m.go(Page::Sessions, cx))))
+        .child(nav_item(&t, "days", "Days", None, false, page == Page::Days).on_click(cx.listener(|m, _, _, cx| m.go(Page::Days, cx))));
     let body = match &page {
         Page::Goal(cur) => nav_list(m, &t, &cur.clone(), cx),
         _ => rail_list(m, &t, cx),

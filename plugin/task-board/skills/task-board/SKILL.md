@@ -24,7 +24,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..."` (`--goal G<n>` for the goal).
 - **Written results** (measurements, a write-up): attach a link with `--kind results`. Lead with the answer.
 - **A design is attached**: open it before you touch UI and build to it; note anything that can't match.
-- **At the end**: `tb done "<one-paragraph summary>"`, or `tb fail "<why>"` if it can't be done. A PR, now or later? Read `pr.md` first.
+- **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
 
 `tb status` shows this terminal's task. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
 

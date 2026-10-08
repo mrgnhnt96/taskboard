@@ -6,6 +6,7 @@ pub mod app;
 pub mod board;
 pub mod clock;
 pub mod config;
+pub mod days;
 pub mod db;
 pub mod deliver;
 pub mod dispatch;
@@ -65,6 +66,8 @@ pub fn start_threads(app: &Arc<App>) {
             }
         })
         .ok();
+    let a = app.clone();
+    std::thread::Builder::new().name("history".into()).spawn(move || days::cleanup_loop(a)).ok();
     let a = app.clone();
     std::thread::Builder::new().name("midna-sync".into()).spawn(move || midna::sync_loop(a)).ok();
     if app.cfg.runner {
