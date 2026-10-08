@@ -456,12 +456,13 @@ function renderBanner() {
     html += alerts.map(a => `<div class="banner down alert" role="alert"><span class="dot"></span>
     <span class="banner-text grow">${esc(a.text)} <small>${esc(ago(a.at))}</small></span>
     ${alertOpenBtn(a)}
-    ${btn('Dismiss', 'alert-dismiss', { id: a.id, cls: 'ghost sm' })}</div>`).join('');
+    ${alertStays(a) ? '' : btn('Dismiss', 'alert-dismiss', { id: a.id, cls: 'ghost sm' })}</div>`).join('');
   }
   patch($('#banner'), html);
   if (S.modal && S.modal.kind === 'alerts') { if (currentAlerts().length) renderModal(); else closeModal(); }
 }
 const currentAlerts = () => (S.state && S.state.alerts) || [];
+const alertStays = a => !!a.review;
 const alertOpenBtn = a => a.task || a.goal ? btn('Open ' + (a.task || a.goal), 'alert-open', { id: a.id, cls: 'soft sm' }) : '';
 function alertsDialogHtml() {
   const alerts = currentAlerts();
@@ -469,8 +470,8 @@ function alertsDialogHtml() {
     <div class="modal-head"><h2>${plural(alerts.length, 'task needs', 'tasks need')} your attention</h2>${closeBtn('modal-close')}</div>
     <ul class="alert-list">${alerts.map(a => `<li><span class="dot"></span>
       <span class="grow">${esc(a.text)} <small>${esc(ago(a.at))}</small></span>
-      <span class="alert-acts">${alertOpenBtn(a)}${btn('Dismiss', 'alert-dismiss', { id: a.id, cls: 'ghost sm' })}</span></li>`).join('')}</ul>
-    <div class="modal-foot">${btn('Dismiss all', 'alerts-dismiss-all', { cls: 'ghost sm' })}</div>
+      <span class="alert-acts">${alertOpenBtn(a)}${alertStays(a) ? '' : btn('Dismiss', 'alert-dismiss', { id: a.id, cls: 'ghost sm' })}</span></li>`).join('')}</ul>
+    ${alerts.some(a => !alertStays(a)) ? `<div class="modal-foot">${btn('Dismiss all', 'alerts-dismiss-all', { cls: 'ghost sm' })}</div>` : ''}
   </div></div>`;
 }
 
@@ -1091,7 +1092,7 @@ function jiraRow(t) {
   return lrow('Jira', v);
 }
 
-const PR_STAGE_CLS = { checks: 'st-queued', fix: 'st-failed', review: 'st-review', comments: 'st-needs',
+const PR_STAGE_CLS = { checks: 'st-queued', fix: 'st-failed', review: 'st-review', rereview: 'st-review', comments: 'st-needs',
   merge: 'st-working', merged: 'st-done', declined: 'neutral' };
 const PR_AGENT_PHASES = new Set(['fix', 'comments', 'merge']);
 const STEP_ICON = {
@@ -1114,6 +1115,7 @@ function checksStep(p) {
 function reviewStep(p) {
   const s = { name: 'Review' };
   const r = String(p.review || '').toLowerCase();
+  if (p.stage && p.stage.phase === 'rereview') return { ...s, st: 'wait', sub: 'Awaiting re-review' };
   if (r === 'changes') return { ...s, st: 'ask', sub: REVIEW.changes };
   if (p.stage && p.stage.phase === 'comments') return { ...s, st: 'ask', sub: 'New comments' };
   if (r === 'approved') return { ...s, st: 'done', sub: REVIEW.approved };
@@ -1227,6 +1229,13 @@ function metaRows(t) {
   return m.map(p => Array.isArray(p) ? [String(p[0] ?? ''), String(p[1] ?? '')] : [String((p && (p.name ?? p.k)) ?? ''), String((p && (p.value ?? p.v)) ?? '')]);
 }
 
+function originRow(t) {
+  const o = t.origin;
+  if (!o || !o.from) return '';
+  const from = o.url ? `<a href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.from)}</a>` : esc(o.from);
+  return `<div><span class="k">From</span><span class="v">${from}${o.by ? ` · ${esc(o.by)}` : ''}</span></div>`;
+}
+
 function contextTab(t) {
   const r = ref(t, 'T');
   const c = t.context || {};
@@ -1256,7 +1265,7 @@ function contextTab(t) {
   const handoff = `<div class="handoff">${esc(text ?? 'Loading…')}</div>`;
   return `
     ${savedLine(t) ? `<span class="muted" style="font-size:13px">${esc(savedLine(t))}</span>` : ''}
-    <section class="kv" aria-label="Where it is">${where.map(([k, v]) => `<div><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('')}</section>
+    <section class="kv" aria-label="Where it is">${where.map(([k, v]) => `<div><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('')}${originRow(t)}</section>
     ${lists.join('')}
     <div class="stack" style="gap:8px"><h3 class="h3">Files touched</h3>${files.length ? `<div class="files">${files.map(f => `<span title="${esc(f)}">${esc(String(f).split('/').pop())}</span>`).join('')}</div>` : '<span class="help">None yet.</span>'}</div>
     ${meta.length ? `<div class="stack" style="gap:8px"><h3 class="h3">Details</h3>
@@ -1689,7 +1698,7 @@ const ACTIONS = {
     if (S.modal && S.modal.kind === 'alerts') closeModal();
     if (a.task) openTask(a.task); else location.hash = `#/goals/${a.goal}`;
   },
-  'alerts-dismiss-all': el => run(el, () => Promise.all(currentAlerts().map(a => post(`/alerts/${encodeURIComponent(a.id)}/dismiss`, {}))), { ok: '' }),
+  'alerts-dismiss-all': el => run(el, () => Promise.all(currentAlerts().filter(a => !alertStays(a)).map(a => post(`/alerts/${encodeURIComponent(a.id)}/dismiss`, {}))), { ok: '' }),
   'open-session': el => nav(routeHash('sessions', null, { s: el.dataset.id })),
   'close-modal': () => { if (!(S.modal && S.modal.busy)) closeModal(); },
   'open-issue': el => nav(hashWith({ issue: el.dataset.id, task: null, tab: null })),

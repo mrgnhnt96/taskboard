@@ -206,9 +206,14 @@ fn js_len(s: &str) -> usize {
 
 // ------------------------------------------------------------------ goal state and counts
 
-/// `goalState(tasks, g)`: the goal's state label and its chip color.
+/// `countedTasks(g)`: the goal's own tasks, then the shared ones from other goals that also count toward it.
+fn counted(g: &Value) -> Vec<Value> {
+    arr(g, "tasks").iter().chain(arr(g, "shared")).cloned().collect()
+}
+
+/// `goalState(countedTasks(g), g)`: the goal's state label and its chip color.
 pub fn goal_state(g: &Value) -> (String, &'static str) {
-    let tasks = arr(g, "tasks");
+    let tasks = counted(g);
     if !tasks.is_empty() && tasks.iter().all(|t| s(t, "status") == "done") {
         let open: Vec<&Value> = tasks.iter().filter(|t| awaiting_merge(t)).collect();
         if open.iter().any(|t| pr_stopped(t)) {
@@ -251,9 +256,9 @@ struct Counts {
     queued: i64,
 }
 
-/// `goalCounts(g)` for a goal detail (it has its tasks).
+/// `goalCounts(g)` for a goal detail (it has its tasks, and the shared ones).
 fn counts(g: &Value) -> Counts {
-    let tasks = arr(g, "tasks");
+    let tasks = counted(g);
     let count = |f: &dyn Fn(&Value) -> bool| tasks.iter().filter(|t| f(t)).count() as i64;
     Counts {
         n: tasks.len() as i64,
@@ -458,6 +463,8 @@ pub struct TaskRow {
     pub pr_tip: Option<String>,
     pub pr_phase: String,
     pub planned: bool,
+    /// The row's tooltip (shared rows: which goal runs it).
+    pub tip: Option<String>,
 }
 
 /// `goalTaskMeta(t, i, tasks, g)`.
@@ -482,6 +489,11 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
         "queued" => vec![high, after(if in_order { prev_open() } else { 0 }).or(Some("starts when a terminal is free".into())), key],
         _ => vec![after(if in_order { prev_open() } else { 0 })],
     };
+    let mut parts = parts;
+    let also: Vec<&str> = arr(t, "also").iter().map(|x| s(x, "ref")).collect();
+    if !also.is_empty() {
+        parts.push(Some(format!("also for {}", also.join(", "))));
+    }
     let mut list: Vec<String> = parts.into_iter().flatten().filter(|x| !x.is_empty()).collect();
     if let Some(first) = list.first_mut() {
         if Some(first.as_str()) != who.as_deref() {
@@ -517,7 +529,22 @@ pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskR
         pr_tip,
         pr_phase,
         planned: s(t, "status") == "planned",
+        tip: None,
     }
+}
+
+/// A row of `goalTasks`' "From other goals": a shared task its home goal runs (n is 0: it shows "·").
+pub fn shared_row_view(t: &Value) -> TaskRow {
+    let home = t.get("goal").filter(|g| g.is_object());
+    let mut row = task_row_view(t, 0, std::slice::from_ref(t), &json!({}));
+    row.n = 0;
+    row.jira_tip = None;
+    row.meta = match home {
+        Some(g) => format!("From {} · {}", s(g, "ref"), s(g, "name")),
+        None => "From another goal".into(),
+    };
+    row.tip = Some(format!("Counts toward this goal; {} runs it", home.map(|g| s(g, "ref")).unwrap_or("its own goal")));
+    row
 }
 
 pub struct HowRuns {
@@ -1900,7 +1927,8 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
 
 fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let tasks = arr(g, "tasks");
-    if tasks.is_empty() {
+    let shared = arr(g, "shared");
+    if tasks.is_empty() && shared.is_empty() {
         // `.empty-box`.
         return div()
             .p(px(24.))
@@ -1920,91 +1948,108 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
         _ => None,
     };
     // `.rows.trows`.
-    let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
-    for (ix, task) in tasks.iter().enumerate() {
-        let row = task_row_view(task, ix, tasks, g);
-        let hover = accent_tint(t);
-        let target = row.r.clone();
-        let on = open_task.as_deref() == Some(row.r.as_str());
-        let pr_color = match row.pr_phase.as_str() {
-            "merged" => t.up_fg,
-            "declined" => t.muted,
-            "fix" => t.down,
-            "comments" => t.warn_fg,
-            _ => t.accent_fg,
-        };
-        let fade = if row.planned { 0.85 } else { 1. };
-        list = list.child(
-            div()
-                .id(SharedString::from(format!("goal-task-{}", row.r)))
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .px(px(14.))
-                .py(px(12.))
-                .bg(t.card)
-                .cursor_pointer()
-                .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
-                .when(on, |d| d.bg(hover))
-                .hover(move |d| d.bg(hover))
-                // `.n`: the plain step number in a 28px column.
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .justify_center()
-                        .w(px(28.))
-                        .opacity(fade)
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.muted)
-                        .child(row.n.to_string()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(2.))
-                        .opacity(fade)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .min_w_0()
-                                .child(st_chip(t, status_tone(row.key), row.chip))
-                                .children(row.jira_tip.clone().map(|tip| {
-                                    div()
-                                        .id(SharedString::from(format!("goal-jira-{}", row.r)))
-                                        .flex()
-                                        .flex_none()
-                                        .child(ico(Ico::Jira, 14., t.jira))
-                                        .tooltip(kit::tip(tip))
-                                }))
-                                .children(row.pr_text.clone().map(|txt| {
-                                    div()
-                                        .id(SharedString::from(format!("goal-pr-{}", row.r)))
-                                        .flex()
-                                        .flex_none()
-                                        .items_center()
-                                        .gap(px(3.))
-                                        .text_size(px(12.))
-                                        .text_color(pr_color)
-                                        .child(ico(Ico::PrOpen, 13., pr_color))
-                                        .child(txt)
-                                        .when_some(stage_icon(&row.pr_phase), |d, st| d.child(div().ml(px(3.)).child(ico(Ico::Stage(st), 13., pr_color))))
-                                        .tooltip(kit::tip(row.pr_tip.clone().unwrap_or_default()))
-                                }))
-                                .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(row.title.clone())),
-                        )
-                        .when(!row.meta.is_empty(), |d| d.child(div().text_size(px(12.5)).text_color(t.muted).truncate().child(row.meta.clone()))),
-                )
-                .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx))),
-        );
+    let rows = |views: Vec<TaskRow>, cx: &mut Context<MainWindow>| {
+        let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
+        for (ix, row) in views.into_iter().enumerate() {
+            let on = open_task.as_deref() == Some(row.r.as_str());
+            list = list.child(task_row_el(t, row, ix, on, cx));
+        }
+        list
+    };
+    let mut out = div().flex().flex_col();
+    if !tasks.is_empty() {
+        out = out.child(rows(tasks.iter().enumerate().map(|(ix, task)| task_row_view(task, ix, tasks, g)).collect(), cx));
     }
-    list
+    if !shared.is_empty() {
+        // `.h3.shared-h`: 18px above, 8px below.
+        out = out
+            .child(h3(t, 13., "From other goals").when(!tasks.is_empty(), |d| d.mt(px(18.))).mb(px(8.)))
+            .child(rows(shared.iter().map(shared_row_view).collect(), cx));
+    }
+    out
+}
+
+/// One `.trow`: the step number (or "·" for a shared task), the status chip, Jira and PR marks, title and meta.
+fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let hover = accent_tint(t);
+    let target = row.r.clone();
+    let pr_color = match row.pr_phase.as_str() {
+        "merged" => t.up_fg,
+        "declined" => t.muted,
+        "fix" => t.down,
+        "comments" => t.warn_fg,
+        _ => t.accent_fg,
+    };
+    let fade = if row.planned { 0.85 } else { 1. };
+    let id = if row.n == 0 { format!("goal-shared-{}", row.r) } else { format!("goal-task-{}", row.r) };
+    div()
+        .id(SharedString::from(id))
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(14.))
+        .py(px(12.))
+        .bg(t.card)
+        .cursor_pointer()
+        .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
+        .when(on, |d| d.bg(hover))
+        .hover(move |d| d.bg(hover))
+        // `.n`: the plain step number in a 28px column.
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .justify_center()
+                .w(px(28.))
+                .opacity(fade)
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.muted)
+                .child(if row.n == 0 { "·".to_string() } else { row.n.to_string() }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .opacity(fade)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .min_w_0()
+                        .child(st_chip(t, status_tone(row.key), row.chip))
+                        .children(row.jira_tip.clone().map(|tip| {
+                            div()
+                                .id(SharedString::from(format!("goal-jira-{}", row.r)))
+                                .flex()
+                                .flex_none()
+                                .child(ico(Ico::Jira, 14., t.jira))
+                                .tooltip(kit::tip(tip))
+                        }))
+                        .children(row.pr_text.clone().map(|txt| {
+                            div()
+                                .id(SharedString::from(format!("goal-pr-{}", row.r)))
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(3.))
+                                .text_size(px(12.))
+                                .text_color(pr_color)
+                                .child(ico(Ico::PrOpen, 13., pr_color))
+                                .child(txt)
+                                .when_some(stage_icon(&row.pr_phase), |d, st| d.child(div().ml(px(3.)).child(ico(Ico::Stage(st), 13., pr_color))))
+                                .tooltip(kit::tip(row.pr_tip.clone().unwrap_or_default()))
+                        }))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(row.title.clone())),
+                )
+                .when(!row.meta.is_empty(), |d| d.child(div().text_size(px(12.5)).text_color(t.muted).truncate().child(row.meta.clone()))),
+        )
+        .when_some(row.tip.clone(), |d, tip| d.tooltip(kit::tip(tip)))
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx)))
 }
 
 fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
@@ -2830,15 +2875,22 @@ mod tests {
                 "taskRows" => {
                     let tasks = arr(goal, "tasks");
                     let h = how_runs_view(goal);
-                    json!({
-                        "empty": tasks.is_empty().then_some("No tasks in this goal yet. Add one, or let Claude plan them."),
+                    let mut out = json!({
+                        "empty": (tasks.is_empty() && arr(goal, "shared").is_empty()).then_some("No tasks in this goal yet. Add one, or let Claude plan them."),
                         "rows": tasks.iter().enumerate().map(|(ix, t)| {
                             let r = task_row_view(t, ix, tasks, goal);
                             json!({"n": r.n.to_string(), "chip": r.chip, "title": r.title, "meta": r.meta, "jira_tip": r.jira_tip, "pr_text": r.pr_text, "pr_tip": r.pr_tip, "planned": r.planned})
                         }).collect::<Vec<_>>(),
                         "max_options": h.options.iter().map(|(_, l)| l.clone()).collect::<Vec<_>>(),
                         "max_selected": h.selected, "run_in_order": h.run_in_order, "auto_close": h.auto_close,
-                    })
+                    });
+                    if !arr(goal, "shared").is_empty() {
+                        out["shared"] = json!(arr(goal, "shared").iter().map(|t| {
+                            let r = shared_row_view(t);
+                            json!({"chip": r.chip, "title": r.title, "meta": r.meta, "tip": r.tip, "pr_text": r.pr_text, "planned": r.planned})
+                        }).collect::<Vec<_>>());
+                    }
+                    out
                 }
                 "gate" => match gate_view(goal) {
                     Some((label, text, (act, button))) => json!({"label": label, "text": text, "buttons": [{"act": act, "label": button}]}),

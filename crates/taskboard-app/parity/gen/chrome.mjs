@@ -269,6 +269,8 @@ const ALERTS = [
   { id: 'a2', at: at(3), text: 'G2 is stuck.', task: null, goal: 'G2' },
   { id: 'a3', at: at(1), text: 'Something needs you.', task: null, goal: null },
 ];
+// A PR waiting on your review: it stays until you review it, so it offers no Dismiss.
+const REVIEW_ALERT = { id: 'a4', at: at(20), text: 'PR #12 for T5 is green and ready for review.', task: 'T5', goal: null, review: true };
 function parseBanner(html) {
   return [...html.matchAll(/<div class="banner ([a-z ]+)"[^>]*>([\s\S]*?)<\/div>/g)].map(m => ({
     kind: m[1].includes('alert') ? 'alert' : 'down',
@@ -278,7 +280,8 @@ function parseBanner(html) {
   }));
 }
 for (const [name, err, alerts] of [['none', '', []], ['down', 'Can’t reach the task board server.', []], ['one task alert', '', [ALERTS[0]]], ['one goal alert', '', [ALERTS[1]]],
-  ['one plain alert', '', [ALERTS[2]]], ['three alerts', '', ALERTS], ['down and alert', 'The board answered 500.', [ALERTS[0]]]]) {
+  ['one plain alert', '', [ALERTS[2]]], ['three alerts', '', ALERTS], ['down and alert', 'The board answered 500.', [ALERTS[0]]],
+  ['one review alert', '', [REVIEW_ALERT]]]) {
   const w = web();
   w.set('S.state', state({ alerts }));
   w.set('S.stateErr', err);
@@ -286,18 +289,18 @@ for (const [name, err, alerts] of [['none', '', []], ['down', 'Can’t reach the
   w.call('renderBanner');
   add(`banner ${name}`, { fn: 'banner', down: err || null, alerts }, parseBanner(w.run('__b')));
 }
-{
+for (const [name, alerts] of [['alertsDialog', ALERTS], ['alertsDialog with a review alert', [REVIEW_ALERT, ...ALERTS]], ['alertsDialog only review alerts', [REVIEW_ALERT, { ...REVIEW_ALERT, id: 'a5', task: 'T6' }]]]) {
   const w = web();
-  w.set('S.state', state({ alerts: ALERTS }));
+  w.set('S.state', state({ alerts }));
   const html = w.call('alertsDialogHtml');
-  add('alertsDialog', { fn: 'alertsDialog', alerts: ALERTS }, {
+  add(name, { fn: 'alertsDialog', alerts }, {
     title: text(html.match(/<h2>([\s\S]*?)<\/h2>/)[1]),
     rows: [...html.matchAll(/<li>([\s\S]*?)<\/li>/g)].map(m => ({
       text: text(m[1].replace(/<button[\s\S]*?<\/button>/g, '').replace(/<small>[\s\S]*?<\/small>/g, '')),
       ago: text(m[1].match(/<small>([\s\S]*?)<\/small>/)[1]),
       buttons: [...m[1].matchAll(/<button[^>]*data-act="([^"]+)"[^>]*>([\s\S]*?)<\/button>/g)].map(b => `${b[1]}:${text(b[2])}`),
     })),
-    foot: acts(html.match(/<div class="modal-foot">([\s\S]*?)<\/div>/)[1]),
+    foot: acts((html.match(/<div class="modal-foot">([\s\S]*?)<\/div>/) || [])[1]),
   });
 }
 

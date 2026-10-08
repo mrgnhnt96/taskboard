@@ -83,8 +83,9 @@ function goalState(tasks, g = {}) {
   if (queued.length) return { label: 'Queued', cls: 'st-working' };
   return { label: tasks.length ? 'Not started' : 'No tasks yet', cls: 'st-queued' };
 }
+const countedTasks = g => (g.tasks || []).concat(g.shared || []);
 function goalCounts(g) {
-  const tasks = g.tasks || [];
+  const tasks = countedTasks(g);
   const prs = g.tasks ? tasks.filter(awaitingMerge).length : (g.prs_open || []).length;
   const c = !g.tasks ? { n: g.total || 0, done: g.done || 0, active: g.active || 0, queued: 0, prs } : {
     n: tasks.length,
@@ -166,7 +167,7 @@ function goalMain(g) {
   const c = goalCounts(g);
   const openIssues = (g.backlog || []).filter(b => (b.state || 'open') === 'open').length;
   const view = S.route.q.view === 'backlog' ? 'backlog' : 'tasks';
-  const gs = goalState(tasks, g);
+  const gs = goalState(countedTasks(g), g);
   const epic = g.epic_key
     ? `Jira epic ${g.epic_url ? `<a class="epic" href="${esc(safeUrl(g.epic_url))}" target="_blank" rel="noopener">${esc(g.epic_key)}</a>` : `<span class="epic">${esc(g.epic_key)}</span>`}${g.epic_status ? ' · ' + esc(g.epic_status) : ''}`
     : jiraOn() ? 'No Jira epic' : '';
@@ -202,6 +203,7 @@ function goalTaskMeta(t, i, tasks, g) {
   else if (t.status === 'queued' && t.waiting) parts = [t.priority === 'high' && 'High', t.waiting, key];
   else if (t.status === 'queued') { const p = g.run_in_order ? prevOpen() : 0; parts = [t.priority === 'high' && 'High', p ? `after task ${p}` : 'starts when a terminal is free', key]; }
   else { const p = g.run_in_order ? prevOpen() : 0; parts = [p && `after task ${p}`]; }
+  if ((t.also || []).length) parts.push(`also for ${t.also.map(x => x.ref).join(', ')}`);
   const list = parts.filter(Boolean);
   if (list[0] && list[0] !== t.who) list[0] = firstUpper(list[0]);
   return list.join(' · ');
@@ -242,8 +244,17 @@ function goalTasks(g) {
     return `<li class="trow${t.status === 'planned' ? ' planned' : ''}"><span class="n" aria-hidden="true"><span class="num">${i + 1}</span></span>
       <button type="button" class="main" data-act="open-task" data-id="${esc(r)}"><span class="l1"><span class="chip st-${k}">${STATUS[k]}</span>${t.jira && t.jira.key ? `<span class="jira-at" title="${esc(t.jira.key + (t.jira.status ? ' · ' + t.jira.status : ''))}">${ICON.jiraMark}<span class="sr">Jira ${esc(t.jira.key)}</span></span>` : ''}${prMark(t)}<b>${esc(t.title)}</b></span>${(m => m ? `<span class="m">${esc(m)}</span>` : '')(goalTaskMeta(t, i, tasks, g))}</button></li>`;
   };
+  const sharedRow = t => {
+    const r = ref(t, 'T');
+    const k = stKey(t);
+    const home = t.goal ? `From ${t.goal.ref} · ${t.goal.name}` : 'From another goal';
+    return `<li class="trow${t.status === 'planned' ? ' planned' : ''}"><span class="n" aria-hidden="true"><span class="num">·</span></span>
+      <button type="button" class="main" data-act="open-task" data-id="${esc(r)}" title="Counts toward this goal; ${esc(t.goal ? t.goal.ref : 'its own goal')} runs it"><span class="l1"><span class="chip st-${k}">${STATUS[k]}</span>${prMark(t)}<b>${esc(t.title)}</b></span><span class="m">${esc(home)}</span></button></li>`;
+  };
+  const shared = g.shared || [];
   const max = Number(g.max_terminals) || 2;
-  return `${gateBanner(g)}${tasks.length ? `<ol class="rows trows">${tasks.map(rowHtml).join('')}</ol>` : '<p class="empty-box">No tasks in this goal yet. Add one, or let Claude plan them.</p>'}
+  return `${gateBanner(g)}${tasks.length ? `<ol class="rows trows">${tasks.map(rowHtml).join('')}</ol>` : shared.length ? '' : '<p class="empty-box">No tasks in this goal yet. Add one, or let Claude plan them.</p>'}
+    ${shared.length ? `<h3 class="h3 shared-h">From other goals</h3><ol class="rows trows">${shared.map(sharedRow).join('')}</ol>` : ''}
     <div class="card-box"><h3 class="h3">How this goal runs</h3>
       <div class="row" style="gap:10px"><label for="max-terms" style="font-size:14px">At most</label>
         <select id="max-terms" class="select sm" data-change="goal-set" data-field="max_terminals" data-id="${esc(gr)}" data-grp="gset:${esc(gr)}">${[1, 2, 3, 4, 5, 6, 8].map(n => opt(n, plural(n, 'terminal'), max)).join('')}</select>

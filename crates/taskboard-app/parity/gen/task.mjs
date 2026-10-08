@@ -201,6 +201,7 @@ for (const [label, p] of [
   ['stage comments asked', pr({ checks: 'pass', review: 'pending', stage: { phase: 'comments', label: 'Answering comments', session: 's5', stopped: { asked: true, message: 'Should I rename the helper as the reviewer asks?' } } })],
   ['stage review', pr({ checks: 'pass', stage: { phase: 'review', label: 'Awaiting reviews', session: null, stopped: null } })],
   ['stage merge', pr({ checks: 'pass', review: 'approved', stage: { phase: 'merge', label: 'Merging', session: 's5', stopped: null } })],
+  ['stage rereview', pr({ checks: 'pass', review: 'changes', stage: { phase: 'rereview', label: 'Awaiting re-review', session: null, stopped: null } })],
   ['merged', pr({ state: 'MERGED', checks: 'pass', review: 'approved', stage: { phase: 'merged', label: 'Merged', session: null, stopped: null } })],
   ['declined', pr({ state: 'DECLINED', checks: 'fail', review: 'none' })],
   ['no url, title starts with jira key', pr({ url: null, title: 'PROJ-12: Passkey sign-in' })],
@@ -244,6 +245,10 @@ panel('context: handoff loaded', task({ handoff: undefined }), { ...withUi({ han
 panel('context: handoff object', task({ handoff: { text: 'Object handoff.' } }), { ...withUi({}), tab: 'context' });
 panel('context: handoff failed', task({ handoff: undefined }), { ...withUi({ handoffs: { T7: 'Couldn’t load the handoff: The board answered 500.' } }), tab: 'context' });
 panel('context: uncommitted string, started by who', task({ started_at: null, who: 'T7 x', context: { where: { uncommitted: 'unknown' } } }), { ...withUi({}), tab: 'context' });
+panel('context: from the board', task({ origin: { from: 'Added on the board', by: 'You' } }), { ...withUi({}), tab: 'context' });
+panel('context: from a link', task({ origin: { from: 'Backlog B3: Flaky test', by: 'T2 Sign in', url: 'https://example.com/b/3' } }), { ...withUi({}), tab: 'context' });
+panel('context: from, no by', task({ origin: { from: 'Code changed in T7 x while Sam worked there' } }), { ...withUi({}), tab: 'context' });
+panel('context: origin without from', task({ origin: { by: 'You' } }), { ...withUi({}), tab: 'context' });
 panel('context: meta objects', task({ meta: [{ name: 'A', value: 'b' }, { k: 'C', v: 'd' }, ['E'], [null, 5]] }), { ...withUi({}), tab: 'context' });
 panel('context: meta being edited', task({ meta: [['Figma', 'x']] }), { ...withUi({ meta_edit: { T7: [['Figma', 'x2'], ['New', '']] }, notes: { 'meta:T7': { text: 'Saved', err: false } } }), tab: 'context' });
 

@@ -19447,6 +19447,33 @@
       ]
     },
     {
+      "name": "banner one review alert",
+      "input": {
+        "fn": "banner",
+        "down": null,
+        "alerts": [
+          {
+            "id": "a4",
+            "at": "2026-10-07T14:40:00.000Z",
+            "text": "PR #12 for T5 is green and ready for review.",
+            "task": "T5",
+            "goal": null,
+            "review": true
+          }
+        ]
+      },
+      "expect": [
+        {
+          "kind": "alert",
+          "text": "PR #12 for T5 is green and ready for review.",
+          "ago": "20m ago",
+          "buttons": [
+            "alert-open:Open T5"
+          ]
+        }
+      ]
+    },
+    {
       "name": "alertsDialog",
       "input": {
         "fn": "alertsDialog",
@@ -19504,6 +19531,125 @@
         "foot": [
           "alerts-dismiss-all"
         ]
+      }
+    },
+    {
+      "name": "alertsDialog with a review alert",
+      "input": {
+        "fn": "alertsDialog",
+        "alerts": [
+          {
+            "id": "a4",
+            "at": "2026-10-07T14:40:00.000Z",
+            "text": "PR #12 for T5 is green and ready for review.",
+            "task": "T5",
+            "goal": null,
+            "review": true
+          },
+          {
+            "id": "a1",
+            "at": "2026-10-07T14:48:00.000Z",
+            "text": "T4 couldn’t start in Midna.",
+            "task": "T4",
+            "goal": null
+          },
+          {
+            "id": "a2",
+            "at": "2026-10-07T14:57:00.000Z",
+            "text": "G2 is stuck.",
+            "task": null,
+            "goal": "G2"
+          },
+          {
+            "id": "a3",
+            "at": "2026-10-07T14:59:00.000Z",
+            "text": "Something needs you.",
+            "task": null,
+            "goal": null
+          }
+        ]
+      },
+      "expect": {
+        "title": "4 tasks need your attention",
+        "rows": [
+          {
+            "text": "PR #12 for T5 is green and ready for review.",
+            "ago": "20m ago",
+            "buttons": [
+              "alert-open:Open T5"
+            ]
+          },
+          {
+            "text": "T4 couldn’t start in Midna.",
+            "ago": "12m ago",
+            "buttons": [
+              "alert-open:Open T4",
+              "alert-dismiss:Dismiss"
+            ]
+          },
+          {
+            "text": "G2 is stuck.",
+            "ago": "3m ago",
+            "buttons": [
+              "alert-open:Open G2",
+              "alert-dismiss:Dismiss"
+            ]
+          },
+          {
+            "text": "Something needs you.",
+            "ago": "1m ago",
+            "buttons": [
+              "alert-dismiss:Dismiss"
+            ]
+          }
+        ],
+        "foot": [
+          "alerts-dismiss-all"
+        ]
+      }
+    },
+    {
+      "name": "alertsDialog only review alerts",
+      "input": {
+        "fn": "alertsDialog",
+        "alerts": [
+          {
+            "id": "a4",
+            "at": "2026-10-07T14:40:00.000Z",
+            "text": "PR #12 for T5 is green and ready for review.",
+            "task": "T5",
+            "goal": null,
+            "review": true
+          },
+          {
+            "id": "a5",
+            "at": "2026-10-07T14:40:00.000Z",
+            "text": "PR #12 for T5 is green and ready for review.",
+            "task": "T6",
+            "goal": null,
+            "review": true
+          }
+        ]
+      },
+      "expect": {
+        "title": "2 tasks need your attention",
+        "rows": [
+          {
+            "text": "PR #12 for T5 is green and ready for review.",
+            "ago": "20m ago",
+            "buttons": [
+              "alert-open:Open T5"
+            ]
+          },
+          {
+            "text": "PR #12 for T5 is green and ready for review.",
+            "ago": "20m ago",
+            "buttons": [
+              "alert-open:Open T6"
+            ]
+          }
+        ],
+        "foot": []
       }
     },
     {

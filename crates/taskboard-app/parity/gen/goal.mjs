@@ -64,6 +64,13 @@ const GOALS = {
   'rich, not in order': G({ tasks: RICH, run_in_order: false, epic_key: 'PROJ-9' }),
   'empty run_in_order 0': G({ run_in_order: 0, auto_close: 0, max_terminals: 7, tasks: [T(1, { status: 'planned' })] }),
   'max missing': G({ max_terminals: null, auto_close: undefined, run_in_order: undefined }),
+  // Shared tasks (`tb task set T<n> --also G<n>`): a home goal runs them, other goals count them.
+  'shared': G({ tasks: [T(1, { status: 'done', who: 'T1 Add the endpoint', when: at(30), also: [{ id: 2, ref: 'G2', name: 'Sign-up' }, { id: 4, ref: 'G4', name: 'Audit' }] }),
+    T(2, { status: 'planned', also: [{ id: 2, ref: 'G2', name: 'Sign-up' }] })],
+    shared: [T(20, { status: 'working', who: 'T20 Auth client', goal: { id: 3, ref: 'G3', name: 'Auth client' }, pr: openPr({ num: 41, stage: { phase: 'rereview', label: 'Awaiting re-review' } }) }),
+      T(21, { status: 'done', goal: { id: 3, ref: 'G3', name: 'Auth client' } }), T(22, { status: 'planned', goal: null })] }),
+  'shared only': G({ shared: [T(23, { status: 'queued', goal: { id: 3, ref: 'G3', name: 'Auth client' } })] }),
+  'shared, all done': G({ tasks: [T(1, { status: 'done' })], shared: [T(24, { status: 'working', goal: { id: 3, ref: 'G3', name: 'Auth client' } })] }),
 };
 const HOURS = {
   open: HOURS_OPEN,
@@ -78,7 +85,7 @@ const cases = [];
 const add = (fn, name, input, expect) => cases.push({ name: `${fn} ${name}`, input: { fn, ...input }, expect });
 
 // ---------------------------------------------------------------- goalState
-for (const [n, g] of Object.entries(GOALS)) add('goalState', n, { goal: g }, w.call('goalState', g.tasks, g).label);
+for (const [n, g] of Object.entries(GOALS)) add('goalState', n, { goal: g }, w.call('goalState', w.call('countedTasks', g), g).label);
 
 // ---------------------------------------------------------------- header (goalMain's <header>, minus the run buttons)
 w.set('S.route', { page: 'goal', id: 'G1', q: {} });
@@ -135,11 +142,23 @@ for (const [hn, hours] of Object.entries(HOURS)) {
 w.run('S.startMenu = null');
 
 // ---------------------------------------------------------------- task rows + how it runs
-for (const n of ['rich', 'rich, not in order', 'no tasks', 'planned only', 'empty run_in_order 0', 'max missing']) {
+for (const n of ['rich', 'rich, not in order', 'no tasks', 'planned only', 'empty run_in_order 0', 'max missing', 'shared', 'shared only']) {
   const g = GOALS[n];
   setState({});
   const html = w.call('goalTasks', g);
-  const rows = [...html.matchAll(/<li class="trow[^"]*">([\s\S]*?)<\/li>/g)].map(m => {
+  const [own, others = ''] = html.split('<h3 class="h3 shared-h">From other goals</h3>');
+  const shared = [...others.matchAll(/<li class="trow[^"]*">([\s\S]*?)<\/li>/g)].map(m => {
+    const li = m[1];
+    return {
+      chip: vis(li.match(/<span class="chip st-[^"]*">([\s\S]*?)<\/span>/)[1]),
+      title: vis(li.match(/<b>([\s\S]*?)<\/b>/)[1]),
+      meta: vis(li.match(/<span class="m">([\s\S]*?)<\/span>/)[1]),
+      tip: attr(li, /class="main"[^>]*title="([^"]*)"/),
+      pr_text: (x => x ? vis(x[1]) : null)(li.match(/class="pr-at[^"]*"[^>]*>([\s\S]*?)<b>/)),
+      planned: /class="trow planned"/.test(m[0]),
+    };
+  });
+  const rows = [...own.matchAll(/<li class="trow[^"]*">([\s\S]*?)<\/li>/g)].map(m => {
     const li = m[1];
     return {
       n: vis(li.match(/<span class="num">(\d+)<\/span>/)[1]),
@@ -156,6 +175,7 @@ for (const n of ['rich', 'rich, not in order', 'no tasks', 'planned only', 'empt
   add('taskRows', n, { goal: g }, {
     empty: (x => x ? vis(x[1]) : null)(html.match(/<p class="empty-box">([\s\S]*?)<\/p>/)),
     rows,
+    ...(shared.length ? { shared } : {}),
     max_options: [...runs.matchAll(/<option value="(\d+)"[^>]*>([^<]*)<\/option>/g)].map(m => vis(m[2])),
     max_selected: (x => x ? vis(x[1]) : null)(runs.match(/<option value="\d+" selected>([^<]*)<\/option>/)),
     run_in_order: /data-field="run_in_order"[^>]*checked/.test(runs),

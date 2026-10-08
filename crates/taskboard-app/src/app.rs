@@ -856,12 +856,19 @@ pub struct BannerRow {
     pub buttons: Vec<(&'static str, String)>,
 }
 
+/// `alertStays`: a PR waiting on your review stays until you review it (the board refuses a dismiss).
+pub fn alert_stays(a: &Value) -> bool {
+    a["review"] == true
+}
+
 fn alert_buttons(a: &Value) -> Vec<(&'static str, String)> {
     let mut b = Vec::new();
     if let Some(r) = fmt::opt_s(a, "task").or(fmt::opt_s(a, "goal")) {
         b.push(("alert-open", format!("Open {r}")));
     }
-    b.push(("alert-dismiss", "Dismiss".into()));
+    if !alert_stays(a) {
+        b.push(("alert-dismiss", "Dismiss".into()));
+    }
     b
 }
 
@@ -887,7 +894,7 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
     out
 }
 
-/// `alertsDialogHtml`: (title, rows); its foot is "Dismiss all". (For the dialog in modals.rs.)
+/// `alertsDialogHtml`: (title, rows); its foot is "Dismiss all" while any alert can be dismissed. (For the dialog in modals.rs.)
 pub fn alerts_dialog_view(alerts: &[Value]) -> (String, Vec<BannerRow>) {
     let title = format!("{} your attention", fmt::plural(alerts.len() as i64, "task needs", "tasks need"));
     let rows = alerts.iter().map(|a| BannerRow { kind: "alert", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }).collect();
@@ -1081,7 +1088,9 @@ pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
                 open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
             }))
         }))
-        .child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
+        .when(r.buttons.iter().any(|(act, _)| *act == "alert-dismiss"), |d| {
+            d.child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
+        })
 }
 
 /// `alert-open`: close the alerts dialog, then the task (or else the goal).
@@ -1104,7 +1113,7 @@ pub fn dismiss_alert(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>)
 /// `alerts-dismiss-all`: dismiss every current alert; the dialog closes once none are left.
 /// (For the dialog in modals.rs.)
 pub fn dismiss_all_alerts(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let ids: Vec<String> = arr(m.state(), "alerts").iter().map(|a| s(a, "id").to_string()).collect();
+    let ids: Vec<String> = arr(m.state(), "alerts").iter().filter(|a| !alert_stays(a)).map(|a| s(a, "id").to_string()).collect();
     for id in ids {
         dismiss_alert(m, &id, cx);
     }
@@ -1283,7 +1292,8 @@ mod tests {
             let (title, rows) = alerts_dialog_view(arr(i, "alerts"));
             let rows: Vec<Value> = rows.iter().map(|r| json!({"text": r.text, "ago": r.ago,
                 "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()})).collect();
-            json!({"title": title, "rows": rows, "foot": ["alerts-dismiss-all"]})
+            let foot: Vec<&str> = if arr(i, "alerts").iter().any(|a| !super::alert_stays(a)) { vec!["alerts-dismiss-all"] } else { vec![] };
+            json!({"title": title, "rows": rows, "foot": foot})
         });
     }
 

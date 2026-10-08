@@ -2106,6 +2106,344 @@
       "expect": "No tasks yet"
     },
     {
+      "name": "goalState shared",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Add the endpoint",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                },
+                {
+                  "id": 4,
+                  "ref": "G4",
+                  "name": "Audit"
+                }
+              ]
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": "T20 Auth client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 41,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "rereview",
+                  "label": "Awaiting re-review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": "In progress"
+    },
+    {
+      "name": "goalState shared only",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 23,
+              "ref": "T23",
+              "title": "Task 23",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": "Queued"
+    },
+    {
+      "name": "goalState shared, all done",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 24,
+              "ref": "T24",
+              "title": "Task 24",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": "In progress"
+    },
+    {
       "name": "header no tasks",
       "input": {
         "fn": "header",
@@ -4530,6 +4868,392 @@
       }
     },
     {
+      "name": "header shared",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Add the endpoint",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                },
+                {
+                  "id": 4,
+                  "ref": "G4",
+                  "name": "Audit"
+                }
+              ]
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": "T20 Auth client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 41,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "rereview",
+                  "label": "Awaiting re-review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "jira": false
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "In progress",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp 2 of 5 done · 1 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 5",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header shared only",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 23,
+              "ref": "T23",
+              "title": "Task 23",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "jira": false
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Queued",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp 0 of 1 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header shared, all done",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 24,
+              "ref": "T24",
+              "title": "Task 24",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "jira": false
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "In progress",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp 1 of 2 done · 1 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 2",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
       "name": "header no tasks (jira)",
       "input": {
         "fn": "header",
@@ -6948,6 +7672,392 @@
         "epic_link": null,
         "tabs": [
           "Tasks 0",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header shared (jira)",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Add the endpoint",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                },
+                {
+                  "id": 4,
+                  "ref": "G4",
+                  "name": "Audit"
+                }
+              ]
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": "T20 Auth client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 41,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "rereview",
+                  "label": "Awaiting re-review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "jira": true
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "In progress",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp No Jira epic 2 of 5 done · 1 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 5",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header shared only (jira)",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 23,
+              "ref": "T23",
+              "title": "Task 23",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "jira": true
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Queued",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp No Jira epic 0 of 1 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header shared, all done (jira)",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 24,
+              "ref": "T24",
+              "title": "Task 24",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "jira": true
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "In progress",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp No Jira epic 1 of 2 done · 1 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 2",
           "Backlog 0"
         ],
         "tool": "Add a task"
@@ -10097,6 +11207,434 @@
             "act": "goal-deprio-ask",
             "label": "Deprioritize",
             "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons shared / open",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Add the endpoint",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                },
+                {
+                  "id": 4,
+                  "ref": "G4",
+                  "name": "Audit"
+                }
+              ]
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": "T20 Auth client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 41,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "rereview",
+                  "label": "Awaiting re-review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "hours": {
+          "on": true,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-run",
+            "label": "Start",
+            "title": "Queue the 1 planned task; the goal’s rules decide what runs when"
+          },
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons shared only / open",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 23,
+              "ref": "T23",
+              "title": "Task 23",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "hours": {
+          "on": true,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          },
+          {
+            "act": "goal-deprio-ask",
+            "label": "Deprioritize",
+            "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons shared, all done / open",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 24,
+              "ref": "T24",
+              "title": "Task 24",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "hours": {
+          "on": true,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
           }
         ]
       }
@@ -16196,6 +17734,345 @@
       "expect": {
         "empty": "No tasks in this goal yet. Add one, or let Claude plan them.",
         "rows": [],
+        "max_options": [
+          "1 terminal",
+          "2 terminals",
+          "3 terminals",
+          "4 terminals",
+          "5 terminals",
+          "6 terminals",
+          "8 terminals"
+        ],
+        "max_selected": "2 terminals",
+        "run_in_order": true,
+        "auto_close": true
+      }
+    },
+    {
+      "name": "taskRows shared",
+      "input": {
+        "fn": "taskRows",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Add the endpoint",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                },
+                {
+                  "id": 4,
+                  "ref": "G4",
+                  "name": "Audit"
+                }
+              ]
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": "T20 Auth client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 41,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "rereview",
+                  "label": "Awaiting re-review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "empty": null,
+        "rows": [
+          {
+            "n": "1",
+            "chip": "Done",
+            "title": "Task 1",
+            "meta": "T1 Add the endpoint · finished 30m ago · also for G2, G4",
+            "jira_tip": null,
+            "pr_text": null,
+            "pr_tip": null,
+            "planned": false
+          },
+          {
+            "n": "2",
+            "chip": "Planned",
+            "title": "Task 2",
+            "meta": "Also for G2",
+            "jira_tip": null,
+            "pr_text": null,
+            "pr_tip": null,
+            "planned": true
+          }
+        ],
+        "shared": [
+          {
+            "chip": "Working",
+            "title": "Task 20",
+            "meta": "From G3 · Auth client",
+            "tip": "Counts toward this goal; G3 runs it",
+            "pr_text": "#41",
+            "planned": false
+          },
+          {
+            "chip": "Done",
+            "title": "Task 21",
+            "meta": "From G3 · Auth client",
+            "tip": "Counts toward this goal; G3 runs it",
+            "pr_text": null,
+            "planned": false
+          },
+          {
+            "chip": "Planned",
+            "title": "Task 22",
+            "meta": "From another goal",
+            "tip": "Counts toward this goal; its own goal runs it",
+            "pr_text": null,
+            "planned": true
+          }
+        ],
+        "max_options": [
+          "1 terminal",
+          "2 terminals",
+          "3 terminals",
+          "4 terminals",
+          "5 terminals",
+          "6 terminals",
+          "8 terminals"
+        ],
+        "max_selected": "2 terminals",
+        "run_in_order": true,
+        "auto_close": true
+      }
+    },
+    {
+      "name": "taskRows shared only",
+      "input": {
+        "fn": "taskRows",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "shared": [
+            {
+              "id": 23,
+              "ref": "T23",
+              "title": "Task 23",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "empty": null,
+        "rows": [],
+        "shared": [
+          {
+            "chip": "Queued",
+            "title": "Task 23",
+            "meta": "From G3 · Auth client",
+            "tip": "Counts toward this goal; G3 runs it",
+            "pr_text": null,
+            "planned": false
+          }
+        ],
         "max_options": [
           "1 terminal",
           "2 terminals",

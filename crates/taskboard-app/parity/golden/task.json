@@ -7926,6 +7926,162 @@
       }
     },
     {
+      "name": "done PR: stage rereview",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "done",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": "Login ceremony is in.",
+          "when": "2026-10-07T14:30:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:30:00.000Z",
+          "finished_at": "2026-10-07T14:30:00.000Z",
+          "who": "T7 Sign in with a passkey",
+          "session_id": null,
+          "goal": null,
+          "jira": {
+            "key": "PROJ-12",
+            "status": "In Review",
+            "url": null
+          },
+          "pr": {
+            "repo": "webapp",
+            "num": 42,
+            "url": "https://github.com/acme/webapp/pull/42",
+            "title": "Passkey sign-in",
+            "state": "OPEN",
+            "checks": "pass",
+            "review": "changes",
+            "stage": {
+              "phase": "rereview",
+              "label": "Awaiting re-review",
+              "session": null,
+              "stopped": null
+            }
+          },
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [
+            {
+              "id": "s5",
+              "name": "PR visitor",
+              "status": "idle",
+              "why": "Worked on the PR",
+              "at": "2026-10-07T14:40:00.000Z"
+            },
+            {
+              "id": "s1",
+              "name": "T7 Sign in with a passkey",
+              "status": "gone",
+              "why": "Worked on the task",
+              "at": "2026-10-07T13:20:00.000Z"
+            }
+          ],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "ref": null,
+        "err": null,
+        "tab": "overview",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Awaiting re-review T7 Sign in with a passkey webapp Finished 30m ago Took 2h Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review Awaiting re-review Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log",
+          "requeue",
+          "term-focus"
+        ],
+        "titles": [
+          "The work is done; PR #42 isn’t merged yet",
+          "Open this terminal",
+          "Focus in Midna",
+          "Open this terminal",
+          "Open the pull request"
+        ],
+        "values": []
+      }
+    },
+    {
       "name": "done PR: merged",
       "input": {
         "fn": "panel",
@@ -10954,6 +11110,481 @@
       },
       "expect": {
         "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Overview Context Log Branch Not reported yet Worktree /tmp/webapp Not committed unknown Files touched None yet. What a new terminal gets You are working on T7.",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [],
+        "values": []
+      }
+    },
+    {
+      "name": "context: from the board",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "origin": {
+            "from": "Added on the board",
+            "by": "You"
+          }
+        },
+        "ref": null,
+        "err": null,
+        "tab": "context",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Branch Not reported yet Worktree /tmp/webapp From Added on the board · You Files touched None yet. What a new terminal gets You are working on T7.",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [],
+        "values": []
+      }
+    },
+    {
+      "name": "context: from a link",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "origin": {
+            "from": "Backlog B3: Flaky test",
+            "by": "T2 Sign in",
+            "url": "https://example.com/b/3"
+          }
+        },
+        "ref": null,
+        "err": null,
+        "tab": "context",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Branch Not reported yet Worktree /tmp/webapp From Backlog B3: Flaky test · T2 Sign in Files touched None yet. What a new terminal gets You are working on T7.",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [],
+        "values": []
+      }
+    },
+    {
+      "name": "context: from, no by",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "origin": {
+            "from": "Code changed in T7 x while Sam worked there"
+          }
+        },
+        "ref": null,
+        "err": null,
+        "tab": "context",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Branch Not reported yet Worktree /tmp/webapp From Code changed in T7 x while Sam worked there Files touched None yet. What a new terminal gets You are working on T7.",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [],
+        "values": []
+      }
+    },
+    {
+      "name": "context: origin without from",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": null,
+          "session_id": null,
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": null,
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "origin": {
+            "by": "You"
+          }
+        },
+        "ref": null,
+        "err": null,
+        "tab": "context",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets You are working on T7.",
         "acts": [
           "close-panel",
           "tab:overview",

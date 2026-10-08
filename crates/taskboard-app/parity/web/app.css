@@ -620,6 +620,7 @@ a.pr-bar, button.pr-bar { cursor: pointer; }
 .rows > li + li { border-top: 1px solid var(--divider); }
 .trow { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 14px; background: var(--card); }
 .trow.planned .main, .trow.planned .n { opacity: .85; }
+.shared-h { margin: 18px 0 8px; }
 .trow:hover { background: var(--accent-tint); }
 .trow .n { display: grid; place-items: center; font-size: 13px; font-weight: 600; color: var(--muted); text-align: center; }
 .trow .main { display: flex; flex-direction: column; gap: 2px; min-width: 0; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: inherit; font: inherit; }

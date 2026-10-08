@@ -432,7 +432,7 @@ fn stage_tone(phase: &str) -> Tone {
     match phase {
         "checks" => Tone::Queued,
         "fix" => Tone::Failed,
-        "review" => Tone::Review,
+        "review" | "rereview" => Tone::Review,
         "comments" => Tone::Needs,
         "merge" => Tone::Working,
         "merged" => Tone::Done,
@@ -1031,7 +1031,9 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
         _ => (if pr_open(p) { StepSt::Wait } else { StepSt::Todo }, Some("Waiting".into())),
     };
     let rv = js_lower(&p["review"]);
-    let review = if rv == "changes" {
+    let review = if phase == "rereview" {
+        (StepSt::Wait, Some("Awaiting re-review".to_string()))
+    } else if rv == "changes" {
         (StepSt::Ask, Some("Changes asked".to_string()))
     } else if phase == "comments" {
         (StepSt::Ask, Some("New comments".into()))
@@ -1275,6 +1277,18 @@ pub fn meta_rows(t: &Value, ui: &Ui) -> Vec<(String, String)> {
         .collect()
 }
 
+/// `originRow(t)`: where the task came from ("From Backlog B3: Flaky test · You"), linked when it has a URL.
+fn origin_row(t: &Value) -> Option<Node> {
+    let o = obj(t, "origin")?;
+    let from = opt_s(o, "from")?;
+    let by = opt_s(o, "by").map(|b| format!(" · {b}")).unwrap_or_default();
+    let value = match opt_s(o, "url") {
+        Some(url) => el(K::Line, vec![Node::Link { s: from.to_string(), go: Go::Url(url.to_string()), tip: None, look: LinkLook::Plain }, txt(by, St::Plain)]),
+        None => txt(format!("{from}{by}"), St::Plain),
+    };
+    Some(el(K::KvRow, vec![txt("From", St::LrowKey), value]))
+}
+
 /// `contextTab(t)`.
 fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
@@ -1302,7 +1316,9 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     if !saved.is_empty() {
         out.push(txt(saved, St::Muted));
     }
-    out.push(el(K::Kv, wh.into_iter().map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)])).collect()));
+    let mut kv: Vec<Node> = wh.into_iter().map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)])).collect();
+    kv.extend(origin_row(t));
+    out.push(el(K::Kv, kv));
     for (title, key, glyph, dot) in [("Done so far", "done", "✓", Dot::Up), ("Next", "next", "→", Dot::Accent), ("Decisions", "decisions", "•", Dot::Faint), ("Your answers", "answers", "•", Dot::Warn)] {
         let items = arr(cx, key);
         if items.is_empty() {

@@ -126,13 +126,15 @@ fn alerts(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement
     kit::modal_box(t, 560.)
         .child(head(t, title, cx))
         .child(col)
-        .child(
-            div().flex().justify_end().p(px(16.)).child(
-                kit::btn_small(t, "alerts-dismiss-all", "Dismiss all")
-                    // The dialog closes by itself once the alerts are gone.
-                    .on_click(cx.listener(|m, _, _, cx| crate::app::dismiss_all_alerts(m, cx))),
-            ),
-        )
+        .when(list.iter().any(|a| !crate::app::alert_stays(a)), |d| {
+            d.child(
+                div().flex().justify_end().p(px(16.)).child(
+                    kit::btn_small(t, "alerts-dismiss-all", "Dismiss all")
+                        // The dialog closes by itself once the alerts are gone.
+                        .on_click(cx.listener(|m, _, _, cx| crate::app::dismiss_all_alerts(m, cx))),
+                ),
+            )
+        })
         .into_any_element()
 }
 
