@@ -27,6 +27,7 @@ pub mod screen;
 pub mod seed;
 pub mod server;
 pub mod transcript;
+pub mod triage;
 pub mod usage;
 pub mod util;
 pub mod waitsfor;
@@ -68,6 +69,17 @@ pub fn start_threads(app: &Arc<App>) {
         .ok();
     let a = app.clone();
     std::thread::Builder::new().name("history".into()).spawn(move || days::cleanup_loop(a)).ok();
+    let a = app.clone();
+    std::thread::Builder::new()
+        .name("backlog-ai".into())
+        .spawn(move || {
+            while !a.stopping() {
+                if let Some(f) = a.next_ai(Duration::from_secs(5)) {
+                    f(&a);
+                }
+            }
+        })
+        .ok();
     let a = app.clone();
     std::thread::Builder::new().name("midna-sync".into()).spawn(move || midna::sync_loop(a)).ok();
     if app.cfg.runner {

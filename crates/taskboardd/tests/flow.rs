@@ -432,3 +432,84 @@ fn with_midnas_network_resume_off_a_lost_network_needs_you() {
     assert_eq!(t.s("status"), Some("needs"));
     assert_eq!(t.s("needs_reason"), Some("offline"));
 }
+
+// ------------------------------------------------------------------ planning from the backlog
+
+fn issue(b: &Board, title: &str, kind: &str) -> String {
+    let v = b.post("backlog", json!({"title": title, "kind": kind, "project": "webapp"}));
+    v["ref"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn the_plan_page_turns_picked_issues_into_a_goal_in_waves() {
+    let b = new_board();
+    let bug = issue(&b, "Restarts ignore the cap", "bug");
+    let gap = issue(&b, "No test for spool replay", "gap");
+    let clean = issue(&b, "Remove old prefs keys", "clean");
+    let left = issue(&b, "Docs typo", "follow");
+
+    // Untriaged: open and in no goal. Without Claude they're grouped by kind.
+    let t = b.get("backlog/triage");
+    assert_eq!(t["untriaged"], 4);
+    assert_eq!(t["triaged"], 0);
+    assert_eq!(t["ai"], false);
+    let first = t["issues"].as_array().unwrap().iter().find(|x| x["ref"] == bug.as_str()).unwrap().clone();
+    assert_eq!((first["priority"].as_str(), first["impact"].as_str(), first["group"].as_str()), (Some("p2"), Some("med"), Some("Bugs")));
+
+    // Priority from the selection bar, then a plan: waves by priority.
+    b.post("backlog/bulk", json!({"ids": [bug], "action": "priority", "priority": "p1"}));
+    let plan = b.post("backlog/plan", json!({"ids": [bug, gap, clean]}));
+    assert_eq!(plan["state"], "ready");
+    assert_eq!(plan["by"], "rules");
+    let waves = plan["waves"].as_array().unwrap();
+    assert_eq!(waves.len(), 2, "p1 first, then the p3s: {plan}");
+    assert_eq!(waves[0]["items"][0]["ref"], bug.as_str());
+    // The two p3s are in the same area (the project), so the second waits for the first.
+    assert_eq!(waves[1]["items"][1]["after"], json!([gap]));
+    assert_eq!(b.get("backlog/plan")["id"], plan["id"]);
+
+    let g = b.post("backlog/goal", json!({"name": "Runner reliability", "waves": plan["waves"]}));
+    let gid = g["goal"]["id"].as_i64().or(g["id"].as_i64()).unwrap();
+    let tasks = b.app.db.q("SELECT * FROM tasks WHERE goal_id = ? ORDER BY position, id", p![gid]).unwrap();
+    assert_eq!(tasks.len(), 3);
+    assert!(tasks.iter().all(|t| t.s("status") == Some("planned")));
+    assert_eq!(tasks.iter().map(|t| t.i0("wave")).collect::<Vec<_>>(), [1, 2, 2]);
+    assert_eq!(tasks[0].s("priority"), Some("high"));
+    assert_eq!(tasks[2].s("waits_for").map(|w| w.to_string()), Some(format!("[{}]", tasks[1].id())));
+    let goal = board::get_goal(&b.app, gid).unwrap();
+    assert!(!goal.b("run_in_order"), "waves decide the order");
+    assert_eq!(b.get("backlog/plan")["state"], "none", "the plan is used up");
+
+    // Triaged now; only the one left over still needs it.
+    let t = b.get("backlog/triage");
+    assert_eq!((t["untriaged"].as_i64(), t["triaged"].as_i64()), (Some(1), Some(3)));
+
+    // Wave 2 waits for wave 1, even queued.
+    for x in &tasks {
+        b.post(&format!("tasks/T{}/queue", x.id()), json!({}));
+    }
+    let later = b.task(tasks[1].id());
+    assert_eq!(runner::goal_blocker(&b.app, &later, &goal).unwrap().as_deref(), Some("Waits for wave 1 to finish"));
+    assert_eq!(runner::goal_blocker(&b.app, &b.task(tasks[0].id()), &goal).unwrap(), None);
+
+    // Into an existing goal: a planned task in its last wave. Then defer.
+    let more = issue(&b, "One more", "bug");
+    b.post("backlog/bulk", json!({"ids": [more], "action": "goal", "goal_id": gid}));
+    let t = b.app.db.q1("SELECT * FROM tasks WHERE goal_id = ? ORDER BY id DESC", p![gid]).unwrap().unwrap();
+    assert_eq!((t.s("status"), t.i("wave")), (Some("planned"), Some(2)));
+    b.post("backlog/bulk", json!({"ids": [left], "action": "defer"}));
+    assert_eq!(b.get("backlog/triage")["untriaged"], 0);
+    assert_eq!(b.get(&format!("backlog/{left}"))["state"], "defer");
+}
+
+#[test]
+fn a_backlog_goal_holds_one_project() {
+    let b = new_board();
+    let a = issue(&b, "A", "bug");
+    let other = b.post("backlog", json!({"title": "B", "kind": "bug", "project": "api"}))["ref"].as_str().unwrap().to_string();
+    let (code, msg) = b.post_err("backlog/goal", json!({"name": "Mixed", "waves": [{"why": "", "items": [{"ref": a}, {"ref": other}]}]}));
+    assert_eq!(code, 409, "{msg}");
+    assert!(b.app.db.q("SELECT * FROM goals", p![]).unwrap().is_empty(), "nothing changed");
+    let (code, _) = b.post_err("backlog/plan", json!({"ids": []}));
+    assert_eq!(code, 400);
+}

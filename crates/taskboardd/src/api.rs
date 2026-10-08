@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -214,6 +214,10 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["backlog"]) => list_backlog(app, query),
         ("POST", ["backlog"]) => post_issue(app, body),
         ("POST", ["backlog", "bulk"]) => backlog_bulk(app, body),
+        ("GET", ["backlog", "triage"]) => triage::list(app, q(query, "project", "all")),
+        ("GET", ["backlog", "plan"]) => Ok(triage::plan_get(app)),
+        ("POST", ["backlog", "plan"]) => triage::plan_start(app, body),
+        ("POST", ["backlog", "goal"]) => triage::create_goal(app, body),
         ("GET", ["backlog", id]) => issue_detail(app, iid(id)?),
         ("POST", ["backlog", id]) => app.db.tx(|| patch_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "promote"]) => app.db.tx(|| promote(app, iid(id)?, body)),
@@ -344,6 +348,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
     sp.dedup();
     counts.insert("done_hidden".into(), json!(done_hidden));
     counts.insert("open_issues".into(), json!(open_issues.len()));
+    counts.insert("untriaged".into(), json!(app.db.count("SELECT COUNT(*) FROM issues WHERE state = 'open' AND goal_id IS NULL", p![])?));
     let mut planned = vec![];
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'planned' ORDER BY goal_id, position, id", p![])? {
         if project_match(t.s("project"), project) && goal_match(t.i("goal_id"), goal)? {
@@ -1562,7 +1567,7 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
     issue_detail(app, id)
 }
 
-fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
+pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     let where_ = { let w = body_str(body, "where"); if w.is_empty() { "board".to_string() } else { w } };
     if where_ != "board" && where_ != "goal" {
         return err(400, "Make it a task on the board or in its goal.");
@@ -1686,8 +1691,15 @@ fn move_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
 
 fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
     let action = body_str(body, "action");
-    if !["task", "ticket", "drop", "move", "reopen"].contains(&action.as_str()) {
-        return err(400, "Say what to do: task, ticket, drop, move or reopen.");
+    if !["task", "ticket", "drop", "move", "reopen", "defer", "priority", "goal"].contains(&action.as_str()) {
+        return err(400, "Say what to do: task, ticket, drop, move, reopen, defer, priority or goal.");
+    }
+    let priority = body_str(body, "priority");
+    if action == "priority" && !triage::PRIORITIES.contains(&priority.as_str()) {
+        return err(400, "Priority must be p1, p2 or p3.");
+    }
+    if action == "goal" && opt_goal(body, "goal_id")?.is_none() {
+        return err(400, "Say which goal to put them in.");
     }
     let raw = body["ids"].as_array().cloned().unwrap_or_default();
     if raw.is_empty() {
@@ -1711,7 +1723,7 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
         let mut tasks = vec![];
         for id in &ids {
             let b = board::get_issue(app, *id)?;
-            if ["task", "ticket", "drop"].contains(&action.as_str()) && b.s("state") != Some("open") {
+            if ["task", "ticket", "drop", "defer", "goal"].contains(&action.as_str()) && b.s("state") != Some("open") {
                 return err(409, format!("{} isn't open any more, so nothing changed.", rf("issue", *id)));
             }
             match action.as_str() {
@@ -1724,6 +1736,25 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
                 }
                 "move" => {
                     move_issue(app, *id, body)?;
+                }
+                "defer" => {
+                    app.db.update("issues", &json!(id), fields!["state" => "defer", "updated_at" => now_iso()])?;
+                    board::add_issue_event(app, *id, OWNER, "note", "Deferred: not for now", None)?;
+                }
+                "priority" => {
+                    app.db.update("issues", &json!(id), fields!["priority" => priority, "updated_at" => now_iso()])?;
+                    board::add_issue_event(app, *id, OWNER, "note", &format!("Priority set to {}", priority.to_uppercase()), None)?;
+                }
+                "goal" => {
+                    move_issue(app, *id, body)?;
+                    let gid = opt_goal(body, "goal_id")?.unwrap_or(0);
+                    let wave = triage::last_wave(app, gid)?;
+                    let high = triage::fields(&b)["priority"] == "p1";
+                    let made = promote(app, *id, &json!({"where": "goal", "priority": if high { "high" } else { "normal" }}))?;
+                    if let (Some(w), Some(tid)) = (wave, made["task"]["id"].as_i64()) {
+                        app.db.update("tasks", &json!(tid), fields!["wave" => w])?;
+                    }
+                    tasks.push(made["task"].clone());
                 }
                 _ => {
                     reopen_issue(app, *id)?;

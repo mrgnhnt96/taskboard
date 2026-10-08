@@ -26,6 +26,7 @@ pub struct FileConfig {
     pub intervals: Intervals,
     pub work_hours: WorkHoursDefault,
     pub questions: Questions,
+    pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
 }
@@ -104,6 +105,26 @@ impl Default for Questions {
             timeout_secs: 75,
             rules: vec![],
         }
+    }
+}
+
+/// Planning from the backlog: a headless `claude -p` groups new issues (area, impact, priority,
+/// similar work) and splits the issues picked for a goal into waves.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct BacklogAi {
+    /// Ask Claude. Off (or no `claude`), the board groups by kind and plans waves by priority.
+    pub ai: bool,
+    pub model: String,
+    pub budget_usd: String,
+    pub timeout_secs: u64,
+    /// How many terminals a goal made from the backlog runs at once.
+    pub max_terminals: i64,
+}
+
+impl Default for BacklogAi {
+    fn default() -> Self {
+        BacklogAi { ai: true, model: "sonnet".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2 }
     }
 }
 
@@ -199,6 +220,7 @@ pub struct Config {
     pub intervals: Intervals,
     pub work_hours: WorkHoursDefault,
     pub questions: Questions,
+    pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
@@ -280,6 +302,7 @@ impl Config {
             intervals: f.intervals,
             work_hours: f.work_hours,
             questions: f.questions,
+            backlog: f.backlog,
             pr: f.pr,
             jira,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
@@ -299,6 +322,7 @@ impl Config {
         c.notify = false;
         c.midna = data.join("no-midna");
         c.questions.screen = false;
+        c.backlog.ai = false;
         c.pr.watch = false;
         c.accounts_sandbox = true;
         c.page_url = "taskboard://".into();

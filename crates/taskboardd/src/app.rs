@@ -29,6 +29,12 @@ pub struct Shared {
     pub jira_token_off: bool,
     pub jira_creds: Option<(String, String)>,
     pub remotes: std::collections::HashMap<String, (Instant, Option<bool>)>,
+    /// Claude is grouping new backlog issues; and when it last failed (it waits before trying again).
+    pub grouping: bool,
+    pub group_failed_at: Option<Instant>,
+    /// The latest wave plan asked for on the Backlog page (`GET /backlog/plan`).
+    pub plan: Option<serde_json::Value>,
+    pub plan_seq: i64,
 }
 
 struct Signal {
@@ -69,6 +75,8 @@ pub struct App {
     deferred_signal: Signal,
     hook_jobs: Mutex<VecDeque<Deferred>>,
     hook_signal: Signal,
+    ai_jobs: Mutex<VecDeque<Deferred>>,
+    ai_signal: Signal,
     pub inline_deferred: bool,
 }
 
@@ -106,6 +114,8 @@ impl App {
             deferred_signal: Signal::new(),
             hook_jobs: Mutex::new(VecDeque::new()),
             hook_signal: Signal::new(),
+            ai_jobs: Mutex::new(VecDeque::new()),
+            ai_signal: Signal::new(),
             inline_deferred: inline,
         }
     }
@@ -131,6 +141,7 @@ impl App {
         self.md_signal.set();
         self.deferred_signal.set();
         self.hook_signal.set();
+        self.ai_signal.set();
     }
 
     pub fn wake_runner(&self) {
@@ -182,6 +193,25 @@ impl App {
         }
         self.deferred_signal.wait(timeout);
         self.deferred.lock().pop_front()
+    }
+
+    /// Headless Claude calls (backlog grouping and wave plans) run one at a time on their own
+    /// thread: each takes a minute or more and mustn't hold up other work.
+    pub fn queue_ai(&self, f: Deferred) {
+        if self.inline_deferred {
+            f(self);
+            return;
+        }
+        self.ai_jobs.lock().push_back(f);
+        self.ai_signal.set();
+    }
+
+    pub fn next_ai(&self, timeout: Duration) -> Option<Deferred> {
+        if let Some(f) = self.ai_jobs.lock().pop_front() {
+            return Some(f);
+        }
+        self.ai_signal.wait(timeout);
+        self.ai_jobs.lock().pop_front()
     }
 
     /// Owner hooks run one at a time on their own thread, in the order the board reached their steps.

@@ -216,6 +216,27 @@ original returned the count of every issue regardless of filters; the UI only ne
 so the matched count is fine (the mock does that). The page also calls it once with the default filters
 (`project=all&goal=all&kind=all&state=open&sort=new`) to show the "<n> open" pill.
 
+### `GET /backlog/triage`
+
+Query: `project=<name|all>`. The Backlog page's list: open issues in no goal (untriaged), newest first.
+```
+{"issues": [issue_card + {"area": str, "impact": "high"|"med"|"low", "priority": "p1"|"p2"|"p3",
+                          "group": str, "group_about": str, "grouped": bool, "detail", "said"}],
+ "untriaged": int, "triaged": int, "total": int,   // triaged = in a goal, deferred, dropped, a task or a ticket
+ "projects": [{"name": str, "untriaged": int}],
+ "grouping": bool,  // Claude is sorting new issues now
+ "ai": bool}        // Claude is on ([backlog] ai and `claude` installed)
+```
+Asking for it starts Claude on any issues it hasn't sorted yet. Until then (or without Claude) an issue's
+fields are guesses from its kind: bugs p2 / medium, the rest p3 / low, grouped by kind, area = project.
+`GET /state`'s `counts.untriaged` is the same count for every project.
+
+### `GET /backlog/plan`
+
+The latest plan asked for: `{"state": "none"}`, or `{id, state: "planning"|"ready", ids: ["B1", …],
+waves: [{why, items: [{ref, after: [ref]}]}], name, by: "claude"|"rules", note?}`. `ids` are the issues it
+was asked for; `note` says why Claude's plan was replaced by the priority rules. Making a goal from it clears it.
+
 ### `GET /backlog/:id`
 
 The full `issue`:
@@ -458,7 +479,9 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /backlog/:id/drop` | `{}` | Won't do. |
 | `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none. |
 | `POST /backlog/:id/note` | `{text}` | Add a note to its history. |
-| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move", where?: "goal", goal_id?: int\|null}` | Goal page bulk bar. `task` sends `where: "goal"`; `move` sends `goal_id`. **Response read:** `count: int`. |
+| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
+| `POST /backlog/plan` | `{ids: ["B1", …]}` | Plan waves for these open issues (Backlog page). With Claude it answers `state: "planning"` at once and plans on its own thread; poll `GET /backlog/plan`. **Response read:** the plan (below). |
+| `POST /backlog/goal` | `{name, waves: [{why, items: [{ref: "B1", after: ["B2"]}]}]}` | A new goal from a plan: one project's open issues, none in a goal yet. Each becomes a planned task in its wave (`tasks.wave`); `after` becomes the task's wait-for; the waves go in a pinned goal note. The goal doesn't run in order: a wave starts once every task in the waves before it is done. **Response read:** the goal detail. |
 
 ### Attachments
 | Path | Body | Notes |

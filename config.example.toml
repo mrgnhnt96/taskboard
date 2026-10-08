@@ -51,6 +51,16 @@ budget_usd = "0.30"
 timeout_secs = 75
 rules = []                           # example: ["~/.claude/CLAUDE.md"]
 
+# Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
+# impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
+# waves. Off, or without `claude`, issues are grouped by kind and waves follow priority.
+[backlog]
+ai = true
+model = "sonnet"
+budget_usd = "1.00"
+timeout_secs = 240
+max_terminals = 2                    # how many terminals a goal made from the backlog runs at once
+
 # Pull requests. Any GitHub, GitLab or Bitbucket PR link an agent reports is linked to its task.
 # GitHub PRs are watched with the gh CLI (which must be logged in).
 [pr]

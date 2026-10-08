@@ -153,6 +153,13 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("sessions", "api_error_at", "TEXT"),
     ("sessions", "api_error_tries", "INT DEFAULT 0"),
     ("tasks", "human_min", "INT"),
+    ("issues", "area", "TEXT"),
+    ("issues", "impact", "TEXT"),
+    ("issues", "priority", "TEXT"),
+    ("issues", "grp", "TEXT"),
+    ("issues", "grp_about", "TEXT"),
+    ("issues", "grouped_at", "TEXT"),
+    ("tasks", "wave", "INT"),
 ];
 
 fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
