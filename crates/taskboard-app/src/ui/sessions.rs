@@ -11,7 +11,7 @@
 //! a row for its menu.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeMode};
 use crate::ui::text_input::FieldChanged;
 use crate::ui::{kit, md};
 use gpui_kit::prelude::*;
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-const LIST_W: f32 = 380.;
+const LIST_W: f32 = 460.;
 const STALE_MS: i64 = 60 * 60 * 1000;
 const HOLD: Duration = Duration::from_millis(1200);
 const MENU_PREFIX: &str = "ss-menu:";
@@ -291,7 +291,8 @@ fn timeline_kind(t: &Theme, kind: &str) -> (Hsla, &'static str) {
         "prompt" | "turn" | "take" => t.accent,
         "commit" | "done" => t.up,
         "checkpoint" => t.goal,
-        "found" | "ask" | "wait" => t.warn,
+        "found" => seen(t),
+        "ask" | "wait" => t.warn,
         "fail" | "close" | "closed" | "close_failed" => t.down,
         _ => t.faint,
     };
@@ -1446,6 +1447,171 @@ fn tick_renames(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
+// ------------------------------------------------------------------ look (app.css values)
+
+/// `--accent-tint` (not in the shared theme).
+fn accent_tint(t: &Theme) -> Hsla {
+    if matches!(t.mode, ThemeMode::Dark) { rgb(0x172036).into() } else { rgb(0xf5f8ff).into() }
+}
+
+/// `--seen` (the timeline's "Issue" dot).
+fn seen(t: &Theme) -> Hsla {
+    if matches!(t.mode, ThemeMode::Dark) { rgb(0xb9764f).into() } else { rgb(0xe39a6f).into() }
+}
+
+/// The web's 24×24 stroke icons (`ICON.chev`, `ICON.search`, `ICON.back`).
+#[derive(Clone, Copy)]
+enum Glyph {
+    ChevDown,
+    ChevRight,
+    Search,
+    Back,
+}
+
+fn glyph(g: Glyph, color: Hsla, size: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let k = bounds.size.width.as_f32() / 24.;
+            let u = |x: f32, y: f32| point(bounds.origin.x + px(x * k), bounds.origin.y + px(y * k));
+            let line = |pts: &[(f32, f32)], window: &mut Window| {
+                let mut p = PathBuilder::stroke(px(2.2 * k));
+                p.move_to(u(pts[0].0, pts[0].1));
+                for (x, y) in &pts[1..] {
+                    p.line_to(u(*x, *y));
+                }
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, color);
+                }
+            };
+            match g {
+                Glyph::ChevDown => line(&[(6., 9.), (12., 15.), (18., 9.)], window),
+                Glyph::ChevRight => line(&[(9., 6.), (15., 12.), (9., 18.)], window),
+                Glyph::Back => line(&[(15., 6.), (9., 12.), (15., 18.)], window),
+                Glyph::Search => {
+                    let pts: Vec<(f32, f32)> = (0..=32).map(|n| {
+                        let a = 2. * std::f32::consts::PI * n as f32 / 32.;
+                        (11. + 6.5 * a.cos(), 11. + 6.5 * a.sin())
+                    }).collect();
+                    line(&pts, window);
+                    line(&[(16., 16.), (20.5, 20.5)], window);
+                }
+            }
+        },
+    )
+    .size(px(size))
+    .flex_none()
+}
+
+/// `.pill` (`sm`: `.pill.sm`): 12px semibold on a soft fill.
+fn pill_el(fg: Hsla, bg: Hsla, label: impl Into<SharedString>, sm: bool) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .px(px(if sm { 8. } else { 10. }))
+        .py(px(if sm { 1. } else { 2. }))
+        .rounded_full()
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(12.))
+        .line_height(px(18.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .whitespace_nowrap()
+        .child(label.into())
+}
+
+/// `.pill.st-{idle,working,needs,gone}` (plus the native-only `offline`).
+fn sess_pill(t: &Theme, status: &str, label: &'static str) -> Div {
+    let (fg, bg) = match status {
+        "working" => (t.accent_fg, t.accent_soft),
+        "needs" => (t.warn_fg, t.warn_soft),
+        "offline" => (t.down, t.down_soft),
+        "gone" => (t.muted, t.panel_2),
+        _ => (t.text_2, t.panel_2),
+    };
+    pill_el(fg, bg, label, false)
+}
+
+/// `.pill.sm.st-{task status}`, by its label.
+fn task_st_pill(t: &Theme, label: &'static str) -> Div {
+    let p = |fg, bg| pill_el(fg, bg, label, true);
+    match label {
+        "Working" => p(t.accent_fg, t.accent_soft),
+        "Needs you" | "Blocked" => p(t.warn_fg, t.warn_soft),
+        "Done" => p(t.up_fg, t.up_soft),
+        "Failed" => p(t.down, t.down_soft),
+        "Planned" => p(t.muted, t.card).border_1().border_color(t.border),
+        _ => p(t.text_2, t.col),
+    }
+}
+
+/// `.btn` (36px, 13px, 0 14px, radius 8) without its hover; each tone sets its own.
+fn btn_base(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .h(px(36.))
+        .px(px(14.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .text_color(t.text)
+        .text_size(px(13.))
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .child(label.into())
+}
+
+/// `.btn.soft`.
+fn soft_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let fill = t.accent_soft;
+    btn_base(t, id, label).text_color(t.accent).bg(fill).border_color(transparent_black()).font_weight(FontWeight::SEMIBOLD).hover(move |s| s.border_color(fill))
+}
+
+/// `.btn.danger`.
+fn danger_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let hover = t.border_2;
+    btn_base(t, id, label).text_color(t.down).border_color(t.down_line).hover(move |s| s.border_color(hover))
+}
+
+/// `.btn.danger.solid`.
+fn solid_danger_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let fill = t.down;
+    btn_base(t, id, label).text_color(gpui_kit::white()).bg(fill).border_color(transparent_black()).font_weight(FontWeight::SEMIBOLD).hover(move |s| s.border_color(fill).opacity(0.94))
+}
+
+/// `.btn.ghost`.
+fn ghost_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    let hover = t.text;
+    btn_base(t, id, label).text_color(t.muted).bg(transparent_black()).border_color(transparent_black()).px(px(10.)).hover(move |s| s.border_color(transparent_black()).text_color(hover))
+}
+
+/// `.btn.sm` on top of any of the above.
+fn sm(b: Stateful<Div>) -> Stateful<Div> {
+    b.h(px(32.)).text_size(px(12.5)).px(px(10.)).rounded(px(7.))
+}
+
+/// `.h3`: 13px semibold uppercase muted.
+fn h3(t: &Theme, text: &str) -> Div {
+    div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
+}
+
+/// `.none-yet`: 13px muted.
+fn none_yet(t: &Theme, text: impl Into<SharedString>) -> Div {
+    div().py(px(10.)).text_size(px(13.)).text_color(t.muted).child(text.into())
+}
+
+/// `.slist` / `.sdetail`: the two cards.
+fn page_card(t: &Theme) -> Div {
+    div().flex().flex_col().min_h_0().rounded(px(14.)).border_1().border_color(t.border).bg(t.card)
+}
+
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     if m.sessions.search.is_none() {
@@ -1461,14 +1627,22 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     tick_renames(m, cx);
     auto_select(m, cx);
 
+    // `.spage`: 24px 32px 28px, 18px between the header and the grid; body text 14px / 1.5.
     div()
         .relative()
         .flex()
         .flex_col()
+        .gap(px(18.))
         .size_full()
         .min_w_0()
+        .pt(px(24.))
+        .px(px(32.))
+        .pb(px(28.))
+        .text_size(px(14.))
+        .line_height(relative(1.5))
+        .text_color(t.text)
         .child(header(m, &t, cx))
-        .child(div().flex().flex_1().min_h_0().child(list(m, &t, window, cx)).child(detail(m, &t, window, cx)))
+        .child(div().flex().gap(px(20.)).flex_1().min_h_0().child(list(m, &t, window, cx)).child(detail(m, &t, window, cx)))
         .children(row_menu(m, &t, cx))
         .children(bulk_dialog(m, &t, cx))
         .into_any_element()
@@ -1477,30 +1651,63 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 fn header(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     let live = m.data.sessions.as_ref().map(|_| live_list(m));
     let vm = header_vm(live.as_deref(), &m.sessions.filter, m.sessions.back.as_deref());
-    let on = FILTERS.iter().position(|(k, _)| *k == vm.pressed).unwrap_or(0);
-    let labels: Vec<String> = vm.filters.iter().map(|(_, l, n)| format!("{l}  {n}")).collect();
-    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let seg = kit::seg(t, "ss-filter", &labels, on, |idx, item| item.on_click(cx.listener(move |m, _, _, cx| set_filter(m, FILTERS[idx].0, cx))));
+    // `.seg.sm`: 3px padding, 2px gaps, radius 9; 32px semibold buttons with the count in faint.
+    let mut seg = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
+    for (idx, (k, label, n)) in vm.filters.iter().enumerate() {
+        let on = *k == vm.pressed;
+        let hover = t.text;
+        let item = div()
+            .id(SharedString::from(format!("ss-filter-{idx}")))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(8.))
+            .h(px(32.))
+            .px(px(11.))
+            .rounded(px(7.))
+            .text_size(px(13.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .whitespace_nowrap()
+            .cursor_pointer()
+            .text_color(if on { t.text } else { t.muted })
+            .when(on, |d| d.bg(t.card).shadow(vec![BoxShadow { color: hsla(0., 0., 0., if matches!(t.mode, ThemeMode::Dark) { 0.4 } else { 0.10 }), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]))
+            .hover(move |s| s.text_color(hover))
+            .child(label.to_string())
+            .child(div().font_weight(FontWeight::MEDIUM).text_color(if on { t.muted } else { t.faint }).child(n.to_string()))
+            .on_click(cx.listener(move |m, _, _, cx| set_filter(m, FILTERS[idx].0, cx)));
+        seg = seg.child(item);
+    }
+    // `.back` (only when it came from a task; the rail is the way back to the board).
     let back = vm.back.clone().zip(m.sessions.back.clone()).map(|(label, r)| {
-        kit::link(t, "ss-back", format!("‹ {label}")).text_size(px(13.)).on_click(cx.listener(move |m, _, _, cx| {
-            m.sessions.back = None;
-            m.go(Page::Board, cx);
-            m.open_task(r.clone(), cx);
-        }))
+        let (muted, hover) = (t.muted, t.text);
+        div()
+            .id("ss-back")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .h(px(32.))
+            .text_size(px(13.))
+            .text_color(muted)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(hover))
+            .child(glyph(Glyph::Back, muted, 16.))
+            .child(label)
+            .on_click(cx.listener(move |m, _, _, cx| {
+                m.sessions.back = None;
+                m.go(Page::Board, cx);
+                m.open_task(r.clone(), cx);
+            }))
     });
+    // `.top`: 14px column gap; the h1 is 20px bold, 4px in.
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(12.))
-        .px(px(24.))
-        .pt(px(18.))
-        .pb(px(14.))
-        .border_b_1()
-        .border_color(t.border)
+        .gap(px(14.))
         .children(back)
-        .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child("Sessions"))
-        .child(div().text_size(px(12.5)).text_color(t.muted).child(vm.count))
+        .child(div().ml(px(4.)).text_size(px(20.)).font_weight(FontWeight::BOLD).whitespace_nowrap().child("Sessions"))
+        .child(div().text_color(t.muted).whitespace_nowrap().child(vm.count))
         .child(div().flex_1())
         .child(seg)
 }
@@ -1526,18 +1733,20 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         flash: &st.flash,
     });
 
-    let search = m.sessions.search.as_ref().map(|i| i.render(t, "ss-search", window).flex_1().h(px(30.)).min_h(px(30.)).text_size(px(13.)));
-    let mut top = div().flex().flex_none().items_center().gap(px(8.)).p(px(12.)).children(search);
+    // `.slist-search`: 12px 14px 8px, the 16px search icon, then `.input.sm` (34px, 13px, 6px 10px, radius 7).
+    let search = m.sessions.search.as_ref().map(|i| i.render(t, "ss-search", window).flex_1().min_h(px(34.)).h(px(34.)).py(px(6.)).px(px(10.)).rounded(px(7.)).text_size(px(13.)));
+    let mut top = div().flex().flex_none().items_center().gap(px(8.)).pt(px(12.)).px(px(14.)).pb(px(8.)).child(glyph(Glyph::Search, t.muted, 16.)).children(search);
     if let Some((label, tip)) = vm.stale_btn.clone() {
-        top = top.child(kit::btn_small(t, "ss-stale", label).tooltip(kit::tip(tip)).on_click(cx.listener(|m, _, _, cx| pick_stale(m, cx))));
+        top = top.child(sm(soft_btn(t, "ss-stale", label)).tooltip(kit::tip(tip)).on_click(cx.listener(|m, _, _, cx| pick_stale(m, cx))));
     }
 
-    let mut body = div().id("ss-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll().px(px(8.)).pb(px(12.));
+    // `.slist-body`: 4px 0 10px.
+    let mut body = div().id("ss-list").flex().flex_col().flex_1().min_h_0().overflow_y_scroll().pt(px(4.)).pb(px(10.));
     if let Some(l) = &vm.loading {
-        body = body.child(kit::empty(t, l.clone()));
+        body = body.child(div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(l.clone()));
     }
     // Groups, then "None right now." (when no group shows), then Closed: the web's order.
-    let mut empty = vm.empty.clone().map(|e| kit::empty(t, e));
+    let mut empty = vm.empty.clone().map(|e| div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(e));
     let mut placed_empty = false;
     for g in vm.groups.iter().chain(vm.closed.iter()) {
         if g.closed && !placed_empty {
@@ -1546,34 +1755,36 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         }
         let (key, open, is_closed) = (g.key.clone(), g.open, g.closed);
         let id = if is_closed { "ss-closed".to_string() } else { format!("ss-group-{key}") };
-        body = body.child(group_head(t, &id, &g.label, &g.count, open).on_click(cx.listener(move |m, _, _, cx| {
+        let head = group_head(t, &id, &g.label, &g.count, open).on_click(cx.listener(move |m, _, _, cx| {
             if is_closed {
                 toggle_closed(m, open, cx);
             } else {
                 toggle_group(m, &key, open, cx);
             }
-        })));
+        }));
+        // `.sgroup.open` has 4px below it; `.sgroup.closed` 8px above and a divider.
+        let mut group = div().flex().flex_col().flex_none().when(open, |d| d.pb(px(4.))).when(is_closed, |d| d.mt(px(8.)).border_t_1().border_color(t.divider)).child(head);
         for r in &g.rows {
-            body = body.child(row(t, r, cx));
+            group = group.child(row(t, r, cx));
         }
+        body = body.child(group);
     }
     if !placed_empty {
         body = body.children(empty);
     }
 
-    div()
-        .flex()
-        .flex_col()
+    // `.spage-grid`: minmax(380px, 460px) next to the detail.
+    page_card(t)
         .flex_none()
         .w(px(LIST_W))
         .h_full()
-        .border_r_1()
-        .border_color(t.border)
+        .overflow_hidden()
         .child(top)
         .children(vm.bulk.as_ref().map(|bb| bulk_bar(t, bb, cx)))
         .child(body)
 }
 
+/// `.sbulk`: 48px, 10px 14px 12px, a divider under it; tinted once something is picked.
 fn bulk_bar(t: &Theme, bb: &BulkBarVm, cx: &mut Context<MainWindow>) -> Div {
     let on = bb.close.is_some();
     div()
@@ -1582,48 +1793,91 @@ fn bulk_bar(t: &Theme, bb: &BulkBarVm, cx: &mut Context<MainWindow>) -> Div {
         .flex_none()
         .items_center()
         .gap(px(8.))
-        .mx(px(12.))
-        .mb(px(8.))
-        .px(px(10.))
-        .py(px(8.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(if on { t.down_line } else { t.border })
-        .bg(if on { t.down_soft } else { t.panel_2 })
-        .text_size(px(12.5))
-        .child(div().flex_1().text_color(if on { t.down } else { t.muted }).child(bb.line.clone()))
-        .children(bb.add.clone().map(|a| kit::link(t, "ss-stale-add", a).text_size(px(12.)).on_click(cx.listener(|m, _, _, cx| pick_stale(m, cx)))))
-        .child(kit::btn_small(t, "ss-done", "Done").on_click(cx.listener(|m, _, _, cx| done_picking(m, cx))))
+        .min_h(px(48.))
+        .pt(px(10.))
+        .px(px(14.))
+        .pb(px(12.))
+        .border_b_1()
+        .border_color(t.divider)
+        .when(on, |d| d.bg(accent_tint(t)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(13.))
+                .text_color(if on { t.accent_fg } else { t.muted })
+                .when(on, |d| d.font_weight(FontWeight::SEMIBOLD))
+                .child(bb.line.clone()),
+        )
+        .children(bb.add.clone().map(|a| {
+            let fg = t.accent;
+            div()
+                .id("ss-stale-add")
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(32.))
+                .px(px(2.))
+                .text_size(px(12.5))
+                .text_color(fg)
+                .cursor_pointer()
+                .hover(|s| s.underline())
+                .child(a)
+                .on_click(cx.listener(|m, _, _, cx| pick_stale(m, cx)))
+        }))
+        .child(sm(ghost_btn(t, "ss-done", "Done")).on_click(cx.listener(|m, _, _, cx| done_picking(m, cx))))
         .children(bb.close.clone().map(|c| {
-            kit::btn_danger(t, "ss-bulk", c).h(px(24.)).px(px(8.)).text_size(px(12.)).on_click(cx.listener(|m, _, _, cx| {
+            sm(danger_btn(t, "ss-bulk", c)).on_click(cx.listener(|m, _, _, cx| {
                 m.sessions.bulk = true;
                 cx.notify();
             }))
         }))
 }
 
+/// `.sgroup-h.sgroup-toggle`: 10px 16px, 13px semibold, the 14px chevron, the count in 12px muted.
 fn group_head(t: &Theme, id: &str, label: &str, count: &str, open: bool) -> Stateful<Div> {
     let hover = t.panel_2;
+    // " · N need(s) you" on a collapsed group is `<b>` in warn.
+    let (plain, hot) = match count.split_once(" · ") {
+        Some((a, b)) => (a.to_string(), Some(b.to_string())),
+        None => (count.to_string(), None),
+    };
     div()
         .id(SharedString::from(id.to_string()))
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .h(px(30.))
-        .px(px(8.))
-        .mt(px(6.))
-        .rounded(px(6.))
+        .gap(px(8.))
+        .w_full()
+        .py(px(10.))
+        .px(px(16.))
+        .text_size(px(13.))
+        .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
         .hover(move |d| d.bg(hover))
-        .child(div().w(px(12.)).text_size(px(10.)).text_color(t.faint).child(if open { "▾" } else { "▸" }))
-        .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(label.to_string()))
-        .child(div().text_size(px(12.)).text_color(t.faint).child(count.to_string()))
+        .child(glyph(if open { Glyph::ChevDown } else { Glyph::ChevRight }, t.muted, 14.))
+        .child(div().whitespace_nowrap().child(label.to_string()))
+        .child(
+            div()
+                .flex()
+                .text_size(px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.muted)
+                .whitespace_nowrap()
+                .child(plain)
+                .children(hot.map(|h| div().flex().child(" · ").child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.warn).child(h)))),
+        )
 }
 
 /// The name, styled by its rename state.
 fn name_el(t: &Theme, id: &str, n: &NameVm) -> Stateful<Div> {
-    let d = div().id(SharedString::from(id.to_string())).truncate().child(n.text.clone()).tooltip(kit::tip(n.title.clone()));
+    name_box(t, id, n).truncate()
+}
+
+/// The name without the one-line cut (the detail title wraps).
+fn name_box(t: &Theme, id: &str, n: &NameVm) -> Stateful<Div> {
+    let d = div().id(SharedString::from(id.to_string())).child(n.text.clone()).tooltip(kit::tip(n.title.clone()));
     match n.kind {
         NameKind::Renaming => d.text_color(t.faint),
         NameKind::Ok => d.text_color(t.up),
@@ -1632,16 +1886,27 @@ fn name_el(t: &Theme, id: &str, n: &NameVm) -> Stateful<Div> {
     }
 }
 
-fn dot_color(t: &Theme, status: &str) -> Hsla {
+/// `SESS_DOT`, and the 3px ring around a row's dot (`.srow .dot`).
+fn dot_color(t: &Theme, status: &str) -> (Hsla, Hsla) {
     match status {
-        "working" => t.accent,
-        "needs" => t.warn,
-        "offline" => t.down,
-        "gone" => t.border_2,
-        _ => t.faint,
+        "working" => (t.accent, t.accent_soft),
+        "needs" => (t.warn, t.warn_soft),
+        "offline" => (t.down, t.down_soft),
+        _ => (t.faint, t.col),
     }
 }
 
+/// An 8px dot with a 3px ring that, like a box-shadow, takes no room.
+fn ringed_dot(dot: Hsla, ring: Hsla) -> Div {
+    div()
+        .relative()
+        .flex_none()
+        .size(px(8.))
+        .child(div().absolute().top(px(-3.)).left(px(-3.)).size(px(14.)).rounded_full().bg(ring))
+        .child(div().absolute().top_0().left_0().size(px(8.)).rounded_full().bg(dot))
+}
+
+/// `.srow`: 0 14px 0 13px with a 3px left edge (accent when selected); `.srow-main` 9px tall padding.
 fn row(t: &Theme, r: &RowVm, cx: &mut Context<MainWindow>) -> AnyElement {
     let id = r.id.clone();
     let hover = t.panel_2;
@@ -1656,8 +1921,8 @@ fn row(t: &Theme, r: &RowVm, cx: &mut Context<MainWindow>) -> AnyElement {
                 .size(px(16.))
                 .rounded(px(4.))
                 .border_1()
-                .border_color(if on { t.down } else { t.border_2 })
-                .bg(if on { t.down } else { t.card })
+                .border_color(if on { t.accent } else { t.border_2 })
+                .bg(if on { t.accent } else { t.card })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1672,45 +1937,56 @@ fn row(t: &Theme, r: &RowVm, cx: &mut Context<MainWindow>) -> AnyElement {
                 .into_any_element(),
         ),
     };
+    let (dot, ring) = dot_color(t, &r.status);
+    let state_c = match r.status.as_str() {
+        "working" => t.accent,
+        "needs" => t.warn,
+        "offline" => t.down,
+        _ => t.muted,
+    };
     div()
         .id(SharedString::from(format!("ss-row-{id}")))
         .flex()
         .flex_none()
         .items_center()
         .gap(px(10.))
-        .px(px(10.))
-        .py(px(8.))
-        .rounded(px(8.))
+        .pl(px(13.))
+        .pr(px(14.))
+        .border_l(px(3.))
+        .border_color(if r.on { t.accent } else { transparent_black() })
         .cursor_pointer()
-        .when(r.on, |d| d.bg(t.accent_soft))
+        .when(r.on, |d| d.bg(accent_tint(t)))
         .when(!r.on, |d| d.hover(move |s| s.bg(hover)))
-        .when(r.closing || r.closed, |d| d.opacity(if r.closed { 0.75 } else { 0.6 }))
+        .when(r.closing || r.closed, |d| d.opacity(if r.closed { 0.7 } else { 0.6 }))
         .children(check)
-        .child(kit::dot(dot_color(t, &r.status), 8.))
         .child(
             div()
                 .flex()
-                .flex_col()
                 .flex_1()
                 .min_w_0()
-                .gap(px(1.))
-                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(if r.on { t.accent_fg } else { t.text }).child(name_el(t, &format!("ss-name-{id}"), &r.name)))
-                .child(div().truncate().text_size(px(12.)).text_color(t.muted).child(r.sub.clone())),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .items_end()
-                .gap(px(1.))
-                .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(match r.status.as_str() {
-                    "working" => t.accent_fg,
-                    "needs" => t.warn_fg,
-                    "offline" => t.down,
-                    _ => t.muted,
-                }).child(r.state.clone()))
-                .child(div().text_size(px(11.5)).text_color(t.faint).child(r.when.clone())),
+                .items_center()
+                .gap(px(10.))
+                .py(px(9.))
+                .child(ringed_dot(dot, ring))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(name_el(t, &format!("ss-name-{id}"), &r.name)))
+                        .child(div().truncate().text_size(px(12.5)).text_color(t.muted).child(r.sub.clone())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .items_end()
+                        .text_size(px(12.))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(state_c).child(r.state.clone()))
+                        .child(div().text_color(t.muted).child(r.when.clone())),
+                ),
         )
         .on_click(cx.listener(move |m, _, _, cx| row_click(m, &rid, cx)))
         .on_mouse_down(
@@ -1845,8 +2121,9 @@ fn rename_field(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Con
 
 // ------------------------------------------------------------------ detail
 
+/// `.sdetail`: the right card, 22px 26px, 16px between its parts.
 fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let shell = div().id("ss-detail").flex().flex_col().flex_1().min_w_0().h_full().overflow_y_scroll();
+    let shell = page_card(t).id("ss-detail").flex_1().min_w_0().h_full().overflow_y_scroll();
     let d = detail_data(m);
     let closed = closed_list(m);
     let sel = m.sessions.selected.clone();
@@ -1864,31 +2141,25 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         flash: sel.as_ref().and_then(|id| st.flash.get(id)),
     });
     let v = match view {
-        DetailView::Message(msg) => return shell.child(div().flex_1().flex().items_center().justify_center().child(kit::empty(t, msg))),
-        DetailView::Error(msg) => return shell.child(div().flex_1().flex().items_center().justify_center().child(kit::empty(t, msg).text_color(t.down))),
+        DetailView::Message(msg) => return shell.items_center().justify_center().child(none_yet(t, msg)),
+        DetailView::Error(msg) => return shell.items_center().justify_center().child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(msg)),
         DetailView::Full(v) => v,
     };
     let id = v.id.clone();
 
-    let tone = match (v.pill, v.status.as_str()) {
-        ("Closing", _) => "down",
-        ("Closed", _) => "muted",
-        (_, "working") => "accent",
-        (_, "needs") => "warn",
-        (_, "offline") => "down",
-        _ => "muted",
-    };
-    let status_row = div().flex().items_center().gap(px(8.)).child(kit::tone_pill(t, tone, v.pill)).children(v.status_line.clone().map(|l| div().text_size(px(12.5)).text_color(t.muted).child(l)));
+    // `.pill.st-{status}` and the muted "for 4 min".
+    let status_row = div().flex().items_center().gap(px(8.)).child(sess_pill(t, &v.status, v.pill)).children(v.status_line.clone().map(|l| div().text_color(t.muted).child(l)));
 
+    // `.shead h2`: 22px bold, 1.3 line height, 4px above.
     let title: AnyElement = match &v.title {
         None => rename_field(m, t, window, cx).into_any_element(),
         Some(n) => {
-            let el = name_el(t, "ss-title", n).text_size(px(20.)).font_weight(FontWeight::BOLD);
+            let el = name_box(t, "ss-title", n).mt(px(4.)).text_size(px(22.)).line_height(relative(1.3)).font_weight(FontWeight::BOLD);
             if v.gone {
                 el.into_any_element()
             } else {
                 let rid = id.clone();
-                el.cursor_pointer()
+                el.cursor_text()
                     .on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
                         if e.click_count() >= 2 {
                             start_rename(m, &rid, window, cx);
@@ -1899,46 +2170,52 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         }
     };
 
-    let mut meta = div().flex().flex_wrap().items_center().gap(px(12.)).text_size(px(12.)).text_color(t.muted);
-    if !v.path.is_empty() {
-        meta = meta.child(kit::mono(t, v.path.clone()).text_color(t.muted));
-    }
-    if !v.branch.is_empty() {
-        meta = meta.child(kit::mono(t, v.branch.clone()).text_color(t.muted));
+    // `.smeta`: 13px muted, 10px apart with a faint "·" between; paths and branches in 12.5px mono.
+    let mut parts: Vec<AnyElement> = Vec::new();
+    for p in [&v.path, &v.branch] {
+        if !p.is_empty() {
+            parts.push(div().font_family(t.mono_font.clone()).text_size(px(12.5)).child(p.clone()).into_any_element());
+        }
     }
     if let Some((text, tip)) = v.diff.clone() {
-        let mut parts = text.splitn(3, ' ');
-        let el = match (tip, parts.next(), parts.next(), parts.next()) {
+        let mut words = text.splitn(3, ' ');
+        let el = match (tip, words.next(), words.next(), words.next()) {
             (Some(tip), Some(n), Some(files_add), Some(rest)) => {
-                // "3 files +40 −7": the counts in green and red.
+                // "3 files +40 −7": the counts in semibold green and red.
                 let (files, add) = files_add.split_once(' ').map(|(a, b)| (format!("{n} {a}"), b.to_string())).unwrap_or((format!("{n} {files_add}"), String::new()));
                 let (add, del) = if add.is_empty() { rest.split_once(' ').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((rest.into(), String::new())) } else { (add, rest.to_string()) };
                 div()
                     .id("ss-diff")
                     .flex()
-                    .gap(px(5.))
+                    .gap(px(4.))
                     .child(files)
-                    .child(div().font_weight(FontWeight::BOLD).text_color(t.up).child(add))
-                    .child(div().font_weight(FontWeight::BOLD).text_color(t.down).child(del))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.up).child(add))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.down).child(del))
                     .tooltip(kit::tip(tip))
                     .into_any_element()
             }
             _ => div().child(text).into_any_element(),
         };
-        meta = meta.child(el);
+        parts.push(el);
+    }
+    let mut meta = div().flex().flex_wrap().items_center().gap_x(px(10.)).gap_y(px(4.)).text_size(px(13.)).text_color(t.muted);
+    for (n, p) in parts.into_iter().enumerate() {
+        // The "·" goes with the part after it (`.smeta > * + *::before`), so a wrap takes it along.
+        meta = meta.child(div().flex().items_center().when(n > 0, |d| d.child(div().mr(px(10.)).text_color(t.faint).child("·"))).child(p));
     }
 
+    // `.sactions`: 40px buttons, 8px apart.
     let mut actions = div().flex().flex_none().items_start().gap(px(8.));
     for a in &v.actions {
         let rid = id.clone();
         let el = match a.act {
             "ss-hold" => hold_button(t, &rid, &a.label, a.busy, a.label == "Keep holding…", cx),
-            "ss-ask" => kit::btn_danger(t, "ss-ask", a.label.clone()).on_click(cx.listener(move |m, _, _, cx| {
+            "ss-ask" => danger_btn(t, "ss-ask", a.label.clone()).h(px(40.)).on_click(cx.listener(move |m, _, _, cx| {
                 m.sessions.confirm = Some(rid.clone());
                 cx.notify();
             })),
             act => {
-                let b = kit::btn(t, act, a.label.clone());
+                let b = soft_btn(t, act, a.label.clone()).h(px(40.));
                 if a.busy {
                     kit::disabled(b)
                 } else if act == "ss-reopen" {
@@ -1955,38 +2232,40 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         .flex()
         .items_start()
         .gap(px(16.))
-        .child(div().flex().flex_col().flex_1().min_w_0().gap(px(6.)).child(status_row).child(title).child(meta))
-        .child(actions);
+        .child(div().flex().flex_col().flex_1().min_w_0().gap(px(4.)).child(status_row).child(title).child(meta))
+        .when(!v.actions.is_empty(), |d| d.child(actions));
 
-    let mut col = div().flex().flex_col().gap(px(16.)).px(px(28.)).py(px(22.)).max_w(px(960.)).child(head);
+    let mut col = shell.gap(px(16.)).py(px(22.)).px(px(26.)).child(head);
     if let Some(n) = v.close_note {
-        col = col.child(kit::help(t, n));
+        col = col.child(div().mt(px(-8.)).text_color(t.muted).child(n));
     }
     if let Some((n, err)) = v.note.clone() {
-        col = col.child(div().text_size(px(12.5)).text_color(if err { t.down } else { t.up }).child(n));
+        col = col.child(div().text_size(px(12.5)).when(err, |d| d.font_weight(FontWeight::MEDIUM)).text_color(if err { t.down } else { t.up_fg }).child(n));
     }
     if let Some(c) = &v.confirm {
+        // `.sconfirm`: 14px 16px on down-soft, radius 12.
         let rid = id.clone();
         let force = c.force;
-        let go = kit::btn(t, "ss-close", c.label.clone()).bg(t.down).border_color(t.down).text_color(t.on_accent);
+        let go = solid_danger_btn(t, "ss-close", c.label.clone());
         col = col.child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
-                .p(px(14.))
-                .rounded(px(10.))
-                .border_1()
-                .border_color(t.down_line)
+                .gap(px(10.))
+                .py(px(14.))
+                .px(px(16.))
+                .rounded(px(12.))
                 .bg(t.down_soft)
                 .child(div().font_weight(FontWeight::BOLD).text_color(t.down).child(c.title.clone()))
-                .child(div().text_size(px(13.)).text_color(t.text_2).child(c.text.clone()))
+                .child(div().text_size(px(13.5)).child(c.text.clone()))
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
+                        .items_center()
                         .gap(px(8.))
                         .child(if c.busy { kit::disabled(go) } else { go.on_click(cx.listener(move |m, _, _, cx| close(m, &rid, force, cx))) })
-                        .child(kit::btn(t, "ss-cancel", "Keep it open").on_click(cx.listener(|m, _, _, cx| {
+                        .child(ghost_btn(t, "ss-cancel", "Keep it open").on_click(cx.listener(|m, _, _, cx| {
                             m.sessions.confirm = None;
                             cx.notify();
                         }))),
@@ -1994,7 +2273,8 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         );
     }
     if let Some(c) = &v.closing {
-        col = col.child(div().p(px(12.)).rounded(px(10.)).bg(t.down_soft).text_color(t.down).text_size(px(13.)).child(c.clone()));
+        // `.sclosing`.
+        col = col.child(div().py(px(14.)).px(px(16.)).rounded(px(12.)).bg(t.panel_2).text_color(t.text_2).text_size(px(13.5)).child(c.clone()));
     }
     if !v.links.is_empty() {
         col = col.child(links(t, &v.links, cx));
@@ -2003,35 +2283,18 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
     if let Some(bx) = &v.boxes {
         col = col.child(boxes(t, bx, &id));
     }
-    col = col.child(timeline(t, &v.timeline));
-    shell.child(col)
+    col.child(timeline(t, &v.timeline))
 }
 
-/// "Force close" that only fires after being held down for `HOLD` (letting go or leaving it stops).
+/// "Force close" (`.btn.danger.solid.hold`) that only fires after being held down for `HOLD`
+/// (letting go or leaving it stops).
 fn hold_button(t: &Theme, id: &str, label: &str, busy: bool, holding: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let rid = id.to_string();
-    let b = div()
-        .id("ss-hold")
-        .relative()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .h(px(30.))
-        .px(px(14.))
-        .rounded(px(8.))
-        .overflow_hidden()
-        .bg(t.down)
-        .text_color(t.on_accent)
-        .text_size(px(13.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .tooltip(kit::tip("Press and hold to stop what it’s doing and close it"))
-        .child(div().relative().child(label.to_string()));
+    let b = solid_danger_btn(t, "ss-hold", label.to_string()).h(px(40.)).tooltip(kit::tip("Press and hold to stop what it’s doing and close it"));
     if busy {
         return kit::disabled(b);
     }
-    b.cursor_pointer()
-        .when(holding, |d| d.bg(t.down.opacity(0.85)))
+    b.when(holding, |d| d.bg(t.down.opacity(0.85)))
         .on_mouse_down(MouseButton::Left, cx.listener(move |m, _, _, cx| hold_start(m, &rid, cx)))
         .on_mouse_up(MouseButton::Left, cx.listener(|m, _, _, cx| hold_end(m, cx)))
         .on_mouse_up_out(MouseButton::Left, cx.listener(|m, _, _, cx| hold_end(m, cx)))
@@ -2042,36 +2305,34 @@ fn hold_button(t: &Theme, id: &str, label: &str, busy: bool, holding: bool, cx: 
         }))
 }
 
-/// Its task (and goal), or "No task" and the last task it worked on.
+/// `.slinks`: its task (and goal), or "No task" and the last task it worked on.
 fn links(t: &Theme, rows: &[LinkVm], cx: &mut Context<MainWindow>) -> Div {
-    let mut card = kit::card(t).overflow_hidden();
+    let mut card = div().flex().flex_col().flex_none().rounded(px(10.)).border_1().border_color(t.border).overflow_hidden();
     for (n, l) in rows.iter().enumerate() {
-        if n > 0 {
-            card = card.child(kit::divider(t));
-        }
         let hover = t.panel_2;
         let mut row = div()
             .id(SharedString::from(format!("ss-link-{n}")))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(14.))
+            .gap(px(12.))
+            .min_h(px(44.))
             .py(px(10.))
-            .child(div().w(px(70.)).flex_none().text_size(px(12.)).text_color(t.muted).child(l.k))
+            .px(px(14.))
+            .when(n > 0, |d| d.border_t_1().border_color(t.divider))
+            .child(div().w(px(72.)).flex_none().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(l.k.to_uppercase()))
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .items_center()
-                    .gap(px(6.))
-                    .text_size(px(13.))
-                    .when(!l.r.is_empty(), |d| d.child(div().flex_none().font_weight(FontWeight::BOLD).child(l.r.clone())))
-                    .child(div().truncate().when(l.go.is_none(), |d| d.text_color(t.muted)).child(l.title.clone()))
-                    .children(l.pill.map(|(label, tone)| kit::tone_pill(t, tone, label))),
+                    .overflow_hidden()
+                    .when(!l.r.is_empty(), |d| d.child(div().flex_none().mr(px(4.)).font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(l.r.clone())))
+                    .child(div().pl(px(4.)).truncate().when(l.go.is_none(), |d| d.text_color(t.muted)).child(l.title.clone()))
+                    .children(l.pill.map(|(label, _)| div().flex_none().ml(px(6.)).child(task_st_pill(t, label)))),
             );
         if let Some((go, target)) = l.go.clone() {
-            row = row.cursor_pointer().hover(move |s| s.bg(hover)).child(div().flex_none().text_size(px(12.)).text_color(t.accent).child(go)).on_click(cx.listener(move |m, _, _, cx| match &target {
+            row = row.cursor_pointer().hover(move |s| s.bg(hover)).child(div().flex_none().text_size(px(13.)).text_color(t.accent).child(go)).on_click(cx.listener(move |m, _, _, cx| match &target {
                 LinkTarget::Task(r) => m.open_task(r.clone(), cx),
                 LinkTarget::Goal(r) => m.go(Page::Goal(r.clone()), cx),
             }));
@@ -2081,43 +2342,52 @@ fn links(t: &Theme, rows: &[LinkVm], cx: &mut Context<MainWindow>) -> Div {
     card
 }
 
+/// `.sstats`: four tiles, 10px apart.
 fn stats(t: &Theme, items: &[(String, &'static str)]) -> Div {
-    let mut row = div().flex().gap(px(10.));
+    let mut row = div().flex().flex_none().gap(px(10.));
     for (v, k) in items {
         row = row.child(
-            kit::card(t)
+            div()
+                .flex()
+                .flex_col()
                 .flex_1()
-                .px(px(14.))
-                .py(px(10.))
+                .flex_basis(px(0.))
+                .min_w_0()
                 .gap(px(2.))
-                .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child(v.clone()))
-                .child(div().text_size(px(12.)).text_color(t.muted).child(*k)),
+                .py(px(12.))
+                .px(px(14.))
+                .rounded(px(10.))
+                .bg(t.panel_2)
+                .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(v.clone()))
+                .child(div().text_size(px(12.5)).text_color(t.muted).child(*k)),
         );
     }
     row
 }
 
-/// The last prompt next to the latest reply (or what it's waiting on).
+/// `.snow`: the last prompt next to the latest reply (or what it's waiting on).
 fn boxes(t: &Theme, bx: &BoxesVm, id: &str) -> Div {
-    let label = |text: String| div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(text);
-    let left = kit::card(t).flex_1().min_w_0().p(px(14.)).gap(px(6.)).child(label(bx.prompt_when.clone())).child(div().text_size(px(13.)).child(bx.prompt_text.clone()));
-    let mut right = kit::card(t).flex_1().min_w_0().p(px(14.)).gap(px(6.)).text_size(px(13.)).child(label(bx.reply_when.clone()));
+    let sbox = || div().flex().flex_col().flex_1().flex_basis(px(0.)).min_w_0().gap(px(4.)).py(px(14.)).px(px(16.)).rounded(px(12.)).bg(t.panel_2);
+    let when = |text: String| div().text_size(px(12.)).text_color(t.muted).child(text);
+    let left = sbox().child(when(bx.prompt_when.clone())).child(div().child(bx.prompt_text.clone()));
+    let mut right = sbox().child(when(bx.reply_when.clone()));
     if bx.waiting {
-        right = right.border_color(t.warn_line).bg(t.warn_soft);
+        right = right.bg(t.warn_soft);
     }
     right = match &bx.reply_text {
-        Some(x) => right.child(md::render(t, x, 1200, &format!("ss-reply-{id}"))),
+        Some(x) => right.child(div().id(SharedString::from(format!("ss-reply-box-{id}"))).max_h(px(320.)).overflow_y_scroll().child(md::render(t, x, 1200, &format!("ss-reply-{id}")))),
         None => right.child("Nothing yet."),
     };
-    div().flex().items_start().gap(px(10.)).child(left).child(right)
+    div().flex().flex_none().gap(px(12.)).child(left).child(right)
 }
 
+/// `.stl`: time (48px, 12px mono muted), the dot, the text (13.5px), the kind (12px muted).
 fn timeline(t: &Theme, items: &[TimelineVm]) -> Div {
-    let mut col = div().flex().flex_col().gap(px(8.)).child(kit::h3(t, "Turns and events"));
+    let col = div().flex().flex_col().flex_none().gap(px(8.)).child(h3(t, "Turns and events"));
     if items.is_empty() {
-        return col.child(kit::help(t, "Nothing recorded yet. Its turns show up here once it runs with the task board plugin."));
+        return col.child(none_yet(t, "Nothing recorded yet. Its turns show up here once it runs with the task board plugin."));
     }
-    let mut list = kit::card(t).py(px(6.));
+    let mut list = div().flex().flex_col();
     for (n, e) in items.iter().enumerate() {
         let (dot, label) = timeline_kind(t, &e.kind);
         list = list.child(
@@ -2126,18 +2396,17 @@ fn timeline(t: &Theme, items: &[TimelineVm]) -> Div {
                 .flex()
                 .items_start()
                 .gap(px(10.))
-                .px(px(14.))
-                .py(px(6.))
-                .text_size(px(13.))
-                .child(div().flex_none().w(px(64.)).font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.faint).pt(px(1.)).child(e.time.clone()))
-                .child(div().flex_none().pt(px(5.)).child(kit::dot(dot, 8.)))
-                .child(div().flex_1().min_w_0().text_color(t.text_2).child(e.text.clone()))
-                .child(div().flex_none().text_size(px(11.5)).text_color(t.faint).child(label))
+                .py(px(9.))
+                .border_t_1()
+                .border_color(t.divider)
+                .child(div().flex_none().w(px(48.)).pt(px(1.)).font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.muted).child(e.time.clone()))
+                .child(div().flex_none().w(px(10.)).self_center().child(kit::dot(dot, 8.)))
+                .child(div().flex_1().min_w_0().text_size(px(13.5)).child(e.text.clone()))
+                .child(div().flex_none().pt(px(1.)).text_size(px(12.)).text_color(t.muted).whitespace_nowrap().child(label))
                 .tooltip(kit::tip(e.full.clone())),
         );
     }
-    col = col.child(list);
-    col
+    col.child(list)
 }
 
 #[cfg(test)]
