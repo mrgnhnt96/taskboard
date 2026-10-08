@@ -106,8 +106,9 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
         .flex()
         .items_center()
         .gap(px(6.))
-        .h(px(22.))
+        .py(px(3.))
         .px(px(10.))
+        .line_height(px(18.75))
         .rounded_full()
         .border_1()
         .border_color(if open { fg } else { gpui_kit::transparent_black() })
@@ -117,9 +118,9 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
         .whitespace_nowrap()
         .text_color(fg)
         .bg(bg)
-        .child(kit::dot(dot, 7.))
+        .child(kit::dot(dot, 8.))
         .child(p.label)
-        .child(div().opacity(0.65).child("▾"))
+        .child(div().ml(px(-1.)).opacity(0.65).child(kit::icon(kit::Icon::Chev, 14., fg)))
         .tooltip(kit::tip(p.title))
         .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
             if m.menu_open(MENU).is_none() {
@@ -162,15 +163,16 @@ fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, Strin
         .min_w_0()
         .items_center()
         .justify_between()
-        .h(px(28.))
-        .px(px(8.))
-        .rounded(px(6.))
+        .gap(px(4.))
+        .h(px(40.))
+        .px(px(12.))
+        .rounded(px(9.))
         .border_1()
         .border_color(if open { t.accent } else { t.border_2 })
         .bg(t.card)
-        .text_size(px(13.))
-        .child(label)
-        .child(div().text_color(t.faint).child("▾"))
+        .text_size(px(14.))
+        .child(div().min_w_0().truncate().child(label))
+        .child(kit::icon(kit::Icon::Chev, 12., t.muted))
         .when(!enabled, |d| d.opacity(0.5))
         .when(enabled, |d| {
             d.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
@@ -204,6 +206,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
     let t = cx.global::<Theme>().clone();
     let st = &m.hours;
     let on = st.on;
+    // `.hours-row`: 8px gaps, 13px, 0 4px.
     let row = || div().flex().items_center().gap(px(8.)).px(px(4.)).text_size(px(13.));
     let check = div()
         .id("hours-on")
@@ -233,7 +236,8 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
             save(m, cx);
             cx.notify();
         }));
-    let mut days = div().flex().gap(px(2.)).p(px(2.)).rounded(px(8.)).bg(t.seg);
+    // `.seg.sm`: 3px padding, radius 9; buttons 30px, radius 7, 13px semibold.
+    let mut days = div().flex().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
     for (d, l) in DAYS {
         let sel = st.days.iter().any(|x| x == d);
         let mut item = div()
@@ -243,11 +247,11 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.))
-            .text_size(px(12.5))
+            .rounded(px(7.))
+            .text_size(px(13.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(if sel { t.text } else { t.muted })
-            .when(sel, |x| x.bg(t.card))
+            .when(sel, |x| x.bg(t.card).shadow(crate::ui::sidebar::shadow_seg(&t)))
             .when(!on, |x| x.opacity(0.5))
             .tooltip(kit::tip(fmt::cap(d)))
             .child(l);
@@ -264,6 +268,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
     let (start, end, today, open, err) = (st.start.clone(), st.end.clone(), st.today.clone(), st.open, st.err.clone());
     let menu = kit::menu_box(&t, 280.)
         .id("hours-menu")
+        .shadow(crate::ui::sidebar::shadow_modal(&t))
         .p(px(10.))
         .gap(px(10.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -271,14 +276,14 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
         .child(
             row()
                 .items_start()
-                .child(div().pt(px(5.)).child("From"))
+                .child(div().pt(px(10.)).child("From"))
                 .child(select(&t, SELECTS[0], &start, &start_o, on, open == Some("start"), cx))
-                .child(div().pt(px(5.)).child("to"))
+                .child(div().pt(px(10.)).child("to"))
                 .child(select(&t, SELECTS[1], &end, &end_o, on, open == Some("end"), cx)),
         )
         .child(days)
-        .child(row().items_start().child(div().pt(px(5.)).child("Today until")).child(select(&t, SELECTS[2], &today, &today_o, on, open == Some("today"), cx)))
-        .children(err.map(|e| div().px(px(4.)).text_size(px(12.5)).text_color(t.down).child(e)));
+        .child(row().items_start().child(div().pt(px(10.)).child("Today until")).child(select(&t, SELECTS[2], &today, &today_o, on, open == Some("today"), cx)))
+        .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)));
     // Opens upward from the pill.
     Some(deferred(anchored().anchor(Anchor::BottomLeft).position(at).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
 }

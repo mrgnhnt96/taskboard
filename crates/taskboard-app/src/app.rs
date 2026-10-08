@@ -984,8 +984,30 @@ pub fn usage_view(u: &Value) -> Option<UsageView> {
 
 // ------------------------------------------------------------------ chrome drawing
 
+/// `.banner`: 7px 40px, 6/10 gaps, 13px, a bottom line.
 fn bar(bg: Hsla, fg: Hsla, line: Hsla) -> Div {
-    div().flex().flex_none().items_center().flex_wrap().gap(px(10.)).px(px(24.)).py(px(7.)).text_size(px(13.)).bg(bg).text_color(fg).border_b_1().border_color(line)
+    div().flex().flex_none().items_center().flex_wrap().gap_x(px(10.)).gap_y(px(6.)).px(px(40.)).py(px(7.)).text_size(px(13.)).bg(bg).text_color(fg).border_b_1().border_color(line)
+}
+
+/// `.btn.sm` in the banner: 32px tall, 12.5px, 0 10px, radius 7. `soft` is accent on accent-soft
+/// (semibold); otherwise `.ghost` (muted, no fill).
+fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, soft: bool) -> Stateful<Div> {
+    let text = t.text;
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .h(px(32.))
+        .px(px(10.))
+        .rounded(px(7.))
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .when(soft, |d| d.bg(t.accent_soft).text_color(t.accent).font_weight(FontWeight::SEMIBOLD).hover(|s| s.opacity(0.9)))
+        .when(!soft, |d| d.text_color(t.muted).hover(move |s| s.text_color(text)))
+        .child(label.into())
 }
 
 /// The banner lines: the board down, the login item (native), the alerts.
@@ -1019,7 +1041,7 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
                 bar(t.down_soft, t.down, t.down_line)
                     .child(kit::dot(t.down, 8.))
                     .child(alert_text(t, &r))
-                    .child(kit::btn_small(t, "alerts-open", "Show all").on_click(cx.listener(|m, _, window, cx| {
+                    .child(banner_btn(t, "alerts-open", "Show all", true).on_click(cx.listener(|m, _, window, cx| {
                         m.set_modal(Some(ui::modals::Modal::Alerts), window, cx);
                     })))
                     .into_any_element(),
@@ -1042,7 +1064,7 @@ fn alert_text(t: &Theme, r: &BannerRow) -> Div {
         .items_baseline()
         .gap(px(4.))
         .child(r.text.clone())
-        .children(r.ago.clone().map(|a| div().text_size(px(12.)).text_color(t.muted).child(a)))
+        .children(r.ago.clone().map(|a| div().ml(px(4.)).text_size(px(10.8)).text_color(t.muted).child(a)))
 }
 
 /// One alert: its text and age, "Open T12" and Dismiss. Also used by the alerts dialog.
@@ -1055,11 +1077,11 @@ pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
         .child(alert_text(t, &r))
         .children(r.buttons.iter().filter(|(act, _)| *act == "alert-open").map(|(_, label)| {
             let (task, goal) = (task.clone(), goal.clone());
-            kit::btn_small(t, SharedString::from(format!("alert-open-{id}")), label.clone()).on_click(cx.listener(move |m, _, window, cx| {
+            banner_btn(t, SharedString::from(format!("alert-open-{id}")), label.clone(), true).on_click(cx.listener(move |m, _, window, cx| {
                 open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
             }))
         }))
-        .child(kit::btn_small(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss").on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
+        .child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
 }
 
 /// `alert-open`: close the alerts dialog, then the task (or else the goal).
@@ -1088,19 +1110,21 @@ pub fn dismiss_all_alerts(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     }
 }
 
-fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<Div> {
+/// `.conn`: 12.5px, 3px 10px, fully rounded, 6px gaps (line height 1.5).
+pub fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<Div> {
     let _ = t;
-    div().id(id).flex().items_center().gap(px(6.)).h(px(22.)).px(px(10.)).rounded_full().text_size(px(12.5)).whitespace_nowrap().text_color(fg).bg(bg)
+    div().id(id).flex().flex_none().items_center().gap(px(6.)).py(px(3.)).px(px(10.)).rounded_full().text_size(px(12.5)).line_height(px(18.75)).whitespace_nowrap().text_color(fg).bg(bg)
 }
 
 /// Bottom bar (`statusBarHtml`): Midna connection, work hours and usage pills.
 fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     let st = m.state().clone();
-    let mut bar = div().flex().flex_none().items_center().gap(px(8.)).h(px(32.)).px(px(14.)).border_t_1().border_color(t.border).bg(t.card);
+    // `#statusbar`: min-height 34, 4px 12px, 8px gaps.
+    let mut bar = div().flex().flex_none().items_center().gap(px(8.)).min_h(px(34.)).py(px(4.)).px(px(12.)).border_t_1().border_color(t.border).bg(t.card);
     if let Some(mid) = st.get("midna").filter(|v| v.is_object()) {
         let p = conn_pill(mid);
         let (fg, bg, dot) = if p.cls == "up" { (t.up_fg, t.up_soft, t.up) } else { (t.warn_fg, t.warn_soft, t.warn) };
-        bar = bar.child(pill_shell(t, "conn-pill", fg, bg).child(kit::dot(dot, 7.)).child(p.label).tooltip(kit::tip(p.title)));
+        bar = bar.child(pill_shell(t, "conn-pill", fg, bg).child(kit::dot(dot, 8.)).child(p.label).tooltip(kit::tip(p.title)));
     }
     bar = bar.child(ui::hours::pill(m, t, cx));
     if let Some(u) = st.get("usage").and_then(usage_view) {
@@ -1184,13 +1208,20 @@ fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     Some(el.into_any_element())
 }
 
+/// `.conn.usage`: per window `.u-k` label, a 34×5 bar and the value; warm/hot recolour both.
 fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
-    let mut row = pill_shell(t, "usage-pill", t.muted, t.seg).gap(px(0.)).px(px(4.)).when(u.stale, |d| d.opacity(0.6)).tooltip(kit::tip(u.title.clone()));
+    let mut row = pill_shell(t, "usage-pill", t.muted, t.seg)
+        .gap(px(0.))
+        .px(px(4.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .when(u.stale, |d| d.opacity(0.6))
+        .tooltip(kit::tip(u.title.clone()));
     for (n, w) in u.windows.iter().enumerate() {
         let (bar_c, val_c) = match w.level {
             "hot" => (t.down, t.down),
             "warm" => (t.warn, t.warn_fg),
-            _ => (t.accent, t.muted),
+            _ => (t.up, t.text_2),
         };
         row = row.child(
             div()
@@ -1199,32 +1230,32 @@ fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
                 .gap(px(6.))
                 .px(px(7.))
                 .when(n > 0, |d| d.border_l_1().border_color(t.border_2))
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(w.label.clone()))
-                .child(div().w(px(36.)).h(px(5.)).rounded_full().bg(t.border).child(div().h_full().rounded_full().bg(bar_c).w(relative((w.width / 100.) as f32))))
-                .child(div().text_color(val_c).when(w.level == "hot", |d| d.font_weight(FontWeight::SEMIBOLD)).child(w.value.clone())),
+                .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(t.faint).child(w.label.clone()))
+                .child(div().w(px(34.)).h(px(5.)).rounded_full().overflow_hidden().bg(t.border_2).child(div().h_full().rounded_full().bg(bar_c).w(relative((w.width / 100.) as f32))))
+                .child(div().min_w(px(22.)).flex().justify_end().text_color(val_c).when(w.level == "hot", |d| d.font_weight(FontWeight::SEMIBOLD)).child(w.value.clone())),
         );
     }
     row.into_any_element()
 }
 
+/// `.toast`: centred 24px above the bottom, 9px 16px, radius 9, 13px, `--shadow-modal`.
 fn toasts(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
     if m.toasts.is_empty() {
         return None;
     }
-    let mut col = div().absolute().bottom(px(44.)).left_0().right_0().flex().flex_col().items_center().gap(px(6.));
+    let mut col = div().absolute().bottom(px(24.)).left_0().right_0().px(px(16.)).flex().flex_col().items_center().gap(px(6.));
     // (One at a time: `toast` replaces the last.)
     for (i, x) in m.toasts.iter().enumerate() {
         col = col.child(
             div()
                 .id(("toast", i))
-                .px(px(14.))
-                .py(px(8.))
-                .rounded(px(10.))
-                .shadow_lg()
+                .px(px(16.))
+                .py(px(9.))
+                .rounded(px(9.))
+                .shadow(ui::sidebar::shadow_modal(t))
                 .text_size(px(13.))
-                .max_w(px(520.))
                 .bg(if x.err { t.down } else { t.text })
-                .text_color(if x.err { t.on_accent } else { t.bg })
+                .text_color(if x.err { gpui_kit::white() } else { t.bg })
                 .child(x.text.clone()),
         );
     }

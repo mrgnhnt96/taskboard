@@ -20,6 +20,8 @@ use std::f32::consts::PI;
 pub const RAIL_MIN: f32 = 220.;
 pub const RAIL_MAX: f32 = 600.;
 pub const RAIL_DEFAULT: f32 = 300.;
+/// The goal page's goal list (`.gpage`: 340px).
+pub const GNAV_WIDTH: f32 = 340.;
 const PEEK_DELAY_MS: u64 = 300;
 const PEEK_HIDE_MS: u64 = 150;
 
@@ -656,10 +658,6 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
     .flex_none()
 }
 
-fn chev(open: bool) -> &'static str {
-    if open { "▾" } else { "▸" }
-}
-
 /// The hover peek: after 300 ms on a goal (at once when a card already shows); away for 150 ms
 /// hides it unless the pointer moved onto the card.
 fn on_goal_hover(m: &mut MainWindow, r: String, hovered: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
@@ -703,13 +701,15 @@ fn hide_peek_soon(m: &mut MainWindow, seq: u64, cx: &mut Context<MainWindow>) {
 }
 
 fn rail_width_now(m: &MainWindow) -> f32 {
-    let _ = m;
-    rail_width()
+    if matches!(m.page, Page::Goal(_)) { GNAV_WIDTH } else { rail_width() }
 }
 
+/// `.bg-item` / `.bg-pick`: ring, "G3 name" (the ref in mono, faint), done/n; the picked goal
+/// is tinted and offers `.bg-open`.
 fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.col;
     let rid = r.r.clone();
+    let name = r.name.strip_prefix(&format!("{} ", r.r)).unwrap_or(&r.name).to_string();
     let pick = div()
         .id(SharedString::from(format!("goal-pick-{}", r.r)))
         .flex()
@@ -724,17 +724,18 @@ fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
         .child(ring_el(t, r.ring))
         .child(
             div()
+                .flex()
                 .flex_1()
                 .min_w_0()
-                .truncate()
+                .items_baseline()
+                .gap(px(4.))
                 .text_size(px(13.))
                 .font_weight(if r.on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .text_color(if r.dim { t.muted } else { t.text })
-                .child(
-                    StyledText::new(r.name.clone()).with_highlights([(0..r.r.len(), HighlightStyle { color: Some(t.faint), ..Default::default() })]),
-                ),
+                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.7)).text_color(t.faint).child(r.r.clone()))
+                .child(div().flex_1().min_w_0().truncate().child(name)),
         )
-        .child(div().flex_none().text_size(px(12.)).text_color(t.faint).child(r.count.clone()))
+        .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(t.faint).child(r.count.clone()))
         .when_some(r.status.clone(), |d, st| d.tooltip(kit::tip(st.label)))
         .on_hover(cx.listener({
             let rid = rid.clone();
@@ -746,11 +747,12 @@ fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
         }));
     div()
         .flex()
+        .flex_none()
         .items_center()
         .gap(px(6.))
         .pr(px(4.))
         .rounded(px(8.))
-        .when(r.on, |d| d.bg(t.goal_tint).border_1().border_color(t.goal_line))
+        .when(r.on, |d| d.bg(t.goal_tint).shadow(inset_line(t.goal_line)))
         .when(!r.on, |d| d.hover(move |s| s.bg(hover)))
         .child(pick)
         .when(r.open, |d| {
@@ -765,36 +767,51 @@ fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
                     .size(px(26.))
                     .rounded(px(6.))
                     .bg(t.goal_soft)
-                    .text_color(t.goal)
                     .cursor_pointer()
-                    .child("→")
+                    .child(kit::icon(kit::Icon::Fwd, 16., t.goal))
                     .tooltip(kit::tip("Open the goal"))
                     .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(target.clone()), cx))),
             )
         })
 }
 
-fn group_head(t: &Theme, g: &Group, cx: &mut Context<MainWindow>) -> Div {
+/// `.bg-fold`: the 28×30 chevron cell (down when open, right when folded).
+fn fold_cell(t: &Theme, open: bool) -> Div {
+    div().flex().flex_none().items_center().justify_center().w(px(28.)).h(px(30.)).rounded(px(8.)).child(kit::icon(if open { kit::Icon::Chev } else { kit::Icon::Fwd }, 14., t.faint))
+}
+
+/// `.bg-pname`'s text: 11px semibold uppercase.
+fn pname(t: &Theme, text: &str, on: bool) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_size(px(11.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(if on { t.accent } else { t.faint })
+        .child(text.to_uppercase())
+}
+
+/// `.bg-n`: 12px faint count.
+fn bg_n(t: &Theme, n: impl ToString) -> Div {
+    div().flex_none().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(t.faint).child(n.to_string())
+}
+
+/// `.bg-proj`: fold chevron, project name (filters the board), needs dot when folded, count.
+fn group_head(t: &Theme, g: &Group, first: bool, cx: &mut Context<MainWindow>) -> Div {
     let (p1, p2) = (g.project.clone(), g.project.clone());
     div()
         .flex()
+        .flex_none()
         .items_center()
-        .mt(px(10.))
+        .when(!first, |d| d.mt(px(10.)))
         .mb(px(4.))
         .rounded(px(8.))
         .when(g.on, |d| d.bg(t.accent_soft))
         .child(
-            div()
+            fold_cell(t, g.open)
                 .id(SharedString::from(format!("rail-fold-{}", g.project)))
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .w(px(28.))
-                .h(px(30.))
-                .text_color(t.faint)
                 .cursor_pointer()
-                .child(chev(g.open))
                 .tooltip(kit::tip(format!("{} {} goals", if g.open { "Hide" } else { "Show" }, g.project)))
                 .on_click(cx.listener(move |m, _, _, cx| {
                     toggle_shut(&p1);
@@ -813,24 +830,29 @@ fn group_head(t: &Theme, g: &Group, cx: &mut Context<MainWindow>) -> Div {
                 .h(px(30.))
                 .pr(px(8.))
                 .cursor_pointer()
-                .text_size(px(11.5))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(if g.on { t.accent } else { t.faint })
-                .child(div().flex_1().min_w_0().truncate().child(g.project.to_uppercase()))
+                .child(pname(t, &g.project, g.on))
                 .when(g.dot, |d| d.child(kit::dot(t.warn, 7.)))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(t.faint).child(g.count.to_string()))
+                .child(bg_n(t, g.count))
                 .tooltip(kit::tip(if g.on { "Show every project".to_string() } else { format!("Show only {}", g.project) }))
                 .on_click(cx.listener(move |m, _, _, cx| m.rail_pick_project(&p2, cx))),
         )
+}
+
+/// `.count`: 12px semibold muted on `--col`, fully rounded (`.hot`: warn).
+fn count_pill(t: &Theme, n: impl ToString, hot: bool) -> Div {
+    let (fg, bg) = if hot { (t.warn_fg, t.warn_soft) } else { (t.muted, t.col) };
+    div().flex_none().px(px(7.)).rounded_full().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).bg(bg).child(n.to_string())
 }
 
 fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let goals = (m.goals_loaded()).then_some(m.data.goals.as_slice());
     let view = rail_view(m.data.state.as_ref(), goals, &m.filters, &rail_shut(), recent_open());
     let mut out: Vec<AnyElement> = Vec::new();
+    let goal_c = t.goal;
     out.push(
         div()
             .flex()
+            .flex_none()
             .items_center()
             .gap(px(8.))
             .px(px(6.))
@@ -838,18 +860,25 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
             .child(
                 div()
                     .id("rail-goals-title")
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
                     .cursor_pointer()
-                    .hover(|s| s.opacity(0.8))
-                    .child(kit::h3(t, "Goals ›"))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.muted)
+                    .hover(move |s| s.text_color(goal_c))
+                    .child("GOALS")
+                    .child(div().opacity(0.6).child(kit::icon(kit::Icon::Fwd, 12., t.muted)))
                     .tooltip(kit::tip("See every goal: active, deprioritized and finished"))
                     .on_click(cx.listener(|m, _, _, cx| m.open_goals(cx))),
             )
-            .child(div().text_size(px(12.)).text_color(t.faint).child(view.count.to_string()))
+            .child(count_pill(t, view.count, false))
             .into_any_element(),
     );
     let mut list = div().id("goals-rail").flex().flex_col().gap(px(1.)).flex_1().min_h_0().overflow_y_scroll();
-    for g in &view.groups {
-        list = list.child(group_head(t, g, cx));
+    for (ix, g) in view.groups.iter().enumerate() {
+        list = list.child(group_head(t, g, ix == 0, cx));
         for r in &g.rows {
             list = list.child(rail_row(t, r, cx));
         }
@@ -859,17 +888,16 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
     }
     out.push(list.into_any_element());
     if let Some((open, n, rows)) = view.recent {
-        let mut rec = div().flex().flex_col().gap(px(1.)).pt(px(10.)).border_t_1().border_color(t.border).child(
+        let mut rec = div().flex().flex_none().flex_col().gap(px(1.)).pt(px(10.)).border_t_1().border_color(t.border).child(
             div()
                 .id("rail-recent")
                 .flex()
                 .items_center()
+                .mb(px(4.))
+                .rounded(px(8.))
                 .cursor_pointer()
-                .text_color(t.muted)
-                .hover(|s| s.opacity(0.8))
-                .child(div().flex().items_center().justify_center().w(px(28.)).h(px(30.)).text_color(t.faint).child(chev(open)))
-                .child(div().flex_1().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).child("RECENTLY COMPLETED"))
-                .child(div().pr(px(8.)).text_size(px(12.)).text_color(t.faint).child(n.to_string()))
+                .child(fold_cell(t, open))
+                .child(div().flex().flex_1().min_w_0().items_center().gap(px(8.)).h(px(30.)).pr(px(8.)).child(pname(t, "Recently completed", false)).child(bg_n(t, n)))
                 .on_click(cx.listener(|_, _, _, cx| {
                     toggle_recent();
                     cx.notify();
@@ -883,37 +911,48 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
     out
 }
 
+/// `goalNavList` on the goal page: "Goals", the Active / Deprioritized / Finished tabs
+/// (`.seg.sm.gn-views`), then the goals by project (`.gn-group`, `.gitem`).
 fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let goals: Vec<&Value> = m.data.goals.iter().filter(|g| !b(g, "archived")).collect();
     let view = nav_view_for(&goals, Some(cur), m.sidebar.gnav.as_ref());
     m.sidebar.gnav = Some((view.to_string(), cur.to_string()));
     let nv = nav_view(&goals, Some(cur), view);
     let mut out: Vec<AnyElement> = Vec::new();
-    out.push(
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .px(px(6.))
-            .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Goals"))
-            .into_any_element(),
-    );
-    let tabs: Vec<String> = nv.tabs.iter().map(|(_, l, n)| format!("{l} {n}")).collect();
-    let tab_refs: Vec<&str> = tabs.iter().map(String::as_str).collect();
-    let on = nv.tabs.iter().position(|(k, _, _)| *k == nv.view).unwrap_or(0);
-    let keys: Vec<&'static str> = nv.tabs.iter().map(|(k, _, _)| *k).collect();
-    let cur_s = cur.to_string();
-    out.push(
-        kit::seg(t, "gnav-view", &tab_refs, on, |ix, item| {
-            let (k, c) = (keys[ix], cur_s.clone());
-            item.flex_1().justify_center().text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
-                m.sidebar.gnav = Some((k.to_string(), c.clone()));
-                cx.notify();
-            }))
-        })
-        .into_any_element(),
-    );
-    let mut list = div().id("goal-nav").flex().flex_col().gap(px(10.)).flex_1().min_h_0().overflow_y_scroll();
+    out.push(div().flex().flex_none().items_center().gap(px(8.)).child(div().flex_1().text_size(px(20.)).font_weight(FontWeight::BOLD).child("Goals")).into_any_element());
+    let mut tabs = div().flex().flex_none().gap(px(2.)).p(px(3.)).mt(px(-2.)).rounded(px(9.)).bg(t.seg);
+    for (k, label, n) in nv.tabs.iter().copied() {
+        let sel = k == nv.view;
+        let c = cur.to_string();
+        let hover = t.text;
+        tabs = tabs.child(
+            div()
+                .id(SharedString::from(format!("gnav-view-{k}")))
+                .flex()
+                .flex_auto()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .h(px(32.))
+                .px(px(6.))
+                .rounded(px(7.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .text_color(if sel { t.text } else { t.muted })
+                .when(sel, |d| d.bg(t.card).shadow(shadow_seg(t)))
+                .hover(move |s| s.text_color(hover))
+                .child(label)
+                .child(div().font_weight(FontWeight::MEDIUM).text_color(t.muted).child(n.to_string()))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    m.sidebar.gnav = Some((k.to_string(), c.clone()));
+                    cx.notify();
+                })),
+        );
+    }
+    out.push(tabs.into_any_element());
+    let mut list = div().id("goal-nav").flex().flex_col().gap(px(14.)).flex_1().min_h_0().overflow_y_scroll();
     for (p, items) in &nv.groups {
         let mut grp = div().flex().flex_col().gap(px(4.)).child(
             div()
@@ -922,48 +961,48 @@ fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindo
                 .gap(px(8.))
                 .px(px(10.))
                 .pt(px(6.))
-                .text_size(px(11.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t.faint)
-                .child(div().flex_1().truncate().child(p.to_uppercase()))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::NORMAL).child(items.len().to_string())),
+                .child(pname(t, p, false))
+                .child(bg_n(t, items.len())),
         );
+        let mut rows = div().flex().flex_col().gap(px(1.));
         for it in items {
             let color = match it.kind {
-                "run" => t.accent,
+                "run" | "queued" => t.accent,
                 "warn" => t.warn,
                 "done" => t.up,
-                "queued" => t.accent,
                 _ => t.faint,
             };
             let (r1, r2) = (it.r.clone(), it.r.clone());
             let hover = t.col;
-            grp = grp.child(
+            rows = rows.child(
                 div()
                     .id(SharedString::from(format!("gitem-{}", it.r)))
                     .flex()
                     .items_start()
                     .gap(px(10.))
+                    .min_h(px(50.))
                     .px(px(10.))
-                    .py(px(7.))
+                    .py(px(8.))
                     .rounded(px(8.))
                     .cursor_pointer()
-                    .when(it.current, |d| d.bg(t.goal_tint).border_1().border_color(t.goal_line))
+                    .when(it.current, |d| d.bg(t.goal_tint).shadow(inset_line(t.goal_line)))
                     .when(!it.current, |d| d.hover(move |s| s.bg(hover)))
-                    .child(ring_el(t, it.ring))
+                    .child(div().mt(px(1.)).child(ring_el(t, it.ring)))
                     .child(
                         div()
                             .flex()
+                            .flex_1()
                             .flex_col()
                             .min_w_0()
-                            .gap(px(2.))
+                            .gap(px(1.))
                             .child(
                                 div()
                                     .flex()
+                                    .items_baseline()
                                     .gap(px(6.))
                                     .text_size(px(13.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(div().flex_none().text_color(t.faint).font_family(t.mono_font.clone()).text_size(px(11.5)).child(it.r.clone()))
+                                    .font_weight(if it.current { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                                    .child(div().flex_none().text_color(t.faint).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(it.r.clone()))
                                     .child(div().min_w_0().truncate().child(it.name.clone())),
                             )
                             .child(
@@ -971,24 +1010,59 @@ fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindo
                                     .flex()
                                     .items_center()
                                     .gap(px(5.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
                                     .text_color(color)
-                                    .when(it.dot, |d| d.child(kit::dot(color, 6.)))
+                                    .when(it.dot, |d| d.child(kit::dot(color, 7.)))
                                     .child(it.label.clone())
-                                    .child(div().text_color(t.faint).child(it.n.clone())),
+                                    .child(div().min_w_0().truncate().text_color(t.faint).font_weight(FontWeight::NORMAL).child(it.n.clone())),
                             ),
                     )
                     .on_hover(cx.listener(move |m, h: &bool, window, cx| on_goal_hover(m, r1.clone(), *h, window, cx)))
                     .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(r2.clone()), cx))),
             );
         }
+        grp = grp.child(rows);
         list = list.child(grp);
     }
     if let Some(e) = nv.empty {
-        list = list.child(div().px(px(10.)).child(kit::help(t, e)));
+        list = list.child(kit::help(t, e));
     }
     out.push(list.into_any_element());
     out
+}
+
+/// `.chip.st-*`: 11.5px semibold, radius 5, padding 1px 6px.
+fn status_chip(t: &Theme, kind: &str, label: &str) -> Div {
+    let (fg, bg) = match kind {
+        "needs" | "blocked" => (t.warn_fg, t.warn_soft),
+        "working" => (t.accent_fg, t.accent_soft),
+        "failed" => (t.down, t.down_soft),
+        "done" => (t.up_fg, t.up_soft),
+        _ => (t.text_2, t.col),
+    };
+    div().flex().flex_none().items_center().px(px(6.)).py(px(1.)).rounded(px(5.)).text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(fg).bg(bg).child(label.to_string())
+}
+
+/// `box-shadow: inset 0 0 0 1px <color>` (an outline that takes no room).
+fn inset_line(color: Hsla) -> Vec<BoxShadow> {
+    vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: true }]
+}
+
+/// `--shadow-modal`: 0 24px 64px.
+pub fn shadow_modal(t: &Theme) -> Vec<BoxShadow> {
+    let dark = t.mode == crate::theme::ThemeMode::Dark;
+    let color: Hsla = if dark { rgba(0x00000099).into() } else { rgba(0x10182840).into() };
+    vec![BoxShadow { color, offset: point(px(0.), px(24.)), blur_radius: px(64.), spread_radius: px(0.), inset: false }]
+}
+
+/// `--shadow-seg`: the selected segment's lift.
+pub fn shadow_seg(t: &Theme) -> Vec<BoxShadow> {
+    let dark = t.mode == crate::theme::ThemeMode::Dark;
+    let color: Hsla = if dark { rgba(0x00000066).into() } else { rgba(0x1018281a).into() };
+    vec![BoxShadow { color, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]
 }
 
 /// The peek card for the hovered goal (drawn above everything, next to the sidebar).
@@ -999,6 +1073,7 @@ pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
     let pv = peek_view(&g, m.state());
     let mut card = kit::menu_box(&t, 320.)
         .id("goal-peek")
+        .shadow(shadow_modal(&t))
         .p(px(12.))
         .gap(px(10.))
         .max_h(px(480.))
@@ -1016,11 +1091,18 @@ pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(
-                    div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(
-                        StyledText::new(pv.title.clone()).with_highlights([(0..fmt::ref_of(&g, "G").len(), HighlightStyle { color: Some(t.faint), ..Default::default() })]),
-                    ),
-                )
+                .child({
+                    let gr = fmt::ref_of(&g, "G");
+                    let name = pv.title.strip_prefix(&gr).unwrap_or(&pv.title).trim_start().to_string();
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(6.))
+                        .text_size(px(13.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(div().flex_none().font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(t.faint).child(gr))
+                        .child(div().min_w_0().child(name))
+                })
                 .child(
                     div()
                         .flex()
@@ -1038,7 +1120,7 @@ pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
                 .items_center()
                 .gap(px(6.))
                 .mb(px(2.))
-                .child(kit::tone_pill(&t, chip, *label))
+                .child(status_chip(&t, chip, *label))
                 .child(div().text_size(px(12.)).text_color(t.faint).child(tasks.len().to_string())),
         );
         for tk in tasks {
@@ -1048,8 +1130,10 @@ pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
                 div()
                     .id(SharedString::from(format!("peek-{}", tk.r)))
                     .flex()
+                    .items_baseline()
                     .gap(px(8.))
                     .px(px(6.))
+                    .mx(px(-6.))
                     .py(px(4.))
                     .rounded(px(6.))
                     .cursor_pointer()
@@ -1061,7 +1145,7 @@ pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
                             .flex_col()
                             .min_w_0()
                             .gap(px(1.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(tk.title.clone()))
+                            .child(div().truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(tk.title.clone()))
                             .children(tk.why.clone().map(|w| div().text_size(px(12.)).text_color(t.muted).child(w))),
                     )
                     .on_click(cx.listener(move |m, _, _, cx| {
@@ -1075,27 +1159,28 @@ pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
     Some(deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(card)).with_priority(3).into_any_element())
 }
 
+/// A page entry (native: the web reached these through links). Drawn like the rail's goal rows
+/// (`.bg-pick`: 13px medium, 8px radius, `--col` hover), with the web's `.count` pill.
 fn nav_item(t: &Theme, id: &str, label: &str, count: Option<i64>, alert: bool, on: bool) -> Stateful<Div> {
-    let hover = t.panel_2;
+    let hover = t.col;
     div()
         .id(SharedString::from(format!("nav-{id}")))
         .flex()
+        .flex_none()
         .items_center()
         .gap(px(8.))
-        .h(px(30.))
-        .px(px(10.))
+        .h(px(32.))
+        .pl(px(10.))
+        .pr(px(6.))
         .rounded(px(8.))
         .cursor_pointer()
-        .text_size(px(13.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(if on { t.accent_fg } else { t.text_2 })
+        .text_size(px(13.))
+        .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+        .text_color(if on { t.accent_fg } else { t.text })
         .when(on, |d| d.bg(t.accent_soft))
         .when(!on, |d| d.hover(move |s| s.bg(hover)))
         .child(div().flex_1().child(label.to_string()))
-        .children(count.filter(|n| *n > 0).map(|n| {
-            let (fg, bg) = if alert { (t.on_accent, t.warn) } else { (t.muted, t.seg) };
-            kit::pill(fg, bg, n.to_string()).h(px(18.)).px(px(6.))
-        }))
+        .children(count.filter(|n| *n > 0).map(|n| count_pill(t, n, alert)))
 }
 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -1104,27 +1189,49 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let counts = &st["counts"];
     let page = m.page.clone();
     let sessions = arr(&st, "sessions").len() as i64;
-    let width = m.sidebar.drag.map(|_| m.sidebar_width).unwrap_or_else(rail_width);
+    let goal_page = matches!(page, Page::Goal(_));
+    // The goal page's list is the web's fixed 340px `.gnav`; elsewhere the resizable rail.
+    let width = if goal_page { GNAV_WIDTH } else { m.sidebar.drag.map(|_| m.sidebar_width).unwrap_or_else(rail_width) };
     let _ = window;
 
+    // `.bg-brand`: the logo and "Task board".
     let brand = div()
         .flex()
+        .flex_none()
         .items_center()
         .gap(px(10.))
         .px(px(4.))
-        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"));
+        .pb(px(10.))
+        .child(
+            div()
+                .id("brand-logo")
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(36.))
+                .rounded(px(10.))
+                .bg(t.accent_soft)
+                .cursor_pointer()
+                .child(kit::icon(kit::Icon::Board, 22., t.accent))
+                .tooltip(kit::tip("Task board"))
+                .on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))),
+        )
+        .child(div().flex_1().whitespace_nowrap().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"));
     let nav = div()
         .flex()
+        .flex_none()
         .flex_col()
-        .gap(px(2.))
+        .gap(px(1.))
         .child(nav_item(&t, "board", "Board", Some(i(counts, "needs")), true, page == Page::Board).on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))))
-        .child(nav_item(&t, "backlog", "Backlog", Some(i(counts, "untriaged")), false, page == Page::Backlog).on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx))))
+        .child(nav_item(&t, "backlog", "Backlog", Some(i(counts, "open_issues")), false, page == Page::Backlog).on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx))))
         .child(nav_item(&t, "sessions", "Sessions", Some(sessions), false, page == Page::Sessions).on_click(cx.listener(|m, _, _, cx| m.go(Page::Sessions, cx))))
         .child(nav_item(&t, "days", "Days", None, false, page == Page::Days).on_click(cx.listener(|m, _, _, cx| m.go(Page::Days, cx))));
     let body = match &page {
         Page::Goal(cur) => nav_list(m, &t, &cur.clone(), cx),
         _ => rail_list(m, &t, cx),
     };
+    let accent = t.accent;
     let grip = div()
         .id("rail-grip")
         .absolute()
@@ -1133,8 +1240,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .right(px(-4.))
         .w(px(8.))
         .cursor_col_resize()
-        .child(div().absolute().top_0().bottom_0().left(px(3.)).w(px(2.)).when(m.sidebar.drag.is_some(), |d| d.bg(t.accent)))
-        .hover(|s| s.bg(gpui_kit::transparent_black()))
+        .child(div().absolute().top_0().bottom_0().left(px(3.)).w(px(2.)).when(m.sidebar.drag.is_some(), |d| d.bg(accent)))
+        .hover(move |s| s.bg(gpui_kit::transparent_black()))
         .tooltip(kit::tip("Drag to resize · double-click to reset"))
         .on_mouse_down(
             MouseButton::Left,
@@ -1158,18 +1265,17 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .flex_none()
         .w(px(width))
         .h_full()
-        .bg(t.tint)
+        .bg(t.card)
         .border_r_1()
         .border_color(t.border)
-        // Room for the traffic lights (the title bar is transparent).
-        .pt(px(44.))
-        .px(px(10.))
-        .pb(px(10.))
-        .gap(px(12.))
+        // `.bgoals`: 32 10 24 12; the goal page's `.gnav`: 32 20 32 32.
+        .pt(px(32.))
+        .when(goal_page, |d| d.pl(px(32.)).pr(px(20.)).pb(px(32.)).gap(px(14.)))
+        .when(!goal_page, |d| d.pl(px(12.)).pr(px(10.)).pb(px(24.)).gap(px(12.)))
         .child(brand)
         .child(nav)
         .children(body)
-        .child(grip)
+        .when(!goal_page, |d| d.child(grip))
         .into_any_element()
 }
 

@@ -102,3 +102,9 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 - `modals.rs` (alerts dialog): use `app::alerts_dialog_view` for the rows and `app::dismiss_all_alerts` for "Dismiss all", and don't close the dialog immediately (it closes itself when the alerts are gone, as the web did).
 - `backend.rs`: the web's error texts were "Can’t reach the task board server." (no connection) and "The board answered N." (non-JSON error); `Daemon::answer` says "The board isn't answering at …: …". The banner shows whatever the backend says.
 - Esc closes the alerts dialog (the app has no forms); the goal note dialog (`gnote`, goal page) closes on Esc itself.
+
+## Visual pass (CSS values)
+
+Sidebar, status bar, banner, toasts and the hours menu use the web's `app.css` numbers (web px = GPUI px): `.bgoals` 32/10/24/12 padding on `--card`, `.bg-brand` logo tile, `.bg-head` 13px "GOALS ›" + `.count`, `.bg-proj`/`.bg-item`/`.bg-open` with drawn chevrons (`kit::icon`), `.gnav` 340px with `.seg.sm` tabs and 50px `.gitem`s, `#statusbar` 34px / `.conn` pills / `.u-win` usage bars (green when ok), `.banner` 7px 40px with `.btn.sm` soft/ghost buttons, `.toast` 24px from the bottom.
+
+Intentional differences: the banner sits over the page column, not the full window (the traffic lights live in the sidebar's top); the page list (Board, Backlog, Sessions, Days) sits under the brand and is styled like the rail rows; the goal page keeps the brand and page list in place of "← Task board"; CSS `letter-spacing` has no GPUI equivalent; the UI font is Atkinson Hyperlegible Next, not the system font.
