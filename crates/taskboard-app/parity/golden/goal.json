@@ -9520,6 +9520,3820 @@
       }
     },
     {
+      "name": "waveRail waves running",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T13:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Model",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T13:40:00.000Z",
+              "started_at": null,
+              "who": "T2 Form",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 31,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "review",
+                  "label": "Awaiting review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 3,
+              "ref": "T3",
+              "title": "Task 3",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:45:00.000Z",
+              "started_at": "2026-10-07T13:55:00.000Z",
+              "who": "T3 Wire",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": {
+                "key": "PROJ-3",
+                "status": "In Progress",
+                "url": "https://acme.atlassian.net/browse/PROJ-3"
+              },
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2,
+              "session_id": "s3"
+            },
+            {
+              "id": 4,
+              "ref": "T4",
+              "title": "Task 4",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": true,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2
+            },
+            {
+              "id": 5,
+              "ref": "T5",
+              "title": "Task 5",
+              "project": "webapp",
+              "status": "needs",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": "Which wording?",
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:57:00.000Z",
+              "started_at": "2026-10-07T14:30:00.000Z",
+              "who": "T5 Copy",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2,
+              "session_id": "s5"
+            },
+            {
+              "id": 6,
+              "ref": "T6",
+              "title": "Task 6",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for wave 2",
+              "blocked": false,
+              "wave": 3
+            },
+            {
+              "id": 7,
+              "ref": "T7",
+              "title": "Task 7",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "high",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 3,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            },
+            {
+              "id": 8,
+              "ref": "T8",
+              "title": "Task 8",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for wave 2",
+              "blocked": true
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "Basics",
+              "stop_after": true,
+              "released_at": "2026-10-07T14:20:00.000Z",
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 2,
+              "done": 2,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            },
+            {
+              "wave": 2,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "running",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 3,
+              "done": 0,
+              "failed": [],
+              "active": 3,
+              "starting": 1,
+              "planned": 0
+            },
+            {
+              "wave": 3,
+              "name": "Polish",
+              "stop_after": true,
+              "released_at": null,
+              "passed": false,
+              "state": "waiting",
+              "blocked": true,
+              "held_by": "running",
+              "hold": "Waits for wave 2",
+              "tasks": [],
+              "total": 2,
+              "done": 0,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 1
+            }
+          ]
+        },
+        "open": false
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": false,
+            "n": "Wave 1",
+            "name": "Basics",
+            "count": [
+              {
+                "cls": "st-review",
+                "text": "Awaiting review"
+              },
+              {
+                "cls": "st-done",
+                "text": "Done"
+              }
+            ],
+            "stop": false,
+            "gate": {
+              "cls": "ok",
+              "text": "You let the goal go on at 2:20 PM.",
+              "button": null
+            },
+            "tasks": []
+          },
+          {
+            "kind": "wave",
+            "state": "running",
+            "open": true,
+            "n": "Wave 2",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-working",
+                "text": "Running ×2"
+              },
+              {
+                "cls": "st-queued",
+                "text": "Starting"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T3",
+                "title": "Task 3",
+                "planned": false,
+                "jira": "https://acme.atlassian.net/browse/PROJ-3",
+                "pr": null,
+                "when": "1h 5m",
+                "facts": [
+                  {
+                    "cls": "term",
+                    "text": "T3 Wire"
+                  },
+                  {
+                    "cls": "warn",
+                    "text": "updated 15m ago"
+                  }
+                ],
+                "term": "#/sessions?s=s3"
+              },
+              {
+                "ref": "T4",
+                "title": "Task 4",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "quiet",
+                    "text": "Starting"
+                  }
+                ],
+                "term": null
+              },
+              {
+                "ref": "T5",
+                "title": "Task 5",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": "30m",
+                "facts": [
+                  {
+                    "cls": "warn",
+                    "text": "Asked you something"
+                  },
+                  {
+                    "cls": "term",
+                    "text": "T5 Copy"
+                  },
+                  {
+                    "cls": "quiet",
+                    "text": "asked 3m ago"
+                  }
+                ],
+                "term": "#/sessions?s=s5"
+              }
+            ]
+          },
+          {
+            "kind": "wave",
+            "state": "waiting",
+            "open": false,
+            "n": "Wave 3",
+            "name": "Polish",
+            "count": [],
+            "stop": true,
+            "gate": null,
+            "tasks": []
+          },
+          {
+            "kind": "post",
+            "state": "loose",
+            "open": true,
+            "n": null,
+            "name": "Post",
+            "count": [],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T8",
+                "title": "Task 8",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "warn",
+                    "text": "Waits for wave 2"
+                  }
+                ],
+                "term": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves running (all open)",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T13:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Model",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T13:40:00.000Z",
+              "started_at": null,
+              "who": "T2 Form",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 31,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "review",
+                  "label": "Awaiting review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 3,
+              "ref": "T3",
+              "title": "Task 3",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:45:00.000Z",
+              "started_at": "2026-10-07T13:55:00.000Z",
+              "who": "T3 Wire",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": {
+                "key": "PROJ-3",
+                "status": "In Progress",
+                "url": "https://acme.atlassian.net/browse/PROJ-3"
+              },
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2,
+              "session_id": "s3"
+            },
+            {
+              "id": 4,
+              "ref": "T4",
+              "title": "Task 4",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": true,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2
+            },
+            {
+              "id": 5,
+              "ref": "T5",
+              "title": "Task 5",
+              "project": "webapp",
+              "status": "needs",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": "Which wording?",
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:57:00.000Z",
+              "started_at": "2026-10-07T14:30:00.000Z",
+              "who": "T5 Copy",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2,
+              "session_id": "s5"
+            },
+            {
+              "id": 6,
+              "ref": "T6",
+              "title": "Task 6",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for wave 2",
+              "blocked": false,
+              "wave": 3
+            },
+            {
+              "id": 7,
+              "ref": "T7",
+              "title": "Task 7",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "high",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 3,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            },
+            {
+              "id": 8,
+              "ref": "T8",
+              "title": "Task 8",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for wave 2",
+              "blocked": true
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "Basics",
+              "stop_after": true,
+              "released_at": "2026-10-07T14:20:00.000Z",
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 2,
+              "done": 2,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            },
+            {
+              "wave": 2,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "running",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 3,
+              "done": 0,
+              "failed": [],
+              "active": 3,
+              "starting": 1,
+              "planned": 0
+            },
+            {
+              "wave": 3,
+              "name": "Polish",
+              "stop_after": true,
+              "released_at": null,
+              "passed": false,
+              "state": "waiting",
+              "blocked": true,
+              "held_by": "running",
+              "hold": "Waits for wave 2",
+              "tasks": [],
+              "total": 2,
+              "done": 0,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 1
+            }
+          ]
+        },
+        "open": true
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": true,
+            "n": "Wave 1",
+            "name": "Basics",
+            "count": [
+              {
+                "cls": "st-review",
+                "text": "Awaiting review"
+              },
+              {
+                "cls": "st-done",
+                "text": "Done"
+              }
+            ],
+            "stop": false,
+            "gate": {
+              "cls": "ok",
+              "text": "You let the goal go on at 2:20 PM.",
+              "button": null
+            },
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              },
+              {
+                "ref": "T2",
+                "title": "Task 2",
+                "planned": false,
+                "jira": null,
+                "pr": "#31 Awaiting review",
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "wave",
+            "state": "running",
+            "open": true,
+            "n": "Wave 2",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-working",
+                "text": "Running ×2"
+              },
+              {
+                "cls": "st-queued",
+                "text": "Starting"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T3",
+                "title": "Task 3",
+                "planned": false,
+                "jira": "https://acme.atlassian.net/browse/PROJ-3",
+                "pr": null,
+                "when": "1h 5m",
+                "facts": [
+                  {
+                    "cls": "term",
+                    "text": "T3 Wire"
+                  },
+                  {
+                    "cls": "warn",
+                    "text": "updated 15m ago"
+                  }
+                ],
+                "term": "#/sessions?s=s3"
+              },
+              {
+                "ref": "T4",
+                "title": "Task 4",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "quiet",
+                    "text": "Starting"
+                  }
+                ],
+                "term": null
+              },
+              {
+                "ref": "T5",
+                "title": "Task 5",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": "30m",
+                "facts": [
+                  {
+                    "cls": "warn",
+                    "text": "Asked you something"
+                  },
+                  {
+                    "cls": "term",
+                    "text": "T5 Copy"
+                  },
+                  {
+                    "cls": "quiet",
+                    "text": "asked 3m ago"
+                  }
+                ],
+                "term": "#/sessions?s=s5"
+              }
+            ]
+          },
+          {
+            "kind": "wave",
+            "state": "waiting",
+            "open": true,
+            "n": "Wave 3",
+            "name": "Polish",
+            "count": [],
+            "stop": true,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T6",
+                "title": "Task 6",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              },
+              {
+                "ref": "T7",
+                "title": "Task 7",
+                "planned": true,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "warn",
+                    "text": "High priority"
+                  },
+                  {
+                    "cls": "quiet",
+                    "text": "Also for G2"
+                  }
+                ],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "post",
+            "state": "loose",
+            "open": true,
+            "n": null,
+            "name": "Post",
+            "count": [],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T8",
+                "title": "Task 8",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "warn",
+                    "text": "Waits for wave 2"
+                  }
+                ],
+                "term": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves stopped",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Stopped for your review after wave 1 (Basics)",
+              "blocked": false,
+              "wave": 2
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "Basics",
+              "stop_after": true,
+              "released_at": null,
+              "passed": false,
+              "state": "stopped",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            },
+            {
+              "wave": 2,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "waiting",
+              "blocked": true,
+              "held_by": "stopped",
+              "hold": "Stopped for your review after wave 1 (Basics)",
+              "tasks": [],
+              "total": 1,
+              "done": 0,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ]
+        },
+        "open": false
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "stopped",
+            "open": true,
+            "n": "Wave 1",
+            "name": "Basics",
+            "count": [
+              {
+                "cls": "st-needs",
+                "text": "Waiting for your review"
+              }
+            ],
+            "stop": false,
+            "gate": {
+              "cls": "ask",
+              "text": "Stop point. Wave 1 · Basics is done. Look it over, then let wave 2 start.",
+              "button": {
+                "act": "wave-continue",
+                "label": "Continue to wave 2"
+              }
+            },
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "wave",
+            "state": "waiting",
+            "open": false,
+            "n": "Wave 2",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-needs",
+                "text": "Stopped for your review"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves stopped (all open)",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Stopped for your review after wave 1 (Basics)",
+              "blocked": false,
+              "wave": 2
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "Basics",
+              "stop_after": true,
+              "released_at": null,
+              "passed": false,
+              "state": "stopped",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            },
+            {
+              "wave": 2,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "waiting",
+              "blocked": true,
+              "held_by": "stopped",
+              "hold": "Stopped for your review after wave 1 (Basics)",
+              "tasks": [],
+              "total": 1,
+              "done": 0,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ]
+        },
+        "open": true
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "stopped",
+            "open": true,
+            "n": "Wave 1",
+            "name": "Basics",
+            "count": [
+              {
+                "cls": "st-needs",
+                "text": "Waiting for your review"
+              }
+            ],
+            "stop": false,
+            "gate": {
+              "cls": "ask",
+              "text": "Stop point. Wave 1 · Basics is done. Look it over, then let wave 2 start.",
+              "button": {
+                "act": "wave-continue",
+                "label": "Continue to wave 2"
+              }
+            },
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "wave",
+            "state": "waiting",
+            "open": true,
+            "n": "Wave 2",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-needs",
+                "text": "Stopped for your review"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T2",
+                "title": "Task 2",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves failed",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": true,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:40:00.000Z",
+              "started_at": null,
+              "who": "T1 Model",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "failed",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 2,
+              "done": 2,
+              "failed": [
+                "T1"
+              ],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ]
+        },
+        "open": false
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "failed",
+            "open": true,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-failed",
+                "text": "A task failed"
+              }
+            ],
+            "stop": false,
+            "gate": {
+              "cls": "bad",
+              "text": "T1 failed. The rest of the goal waits. Try the task again from its ⋯ menu, or go on without it.",
+              "button": {
+                "act": "wave-continue",
+                "label": "Continue anyway"
+              }
+            },
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "bad",
+                    "text": "Failed"
+                  }
+                ],
+                "term": null
+              },
+              {
+                "ref": "T2",
+                "title": "Task 2",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves failed (all open)",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": true,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:40:00.000Z",
+              "started_at": null,
+              "who": "T1 Model",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "failed",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 2,
+              "done": 2,
+              "failed": [
+                "T1"
+              ],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ]
+        },
+        "open": true
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "failed",
+            "open": true,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-failed",
+                "text": "A task failed"
+              }
+            ],
+            "stop": false,
+            "gate": {
+              "cls": "bad",
+              "text": "T1 failed. The rest of the goal waits. Try the task again from its ⋯ menu, or go on without it.",
+              "button": {
+                "act": "wave-continue",
+                "label": "Continue anyway"
+              }
+            },
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [
+                  {
+                    "cls": "bad",
+                    "text": "Failed"
+                  }
+                ],
+                "term": null
+              },
+              {
+                "ref": "T2",
+                "title": "Task 2",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves with shared",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:58:00.000Z",
+              "started_at": "2026-10-07T14:50:00.000Z",
+              "who": "T21 Client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "session_id": "s21"
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "open": false
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": false,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-done",
+                "text": "Done"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": []
+          },
+          {
+            "kind": "ref",
+            "done": true,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": false,
+            "line": "var(--up)",
+            "task": {
+              "ref": "T20",
+              "title": "Task 20",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "ref",
+            "done": false,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": true,
+            "line": "var(--goal-line)",
+            "task": {
+              "ref": "T21",
+              "title": "Task 21",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": "10m",
+              "facts": [
+                {
+                  "cls": "term",
+                  "text": "T21 Client"
+                }
+              ],
+              "term": "#/sessions?s=s21"
+            }
+          },
+          {
+            "kind": "ref",
+            "done": false,
+            "badge": "G?",
+            "badge_link": null,
+            "dashed": true,
+            "line": "var(--goal-line)",
+            "task": {
+              "ref": "T22",
+              "title": "Task 22",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "finish",
+            "done": false,
+            "text": "Goal finishes when G3’s and another goal’s tasks land"
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves with shared (all open)",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:58:00.000Z",
+              "started_at": "2026-10-07T14:50:00.000Z",
+              "who": "T21 Client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "session_id": "s21"
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "open": true
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": true,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-done",
+                "text": "Done"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "ref",
+            "done": true,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": false,
+            "line": "var(--up)",
+            "task": {
+              "ref": "T20",
+              "title": "Task 20",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "ref",
+            "done": false,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": true,
+            "line": "var(--goal-line)",
+            "task": {
+              "ref": "T21",
+              "title": "Task 21",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": "10m",
+              "facts": [
+                {
+                  "cls": "term",
+                  "text": "T21 Client"
+                }
+              ],
+              "term": "#/sessions?s=s21"
+            }
+          },
+          {
+            "kind": "ref",
+            "done": false,
+            "badge": "G?",
+            "badge_link": null,
+            "dashed": true,
+            "line": "var(--goal-line)",
+            "task": {
+              "ref": "T22",
+              "title": "Task 22",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "finish",
+            "done": false,
+            "text": "Goal finishes when G3’s and another goal’s tasks land"
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves shared landed, PR open",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 30,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": null
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "prs_open": [
+            30
+          ],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "open": false
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": false,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-working",
+                "text": "Awaiting merge"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": []
+          },
+          {
+            "kind": "ref",
+            "done": true,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": false,
+            "line": "var(--up)",
+            "task": {
+              "ref": "T20",
+              "title": "Task 20",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "finish",
+            "done": false,
+            "text": "Goal finishes when its PR merges"
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves shared landed, PR open (all open)",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 30,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": null
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "prs_open": [
+            30
+          ],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "open": true
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": true,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-working",
+                "text": "Awaiting merge"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": "#30",
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "ref",
+            "done": true,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": false,
+            "line": "var(--up)",
+            "task": {
+              "ref": "T20",
+              "title": "Task 20",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "finish",
+            "done": false,
+            "text": "Goal finishes when its PR merges"
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves finished",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "finished_at": "2026-10-07T14:55:00.000Z",
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "open": false
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": false,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-done",
+                "text": "Done"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": []
+          },
+          {
+            "kind": "ref",
+            "done": true,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": false,
+            "line": "var(--up)",
+            "task": {
+              "ref": "T20",
+              "title": "Task 20",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "finish",
+            "done": true,
+            "text": "Goal finished"
+          }
+        ]
+      }
+    },
+    {
+      "name": "waveRail waves finished (all open)",
+      "input": {
+        "fn": "waveRail",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "finished_at": "2026-10-07T14:55:00.000Z",
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        },
+        "open": true
+      },
+      "expect": {
+        "rail": true,
+        "shared_list": false,
+        "items": [
+          {
+            "kind": "wave",
+            "state": "done",
+            "open": true,
+            "n": "Wave 1",
+            "name": null,
+            "count": [
+              {
+                "cls": "st-done",
+                "text": "Done"
+              }
+            ],
+            "stop": false,
+            "gate": null,
+            "tasks": [
+              {
+                "ref": "T1",
+                "title": "Task 1",
+                "planned": false,
+                "jira": null,
+                "pr": null,
+                "when": null,
+                "facts": [],
+                "term": null
+              }
+            ]
+          },
+          {
+            "kind": "ref",
+            "done": true,
+            "badge": "G3",
+            "badge_link": "#/goals/G3",
+            "dashed": false,
+            "line": "var(--up)",
+            "task": {
+              "ref": "T20",
+              "title": "Task 20",
+              "planned": false,
+              "jira": null,
+              "pr": null,
+              "when": null,
+              "facts": [],
+              "term": null
+            }
+          },
+          {
+            "kind": "finish",
+            "done": true,
+            "text": "Goal finished"
+          }
+        ]
+      }
+    },
+    {
+      "name": "goalState waves running",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T13:30:00.000Z",
+              "started_at": null,
+              "who": "T1 Model",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T13:40:00.000Z",
+              "started_at": null,
+              "who": "T2 Form",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 31,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": {
+                  "phase": "review",
+                  "label": "Awaiting review"
+                }
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 3,
+              "ref": "T3",
+              "title": "Task 3",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:45:00.000Z",
+              "started_at": "2026-10-07T13:55:00.000Z",
+              "who": "T3 Wire",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": {
+                "key": "PROJ-3",
+                "status": "In Progress",
+                "url": "https://acme.atlassian.net/browse/PROJ-3"
+              },
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2,
+              "session_id": "s3"
+            },
+            {
+              "id": 4,
+              "ref": "T4",
+              "title": "Task 4",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": true,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2
+            },
+            {
+              "id": 5,
+              "ref": "T5",
+              "title": "Task 5",
+              "project": "webapp",
+              "status": "needs",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": "Which wording?",
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:57:00.000Z",
+              "started_at": "2026-10-07T14:30:00.000Z",
+              "who": "T5 Copy",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 2,
+              "session_id": "s5"
+            },
+            {
+              "id": 6,
+              "ref": "T6",
+              "title": "Task 6",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for wave 2",
+              "blocked": false,
+              "wave": 3
+            },
+            {
+              "id": 7,
+              "ref": "T7",
+              "title": "Task 7",
+              "project": "webapp",
+              "status": "planned",
+              "priority": "high",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 3,
+              "also": [
+                {
+                  "id": 2,
+                  "ref": "G2",
+                  "name": "Sign-up"
+                }
+              ]
+            },
+            {
+              "id": 8,
+              "ref": "T8",
+              "title": "Task 8",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Waits for wave 2",
+              "blocked": true
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "Basics",
+              "stop_after": true,
+              "released_at": "2026-10-07T14:20:00.000Z",
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 2,
+              "done": 2,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            },
+            {
+              "wave": 2,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "running",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 3,
+              "done": 0,
+              "failed": [],
+              "active": 3,
+              "starting": 1,
+              "planned": 0
+            },
+            {
+              "wave": 3,
+              "name": "Polish",
+              "stop_after": true,
+              "released_at": null,
+              "passed": false,
+              "state": "waiting",
+              "blocked": true,
+              "held_by": "running",
+              "hold": "Waits for wave 2",
+              "tasks": [],
+              "total": 2,
+              "done": 0,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 1
+            }
+          ]
+        }
+      },
+      "expect": "Waiting on you"
+    },
+    {
+      "name": "goalState waves stopped",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": "Stopped for your review after wave 1 (Basics)",
+              "blocked": false,
+              "wave": 2
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "Basics",
+              "stop_after": true,
+              "released_at": null,
+              "passed": false,
+              "state": "stopped",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            },
+            {
+              "wave": 2,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "waiting",
+              "blocked": true,
+              "held_by": "stopped",
+              "hold": "Stopped for your review after wave 1 (Basics)",
+              "tasks": [],
+              "total": 1,
+              "done": 0,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ]
+        }
+      },
+      "expect": "Queued"
+    },
+    {
+      "name": "goalState waves failed",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": true,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:40:00.000Z",
+              "started_at": null,
+              "who": "T1 Model",
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            },
+            {
+              "id": 2,
+              "ref": "T2",
+              "title": "Task 2",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": false,
+              "state": "failed",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 2,
+              "done": 2,
+              "failed": [
+                "T1"
+              ],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ]
+        }
+      },
+      "expect": "Done"
+    },
+    {
+      "name": "goalState waves with shared",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            },
+            {
+              "id": 21,
+              "ref": "T21",
+              "title": "Task 21",
+              "project": "webapp",
+              "status": "working",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:58:00.000Z",
+              "started_at": "2026-10-07T14:50:00.000Z",
+              "who": "T21 Client",
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "session_id": "s21"
+            },
+            {
+              "id": 22,
+              "ref": "T22",
+              "title": "Task 22",
+              "project": "webapp",
+              "status": "queued",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": null,
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": "In progress"
+    },
+    {
+      "name": "goalState waves shared landed, PR open",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": {
+                "repo": "webapp",
+                "num": 30,
+                "url": "https://x/30",
+                "title": null,
+                "state": "OPEN",
+                "checks": "pass",
+                "review": "approved",
+                "stage": null
+              },
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "prs_open": [
+            30
+          ],
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": "Awaiting merge"
+    },
+    {
+      "name": "goalState waves finished",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false,
+              "wave": 1
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "finished_at": "2026-10-07T14:55:00.000Z",
+          "waves": [
+            {
+              "wave": 1,
+              "name": "",
+              "stop_after": false,
+              "released_at": null,
+              "passed": true,
+              "state": "done",
+              "blocked": false,
+              "held_by": null,
+              "hold": null,
+              "tasks": [],
+              "total": 1,
+              "done": 1,
+              "failed": [],
+              "active": 0,
+              "starting": 0,
+              "planned": 0
+            }
+          ],
+          "shared": [
+            {
+              "id": 20,
+              "ref": "T20",
+              "title": "Task 20",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 3,
+                "ref": "G3",
+                "name": "Auth client"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ]
+        }
+      },
+      "expect": "Done"
+    },
+    {
       "name": "runButtons no tasks / open",
       "input": {
         "fn": "runButtons",

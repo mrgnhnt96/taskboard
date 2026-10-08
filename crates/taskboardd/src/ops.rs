@@ -64,6 +64,20 @@ pub fn origin(o: Option<&Value>, who: &str) -> Value {
     out
 }
 
+/// A task's wave: a number from 1, or none.
+pub fn wave_of(v: &Value) -> Result<Option<i64>> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("none") => Ok(None),
+        _ => v
+            .as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            .filter(|n| *n >= 1)
+            .map(Some)
+            .ok_or_else(|| ApiError::new(400, "A wave is a number from 1, or none.")),
+    }
+}
+
 pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> Result<Value> {
     let title = clip(&body_str(body, "title"), 300);
     if title.is_empty() {
@@ -114,6 +128,13 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "origin" => jdumps(&origin(body.get("origin"), who)),
                 "latest" => if latest.is_empty() { None } else { Some(latest) }],
     )?;
+    if let Some(w) = body.get("wave").filter(|w| !w.is_null()) {
+        let w = wave_of(w)?;
+        if goal_id.is_none() && w.is_some() {
+            return err(400, "Only a task in a goal has a wave.");
+        }
+        board::update_task(app, tid, fields!["wave" => w])?;
+    }
     if body_has(body, "waits_for") {
         let t = board::get_task(app, tid)?;
         let wf = waitsfor::clean(app, &body["waits_for"], Some(&t))?;
@@ -263,6 +284,8 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
     for b in app.db.q("SELECT * FROM issues WHERE goal_id = ? AND state != 'drop' ORDER BY created_at DESC, id DESC", p![id])? {
         backlog.push(board::issue_dict(app, &b)?);
     }
+    let rows = board::goal_tasks(app, id)?;
+    let waves = if crate::waves::uses_waves(&rows) { crate::waves::waves(app, &g, &rows)? } else { vec![] };
     let mut shared_cards = vec![];
     for t in shared::tasks_for(app, id)? {
         shared_cards.push(board::task_card(app, &t)?);
@@ -272,6 +295,7 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
         json!({
             "tasks": tasks,
             "shared": shared_cards,
+            "waves": waves,
             "qa": crate::qa::for_goal(app, id)?,
             "notes": board::goal_notes(app, id)?.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
             "backlog": backlog,

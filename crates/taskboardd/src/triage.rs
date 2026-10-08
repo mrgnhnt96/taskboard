@@ -528,13 +528,6 @@ pub fn last_wave(app: &App, goal_id: i64) -> Result<Option<i64>> {
     Ok(app.db.val("SELECT MAX(wave) FROM tasks WHERE goal_id = ?", p![goal_id])?.as_i64())
 }
 
-/// Why a task waits for its wave: a task in an earlier wave of its goal isn't done.
-pub fn wave_blocker(app: &App, t: &Row) -> Result<Option<String>> {
-    let (Some(w), Some(g)) = (t.i("wave"), t.i("goal_id")) else { return Ok(None) };
-    let n = app.db.count("SELECT COUNT(*) FROM tasks WHERE goal_id = ? AND wave < ? AND status != 'done'", p![g, w])?;
-    Ok((n > 0).then(|| format!("Waits for wave {} to finish", w - 1)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

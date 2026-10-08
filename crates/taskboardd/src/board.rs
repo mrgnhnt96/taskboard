@@ -244,6 +244,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "who": t.v("session_name"), "session_id": t.v("session_id"),
         "goal": goal_ref(g.as_ref()),
         "also": crate::shared::goals_of(app, t.id())?,
+        "wave": t.v("wave"),
         "jira": jira_card(app, t)?,
         "pr": pr_card(t),
         "position": position,
@@ -479,6 +480,9 @@ pub fn goal_state_line(c: &Value) -> String {
 
 pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
     let c = goal_counts(app, g.id())?;
+    // A goal stopped at a wave for the owner (a review stop, or a failed task): one line.
+    let ts = goal_tasks(app, g.id())?;
+    let stopped = if crate::waves::uses_waves(&ts) { crate::waves::stopped_line(&crate::waves::waves(app, g, &ts)?) } else { None };
     let mut d = json!({
         "id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "outcome": g.v("outcome"),
         "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"),
@@ -491,6 +495,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),
         "state": goal_state_line(&c),
         "peek": goal_peek(app, g)?,
+        "stopped": stopped,
     });
     if let (Some(o), Some(c)) = (d.as_object_mut(), c.as_object()) {
         for (k, v) in c {

@@ -19,6 +19,8 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
+mod waves;
+
 const START_MENU: &str = "goal-start";
 const ATT_MENU: &str = "goal-att";
 const MAX_TERMINALS: [i64; 7] = [1, 2, 3, 4, 5, 6, 8];
@@ -35,6 +37,8 @@ pub struct State {
     pub backlog_view: bool,
     /// The QA tab (shown only while the goal has QA comments: Settings ▸ QA on).
     pub qa_view: bool,
+    /// Waves opened or closed by hand, by "G1:2" / "G1:none" (`S.waveOpen`).
+    pub wave_open: HashMap<String, bool>,
     /// QA comments whose "Their comment" is open.
     qa_open: HashSet<String>,
     /// Picked backlog refs, in the order picked (`P.sel`).
@@ -58,6 +62,7 @@ impl State {
         self.backlog_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "backlog");
         self.qa_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "qa");
         self.qa_open.clear();
+        self.wave_open.clear();
         self.sel.clear();
         self.anchor = None;
         self.kept.clear();
@@ -2042,10 +2047,14 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
         list
     };
     let mut out = div().flex().flex_col();
-    if !tasks.is_empty() {
+    // A goal with waves shows them as a rail; its shared tasks branch into the rail there.
+    let by_wave = !arr(g, "waves").is_empty();
+    if !tasks.is_empty() && by_wave {
+        out = out.child(waves::rail(m, t, g, cx));
+    } else if !tasks.is_empty() {
         out = out.child(rows(tasks.iter().enumerate().map(|(ix, task)| task_row_view(task, ix, tasks, g)).collect(), cx));
     }
-    if !shared.is_empty() {
+    if !shared.is_empty() && !by_wave {
         // `.h3.shared-h`: 18px above, 8px below.
         out = out
             .child(h3(t, 13., "From other goals").when(!tasks.is_empty(), |d| d.mt(px(18.))).mb(px(8.)))
@@ -3062,6 +3071,31 @@ mod tests {
                 "opensAt" => {
                     let (d, a) = opens_at(&i["hours"]);
                     json!([d, a])
+                }
+                "waveRail" => {
+                    let mut open = HashMap::new();
+                    if b(i, "open") {
+                        for w in arr(goal, "waves") {
+                            open.insert(format!("G1:{}", num_text(&w["wave"])), true);
+                        }
+                        open.insert("G1:none".to_string(), true);
+                    }
+                    let wt = |x: &waves::WTask| json!({"ref": x.r, "title": x.title, "planned": x.planned, "jira": x.jira.as_ref().map(|j| j.1.clone()),
+                        "pr": x.pr_text.as_ref().map(|p| format!("{p}{}", x.pr_label.as_ref().map(|l| format!(" {l}")).unwrap_or_default())),
+                        "when": x.when, "facts": x.facts.iter().map(|(c, t)| json!({"cls": c, "text": t})).collect::<Vec<_>>(),
+                        "term": x.term.as_ref().map(|s| format!("#/sessions?s={s}"))});
+                    let items: Vec<Value> = waves::rail_view(goal, &open).iter().map(|it| match it {
+                        waves::Item::Wave { wave, state, open, name, count, stop, gate, tasks } => json!({"kind": "wave", "state": state, "open": open,
+                            "n": format!("Wave {wave}"), "name": name, "count": count.iter().map(|(c, t)| json!({"cls": c, "text": t})).collect::<Vec<_>>(),
+                            "stop": stop, "gate": gate.as_ref().map(|g| json!({"cls": g.cls, "text": g.text, "button": g.button.as_ref().map(|(a, l)| json!({"act": a, "label": l}))})),
+                            "tasks": if *open { tasks.iter().map(wt).collect::<Vec<_>>() } else { vec![] }}),
+                        waves::Item::Post { open, tasks } => json!({"kind": "post", "state": "loose", "open": open, "n": null, "name": "Post", "count": [], "stop": false, "gate": null,
+                            "tasks": if *open { tasks.iter().map(wt).collect::<Vec<_>>() } else { vec![] }}),
+                        waves::Item::Ref { done, badge, home, landed, task } => json!({"kind": "ref", "done": done, "badge": badge, "badge_link": home.as_ref().map(|h| format!("#/goals/{h}")),
+                            "dashed": !landed, "line": if *landed { "var(--up)" } else { "var(--goal-line)" }, "task": wt(task)}),
+                        waves::Item::Finish { done, text } => json!({"kind": "finish", "done": done, "text": text}),
+                    }).collect();
+                    json!({"rail": !arr(goal, "tasks").is_empty() && !arr(goal, "waves").is_empty(), "shared_list": !arr(goal, "shared").is_empty() && arr(goal, "waves").is_empty(), "items": items})
                 }
                 "qaTab" => {
                     let items = tab_items(goal);

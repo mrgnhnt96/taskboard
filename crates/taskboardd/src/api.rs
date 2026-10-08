@@ -40,6 +40,10 @@ fn task_goal_match(app: &App, t: &Row, want: &str) -> Result<bool> {
     Ok(parse_ref_str(want, "goal")?.map(|g| shared::goal_ids(app, t.id()).map(|ids| ids.contains(&g))).transpose()?.unwrap_or(false))
 }
 
+fn wave_n(s: &str) -> Result<i64> {
+    s.parse::<i64>().ok().filter(|n| *n >= 0).ok_or_else(|| ApiError::new(404, "There's no such wave."))
+}
+
 fn tid(s: &str) -> Result<i64> {
     parse_ref_str(s, "task")?.ok_or_else(|| ApiError::new(404, "There's nothing at that address."))
 }
@@ -221,6 +225,28 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["goals", id, "notes", nid]) => goal_note_edit(app, gid(id)?, nid, body),
         ("POST", ["goals", id, "plan"]) => goal_plan(app, gid(id)?, body),
         ("POST", ["goals", id, "run"]) => run_goal(app, gid(id)?, body),
+        ("POST", ["goals", id, "waves", n]) => {
+            let (g, n) = (gid(id)?, wave_n(n)?);
+            app.db.tx(|| {
+                board::get_goal(app, g)?;
+                let mut f = vec![];
+                if body.get("name").is_some() {
+                    let name = one_line(&body_str(body, "name"), 80);
+                    f.push(("name", if name.is_empty() { Value::Null } else { json!(name) }));
+                }
+                if body.get("stop_after").is_some() {
+                    f.push(("stop_after", json!(as_bool(body.get("stop_after"), false) as i64)));
+                }
+                crate::waves::set_wave(app, g, n, f)
+            })?;
+            goal_detail(app, g)
+        }
+        ("POST", ["goals", id, "waves", n, "continue"]) => {
+            let (g, n) = (gid(id)?, wave_n(n)?);
+            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            app.db.tx(|| crate::waves::release(app, g, n, &who))?;
+            goal_detail(app, g)
+        }
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
         ("POST", ["attachments", id, "remove"]) => remove_attachment(app, id),
         ("GET", ["backlog"]) => list_backlog(app, query),
@@ -628,6 +654,18 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             f.push(("meta", json!(jdumps(&meta(body.get("meta"))?))));
             bump = true;
         }
+        let mut wave_changed = None;
+        if has_key("wave") {
+            let w = ops::wave_of(&body["wave"])?;
+            if w.is_some() && t.i("goal_id").is_none() && new_goal_id.flatten().is_none() {
+                return err(400, "Only a task in a goal has a wave.");
+            }
+            if w != t.i("wave") {
+                f.push(("wave", json!(w)));
+                wave_changed = Some(w);
+                bump = true;
+            }
+        }
         if has_key("auto_close") {
             f.push(("auto_close", json!(as_bool(body.get("auto_close"), true) as i64)));
         }
@@ -716,6 +754,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             board::log_event(app, id, OWNER, "status", &name)?;
         } else if edited {
             board::log_event(app, id, OWNER, "note", "Edited the task")?;
+        }
+        if let Some(w) = wave_changed {
+            board::log_event(app, id, OWNER, "note", &match w { Some(n) => format!("In wave {n}"), None => "In no wave".into() })?;
         }
         if let Some(wf) = waits_changed {
             let names: Vec<String> = jloads_arr(wf.as_deref()).iter().filter_map(|v| v.as_i64()).map(|n| rf("task", n)).collect();

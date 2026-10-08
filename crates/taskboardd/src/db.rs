@@ -104,6 +104,10 @@ CREATE INDEX IF NOT EXISTS attachments_goal ON attachments(goal_id);
 CREATE TABLE IF NOT EXISTS task_terminals(
   task_id INT NOT NULL, session_id TEXT NOT NULL, why TEXT, at TEXT, PRIMARY KEY(task_id, session_id));
 
+CREATE TABLE IF NOT EXISTS goal_waves(
+  goal_id INT NOT NULL, wave INT NOT NULL, name TEXT, stop_after INT DEFAULT 0, released_at TEXT,
+  PRIMARY KEY(goal_id, wave));
+
 CREATE TABLE IF NOT EXISTS task_goals(
   task_id INT NOT NULL, goal_id INT NOT NULL, at TEXT, PRIMARY KEY(task_id, goal_id));
 CREATE INDEX IF NOT EXISTS task_goals_goal ON task_goals(goal_id);

@@ -1055,12 +1055,16 @@ fn project_for(r: &Report, given: &str) -> Result<Option<String>> {
 fn planned(r: &Report, g: &Row, items: &Value) -> Result<Vec<String>> {
     let mut created = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
-        let (title, detail) = match &item {
+        // "title::detail" or "title::detail::2" (its wave); or {title, detail, wave}.
+        let (title, detail, wave) = match &item {
             Value::String(s) => {
                 let (a, b) = s.split_once("::").unwrap_or((s.as_str(), ""));
-                (a.to_string(), b.to_string())
+                match b.rsplit_once("::").filter(|(_, n)| n.trim().parse::<i64>().is_ok()) {
+                    Some((d, n)) => (a.to_string(), d.to_string(), json!(n.trim().parse::<i64>().unwrap_or(0))),
+                    None => (a.to_string(), b.to_string(), Value::Null),
+                }
             }
-            Value::Object(o) => (o.s("title").unwrap_or("").to_string(), o.s("detail").unwrap_or("").to_string()),
+            Value::Object(o) => (o.s("title").unwrap_or("").to_string(), o.s("detail").unwrap_or("").to_string(), o.get("wave").cloned().unwrap_or(Value::Null)),
             _ => continue,
         };
         let title = one_line(&title, 300);
@@ -1070,7 +1074,7 @@ fn planned(r: &Report, g: &Row, items: &Value) -> Result<Vec<String>> {
         let c = ops::new_task(
             r.app,
             &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
-                    "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"),
+                    "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
@@ -1112,7 +1116,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
-        let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also")}]);
+        let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave")}]);
         let created = planned(r, &g, &item)?;
         return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned"})));
     }

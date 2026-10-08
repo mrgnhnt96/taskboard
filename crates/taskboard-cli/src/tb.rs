@@ -290,6 +290,18 @@ enum GoalCmd {
         #[arg(long)]
         product: Option<String>,
     },
+    /// Name a wave, or stop the goal after it for the owner's review
+    Wave {
+        goal: String,
+        wave: i64,
+        #[arg(long)]
+        name: Option<String>,
+        /// Stop the goal after this wave for the owner's review
+        #[arg(long, value_parser = ["on", "off"])]
+        stop: Option<String>,
+    },
+    /// Let the goal go on past a wave it stopped at (a review stop or a failed task), when the owner says so
+    Continue { goal: String, wave: i64 },
     /// Delete a goal (only when the owner asks)
     Delete {
         goal: String,
@@ -314,6 +326,9 @@ enum TaskCmd {
         /// Its work also finishes this goal (counted there, run by --goal); repeat for more
         #[arg(long)]
         also: Vec<String>,
+        /// The goal's wave it runs in, side by side with the rest of that wave
+        #[arg(long)]
+        wave: Option<i64>,
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
@@ -337,6 +352,9 @@ enum TaskCmd {
         /// It no longer finishes this other goal
         #[arg(long = "not-also")]
         not_also: Vec<String>,
+        /// Its wave in its goal (a number), or none
+        #[arg(long)]
+        wave: Option<String>,
         #[arg(long, value_parser = ["normal", "high"])]
         priority: Option<String>,
         #[arg(long = "waits-for")]
@@ -566,6 +584,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
         for (i, t) in tasks.iter().enumerate() {
             let status = if t["failed"] == true { "failed".to_string() } else { t["status"].as_str().unwrap_or("").to_string() };
             let mut line = format!("  {}. {} [{status}] {}", i + 1, t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""));
+            if let Some(w) = t["wave"].as_i64() {
+                line += &format!(" · wave {w}");
+            }
             if let Some(also) = t["also"].as_array().filter(|a| !a.is_empty()) {
                 line += &format!(" · also for {}", also.iter().filter_map(|x| x["ref"].as_str()).collect::<Vec<_>>().join(", "));
             }
@@ -574,6 +595,20 @@ fn goal_lines(g: &Value) -> Vec<String> {
             }
             if let Some(u) = t["pr"]["url"].as_str() {
                 line += &format!(" ({u})");
+            }
+            lines.push(line);
+        }
+    }
+    if let Some(waves) = g["waves"].as_array().filter(|a| !a.is_empty()) {
+        lines.push("Waves:".into());
+        for w in waves {
+            let name = w["name"].as_str().filter(|n| !n.is_empty()).map(|n| format!(" · {n}")).unwrap_or_default();
+            let mut line = format!("  Wave {}{name} · {} · {}/{} done", w["wave"], w["state"].as_str().unwrap_or(""), w["done"], w["total"]);
+            if w["stop_after"] == true {
+                line += if w["released_at"].is_string() { " · stop point, let go on" } else { " · stop point" };
+            }
+            if let Some(h) = w["hold"].as_str() {
+                line += &format!(" · {h}");
             }
             lines.push(line);
         }
@@ -803,6 +838,28 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
                 Ok(0)
             }
+            GoalCmd::Wave { goal, wave, name, stop } => {
+                let g = goal_ref(&goal)?;
+                let mut b = json!({});
+                if let Some(n) = name {
+                    b["name"] = json!(n);
+                }
+                if let Some(s) = stop {
+                    b["stop_after"] = json!(s == "on");
+                }
+                if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    return Err("say what to change: tb goal wave G3 2 --name \"API\" or --stop on".into());
+                }
+                c.call("POST", &format!("/goals/{g}/waves/{wave}"), Some(b))?;
+                out(&format!("Changed wave {wave} of {g}."));
+                Ok(0)
+            }
+            GoalCmd::Continue { goal, wave } => {
+                let g = goal_ref(&goal)?;
+                c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
+                out(&format!("{g} goes on past wave {wave}."));
+                Ok(0)
+            }
             GoalCmd::Delete { goal, keep_tasks, delete_tasks, delete_backlog } => {
                 let g = goal_ref(&goal)?;
                 if keep_tasks == delete_tasks {
@@ -899,7 +956,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, project, planned, here } => {
+            TaskCmd::New { title, detail, goal, also, wave, project, planned, here } => {
+                if wave.is_some() && goal.is_none() {
+                    return Err("--wave needs --goal: waves are a goal's".into());
+                }
                 if here && (goal.is_some() || !also.is_empty()) {
                     return Err("--here makes a standalone task on this terminal; leave out --goal and --also".into());
                 }
@@ -915,6 +975,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if here {
                     body["here"] = json!(true);
                 }
+                if let Some(w) = wave {
+                    body["wave"] = json!(w);
+                }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) if here => {
@@ -929,7 +992,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, priority, waits_for, jira } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, jira } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -952,6 +1015,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = priority {
                     b["priority"] = json!(x);
+                }
+                if let Some(x) = wave {
+                    b["wave"] = if x.eq_ignore_ascii_case("none") { Value::Null } else { json!(x) };
                 }
                 if let Some(x) = waits_for {
                     b["waits_for"] = json!(x);
@@ -1303,6 +1369,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--detail", "y", "--here"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "qa", "task", "Q3", "--note", "do it", "--no-pr"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "qa", "waiting"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--stop", "on"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--wave", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());

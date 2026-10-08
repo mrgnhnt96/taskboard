@@ -489,7 +489,7 @@ fn the_plan_page_turns_picked_issues_into_a_goal_in_waves() {
         b.post(&format!("tasks/T{}/queue", x.id()), json!({}));
     }
     let later = b.task(tasks[1].id());
-    assert_eq!(runner::goal_blocker(&b.app, &later, &goal).unwrap().as_deref(), Some("Waits for wave 1 to finish"));
+    assert_eq!(runner::goal_blocker(&b.app, &later, &goal).unwrap().as_deref(), Some("Waits for wave 1"));
     assert_eq!(runner::goal_blocker(&b.app, &b.task(tasks[0].id()), &goal).unwrap(), None);
 
     // Into an existing goal: a planned task in its last wave. Then defer.

@@ -36,7 +36,7 @@ export function web() {
   ctx.globalThis = ctx;
   ctx.self = ctx;
   vm.createContext(ctx);
-  for (const f of ['app.js', 'pages.js', 'sessions.js']) {
+  for (const f of ['app.js', 'pages.js', 'waves.js', 'sessions.js']) {
     vm.runInContext(fs.readFileSync(path.join(here, 'web', f), 'utf8'), ctx, { filename: f });
   }
   // `run("expr")` evaluates in the page's scope (its `let`/`const` globals such as S are only

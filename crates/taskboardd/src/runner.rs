@@ -118,11 +118,15 @@ pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
     if g.b("paused") {
         return Ok(Some("Its goal is paused".into()));
     }
-    if let Some(why) = crate::triage::wave_blocker(app, t)? {
-        return Ok(Some(why));
-    }
     let tasks = board::goal_tasks(app, g.id())?;
-    if g.b("run_in_order") {
+    // Waves take the place of running in order.
+    let waved = crate::waves::uses_waves(&tasks);
+    if waved {
+        if let Some(why) = crate::waves::wave_block(app, t, g)? {
+            return Ok(Some(why));
+        }
+    }
+    if g.b("run_in_order") && !waved {
         for x in &tasks {
             if x.id() == t.id() {
                 break;

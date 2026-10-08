@@ -23,6 +23,16 @@ If the owner's board has products configured, give the goal one: `--product <nam
 - A task that changes no code (an investigation, a measurement): say in its detail that the agent attaches its write-up or numbers with `tb attach <link> --kind results`.
 - A task that builds or changes UI from a design gets the design attached: `tb attach <url-or-path> --kind design --task T<n>` (or `--goal G<n>` for every task).
 
+## Waves
+
+A goal with no waves runs its tasks one after another (or in any order). When tasks can run at the same time without touching the same files, put them in one wave: a wave's tasks run side by side, up to the goal's terminal limit, and the next wave waits until every task in it is done and none failed.
+
+- A new task's wave: `tb task new "<title>" --goal G<n> --wave 2`, or `--task "title::what to do::2"` on `tb propose` and `tb goal new`.
+- An existing task: `tb task set T<n> --wave 3` (`--wave none` takes it out; tasks with no wave run after the waves, in the group called Post).
+- Name a wave: `tb goal wave G<n> 2 --name "API"`.
+- Stop the goal after a wave for the owner's review: `tb goal wave G<n> 2 --stop on`, only when the owner asks. The goal page then shows "Continue to wave 3"; `tb goal continue G<n> 2` does the same when the owner says so, and also goes on past a wave whose task failed.
+- `tb goal show G<n>` shows each task's wave and the waves' states.
+
 ## Work that also finishes another goal
 
 Before you add a task, check the project's other open goals (`tb goals --project <name>`, then `tb goal show G<n>`) for work that overlaps: the same files, the same change. When one task's PR finishes both, keep it one task and reference the other goal; never add a second task for the same work, and don't wait on the owner to decide.

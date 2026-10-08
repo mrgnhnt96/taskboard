@@ -33,6 +33,7 @@ pub mod triage;
 pub mod usage;
 pub mod util;
 pub mod waitsfor;
+pub mod waves;
 
 
 use std::sync::Arc;

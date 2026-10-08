@@ -55,10 +55,47 @@ pub fn seed(app: &App) -> Result<()> {
                     "snapshot" => jdumps(&json!({"task": "T1 · Add the WebAuthn registration endpoint", "branch": "feature/passkeys"})),
                     "created_at" => now, "updated_at" => now],
         )?;
+        seed_waves(app, t2)?;
         seed_today(app, &[(t1, "done"), (t2, "working"), (t3, "needs")])?;
         seed_history(app)?;
         Ok(())
     })
+}
+
+/// A goal planned in waves: a review stop it was let past, a wave running, one waiting, a task with
+/// no wave, and a task of the passkeys goal that also finishes this one.
+fn seed_waves(app: &App, shared: i64) -> Result<()> {
+    let g = ops::new_goal(
+        app,
+        &json!({"name": "Faster sign-in", "project": "webapp", "outcome": "sign-in takes under a second", "tldr": "Cut sign-in latency.",
+                "max_terminals": 3, "run_in_order": false}),
+    )?;
+    let gid = g["id"].as_i64().unwrap_or(0);
+    let mk = |title: &str, wave: Option<i64>, status: &str| -> Result<i64> {
+        let c = ops::new_task(
+            app,
+            &json!({"title": title, "detail": "Sample work.", "project": "webapp", "goal_id": gid, "wave": wave, "status": "queued", "pickup": {"mode": "queue"}}),
+            board::OWNER,
+            None,
+        )?;
+        let id = c["id"].as_i64().unwrap_or(0);
+        if status != "queued" {
+            board::update_task(app, id, fields!["status" => status, "started_at" => iso(now_ts() - 3900.0)])?;
+        }
+        Ok(id)
+    };
+    for t in [mk("Measure the sign-in path", Some(1), "done")?, mk("Cache the user lookup", Some(1), "done")?] {
+        board::update_task(app, t, fields!["finished_at" => iso(now_ts() - 5400.0), "summary" => "Done."])?;
+    }
+    crate::waves::set_wave(app, gid, 1, fields!["name" => "Measure", "stop_after" => 1, "released_at" => iso(now_ts() - 3600.0)])?;
+    let w = mk("Batch the session writes", Some(2), "working")?;
+    board::update_task(app, w, fields!["session_name" => "T Batch writes", "updated_at" => iso(now_ts() - 120.0)])?;
+    mk("Drop the extra redirect", Some(2), "queued")?;
+    crate::waves::set_wave(app, gid, 3, fields!["name" => "Check", "stop_after" => 1])?;
+    mk("Re-measure and compare", Some(3), "queued")?;
+    mk("Write up the numbers", None, "planned")?;
+    crate::shared::add(app, &board::get_task(app, shared)?, &[gid], board::OWNER)?;
+    Ok(())
 }
 
 /// Today's sample tasks started a few hours ago, not the second the board was seeded.

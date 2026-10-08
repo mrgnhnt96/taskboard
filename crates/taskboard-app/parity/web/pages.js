@@ -282,9 +282,10 @@ function goalTasks(g) {
       <button type="button" class="main" data-act="open-task" data-id="${esc(r)}" title="Counts toward this goal; ${esc(t.goal ? t.goal.ref : 'its own goal')} runs it"><span class="l1"><span class="chip st-${k}">${STATUS[k]}</span>${prMark(t)}<b>${esc(t.title)}</b></span><span class="m">${esc(home)}</span></button></li>`;
   };
   const shared = g.shared || [];
+  const byWave = goalWaves(g).length > 0;
   const max = Number(g.max_terminals) || 2;
-  return `${gateBanner(g)}${tasks.length ? `<ol class="rows trows">${tasks.map(rowHtml).join('')}</ol>` : shared.length ? '' : '<p class="empty-box">No tasks in this goal yet. Add one, or let Claude plan them.</p>'}
-    ${shared.length ? `<h3 class="h3 shared-h">From other goals</h3><ol class="rows trows">${shared.map(sharedRow).join('')}</ol>` : ''}
+  return `${gateBanner(g)}${!tasks.length ? '' : byWave ? waveRail(g) : `<ol class="rows trows">${tasks.map(rowHtml).join('')}</ol>`}${tasks.length || shared.length ? '' : '<p class="empty-box">No tasks in this goal yet. Add one, or let Claude plan them.</p>'}
+    ${shared.length && !byWave ? `<h3 class="h3 shared-h">From other goals</h3><ol class="rows trows">${shared.map(sharedRow).join('')}</ol>` : ''}
     <div class="card-box"><h3 class="h3">How this goal runs</h3>
       <div class="row" style="gap:10px"><label for="max-terms" style="font-size:14px">At most</label>
         <select id="max-terms" class="select sm" data-change="goal-set" data-field="max_terminals" data-id="${esc(gr)}" data-grp="gset:${esc(gr)}">${[1, 2, 3, 4, 5, 6, 8].map(n => opt(n, plural(n, 'terminal'), max)).join('')}</select>

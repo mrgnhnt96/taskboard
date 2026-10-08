@@ -164,6 +164,7 @@ A goal with `finished_at` (or all tasks done and no open PRs) shows as finished;
 {
   "tasks": [task_card],             // every task in the goal including planned, in goal order (position, then id)
   "qa": [qa_comment],               // QA comments on the goal's tickets that need or needed something, waiting ones first; [] while QA is off
+  "waves": [wave],                  // [] when no task has a wave; see below
   "shared": [task_card],            // tasks from other goals that also finish this one (`tb task set T<n> --also G<n>`); they count in the totals
   "notes": [{"id": int, "kind": "finding"|"decision"|"reference", "text": str, "source": str|null, "pinned": bool, "at": iso}],
                                     // source: "you", a task ref like "T4", or free text; shown as the note's byline
@@ -552,3 +553,21 @@ Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
 | `GET /qa-comments` | `?limit&waiting=1` | `{on, comments: [qa_comment]}`, newest first. |
 | `GET /qa-comments/:id` | | One `qa_comment`. |
 | `POST /qa-comments/:id` | `{action: "task"\|"ignore", note?, pr?, who?}` | The owner's word on a flag (`tb qa task Q3`). Answers the comment plus `started: "T9"\|null`. |
+
+## Waves
+
+A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every wave before it has passed.
+`wave`:
+```
+{"wave": int, "name": str, "stop_after": bool, "released_at": iso|null, "passed": bool,
+ "state": "done"|"stopped"|"failed"|"running"|"ready"|"waiting",   // stopped: done, waiting for your review
+ "blocked": bool, "held_by": state|null, "hold": str|null,           // the earlier wave that holds it, and why
+ "tasks": ["T3"], "total": int, "done": int, "failed": ["T4"], "active": int, "starting": int, "planned": int}
+```
+`goal_summary.stopped` is a one-line note while the goal waits at a wave for you. Task cards carry `wave: int|null`.
+
+| Request | Body | What |
+|---|---|---|
+| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave or make it a review stop (`tb goal wave`). Answers the goal detail. |
+| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task. Answers the goal detail. |
+| `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |

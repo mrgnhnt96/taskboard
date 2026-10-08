@@ -153,6 +153,95 @@ for (const n of ['qa waiting', 'qa handled']) {
 }
 w.set('S.route', { page: 'goal', id: 'G1', q: {} });
 
+// ---------------------------------------------------------------- the wave rail (waves.js)
+const W = (wave, o) => ({ wave, name: '', stop_after: false, released_at: null, passed: false, state: 'waiting', blocked: false, held_by: null, hold: null,
+  tasks: [], total: 0, done: 0, failed: [], active: 0, starting: 0, planned: 0, ...o });
+const g3 = { id: 3, ref: 'G3', name: 'Auth client' };
+const WAVE_GOALS = {
+  'waves running': G({
+    tasks: [
+      T(1, { status: 'done', wave: 1, who: 'T1 Model', when: at(90) }),
+      T(2, { status: 'done', wave: 1, who: 'T2 Form', when: at(80), pr: openPr({ num: 31, stage: { phase: 'review', label: 'Awaiting review' } }) }),
+      T(3, { status: 'working', wave: 2, who: 'T3 Wire', session_id: 's3', started_at: at(65), when: at(15), jira: { key: 'PROJ-3', status: 'In Progress', url: 'https://acme.atlassian.net/browse/PROJ-3' } }),
+      T(4, { status: 'queued', wave: 2, starting: true }),
+      T(5, { status: 'needs', wave: 2, who: 'T5 Copy', session_id: 's5', question: 'Which wording?', started_at: at(30), when: at(3) }),
+      T(6, { status: 'queued', wave: 3, waiting: 'Waits for wave 2' }),
+      T(7, { status: 'planned', wave: 3, priority: 'high', also: [{ id: 2, ref: 'G2', name: 'Sign-up' }] }),
+      T(8, { status: 'queued', waiting: 'Waits for wave 2', blocked: true }),
+    ],
+    waves: [W(1, { name: 'Basics', state: 'done', stop_after: true, released_at: at(40), passed: true, total: 2, done: 2 }),
+      W(2, { state: 'running', total: 3, active: 3, starting: 1 }),
+      W(3, { name: 'Polish', state: 'waiting', blocked: true, held_by: 'running', hold: 'Waits for wave 2', stop_after: true, total: 2, planned: 1 })],
+  }),
+  'waves stopped': G({
+    tasks: [T(1, { status: 'done', wave: 1 }), T(2, { status: 'queued', wave: 2, waiting: 'Stopped for your review after wave 1 (Basics)' })],
+    waves: [W(1, { name: 'Basics', state: 'stopped', stop_after: true, total: 1, done: 1 }),
+      W(2, { state: 'waiting', blocked: true, held_by: 'stopped', hold: 'Stopped for your review after wave 1 (Basics)', total: 1 })],
+  }),
+  'waves failed': G({
+    tasks: [T(1, { status: 'done', wave: 1, failed: true, who: 'T1 Model', when: at(20) }), T(2, { status: 'done', wave: 1 })],
+    waves: [W(1, { state: 'failed', total: 2, done: 2, failed: ['T1'] })],
+  }),
+  'waves with shared': G({
+    tasks: [T(1, { status: 'done', wave: 1 })],
+    waves: [W(1, { state: 'done', passed: true, total: 1, done: 1 })],
+    shared: [T(20, { status: 'done', goal: g3 }), T(21, { status: 'working', who: 'T21 Client', session_id: 's21', started_at: at(10), when: at(2), goal: g3 }), T(22, { status: 'queued', goal: null })],
+  }),
+  'waves shared landed, PR open': G({
+    tasks: [T(1, { status: 'done', wave: 1, pr: openPr() })], prs_open: [30],
+    waves: [W(1, { state: 'done', passed: true, total: 1, done: 1 })],
+    shared: [T(20, { status: 'done', goal: g3 })],
+  }),
+  'waves finished': G({
+    tasks: [T(1, { status: 'done', wave: 1 })], finished_at: at(5),
+    waves: [W(1, { state: 'done', passed: true, total: 1, done: 1 })],
+    shared: [T(20, { status: 'done', goal: g3 })],
+  }),
+};
+const wtask = li => ({
+  ref: vis(li.match(/<span class="n">([^<]*)<\/span>/)[1]),
+  title: vis(li.match(/class="wt-title"[^>]*>([\s\S]*?)<\/button>/)[1]),
+  planned: /class="wt planned"/.test(li),
+  jira: attr(li, /class="jira-at" href="([^"]*)"/),
+  pr: (x => x ? vis(x[1]) : null)(li.match(/class="pr-at[^"]*"[^>]*>([\s\S]*?)<\/(?:a|span)>/)),
+  when: (x => x ? vis(x[1]) : null)(li.match(/<span class="wt-when[^"]*">([^<]*)<\/span>/)),
+  facts: [...li.matchAll(/<(?:span|a) class="wchip ?([^"]*)"[^>]*>([\s\S]*?)<\/(?:span|a)>(?=<|\s*$)/g)].map(m => ({ cls: m[1], text: vis(m[2]) })),
+  term: attr(li, /class="wchip term" href="([^"]*)"/),
+});
+const railItems = html => {
+  const parts = html.split(/(?=<li class="wv[ "])/).slice(1);
+  return parts.map(p => {
+    const cls = p.match(/<li class="wv ?([^"]*)"/)[1];
+    if (cls.includes('wv-ref')) return { kind: 'ref', done: cls.includes('ws-done'), badge: vis(p.match(/class="g-badge"[^>]*>([^<]*)</)[1]), badge_link: attr(p, /<a class="g-badge" href="([^"]*)"/),
+      dashed: /stroke-dasharray/.test(p), line: attr(p, /stroke="(var\(--[a-z-]+\))"/), task: wtask(p) };
+    if (cls.includes('wv-finish')) return { kind: 'finish', done: cls.includes('ws-done'), text: vis(p.match(/<span class="wv-name">([^<]*)<\/span>/)[1]) };
+    const head = p.match(/<button type="button" class="wv-head"[\s\S]*?<\/button>/)[0];
+    const gate = p.match(/<div class="wgate (\w+)"><span>([\s\S]*?)<\/span>([\s\S]*?)<\/div>/);
+    return {
+      kind: cls === 'ws-loose' ? 'post' : 'wave', state: (cls.match(/ws-(\w+)/) || [])[1] || null,
+      open: /aria-expanded="true"/.test(head),
+      n: (x => x ? vis(x[1]) : null)(head.match(/<span class="wv-n">([^<]*)<\/span>/)),
+      name: (x => x ? vis(x[1]) : null)(head.match(/<span class="wv-name">([^<]*)<\/span>/)),
+      count: [...head.matchAll(/<span class="pill sm ([^"]*)">([^<]*)<\/span>/g)].map(m => ({ cls: m[1], text: vis(m[2]) })),
+      stop: /class="wv-stop"/.test(head),
+      gate: gate ? { cls: gate[1], text: vis(gate[2]), button: (x => x ? { act: x[1], label: vis(x[2]) } : null)(gate[3].match(/data-act="([^"]*)"[^>]*>([\s\S]*?)<\/button>/)) } : null,
+      tasks: [...p.matchAll(/<li class="wt[^"]*">([\s\S]*?)<\/li>/g)].map(m => wtask(m[0])),
+    };
+  });
+};
+for (const [n, g] of Object.entries(WAVE_GOALS)) {
+  for (const opened of [false, true]) {
+    setState({});
+    w.run('S.waveOpen = {}');
+    if (opened) for (const x of [...(g.waves || []).map(v => v.wave), 'none']) w.run(`S.waveOpen['G1:${x}'] = true`);
+    const html = w.call('goalTasks', g);
+    add('waveRail', `${n}${opened ? ' (all open)' : ''}`, { goal: g, open: opened }, {
+      rail: /<ol class="wrail">/.test(html), shared_list: /From other goals/.test(html), items: railItems(html) });
+  }
+}
+w.run('S.waveOpen = {}');
+for (const [n, g] of Object.entries(WAVE_GOALS)) add('goalState', n, { goal: g }, w.call('goalState', w.call('countedTasks', g), g).label);
+
 // ---------------------------------------------------------------- run buttons + start menu
 const buttons = html => [...html.matchAll(/<button type="button" class="btn ([^"]*)"([^>]*)>([\s\S]*?)<\/button>/g)]
   .filter(m => !/split-caret/.test(m[1]))
