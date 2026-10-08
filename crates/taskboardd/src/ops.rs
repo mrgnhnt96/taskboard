@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, fields, handoff, jira, jobs, p, projects, transcript, waitsfor};
+use crate::{board, fields, handoff, hooks, jira, jobs, p, projects, transcript, waitsfor};
 
 fn merge(mut v: Value, extra: Value) -> Value {
     if let (Some(o), Value::Object(e)) = (v.as_object_mut(), extra) {
@@ -112,6 +112,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     }
     board::log_event(app, tid, who, "status", &text)?;
     let t = board::get_task(app, tid)?;
+    hooks::fire(app, "task.created", &t, None);
     if jmode == "create" {
         jira::request_create_for_task(app, &t)?;
     } else if let Some(k) = &jkey {
@@ -156,6 +157,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
                 "created_at" => now, "updated_at" => now, "archived" => 0],
     )?;
     let g = board::get_goal(app, gid)?;
+    hooks::fire_goal(app, "goal.created", &g, None);
     if emode == "create" {
         jira::request_epic(app, &g)?;
     } else if let Some(k) = &ekey {

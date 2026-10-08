@@ -10,6 +10,7 @@ pub mod db;
 pub mod deliver;
 pub mod dispatch;
 pub mod handoff;
+pub mod hooks;
 pub mod hours;
 pub mod jira;
 pub mod jobs;
@@ -48,6 +49,17 @@ pub fn start_threads(app: &Arc<App>) {
         .spawn(move || {
             while !a.stopping() {
                 if let Some(f) = a.next_deferred(Duration::from_secs(5)) {
+                    f(&a);
+                }
+            }
+        })
+        .ok();
+    let a = app.clone();
+    std::thread::Builder::new()
+        .name("hooks".into())
+        .spawn(move || {
+            while !a.stopping() {
+                if let Some(f) = a.next_hook(Duration::from_secs(5)) {
                     f(&a);
                 }
             }

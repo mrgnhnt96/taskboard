@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, fields, handoff, midna, ops, p, prflow, projects, screen, transcript, waitsfor};
+use crate::{board, deliver, fields, handoff, hooks, midna, ops, p, prflow, projects, screen, transcript, waitsfor};
 
 static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[Tt](\d+)\]").unwrap());
 static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)$").unwrap());
@@ -917,6 +917,31 @@ fn on_done(r: &mut Report) -> Result<Value> {
     Ok(ok(Some(&t), None))
 }
 
+/// `task.finishing`'s hooks, before `tb done` (outside the transaction: a hook may call `tb`). A stop is
+/// refused back to the agent with the reason, and noted on the task.
+fn finishing(r: &Report) -> Result<()> {
+    let app = r.app;
+    let Some(t) = r.task()? else { return Ok(()) };
+    if t.s("status") == Some("done") {
+        return Ok(());
+    }
+    let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
+    let done = json!({"summary": summary, "pr": r.b("pr")});
+    let d = hooks::gate(app, "task.finishing", &t, json!({"by": r.name(), "done": done}));
+    if d == hooks::Decision::Go {
+        return Ok(());
+    }
+    let line = d.said("Stopped from finishing");
+    app.db.tx(|| {
+        hooks::note(app, t.id(), &line)?;
+        if r.spooled {
+            crate::dispatch::add_alert(app, &format!("{}: {line}", rf("task", t.id())), Some(t.id()), t.i("goal_id"), None, None)?;
+        }
+        Ok(())
+    })?;
+    err(409, format!("{line}. The task is still open: deal with that, then run tb done again."))
+}
+
 fn on_fail(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
@@ -1242,6 +1267,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     if r.event == "tb.question" && !spooled {
         let t = r.task().ok().flatten();
         r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
+    }
+    if r.event == "tb.done" {
+        finishing(&r)?;
     }
     app.db.tx(|| {
         if API_RETRY_EVENTS.contains(&r.event.as_str()) {

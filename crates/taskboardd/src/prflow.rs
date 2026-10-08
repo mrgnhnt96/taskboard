@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, dispatch, fields, handoff, hours, p, proc, runner};
+use crate::{board, dispatch, fields, handoff, hooks, hours, p, proc, runner};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge"];
 pub const IN_REVIEW: &[&str] = &["review", "comments", "merge"];
@@ -423,21 +423,29 @@ pub fn summarize_github(d: &Value) -> Value {
     })
 }
 
+/// Why this head's checks are skipped (a hook or `tb pr skip-checks`), if they are. `*` skips every push.
+pub fn checks_skipped(f: &Row, rec: &Value) -> Option<String> {
+    let skips = f.get("skip_checks")?.as_object()?;
+    let head = rec["head"].as_str().unwrap_or("");
+    skips.get(head).or_else(|| skips.get("*")).map(|v| v.as_str().unwrap_or("").to_string())
+}
+
 pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     match rec["state"].as_str().unwrap_or("OPEN").to_uppercase().as_str() {
         "MERGED" => return "merged".into(),
         "CLOSED" | "DECLINED" => return "declined".into(),
         _ => {}
     }
-    if rec["failed"].as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+    let f = flow(t);
+    let skipped = checks_skipped(&f, rec).is_some();
+    if !skipped && rec["failed"].as_array().map(|a| !a.is_empty()).unwrap_or(false) {
         return "fix".into();
     }
     let checks = rec["checks"].as_array().map(|a| a.len()).unwrap_or(0);
     let running = rec["running"].as_i64().unwrap_or(0) > 0;
-    let f = flow(t);
     let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
     let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
-    if running || (checks == 0 && waited < app.cfg.pr.no_checks_after_mins * 60.0) {
+    if !skipped && (running || (checks == 0 && waited < app.cfg.pr.no_checks_after_mins * 60.0)) {
         return "checks".into();
     }
     let seen = f.i0("comments_seen");
@@ -446,33 +454,133 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if (decision == "CHANGES_REQUESTED" && !answered) || rec["comments"].as_i64().unwrap_or(0) > seen {
         return "comments".into();
     }
-    if decision == "APPROVED" || (decision.is_empty() && rec["approvals"].as_i64().unwrap_or(0) > 0) {
+    let review_skipped = f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false);
+    if review_skipped || decision == "APPROVED" || (decision.is_empty() && rec["approvals"].as_i64().unwrap_or(0) > 0) {
         return "merge".into();
     }
     "review".into()
 }
 
+/// The task's flow with this record's head noted (when it was first seen), as `step` will save it.
+fn with_head(t: &Row, rec: &Value) -> (Row, Option<Value>) {
+    let mut f = flow(t);
+    let head = rec["head"].as_str().unwrap_or("");
+    let mut heads = f.get("head_at").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    if head.is_empty() || heads.contains_key(head) {
+        return (f, None);
+    }
+    heads.insert(head.to_string(), json!(now_ts()));
+    f.insert("head_at".into(), Value::Object(heads.clone()));
+    (f, Some(Value::Object(heads)))
+}
+
+fn probe(t: &Row, f: &Row) -> Row {
+    let mut p = t.clone();
+    p.insert("pr_flow".into(), json!(jdumps(&Value::Object(f.clone()))));
+    p
+}
+
+/// The owner's hooks on the PR step this record is about to reach (`pr.checks`, `pr.fix`, `pr.comments`,
+/// `pr.merge`), once per step and push. Runs before `step` and outside its transaction. A skip marks this
+/// push's checks as skipped, so the PR moves on to review; a stop keeps the agent from being brought back,
+/// and the owner is told why.
+pub fn gate(app: &App, t: &Row, rec: &Value) -> Result<()> {
+    // A skip moves the PR on, and the step it lands on asks its own hooks: at most one round per step.
+    for _ in 0..5 {
+        let t = board::get_task(app, t.id())?;
+        if !gate_once(app, &t, rec)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Asks the hooks of the step this record reaches; true when they skipped it.
+fn gate_once(app: &App, t: &Row, rec: &Value) -> Result<bool> {
+    let (f, _) = with_head(t, rec);
+    let phase = phase_of(app, &probe(t, &f), rec);
+    if !matches!(phase.as_str(), "checks" | "fix" | "review" | "comments" | "merge") {
+        return Ok(false);
+    }
+    let key = wake_key(&phase, rec);
+    if f.s("gated") == Some(key.as_str()) {
+        return Ok(false);
+    }
+    let event = format!("pr.{phase}");
+    let extra = json!({"checks": rec["checks"], "failed_checks": rec["failed"], "head": rec["head"], "comments": rec["comments"]});
+    let d = hooks::gate(app, &event, t, extra);
+    let pr = format!("PR #{} for {}", t.i0("pr_num"), rf("task", t.id()));
+    let head = rec["head"].as_str().unwrap_or("*").to_string();
+    app.db.tx(|| {
+        let mut changes = fields!["gated" => key.clone()];
+        match &d {
+            hooks::Decision::Go => {}
+            hooks::Decision::Skip { reason, .. } => {
+                match phase.as_str() {
+                    "comments" => {
+                        changes.push(("comments_seen", json!(rec["comments"].as_i64().unwrap_or(0))));
+                        if !rec["changes_at"].is_null() {
+                            changes.push(("answered_changes", rec["changes_at"].clone()));
+                        }
+                    }
+                    "review" => {
+                        let mut skips = f.get("skip_review").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                        skips.insert(head.clone(), json!(reason));
+                        changes.push(("skip_review", Value::Object(skips)));
+                    }
+                    _ => {
+                        let mut skips = f.get("skip_checks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                        skips.insert(head.clone(), json!(reason));
+                        changes.push(("skip_checks", Value::Object(skips)));
+                    }
+                }
+                hooks::note(app, t.id(), &d.said(&format!("{pr}: “{}” skipped", label(&phase))))?;
+            }
+            hooks::Decision::Block { .. } => {
+                changes.push(("held", json!(key)));
+                let line = d.said(&format!("{} stopped at “{}”", pr, label(&phase)));
+                hooks::note(app, t.id(), &line)?;
+                dispatch::add_alert(app, &line, Some(t.id()), t.i("goal_id"), None, Some("pr"))?;
+            }
+        }
+        merge_flow(app, t.id(), changes).map(|_| ())
+    })?;
+    Ok(matches!(d, hooks::Decision::Skip { .. }))
+}
+
+/// `tb pr skip-checks`: this push's checks (or, with `all`, every push's) count as passed.
+pub fn skip_checks(app: &App, t: &Row, reason: &str, all: bool, who: &str) -> Result<()> {
+    let f = flow(t);
+    let head = f.get("rec").and_then(|r| r["head"].as_str()).filter(|h| !h.is_empty());
+    let key = if all { "*" } else { head.unwrap_or("*") };
+    let mut skips = f.get("skip_checks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    skips.insert(key.to_string(), json!(reason));
+    merge_flow(app, t.id(), fields!["skip_checks" => Value::Object(skips)])?;
+    let which = if key == "*" { "every push's checks" } else { "this push's checks" };
+    board::log_event(app, t.id(), who, "status", &format!("PR #{}: skipped {which}: {reason}", t.i0("pr_num")))?;
+    if let Some(rec) = f.get("rec").filter(|r| r.is_object()) {
+        step(app, &board::get_task(app, t.id())?, rec)?;
+    }
+    Ok(())
+}
+
 /// Applies a fresh PR record to its task: stage, Jira, wakes.
 pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
-    let mut f = flow(t);
+    let (f, heads) = with_head(t, rec);
     let head = rec["head"].as_str().unwrap_or("").to_string();
     let mut changes: Vec<(&str, Value)> = vec![("rec", rec.clone()), ("checked_at", json!(now_iso()))];
+    if let Some(heads) = heads {
+        changes.push(("head_at", heads));
+    }
     if !head.is_empty() {
-        let mut heads = f.get("head_at").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-        if !heads.contains_key(&head) {
-            heads.insert(head.clone(), json!(now_ts()));
-            f.insert("head_at".into(), Value::Object(heads.clone()));
-            changes.push(("head_at", Value::Object(heads)));
-        }
         changes.push(("head", json!(head)));
     }
-    let mut probe = t.clone();
-    probe.insert("pr_flow".into(), json!(jdumps(&Value::Object(f.clone()))));
-    let phase = phase_of(app, &probe, rec);
+    let phase = phase_of(app, &probe(t, &f), rec);
     let old = t.st("pr_phase");
     let phase_changed = phase != old;
+    let build = if checks_skipped(&f, rec).is_some() { "Checks skipped" } else { build_label(rec) };
     let mut task_fields = fields!["pr_state" => rec["state"].as_str().unwrap_or("OPEN").to_uppercase(),
-                                  "pr_build" => build_label(rec), "pr_review" => review_label(rec)];
+                                  "pr_build" => build, "pr_review" => review_label(rec)];
     if let Some(title) = rec["title"].as_str() {
         task_fields.push(("pr_title", json!(title)));
     }
@@ -498,7 +606,12 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         }
         task_fields.push(("pr_phase", json!(phase)));
     }
-    if t.s("status") == Some("done") && phase == "review" && !f.contains_key("reviewed") && !f.contains_key("review_alerted") {
+    if t.s("status") == Some("done")
+        && phase == "review"
+        && !f.contains_key("reviewed")
+        && !f.contains_key("review_alerted")
+        && f.s("held") != Some(wake_key("review", rec).as_str())
+    {
         dispatch::add_alert(
             app,
             &format!("PR #{} for {} is green and ready for review.", t.i0("pr_num"), rf("task", t.id())),
@@ -516,6 +629,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         && t.s("status") == Some("done")
         && f.s("woke") != Some(key.as_str())
         && f.s("handled") != Some(key.as_str())
+        && f.s("held") != Some(key.as_str())
         && !retry_later(&f)
         && live_job(app, t)?.is_none()
         && hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref())
@@ -526,7 +640,12 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             changes.extend(fields!["woke" => key, "stopped" => null]);
         }
     }
-    if phase == "merge" && !app.cfg.pr.agents_merge && t.s("status") == Some("done") && f.s("merge_alerted") != Some(head.as_str()) {
+    if phase == "merge"
+        && !app.cfg.pr.agents_merge
+        && t.s("status") == Some("done")
+        && f.s("merge_alerted") != Some(head.as_str())
+        && f.s("held") != Some(key.as_str())
+    {
         dispatch::add_alert(
             app,
             &format!("PR #{} for {} is approved and green: ready to merge.", t.i0("pr_num"), rf("task", t.id())),
@@ -576,6 +695,7 @@ pub fn refresh(app: &App) -> Result<i64> {
     for t in tasks {
         match read_github(app, &t) {
             Ok(rec) => {
+                gate(app, &board::get_task(app, t.id())?, &rec)?;
                 let t = board::get_task(app, t.id())?;
                 if app.db.tx(|| step(app, &t, &rec))? {
                     changed += 1;

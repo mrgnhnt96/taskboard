@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, handoff, hours, jira, jobs, midna, p, prflow, projects, reports, usage, waitsfor};
+use crate::{board, deliver, dispatch, fields, handoff, hooks, hours, jira, jobs, midna, p, prflow, projects, reports, usage, waitsfor};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
@@ -102,6 +102,14 @@ fn start_parked(app: &App, t: &Row) -> Result<()> {
     waitsfor::started(app, &board::get_task(app, t.id())?)
 }
 
+/// A `task.starting` hook skipped the task: it's done without running, and says why.
+pub fn skip_task(app: &App, t: &Row, d: &hooks::Decision) -> Result<()> {
+    let line = d.said("Skipped");
+    hooks::note(app, t.id(), &line)?;
+    reports::finish_task(app, &board::get_task(app, t.id())?, "Hook", &line, false, None)?;
+    Ok(())
+}
+
 /// Why a goal holds this queued task back: paused, an earlier task not done, or too many terminals.
 pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
     if g.b("deprioritized") {
@@ -173,6 +181,17 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             continue;
         }
         let tid = t.id();
+        match hooks::gate(app, "task.starting", &t, json!({})) {
+            hooks::Decision::Go => {}
+            d @ hooks::Decision::Block { .. } => {
+                app.db.tx(|| jobs::start_failed(app, &t, &d.said("Stopped from starting"), false, false).map(|_| ()))?;
+                continue;
+            }
+            d @ hooks::Decision::Skip { .. } => {
+                app.db.tx(|| skip_task(app, &t, &d))?;
+                continue;
+            }
+        }
         let r = app.db.tx(|| {
             let t = board::get_task(app, tid)?;
             if waitsfor::parked(&t).is_some() {

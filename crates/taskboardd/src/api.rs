@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, deliver, dispatch as alerts, fields, handoff, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
+use crate::{accounts, board, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -47,6 +47,39 @@ fn required(body: &Value, key: &str, limit: usize, label: &str) -> Result<String
     Ok(v)
 }
 
+/// Counts the PR's checks as passed for its current push (or every push, with `all`), and moves it on.
+fn pr_skip_checks(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let reason = { let r = one_line(&body_str(body, "reason"), 500); if r.is_empty() { "no reason given".to_string() } else { r } };
+    let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+    app.db.tx(|| {
+        let t = board::get_task(app, id)?;
+        if t.i("pr_num").is_none() && !has(t.s("pr_url")) {
+            return err(409, "This task has no PR.");
+        }
+        prflow::skip_checks(app, &t, &reason, as_bool(body.get("all"), false), &who)
+    })?;
+    let t = board::get_task(app, id)?;
+    Ok(json!({"ok": true, "task": rf("task", id), "pr": board::pr_card(&t)}))
+}
+
+/// What a hook would read for an event on a task (`tb hooks test`): the task given, else the newest one.
+fn hook_payload(app: &App, query: &Query) -> Result<Value> {
+    let event = q(query, "event", "");
+    if !hooks::known(event) {
+        return err(400, format!("\"{event}\" isn't an event. Run `tb hooks` for the list."));
+    }
+    let t = match query.get("task").filter(|s| !s.is_empty()) {
+        Some(r) => board::get_task(app, tid(r)?)?,
+        None => match app.db.q1("SELECT * FROM tasks ORDER BY id DESC LIMIT 1", p![])? {
+            Some(t) => t,
+            None => return err(404, "There are no tasks to test with yet."),
+        },
+    };
+    let mut v = hooks::payload(app, event, &t, None);
+    v["test"] = json!(true);
+    Ok(v)
+}
+
 pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value) -> Result<Value> {
     let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
     let r = match (method, segs.as_slice()) {
@@ -58,6 +91,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["accounts", id, "disconnect"]) => accounts::disconnect(app, id),
         ("POST", ["accounts", id]) => accounts::connect(app, id, body),
         ("GET", ["summary"]) => get_summary(app),
+        ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
         ("POST", ["projects", name]) => patch_project(app, name, body),
         ("GET", ["sessions"]) => Ok(json!({"sessions": ops::session_list(app, q(query, "project", "all"))?})),
@@ -132,6 +166,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["tasks", id, "delete"]) => delete_task(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
+        ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reviewed"]) => {
             let t = tid(id)?;
@@ -642,10 +677,34 @@ fn need_live(app: &App, t: &Row) -> Result<Row> {
     live_session(app, t)?.ok_or_else(|| ApiError::new(409, "This task has no open Midna terminal."))
 }
 
+/// Runs a step's hooks for the owner's action (outside its transaction). A stop is refused with its
+/// reason; a skip of `task.starting` closes the task without running it (true).
+fn gate(app: &App, id: i64, event: &str, stopped: &str) -> Result<bool> {
+    let t = board::get_task(app, id)?;
+    if t.s("status") == Some("done") {
+        return Ok(false);
+    }
+    match hooks::gate(app, event, &t, json!({"by": OWNER})) {
+        hooks::Decision::Go => Ok(false),
+        d @ hooks::Decision::Skip { .. } => {
+            app.db.tx(|| runner::skip_task(app, &t, &d))?;
+            Ok(true)
+        }
+        d => {
+            let line = d.said(stopped);
+            app.db.tx(|| hooks::note(app, id, &line))?;
+            err(409, format!("{line}."))
+        }
+    }
+}
+
 fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mode = { let m = body_str(body, "mode"); if m.is_empty() { "new".to_string() } else { m } };
     if !["new", "queue", "attach"].contains(&mode.as_str()) {
         return err(400, "Start mode must be new, queue or attach.");
+    }
+    if gate(app, id, "task.starting", "Stopped from starting")? {
+        return task_detail(app, id);
     }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
@@ -807,6 +866,9 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
     if mode != "fresh" && mode != "reopen" {
         return err(400, "Resume mode must be fresh or reopen.");
     }
+    if gate(app, id, "task.starting", "Stopped from starting")? {
+        return task_detail(app, id);
+    }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         if t.s("status") == Some("done") {
@@ -863,6 +925,9 @@ fn requeue(app: &App, id: i64) -> Result<Value> {
 }
 
 fn mark_done(app: &App, id: i64, body: &Value, failed: bool) -> Result<Value> {
+    if !failed {
+        gate(app, id, "task.finishing", "Stopped from finishing")?;
+    }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         if t.s("status") == Some("done") {
@@ -1053,7 +1118,7 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr"));
         if !f.is_empty() {
             f.push(("updated_at", json!(now_iso())));
-            app.db.update("goals", &json!(id), f)?;
+            board::update_goal(app, id, f)?;
             if ctx_change {
                 app.db.x("UPDATE tasks SET ctx_version = COALESCE(ctx_version, 1) + 1 WHERE goal_id = ? AND status != 'done'", p![id])?;
             }
@@ -1329,7 +1394,7 @@ fn run_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
         }
         if g.b("paused") || g.b("deprioritized") {
-            app.db.update("goals", &json!(id), fields!["paused" => 0, "deprioritized" => 0, "updated_at" => now_iso()])?;
+            board::update_goal(app, id, fields!["paused" => 0, "deprioritized" => 0, "updated_at" => now_iso()])?;
         }
         Ok(n)
     })?;

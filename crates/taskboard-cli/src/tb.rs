@@ -7,6 +7,7 @@ use crate::client::{self, CallError};
 use crate::hook;
 use taskboardd::accounts::{self, Provider};
 use taskboardd::config::Config;
+use taskboardd::hooks;
 
 const TB_TIMEOUT: f64 = 5.0;
 const QUESTION_TIMEOUT: f64 = 100.0;
@@ -181,6 +182,11 @@ enum Cmd {
         #[arg(short, long)]
         data: Option<String>,
     },
+    /// The owner's hooks: commands run at each step of a task's flow (hooks.json)
+    Hooks {
+        #[command(subcommand)]
+        action: Option<HooksCmd>,
+    },
     /// Tell the board where this tb is
     Hello,
     /// Claude Code hook (used by the plugin)
@@ -190,6 +196,24 @@ enum Cmd {
         /// Print the input unchanged (to chain into your own status line command)
         #[arg(long)]
         pass: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HooksCmd {
+    /// The flow's events and the hooks on each (the default)
+    List,
+    /// Run an event's hooks now against a task, with `"test": true` in their input
+    Test {
+        event: String,
+        /// The task (defaults to the newest one)
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// The latest hook runs
+    Log {
+        #[arg(short, default_value_t = 20)]
+        n: usize,
     },
 }
 
@@ -302,6 +326,15 @@ enum PrCmd {
     Wait { task: Option<String> },
     /// The PR was merged
     Merged { task: Option<String> },
+    /// Count the PR's checks as passed (e.g. a hook cancelled the builds), so it moves on to review
+    SkipChecks {
+        task: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+        /// Every later push too, not just the current one
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn out(line: &str) {
@@ -810,6 +843,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("The board watches {t}'s PR again and brings this conversation back when it needs you. You can stop here."));
                 Ok(0)
             }
+            PrCmd::SkipChecks { task, reason, all } => {
+                let t = c.pr_task(task)?;
+                let who = if c.session.is_empty() { "tb" } else { "The agent" };
+                c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason.unwrap_or_default(), "all": all, "who": who})))?;
+                out(&format!("{t}'s PR checks count as passed{}.", if all { " on every push" } else { " for this push" }));
+                Ok(0)
+            }
             PrCmd::Merged { task } => {
                 let t = c.pr_task(task)?;
                 c.call("POST", &format!("/tasks/{t}/pr/merged"), Some(json!({"who": if c.session.is_empty() { "tb" } else { "The agent" }})))?;
@@ -817,6 +857,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
         },
+        Cmd::Hooks { action } => hooks_cmd(c, action.unwrap_or(HooksCmd::List)),
         Cmd::Hello => {
             let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "tb".into());
             match c.report("tb.hello", json!({"tb_path": exe, "plugin_version": env!("CARGO_PKG_VERSION")}), None, TB_TIMEOUT)? {
@@ -851,6 +892,78 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Api { provider, path, method, data } => api_call(&c.cfg, &provider, &path, method, data),
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
+    }
+}
+
+fn hooks_cmd(c: &Ctx, action: HooksCmd) -> Result<i32, String> {
+    let file = hooks::load(&c.cfg)?;
+    match action {
+        HooksCmd::List => {
+            out(&format!("Hooks file: {}", hooks::path(&c.cfg).display()));
+            out("A step's hooks run before it and may stop or skip it, unless it says otherwise. [after] events are announced once they happened.\n");
+            for e in hooks::EVENTS {
+                out(&format!("{:<15} {}{}", e.name, e.when, if e.before { "" } else { " [after]" }));
+                if e.before && !e.no_stop.is_empty() {
+                    out(&format!("                  can't stop: {}", e.no_stop));
+                }
+                if e.before && !e.no_skip.is_empty() {
+                    out(&format!("                  can't skip: {}", e.no_skip));
+                }
+                for g in file.hooks.get(e.name).into_iter().flatten() {
+                    let on = if g.matcher.trim().is_empty() || g.matcher.trim() == "*" { "every project".to_string() } else { format!("projects {}", g.matcher) };
+                    for h in &g.hooks {
+                        out(&format!("  → {} ({on})", h.command));
+                    }
+                }
+            }
+            Ok(0)
+        }
+        HooksCmd::Test { event, task } => {
+            let task = task.map(|t| task_ref(&t)).transpose()?;
+            let mut path = format!("/hooks/payload?event={event}");
+            if let Some(t) = &task {
+                path += &format!("&task={t}");
+            }
+            let input = c.call("GET", &path, None)?;
+            let t = &input["task"];
+            let list = hooks::matching(&file, &event, t["project"].as_str().unwrap_or(""));
+            if list.is_empty() {
+                out(&format!("No hooks on {event} for {} ({}).", t["ref"].as_str().unwrap_or(""), t["project"].as_str().unwrap_or("")));
+                return Ok(0);
+            }
+            let cwd = t["repo_path"].as_str().map(std::path::PathBuf::from).filter(|p| p.is_dir());
+            let mut failed = false;
+            for h in list {
+                let r = hooks::run(&h, &event, &input, cwd.as_deref(), &hooks::log_path(&c.cfg));
+                out(&format!("{}: {}", h.command, r.line()));
+                if r.decision().is_some() && !input["can"]["block"].as_bool().unwrap_or(false) && !input["can"]["skip"].as_bool().unwrap_or(false) {
+                    out(&format!("  ({event} can't be stopped or skipped, so the board would ignore that)"));
+                }
+                for l in r.stdout.lines().chain(r.stderr.lines()) {
+                    out(&format!("  {l}"));
+                }
+                failed |= !r.ok();
+            }
+            Ok(if failed { 1 } else { 0 })
+        }
+        HooksCmd::Log { n } => {
+            let text = std::fs::read_to_string(hooks::log_path(&c.cfg)).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.is_empty() {
+                out("No hook has run yet.");
+            }
+            for l in &lines[lines.len().saturating_sub(n)..] {
+                let v: Value = serde_json::from_str(l).unwrap_or_default();
+                let res = match (v["error"].as_str(), v["code"].as_i64()) {
+                    _ if v["decision"].is_object() => format!("asked to {}: {}", v["decision"]["decision"].as_str().unwrap_or(""), v["decision"]["reason"].as_str().unwrap_or("")),
+                    (Some(e), _) => e.to_string(),
+                    (None, Some(0)) => "ok".into(),
+                    (None, code) => format!("exited {}", code.map(|c| c.to_string()).unwrap_or_else(|| "on a signal".into())),
+                };
+                out(&format!("{} {} {} {}: {res}", v["at"].as_str().unwrap_or(""), v["event"].as_str().unwrap_or(""), v["task"].as_str().unwrap_or(""), v["command"].as_str().unwrap_or("")));
+            }
+            Ok(0)
+        }
     }
 }
 

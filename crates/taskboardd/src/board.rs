@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{fields, p, prflow, waitsfor};
+use crate::{fields, hooks, p, prflow, waitsfor};
 
 pub const BOARD: &str = "Task board";
 pub const OWNER: &str = "You";
@@ -26,9 +26,48 @@ pub fn find_task(app: &App, id: Option<i64>) -> Result<Option<Row>> {
 }
 
 pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> {
+    let before = if f.iter().any(|(k, _)| hooks::watched(k)) { find_task(app, Some(id))? } else { None };
+    let goal = before.as_ref().and_then(|t| t.i("goal_id"));
+    let goal_was_finished = match goal {
+        Some(g) => goal_finished(app, g)?,
+        None => true,
+    };
     f.push(("updated_at", json!(now_iso())));
     app.db.update("tasks", &json!(id), f)?;
     app.schedule_md(id);
+    if let Some(before) = before {
+        let after = get_task(app, id)?;
+        for event in hooks::events_between(&before, &after) {
+            hooks::fire(app, event, &after, Some(&before));
+        }
+        if let (Some(g), false) = (goal, goal_was_finished) {
+            if goal_finished(app, g)? {
+                hooks::fire_goal(app, "goal.finished", &get_goal(app, g)?, Some(&after));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every task in the goal is done and no PR of theirs is still open (`goal_counts`' finished_at, cheaply).
+pub fn goal_finished(app: &App, goal_id: i64) -> Result<bool> {
+    let rows = goal_tasks(app, goal_id)?;
+    Ok(!rows.is_empty()
+        && rows.iter().all(|r| r.s("status") == Some("done"))
+        && !rows.iter().any(|r| !r.b("failed") && pr_still_open(r)))
+}
+
+/// Changes a goal and announces it being paused, resumed or archived.
+pub fn update_goal(app: &App, id: i64, f: Vec<(&str, Value)>) -> Result<()> {
+    let before = find_goal(app, Some(id))?;
+    app.db.update("goals", &json!(id), f)?;
+    let (Some(before), Some(after)) = (before, find_goal(app, Some(id))?) else { return Ok(()) };
+    if !before.b("archived") && after.b("archived") {
+        hooks::fire_goal(app, "goal.archived", &after, None);
+    }
+    if before.b("paused") != after.b("paused") {
+        hooks::fire_goal(app, if after.b("paused") { "goal.paused" } else { "goal.resumed" }, &after, None);
+    }
     Ok(())
 }
 

@@ -67,6 +67,8 @@ pub struct App {
     md_signal: Signal,
     deferred: Mutex<VecDeque<Deferred>>,
     deferred_signal: Signal,
+    hook_jobs: Mutex<VecDeque<Deferred>>,
+    hook_signal: Signal,
     pub inline_deferred: bool,
 }
 
@@ -102,6 +104,8 @@ impl App {
             md_signal: Signal::new(),
             deferred: Mutex::new(VecDeque::new()),
             deferred_signal: Signal::new(),
+            hook_jobs: Mutex::new(VecDeque::new()),
+            hook_signal: Signal::new(),
             inline_deferred: inline,
         }
     }
@@ -126,6 +130,7 @@ impl App {
         self.jobs_signal.set();
         self.md_signal.set();
         self.deferred_signal.set();
+        self.hook_signal.set();
     }
 
     pub fn wake_runner(&self) {
@@ -177,5 +182,23 @@ impl App {
         }
         self.deferred_signal.wait(timeout);
         self.deferred.lock().pop_front()
+    }
+
+    /// Owner hooks run one at a time on their own thread, in the order the board reached their steps.
+    pub fn queue_hook(&self, f: Deferred) {
+        if self.inline_deferred {
+            f(self);
+            return;
+        }
+        self.hook_jobs.lock().push_back(f);
+        self.hook_signal.set();
+    }
+
+    pub fn next_hook(&self, timeout: Duration) -> Option<Deferred> {
+        if let Some(f) = self.hook_jobs.lock().pop_front() {
+            return Some(f);
+        }
+        self.hook_signal.wait(timeout);
+        self.hook_jobs.lock().pop_front()
     }
 }
