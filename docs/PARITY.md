@@ -9,7 +9,7 @@ This is the audit of the native app against it, one web behaviour per row, with 
 | Board | `renderBoard`, `sessionsHtml`, `columnsHtml`, `taskCard`, `issueCard`, drag to Working, rename | [board.md](parity/board.md) | 13 | 19 | 2 |
 | Task panel | `taskPanel`, `overviewTab`, `contextTab`, `logTab`, `prBar`, `attachList`, `metaRows`, … | [task.md](parity/task.md) | 23 | 24 | 1 |
 | Goal page | `goalMain`, `goalTasks`, `notesAside`, `goalBacklog`, `bulkBar`, `goalRunButtons`, … | [goal.md](parity/goal.md) | 10 | 34 | 2 |
-| Backlog page + issue panel | `renderBacklogPage`, `issueAside`, `issuePanel`, `issueActions`, … | [backlog.md](parity/backlog.md) | 12 | 29 | 0 |
+| Issue panel (the web's Backlog page is replaced by the native planning page, `ui/backlog.rs`) | `issueAside`, `issuePanel`, `issueActions`, … | [backlog.md](parity/backlog.md) | 12 | 29 | 0 |
 | Sessions page | all of `sessions.js` + the rename helpers | [sessions.md](parity/sessions.md) | 23 | 32 | 5 |
 | Forms and pickers | `taskFormHtml`, `goalFormHtml`, `newIssueHtml`, `submit*`, pickers, drafts | [forms.md](parity/forms.md) | 19 | 23 | 7 |
 | **Total** | | | **111** | **200** | **24** |

@@ -217,27 +217,11 @@ mod tests {
     }
 
     /// Lists keep what they showed when a refresh fails, remember why, and clear it on the
-    /// next good answer (`backlogErr`, `SS.listErr`, `SS.detailErr`, `goalErr`, `issueErr`).
+    /// next good answer (`SS.listErr`, `SS.detailErr`, `goalErr`, `issueErr`).
     #[gpui_kit::test]
     fn failed_fetches_keep_the_page_and_say_why(cx: &mut gpui_kit::TestAppContext) {
         use crate::app::Page;
         let (w, rec) = window(cx);
-        // Backlog: loaded once, then failing.
-        w.update(cx, |m, _, cx| m.go(Page::Backlog, cx)).unwrap();
-        settle(cx);
-        w.update(cx, |m, _, _| assert!(m.data.backlog.is_some())).unwrap();
-        rec.fail("backlog", 0, "Can’t reach the task board server.");
-        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
-        settle(cx);
-        w.update(cx, |m, _, _| {
-            assert!(m.data.backlog.is_some(), "the old list stays");
-            assert_eq!(m.data.errs.backlog.as_deref(), Some("Can’t reach the task board server."));
-        })
-        .unwrap();
-        rec.heal();
-        w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
-        settle(cx);
-        w.update(cx, |m, _, _| assert_eq!(m.data.errs.backlog, None, "cleared by a good answer")).unwrap();
         // Sessions: list and detail.
         rec.fail("sessions", 500, "The board hit an error. It's in the board's log.");
         rec.fail("sessions/fake-s1", 404, "There's nothing at that address.");

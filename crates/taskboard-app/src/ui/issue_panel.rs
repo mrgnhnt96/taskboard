@@ -71,14 +71,6 @@ pub fn live_goals(goals: &[Value]) -> Vec<&Value> {
     goals.iter().filter(|g| !fmt::b(g, "archived")).collect()
 }
 
-/// `issueGoalName`: the issue's own goal name, else the goal's from the list, else "".
-pub fn goal_name(goals: &[Value], b: &Value) -> String {
-    if let Some(n) = b.get("goal").and_then(|g| fmt::opt_s(g, "name")) {
-        return n.to_string();
-    }
-    goal_id(b).and_then(|id| live_goals(goals).into_iter().find(|g| fmt::i(g, "id") == id)).map(|g| s(g, "name").to_string()).unwrap_or_default()
-}
-
 /// The task that reported it, as a ref (`foundTask`).
 pub fn found_task(b: &Value) -> Option<String> {
     match b.get("found_by_task")? {
@@ -97,20 +89,13 @@ pub fn issue_state(b: &Value) -> Option<(String, String)> {
             Some((key.unwrap_or("Ticket asked for").to_string(), key.map(|k| format!("Jira {k}")).unwrap_or_else(|| "Jira ticket being created".into())))
         }
         "drop" => Some(("Won’t do".into(), "Closed as won’t do".into())),
+        "defer" => Some(("Deferred".into(), "Deferred: not for now".into())),
         _ => None,
     }
 }
 
-/// The state chip's colors (`.st-task`, `.st-ticket`, `.st-drop`).
-pub fn state_colors(t: &Theme, b: &Value) -> (Hsla, Hsla) {
-    match s(b, "state") {
-        "task" => (t.goal, t.goal_soft),
-        "ticket" => (t.accent_fg, t.accent_soft),
-        _ => (t.muted, t.col),
-    }
-}
-
 /// `issueFrom`: "Found by T4 · api terminal · 3:05 PM" / "Added by you · Oct 7".
+#[cfg(test)]
 pub fn issue_from(b: &Value, long: bool) -> String {
     let ft = found_task(b);
     let source = s(b, "source");
@@ -528,13 +513,10 @@ pub fn run(
     cx.notify();
 }
 
-/// `keepIssue`: keep a changed issue where it was on the Board's Backlog column or the Backlog
-/// page (it may no longer match the filters).
+/// `keepIssue`: keep a changed issue where it was on the Board's Backlog column (it may no longer
+/// match the filters).
 pub fn keep_issue(m: &mut MainWindow, r: &str) {
     crate::ui::board::keep_issue(m, r);
-    if m.page == Page::Backlog {
-        crate::ui::backlog::keep_row(m, r);
-    }
 }
 
 /// `promote`: `POST /backlog/:id/promote {where}`. On the Board the new task opens.
@@ -624,10 +606,10 @@ pub fn open_log(m: &mut MainWindow, tr: &str, cx: &mut Context<MainWindow>) {
     m.panel = Some(Panel::Task { r: tr.to_string(), tab: TaskTab::Log });
 }
 
-/// "See every backlog issue": the Backlog page with this issue beside the list.
+/// "See every backlog issue": the Backlog page.
 pub fn see_all(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
+    let _ = r;
     m.close_panel(cx);
-    crate::ui::backlog::enter(m, Some(r.to_string()));
     m.go(Page::Backlog, cx);
 }
 
@@ -721,6 +703,7 @@ fn home_tilde(p: &str) -> String {
 
 /// `pickerButton`'s label: a special's name, the goal's name ("Choose a goal" when unknown) or
 /// the project ("Choose a project" when empty).
+#[cfg(test)]
 pub fn picker_label(goal: bool, value: &str, specials: &[(String, String)], goals: &[Value]) -> String {
     if let Some((_, n)) = specials.iter().find(|(v, _)| v == value) {
         return n.clone();
@@ -1061,12 +1044,12 @@ fn note_form(m: &mut MainWindow, t: &Theme, v: &DetailView, window: &mut Window,
         .into_any_element()
 }
 
-/// The Board's issue panel (the web board showed it only there; the Backlog and Goal pages draw
-/// [`render_aside`] beside their lists instead).
+/// The issue panel on the Board and the Backlog page (the Goal page draws [`render_aside`] beside
+/// its list instead).
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let r = match &m.panel {
-        Some(Panel::Issue { r }) if !matches!(m.page, Page::Backlog | Page::Goal(_)) => r.clone(),
+        Some(Panel::Issue { r }) if !matches!(m.page, Page::Goal(_)) => r.clone(),
         _ => return div().into_any_element(),
     };
     let close = kit::btn_small(&t, "issue-close", "✕").on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)));

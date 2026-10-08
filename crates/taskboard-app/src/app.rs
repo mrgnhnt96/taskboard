@@ -24,6 +24,7 @@ pub enum Page {
     Board,
     /// A goal ref, `G3`.
     Goal(String),
+    /// The backlog: triage it by making goals from untriaged issues.
     Backlog,
     Sessions,
     Days,
@@ -54,8 +55,6 @@ pub struct Data {
     pub issue: Option<Value>,
     /// `GET /goals/:id` for the goal page.
     pub goal: Option<Value>,
-    /// `GET /backlog` with the Backlog page's filters.
-    pub backlog: Option<Value>,
     /// `GET /sessions`, `GET /sessions/closed`, `GET /sessions/:id` for the Sessions page.
     pub sessions: Option<Value>,
     pub closed: Option<Value>,
@@ -63,7 +62,7 @@ pub struct Data {
     /// `GET /days` for the Days page.
     pub days: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
-    /// `backlogErr`, `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
+    /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
     pub errs: Errs,
 }
@@ -73,7 +72,6 @@ pub struct Errs {
     pub task: Option<String>,
     pub issue: Option<String>,
     pub goal: Option<String>,
-    pub backlog: Option<String>,
     pub sessions: Option<String>,
     pub session: Option<String>,
     pub days: Option<String>,
@@ -213,12 +211,16 @@ impl MainWindow {
         };
         if let Ok(p) = std::env::var("TASKBOARD_PAGE") {
             m.page = match p.as_str() {
-                "backlog" => Page::Backlog,
+                "backlog" | "plan" => Page::Backlog,
                 "sessions" => Page::Sessions,
                 "days" => Page::Days,
                 g if g.starts_with('G') => Page::Goal(g.into()),
                 _ => Page::Board,
             };
+        }
+        // Dev: `TASKBOARD_PICK=B2,B3` checks those issues on the Backlog page (screenshots).
+        if let Ok(p) = std::env::var("TASKBOARD_PICK") {
+            m.backlog.picked = p.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         }
         if let Ok(r) = std::env::var("TASKBOARD_OPEN") {
             m.panel = Some(if r.starts_with('B') { Panel::Issue { r } } else { Panel::Task { r, tab: TaskTab::Overview } });
@@ -304,7 +306,7 @@ impl MainWindow {
             let entering_backlog = page == Page::Backlog;
             self.page = page;
             if entering_backlog {
-                ui::backlog::enter(self, None);
+                ui::backlog::enter(self);
             }
             self.menu = None;
             self.refresh(cx);
@@ -346,7 +348,7 @@ impl MainWindow {
                 self.go(Page::Sessions, cx);
                 self.refresh(cx);
             }
-            ("backlog", _) => self.go(Page::Backlog, cx),
+            ("backlog" | "plan", _) => self.go(Page::Backlog, cx),
             ("sessions", _) => self.go(Page::Sessions, cx),
             ("days", _) => self.go(Page::Days, cx),
             _ => self.go(Page::Board, cx),
@@ -409,6 +411,10 @@ impl MainWindow {
     /// alerts; a form keeps its typing), then the task panel (or an issue panel on the board),
     /// then, on the board with nothing focused, the rail's filters.
     pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // On the Backlog page esc unchecks everything, closing its menu too.
+        if ui::backlog::escape(self, cx) {
+            return;
+        }
         if self.menu.is_some() {
             self.menu = None;
             cx.notify();
@@ -425,7 +431,7 @@ impl MainWindow {
         }
         match &self.panel {
             Some(Panel::Task { .. }) => return self.close_panel(cx),
-            Some(Panel::Issue { .. }) if self.page == Page::Board => return self.close_panel(cx),
+            Some(Panel::Issue { .. }) if matches!(self.page, Page::Board | Page::Backlog) => return self.close_panel(cx),
             _ => {}
         }
         if self.page == Page::Board && self.focus.is_focused(window) && (self.filters.goal != "all" || self.filters.project != "all") {
@@ -584,7 +590,6 @@ struct Wants {
     task: Option<String>,
     issue: Option<String>,
     goal: Option<String>,
-    backlog_q: Option<Vec<(&'static str, String)>>,
     sessions: bool,
     session: Option<String>,
     days_q: Option<Vec<(&'static str, String)>>,
@@ -599,7 +604,6 @@ struct Got {
     task: Option<(String, Answer)>,
     issue: Option<(String, Answer)>,
     goal: Option<(String, Answer)>,
-    backlog: Option<Answer>,
     sessions: Option<Answer>,
     closed: Option<Value>,
     session: Option<(String, Answer)>,
@@ -623,7 +627,6 @@ impl Wants {
                 Page::Goal(g) => Some(g.clone()),
                 _ => None,
             },
-            backlog_q: (m.page == Page::Backlog).then(|| m.backlog.query()),
             sessions: m.page == Page::Sessions,
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
@@ -640,7 +643,6 @@ impl Wants {
             task: self.task.and_then(|r| get(&format!("tasks/{r}"), &[]).map(|v| (r, v))),
             issue: self.issue.and_then(|r| get(&format!("backlog/{r}"), &[]).map(|v| (r, v))),
             goal: self.goal.and_then(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))),
-            backlog: self.backlog_q.and_then(|q| get("backlog", &q)),
             sessions: if self.sessions { get("sessions", &[("project", "all".into())]) } else { None },
             closed: if self.sessions { get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok) } else { None },
             session: self.session.and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
@@ -696,9 +698,6 @@ impl Got {
             if m.page == Page::Goal(r) {
                 land(&mut d.goal, &mut d.errs.goal, v, merge_goal);
             }
-        }
-        if let Some(v) = self.backlog {
-            land(&mut d.backlog, &mut d.errs.backlog, v, |v| v);
         }
         if let Some(v) = self.sessions {
             land(&mut d.sessions, &mut d.errs.sessions, v, |v| v);
@@ -1329,14 +1328,22 @@ mod tests {
             m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
             m.escape(window, cx);
             assert!(m.panel.is_none());
-            m.page = Page::Backlog;
+            m.page = Page::Goal("G1".into());
             m.panel = Some(Panel::Issue { r: "B1".into() });
             m.escape(window, cx);
-            assert!(m.panel.is_some(), "on the Backlog page the issue stays");
-            m.page = Page::Board;
+            assert!(m.panel.is_some(), "on a goal page the issue stays");
+            m.page = Page::Backlog;
+            m.backlog.picked = vec!["B1".into(), "B2".into()];
             m.escape(window, cx);
-            assert!(m.panel.is_none(), "on the board it closes");
+            assert!(m.panel.is_none(), "on the Backlog page it closes, as on the board");
+            assert_eq!(m.backlog.picked.len(), 2, "closing the panel keeps the checked issues");
+            m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
+            m.escape(window, cx);
+            assert!(m.panel.is_none() && m.backlog.picked.len() == 2, "a task panel too");
+            m.escape(window, cx);
+            assert!(m.backlog.picked.is_empty(), "then Esc unchecks them");
             // Then the rail's filters (railClear), with the board focused.
+            m.page = Page::Board;
             m.filters = crate::app::Filters { project: "webapp".into(), goal: "G1".into(), done: "7d".into() };
             m.board.keep = vec!["B1".into()];
             window.focus(&m.focus, cx);

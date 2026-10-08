@@ -1021,7 +1021,7 @@ pub fn open_goal_form(m: &mut MainWindow, goal: Option<Value>, window: &mut Wind
 }
 
 pub fn open_issue_form(m: &mut MainWindow, goal_ref: Option<String>, window: &mut Window, cx: &mut Context<MainWindow>) {
-    let backlog = (m.page == Page::Backlog).then(|| (m.backlog.project.clone(), m.backlog.goal.clone()));
+    let backlog = (m.page == Page::Backlog).then(|| (m.backlog.project.clone(), "all".to_string()));
     let v = open_issue_vals(&Board::of(m), goal_ref.as_deref(), backlog.as_ref().map(|(p, g)| (p.as_str(), g.as_str())));
     let form = IssueForm {
         title: text_input(cx, "", false, ""),
