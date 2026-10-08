@@ -701,7 +701,8 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     } else if status == "needs" {
         let q = opt_s(t, "question");
         let grp = format!("ask:{r}");
-        let mut row = answer_btns(c, &r);
+        let mut row = step_btns(c, t, &r, &grp);
+        row.extend(answer_btns(c, &r));
         if q.is_none() && session_live(t) {
             row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
         }
@@ -1758,4 +1759,21 @@ pub fn find_act<'a>(n: &'a Node, act: &str, arg: Option<&str>) -> Option<&'a Act
         Node::El { .. } => shown(n).find_map(|k| find_act(k, act, arg)),
         _ => None,
     }
+}
+
+/// A task waiting on one of the owner's steps (`t.step`): open where it happens, then Done; a step that
+/// can't pass can be skipped.
+fn step_btns(c: &Ctx, t: &Value, r: &str, grp: &str) -> Vec<Node> {
+    let st = &t["step"];
+    let Some(name) = opt_s(st, "name") else { return Vec::new() };
+    let mut row = Vec::new();
+    if let Some(url) = opt_s(st, "open") {
+        row.push(c.btn("Open", Act::new("open-url", url, r, grp), Look::Plain, false, Some(url)));
+    }
+    if b(st, "failed") {
+        row.push(c.btn("Skip this step", Act::new("step", "skip", r, grp), Look::Plain, false, Some(&format!("Count “{name}” as done and carry on"))));
+    } else {
+        row.push(c.btn("Done", Act::new("step", "done", r, grp), Look::Primary, false, Some(&format!("“{name}” is done; the agent carries on"))));
+    }
+    row
 }
