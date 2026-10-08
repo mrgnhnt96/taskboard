@@ -215,6 +215,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["backlog"]) => post_issue(app, body),
         ("POST", ["backlog", "bulk"]) => backlog_bulk(app, body),
         ("GET", ["backlog", id]) => issue_detail(app, iid(id)?),
+        ("POST", ["backlog", id]) => app.db.tx(|| patch_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "promote"]) => app.db.tx(|| promote(app, iid(id)?, body)),
         ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?)),
         ("POST", ["backlog", id, "drop"]) => app.db.tx(|| drop_issue(app, iid(id)?, body)),
@@ -1623,6 +1624,35 @@ fn reopen_issue(app: &App, id: i64) -> Result<Value> {
     }
     app.db.update("issues", &json!(id), fields!["state" => "open", "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, OWNER, "note", "Opened again", None)?;
+    issue_detail(app, id)
+}
+
+/// Retitles an issue or rewrites its detail; terminals do this through `tb backlog set`.
+fn patch_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let b = board::get_issue(app, id)?;
+    let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+    let mut f: Vec<(&str, Value)> = vec![];
+    let mut said = vec![];
+    if body.get("title").is_some() {
+        let title = required(body, "title", 300, "The title")?;
+        if title != b.st("title") {
+            said.push(format!("Renamed from “{}”", b.st("title")));
+            f.push(("title", json!(title)));
+        }
+    }
+    if body.get("detail").is_some() {
+        let detail = body_str(body, "detail");
+        if detail != b.st("detail") {
+            said.push("Rewrote the detail".to_string());
+            f.push(("detail", json!(if detail.is_empty() { None } else { Some(detail) })));
+        }
+    }
+    if f.is_empty() {
+        return issue_detail(app, id);
+    }
+    f.push(("updated_at", json!(now_iso())));
+    app.db.update("issues", &json!(id), f)?;
+    board::add_issue_event(app, id, &who, "note", &said.join("; "), None)?;
     issue_detail(app, id)
 }
 

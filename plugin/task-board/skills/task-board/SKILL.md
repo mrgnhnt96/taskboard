@@ -18,7 +18,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   Flags repeat; `--file path` for key files.
 - **Notes** worth keeping on the task: `tb note "..."`. For the whole goal: `tb note --goal --kind finding|decision|reference "..."`.
 - **Something outside the task**: don't fix it. Report it and carry on:
-  `tb found "<short title>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
+  `tb found "<short summary, 80 chars max>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
 - **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"`, then end your turn. Never ask the owner; see `questions.md`.
 - **Blocked on the owner**: read `questions.md` first; most calls are yours. Still the owner's? `tb question "<the question>"`, then stop.
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..."` (`--goal G<n>` for the goal).
@@ -41,13 +41,14 @@ Planning a goal? Read `planning.md` first.
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`.
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
+   - Retitle or rewrite an issue (the owner asks you to; they can't edit it in the app): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
 3. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks; ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
 4. The project defaults to this terminal's; `--project <name>` picks another.
 5. Nothing you add runs until the owner queues or starts it; don't take it unless asked.
 6. Give the owner the link `tb` printed.
 
-Titles are short imperatives; details go in `--detail`.
+Titles are short summaries a person reads at a glance (80 characters at most, no test names, paths, commit hashes or error text); all of that goes in `--detail`.
 
 ## Work hours
 

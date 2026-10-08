@@ -322,6 +322,14 @@ enum BacklogCmd {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Change a backlog issue's title or detail
+    Set {
+        issue: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        detail: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -363,6 +371,15 @@ fn goal_ref(v: &str) -> Result<String, String> {
         return Err(format!("expected G<number>, got {v:?}"));
     }
     Ok(format!("G{digits}"))
+}
+
+fn issue_ref(v: &str) -> Result<String, String> {
+    let s = v.trim();
+    let digits = s.trim_start_matches(['B', 'b']);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("expected B<number>, got {v:?}"));
+    }
+    Ok(format!("B{digits}"))
 }
 
 struct Ctx {
@@ -408,6 +425,11 @@ impl Ctx {
         }
     }
 
+    /// How the board names this terminal in an issue's history.
+    fn who(&self) -> String {
+        if self.session.is_empty() { "tb".to_string() } else { format!("terminal {}", self.session.chars().take(8).collect::<String>()) }
+    }
+
     fn call(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
         match client::request(&self.cfg, method, path, body.as_ref(), TB_TIMEOUT) {
             Ok(v) => Ok(v),
@@ -442,6 +464,26 @@ impl Ctx {
         let v = self.call("GET", &format!("/whoami?session={}", self.session), None)?;
         v["task"]["ref"].as_str().map(|s| s.to_string()).or_else(|| v["visiting"]["ref"].as_str().map(|s| s.to_string())).ok_or_else(|| "this terminal has no task; name one, for example: tb pr status T12".into())
     }
+}
+
+/// Longest title a terminal may give a task or backlog issue: a card shows it whole.
+const TITLE_MAX: usize = 80;
+
+/// A title as a short summary, or why it isn't one.
+fn short_title(title: &str) -> Result<String, String> {
+    let t = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let n = t.chars().count();
+    if n > TITLE_MAX {
+        return Err(format!(
+            "that title is {n} characters; keep it to {TITLE_MAX} or fewer. Write a short summary a person can read at a glance (for example \"midnad tests fail on clean main\") and put names, errors and specifics in --detail"
+        ));
+    }
+    Ok(t)
+}
+
+/// Checks each `--task "title::detail"`'s title.
+fn short_task_titles(tasks: &[String]) -> Result<(), String> {
+    tasks.iter().try_for_each(|x| short_title(x.split_once("::").map_or(x.as_str(), |(t, _)| t)).map(|_| ()))
 }
 
 fn midna_attention(text: &str) {
@@ -522,7 +564,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Found { title, kind, detail, output, t } => c.run_report(
             "tb.found",
-            json!({"title": title, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>())}),
+            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>())}),
             t.task,
             false,
             |v| {
@@ -618,6 +660,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Propose { goal, tasks } => {
             let g = goal_ref(&goal)?;
+            short_task_titles(&tasks)?;
             match c.report("tb.propose", json!({"goal": g, "tasks": tasks}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
                 Some(v) => out(&format!("Added {} to {g} as planned.", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default())),
@@ -645,6 +688,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Goal { action } => match action {
             GoalCmd::New { name, outcome, tldr, project, product, tasks } => {
+                short_task_titles(&tasks)?;
                 match c.report("tb.goal", json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "tasks": tasks}), None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
@@ -723,7 +767,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Task { action } => match action {
             TaskCmd::New { title, detail, goal, project, planned } => {
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
-                match c.report("tb.new_task", json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned}), None, TB_TIMEOUT)? {
+                match c.report("tb.new_task", json!({"title": short_title(&title)?, "detail": detail, "goal": goal, "project": project, "planned": planned}), None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
@@ -737,7 +781,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
-                    b["title"] = json!(x);
+                    b["title"] = json!(short_title(&x)?);
                 }
                 if let Some(x) = detail {
                     b["detail"] = json!(x);
@@ -770,13 +814,29 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         },
         Cmd::Backlog { action: BacklogCmd::Add { title, kind, detail, goal, project } } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
-            let name = if c.session.is_empty() { "tb".to_string() } else { format!("terminal {}", c.session.chars().take(8).collect::<String>()) };
+            let name = c.who();
             let v = c.call(
                 "POST",
                 "/backlog",
-                Some(json!({"title": title, "kind": kind, "detail": detail, "goal_id": goal, "project": project, "cwd": c.cwd, "where": "tb", "who": name})),
+                Some(json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "goal_id": goal, "project": project, "cwd": c.cwd, "where": "tb", "who": name})),
             )?;
             out(&format!("Added {} to the backlog.", v["ref"].as_str().unwrap_or("")));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Set { issue, title, detail } } => {
+            let r = issue_ref(&issue)?;
+            let mut b = json!({"who": c.who()});
+            if let Some(x) = title {
+                b["title"] = json!(short_title(&x)?);
+            }
+            if let Some(x) = detail {
+                b["detail"] = json!(x);
+            }
+            if b.as_object().map_or(0, |o| o.len()) < 2 {
+                return Err("say what to change, for example: tb backlog set B3 --title \"Login button flickers\"".into());
+            }
+            let v = c.call("POST", &format!("/backlog/{r}"), Some(b))?;
+            out(&format!("Changed {r} “{}”.", v["title"].as_str().unwrap_or("")));
             Ok(0)
         }
         Cmd::Attach { url, kind, title, goal, t } => {
@@ -1059,11 +1119,22 @@ mod tests {
     fn parses_commands() {
         assert!(Cli::try_parse_from(["tb", "checkpoint", "--done", "a", "--next", "b", "--decision", "c"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "found", "x", "--kind", "nope"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());
         assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
+    }
+
+    #[test]
+    fn titles_stay_short() {
+        assert_eq!(short_title("  Fix the\n login  flicker ").unwrap(), "Fix the login flicker");
+        assert!(short_title(&"x".repeat(TITLE_MAX)).is_ok());
+        let e = short_title(&"x".repeat(TITLE_MAX + 1)).unwrap_err();
+        assert!(e.contains("--detail"), "{e}");
+        assert!(short_task_titles(&["Short::".to_string() + &"long detail ".repeat(20)]).is_ok());
+        assert!(short_task_titles(&["y".repeat(TITLE_MAX + 1)]).is_err());
     }
 
     #[test]

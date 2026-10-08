@@ -321,6 +321,19 @@ fn a_github_pr_moves_through_its_stages_and_wakes_the_task() {
 }
 
 #[test]
+fn a_terminal_retitles_a_backlog_issue() {
+    let b = new_board();
+    b.post("/backlog", json!({"title": "midnad tests fail: daemon::stream_attach_frames_roundtrip (size (100,30))", "kind": "bug", "project": "webapp"}));
+    let out = b.post("/backlog/B1", json!({"title": "midnad tests fail on clean main", "detail": "daemon::stream_attach_frames_roundtrip", "who": "terminal ab12cd34"}));
+    assert_eq!(out["title"], "midnad tests fail on clean main");
+    assert_eq!(out["detail"], "daemon::stream_attach_frames_roundtrip");
+    let last = out["history"].as_array().unwrap().iter().find(|h| h["text"].as_str().unwrap_or("").starts_with("Renamed")).cloned().unwrap();
+    assert!(last["text"].as_str().unwrap().contains("Rewrote the detail"));
+    let (code, _) = b.post_err("/backlog/B1", json!({"title": " "}));
+    assert_eq!(code, 400);
+}
+
+#[test]
 fn the_api_validates_and_moves_backlog_issues() {
     let b = new_board();
     let (code, _) = b.post_err("/tasks", json!({"title": "", "project": "webapp"}));
