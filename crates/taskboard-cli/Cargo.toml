@@ -1,0 +1,20 @@
+[package]
+name = "taskboard-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "tb: the agent CLI, Claude Code hooks and status line for the task board"
+
+[[bin]]
+name = "tb"
+path = "src/main.rs"
+
+[dependencies]
+taskboardd.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+ureq.workspace = true
+rand = "0.8"
+clap.workspace = true
+regex.workspace = true
+once_cell.workspace = true

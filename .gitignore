@@ -1,0 +1,13 @@
+/target
+/dist
+.DS_Store
+# Never commit local config, credentials or board data.
+.env
+.env.*
+config.toml
+*.pem
+*.key
+*.p12
+*.sqlite
+*.sqlite3
+*.db

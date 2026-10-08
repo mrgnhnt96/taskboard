@@ -1,0 +1,31 @@
+[package]
+name = "taskboard-app"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "The task board's native macOS app (GPUI), a client of taskboardd"
+
+[[bin]]
+name = "taskboard-app"
+path = "src/main.rs"
+
+[features]
+# `TASKBOARD_SNAPSHOT=out.png`: draw the main window offscreen, save it, then quit. Dev only.
+snapshot = ["gpui-kit/test-support"]
+
+[dev-dependencies]
+gpui-kit = { version = "0.7", default-features = false, features = ["test-support"] }
+
+[dependencies]
+taskboardd.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+ureq.workspace = true
+gpui-kit = { version = "0.7", default-features = false }
+async-channel = "2"
+libc = "0.2"
+# install (src/install.rs): register the daemon's LaunchAgent with SMAppService
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

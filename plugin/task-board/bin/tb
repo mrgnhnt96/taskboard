@@ -1,0 +1,47 @@
+#!/bin/sh
+# Shim: run the installed Rust tb binary.
+
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd "$(dirname "$self")" 2>/dev/null && pwd -P)
+
+me=$(realpath "$self" 2>/dev/null || echo "$self")
+
+# An executable that isn't this shim (both are called tb; a ~/.local/bin/tb linked to the shim
+# would otherwise exec itself forever).
+pick() {
+  [ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] && [ "$(realpath "$1" 2>/dev/null || echo "$1")" != "$me" ]
+}
+
+bin=
+if [ -n "$TASKBOARD_TB" ] && pick "$TASKBOARD_TB"; then
+  bin=$TASKBOARD_TB
+elif [ -n "$here" ] && pick "$here/../../../target/release/tb"; then
+  bin=$here/../../../target/release/tb
+elif [ -n "$here" ] && pick "$here/../../../target/debug/tb"; then
+  bin=$here/../../../target/debug/tb
+elif pick "$HOME/.cargo/bin/tb"; then
+  bin=$HOME/.cargo/bin/tb
+elif pick "$HOME/.local/bin/tb"; then
+  bin=$HOME/.local/bin/tb
+elif pick "/Applications/Taskboard.app/Contents/MacOS/tb"; then
+  bin=/Applications/Taskboard.app/Contents/MacOS/tb
+elif pick "$HOME/Applications/Taskboard.app/Contents/MacOS/tb"; then
+  bin=$HOME/Applications/Taskboard.app/Contents/MacOS/tb
+fi
+
+if [ -z "$bin" ]; then
+  case $1 in
+    hook|statusline) exit 0 ;;
+  esac
+  echo "tb: taskboard binary not found; set TASKBOARD_TB or install Taskboard.app or put tb in ~/.local/bin" >&2
+  exit 1
+fi
+
+exec "$bin" "$@"

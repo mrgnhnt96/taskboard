@@ -1,0 +1,6126 @@
+{
+  "now": "2026-10-07T15:00:00.000Z",
+  "cases": [
+    {
+      "name": "everything",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "24h"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 2,
+            "open_issues": 9,
+            "done_hidden": 0
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions T3 Settings Needs you webapp Settings page: manage passkeys T2 Sign in with a passkey Working webapp Sign in with a passkey api shell Idle api new name Idle webapp A title without a ref stubborn Idle webapp s-noname Idle webapp",
+          "acts": [
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-needs",
+              "text": "T3 Settings Needs you webapp Settings page: manage passkeys",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T3 Settings · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "s-work",
+              "text": "T2 Sign in with a passkey Working webapp Sign in with a passkey",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T2 Sign in with a passkey · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-idle",
+              "text": "api shell Idle api",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "api shell · double-click to rename",
+              "project_title": "/tmp/api",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-ren",
+              "text": "new name Idle webapp A title without a ref",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Renaming in Midna…",
+              "project_title": "/tmp/webapp",
+              "renaming": true,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-err",
+              "text": "stubborn Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Last rename failed: Midna said no · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-noname",
+              "text": "s-noname Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": " · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all Test gap 40m ago No test for an expired challenge G1 Bug Now a task 1d ago Made into a task Not in a goal Follow-up PROJ-40 10m ago Ticket with key G3 Clean-up Ticket asked for 2m ago Ticket being created Not in a goal Odd Won’t do 3d ago Dropped Not in a goal Issue just now Nobody reported it Not in a goal 7 more on the Backlog page",
+            "acts": [
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Queued 3 T5 5m ago Upgrade the HTTP client High webapp G1 · T6 30m ago Queued in a goal webapp T7 1m ago Starting now api",
+            "acts": [
+              "open-task",
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Working 2 G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey T8 2h ago API rate limits api PR #3 · Running api shell",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": true
+          },
+          {
+            "text": "Needs you 2 G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Done 3 G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn T10 20h ago Failed migration api PR #11 · Unknown Failed T11 2h ago No PR number api",
+            "acts": [
+              "done-menu",
+              "open-task",
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [
+          {
+            "ref": "T5",
+            "text": "T5 5m ago Upgrade the HTTP client High webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 5m ago",
+            "goal_title": null,
+            "drag": true,
+            "drag_title": "Drag to Working to start it",
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "high",
+              "repo"
+            ]
+          },
+          {
+            "ref": "T6",
+            "text": "G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 30m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T7",
+            "text": "T7 1m ago Starting now api",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 1m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T2",
+            "text": "G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "jira",
+              "b-pass"
+            ]
+          },
+          {
+            "ref": "T8",
+            "text": "T8 2h ago API rate limits api PR #3 · Running api shell",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-run"
+            ]
+          },
+          {
+            "ref": "T3",
+            "text": "G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Asked 3m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T9",
+            "text": "T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Lost 12m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "high",
+              "repo",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T1",
+            "text": "G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 5h ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-fail"
+            ]
+          },
+          {
+            "ref": "T10",
+            "text": "T10 20h ago Failed migration api PR #11 · Unknown Failed",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Stopped 20h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-unk",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T11",
+            "text": "T11 2h ago No PR number api",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 2h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          }
+        ],
+        "issue_cards": [
+          {
+            "ref": "B1",
+            "text": "Test gap 40m ago No test for an expired challenge G1",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "T1 Add the WebAuthn · 2:20 PM",
+            "goal_title": "Sign-in with passkeys",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-gap"
+            ]
+          },
+          {
+            "ref": "B2",
+            "text": "Bug Now a task 1d ago Made into a task Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · Oct 6",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-bug",
+              "st-task"
+            ]
+          },
+          {
+            "ref": "B3",
+            "text": "Follow-up PROJ-40 10m ago Ticket with key G3",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "From your answer · 2:50 PM",
+            "goal_title": "Docs refresh",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-follow",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B4",
+            "text": "Clean-up Ticket asked for 2m ago Ticket being created Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 2:58 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-clean",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B5",
+            "text": "Odd Won’t do 3d ago Dropped Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Found by a terminal · Oct 4",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-odd",
+              "st-drop"
+            ]
+          },
+          {
+            "ref": "B6",
+            "text": "Issue just now Nobody reported it Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 3:00 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-"
+            ]
+          }
+        ],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "project webapp",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "webapp",
+          "goal": "all",
+          "done": "24h"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 2,
+            "open_issues": 9,
+            "done_hidden": 0
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {
+            "task": "T2"
+          }
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions T3 Settings Needs you webapp Settings page: manage passkeys T2 Sign in with a passkey Working webapp Sign in with a passkey new name Idle webapp A title without a ref stubborn Idle webapp s-noname Idle webapp",
+          "acts": [
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-needs",
+              "text": "T3 Settings Needs you webapp Settings page: manage passkeys",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T3 Settings · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "s-work",
+              "text": "T2 Sign in with a passkey Working webapp Sign in with a passkey",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T2 Sign in with a passkey · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-ren",
+              "text": "new name Idle webapp A title without a ref",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Renaming in Midna…",
+              "project_title": "/tmp/webapp",
+              "renaming": true,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-err",
+              "text": "stubborn Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Last rename failed: Midna said no · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-noname",
+              "text": "s-noname Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": " · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all Test gap 40m ago No test for an expired challenge G1 Bug Now a task 1d ago Made into a task Not in a goal Follow-up PROJ-40 10m ago Ticket with key G3 Issue just now Nobody reported it Not in a goal 7 more on the Backlog page",
+            "acts": [
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Queued 2 T5 5m ago Upgrade the HTTP client High webapp G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Working 1 G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "drop": true
+          },
+          {
+            "text": "Needs you 2 G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Done 1 G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "done-menu",
+              "open-task"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [
+          {
+            "ref": "T5",
+            "text": "T5 5m ago Upgrade the HTTP client High webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 5m ago",
+            "goal_title": null,
+            "drag": true,
+            "drag_title": "Drag to Working to start it",
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "high",
+              "repo"
+            ]
+          },
+          {
+            "ref": "T6",
+            "text": "G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 30m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T2",
+            "text": "G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": true,
+            "needs": false,
+            "chips": [
+              "repo",
+              "jira",
+              "b-pass"
+            ]
+          },
+          {
+            "ref": "T3",
+            "text": "G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Asked 3m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T9",
+            "text": "T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Lost 12m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "high",
+              "repo",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T1",
+            "text": "G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 5h ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-fail"
+            ]
+          }
+        ],
+        "issue_cards": [
+          {
+            "ref": "B1",
+            "text": "Test gap 40m ago No test for an expired challenge G1",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "T1 Add the WebAuthn · 2:20 PM",
+            "goal_title": "Sign-in with passkeys",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-gap"
+            ]
+          },
+          {
+            "ref": "B2",
+            "text": "Bug Now a task 1d ago Made into a task Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · Oct 6",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-bug",
+              "st-task"
+            ]
+          },
+          {
+            "ref": "B3",
+            "text": "Follow-up PROJ-40 10m ago Ticket with key G3",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "From your answer · 2:50 PM",
+            "goal_title": "Docs refresh",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-follow",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B6",
+            "text": "Issue just now Nobody reported it Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 3:00 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-"
+            ]
+          }
+        ],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "goal G1",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "webapp",
+          "goal": "G1",
+          "done": "24h"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 2,
+            "open_issues": 9,
+            "done_hidden": 0
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {
+            "issue": "B1"
+          }
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions T3 Settings Needs you webapp Settings page: manage passkeys T2 Sign in with a passkey Working webapp Sign in with a passkey new name Idle webapp A title without a ref stubborn Idle webapp s-noname Idle webapp",
+          "acts": [
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-needs",
+              "text": "T3 Settings Needs you webapp Settings page: manage passkeys",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T3 Settings · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "s-work",
+              "text": "T2 Sign in with a passkey Working webapp Sign in with a passkey",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T2 Sign in with a passkey · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-ren",
+              "text": "new name Idle webapp A title without a ref",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Renaming in Midna…",
+              "project_title": "/tmp/webapp",
+              "renaming": true,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-err",
+              "text": "stubborn Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Last rename failed: Midna said no · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-noname",
+              "text": "s-noname Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": " · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all Test gap 40m ago No test for an expired challenge G1 8 more on the Backlog page",
+            "acts": [
+              "open-issue"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Queued 1 G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Working 1 G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "drop": true
+          },
+          {
+            "text": "Needs you 1 G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings",
+            "acts": [
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Done 1 G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "done-menu",
+              "open-task"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [
+          {
+            "ref": "T6",
+            "text": "G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 30m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T2",
+            "text": "G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "jira",
+              "b-pass"
+            ]
+          },
+          {
+            "ref": "T3",
+            "text": "G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Asked 3m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T1",
+            "text": "G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 5h ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-fail"
+            ]
+          }
+        ],
+        "issue_cards": [
+          {
+            "ref": "B1",
+            "text": "Test gap 40m ago No test for an expired challenge G1",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "T1 Add the WebAuthn · 2:20 PM",
+            "goal_title": "Sign-in with passkeys",
+            "goal_none": false,
+            "selected": true,
+            "chips": [
+              "k-gap"
+            ]
+          }
+        ],
+        "goal_bar": {
+          "text": "Sign-in with passkeys 1 of 4 done · 1 needs you · 1 working · 1 in the backlog Open goal",
+          "acts": [
+            "goal-pick"
+          ]
+        },
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "goal G2 paused",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "api",
+          "goal": "G2",
+          "done": "7d"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 2,
+            "open_issues": 9,
+            "done_hidden": 0
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions api shell Idle api",
+          "acts": [
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-idle",
+              "text": "api shell Idle api",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "api shell · double-click to rename",
+              "project_title": "/tmp/api",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all 9 more on the Backlog page Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Queued 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Working 0 Nothing here",
+            "acts": [],
+            "drop": true
+          },
+          {
+            "text": "Needs you 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Done 0 Nothing here",
+            "acts": [
+              "done-menu"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [],
+        "issue_cards": [],
+        "goal_bar": {
+          "text": "Faster builds 3 of 3 done · Paused Open goal",
+          "acts": [
+            "goal-pick"
+          ]
+        },
+        "done_menu": {
+          "text": "Show Last 24 hours ✓ Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "goal G3 deprioritized",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "webapp",
+          "goal": "G3",
+          "done": "all"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 2,
+            "open_issues": 9,
+            "done_hidden": 0
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions T3 Settings Needs you webapp Settings page: manage passkeys T2 Sign in with a passkey Working webapp Sign in with a passkey new name Idle webapp A title without a ref stubborn Idle webapp s-noname Idle webapp",
+          "acts": [
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-needs",
+              "text": "T3 Settings Needs you webapp Settings page: manage passkeys",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T3 Settings · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "s-work",
+              "text": "T2 Sign in with a passkey Working webapp Sign in with a passkey",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T2 Sign in with a passkey · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-ren",
+              "text": "new name Idle webapp A title without a ref",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Renaming in Midna…",
+              "project_title": "/tmp/webapp",
+              "renaming": true,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-err",
+              "text": "stubborn Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Last rename failed: Midna said no · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-noname",
+              "text": "s-noname Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": " · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all Follow-up PROJ-40 10m ago Ticket with key G3 9 more on the Backlog page",
+            "acts": [
+              "open-issue"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Queued 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Working 0 Nothing here",
+            "acts": [],
+            "drop": true
+          },
+          {
+            "text": "Needs you 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Done 0 Nothing here",
+            "acts": [
+              "done-menu"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [],
+        "issue_cards": [
+          {
+            "ref": "B3",
+            "text": "Follow-up PROJ-40 10m ago Ticket with key G3",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "From your answer · 2:50 PM",
+            "goal_title": "Docs refresh",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-follow",
+              "st-ticket"
+            ]
+          }
+        ],
+        "goal_bar": {
+          "text": "Docs refresh 0 of 2 done · 1 working · 2 in the backlog · Deprioritized Open goal",
+          "acts": [
+            "goal-pick"
+          ]
+        },
+        "done_menu": {
+          "text": "Show Last 24 hours Last 7 days ✓ Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "done hidden 24h",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "24h"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 1
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions T3 Settings Needs you webapp Settings page: manage passkeys T2 Sign in with a passkey Working webapp Sign in with a passkey api shell Idle api new name Idle webapp A title without a ref stubborn Idle webapp s-noname Idle webapp",
+          "acts": [
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-needs",
+              "text": "T3 Settings Needs you webapp Settings page: manage passkeys",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T3 Settings · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "s-work",
+              "text": "T2 Sign in with a passkey Working webapp Sign in with a passkey",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T2 Sign in with a passkey · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-idle",
+              "text": "api shell Idle api",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "api shell · double-click to rename",
+              "project_title": "/tmp/api",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-ren",
+              "text": "new name Idle webapp A title without a ref",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Renaming in Midna…",
+              "project_title": "/tmp/webapp",
+              "renaming": true,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-err",
+              "text": "stubborn Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Last rename failed: Midna said no · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-noname",
+              "text": "s-noname Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": " · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all Test gap 40m ago No test for an expired challenge G1 Bug Now a task 1d ago Made into a task Not in a goal Follow-up PROJ-40 10m ago Ticket with key G3 Clean-up Ticket asked for 2m ago Ticket being created Not in a goal Odd Won’t do 3d ago Dropped Not in a goal Issue just now Nobody reported it Not in a goal 7 more on the Backlog page",
+            "acts": [
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Queued 3 T5 5m ago Upgrade the HTTP client High webapp G1 · T6 30m ago Queued in a goal webapp T7 1m ago Starting now api",
+            "acts": [
+              "open-task",
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Working 2 G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey T8 2h ago API rate limits api PR #3 · Running api shell",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": true
+          },
+          {
+            "text": "Needs you 2 G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Done 3 G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn T10 20h ago Failed migration api PR #11 · Unknown Failed T11 2h ago No PR number api 1 older task hidden · show more",
+            "acts": [
+              "done-menu",
+              "open-task",
+              "open-task",
+              "open-task",
+              "done-window"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [
+          {
+            "ref": "T5",
+            "text": "T5 5m ago Upgrade the HTTP client High webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 5m ago",
+            "goal_title": null,
+            "drag": true,
+            "drag_title": "Drag to Working to start it",
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "high",
+              "repo"
+            ]
+          },
+          {
+            "ref": "T6",
+            "text": "G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 30m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T7",
+            "text": "T7 1m ago Starting now api",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 1m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T2",
+            "text": "G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "jira",
+              "b-pass"
+            ]
+          },
+          {
+            "ref": "T8",
+            "text": "T8 2h ago API rate limits api PR #3 · Running api shell",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-run"
+            ]
+          },
+          {
+            "ref": "T3",
+            "text": "G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Asked 3m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T9",
+            "text": "T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Lost 12m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "high",
+              "repo",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T1",
+            "text": "G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 5h ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-fail"
+            ]
+          },
+          {
+            "ref": "T10",
+            "text": "T10 20h ago Failed migration api PR #11 · Unknown Failed",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Stopped 20h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-unk",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T11",
+            "text": "T11 2h ago No PR number api",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 2h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          }
+        ],
+        "issue_cards": [
+          {
+            "ref": "B1",
+            "text": "Test gap 40m ago No test for an expired challenge G1",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "T1 Add the WebAuthn · 2:20 PM",
+            "goal_title": "Sign-in with passkeys",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-gap"
+            ]
+          },
+          {
+            "ref": "B2",
+            "text": "Bug Now a task 1d ago Made into a task Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · Oct 6",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-bug",
+              "st-task"
+            ]
+          },
+          {
+            "ref": "B3",
+            "text": "Follow-up PROJ-40 10m ago Ticket with key G3",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "From your answer · 2:50 PM",
+            "goal_title": "Docs refresh",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-follow",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B4",
+            "text": "Clean-up Ticket asked for 2m ago Ticket being created Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 2:58 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-clean",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B5",
+            "text": "Odd Won’t do 3d ago Dropped Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Found by a terminal · Oct 4",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-odd",
+              "st-drop"
+            ]
+          },
+          {
+            "ref": "B6",
+            "text": "Issue just now Nobody reported it Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 3:00 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-"
+            ]
+          }
+        ],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "done empty with hidden 7d",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "7d"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "s-idle",
+              "name": "api shell",
+              "project": "api",
+              "project_path": "/tmp/api",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": null,
+              "can_take": true,
+              "close": "close",
+              "closing": false,
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-work",
+              "name": "T2 Sign in with a passkey",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working",
+              "task_ref": "T2",
+              "task_title": "Sign in with a passkey",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-needs",
+              "name": "T3 Settings",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs",
+              "task_ref": "T3",
+              "task_title": "Settings page: manage passkeys",
+              "close": "force",
+              "renaming": null,
+              "rename_error": null
+            },
+            {
+              "id": "s-ren",
+              "name": "old name",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle",
+              "task_ref": null,
+              "task_title": "A title without a ref",
+              "renaming": "new name",
+              "rename_error": null
+            },
+            {
+              "id": "s-err",
+              "name": "stubborn",
+              "project": "webapp",
+              "project_path": null,
+              "status": "weird",
+              "task_ref": null,
+              "task_title": null,
+              "renaming": null,
+              "rename_error": "Midna said no"
+            },
+            {
+              "id": "s-noname",
+              "name": "",
+              "project": "webapp",
+              "status": "idle"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "done_hidden": 14
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions T3 Settings Needs you webapp Settings page: manage passkeys T2 Sign in with a passkey Working webapp Sign in with a passkey api shell Idle api new name Idle webapp A title without a ref stubborn Idle webapp s-noname Idle webapp",
+          "acts": [
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-task",
+            "open-session",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "s-needs",
+              "text": "T3 Settings Needs you webapp Settings page: manage passkeys",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T3 Settings · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "s-work",
+              "text": "T2 Sign in with a passkey Working webapp Sign in with a passkey",
+              "acts": [
+                "open-session",
+                "open-task"
+              ],
+              "name_title": "T2 Sign in with a passkey · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-idle",
+              "text": "api shell Idle api",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "api shell · double-click to rename",
+              "project_title": "/tmp/api",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-ren",
+              "text": "new name Idle webapp A title without a ref",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Renaming in Midna…",
+              "project_title": "/tmp/webapp",
+              "renaming": true,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-err",
+              "text": "stubborn Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "Last rename failed: Midna said no · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "s-noname",
+              "text": "s-noname Idle webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": " · double-click to rename",
+              "project_title": "",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 0 See all Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Queued 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Working 0 Nothing here",
+            "acts": [],
+            "drop": true
+          },
+          {
+            "text": "Needs you 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Done 0 Nothing in the last 7 days 14 older tasks hidden · show more",
+            "acts": [
+              "done-menu",
+              "done-window"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [],
+        "issue_cards": [],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show Last 24 hours ✓ Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": true
+        }
+      }
+    },
+    {
+      "name": "empty board, filter api",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "api",
+          "goal": "all",
+          "done": "all"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [],
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {}
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions No Midna terminals in api yet. They show up here once Midna lists them.",
+          "acts": [],
+          "cards": []
+        },
+        "columns": [
+          {
+            "text": "Backlog 0 See all Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Queued 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Working 0 Nothing here",
+            "acts": [],
+            "drop": true
+          },
+          {
+            "text": "Needs you 0 Nothing here",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Done 0 Nothing here",
+            "acts": [
+              "done-menu"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [],
+        "issue_cards": [],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show Last 24 hours Last 7 days ✓ Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": true
+        }
+      }
+    },
+    {
+      "name": "many sessions",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "all",
+          "goal": "all"
+        },
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "projects": [
+            {
+              "name": "api",
+              "path": "/tmp/api"
+            },
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "m0",
+              "name": "term 0",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs"
+            },
+            {
+              "id": "m1",
+              "name": "term 1",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working"
+            },
+            {
+              "id": "m2",
+              "name": "term 2",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle"
+            },
+            {
+              "id": "m3",
+              "name": "term 3",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs"
+            },
+            {
+              "id": "m4",
+              "name": "term 4",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working"
+            },
+            {
+              "id": "m5",
+              "name": "term 5",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "idle"
+            },
+            {
+              "id": "m6",
+              "name": "term 6",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "needs"
+            },
+            {
+              "id": "m7",
+              "name": "term 7",
+              "project": "webapp",
+              "project_path": "/tmp/webapp",
+              "status": "working"
+            }
+          ],
+          "session_projects": [
+            "api",
+            "webapp"
+          ],
+          "goals": [
+            {
+              "id": 1,
+              "ref": "G1",
+              "name": "Sign-in with passkeys",
+              "project": "webapp",
+              "total": 4,
+              "done": 1,
+              "active": 2,
+              "needs": 1,
+              "open_issues": 1,
+              "prs_open": [],
+              "archived": false
+            },
+            {
+              "id": 2,
+              "ref": "G2",
+              "name": "Faster builds",
+              "project": "api",
+              "total": 3,
+              "done": 3,
+              "active": 0,
+              "needs": 0,
+              "open_issues": 0,
+              "prs_open": [
+                41
+              ],
+              "paused": true
+            },
+            {
+              "id": 3,
+              "ref": "G3",
+              "name": "Docs refresh",
+              "project": "webapp",
+              "total": 2,
+              "done": 0,
+              "active": 1,
+              "needs": 0,
+              "open_issues": 2,
+              "prs_open": [],
+              "deprioritized": true
+            }
+          ],
+          "columns": {
+            "backlog": [
+              {
+                "id": 1,
+                "ref": "B1",
+                "kind": "gap",
+                "title": "No test for an expired challenge",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "goal_id": 1,
+                "project": "webapp",
+                "state": "open",
+                "source": "terminal",
+                "found_by_name": "T1 Add the WebAuthn",
+                "found_by_task": 1,
+                "created_at": "2026-10-07T14:20:00.000Z"
+              },
+              {
+                "id": 2,
+                "ref": "B2",
+                "kind": "bug",
+                "title": "Made into a task",
+                "goal": null,
+                "goal_id": null,
+                "project": "webapp",
+                "state": "task",
+                "task_id": 12,
+                "source": "you",
+                "found_by_name": "Alex",
+                "created_at": "2026-10-06T09:00:00.000Z"
+              },
+              {
+                "id": 3,
+                "ref": "B3",
+                "kind": "follow",
+                "title": "Ticket with key",
+                "goal_id": 3,
+                "project": "webapp",
+                "state": "ticket",
+                "jira_key": "PROJ-40",
+                "source": "answer",
+                "created_at": "2026-10-07T14:50:00.000Z"
+              },
+              {
+                "id": 4,
+                "ref": "B4",
+                "kind": "clean",
+                "title": "Ticket being created",
+                "goal": null,
+                "project": "api",
+                "state": "ticket",
+                "jira_key": null,
+                "created_at": "2026-10-07T14:58:00.000Z"
+              },
+              {
+                "id": 5,
+                "ref": "B5",
+                "kind": "odd",
+                "title": "Dropped",
+                "goal": null,
+                "project": "api",
+                "state": "drop",
+                "source": "terminal",
+                "created_at": "2026-10-04T15:00:00.000Z"
+              },
+              {
+                "id": 6,
+                "ref": "B6",
+                "kind": "",
+                "title": "Nobody reported it",
+                "goal": null,
+                "project": "webapp",
+                "state": "open",
+                "created_at": "2026-10-07T15:00:00.000Z"
+              }
+            ],
+            "backlog_open": 9,
+            "queued": [
+              {
+                "id": 5,
+                "ref": "T5",
+                "title": "Upgrade the HTTP client",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "high",
+                "when": "2026-10-07T14:55:00.000Z",
+                "goal": null,
+                "jira": null,
+                "pr": null,
+                "starting": false
+              },
+              {
+                "id": 6,
+                "ref": "T6",
+                "title": "Queued in a goal",
+                "project": "webapp",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:30:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "starting": false,
+                "blocked": true
+              },
+              {
+                "id": 7,
+                "ref": "T7",
+                "title": "Starting now",
+                "project": "api",
+                "status": "queued",
+                "priority": "normal",
+                "when": "2026-10-07T14:59:00.000Z",
+                "goal": null,
+                "starting": true
+              }
+            ],
+            "working": [
+              {
+                "id": 2,
+                "ref": "T2",
+                "title": "Sign in with a passkey",
+                "project": "webapp",
+                "status": "working",
+                "priority": "normal",
+                "when": "2026-10-07T14:58:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T2 Sign in with a passkey",
+                "jira": {
+                  "key": "PROJ-12",
+                  "status": "In Progress",
+                  "url": "https://x.atlassian.net/browse/PROJ-12"
+                },
+                "pr": {
+                  "repo": "webapp",
+                  "num": 12,
+                  "url": "https://github.com/x/webapp/pull/12",
+                  "state": "OPEN",
+                  "checks": "pass"
+                }
+              },
+              {
+                "id": 8,
+                "ref": "T8",
+                "title": "API rate limits",
+                "project": "api",
+                "status": "working",
+                "priority": "normal",
+                "updated_at": "2026-10-07T13:30:00.000Z",
+                "goal": null,
+                "who": "api shell",
+                "pr": {
+                  "num": 3,
+                  "checks": "pending",
+                  "state": "OPEN"
+                }
+              }
+            ],
+            "needs": [
+              {
+                "id": 3,
+                "ref": "T3",
+                "title": "Settings page: manage passkeys",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "normal",
+                "when": "2026-10-07T14:57:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "question": "Should removing the last passkey require a password re-check?",
+                "who": "T3 Settings",
+                "needs_reason": "question"
+              },
+              {
+                "id": 9,
+                "ref": "T9",
+                "title": "Lost one",
+                "project": "webapp",
+                "status": "needs",
+                "priority": "high",
+                "when": "2026-10-07T14:48:00.000Z",
+                "goal": null,
+                "lost": true,
+                "needs_reason": "lost",
+                "who": null
+              }
+            ],
+            "done": [
+              {
+                "id": 1,
+                "ref": "T1",
+                "title": "Add the WebAuthn registration endpoint",
+                "project": "webapp",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T10:00:00.000Z",
+                "goal": {
+                  "id": 1,
+                  "ref": "G1",
+                  "name": "Sign-in with passkeys"
+                },
+                "who": "T1 Add the WebAuthn",
+                "pr": {
+                  "num": 10,
+                  "checks": "fail",
+                  "state": "MERGED"
+                }
+              },
+              {
+                "id": 10,
+                "ref": "T10",
+                "title": "Failed migration",
+                "project": "api",
+                "status": "done",
+                "failed": true,
+                "priority": "normal",
+                "when": "2026-10-06T19:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": 11,
+                  "checks": "weird"
+                }
+              },
+              {
+                "id": 11,
+                "ref": "T11",
+                "title": "No PR number",
+                "project": "api",
+                "status": "done",
+                "priority": "normal",
+                "when": "2026-10-07T13:00:00.000Z",
+                "goal": null,
+                "pr": {
+                  "num": null,
+                  "checks": "pass"
+                }
+              }
+            ]
+          },
+          "counts": {
+            "needs": 2,
+            "open_issues": 9,
+            "done_hidden": 0
+          }
+        },
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions Showing 6 of 8 term 0 Needs you webapp term 3 Needs you webapp term 6 Needs you webapp term 1 Working webapp term 4 Working webapp term 7 Working webapp",
+          "acts": [
+            "open-session",
+            "open-session",
+            "open-session",
+            "open-session",
+            "open-session",
+            "open-session"
+          ],
+          "cards": [
+            {
+              "id": "m0",
+              "text": "term 0 Needs you webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "term 0 · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "m3",
+              "text": "term 3 Needs you webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "term 3 · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "m6",
+              "text": "term 6 Needs you webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "term 6 · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": true,
+              "gone": false
+            },
+            {
+              "id": "m1",
+              "text": "term 1 Working webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "term 1 · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "m4",
+              "text": "term 4 Working webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "term 4 · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            },
+            {
+              "id": "m7",
+              "text": "term 7 Working webapp",
+              "acts": [
+                "open-session"
+              ],
+              "name_title": "term 7 · double-click to rename",
+              "project_title": "/tmp/webapp",
+              "renaming": false,
+              "needs": false,
+              "gone": false
+            }
+          ]
+        },
+        "columns": [
+          {
+            "text": "Backlog 9 See all Test gap 40m ago No test for an expired challenge G1 Bug Now a task 1d ago Made into a task Not in a goal Follow-up PROJ-40 10m ago Ticket with key G3 Clean-up Ticket asked for 2m ago Ticket being created Not in a goal Odd Won’t do 3d ago Dropped Not in a goal Issue just now Nobody reported it Not in a goal 7 more on the Backlog page",
+            "acts": [
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue",
+              "open-issue"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Queued 3 T5 5m ago Upgrade the HTTP client High webapp G1 · T6 30m ago Queued in a goal webapp T7 1m ago Starting now api",
+            "acts": [
+              "open-task",
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Working 2 G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey T8 2h ago API rate limits api PR #3 · Running api shell",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": true
+          },
+          {
+            "text": "Needs you 2 G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          },
+          {
+            "text": "Done 3 G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn T10 20h ago Failed migration api PR #11 · Unknown Failed T11 2h ago No PR number api",
+            "acts": [
+              "done-menu",
+              "open-task",
+              "open-task",
+              "open-task"
+            ],
+            "drop": false
+          }
+        ],
+        "task_cards": [
+          {
+            "ref": "T5",
+            "text": "T5 5m ago Upgrade the HTTP client High webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 5m ago",
+            "goal_title": null,
+            "drag": true,
+            "drag_title": "Drag to Working to start it",
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "high",
+              "repo"
+            ]
+          },
+          {
+            "ref": "T6",
+            "text": "G1 · T6 30m ago Queued in a goal webapp",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 30m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T7",
+            "text": "T7 1m ago Starting now api",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Added 1m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T2",
+            "text": "G1 · T2 2m ago Sign in with a passkey webapp PROJ-12 PR #12 · Passed T2 Sign in with a passkey",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "jira",
+              "b-pass"
+            ]
+          },
+          {
+            "ref": "T8",
+            "text": "T8 2h ago API rate limits api PR #3 · Running api shell",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Updated 2h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-run"
+            ]
+          },
+          {
+            "ref": "T3",
+            "text": "G1 · T3 3m ago Settings page: manage passkeys webapp T3 Settings",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Asked 3m ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "repo"
+            ]
+          },
+          {
+            "ref": "T9",
+            "text": "T9 12m ago Lost one High webapp Terminal lost",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Lost 12m ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": true,
+            "chips": [
+              "high",
+              "repo",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T1",
+            "text": "G1 · T1 5h ago Add the WebAuthn registration endpoint webapp PR #10 · Failed T1 Add the WebAuthn",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 5h ago",
+            "goal_title": "Sign-in with passkeys",
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-fail"
+            ]
+          },
+          {
+            "ref": "T10",
+            "text": "T10 20h ago Failed migration api PR #11 · Unknown Failed",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Stopped 20h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo",
+              "b-unk",
+              "bad"
+            ]
+          },
+          {
+            "ref": "T11",
+            "text": "T11 2h ago No PR number api",
+            "acts": [
+              "open-task"
+            ],
+            "when_title": "Finished 2h ago",
+            "goal_title": null,
+            "drag": false,
+            "drag_title": null,
+            "selected": false,
+            "needs": false,
+            "chips": [
+              "repo"
+            ]
+          }
+        ],
+        "issue_cards": [
+          {
+            "ref": "B1",
+            "text": "Test gap 40m ago No test for an expired challenge G1",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "T1 Add the WebAuthn · 2:20 PM",
+            "goal_title": "Sign-in with passkeys",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-gap"
+            ]
+          },
+          {
+            "ref": "B2",
+            "text": "Bug Now a task 1d ago Made into a task Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · Oct 6",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-bug",
+              "st-task"
+            ]
+          },
+          {
+            "ref": "B3",
+            "text": "Follow-up PROJ-40 10m ago Ticket with key G3",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "From your answer · 2:50 PM",
+            "goal_title": "Docs refresh",
+            "goal_none": false,
+            "selected": false,
+            "chips": [
+              "k-follow",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B4",
+            "text": "Clean-up Ticket asked for 2m ago Ticket being created Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 2:58 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-clean",
+              "st-ticket"
+            ]
+          },
+          {
+            "ref": "B5",
+            "text": "Odd Won’t do 3d ago Dropped Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Found by a terminal · Oct 4",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-odd",
+              "st-drop"
+            ]
+          },
+          {
+            "ref": "B6",
+            "text": "Issue just now Nobody reported it Not in a goal",
+            "acts": [
+              "open-issue"
+            ],
+            "when_title": "Added by you · 3:00 PM",
+            "goal_title": "",
+            "goal_none": true,
+            "selected": false,
+            "chips": [
+              "k-"
+            ]
+          }
+        ],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": false
+        }
+      }
+    },
+    {
+      "name": "loading",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "24h"
+        },
+        "state": null,
+        "down": null,
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions Loading…",
+          "acts": [],
+          "cards": []
+        },
+        "columns": [
+          {
+            "text": "Backlog Loading…",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Queued Loading…",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Working Loading…",
+            "acts": [],
+            "drop": true
+          },
+          {
+            "text": "Needs you Loading…",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Done Loading…",
+            "acts": [],
+            "drop": false
+          }
+        ],
+        "task_cards": [],
+        "issue_cards": [],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": true
+        }
+      }
+    },
+    {
+      "name": "cannot load",
+      "input": {
+        "fn": "board",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "24h"
+        },
+        "state": null,
+        "down": "Can’t reach the task board server.",
+        "route": {
+          "page": "board",
+          "id": null,
+          "q": {}
+        },
+        "goals": [
+          {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "project": "webapp",
+            "total": 4,
+            "done": 1,
+            "active": 2,
+            "needs": 1,
+            "open_issues": 1,
+            "prs_open": [],
+            "archived": false
+          },
+          {
+            "id": 2,
+            "ref": "G2",
+            "name": "Faster builds",
+            "project": "api",
+            "total": 3,
+            "done": 3,
+            "active": 0,
+            "needs": 0,
+            "open_issues": 0,
+            "prs_open": [
+              41
+            ],
+            "paused": true
+          },
+          {
+            "id": 3,
+            "ref": "G3",
+            "name": "Docs refresh",
+            "project": "webapp",
+            "total": 2,
+            "done": 0,
+            "active": 1,
+            "needs": 0,
+            "open_issues": 2,
+            "prs_open": [],
+            "deprioritized": true
+          }
+        ]
+      },
+      "expect": {
+        "strip": {
+          "text": "Sessions Can’t load the sessions.",
+          "acts": [],
+          "cards": []
+        },
+        "columns": [
+          {
+            "text": "Backlog Can’t load the board.",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Queued Can’t load the board.",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Working Can’t load the board.",
+            "acts": [],
+            "drop": true
+          },
+          {
+            "text": "Needs you Can’t load the board.",
+            "acts": [],
+            "drop": false
+          },
+          {
+            "text": "Done Can’t load the board.",
+            "acts": [],
+            "drop": false
+          }
+        ],
+        "task_cards": [],
+        "issue_cards": [],
+        "goal_bar": null,
+        "done_menu": {
+          "text": "Show ✓ Last 24 hours Last 7 days Everything Close their terminals",
+          "acts": [
+            "done-menu",
+            "done-window",
+            "done-window",
+            "done-window",
+            "close-done"
+          ],
+          "close_disabled": true
+        }
+      }
+    },
+    {
+      "name": "state query {\"project\":\"all\",\"goal\":\"all\"}",
+      "input": {
+        "fn": "state_query",
+        "filter": {
+          "project": "all",
+          "goal": "all"
+        },
+        "keep": []
+      },
+      "expect": {
+        "project": "all",
+        "goal": "all",
+        "done": "24h"
+      }
+    },
+    {
+      "name": "state query {\"project\":\"webapp\",\"goal\":\"G1\",\"done\":\"7d\"}",
+      "input": {
+        "fn": "state_query",
+        "filter": {
+          "project": "webapp",
+          "goal": "G1",
+          "done": "7d"
+        },
+        "keep": [
+          "B3",
+          "B4"
+        ]
+      },
+      "expect": {
+        "project": "webapp",
+        "goal": "1",
+        "done": "7d",
+        "keep": "B3,B4"
+      }
+    },
+    {
+      "name": "state query {\"project\":\"api\",\"goal\":\"G2\",\"done\":\"all\"}",
+      "input": {
+        "fn": "state_query",
+        "filter": {
+          "project": "api",
+          "goal": "G2",
+          "done": "all"
+        },
+        "keep": []
+      },
+      "expect": {
+        "project": "api",
+        "goal": "2",
+        "done": "all"
+      }
+    },
+    {
+      "name": "goal-pick all from {\"project\":\"webapp\",\"goal\":\"G1\",\"done\":\"24h\"}",
+      "input": {
+        "fn": "goal_pick",
+        "filter": {
+          "project": "webapp",
+          "goal": "G1",
+          "done": "24h"
+        },
+        "arg": "all"
+      },
+      "expect": {
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "24h"
+        },
+        "keep": []
+      }
+    },
+    {
+      "name": "goal-pick G2 from {\"project\":\"all\",\"goal\":\"all\",\"done\":\"7d\"}",
+      "input": {
+        "fn": "goal_pick",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "7d"
+        },
+        "arg": "G2"
+      },
+      "expect": {
+        "filter": {
+          "project": "api",
+          "goal": "G2",
+          "done": "7d"
+        },
+        "keep": []
+      }
+    },
+    {
+      "name": "goal-pick G2 from {\"project\":\"api\",\"goal\":\"G2\"}",
+      "input": {
+        "fn": "goal_pick",
+        "filter": {
+          "project": "api",
+          "goal": "G2"
+        },
+        "arg": "G2"
+      },
+      "expect": {
+        "filter": {
+          "project": "all",
+          "goal": "all"
+        },
+        "keep": []
+      }
+    },
+    {
+      "name": "done-window 7d",
+      "input": {
+        "fn": "done_window",
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "24h"
+        },
+        "arg": "7d"
+      },
+      "expect": {
+        "filter": {
+          "project": "all",
+          "goal": "all",
+          "done": "7d"
+        },
+        "keep": [
+          "B1"
+        ]
+      }
+    },
+    {
+      "name": "done-window all",
+      "input": {
+        "fn": "done_window",
+        "filter": {
+          "project": "webapp",
+          "goal": "G1"
+        },
+        "arg": "all"
+      },
+      "expect": {
+        "filter": {
+          "project": "webapp",
+          "goal": "G1",
+          "done": "all"
+        },
+        "keep": [
+          "B1"
+        ]
+      }
+    },
+    {
+      "name": "keepIssue on board",
+      "input": {
+        "fn": "keep_issue",
+        "page": "board",
+        "keep": [
+          "B1"
+        ],
+        "add": [
+          "B1",
+          "B2"
+        ]
+      },
+      "expect": [
+        "B1",
+        "B2"
+      ]
+    },
+    {
+      "name": "keepIssue on backlog",
+      "input": {
+        "fn": "keep_issue",
+        "page": "backlog",
+        "keep": [
+          "B1"
+        ],
+        "add": [
+          "B1",
+          "B2"
+        ]
+      },
+      "expect": [
+        "B1"
+      ]
+    },
+    {
+      "name": "nameView a",
+      "input": {
+        "fn": "name_view",
+        "session": {
+          "id": "a",
+          "name": "plain"
+        }
+      },
+      "expect": {
+        "text": "plain",
+        "renaming": false,
+        "title": "plain · double-click to rename"
+      }
+    },
+    {
+      "name": "nameView b",
+      "input": {
+        "fn": "name_view",
+        "session": {
+          "id": "b",
+          "name": "old",
+          "renaming": "new"
+        }
+      },
+      "expect": {
+        "text": "new",
+        "renaming": true,
+        "title": "Renaming in Midna…"
+      }
+    },
+    {
+      "name": "nameView c",
+      "input": {
+        "fn": "name_view",
+        "session": {
+          "id": "c",
+          "name": "kept",
+          "rename_error": "Midna said no"
+        }
+      },
+      "expect": {
+        "text": "kept",
+        "renaming": false,
+        "title": "Last rename failed: Midna said no · double-click to rename"
+      }
+    },
+    {
+      "name": "nameView d",
+      "input": {
+        "fn": "name_view",
+        "session": {
+          "id": "d",
+          "name": ""
+        }
+      },
+      "expect": {
+        "text": "d",
+        "renaming": false,
+        "title": " · double-click to rename"
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+[package]
+name = "taskboardd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The task board daemon: the API, the runner that starts Claude terminals in Midna, and the Midna sync"
+
+[lib]
+name = "taskboardd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "taskboardd"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+rusqlite = { version = "0.37", features = ["bundled", "serde_json"] }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+ureq.workspace = true
+clap.workspace = true
+toml = "0.8"
+shlex = "1"
+regex.workspace = true
+rand = "0.8"
+parking_lot = "0.12"
+mime_guess = "2"
+dirs = "5"
+once_cell.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

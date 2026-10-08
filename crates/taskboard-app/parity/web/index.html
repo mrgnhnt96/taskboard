@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task board</title>
+<link rel="icon" href="/tasks/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tasks/static/app.css">
+<script>
+  (function () {
+    var q = new URLSearchParams(location.search);
+    var t = q.get('theme');
+    if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+    if (q.get('mock') === '1') document.write('<script src="/tasks/static/mock.js"><\/script>');
+  })();
+</script>
+</head>
+<body>
+<div id="banner"></div>
+<div id="page"></div>
+<footer id="statusbar" aria-label="Status"></footer>
+<div id="panel-root"></div>
+<div id="modal-root"></div>
+<div id="picker-root"></div>
+<div id="menu-root"></div>
+<div id="toast-root" aria-live="polite"></div>
+<script src="/tasks/static/app.js"></script>
+<script src="/tasks/static/pages.js"></script>
+<script src="/tasks/static/sessions.js"></script>
+</body>
+</html>

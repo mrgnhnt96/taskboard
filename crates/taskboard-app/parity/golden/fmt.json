@@ -1,0 +1,384 @@
+{
+  "now": "2026-10-07T15:00:00.000Z",
+  "cases": [
+    {
+      "name": "ago 0m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T15:00:00.000Z"
+      },
+      "expect": "just now"
+    },
+    {
+      "name": "ago 0.4m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T14:59:36.000Z"
+      },
+      "expect": "just now"
+    },
+    {
+      "name": "ago 1m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T14:59:00.000Z"
+      },
+      "expect": "1m ago"
+    },
+    {
+      "name": "ago 59m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T14:01:00.000Z"
+      },
+      "expect": "59m ago"
+    },
+    {
+      "name": "ago 60m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T14:00:00.000Z"
+      },
+      "expect": "1h ago"
+    },
+    {
+      "name": "ago 61m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T13:59:00.000Z"
+      },
+      "expect": "1h ago"
+    },
+    {
+      "name": "ago 90m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-07T13:30:00.000Z"
+      },
+      "expect": "2h ago"
+    },
+    {
+      "name": "ago 1380m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-06T16:00:00.000Z"
+      },
+      "expect": "23h ago"
+    },
+    {
+      "name": "ago 1440m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-06T15:00:00.000Z"
+      },
+      "expect": "1d ago"
+    },
+    {
+      "name": "ago 4320m",
+      "input": {
+        "fn": "ago",
+        "iso": "2026-10-04T15:00:00.000Z"
+      },
+      "expect": "3d ago"
+    },
+    {
+      "name": "span 0",
+      "input": {
+        "fn": "span",
+        "m": 0
+      },
+      "expect": "under a minute"
+    },
+    {
+      "name": "span 1",
+      "input": {
+        "fn": "span",
+        "m": 1
+      },
+      "expect": "1m"
+    },
+    {
+      "name": "span 59",
+      "input": {
+        "fn": "span",
+        "m": 59
+      },
+      "expect": "59m"
+    },
+    {
+      "name": "span 60",
+      "input": {
+        "fn": "span",
+        "m": 60
+      },
+      "expect": "1h"
+    },
+    {
+      "name": "span 61",
+      "input": {
+        "fn": "span",
+        "m": 61
+      },
+      "expect": "1h 1m"
+    },
+    {
+      "name": "span 125",
+      "input": {
+        "fn": "span",
+        "m": 125
+      },
+      "expect": "2h 5m"
+    },
+    {
+      "name": "span 1440",
+      "input": {
+        "fn": "span",
+        "m": 1440
+      },
+      "expect": "1d 0h"
+    },
+    {
+      "name": "span 1530",
+      "input": {
+        "fn": "span",
+        "m": 1530
+      },
+      "expect": "1d 2h"
+    },
+    {
+      "name": "span 2940",
+      "input": {
+        "fn": "span",
+        "m": 2940
+      },
+      "expect": "2d 1h"
+    },
+    {
+      "name": "clock12 00:00",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "00:00"
+      },
+      "expect": "12am"
+    },
+    {
+      "name": "clock12 09:00",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "09:00"
+      },
+      "expect": "9am"
+    },
+    {
+      "name": "clock12 09:30",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "09:30"
+      },
+      "expect": "9:30am"
+    },
+    {
+      "name": "clock12 12:00",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "12:00"
+      },
+      "expect": "12pm"
+    },
+    {
+      "name": "clock12 12:05",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "12:05"
+      },
+      "expect": "12:05pm"
+    },
+    {
+      "name": "clock12 15:00",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "15:00"
+      },
+      "expect": "3pm"
+    },
+    {
+      "name": "clock12 23:30",
+      "input": {
+        "fn": "clock12",
+        "hhmm": "23:30"
+      },
+      "expect": "11:30pm"
+    },
+    {
+      "name": "whenLine 0 queued",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "queued",
+          "when": "2026-10-07T14:55:00.000Z"
+        }
+      },
+      "expect": "Added 5m ago"
+    },
+    {
+      "name": "whenLine 1 planned",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "planned",
+          "when": "2026-10-07T13:00:00.000Z"
+        }
+      },
+      "expect": "Added 2h ago"
+    },
+    {
+      "name": "whenLine 2 working",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "working",
+          "when": "2026-10-07T14:59:00.000Z"
+        }
+      },
+      "expect": "Updated 1m ago"
+    },
+    {
+      "name": "whenLine 3 needs",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "needs",
+          "lost": true,
+          "when": "2026-10-07T14:57:00.000Z"
+        }
+      },
+      "expect": "Lost 3m ago"
+    },
+    {
+      "name": "whenLine 4 needs",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "needs",
+          "question": "q?",
+          "when": "2026-10-07T14:57:00.000Z"
+        }
+      },
+      "expect": "Asked 3m ago"
+    },
+    {
+      "name": "whenLine 5 needs",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "needs",
+          "when": "2026-10-07T14:57:00.000Z"
+        }
+      },
+      "expect": "Updated 3m ago"
+    },
+    {
+      "name": "whenLine 6 done",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "done",
+          "failed": true,
+          "when": "2026-10-06T09:00:00.000Z"
+        }
+      },
+      "expect": "Stopped 1d ago"
+    },
+    {
+      "name": "whenLine 7 done",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "done",
+          "when": "2026-10-06T09:00:00.000Z"
+        }
+      },
+      "expect": "Finished 1d ago"
+    },
+    {
+      "name": "whenLine 8 done",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "done",
+          "updated_at": "2026-10-07T14:58:00.000Z"
+        }
+      },
+      "expect": "Finished 2m ago"
+    },
+    {
+      "name": "whenLine 9 done",
+      "input": {
+        "fn": "whenLine",
+        "task": {
+          "status": "done"
+        }
+      },
+      "expect": ""
+    },
+    {
+      "name": "ref {\"id\":4}",
+      "input": {
+        "fn": "ref",
+        "x": {
+          "id": 4
+        },
+        "p": "T"
+      },
+      "expect": "T4"
+    },
+    {
+      "name": "ref {\"ref\":\"G2\",\"id\":2}",
+      "input": {
+        "fn": "ref",
+        "x": {
+          "ref": "G2",
+          "id": 2
+        },
+        "p": "G"
+      },
+      "expect": "G2"
+    },
+    {
+      "name": "ref 7",
+      "input": {
+        "fn": "ref",
+        "x": 7,
+        "p": "B"
+      },
+      "expect": "B7"
+    },
+    {
+      "name": "ref \"t9\"",
+      "input": {
+        "fn": "ref",
+        "x": "t9",
+        "p": "T"
+      },
+      "expect": "T9"
+    },
+    {
+      "name": "ref \"\"",
+      "input": {
+        "fn": "ref",
+        "x": "",
+        "p": "T"
+      },
+      "expect": ""
+    },
+    {
+      "name": "ref null",
+      "input": {
+        "fn": "ref",
+        "x": null,
+        "p": "T"
+      },
+      "expect": ""
+    }
+  ]
+}

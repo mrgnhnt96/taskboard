@@ -1,0 +1,86 @@
+# taskboard configuration. Copy to ~/.config/taskboard/config.toml (or point TASKBOARD_CONFIG at it).
+# Every key is optional; the values below are the defaults unless marked "example".
+
+# The person who runs the board. Agents are told to ask them; defaults to the first name in
+# `git config --global user.name`.
+# owner = "Alex"                      # example
+
+host = "127.0.0.1"
+port = 8792                          # env TASKBOARD_PORT
+data = "~/.config/taskboard"         # env TASKBOARD_DATA: tasks.db, tasks/T<n>.md, spool/, statusline/, server.log
+# page_url = "taskboard://"   # where a clicked notification goes (Taskboard.app's URL scheme)
+
+# Midna, the terminal app the board drives through its CLI (`midna call …`).
+midna = "~/.local/bin/midna"         # env TASKBOARD_MIDNA
+midna_bundle = "com.mrgnhnt.midna"   # opened with `open -g -b` when Midna isn't running
+open_midna = true
+notify = true                        # desktop notifications through Midna
+
+claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening
+claude_projects = "~/.claude/projects"
+
+# The runner starts terminals, sends messages and moves Jira tickets. It's on for the default data
+# directory and off for any other (so a test board never opens terminals). env TASKBOARD_RUNNER=1|0
+# runner = true
+
+[intervals]
+runner = 5.0
+spool = 10.0
+prs = 60.0
+midna_sync = 3.0
+midna_up = 20.0
+running_job_expiry = 360.0
+pending_job_expiry = 3600.0
+gone_after_missed = 2
+md_debounce = 1.0
+
+# The hours agents may start in. Change them later from the page or with `tb hours`.
+[work_hours]
+on = false
+start = "09:00"
+end = "17:00"
+days = ["mon", "tue", "wed", "thu", "fri"]
+alert_every_mins = 10
+
+# Screen agents' questions with a headless `claude -p` first: when the rules already answer a
+# question, the agent gets the answer and the owner isn't asked.
+[questions]
+screen = false
+model = "claude-haiku-4-5"
+budget_usd = "0.30"
+timeout_secs = 75
+rules = []                           # example: ["~/.claude/CLAUDE.md"]
+
+# Pull requests. Any GitHub, GitLab or Bitbucket PR link an agent reports is linked to its task.
+# GitHub PRs are watched with the gh CLI (which must be logged in).
+[pr]
+watch = true
+wake = true                          # bring a done task back when its PR has failed checks or comments
+agents_merge = false                 # let agents merge an approved, green PR
+gh = "gh"
+no_checks_after_mins = 15.0
+
+# Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
+# env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email).
+[jira]
+site = ""                            # example: "acme.atlassian.net"
+project = ""                         # example: "PROJ"
+email = ""
+token = ""
+keychain_item = "taskboard-jira"
+assignee_account_id = ""
+task_type = "Task"
+bug_type = "Bug"
+epic_type = "Epic"
+labels = []
+in_progress = "In Progress"
+in_review = "In Review"
+done = ""                            # status for a finished task without a PR; empty = leave it
+merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
+
+# Products decide the labels, components and extra fields on a goal's tickets (`tb goal set G1 --product web`).
+# [jira.products.web]
+# what = "the customer-facing web app"
+# labels = ["web"]
+# components = ["Frontend"]
+# fields = { customfield_10001 = { id = "team-uuid" } }

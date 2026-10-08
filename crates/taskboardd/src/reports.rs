@@ -1,0 +1,1232 @@
+//! `POST /report`: what the hooks and `tb` tell the board.
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use once_cell::sync::Lazy;
+use regex::Regex;
+use serde_json::{json, Value};
+
+use crate::app::App;
+use crate::util::*;
+use crate::{board, deliver, fields, handoff, ops, p, prflow, projects, screen, transcript, waitsfor};
+
+static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[Tt](\d+)\]").unwrap());
+static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)$").unwrap());
+static LEADING_MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*\[task-board:[TJ]\d+\]\s*").unwrap());
+
+pub struct Report<'a> {
+    pub app: &'a App,
+    pub body: Value,
+    pub event: String,
+    pub sid: Option<String>,
+    pub claude: Option<String>,
+    pub cwd: Option<String>,
+    pub git: Row,
+    pub spooled: bool,
+    pub at: String,
+    pub waiting_on_background: bool,
+    pub stalled: bool,
+    pub screened: Option<Value>,
+    /// Background commands still running in the transcript, read before the transaction.
+    pub background: usize,
+}
+
+fn s_of(v: &Value, k: &str) -> Option<String> {
+    match v.get(k) {
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+impl<'a> Report<'a> {
+    pub fn new(app: &'a App, body: Value, spooled: bool) -> Self {
+        let at = if spooled { s_of(&body, "at").unwrap_or_else(now_iso) } else { now_iso() };
+        Report {
+            app,
+            event: s_of(&body, "event").unwrap_or_default(),
+            sid: s_of(&body, "session"),
+            claude: s_of(&body, "claude_session"),
+            cwd: s_of(&body, "cwd"),
+            git: body.get("git").and_then(|g| g.as_object()).cloned().unwrap_or_default(),
+            body,
+            spooled,
+            at,
+            waiting_on_background: false,
+            stalled: false,
+            screened: None,
+            background: 0,
+        }
+    }
+
+    fn sid(&self) -> Option<&str> {
+        self.sid.as_deref()
+    }
+
+    pub fn name(&self) -> String {
+        board::session_name(self.app, self.sid(), self.body.get("name").and_then(|v| v.as_str()))
+    }
+
+    fn b(&self, k: &str) -> String {
+        body_str(&self.body, k)
+    }
+
+    fn log(&self, task_id: i64, kind: &str, text: &str, data: Option<Value>) -> Result<i64> {
+        board::log_event_full(self.app, task_id, &self.name(), kind, text, data, Some(&self.at))
+    }
+
+    pub fn task(&self) -> Result<Option<Row>> {
+        let explicit = self.body.get("task").cloned().unwrap_or(Value::Null);
+        if !explicit.is_null() && explicit != "" {
+            let id = need_ref(&explicit, "task")?;
+            return board::get_task(self.app, id).map(Some);
+        }
+        board::task_for_session(self.app, self.sid())
+    }
+
+    fn touch_session(&self, alive: bool) -> Result<()> {
+        let Some(sid) = self.sid() else { return Ok(()) };
+        let app = self.app;
+        let cur = board::get_session(app, Some(sid))?;
+        let mut f = fields!["seen_at" => now_iso(), "last_activity" => self.at];
+        if let Some(b) = self.git.s("branch").filter(|b| !b.is_empty()) {
+            f.push(("branch", json!(b)));
+        }
+        if let Some(u) = self.git.i("uncommitted") {
+            f.push(("dirty", json!(u)));
+        }
+        if let Some(c) = &self.claude {
+            f.push(("claude_session_id", json!(c)));
+        }
+        if let Some(n) = self.body.get("name").and_then(|v| v.as_str()).filter(|n| !n.is_empty()) {
+            f.push(("name", json!(n)));
+            board::note_rename(app, cur.as_ref(), Some(n))?;
+        }
+        if cur.as_ref().map(|c| c.s("source") != Some("midna")).unwrap_or(true) {
+            if let Some(cwd) = &self.cwd {
+                if !cur.as_ref().map(|c| has(c.s("project"))).unwrap_or(false) {
+                    let project = projects::project_for_path(app, Some(cwd))?;
+                    let path = projects::project_path(app, project.as_deref())?.unwrap_or_else(|| cwd.clone());
+                    f.push(("project", json!(project)));
+                    f.push(("project_path", json!(path)));
+                }
+            }
+        }
+        if alive {
+            f.push(("missed", json!(0)));
+            if cur.as_ref().map(|c| c.s("status") == Some("gone")).unwrap_or(false) {
+                f.push(("status", json!("idle")));
+                f.push(("gone_at", Value::Null));
+            }
+        }
+        if cur.is_some() {
+            app.db.update("sessions", &json!(sid), f)?;
+        } else {
+            f.extend(fields!["source" => "hook", "agent" => "claude"]);
+            board::upsert_session(app, sid, f)?;
+        }
+        Ok(())
+    }
+
+    fn set_session_status(&self, status: &str) -> Result<()> {
+        if let Some(sid) = self.sid() {
+            self.app.db.x("UPDATE sessions SET status = ? WHERE id = ? AND status != 'gone'", p![status, sid])?;
+        }
+        Ok(())
+    }
+
+    fn elsewhere(&self, t: &Row) -> Result<bool> {
+        let (Some(cwd), Some(project)) = (&self.cwd, t.s("project").filter(|p| !p.is_empty())) else { return Ok(false) };
+        Ok(projects::project_for_path(self.app, Some(cwd))?.as_deref() != Some(project))
+    }
+
+    fn update_where(&self, t: &Row, turn: bool) -> Result<Row> {
+        let mut ctx = board::task_context(t);
+        let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        let away = self.elsewhere(t)?;
+        if !away {
+            if let Some(b) = self.git.s("branch").filter(|s| !s.is_empty()) {
+                w.insert("branch".into(), json!(b));
+            }
+            if let Some(c) = self.git.s("commit").filter(|s| !s.is_empty()) {
+                w.insert("last_commit".into(), json!(c));
+            }
+            if let Some(c) = self.git.s("sha").filter(|s| !s.is_empty()) {
+                w.insert("sha".into(), json!(c));
+            }
+            if let Some(u) = self.git.i("uncommitted") {
+                w.insert("uncommitted".into(), json!(u));
+            }
+            if let Some(cwd) = &self.cwd {
+                w.insert("worktree".into(), json!(cwd));
+            }
+        }
+        if let Some(c) = &self.claude {
+            w.insert("conversation".into(), json!(c));
+        }
+        ctx.insert("where".into(), Value::Object(w));
+        if turn {
+            let n = ctx.i("turns").unwrap_or(0) + 1;
+            ctx.insert("turns".into(), json!(n));
+        }
+        ctx.insert("saved_at".into(), json!(now_iso()));
+        board::save_context(self.app, t.id(), &ctx, false)?;
+        Ok(ctx)
+    }
+
+    fn sent(&self, t: &Row) -> Result<()> {
+        if let Some(sid) = self.sid() {
+            self.app.db.x("UPDATE sessions SET ctx_task = ?, ctx_version = ? WHERE id = ?", p![t.id(), t.v("ctx_version"), sid])?;
+        }
+        Ok(())
+    }
+
+    fn needs_context(&self, t: &Row) -> Result<bool> {
+        let Some(s) = board::get_session(self.app, self.sid())? else { return Ok(true) };
+        Ok(s.i("ctx_task") != Some(t.id()) || s.i0("ctx_version") < t.i("ctx_version").unwrap_or(1))
+    }
+
+    fn handoff_for(&self, t: &Row) -> Result<String> {
+        let t = board::get_task(self.app, t.id())?;
+        self.sent(&t)?;
+        handoff::build(self.app, t.id())
+    }
+}
+
+pub fn ok(task: Option<&Row>, context: Option<String>) -> Value {
+    let mut out = json!({"ok": true, "task": task.map(|t| json!(rf("task", t.id()))).unwrap_or(Value::Null)});
+    if let Some(c) = context.filter(|c| !c.is_empty()) {
+        out["context"] = json!(c);
+    }
+    out
+}
+
+fn with(mut v: Value, extra: Value) -> Value {
+    if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+        for (k, x) in e {
+            o.insert(k.clone(), x.clone());
+        }
+    }
+    v
+}
+
+fn store_plugin(r: &Report) -> Result<()> {
+    let tb = r.b("tb_path");
+    if !tb.is_empty() {
+        r.app.db.set_setting("tb_path", Some(&tb))?;
+    }
+    let v = r.b("plugin_version");
+    if !v.is_empty() {
+        r.app.db.set_setting("plugin_version", Some(&v))?;
+    }
+    Ok(())
+}
+
+fn on_session_start(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    store_plugin(r)?;
+    let Some(t) = r.task()? else {
+        let s = board::get_session(app, r.sid())?;
+        return Ok(ok(None, Some(handoff::no_task_line(app, s.as_ref().and_then(|s| s.s("project")))?)));
+    };
+    if let (Some(c), true) = (&r.claude, t.s("session_id") == r.sid()) {
+        board::update_task(app, t.id(), fields!["claude_session_id" => c])?;
+    }
+    if t.b("lost") && t.s("session_id") == r.sid() {
+        let src = r.b("source");
+        board::set_working(app, &t, &r.name(), Some(&format!("Terminal came back ({})", if src.is_empty() { "restart" } else { &src })))?;
+    }
+    r.set_session_status(if t.s("status") == Some("working") { "working" } else { "idle" })?;
+    let ctx = r.handoff_for(&t)?;
+    Ok(ok(Some(&t), Some(ctx)))
+}
+
+fn back_to_work(r: &Report, t: &Row, prompt: Option<&str>) -> Result<()> {
+    if t.s("status") != Some("needs") || t.b("lost") {
+        return Ok(());
+    }
+    let reason = t.st("needs_reason");
+    if reason == "attention" || (reason == "question" && (prompt.map(|p| !p.is_empty()).unwrap_or(false) || has(t.s("answered_at")))) {
+        let text = if has(t.s("answered_at")) { "Back to work after your answer" } else { "Back to work" };
+        board::set_working(r.app, t, &r.name(), Some(text))?;
+    }
+    Ok(())
+}
+
+fn on_prompt(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let prompt = r.body.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let m = MARKER_RE.captures(&prompt).and_then(|c| c[1].parse::<i64>().ok());
+    if let Some(sid) = r.sid() {
+        app.db.x("UPDATE sessions SET board_prompt = ? WHERE id = ?", p![m.is_some() as i64, sid])?;
+    }
+    if let Some(n) = m {
+        let t = board::find_task(app, Some(n))?;
+        let mine = board::task_for_session(app, r.sid())?;
+        let handed_over = prompt.contains("You are picking up") || prompt.trim_end().ends_with("] continue");
+        let free = mine.as_ref().map(|m| Some(m.id()) == t.as_ref().map(|t| t.id())).unwrap_or(true) || handed_over;
+        if let Some(t) = &t {
+            if t.s("status") == Some("done") && prflow::waking(app, t)? {
+                prflow::picked_up(app, t, r.sid().unwrap_or(""), &r.name())?;
+                prflow::resumed(app, &board::get_task(app, t.id())?)?;
+                r.set_session_status("working")?;
+                return Ok(ok(Some(t), None));
+            }
+            let already = t.s("session_id") == r.sid() && matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost");
+            if free && !already {
+                if let Some(sid) = r.sid.clone() {
+                    if let Err(why) = board::claim(app, t, &sid, r.claude.as_deref(), None, "Picked up", false)? {
+                        return Ok(ok(None, Some(format!("Task board: {why} Ask {} before working on it.", app.cfg.owner))));
+                    }
+                    let t = board::get_task(app, t.id())?;
+                    r.set_session_status("working")?;
+                    if handoff::is_full_handoff(&prompt, t.id()) {
+                        r.sent(&t)?;
+                        return Ok(ok(Some(&t), None));
+                    }
+                    let c = r.handoff_for(&t)?;
+                    return Ok(ok(Some(&t), Some(c)));
+                }
+            }
+        }
+    }
+    let Some(t) = r.task()? else {
+        if let Some(v) = prflow::visited_by(app, r.sid().unwrap_or(""))? {
+            prflow::resumed(app, &v)?;
+        }
+        return Ok(ok(None, None));
+    };
+    r.set_session_status("working")?;
+    if t.s("session_id") == r.sid() && t.b("lost") {
+        board::set_working(app, &t, &r.name(), Some("Terminal came back"))?;
+    }
+    if t.s("status") == Some("done") {
+        return Ok(ok(Some(&t), None));
+    }
+    back_to_work(r, &board::get_task(app, t.id())?, Some(&prompt))?;
+    let t = board::get_task(app, t.id())?;
+    if r.needs_context(&t)? {
+        let c = r.handoff_for(&t)?;
+        return Ok(ok(Some(&t), Some(c)));
+    }
+    Ok(ok(Some(&t), None))
+}
+
+fn ledger_files(app: &App, sid: &str, task_id: i64, event_id: i64) -> Result<()> {
+    let Some(s) = board::get_session(app, Some(sid))? else { return Ok(()) };
+    let Some(turn) = transcript::last_turn(app, &s) else { return Ok(()) };
+    if turn.files.is_empty() {
+        return Ok(());
+    }
+    app.db.tx(|| {
+        let Some(t) = board::find_task(app, Some(task_id))? else { return Ok(()) };
+        let mut ctx = board::task_context(&t);
+        let mut files: Vec<String> = ctx
+            .get("files")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        for f in &turn.files {
+            files.retain(|x| x != f);
+            files.push(f.clone());
+        }
+        let n = files.len();
+        if n > 100 {
+            files.drain(..n - 100);
+        }
+        ctx.insert("files".into(), json!(files));
+        board::save_context(app, task_id, &ctx, false)?;
+        app.db.x(
+            "UPDATE events SET data = ? WHERE id = ?",
+            p![jdumps(&json!({"files": turn.files, "turn": ctx.get("turns")})), event_id],
+        )?;
+        Ok(())
+    })
+}
+
+fn on_stop(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    r.set_session_status("idle")?;
+    let Some(t) = r.task()? else {
+        return pr_visit_paused(r, &one_line(&r.b("last_message"), 500));
+    };
+    let msg = clip(&r.b("last_message"), 2000);
+    let mut sentence = first_sentence(&msg, 200);
+    if sentence.is_empty() {
+        sentence = "Turn finished".into();
+    }
+    let ctx = r.update_where(&t, true)?;
+    let eid = r.log(t.id(), "turn", &sentence, Some(json!({"turn": ctx.get("turns")})))?;
+    back_to_work(r, &board::get_task(app, t.id())?, None)?;
+    let t = board::get_task(app, t.id())?;
+    if matches!(t.s("status"), Some("working") | Some("queued")) && sentence != "Turn finished" {
+        board::update_task(app, t.id(), fields!["latest" => one_line(&sentence, 200)])?;
+    }
+    if let Some(pr) = find_pr(&msg) {
+        prflow::link_pr(app, &t, &pr, &r.name())?;
+    }
+    r.stalled = stalled(r, &t)?;
+    if let Some(sid) = r.sid.clone() {
+        let tid = t.id();
+        app.defer(Box::new(move |a: &App| {
+            if let Err(e) = ledger_files(a, &sid, tid, eid) {
+                a.info(format!("ledger: {e}"));
+            }
+        }));
+    }
+    app.wake_runner();
+    Ok(ok(Some(&t), None))
+}
+
+fn carry_on_text(app: &App, task: &str) -> String {
+    let owner = &app.cfg.owner;
+    format!(
+        "[task-board] You ended your turn, but {task} isn't finished and nothing is waiting on {owner}: the board \
+         started this turn and you didn't ask a question. Carry on with the next step now. If you really need {owner}, \
+         run tb question; if you need another task's work, run tb wait-for."
+    )
+}
+
+fn nudge(r: &Report) -> Result<Option<Value>> {
+    let Some(t) = r.task()? else { return Ok(None) };
+    r.app.db.x("UPDATE sessions SET board_prompt = 0 WHERE id = ?", p![r.sid()])?;
+    deliver::add(r.app, "carry_on", &carry_on_text(r.app, &rf("task", t.id())), t.id(), None, None)?;
+    deliver::take(r.app, r.sid(), &r.event)
+}
+
+fn stalled(r: &Report, t: &Row) -> Result<bool> {
+    if t.s("status") != Some("working") || t.b("lost") || as_bool(r.body.get("stop_hook_active"), false) {
+        return Ok(false);
+    }
+    let Some(s) = board::get_session(r.app, r.sid())? else { return Ok(false) };
+    if !s.b("board_prompt") || t.s("session_id") != r.sid() {
+        return Ok(false);
+    }
+    Ok(r.background == 0)
+}
+
+fn on_pre_compact(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let ctx = r.update_where(&t, false)?;
+    r.log(t.id(), "checkpoint", "Saved before compacting", Some(json!({"context": ctx})))?;
+    Ok(ok(Some(&t), None))
+}
+
+fn commit_subject(r: &Report, out: &str) -> String {
+    COMMIT_RE
+        .captures(out)
+        .map(|c| c[1].trim().to_string())
+        .or_else(|| r.git.s("commit").filter(|c| !c.is_empty()).map(|c| c.to_string()))
+        .unwrap_or_else(|| "a commit".into())
+}
+
+fn on_commit(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let cmd = r.b("command");
+    let out = clip(&r.b("output"), 1000);
+    r.update_where(&t, false)?;
+    if r.elsewhere(&t)? {
+        return Ok(ok(Some(&t), None));
+    }
+    if cmd.contains("git commit") {
+        let subject = commit_subject(r, &out);
+        r.log(t.id(), "commit", &format!("Committed: {}", one_line(&subject, 200)), None)?;
+        let mut ctx = board::task_context(&board::get_task(app, t.id())?);
+        let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        w.insert("last_commit".into(), json!(subject));
+        ctx.insert("where".into(), Value::Object(w));
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    if cmd.contains("git push") {
+        let branch = r.git.s("branch").filter(|b| !b.is_empty()).unwrap_or("the branch").to_string();
+        r.log(t.id(), "commit", &format!("Pushed {branch}"), None)?;
+        if let Some(pr) = find_pr(&out) {
+            prflow::link_pr(app, &board::get_task(app, t.id())?, &pr, &r.name())?;
+        }
+    }
+    Ok(ok(Some(&t), None))
+}
+
+fn on_session_end(r: &mut Report) -> Result<Value> {
+    let reason = { let x = r.b("reason"); if x.is_empty() { "other".to_string() } else { x } };
+    let t = r.task()?;
+    if reason == "clear" {
+        r.touch_session(true)?;
+        return Ok(ok(t.as_ref(), None));
+    }
+    r.touch_session(false)?;
+    if let Some(sid) = r.sid.clone() {
+        board::session_gone(r.app, &sid, &reason)?;
+    }
+    Ok(ok(t.as_ref(), None))
+}
+
+fn pr_visit_paused(r: &Report, message: &str) -> Result<Value> {
+    let t = prflow::visited_by(r.app, r.sid().unwrap_or(""))?;
+    if let Some(t) = &t {
+        if prflow::stopped(r.app, t, &r.name(), message, false, None)? {
+            r.set_session_status("needs")?;
+        }
+    }
+    Ok(ok(t.as_ref(), None))
+}
+
+fn on_attention(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let kind = r.b("notification_type");
+    if kind == "idle_prompt" && r.background > 0 {
+        r.waiting_on_background = true;
+        return Ok(ok(r.task()?.as_ref(), None));
+    }
+    r.set_session_status("needs")?;
+    let Some(t) = r.task()? else {
+        let m = one_line(&{ let m = r.b("message"); if m.is_empty() { r.b("title") } else { m } }, 500);
+        return pr_visit_paused(r, &m);
+    };
+    if t.s("status") == Some("done") {
+        return Ok(ok(Some(&t), None));
+    }
+    if !(t.s("status") == Some("working") || (t.s("status") == Some("needs") && t.s("needs_reason") == Some("attention"))) {
+        return Ok(ok(Some(&t), None));
+    }
+    let default = if kind == "idle_prompt" { "Waiting for your input in the terminal" } else { "Waiting for you in the terminal" };
+    let raw = { let m = r.b("message"); if m.is_empty() { r.b("title") } else { m } };
+    let message = one_line(if raw.is_empty() { default } else { &raw }, 500);
+    if t.s("status") == Some("needs") && t.s("question") == Some(message.as_str()) {
+        return Ok(ok(Some(&t), None));
+    }
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "attention", "question" => message, "answered_at" => null])?;
+    r.log(t.id(), "question", &format!("Waiting for you: {message}"), None)?;
+    Ok(ok(Some(&t), None))
+}
+
+fn on_note(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let text = one_line(&r.b("text"), 2000);
+    if text.is_empty() {
+        return err(400, "A note needs some text.");
+    }
+    let t = r.task()?;
+    let kind = { let k = r.b("note_kind"); if k.is_empty() { let k2 = r.b("kind"); if k2.is_empty() { "finding".to_string() } else { k2 } } else { k } };
+    let goal = r.body.get("goal").cloned().unwrap_or(Value::Null);
+    let goal_id = match &goal {
+        Value::String(s) if Regex::new(r"^\s*[Gg]?\d+\s*$").unwrap().is_match(s) => parse_ref_str(s.trim(), "goal")?,
+        Value::Number(n) => n.as_i64(),
+        v if as_bool(Some(v), false) => t.as_ref().and_then(|t| t.i("goal_id")),
+        _ => None,
+    };
+    if let Some(gid) = goal_id {
+        board::get_goal(app, gid)?;
+        let source = t.as_ref().map(|t| rf("task", t.id())).unwrap_or_else(|| r.name());
+        board::add_goal_note(app, gid, &kind, &text, Some(&source), false, t.as_ref().map(|t| t.id()))?;
+        if let Some(t) = &t {
+            r.log(t.id(), "note", &format!("Goal note ({kind}): {text}"), None)?;
+        }
+        return Ok(with(ok(t.as_ref(), None), json!({"goal": rf("goal", gid)})));
+    }
+    let Some(t) = t else { return Ok(ok(None, None)) };
+    r.log(t.id(), "note", &text, None)?;
+    board::update_task(app, t.id(), fields!["latest" => one_line(&text, 200)])?;
+    Ok(ok(Some(&t), None))
+}
+
+fn on_checkpoint(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let mut ctx = r.update_where(&t, false)?;
+    for key in ["done", "next", "decisions", "files", "answers"] {
+        if let Some(v) = r.body.get(key).filter(|v| !v.is_null()) {
+            ctx.insert(key.into(), json!(str_list(Some(v))));
+        }
+    }
+    let n = ctx.i("checkpoints").unwrap_or(0) + 1;
+    ctx.insert("checkpoints".into(), json!(n));
+    ctx.insert("saved_at".into(), json!(now_iso()));
+    board::save_context(app, t.id(), &ctx, false)?;
+    let list = |k: &str| str_list(ctx.get(k));
+    let (done, next, dec) = (list("done"), list("next"), list("decisions"));
+    r.log(
+        t.id(),
+        "checkpoint",
+        &format!("Checkpoint: {}", done.last().cloned().unwrap_or_else(|| "progress saved".into())),
+        Some(json!({"done": done, "next": next, "decisions": dec})),
+    )?;
+    let mut latest = vec![];
+    if let Some(d) = done.last() {
+        latest.push(format!("{}.", d.trim_end_matches('.')));
+    }
+    if let Some(n) = next.first() {
+        latest.push(format!("Next: {}.", n.trim_end_matches('.')));
+    }
+    if !latest.is_empty() && t.s("status") != Some("needs") {
+        board::update_task(app, t.id(), fields!["latest" => one_line(&latest.join(" "), 240)])?;
+    }
+    Ok(ok(Some(&t), None))
+}
+
+fn snapshot(r: &Report, t: Option<&Row>, output: &str) -> Result<Value> {
+    let mut snap = Row::new();
+    let w = t.map(|t| board::task_context(t).get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default()).unwrap_or_default();
+    if let Some(t) = t {
+        let ctx = board::task_context(t);
+        snap.insert(
+            "task".into(),
+            json!(format!("{} · {}{}", rf("task", t.id()), t.st("title"), if t.i("goal_id").is_some() { "" } else { " (no goal)" })),
+        );
+        let step = str_list(ctx.get("next")).first().cloned().or_else(|| t.s("latest").map(|s| s.to_string()));
+        if let Some(s) = step.filter(|s| !s.is_empty()) {
+            snap.insert("step".into(), json!(one_line(&s, 300)));
+        }
+    }
+    snap.insert("terminal".into(), json!(r.name()));
+    if let Some(b) = r.git.s("branch").or(w.s("branch")).filter(|s| !s.is_empty()) {
+        snap.insert("branch".into(), json!(b));
+    }
+    if let Some(c) = r.git.s("commit").or(w.s("last_commit")).filter(|s| !s.is_empty()) {
+        snap.insert("last_commit".into(), json!(c));
+    }
+    if let Some(u) = r.git.i("uncommitted").or(w.i("uncommitted")) {
+        snap.insert("uncommitted".into(), json!(u));
+    }
+    if let Some(t) = t {
+        if let Some(last) = r.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'turn' ORDER BY at DESC, id DESC LIMIT 1", p![t.id()])? {
+            snap.insert("last_turn".into(), last.v("text"));
+        }
+    }
+    if !output.trim().is_empty() {
+        snap.insert("output".into(), json!(clip(output.trim(), 1500)));
+    }
+    Ok(Value::Object(snap))
+}
+
+fn on_found(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let title = one_line(&{ let t = r.b("title"); if t.is_empty() { r.b("text") } else { t } }, 300);
+    if title.is_empty() {
+        return err(400, "A found report needs a title.");
+    }
+    let kind = { let k = r.b("kind"); if ISSUE_KINDS.contains(&k.as_str()) { k } else { "bug".into() } };
+    let detail = r.b("detail");
+    let t = r.task()?;
+    let snap = snapshot(r, t.as_ref(), &r.b("output"))?;
+    let s = board::get_session(app, r.sid())?;
+    let mut goal_id = t.as_ref().and_then(|t| t.i("goal_id"));
+    let mut project = t
+        .as_ref()
+        .and_then(|t| t.s("project").map(|s| s.to_string()))
+        .or_else(|| s.as_ref().and_then(|s| s.s("project").map(|x| x.to_string())))
+        .or_else(|| r.cwd.as_deref().and_then(base_name));
+    if body_has(&r.body, "goal") {
+        let g = board::get_goal(app, need_ref(&r.body["goal"], "goal")?)?;
+        goal_id = Some(g.id());
+        project = g.s("project").map(|s| s.to_string());
+    } else if body_has(&r.body, "project") {
+        goal_id = None;
+        project = Some(r.b("project"));
+    }
+    let key = norm_title(&title);
+    let cands = match goal_id {
+        Some(g) => app.db.q("SELECT * FROM issues WHERE state = 'open' AND goal_id = ?", p![g])?,
+        None => app.db.q("SELECT * FROM issues WHERE state = 'open' AND goal_id IS NULL AND project IS ?", p![project])?,
+    };
+    let name = r.name();
+    let while_on = t.as_ref().map(|t| format!(" while working on {}", rf("task", t.id()))).unwrap_or_default();
+    if let Some(dup) = cands.iter().find(|c| norm_title(&c.st("title")) == key) {
+        let mut text = format!("Seen again by {name}{while_on}. Merged here with its own snapshot instead of adding a second issue.");
+        if !detail.is_empty() {
+            text += &format!(" They said: “{}”", one_line(&detail, 400));
+        }
+        board::add_issue_event(app, dup.id(), &name, "seen", &text, Some(&snap))?;
+        if let Some(t) = &t {
+            r.log(
+                t.id(),
+                "found",
+                &format!("Found an issue: {title}. It was already in the backlog as {}, so this sighting was added to it.", rf("issue", dup.id())),
+                Some(json!({"issue": dup.id()})),
+            )?;
+        }
+        return Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", dup.id()), "seen": true})));
+    }
+    let now = now_iso();
+    let how = match &t {
+        Some(t) => format!("The {name} terminal reported it while working on {}.", rf("task", t.id())),
+        None => format!("The {name} terminal reported it while not on a task."),
+    };
+    let said = format!("“{}”", one_line(if detail.is_empty() { &title } else { &detail }, 1000));
+    let iid = app.db.insert(
+        "issues",
+        fields!["goal_id" => goal_id, "project" => project, "kind" => kind, "title" => title,
+                "detail" => if detail.is_empty() { None } else { Some(detail.clone()) }, "said" => said, "how" => how,
+                "source" => "terminal", "found_by_task" => t.as_ref().map(|t| t.id()), "found_by_session" => r.sid(),
+                "found_by_name" => name, "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now],
+    )?;
+    board::add_issue_event(app, iid, &name, "report", &format!("Reported{while_on}"), Some(&snap))?;
+    if let Some(g) = goal_id {
+        app.db.x(
+            "UPDATE tasks SET ctx_version = COALESCE(ctx_version, 1) + 1 WHERE goal_id = ? AND status != 'done' AND id IS NOT ?",
+            p![g, t.as_ref().map(|t| t.id())],
+        )?;
+    }
+    if let Some(t) = &t {
+        let place = if goal_id.is_some() { "the goal’s backlog" } else { "the backlog" };
+        r.log(
+            t.id(),
+            "found",
+            &format!("Found an issue: {title}. Added to {place} with a snapshot of what the task was doing."),
+            Some(json!({"issue": iid})),
+        )?;
+    }
+    Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", iid), "seen": false})))
+}
+
+fn rewrite(screened: &Value) -> Value {
+    match screened.get("question").and_then(|q| q.as_str()) {
+        Some(q) => json!({"question": q}),
+        None => json!({}),
+    }
+}
+
+fn answered(r: &Report, t: &Row, text: &str, screened: &Value) -> Result<Value> {
+    r.log(t.id(), "question", &format!("Asked: {text}"), None)?;
+    let src = screened["source"].as_str().unwrap_or("the rules");
+    let ans = screened["answer"].as_str().unwrap_or("");
+    board::log_event(r.app, t.id(), board::BOARD, "answer", &format!("Answered from {src} without asking you: {ans}"))?;
+    Ok(with(ok(Some(t), None), json!({"answer": ans, "source": src})))
+}
+
+fn on_question(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let text = one_line(&r.b("text"), 2000);
+    if text.is_empty() {
+        return err(400, "A question needs some text.");
+    }
+    let t = r.task()?;
+    let visiting = prflow::visited_by(app, r.sid().unwrap_or(""))?;
+    let screened = r.screened.clone().unwrap_or(json!({}));
+    let is_answered = screened["verdict"] == "answered";
+    if let Some(v) = &visiting {
+        if t.as_ref().map(|t| t.id() == v.id()).unwrap_or(true) {
+            if is_answered {
+                return answered(r, v, &text, &screened);
+            }
+            let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
+            let wrote = if screened["question"].is_string() { Some(text.as_str()) } else { None };
+            if !prflow::stopped(app, v, &r.name(), &asked, true, wrote)? {
+                return err(
+                    409,
+                    format!("{} is done and its PR doesn't need this terminal. Ask {} in the terminal instead.", rf("task", v.id()), app.cfg.owner),
+                );
+            }
+            r.set_session_status("needs")?;
+            return Ok(with(ok(Some(v), None), rewrite(&screened)));
+        }
+    }
+    if let Some(t) = &t {
+        if t.s("status") != Some("done") && is_answered {
+            return answered(r, t, &text, &screened);
+        }
+    }
+    r.set_session_status("needs")?;
+    let Some(t) = t else { return Ok(ok(None, None)) };
+    if t.s("status") == Some("done") {
+        return err(
+            409,
+            format!("{} is done, so the board can't flag a question on it. Ask {} in the terminal instead.", rf("task", t.id()), app.cfg.owner),
+        );
+    }
+    let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => asked, "answered_at" => null, "lost" => 0])?;
+    let mut line = format!("Asked: {asked}");
+    if asked != text {
+        line += &format!(" (The agent wrote: “{text}”)");
+    }
+    r.log(t.id(), "question", &line, None)?;
+    Ok(with(ok(Some(&t), None), rewrite(&screened)))
+}
+
+fn on_wait_for(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    if t.s("status") == Some("done") {
+        return err(409, format!("{} is done, so it has nothing left to wait for.", rf("task", t.id())));
+    }
+    let tasks = r.body.get("tasks").cloned().unwrap_or(Value::Null);
+    if tasks.as_str().map(|s| s.trim().eq_ignore_ascii_case("none")).unwrap_or(false) {
+        board::update_task(app, t.id(), fields!["waits_for" => null])?;
+        r.log(t.id(), "note", "Waits for nothing any more", None)?;
+        return Ok(with(ok(Some(&t), Some("It waits for nothing now.".into())), json!({"parked": false})));
+    }
+    let Some(wanted) = waitsfor::clean(app, &tasks, Some(&t))? else {
+        return err(400, "Say which task this one needs, for example: tb wait-for T14.");
+    };
+    let mut all: Vec<Value> = waitsfor::ids(&t).into_iter().map(|n| json!(n)).collect();
+    all.extend(jloads_arr(Some(&wanted)));
+    let merged = waitsfor::clean(app, &Value::Array(all.iter().map(|v| json!(v.to_string())).collect()), Some(&t))?;
+    let why = one_line(&r.b("why"), 500);
+    board::update_task(app, t.id(), fields!["waits_for" => merged])?;
+    let t = board::get_task(app, t.id())?;
+    let names = jloads_arr(Some(&wanted)).iter().filter_map(|v| v.as_i64()).map(|n| rf("task", n)).collect::<Vec<_>>().join(", ");
+    if waitsfor::blocker(app, &t)?.is_none() {
+        r.log(t.id(), "note", &format!("Needs {names}, which is ready{}", if why.is_empty() { String::new() } else { format!(": {why}") }), None)?;
+        let text = waitsfor::bring_in_text(app, &t)?;
+        return Ok(with(ok(Some(&t), Some(text)), json!({"parked": false})));
+    }
+    waitsfor::park(app, &t, merged.as_deref().unwrap_or("[]"), &r.name(), &why)?;
+    let t = board::get_task(app, t.id())?;
+    r.set_session_status("idle")?;
+    app.wake_runner();
+    let b = waitsfor::blocker(app, &t)?;
+    Ok(with(ok(Some(&t), b), json!({"parked": true})))
+}
+
+pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, at: Option<&str>) -> Result<Row> {
+    let mut text = one_line(summary, 2000);
+    if text.is_empty() {
+        text = if failed { "No reason given".into() } else { "Done".into() };
+    }
+    board::update_task(
+        app,
+        t.id(),
+        fields!["status" => "done", "finished_at" => now_iso(), "summary" => text, "failed" => failed as i64, "lost" => 0,
+                "needs_reason" => null, "question" => null, "answered_at" => null, "start_job" => null,
+                "latest" => if failed { format!("Stopped: {text}") } else { text.clone() }],
+    )?;
+    board::log_event_full(app, t.id(), who, "status", &if failed { format!("Failed: {text}") } else { format!("Marked done: {text}") }, None, at)?;
+    let t = board::get_task(app, t.id())?;
+    deliver::drop(app, t.id(), "the task is done")?;
+    if let (Some(gid), false) = (t.i("goal_id"), failed) {
+        let have: Vec<String> = board::goal_notes(app, gid)?.iter().map(|n| n.st("text").trim().to_lowercase()).collect();
+        for d in str_list(board::task_context(&t).get("decisions")) {
+            if !have.contains(&d.trim().to_lowercase()) {
+                board::add_goal_note(app, gid, "decision", d.trim(), Some(&rf("task", t.id())), false, None)?;
+            }
+        }
+    }
+    if !failed {
+        let in_review = prflow::IN_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
+        let target = if in_review {
+            Some(app.cfg.jira.in_review.clone())
+        } else if t.i("pr_num").is_none() && !app.cfg.jira.done.is_empty() {
+            Some(app.cfg.jira.done.clone())
+        } else {
+            None
+        };
+        board::jira_keep_in_step(app, &t, target.as_deref(), Some(&text))?;
+    }
+    app.wake_runner();
+    Ok(t)
+}
+
+fn on_done(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    if t.s("status") == Some("done") {
+        return Ok(ok(Some(&t), None));
+    }
+    let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
+    let pr_arg = r.b("pr");
+    let pr = find_pr(&pr_arg).or_else(|| find_pr(&summary));
+    if !pr_arg.is_empty() && find_pr(&pr_arg).is_none() {
+        return err(400, "That isn't a pull request link (GitHub, GitLab or Bitbucket).");
+    }
+    if let Some(pr) = pr {
+        prflow::link_pr(r.app, &t, &pr, &r.name())?;
+    }
+    let t = board::get_task(r.app, t.id())?;
+    let at = r.at.clone();
+    let t = finish_task(r.app, &t, &r.name(), &summary, false, Some(&at))?;
+    Ok(ok(Some(&t), None))
+}
+
+fn on_fail(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    if t.s("status") == Some("done") {
+        return Ok(ok(Some(&t), None));
+    }
+    let reason = { let s = r.b("reason"); if s.is_empty() { r.b("text") } else { s } };
+    let at = r.at.clone();
+    let t = finish_task(r.app, &t, &r.name(), &reason, true, Some(&at))?;
+    Ok(ok(Some(&t), None))
+}
+
+fn on_take(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    if !body_has(&r.body, "task") {
+        return err(400, "Say which task to take, for example: tb take T12.");
+    }
+    let t = board::get_task(app, need_ref(&r.body["task"], "task")?)?;
+    let Some(sid) = r.sid.clone() else { return err(400, "tb take only works inside a Midna terminal.") };
+    let reopening = t.s("status") == Some("done") && board::pr_still_open(&t);
+    let already = t.s("session_id") == Some(sid.as_str()) && matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost");
+    if !already {
+        let how = if reopening { format!("Taken back for PR #{}", t.i0("pr_num")) } else { "Taken".into() };
+        if let Err(why) = board::claim(app, &t, &sid, r.claude.as_deref(), None, &how, true)? {
+            return err(409, why);
+        }
+    }
+    if reopening {
+        crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
+    }
+    let t = board::get_task(app, t.id())?;
+    let c = r.handoff_for(&t)?;
+    Ok(ok(Some(&t), Some(c)))
+}
+
+fn project_for(r: &Report, given: &str) -> Result<Option<String>> {
+    if !given.trim().is_empty() {
+        return Ok(Some(given.trim().to_string()));
+    }
+    let s = board::get_session(r.app, r.sid())?;
+    Ok(s.and_then(|s| s.s("project").map(|x| x.to_string())).or_else(|| r.cwd.as_deref().and_then(base_name)))
+}
+
+fn planned(r: &Report, g: &Row, items: &Value) -> Result<Vec<String>> {
+    let mut created = vec![];
+    for item in items.as_array().cloned().unwrap_or_default() {
+        let (title, detail) = match &item {
+            Value::String(s) => {
+                let (a, b) = s.split_once("::").unwrap_or((s.as_str(), ""));
+                (a.to_string(), b.to_string())
+            }
+            Value::Object(o) => (o.s("title").unwrap_or("").to_string(), o.s("detail").unwrap_or("").to_string()),
+            _ => continue,
+        };
+        let title = one_line(&title, 300);
+        if title.is_empty() {
+            continue;
+        }
+        let c = ops::new_task(
+            r.app,
+            &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
+                    "status": "planned", "pickup": {"mode": "queue"}}),
+            &r.name(),
+            Some(&format!("Planned by {}", r.name())),
+        )?;
+        created.push(c["ref"].as_str().unwrap_or("").to_string());
+    }
+    Ok(created)
+}
+
+fn on_propose(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
+    let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
+    let created = planned(r, &g, &tasks)?;
+    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id())})))
+}
+
+fn on_goal(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let project = project_for(r, &r.b("project"))?;
+    let g = ops::new_goal(
+        r.app,
+        &json!({"name": r.body.get("name"), "outcome": r.b("outcome"), "tldr": r.b("tldr"), "project": project, "product": r.body.get("product")}),
+    )?;
+    let gid = g["id"].as_i64().unwrap_or(0);
+    let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
+    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks)?;
+    Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created})))
+}
+
+fn on_new_task(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let title = one_line(&r.b("title"), 300);
+    if title.is_empty() {
+        return err(400, "A task needs a title.");
+    }
+    if body_has(&r.body, "goal") {
+        let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
+        let created = planned(r, &g, &json!([{"title": title, "detail": r.b("detail")}]))?;
+        return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned"})));
+    }
+    let project = project_for(r, &r.b("project"))?;
+    let planned_flag = as_bool(r.body.get("planned"), false);
+    let c = ops::new_task(
+        r.app,
+        &json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
+                "status": if planned_flag { "planned" } else { "queued" }}),
+        &r.name(),
+        Some(&format!("Added by {}; waits for you to press Start", r.name())),
+    )?;
+    Ok(with(ok(None, None), json!({"created": [c["ref"]], "status": c["status"], "project": c["project"]})))
+}
+
+fn on_attach(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let (url, title, kind) = (r.b("url"), r.b("title"), r.b("kind"));
+    if body_has(&r.body, "goal") {
+        let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
+        let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, None, Some(g.id()))?;
+        return Ok(with(ok(None, None), json!({"attachment": a, "goal": rf("goal", g.id())})));
+    }
+    let Some(t) = r.task()? else {
+        return err(400, "No task on this terminal. Name one with --task T<n>, or a goal with --goal G<n>.");
+    };
+    let a = board::add_attachment(r.app, &r.name(), &url, &title, &kind, Some(t.id()), None)?;
+    Ok(with(ok(Some(&t), None), json!({"attachment": a})))
+}
+
+fn on_hello(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    store_plugin(r)?;
+    Ok(ok(None, None))
+}
+
+fn on_delivered(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let ids = r.body.get("ids").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    deliver::delivered(r.app, r.sid(), &ids)?;
+    Ok(ok(None, None))
+}
+
+fn on_status(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, Some("No task on this terminal.".into()))) };
+    let label = if t.b("failed") {
+        "Failed".to_string()
+    } else {
+        match t.s("status") {
+            Some("planned") => "Planned".into(),
+            Some("queued") => "Queued".into(),
+            Some("working") => "Working".into(),
+            Some("needs") => "Needs you".into(),
+            Some("done") => "Done".into(),
+            other => other.unwrap_or("").to_string(),
+        }
+    };
+    let g = board::find_goal(r.app, t.i("goal_id"))?;
+    Ok(with(
+        ok(Some(&t), Some(format!("{} · {} · {label}", rf("task", t.id()), t.st("title")))),
+        json!({"title": t.v("title"), "status": t.v("status"), "jira_key": t.v("jira_key"), "pr_url": t.v("pr_url"),
+               "goal": g.map(|g| g.v("name")).unwrap_or(Value::Null)}),
+    ))
+}
+
+const START_TEXT: &[(&str, &str)] =
+    &[("startup", "Started a Claude session"), ("resume", "Resumed an earlier conversation"), ("clear", "Cleared its conversation and started again")];
+
+fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
+    let b = &r.body;
+    match r.event.as_str() {
+        "hook.session_start" => {
+            let src = r.b("source");
+            START_TEXT.iter().find(|(k, _)| *k == src).map(|(_, v)| ("start", v.to_string()))
+        }
+        "hook.prompt" => {
+            let text = LEADING_MARKER_RE.replace(b["prompt"].as_str().unwrap_or(""), "").trim().to_string();
+            if text.is_empty() || text.starts_with('<') {
+                None
+            } else {
+                Some(("prompt", text))
+            }
+        }
+        "hook.stop" => {
+            let t = r.b("last_message");
+            if t.is_empty() {
+                None
+            } else {
+                Some(("reply", t))
+            }
+        }
+        "hook.pre_compact" => Some((
+            "compact",
+            format!("Compacted its conversation{}", if r.b("trigger") == "manual" { " (you asked)" } else { "" }),
+        )),
+        "hook.commit" => {
+            let cmd = r.b("command");
+            if cmd.contains("git push") {
+                Some(("commit", format!("Pushed {}", r.git.s("branch").filter(|s| !s.is_empty()).unwrap_or("the branch"))))
+            } else {
+                Some(("commit", format!("Committed: {}", commit_subject(r, &r.b("output")))))
+            }
+        }
+        "hook.attention" => {
+            if r.waiting_on_background {
+                return None;
+            }
+            let what = match r.b("notification_type").as_str() {
+                "permission_prompt" => "Waiting for permission",
+                "idle_prompt" => "Waiting for your reply",
+                _ => "Waiting for you",
+            };
+            let msg = r.b("message");
+            Some(("wait", if msg.is_empty() { what.to_string() } else { format!("{what}: {msg}") }))
+        }
+        "hook.session_end" => {
+            let reason = r.b("reason");
+            Some((
+                "end",
+                format!("The Claude session ended{}", if reason.is_empty() || reason == "other" { String::new() } else { format!(" ({reason})") }),
+            ))
+        }
+        "tb.found" => Some(("found", format!("Reported an issue: {}", r.b("title")))),
+        "tb.checkpoint" => {
+            let done = str_list(b.get("done"));
+            Some((
+                "checkpoint",
+                format!("Checkpoint saved{}", if done.is_empty() { String::new() } else { format!(": {}", done.iter().take(2).cloned().collect::<Vec<_>>().join("; ")) }),
+            ))
+        }
+        "tb.question" => {
+            if let Some(a) = out.get("source").and_then(|s| s.as_str()) {
+                Some(("ask", format!("Asked, and the board answered it from {a}: {}", r.b("text"))))
+            } else {
+                Some(("ask", format!("Asked you: {}", out.get("question").and_then(|q| q.as_str()).map(|s| s.to_string()).unwrap_or_else(|| r.b("text")))))
+            }
+        }
+        "tb.done" => Some(("done", format!("Finished {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("summary")))),
+        "tb.fail" => Some(("fail", format!("Gave up on {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("reason")))),
+        "tb.take" => out["task"].as_str().map(|t| ("take", format!("Picked up {t}"))),
+        _ => None,
+    }
+}
+
+type Handler = fn(&mut Report) -> Result<Value>;
+
+fn handler(event: &str) -> Option<Handler> {
+    Some(match event {
+        "hook.session_start" => on_session_start,
+        "hook.prompt" => on_prompt,
+        "hook.stop" => on_stop,
+        "hook.pre_compact" => on_pre_compact,
+        "hook.commit" => on_commit,
+        "hook.session_end" => on_session_end,
+        "hook.attention" => on_attention,
+        "hook.delivered" => on_delivered,
+        "tb.note" => on_note,
+        "tb.checkpoint" => on_checkpoint,
+        "tb.found" => on_found,
+        "tb.question" => on_question,
+        "tb.wait_for" => on_wait_for,
+        "tb.done" => on_done,
+        "tb.fail" => on_fail,
+        "tb.take" => on_take,
+        "tb.propose" => on_propose,
+        "tb.goal" => on_goal,
+        "tb.attach" => on_attach,
+        "tb.new_task" => on_new_task,
+        "tb.hello" => on_hello,
+        "tb.status" => on_status,
+        _ => return None,
+    })
+}
+
+const DEDUPE_FIELDS: &[&str] = &["text", "title", "summary", "reason", "prompt", "last_message", "message", "command", "task", "source", "done", "next", "ids"];
+const DEDUPE_KEEP: usize = 4000;
+
+fn dedupe_key(body: &Value) -> Option<String> {
+    body.get("at").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let mut parts = vec![body.get("event").cloned(), body.get("session").cloned(), body.get("at").cloned()];
+    parts.extend(DEDUPE_FIELDS.iter().map(|f| body.get(*f).cloned()));
+    let mut h = DefaultHasher::new();
+    serde_json::to_string(&parts).unwrap_or_default().hash(&mut h);
+    Some(format!("{:016x}", h.finish()))
+}
+
+fn seen_before(app: &App, body: &Value, spooled: bool) -> bool {
+    let Some(key) = dedupe_key(body) else { return false };
+    let mut s = app.shared.lock();
+    if s.recent_set.contains(&key) {
+        return spooled;
+    }
+    s.recent_set.insert(key.clone());
+    s.recent_reports.push_back(key);
+    while s.recent_reports.len() > DEDUPE_KEEP {
+        if let Some(old) = s.recent_reports.pop_front() {
+            s.recent_set.remove(&old);
+        }
+    }
+    false
+}
+
+pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
+    if !body.is_object() {
+        return err(400, "A report must be a JSON object.");
+    }
+    if seen_before(app, &body, spooled) {
+        app.info(format!("spool: skipped a report already received ({})", body["event"]));
+        return Ok(json!({"ok": true, "task": null, "duplicate": true}));
+    }
+    let mut r = Report::new(app, body, spooled);
+    let Some(f) = handler(&r.event) else {
+        app.info(format!("report ignored: unknown event {:?}", r.event));
+        return Ok(json!({"ok": true, "task": null, "ignored": true}));
+    };
+    if r.event == "hook.stop" || r.event == "hook.attention" {
+        let path = r.body.get("transcript_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        r.background = transcript::background_running(&app.cfg.claude_projects, path.as_deref()).unwrap_or(0);
+    }
+    if r.event == "tb.question" && !spooled {
+        let t = r.task().ok().flatten();
+        r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
+    }
+    app.db.tx(|| {
+        let mut out = f(&mut r)?;
+        if let Some(sid) = r.sid.clone() {
+            if let Some((kind, text)) = session_history(&r, &out) {
+                board::session_event(app, &sid, kind, &text, Some(&r.at))?;
+            }
+        }
+        if !spooled {
+            let mut handed = deliver::take(app, r.sid(), &r.event)?;
+            if handed.is_none() && r.stalled {
+                handed = nudge(&r)?;
+            }
+            if let Some(h) = handed {
+                out["deliver"] = h;
+                if r.event == "hook.stop" {
+                    r.set_session_status("working")?;
+                }
+            }
+        }
+        Ok(out)
+    })
+}
+
+pub fn ingest_spool(app: &App) -> Result<usize> {
+    let dir = app.cfg.spool_dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(0) };
+    let mut items = vec![];
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".json") || name.starts_with('.') {
+            continue;
+        }
+        match std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            Some(body) => items.push((body["at"].as_str().unwrap_or("").to_string(), name, p, body)),
+            None => {
+                app.info(format!("spool {name} unreadable; moved aside"));
+                let _ = std::fs::rename(&p, p.with_extension("json.bad"));
+            }
+        }
+    }
+    items.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    let mut done = 0;
+    for (_, name, p, body) in items {
+        match handle(app, body, true) {
+            Ok(_) => done += 1,
+            Err(e) => app.info(format!("spool {name} refused: {}", e.message)),
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+    if done > 0 {
+        app.info(format!("spool: handled {}", plural(done as i64, "report")));
+    }
+    Ok(done)
+}

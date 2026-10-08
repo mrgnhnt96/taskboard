@@ -1,0 +1,12 @@
+{
+  "name": "taskboard",
+  "owner": { "name": "taskboard" },
+  "description": "Claude Code plugins for the taskboard local task board",
+  "plugins": [
+    {
+      "name": "task-board",
+      "source": "./task-board",
+      "description": "Keeps each Claude session in Midna in step with the local task board, and gives it the tb command to report"
+    }
+  ]
+}
