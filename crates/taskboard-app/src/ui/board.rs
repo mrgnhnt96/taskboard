@@ -1296,7 +1296,7 @@ fn task_card(t: &Theme, x: &TaskCardVm, st: &Value, cx: &mut Context<MainWindow>
         .flex()
         .items_start()
         .gap(px(8.))
-        .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(px(19.)).child(x.title.clone()))
+        .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(px(19.)).line_clamp(3).child(x.title.clone()))
         .when(x.high, |d| d.child(chip(t, "high", "High")));
     let mut chips = div().flex().flex_wrap().items_center().gap(px(6.)).min_w_0();
     for c in &x.chips {
@@ -1359,7 +1359,7 @@ fn issue_card(t: &Theme, x: &IssueCardVm, cx: &mut Context<MainWindow>) -> State
                 .child(div().flex_1())
                 .child(div().id(SharedString::from(format!("ic-when-{}", x.r))).text_size(px(12.)).text_color(t.faint).whitespace_nowrap().child(x.when.clone()).tooltip(kit::tip(x.when_title.clone()))),
         )
-        .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).line_height(px(18.)).child(x.title.clone()))
+        .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).line_height(px(18.)).line_clamp(3).child(x.title.clone()))
         .child(
             div()
                 .id(SharedString::from(format!("ic-goal-{}", x.r)))

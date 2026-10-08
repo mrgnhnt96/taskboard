@@ -410,8 +410,8 @@ a.pr-bar, button.pr-bar { cursor: pointer; }
 .t-top .goal-line { flex-shrink: 0; }
 .bg-ref { font-family: var(--mono); font-size: 0.9em; color: var(--faint); }
 .t-title { display: flex; align-items: flex-start; gap: 8px; }
-.t-title b { flex: 1; font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
-.icard .t-title b { font-size: 13.5px; }
+.t-title b { flex: 1; font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.icard .t-title b { font-size: 13.5px; font-weight: 500; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
 .latest { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .foot { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
