@@ -120,6 +120,24 @@ enum Cmd {
         #[command(subcommand)]
         action: GoalCmd,
     },
+    /// QA testers' Jira comments on board tickets: list, waiting, show Q3, or on the owner's word task Q3 / ignore Q3
+    Qa {
+        /// list (default), waiting, Q3, task or ignore
+        what: Option<String>,
+        /// Q3 (with task or ignore)
+        r#ref: Option<String>,
+        /// What the owner said to do, in their words; it goes in the task's brief
+        #[arg(long)]
+        note: Option<String>,
+        /// The work changes code (the default)
+        #[arg(long, conflicts_with = "no_pr")]
+        pr: bool,
+        /// The work needs no PR
+        #[arg(long = "no-pr")]
+        no_pr: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
     /// Add, change or delete a task
     Task {
         #[command(subcommand)]
@@ -814,6 +832,72 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
         },
+        Cmd::Qa { what, r#ref, note, pr, no_pr, limit } => {
+            let what = what.unwrap_or_default();
+            let line = |c: &Value| {
+                let state = if c["waiting"] == true {
+                    "waiting on the owner".to_string()
+                } else {
+                    match c["verdict"].as_str() {
+                        Some("task") => "has work".into(),
+                        Some("flag") => "asked the owner".into(),
+                        Some("none") => "needs nothing".into(),
+                        None => "being read".into(),
+                        Some(v) => v.to_string(),
+                    }
+                };
+                let what = c["ask"].as_str().filter(|s| !s.is_empty()).or(c["title"].as_str().filter(|s| !s.is_empty()));
+                format!(
+                    "{}  {} {} · {}{}{}",
+                    c["ref"].as_str().unwrap_or(""),
+                    c["jira_key"].as_str().unwrap_or(""),
+                    c["author"].as_str().filter(|s| !s.is_empty()).unwrap_or("comment"),
+                    state,
+                    what.map(|w| format!(": {w}")).unwrap_or_default(),
+                    c["task"].as_str().map(|t| format!(" · {t}")).unwrap_or_default()
+                )
+            };
+            if what.is_empty() || what == "list" || what == "waiting" {
+                let v = c.call("GET", &format!("/qa-comments?limit={limit}{}", if what == "waiting" { "&waiting=1" } else { "" }), None)?;
+                if v["on"] == false {
+                    out("QA comments are off. The owner switches them on in Taskboard's Settings ▸ QA.");
+                }
+                let rows = v["comments"].as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    out(if what == "waiting" { "No QA comment is waiting on the owner." } else { "No Jira comments on board tickets yet." });
+                }
+                for row in rows {
+                    out(&line(&row));
+                }
+                return Ok(0);
+            }
+            if r#ref.is_none() && what.trim_start_matches(['Q', 'q']).chars().all(|ch| ch.is_ascii_digit()) {
+                let v = c.call("GET", &format!("/qa-comments/{what}"), None)?;
+                out(&line(&v));
+                out(&format!("Comment: {}", v["url"].as_str().unwrap_or("")));
+                if let Some(t) = v["text"].as_str().filter(|t| !t.is_empty()) {
+                    out(t);
+                }
+                return Ok(0);
+            }
+            let Some(r) = r#ref.filter(|_| what == "task" || what == "ignore") else {
+                return Err("say tb qa, tb qa waiting, tb qa Q3, tb qa task Q3 [--note TEXT] or tb qa ignore Q3".into());
+            };
+            let mut b = json!({"action": what, "who": c.who()});
+            if let Some(n) = note {
+                b["note"] = json!(n);
+            }
+            if pr || no_pr {
+                b["pr"] = json!(pr);
+            }
+            let v = c.call("POST", &format!("/qa-comments/{r}"), Some(b))?;
+            if what == "task" {
+                out(&format!("{} is now {}.", v["ref"].as_str().unwrap_or(""), v["started"].as_str().or(v["task"].as_str()).unwrap_or("a task")));
+            } else {
+                out(&format!("{} is left as it is.", v["ref"].as_str().unwrap_or("")));
+            }
+            Ok(0)
+        }
         Cmd::Task { action } => match action {
             TaskCmd::New { title, detail, goal, also, project, planned, here } => {
                 if here && (goal.is_some() || !also.is_empty()) {
@@ -1217,6 +1301,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--goal", "G1", "--also", "G2", "--also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--also", "G2", "--not-also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--detail", "y", "--here"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "qa", "task", "Q3", "--note", "do it", "--no-pr"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "qa", "waiting"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());

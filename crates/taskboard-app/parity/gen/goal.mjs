@@ -42,6 +42,10 @@ const G = o => ({ id: 1, ref: 'G1', name: 'Sign-in with passkeys', project: 'web
   epic_key: null, epic_status: null, epic_url: null, run_in_order: true, max_terminals: 2, auto_close: true, archived: false, paused: false, deprioritized: false,
   tasks: [], notes: [], backlog: [], closed_count: 0, attachments: [], ...o });
 
+const QA = (id, o) => ({ id, ref: 'Q' + id, jira_key: 'PROJ-7', comment_id: String(100 + id), url: `https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=${100 + id}`,
+  author: 'Sam QA', verdict: 'flag', pr: 1, title: 'Keep the old login?', ask: 'Should the old login stay for one release? See `login.ts`.',
+  text: 'Tested on iOS.\n\n- the old login still shows\n- should it?', task: null, task_status: null, task_title: null, source_task: 'T1',
+  handled_at: null, handled_by: null, created_at: at(40), waiting: false, ...o });
 const openPr = (o = {}) => ({ repo: 'webapp', num: 30, url: 'https://x/30', title: null, state: 'OPEN', checks: 'pass', review: 'approved', stage: null, ...o });
 const GOALS = {
   'no tasks': G({}),
@@ -70,6 +74,9 @@ const GOALS = {
     shared: [T(20, { status: 'working', who: 'T20 Auth client', goal: { id: 3, ref: 'G3', name: 'Auth client' }, pr: openPr({ num: 41, stage: { phase: 'rereview', label: 'Awaiting re-review' } }) }),
       T(21, { status: 'done', goal: { id: 3, ref: 'G3', name: 'Auth client' } }), T(22, { status: 'planned', goal: null })] }),
   'shared only': G({ shared: [T(23, { status: 'queued', goal: { id: 3, ref: 'G3', name: 'Auth client' } })] }),
+  // QA comments on the goal's tickets (Settings ▸ QA on): waiting ones count on the tab, and make it hot.
+  'qa waiting': G({ tasks: [T(1, { status: 'done' })], qa: [QA(3, { verdict: 'flag', waiting: true }), QA(2, { verdict: 'task', task: 'T9', task_status: 'working', task_title: 'QA on PROJ-7: Fix the overlap' }), QA(1, { verdict: 'flag', handled_at: at(5), handled_by: 'T4 Login' })] }),
+  'qa handled': G({ tasks: [T(1, { status: 'done' })], qa: [QA(4, { verdict: null, ask: null, title: null, text: null }), QA(5, { verdict: 'task', task: 'T9', task_status: 'done', task_title: null })] }),
   'shared, all done': G({ tasks: [T(1, { status: 'done' })], shared: [T(24, { status: 'working', goal: { id: 3, ref: 'G3', name: 'Auth client' } })] }),
 };
 const HOURS = {
@@ -116,6 +123,35 @@ for (const jira of [false, true]) {
   add('backlogTool', 'rich', { goal: g }, vis(html.match(/<div class="gbar">[\s\S]*?<div class="grow"><\/div>([\s\S]*?)<\/div>\s*<div class="gsec-body">/)[1]));
   w.set('S.route', { page: 'goal', id: 'G1', q: {} });
 }
+
+// The QA tab: its own list, waiting ones first ("Waiting on you" / "Handled").
+w.set('S.route', { page: 'goal', id: 'G1', q: { view: 'qa' } });
+for (const n of ['qa waiting', 'qa handled']) {
+  const g = GOALS[n];
+  setState({});
+  const html = w.call('goalMain', g);
+  const body = html.match(/<div class="gsec-body">([\s\S]*?)<\/div>\s*<\/section>/)[1];
+  add('qaTab', n, { goal: g }, {
+    tabs: [...html.matchAll(/data-act="goal-view" data-arg="(\w+)">([\s\S]*?)<\/button>/g)].map(m => vis(m[2])),
+    hot: /data-arg="qa">QA<span class="count hot">/.test(html),
+    selected: attr(html, /aria-selected="true" data-act="goal-view" data-arg="(\w+)"/),
+    groups: [...body.matchAll(/<h3 class="h3[^"]*">([^<]*)<\/h3><ol class="rows qrows">([\s\S]*?)<\/ol>/g)].map(m => ({
+      title: m[1],
+      items: [...m[2].matchAll(/<li class="qrow( wait)?">([\s\S]*?)<\/li>/g)].map(r => ({
+        wait: !!r[1],
+        chip: vis(r[2].match(/<span class="chip [^"]*">([\s\S]*?)<\/span>/)[1]),
+        chip_cls: attr(r[2], /<span class="chip ([^"]*)">/),
+        ref: vis(r[2].match(/<span class="pill ref">([\s\S]*?)<\/span>/)[1]),
+        ask: vis(r[2].match(/<p class="q-ask">([\s\S]*?)<\/p>/)[1]),
+        meta: vis(r[2].match(/<div class="m">([\s\S]*?)<\/div>/)[1]),
+        link: attr(r[2], /<div class="m">[^<]*<a href="([^"]*)"/),
+        opens: [...r[2].matchAll(/data-act="open-task" data-id="([^"]*)"/g)].map(m => m[1]),
+        comment: /<details class="q-text">/.test(r[2]),
+      })),
+    })),
+  });
+}
+w.set('S.route', { page: 'goal', id: 'G1', q: {} });
 
 // ---------------------------------------------------------------- run buttons + start menu
 const buttons = html => [...html.matchAll(/<button type="button" class="btn ([^"]*)"([^>]*)>([\s\S]*?)<\/button>/g)]

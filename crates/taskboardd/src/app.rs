@@ -35,6 +35,8 @@ pub struct Shared {
     /// The latest wave plan asked for on the Backlog page (`GET /backlog/plan`).
     pub plan: Option<serde_json::Value>,
     pub plan_seq: i64,
+    /// QA comments being read by Claude right now (`qa.rs`).
+    pub qa_reading: HashSet<i64>,
 }
 
 struct Signal {

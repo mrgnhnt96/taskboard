@@ -48,15 +48,17 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) -> Option<WindowHandle<Sett
 enum Sec {
     Accounts,
     History,
+    Qa,
 }
 
-const SECS: [Sec; 2] = [Sec::Accounts, Sec::History];
+const SECS: [Sec; 3] = [Sec::Accounts, Sec::History, Sec::Qa];
 
 impl Sec {
     fn label(self) -> &'static str {
         match self {
             Sec::Accounts => "Accounts",
             Sec::History => "History",
+            Sec::Qa => "QA",
         }
     }
 
@@ -64,6 +66,7 @@ impl Sec {
         match self {
             Sec::Accounts => "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers.",
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
+            Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
         }
     }
 
@@ -71,6 +74,7 @@ impl Sec {
         match self {
             Sec::Accounts => "@",
             Sec::History => "◷",
+            Sec::Qa => "✓",
         }
     }
 }
@@ -127,6 +131,10 @@ pub struct SettingsWindow {
     history: Option<Value>,
     history_busy: bool,
     history_note: Option<(String, bool)>,
+    /// `GET /qa`, a call in flight, and the line under its card.
+    qa: Option<Value>,
+    qa_busy: bool,
+    qa_note: Option<(String, bool)>,
 }
 
 impl SettingsWindow {
@@ -156,9 +164,13 @@ impl SettingsWindow {
             history: None,
             history_busy: false,
             history_note: None,
+            qa: None,
+            qa_busy: false,
+            qa_note: None,
         };
         s.load(false, cx);
         s.load_history(cx);
+        s.load_qa(cx);
         cx.spawn(async move |this, cx| {
             let mut tick = 0u32;
             loop {
@@ -183,6 +195,43 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.history = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_qa(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("qa", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(v) = r {
+                    s.qa = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `POST qa {on}`: answers with the QA state.
+    fn post_qa(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.qa_busy {
+            return;
+        }
+        self.qa_busy = true;
+        self.qa_note = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.post("qa", json!({"on": on})) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.qa_busy = false;
+                match r {
+                    Ok(v) => s.qa = Some(v),
+                    Err(e) => s.qa_note = Some((e.message, true)),
                 }
                 cx.notify();
             });
@@ -389,6 +438,7 @@ impl Render for SettingsWindow {
         let body = match self.view {
             Sec::Accounts => self.accounts_page(&t, window, cx).into_any_element(),
             Sec::History => self.history_page(&t, cx).into_any_element(),
+            Sec::Qa => self.qa_page(&t, cx).into_any_element(),
         };
         div()
             .id("settings-root")
@@ -910,6 +960,51 @@ impl SettingsWindow {
         let mut card = kit::card(t).overflow_hidden().child(detail).child(summary).child(used).child(clean);
         if let Some((text, bad)) = &self.history_note {
             card = card.child(row(t, "hist-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
+        }
+        list.child(card)
+    }
+}
+
+// ------------------------------------------------------------------ QA
+
+impl SettingsWindow {
+    fn qa_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = div().id("qa-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let Some(q) = self.qa.clone() else {
+            return list.child(kit::empty(t, "Asking the board…"));
+        };
+        let jira = q["jira"] == true;
+        let on = q["on"] == true;
+        let note = if jira {
+            "The board reads new comments on its tickets every few minutes. A clear direction becomes a high-priority follow-up task; \
+             a question waits for you on the goal's QA tab and in the alerts. Comments from before you switch it on are never read."
+        } else {
+            "Needs Jira: set up [jira] in ~/.config/taskboard/config.toml first."
+        };
+        let control = kit::seg(t, "qa-on", &["Off", "On"], if on { 1 } else { 0 }, |i, item| {
+            if jira && !self.qa_busy {
+                item.on_click(cx.listener(move |s, _, _, cx| s.post_qa(i == 1, cx)))
+            } else {
+                item
+            }
+        });
+        let switch = line(t, "qa-on-row", true, !jira, "Read QA comments", note, None).child(controls().child(control));
+        let mut card = kit::card(t).overflow_hidden().child(switch);
+        if on {
+            let i = |k: &str| q[k].as_i64().unwrap_or(0);
+            let checked = q["checked_at"].as_str().map(crate::fmt::full_time).unwrap_or_else(|| "not yet".into());
+            card = card.child(line(
+                t,
+                "qa-state",
+                false,
+                false,
+                "Comments",
+                &format!("{} read, {} waiting on you. Last checked Jira: {checked}.", i("comments"), i("waiting")),
+                None,
+            ));
+        }
+        if let Some((text, bad)) = &self.qa_note {
+            card = card.child(row(t, "qa-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
         }
         list.child(card)
     }

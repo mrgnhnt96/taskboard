@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, shared, triage, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, qa, reports, runner, shared, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -251,6 +251,24 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["history"]) => days::history(app),
         ("POST", ["history"]) => days::set_history(app, body),
         ("POST", ["history", "cleanup"]) => days::cleanup(app),
+        ("GET", ["qa"]) => qa::settings(app),
+        ("POST", ["qa"]) => app.db.tx(|| qa::set_settings(app, body)),
+        ("POST", ["jira", "comment"]) => qa::intake(app, body),
+        ("GET", ["qa-comments"]) => {
+            let limit = q(query, "limit", "50").parse::<i64>().unwrap_or(50).clamp(1, 200);
+            Ok(json!({"on": qa::on(app), "comments": qa::listing(app, limit, as_bool(query.get("waiting").map(|s| json!(s)).as_ref(), false))?}))
+        }
+        ("GET", ["qa-comments", id]) => Ok(qa::card(app, &qa::get(app, need_ref(&json!(id), "qa")?)?)),
+        ("POST", ["qa-comments", id]) => {
+            let cid = need_ref(&json!(id), "qa")?;
+            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            let note = clip(&body_str(body, "note"), 2000);
+            let pr = body.get("pr").filter(|v| !v.is_null()).map(|v| as_bool(Some(v), true));
+            let t = app.db.tx(|| qa::resolve(app, &qa::get(app, cid)?, &body_str(body, "action"), &who, if note.is_empty() { None } else { Some(&note) }, pr))?;
+            let mut out = qa::card(app, &qa::get(app, cid)?);
+            out["started"] = rf_opt("task", t.map(|t| t.id()));
+            Ok(out)
+        }
         ("GET", ["hours"]) => Ok(hours::state(app)),
         ("POST", ["hours"]) => set_hours(app, body),
         ("GET", ["usage"]) => Ok(usage::state(app)),

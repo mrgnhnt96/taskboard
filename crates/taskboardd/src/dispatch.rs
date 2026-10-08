@@ -107,6 +107,25 @@ pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i6
     Ok(())
 }
 
+/// An alert that goes with a thing rather than a task (a QA comment, `qa:3`): one per key, cleared by
+/// its key, and resolved by its owner (`qa::alert_resolved`).
+pub fn add_alert_keyed(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, key: &str) -> Result<()> {
+    if alerts(app).iter().any(|a| a["key"] == key) {
+        return Ok(());
+    }
+    add_alert(app, text, task_id, goal_id, None, None)?;
+    let mut rows = alerts(app);
+    if let Some(a) = rows.last_mut() {
+        a["key"] = json!(key);
+    }
+    keep(app, &rows)
+}
+
+pub fn clear_alert_key(app: &App, key: &str) -> Result<()> {
+    let rows: Vec<Value> = alerts(app).into_iter().filter(|a| a["key"] != key).collect();
+    keep(app, &rows)
+}
+
 pub fn clear_alerts(app: &App, task_id: Option<i64>, alert_id: Option<&str>) -> Result<()> {
     let rows: Vec<Value> = alerts(app)
         .into_iter()
@@ -157,6 +176,9 @@ fn repeat_alerts(app: &App) -> Result<()> {
 }
 
 fn resolved(app: &App, a: &Value) -> Result<bool> {
+    if a["key"].as_str().map(|k| k.starts_with("qa:")).unwrap_or(false) {
+        return crate::qa::alert_resolved(app, a);
+    }
     let at = a["at"].as_str().unwrap_or("");
     let sid = if let Some(tid) = a["task_id"].as_i64() {
         let Some(t) = board::find_task(app, Some(tid))? else { return Ok(true) };

@@ -163,6 +163,7 @@ A goal with `finished_at` (or all tasks done and no open PRs) shows as finished;
 ```
 {
   "tasks": [task_card],             // every task in the goal including planned, in goal order (position, then id)
+  "qa": [qa_comment],               // QA comments on the goal's tickets that need or needed something, waiting ones first; [] while QA is off
   "shared": [task_card],            // tasks from other goals that also finish this one (`tb task set T<n> --also G<n>`); they count in the totals
   "notes": [{"id": int, "kind": "finding"|"decision"|"reference", "text": str, "source": str|null, "pinned": bool, "at": iso}],
                                     // source: "you", a task ref like "T4", or free text; shown as the note's byline
@@ -530,3 +531,24 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 | `POST /sessions/:id/reopen` | `{}` | Reopen a closed terminal's conversation in a new Midna terminal. |
 
 ---
+
+## QA comments (optional)
+
+Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
+```
+{"id": int, "ref": "Q3", "jira_key": "PROJ-7", "comment_id": str, "url": str, "author": str|null,
+ "verdict": "task"|"flag"|"none"|null,   // null: still being read
+ "title": str|null, "ask": str|null, "text": str|null, "pr": 0|1|null,
+ "task": "T9"|null, "task_status": str|null, "task_title": str|null,   // the follow-up task (goal detail adds status and title)
+ "source_task": "T1", "handled_at": iso|null, "handled_by": str|null, "created_at": iso,
+ "waiting": bool}                         // a flag the owner hasn't answered
+```
+
+| Request | Body | What |
+|---|---|---|
+| `GET /qa` | | `{on, jira, since, checked_at, comments, waiting}` for Settings ▸ QA. |
+| `POST /qa` | `{on: bool}` | Switch it on (409 without Jira) or off. On reads only comments from then on; off clears its alerts. |
+| `POST /jira/comment` | `{key, comment_id, author?, text?}` | A comment from a forwarder. Ignored while off or when the ticket isn't on the board. |
+| `GET /qa-comments` | `?limit&waiting=1` | `{on, comments: [qa_comment]}`, newest first. |
+| `GET /qa-comments/:id` | | One `qa_comment`. |
+| `POST /qa-comments/:id` | `{action: "task"\|"ignore", note?, pr?, who?}` | The owner's word on a flag (`tb qa task Q3`). Answers the comment plus `started: "T9"\|null`. |

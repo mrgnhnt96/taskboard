@@ -621,6 +621,15 @@ a.pr-bar, button.pr-bar { cursor: pointer; }
 .trow { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 14px; background: var(--card); }
 .trow.planned .main, .trow.planned .n { opacity: .85; }
 .shared-h { margin: 18px 0 8px; }
+.qrows { margin-top: 8px; }
+.qrow { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; }
+.qrow.wait { box-shadow: inset 3px 0 0 var(--warn); }
+.qrow .l1 { display: flex; align-items: center; gap: 8px; }
+.qrow .q-ask { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.qrow .m { font-size: 13px; color: var(--muted); }
+.qrow .m .btn.link { font-size: 13px; padding: 0; }
+.qrow .q-text summary { font-size: 13px; color: var(--muted); cursor: pointer; }
+.qrow .q-text .note-body { margin-top: 8px; font-size: 13px; }
 .trow:hover { background: var(--accent-tint); }
 .trow .n { display: grid; place-items: center; font-size: 13px; font-weight: 600; color: var(--muted); text-align: center; }
 .trow .main { display: flex; flex-direction: column; gap: 2px; min-width: 0; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: inherit; font: inherit; }

@@ -21,6 +21,7 @@ pub mod ops;
 pub mod prflow;
 pub mod proc;
 pub mod projects;
+pub mod qa;
 pub mod reports;
 pub mod runner;
 pub mod screen;

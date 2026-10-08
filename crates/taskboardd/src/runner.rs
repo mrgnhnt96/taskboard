@@ -421,6 +421,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| jobs::expire(app))?;
     app.db.tx(|| jira::expire(app))?;
     jira::run_pending(app)?;
+    crate::qa::tick(app)?;
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
     close_for_usage(app)?;

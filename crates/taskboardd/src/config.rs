@@ -317,6 +317,8 @@ impl Config {
         c.data = data.to_path_buf();
         c.statusline_dir = data.join("statusline");
         c.claude_projects = data.join("claude-projects");
+        // Tests never run the real claude (QA comments, screening and wave plans would ask it).
+        c.claude = data.join("no-claude").to_string_lossy().to_string();
         c.runner = false;
         c.open_midna = false;
         c.notify = false;

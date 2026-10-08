@@ -33,6 +33,10 @@ pub struct State {
     // Reset when the goal changes (the web's resetPageState).
     for_goal: String,
     pub backlog_view: bool,
+    /// The QA tab (shown only while the goal has QA comments: Settings ▸ QA on).
+    pub qa_view: bool,
+    /// QA comments whose "Their comment" is open.
+    qa_open: HashSet<String>,
     /// Picked backlog refs, in the order picked (`P.sel`).
     sel: Vec<String>,
     anchor: Option<String>,
@@ -52,6 +56,8 @@ impl State {
     pub fn reset_for(&mut self, goal: &str) {
         self.for_goal = goal.to_string();
         self.backlog_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "backlog");
+        self.qa_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "qa");
+        self.qa_open.clear();
         self.sel.clear();
         self.anchor = None;
         self.kept.clear();
@@ -67,6 +73,7 @@ pub fn open(m: &mut MainWindow, r: &str, backlog: bool, cx: &mut Context<MainWin
     m.go(Page::Goal(r.to_string()), cx);
     m.goal_page.reset_for(r);
     m.goal_page.backlog_view = backlog;
+    m.goal_page.qa_view = false;
     cx.notify();
 }
 
@@ -297,9 +304,9 @@ pub struct HeaderView {
     pub epic: Option<String>,
     pub epic_link: Option<String>,
     pub counts: String,
-    /// The Tasks / Backlog tab labels (the page draws the counts from `counts` itself).
+    /// The Tasks / Backlog (/ QA) tab labels (the page draws the counts from `counts` itself).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub tabs: [String; 2],
+    pub tabs: Vec<String>,
     #[cfg_attr(not(test), allow(dead_code))]
     pub backlog_hot: bool,
 }
@@ -331,9 +338,87 @@ pub fn header_view(g: &Value, jira_on: bool) -> HeaderView {
             c.active,
             if prs.is_empty() { String::new() } else { format!(" · {prs}") }
         ),
-        tabs: [format!("Tasks {}", c.n), format!("Backlog {open}")],
+        tabs: tab_items(g).into_iter().map(|(label, n, _)| format!("{label} {n}")).collect(),
         backlog_hot: open > 0,
     }
+}
+
+/// The goal page's tabs: (label, count, hot). QA shows while the goal has QA comments: the
+/// count is the ones waiting on you (hot), else all of them.
+pub fn tab_items(g: &Value) -> Vec<(&'static str, i64, bool)> {
+    let c = counts(g);
+    let open = open_issue_count(g);
+    let mut items = vec![("Tasks", c.n, false), ("Backlog", open, open > 0)];
+    let qa = arr(g, "qa");
+    if !qa.is_empty() {
+        let asks = qa.iter().filter(|x| b(x, "waiting")).count() as i64;
+        items.push(("QA", if asks > 0 { asks } else { qa.len() as i64 }, asks > 0));
+    }
+    items
+}
+
+// ------------------------------------------------------------------ QA tab
+
+pub struct QaItem {
+    pub r: String,
+    pub wait: bool,
+    pub chip: String,
+    /// The chip's status key (`st-<key>`).
+    pub key: &'static str,
+    pub ask: Vec<Inline>,
+    pub author: String,
+    pub jira_key: String,
+    pub url: String,
+    pub at: String,
+    pub source_task: Option<String>,
+    /// The follow-up task: its ref, "working" and title.
+    pub task: Option<(String, String, Option<String>)>,
+    pub by: Option<String>,
+    pub text: Option<String>,
+}
+
+/// `qaState(c)`: (label, status key).
+fn qa_state(c: &Value) -> (String, &'static str) {
+    if b(c, "waiting") {
+        return ("Waiting on you".into(), "needs");
+    }
+    if let Some(t) = fmt::opt_s(c, "task") {
+        return (format!("Now {t}"), status_key(&json!({"status": c["task_status"]})));
+    }
+    if c["verdict"].is_null() {
+        return ("Being read".into(), "queued");
+    }
+    ("Left as it is".into(), "planned")
+}
+
+/// `qaItem(c)`.
+pub fn qa_item(c: &Value) -> QaItem {
+    let (chip, key) = qa_state(c);
+    let ask = fmt::opt_s(c, "ask").or(fmt::opt_s(c, "title")).unwrap_or("Read the comment on the ticket");
+    QaItem {
+        r: s(c, "ref").to_string(),
+        wait: b(c, "waiting"),
+        chip,
+        key,
+        ask: inline_segments(ask),
+        author: fmt::opt_s(c, "author").unwrap_or("QA").to_string(),
+        jira_key: s(c, "jira_key").to_string(),
+        url: s(c, "url").to_string(),
+        at: fmt::hhmm(s(c, "created_at")),
+        source_task: fmt::opt_s(c, "source_task").map(str::to_string),
+        task: fmt::opt_s(c, "task").map(|t| {
+            (t.to_string(), status_label(status_key(&json!({"status": c["task_status"]}))).to_lowercase(), fmt::opt_s(c, "task_title").map(str::to_string))
+        }),
+        by: fmt::opt_s(c, "handled_by").filter(|_| fmt::opt_s(c, "task").is_none() && fmt::opt_s(c, "handled_at").is_some()).map(str::to_string),
+        text: fmt::opt_s(c, "text").map(str::to_string),
+    }
+}
+
+/// `goalQa(qa)`: "Waiting on you" first, then "Handled".
+pub fn qa_groups(qa: &[Value]) -> Vec<(&'static str, Vec<QaItem>)> {
+    let waiting: Vec<QaItem> = qa.iter().filter(|c| b(c, "waiting")).map(qa_item).collect();
+    let rest: Vec<QaItem> = qa.iter().filter(|c| !b(c, "waiting")).map(qa_item).collect();
+    [("Waiting on you", waiting), ("Handled", rest)].into_iter().filter(|(_, v)| !v.is_empty()).collect()
 }
 
 // ------------------------------------------------------------------ run buttons
@@ -2052,6 +2137,104 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, cx: &mut Context<Ma
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx)))
 }
 
+/// The QA tab: `goalQa(g.qa)`.
+fn qa_tab(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
+    let groups = qa_groups(arr(g, "qa"));
+    let mut out = div().flex().flex_col();
+    for (gi, (title, items)) in groups.into_iter().enumerate() {
+        // `.h3` (`.shared-h` after the first group), then `.rows.qrows` 8px below.
+        out = out.child(h3(t, 13., title).when(gi > 0, |d| d.mt(px(18.))));
+        let mut list = div().mt(px(8.)).flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
+        for (ix, c) in items.into_iter().enumerate() {
+            list = list.child(qa_row(m, t, c, ix, cx));
+        }
+        out = out.child(list);
+    }
+    out
+}
+
+/// One `.qrow`: state chip and ref, what they ask, who / when / which tasks, and their comment folded.
+fn qa_row(m: &MainWindow, t: &Theme, c: QaItem, ix: usize, cx: &mut Context<MainWindow>) -> Div {
+    let link = |id: String, label: String, target: String, cx: &mut Context<MainWindow>| {
+        let hover = t.accent;
+        div()
+            .id(SharedString::from(id))
+            .cursor_pointer()
+            .text_color(t.accent_fg)
+            .hover(move |d| d.text_color(hover))
+            .child(label)
+            .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx)))
+    };
+    let url = c.url.clone();
+    let mut meta = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(4.))
+        .text_size(px(13.))
+        .text_color(t.muted)
+        .child(format!("{} on", c.author))
+        .child(
+            div()
+                .id(SharedString::from(format!("qa-key-{}", c.r)))
+                .cursor_pointer()
+                .text_color(t.accent_fg)
+                .child(c.jira_key.clone())
+                .on_click(move |_, _, cx| cx.open_url(&url)),
+        )
+        .child(format!("· {}", c.at));
+    if let Some(src) = c.source_task.clone() {
+        meta = meta.child("· about").child(link(format!("qa-src-{}", c.r), src.clone(), src, cx));
+    }
+    if let Some((tr, st, title)) = c.task.clone() {
+        meta = meta.child("·").child(link(format!("qa-task-{}", c.r), tr.clone(), tr, cx)).child(format!("{st}{}", title.map(|x| format!(" · {x}")).unwrap_or_default()));
+    }
+    if let Some(by) = &c.by {
+        meta = meta.child(format!("· by {by}"));
+    }
+    let open = m.goal_page.qa_open.contains(&c.r);
+    let r = c.r.clone();
+    let fold = c.text.clone().map(|text| {
+        let hover = t.text;
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id(SharedString::from(format!("qa-fold-{}", c.r)))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .cursor_pointer()
+                    .text_size(px(13.))
+                    .text_color(t.muted)
+                    .hover(move |d| d.text_color(hover))
+                    .child(if open { "▾" } else { "▸" })
+                    .child("Their comment")
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        if !m.goal_page.qa_open.remove(&r) {
+                            m.goal_page.qa_open.insert(r.clone());
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(open, |d| d.child(div().mt(px(8.)).text_size(px(13.)).child(note_body_keyed(t, &note_blocks(&text), &format!("qa-{}", c.r)))))
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .px(px(14.))
+        .py(px(12.))
+        .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
+        // `.qrow.wait`: a 3px warn edge on the left.
+        .when(c.wait, |d| d.border_l(px(3.)).border_color(t.warn))
+        .child(div().flex().items_center().gap(px(8.)).child(st_chip(t, if c.wait { "warn" } else { status_tone(c.key) }, c.chip.clone())).child(pill(t.muted, t.panel_2).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(c.r.clone())))
+        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.45)).child(inline_el(t, &c.ask, format!("qa-ask-{}", c.r))))
+        .child(meta)
+        .children(fold)
+}
+
 fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let v = how_runs_view(g);
@@ -2644,8 +2827,8 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
 }
 
 /// `noteBody` rendered: paragraphs, bullets, code blocks, links and `code`.
-fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
-    let inline = |segs: &[Inline], key: String| -> AnyElement {
+/// `inlineText`'s segments as one run of text: code on a tinted ground, links that open.
+fn inline_el(t: &Theme, segs: &[Inline], key: String) -> AnyElement {
         let mut text = String::new();
         let mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
         let mut links: Vec<(std::ops::Range<usize>, String)> = Vec::new();
@@ -2671,21 +2854,28 @@ fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
         let ranges: Vec<_> = links.iter().map(|(r, _)| r.clone()).collect();
         let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
         InteractiveText::new(SharedString::from(key), styled).on_click(ranges, move |ix, _, cx| if let Some(u) = urls.get(ix) { cx.open_url(u) }).into_any_element()
-    };
+}
+
+fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
+    note_body_keyed(t, blocks, &format!("gnb-{id}"))
+}
+
+fn note_body_keyed(t: &Theme, blocks: &[NoteBlock], key: &str) -> Div {
+    let inline = |segs: &[Inline], k: String| inline_el(t, segs, k);
     let mut col = div().flex().flex_col().gap(px(10.)).text_size(px(14.)).line_height(relative(1.55)).text_color(t.text);
     for (bi, block) in blocks.iter().enumerate() {
         col = col.child(match block {
             NoteBlock::P(lines) => {
                 let mut p = div().flex().flex_col();
                 for (li, l) in lines.iter().enumerate() {
-                    p = p.child(inline(l, format!("gnb-{id}-{bi}-{li}")));
+                    p = p.child(inline(l, format!("{key}-{bi}-{li}")));
                 }
                 p
             }
             NoteBlock::Ul(items) => {
                 let mut ul = div().flex().flex_col().gap(px(4.)).pl(px(18.));
                 for (li, it) in items.iter().enumerate() {
-                    ul = ul.child(div().flex().gap(px(6.)).child(div().flex_none().text_color(t.muted).child("•")).child(div().flex_1().min_w_0().child(inline(it, format!("gnb-{id}-{bi}-{li}")))));
+                    ul = ul.child(div().flex().gap(px(6.)).child(div().flex_none().text_color(t.muted).child("•")).child(div().flex_1().min_w_0().child(inline(it, format!("{key}-{bi}-{li}")))));
                 }
                 ul
             }
@@ -2749,12 +2939,12 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             .into_any_element();
     };
     let backlog_view = m.goal_page.backlog_view;
-    let c = counts(&g);
-    let open = open_issue_count(&g);
-    let items = [("Tasks", c.n, false), ("Backlog", open, open > 0)];
-    let tabs = seg_counts(&t, "goal-view", &items, if backlog_view { 1 } else { 0 }, |ix, item| {
+    let qa_view = !backlog_view && m.goal_page.qa_view && !arr(&g, "qa").is_empty();
+    let items = tab_items(&g);
+    let tabs = seg_counts(&t, "goal-view", &items, if backlog_view { 1 } else if qa_view { 2 } else { 0 }, |ix, item| {
         item.on_click(cx.listener(move |m, _, _, cx| {
             m.goal_page.backlog_view = ix == 1;
+            m.goal_page.qa_view = ix == 2;
             // `goal-view` also closes the open issue.
             if matches!(m.panel, Some(Panel::Issue { .. })) {
                 m.close_panel(cx);
@@ -2770,7 +2960,8 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
         .min_w_0()
         .gap(px(12.))
         .child(div().flex().items_center().gap(px(8.)).child(tabs))
-        .when(!backlog_view, |d| d.children(gate(m, &t, &g, cx)).child(task_rows(m, &t, &g, cx)).child(how_runs(m, &t, &g, cx)))
+        .when(!backlog_view && !qa_view, |d| d.children(gate(m, &t, &g, cx)).child(task_rows(m, &t, &g, cx)).child(how_runs(m, &t, &g, cx)))
+        .when(qa_view, |d| d.child(qa_tab(m, &t, &g, cx)))
         .when(backlog_view, |d| d.child(backlog(m, &t, &g, cx)));
     left.style().flex_grow = Some(1.5);
     left.style().flex_shrink = Some(1.);
@@ -2871,6 +3062,26 @@ mod tests {
                 "opensAt" => {
                     let (d, a) = opens_at(&i["hours"]);
                     json!([d, a])
+                }
+                "qaTab" => {
+                    let items = tab_items(goal);
+                    json!({
+                        "tabs": items.iter().map(|(l, n, _)| format!("{l} {n}")).collect::<Vec<_>>(),
+                        "hot": items.get(2).map(|x| x.2).unwrap_or(false),
+                        "selected": "qa",
+                        "groups": qa_groups(arr(goal, "qa")).into_iter().map(|(title, items)| json!({"title": title, "items": items.iter().map(|c| {
+                            let ask = c.ask.iter().map(|x| match x { Inline::Text(s) | Inline::Code(s) | Inline::Link(s) => s.clone() }).collect::<Vec<_>>().join(" ");
+                            let mut meta = vec![format!("{} on {}", c.author, c.jira_key), c.at.clone()];
+                            meta.extend(c.source_task.as_ref().map(|s| format!("about {s}")));
+                            meta.extend(c.task.as_ref().map(|(r, st, title)| format!("{r} {st}{}", title.as_ref().map(|x| format!(" · {x}")).unwrap_or_default())));
+                            meta.extend(c.by.as_ref().map(|b| format!("by {b}")));
+                            let mut opens: Vec<String> = c.source_task.iter().cloned().collect();
+                            opens.extend(c.task.as_ref().map(|x| x.0.clone()));
+                            json!({"wait": c.wait, "chip": c.chip, "chip_cls": format!("st-{}", c.key), "ref": c.r,
+                                   "ask": ask.split_whitespace().collect::<Vec<_>>().join(" "), "meta": meta.join(" · "),
+                                   "link": c.url, "opens": opens, "comment": c.text.is_some()})
+                        }).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                    })
                 }
                 "taskRows" => {
                     let tasks = arr(goal, "tasks");

@@ -272,6 +272,7 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
         json!({
             "tasks": tasks,
             "shared": shared_cards,
+            "qa": crate::qa::for_goal(app, id)?,
             "notes": board::goal_notes(app, id)?.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
             "backlog": backlog,
             "attachments": board::attachments(app, None, Some(id))?,

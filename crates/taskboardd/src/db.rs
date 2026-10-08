@@ -108,6 +108,12 @@ CREATE TABLE IF NOT EXISTS task_goals(
   task_id INT NOT NULL, goal_id INT NOT NULL, at TEXT, PRIMARY KEY(task_id, goal_id));
 CREATE INDEX IF NOT EXISTS task_goals_goal ON task_goals(goal_id);
 
+-- QA testers' Jira comments on board tickets (`qa.rs`), each read once and turned into a task, a flag or nothing.
+CREATE TABLE IF NOT EXISTS qa_comments(
+  id INTEGER PRIMARY KEY, jira_key TEXT NOT NULL, comment_id TEXT UNIQUE NOT NULL, source_task_id INT,
+  author TEXT, verdict TEXT, pr INT, title TEXT, ask TEXT, text TEXT, task_id INT, tries INT DEFAULT 0, error TEXT,
+  decided_at TEXT, handled_at TEXT, handled_by TEXT, created_at TEXT, updated_at TEXT);
+
 CREATE TABLE IF NOT EXISTS task_states(
   id INTEGER PRIMARY KEY, task_id INT, at TEXT, status TEXT, needs_reason TEXT, failed INT, project TEXT);
 CREATE INDEX IF NOT EXISTS task_states_at ON task_states(at);

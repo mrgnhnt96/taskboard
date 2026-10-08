@@ -52,6 +52,7 @@ Planning a goal? Read `planning.md` first.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
    - Remove an attachment by its link, path or title: `tb unattach "<link-or-title>"` with `--task T<n>` or `--goal G<n>`. To change one, unattach it and attach it again.
+   - A tester's Jira comment the owner gave you their word on (when QA comments are on): `tb qa task Q<n> --note "<what they said>"` or `tb qa ignore Q<n>`; `tb qa waiting` lists the ones waiting.
 3. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks (a task that also finishes another goal moves there either way); ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
 4. The project defaults to this terminal's; `--project <name>` picks another.
 5. Nothing you add runs until the owner queues or starts it; don't take it unless asked.

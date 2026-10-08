@@ -166,14 +166,17 @@ function goalMain(g) {
   const tasks = g.tasks || [];
   const c = goalCounts(g);
   const openIssues = (g.backlog || []).filter(b => (b.state || 'open') === 'open').length;
-  const view = S.route.q.view === 'backlog' ? 'backlog' : 'tasks';
+  const qa = g.qa || [];
+  const asks = qa.filter(c => c.waiting).length;
+  const view = S.route.q.view === 'backlog' ? 'backlog' : S.route.q.view === 'qa' && qa.length ? 'qa' : 'tasks';
   const gs = goalState(countedTasks(g), g);
   const epic = g.epic_key
     ? `Jira epic ${g.epic_url ? `<a class="epic" href="${esc(safeUrl(g.epic_url))}" target="_blank" rel="noopener">${esc(g.epic_key)}</a>` : `<span class="epic">${esc(g.epic_key)}</span>`}${g.epic_status ? ' · ' + esc(g.epic_status) : ''}`
     : jiraOn() ? 'No Jira epic' : '';
-  const views = [['tasks', 'Tasks', c.n, false], ['backlog', 'Backlog', openIssues, openIssues > 0]].map(([id, label, n, hot]) =>
+  const views = [['tasks', 'Tasks', c.n, false], ['backlog', 'Backlog', openIssues, openIssues > 0],
+    ...(qa.length ? [['qa', 'QA', asks || qa.length, asks > 0]] : [])].map(([id, label, n, hot]) =>
     `<button type="button" role="tab" aria-selected="${view === id}" data-act="goal-view" data-arg="${id}">${label}<span class="count${hot ? ' hot' : ''}">${n}</span></button>`).join('');
-  const tools = view === 'tasks' ? btn('Add a task', 'add-task', { id: gr, cls: 'soft md', icon: ICON.plus }) : btn('Add an issue', 'add-issue', { id: gr, cls: 'soft md' });
+  const tools = view === 'tasks' ? btn('Add a task', 'add-task', { id: gr, cls: 'soft md', icon: ICON.plus }) : view === 'qa' ? '' : btn('Add an issue', 'add-issue', { id: gr, cls: 'soft md' });
   return `<main class="gmain">
     <header class="ghead">
       <div class="row" style="gap:10px"><span class="pill goal">${ICON.flag}Goal</span><span class="pill ${gs.cls}">${gs.label}</span><span class="pill ref">${esc(gr)}</span>${btn('Edit', 'goal-edit', { id: gr, cls: 'ghost sm', title: 'Edit the goal’s name, TLDR, outcome and project' })}<div class="grow"></div>${goalRunButtons(g)}</div>
@@ -183,13 +186,40 @@ function goalMain(g) {
       <div class="bar lg"><span class="d" style="width:${pct(c.done, c.n)}"></span><span class="a" style="width:${pct(c.active, c.n)}"></span><span class="q" style="width:${pct(c.queued, c.n)}"></span></div>
     </header>
     <div class="gbody">
-      <section class="gsec" aria-label="${view === 'tasks' ? 'Tasks in this goal' : 'The goal’s backlog'}">
-        <div class="gbar"><div class="seg sm" role="tablist" aria-label="Tasks or backlog">${views}</div><div class="grow"></div>${tools}</div>
-        <div class="gsec-body">${view === 'tasks' ? goalTasks(g) : goalBacklog(g)}</div>
+      <section class="gsec" aria-label="${view === 'tasks' ? 'Tasks in this goal' : view === 'qa' ? 'QA comments on this goal’s tickets' : 'The goal’s backlog'}">
+        <div class="gbar"><div class="seg sm" role="tablist" aria-label="Tasks, backlog or QA">${views}</div><div class="grow"></div>${tools}</div>
+        <div class="gsec-body">${view === 'tasks' ? goalTasks(g) : view === 'qa' ? goalQa(qa) : goalBacklog(g)}</div>
       </section>
-      <div class="stack sticky" style="gap:16px">${view === 'tasks' ? attachAside(g) + notesAside(g) : issueAside(false)}</div>
+      <div class="stack sticky" style="gap:16px">${view !== 'backlog' ? attachAside(g) + notesAside(g) : issueAside(false)}</div>
     </div>
   </main>`;
+}
+
+function qaState(c) {
+  if (c.waiting) return { cls: 'st-needs', label: 'Waiting on you' };
+  if (c.task) return { cls: 'st-' + stKey({ status: c.task_status }), label: `Now ${c.task}` };
+  if (c.verdict == null) return { cls: 'st-queued', label: 'Being read' };
+  return { cls: 'st-planned', label: 'Left as it is' };
+}
+function qaItem(c) {
+  const st = qaState(c);
+  const what = c.ask || c.title || 'Read the comment on the ticket';
+  const meta = [`${c.author || 'QA'} on <a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.jira_key)}</a>`, esc(hhmm(c.created_at)),
+    c.source_task && `about <button type="button" class="btn link sm" data-act="open-task" data-id="${esc(c.source_task)}">${esc(c.source_task)}</button>`,
+    c.task && `<button type="button" class="btn link sm" data-act="open-task" data-id="${esc(c.task)}">${esc(c.task)}</button> ${esc(STATUS[stKey({ status: c.task_status })].toLowerCase())}${c.task_title ? ' · ' + esc(c.task_title) : ''}`,
+    c.handled_by && !c.task && c.handled_at && `by ${esc(c.handled_by)}`].filter(Boolean).join(' · ');
+  return `<li class="qrow${c.waiting ? ' wait' : ''}">
+    <div class="l1"><span class="chip ${esc(st.cls)}">${esc(st.label)}</span><span class="pill ref">${esc(c.ref)}</span></div>
+    <p class="q-ask">${inlineText(what)}</p>
+    <div class="m">${meta}</div>
+    ${c.text ? `<details class="q-text"><summary>Their comment</summary><div class="note-body">${noteBody(c.text)}</div></details>` : ''}
+  </li>`;
+}
+function goalQa(qa) {
+  const waiting = qa.filter(c => c.waiting);
+  const rest = qa.filter(c => !c.waiting);
+  return `${waiting.length ? `<h3 class="h3">Waiting on you</h3><ol class="rows qrows">${waiting.map(qaItem).join('')}</ol>` : ''}
+    ${rest.length ? `<h3 class="h3${waiting.length ? ' shared-h' : ''}">Handled</h3><ol class="rows qrows">${rest.map(qaItem).join('')}</ol>` : ''}`;
 }
 
 function goalTaskMeta(t, i, tasks, g) {
@@ -599,7 +629,7 @@ SUBMITS.issue = submitNewIssue;
 SUBMITS.goal = submitGoal;
 
 Object.assign(ACTIONS, {
-  'goal-view': el => nav(hashWith({ view: el.dataset.arg === 'backlog' ? 'backlog' : null, issue: null })),
+  'goal-view': el => nav(hashWith({ view: ['backlog', 'qa'].includes(el.dataset.arg) ? el.dataset.arg : null, issue: null })),
   'pick-issue': el => nav(hashWith({ issue: el.dataset.id }), { replace: true }),
   'show-dropped': () => { P.showDropped = !P.showDropped; renderAll(); },
   'add-issue': el => openNewIssue(el.dataset.id || null),

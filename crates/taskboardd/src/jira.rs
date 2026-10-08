@@ -191,6 +191,41 @@ fn call(app: &App, creds: &(String, String), method: &str, path: &str, body: Opt
     }
 }
 
+/// A GET or POST on Jira's REST API v3 for code outside the job queue (QA comments). Err when Jira
+/// is off, has no credentials, or answers with an error.
+pub fn api(app: &App, method: &str, path: &str, body: Option<Value>) -> std::result::Result<Value, String> {
+    if !app.cfg.jira_on() {
+        return Err("Jira isn't set up".into());
+    }
+    let creds = credentials(app).ok_or("Jira has no API token")?;
+    call(app, &creds, method, path, body).map_err(|e| e.message)
+}
+
+/// Jira's rich text (ADF) as plain text: paragraphs and list items on their own lines.
+pub fn adf_text(v: &Value) -> String {
+    fn walk(v: &Value, out: &mut String) {
+        match v["type"].as_str() {
+            Some("text") => out.push_str(v["text"].as_str().unwrap_or("")),
+            Some("hardBreak") => out.push('\n'),
+            Some("mention") => out.push_str(v["attrs"]["text"].as_str().unwrap_or("")),
+            Some("inlineCard") | Some("blockCard") => out.push_str(v["attrs"]["url"].as_str().unwrap_or("")),
+            _ => {}
+        }
+        for c in v["content"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+            walk(c, out);
+        }
+        if matches!(v["type"].as_str(), Some("paragraph") | Some("heading") | Some("listItem") | Some("codeBlock")) && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    walk(v, &mut out);
+    out.trim().to_string()
+}
+
 fn adf(text: &str) -> Value {
     let paras: Vec<Value> = text
         .split('\n')

@@ -2358,6 +2358,229 @@
       "expect": "Queued"
     },
     {
+      "name": "goalState qa waiting",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 3,
+              "ref": "Q3",
+              "jira_key": "PROJ-7",
+              "comment_id": "103",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=103",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": true
+            },
+            {
+              "id": 2,
+              "ref": "Q2",
+              "jira_key": "PROJ-7",
+              "comment_id": "102",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=102",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "working",
+              "task_title": "QA on PROJ-7: Fix the overlap",
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 1,
+              "ref": "Q1",
+              "jira_key": "PROJ-7",
+              "comment_id": "101",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=101",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": "2026-10-07T14:55:00.000Z",
+              "handled_by": "T4 Login",
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        }
+      },
+      "expect": "Done"
+    },
+    {
+      "name": "goalState qa handled",
+      "input": {
+        "fn": "goalState",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 4,
+              "ref": "Q4",
+              "jira_key": "PROJ-7",
+              "comment_id": "104",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=104",
+              "author": "Sam QA",
+              "verdict": null,
+              "pr": 1,
+              "title": null,
+              "ask": null,
+              "text": null,
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 5,
+              "ref": "Q5",
+              "jira_key": "PROJ-7",
+              "comment_id": "105",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=105",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "done",
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        }
+      },
+      "expect": "Done"
+    },
+    {
       "name": "goalState shared, all done",
       "input": {
         "fn": "goalState",
@@ -5147,6 +5370,263 @@
         "tabs": [
           "Tasks 1",
           "Backlog 0"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header qa waiting",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 3,
+              "ref": "Q3",
+              "jira_key": "PROJ-7",
+              "comment_id": "103",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=103",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": true
+            },
+            {
+              "id": 2,
+              "ref": "Q2",
+              "jira_key": "PROJ-7",
+              "comment_id": "102",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=102",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "working",
+              "task_title": "QA on PROJ-7: Fix the overlap",
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 1,
+              "ref": "Q1",
+              "jira_key": "PROJ-7",
+              "comment_id": "101",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=101",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": "2026-10-07T14:55:00.000Z",
+              "handled_by": "T4 Login",
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        },
+        "jira": false
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Done",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp 1 of 1 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0",
+          "QA 1"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header qa handled",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 4,
+              "ref": "Q4",
+              "jira_key": "PROJ-7",
+              "comment_id": "104",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=104",
+              "author": "Sam QA",
+              "verdict": null,
+              "pr": 1,
+              "title": null,
+              "ask": null,
+              "text": null,
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 5,
+              "ref": "Q5",
+              "jira_key": "PROJ-7",
+              "comment_id": "105",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=105",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "done",
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        },
+        "jira": false
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Done",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp 1 of 1 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0",
+          "QA 2"
         ],
         "tool": "Add a task"
       }
@@ -7962,6 +8442,263 @@
       }
     },
     {
+      "name": "header qa waiting (jira)",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 3,
+              "ref": "Q3",
+              "jira_key": "PROJ-7",
+              "comment_id": "103",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=103",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": true
+            },
+            {
+              "id": 2,
+              "ref": "Q2",
+              "jira_key": "PROJ-7",
+              "comment_id": "102",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=102",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "working",
+              "task_title": "QA on PROJ-7: Fix the overlap",
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 1,
+              "ref": "Q1",
+              "jira_key": "PROJ-7",
+              "comment_id": "101",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=101",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": "2026-10-07T14:55:00.000Z",
+              "handled_by": "T4 Login",
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        },
+        "jira": true
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Done",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp No Jira epic 1 of 1 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0",
+          "QA 1"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
+      "name": "header qa handled (jira)",
+      "input": {
+        "fn": "header",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 4,
+              "ref": "Q4",
+              "jira_key": "PROJ-7",
+              "comment_id": "104",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=104",
+              "author": "Sam QA",
+              "verdict": null,
+              "pr": 1,
+              "title": null,
+              "ask": null,
+              "text": null,
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 5,
+              "ref": "Q5",
+              "jira_key": "PROJ-7",
+              "comment_id": "105",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=105",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "done",
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        },
+        "jira": true
+      },
+      "expect": {
+        "pills": [
+          "Goal",
+          "Done",
+          "G1"
+        ],
+        "name": "Sign-in with passkeys",
+        "tldr": "TLDR Add WebAuthn passkeys.",
+        "meta": "webapp No Jira epic 1 of 1 done · 0 active · 0 open in the backlog",
+        "epic_link": null,
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0",
+          "QA 2"
+        ],
+        "tool": "Add a task"
+      }
+    },
+    {
       "name": "header shared, all done (jira)",
       "input": {
         "fn": "header",
@@ -8456,6 +9193,331 @@
         }
       },
       "expect": "Add an issue"
+    },
+    {
+      "name": "qaTab qa waiting",
+      "input": {
+        "fn": "qaTab",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 3,
+              "ref": "Q3",
+              "jira_key": "PROJ-7",
+              "comment_id": "103",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=103",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": true
+            },
+            {
+              "id": 2,
+              "ref": "Q2",
+              "jira_key": "PROJ-7",
+              "comment_id": "102",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=102",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "working",
+              "task_title": "QA on PROJ-7: Fix the overlap",
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 1,
+              "ref": "Q1",
+              "jira_key": "PROJ-7",
+              "comment_id": "101",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=101",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": "2026-10-07T14:55:00.000Z",
+              "handled_by": "T4 Login",
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0",
+          "QA 1"
+        ],
+        "hot": true,
+        "selected": "qa",
+        "groups": [
+          {
+            "title": "Waiting on you",
+            "items": [
+              {
+                "wait": true,
+                "chip": "Waiting on you",
+                "chip_cls": "st-needs",
+                "ref": "Q3",
+                "ask": "Should the old login stay for one release? See login.ts .",
+                "meta": "Sam QA on PROJ-7 · 2:20 PM · about T1",
+                "link": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=103",
+                "opens": [
+                  "T1"
+                ],
+                "comment": true
+              }
+            ]
+          },
+          {
+            "title": "Handled",
+            "items": [
+              {
+                "wait": false,
+                "chip": "Now T9",
+                "chip_cls": "st-working",
+                "ref": "Q2",
+                "ask": "Should the old login stay for one release? See login.ts .",
+                "meta": "Sam QA on PROJ-7 · 2:20 PM · about T1 · T9 working · QA on PROJ-7: Fix the overlap",
+                "link": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=102",
+                "opens": [
+                  "T1",
+                  "T9"
+                ],
+                "comment": true
+              },
+              {
+                "wait": false,
+                "chip": "Left as it is",
+                "chip_cls": "st-planned",
+                "ref": "Q1",
+                "ask": "Should the old login stay for one release? See login.ts .",
+                "meta": "Sam QA on PROJ-7 · 2:20 PM · about T1 · by T4 Login",
+                "link": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=101",
+                "opens": [
+                  "T1"
+                ],
+                "comment": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "qaTab qa handled",
+      "input": {
+        "fn": "qaTab",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 4,
+              "ref": "Q4",
+              "jira_key": "PROJ-7",
+              "comment_id": "104",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=104",
+              "author": "Sam QA",
+              "verdict": null,
+              "pr": 1,
+              "title": null,
+              "ask": null,
+              "text": null,
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 5,
+              "ref": "Q5",
+              "jira_key": "PROJ-7",
+              "comment_id": "105",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=105",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "done",
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "tabs": [
+          "Tasks 1",
+          "Backlog 0",
+          "QA 2"
+        ],
+        "hot": false,
+        "selected": "qa",
+        "groups": [
+          {
+            "title": "Handled",
+            "items": [
+              {
+                "wait": false,
+                "chip": "Being read",
+                "chip_cls": "st-queued",
+                "ref": "Q4",
+                "ask": "Read the comment on the ticket",
+                "meta": "Sam QA on PROJ-7 · 2:20 PM · about T1",
+                "link": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=104",
+                "opens": [
+                  "T1"
+                ],
+                "comment": false
+              },
+              {
+                "wait": false,
+                "chip": "Now T9",
+                "chip_cls": "st-done",
+                "ref": "Q5",
+                "ask": "Should the old login stay for one release? See login.ts .",
+                "meta": "Sam QA on PROJ-7 · 2:20 PM · about T1 · T9 done",
+                "link": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=105",
+                "opens": [
+                  "T1",
+                  "T9"
+                ],
+                "comment": true
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "runButtons no tasks / open",
@@ -11524,6 +12586,279 @@
             "act": "goal-deprio-ask",
             "label": "Deprioritize",
             "title": "Take it off the board’s goal list; nothing new starts"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons qa waiting / open",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 3,
+              "ref": "Q3",
+              "jira_key": "PROJ-7",
+              "comment_id": "103",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=103",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": true
+            },
+            {
+              "id": 2,
+              "ref": "Q2",
+              "jira_key": "PROJ-7",
+              "comment_id": "102",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=102",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "working",
+              "task_title": "QA on PROJ-7: Fix the overlap",
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 1,
+              "ref": "Q1",
+              "jira_key": "PROJ-7",
+              "comment_id": "101",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=101",
+              "author": "Sam QA",
+              "verdict": "flag",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": "2026-10-07T14:55:00.000Z",
+              "handled_by": "T4 Login",
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        },
+        "hours": {
+          "on": true,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
+          }
+        ]
+      }
+    },
+    {
+      "name": "runButtons qa handled / open",
+      "input": {
+        "fn": "runButtons",
+        "goal": {
+          "id": 1,
+          "ref": "G1",
+          "name": "Sign-in with passkeys",
+          "project": "webapp",
+          "tldr": "Add WebAuthn passkeys.",
+          "outcome": "users can sign in with a passkey",
+          "epic_key": null,
+          "epic_status": null,
+          "epic_url": null,
+          "run_in_order": true,
+          "max_terminals": 2,
+          "auto_close": true,
+          "archived": false,
+          "paused": false,
+          "deprioritized": false,
+          "tasks": [
+            {
+              "id": 1,
+              "ref": "T1",
+              "title": "Task 1",
+              "project": "webapp",
+              "status": "done",
+              "priority": "normal",
+              "failed": false,
+              "lost": false,
+              "needs_reason": null,
+              "question": null,
+              "latest": null,
+              "summary": null,
+              "when": "2026-10-07T14:50:00.000Z",
+              "started_at": null,
+              "who": null,
+              "goal": {
+                "id": 1,
+                "ref": "G1",
+                "name": "Passkeys"
+              },
+              "jira": null,
+              "pr": null,
+              "starting": false,
+              "waiting": null,
+              "blocked": false
+            }
+          ],
+          "notes": [],
+          "backlog": [],
+          "closed_count": 0,
+          "attachments": [],
+          "qa": [
+            {
+              "id": 4,
+              "ref": "Q4",
+              "jira_key": "PROJ-7",
+              "comment_id": "104",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=104",
+              "author": "Sam QA",
+              "verdict": null,
+              "pr": 1,
+              "title": null,
+              "ask": null,
+              "text": null,
+              "task": null,
+              "task_status": null,
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            },
+            {
+              "id": 5,
+              "ref": "Q5",
+              "jira_key": "PROJ-7",
+              "comment_id": "105",
+              "url": "https://acme.atlassian.net/browse/PROJ-7?focusedCommentId=105",
+              "author": "Sam QA",
+              "verdict": "task",
+              "pr": 1,
+              "title": "Keep the old login?",
+              "ask": "Should the old login stay for one release? See `login.ts`.",
+              "text": "Tested on iOS.\n\n- the old login still shows\n- should it?",
+              "task": "T9",
+              "task_status": "done",
+              "task_title": null,
+              "source_task": "T1",
+              "handled_at": null,
+              "handled_by": null,
+              "created_at": "2026-10-07T14:20:00.000Z",
+              "waiting": false
+            }
+          ]
+        },
+        "hours": {
+          "on": true,
+          "open": true,
+          "start": "09:00",
+          "end": "17:00",
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "line": "",
+          "next_open": null,
+          "today_until": null
+        }
+      },
+      "expect": {
+        "split": false,
+        "buttons": [
+          {
+            "act": "goal-plan-edit",
+            "label": "Plan in Claude",
+            "title": "Open a Claude terminal in Midna on this goal’s plan, to change it by talking it through"
           }
         ]
       }
