@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use crate::client::{self, CallError};
 use crate::hook;
+use taskboardd::accounts::{self, Provider};
 use taskboardd::config::Config;
 
 const TB_TIMEOUT: f64 = 5.0;
@@ -156,6 +157,29 @@ enum Cmd {
     Pr {
         #[command(subcommand)]
         action: PrCmd,
+    },
+    /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
+    Accounts,
+    /// Print an account's token for a script: github, bitbucket or slack
+    Token {
+        #[arg(value_parser = ["github", "bitbucket", "slack"])]
+        provider: String,
+        /// Print who the token belongs to instead (Bitbucket: the email for basic auth)
+        #[arg(long)]
+        user: bool,
+    },
+    /// Call an account's REST API with its token: `tb api bitbucket repositories/acme/web/pullrequests/9`
+    Api {
+        #[arg(value_parser = ["github", "bitbucket", "slack"])]
+        provider: String,
+        /// The path under https://api.github.com/, https://api.bitbucket.org/2.0/ or https://slack.com/api/ (or a full URL)
+        path: String,
+        /// GET, POST, PUT or DELETE (POST when there's --data)
+        #[arg(short = 'X', long)]
+        method: Option<String>,
+        /// A JSON body
+        #[arg(short, long)]
+        data: Option<String>,
     },
     /// Tell the board where this tb is
     Hello,
@@ -801,9 +825,77 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Accounts => {
+            let v = c.call("GET", "/accounts", None)?;
+            for a in v["accounts"].as_array().cloned().unwrap_or_default() {
+                let label = a["label"].as_str().unwrap_or("");
+                if a["connected"] == true {
+                    let scopes = a["scopes"].as_array().map(|s| s.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                    out(&format!("{label}: {}{}", a["detail"].as_str().unwrap_or("connected"), if scopes.is_empty() { String::new() } else { format!(" ({scopes})") }));
+                } else {
+                    out(&format!("{label}: not connected"));
+                }
+                if let Some(e) = a["error"].as_str() {
+                    out(&format!("  ! {e}"));
+                }
+            }
+            out("Connect or change them in Taskboard ▸ Settings ▸ Accounts (the owner does this).");
+            Ok(0)
+        }
+        Cmd::Token { provider, user } => {
+            let p = Provider::parse(&provider).ok_or("unknown account")?;
+            let (who, secret) = accounts::credentials(&c.cfg, p).ok_or_else(|| format!("{} isn't connected. Ask {} to connect it in Taskboard ▸ Settings.", p.label(), c.cfg.owner))?;
+            out(if user { &who } else { &secret });
+            Ok(0)
+        }
+        Cmd::Api { provider, path, method, data } => api_call(&c.cfg, &provider, &path, method, data),
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
     }
+}
+
+/// `tb api`: one authenticated request; prints the answer's body.
+fn api_call(cfg: &Config, provider: &str, path: &str, method: Option<String>, data: Option<String>) -> Result<i32, String> {
+    let p = Provider::parse(provider).ok_or("unknown account")?;
+    let (who, secret) = accounts::credentials(cfg, p).ok_or_else(|| format!("{} isn't connected. Ask {} to connect it in Taskboard ▸ Settings.", p.label(), cfg.owner))?;
+    let base = match p {
+        Provider::Github => "https://api.github.com/",
+        Provider::Bitbucket => "https://api.bitbucket.org/2.0/",
+        Provider::Slack => "https://slack.com/api/",
+    };
+    let url = if path.starts_with("https://") { path.to_string() } else { format!("{base}{}", path.trim_start_matches('/')) };
+    if !url.starts_with(base) {
+        return Err(format!("{} requests go to {base}", p.label()));
+    }
+    let method = method.map(|m| m.to_uppercase()).unwrap_or_else(|| if data.is_some() { "POST".into() } else { "GET".into() });
+    let auth = match p {
+        Provider::Bitbucket => format!("Basic {}", basic(&who, &secret)),
+        _ => format!("Bearer {secret}"),
+    };
+    let req = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build().request(&method, &url).set("Authorization", &auth).set("Accept", "application/json");
+    let resp = match data {
+        Some(d) => {
+            serde_json::from_str::<Value>(&d).map_err(|e| format!("--data isn't JSON: {e}"))?;
+            req.set("Content-Type", "application/json; charset=utf-8").send_string(&d)
+        }
+        None => req.call(),
+    };
+    match resp {
+        Ok(r) => {
+            out(&r.into_string().unwrap_or_default());
+            Ok(0)
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            eprintln!("tb: {} answered {code}", p.label());
+            out(&r.into_string().unwrap_or_default());
+            Ok(1)
+        }
+        Err(e) => Err(format!("couldn't reach {}: {e}", p.label())),
+    }
+}
+
+fn basic(user: &str, secret: &str) -> String {
+    taskboardd::jira::base64_lite::encode(format!("{user}:{secret}").as_bytes())
 }
 
 pub fn main_with(args: Vec<String>) -> i32 {
@@ -849,5 +941,14 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "found", "x", "--kind", "nope"]).is_err());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
+    }
+
+    #[test]
+    fn basic_auth() {
+        assert_eq!(basic("a@b.co", "tok"), "YUBiLmNvOnRvaw==");
+        assert_eq!(basic("ab", "c"), "YWI6Yw==");
     }
 }

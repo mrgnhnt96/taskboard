@@ -8,6 +8,16 @@ A project with no git remote has no PRs: finish with a plain `tb done "<summary>
 2. Open the PR with the repo's normal tools (on GitHub, `gh pr create`). Write the description for developers who have never seen the task board: a short summary of what changes and why, the changes, and how it was tested. No task, goal or backlog refs (T45, G3, B1).
 3. `tb done "<summary>"` with the PR's URL anywhere in the summary (or in your last message). The board picks up GitHub, GitLab and Bitbucket PR URLs and links the PR to the task.
 
+## Accounts
+
+The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Accounts; `tb accounts` shows which are. On GitHub use `gh` (it's signed in there). On Bitbucket and Slack call their REST API through `tb api`, which adds the token:
+
+- Comment: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n>/comments -d '{"content":{"raw":"…"}}'`
+- Reviewers: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n> -X PUT -d '{"title":"…","reviewers":[{"account_id":"…"}]}'` (send the title too)
+- Slack: `tb api slack chat.postMessage -d '{"channel":"#dev","text":"…"}'`
+
+`git push` over HTTPS already works for both hosts. `tb token <github|bitbucket|slack>` prints a token for a script; never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
+
 ## After the PR opens
 
 Read this when the board brings you back about a done task's PR (`[task-board:T<n>] PR … needs you`): failed checks, review comments, or ready to merge. The task is already done: don't `tb take` it or run `tb done`. Every command takes the task, `T<n>`.
