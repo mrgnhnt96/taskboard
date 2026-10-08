@@ -284,6 +284,20 @@ For a live or a gone terminal:
 }
 ```
 
+### `GET /accounts`
+
+Query: `fresh=1` asks GitHub again (`gh auth status` is otherwise trusted for 2 minutes). Returns
+`{"accounts": [account]}` for github, bitbucket and slack, in that order. Never a token.
+```
+account = {"id": "github"|"bitbucket"|"slack", "label": str, "connected": bool,
+           "user": str|null, "name": str|null, "detail": str|null,   // "@sam · sam@acme.com", "Acme · acme.slack.com"
+           "scopes": [str], "checked_at": iso|null,
+           "error": str|null,      // why the last check or sign-in failed
+           "git": bool|null,       // git push over HTTPS is set up (github: git uses gh; bitbucket: the token is in git's helper)
+           "login": {"code": "ABCD-1234", "url": str}|null,   // github: a browser sign-in waiting for the code
+           "ready": bool, "setup": str|null}                 // github: false + "brew install gh" when gh is missing
+```
+
 ---
 
 ## Shared objects
@@ -411,6 +425,17 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off"}` | Sent on every change in the hours menu. `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
 | `POST /alerts/:id/dismiss` | `{}` | |
+
+### Accounts
+Every one answers with `GET /accounts`'s `{"accounts": […]}`.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /accounts/github/login` | `{}` | Starts `gh auth login --web`; answers once gh has shown its one-time code (`login.code`). Poll `GET /accounts` until `login` is null. |
+| `POST /accounts/github/cancel` | `{}` | Stops a browser sign-in. |
+| `POST /accounts/:id` | `{token}` (bitbucket also `{email}`) | Checks the token with the service, then keeps it (GitHub: `gh auth login --with-token`; others: the Keychain). 400 with the reason when it's refused. |
+| `POST /accounts/:id/check` | `{}` | Asks the service again whether the token works. |
+| `POST /accounts/:id/disconnect` | `{}` | Forgets the token (GitHub: `gh auth logout` for github.com). |
 
 ### Sessions (Midna terminals)
 | Path | Body | Notes |

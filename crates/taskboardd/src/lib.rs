@@ -1,5 +1,6 @@
 //! taskboard: a local task board that runs Claude Code sessions in the Midna terminal app and tracks their work.
 
+pub mod accounts;
 pub mod api;
 pub mod app;
 pub mod board;

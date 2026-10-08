@@ -201,6 +201,8 @@ pub struct Config {
     pub questions: Questions,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
+    pub accounts_sandbox: bool,
     pub config_path: PathBuf,
 }
 
@@ -280,6 +282,7 @@ impl Config {
             questions: f.questions,
             pr: f.pr,
             jira,
+            accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }
     }
@@ -297,6 +300,7 @@ impl Config {
         c.midna = data.join("no-midna");
         c.questions.screen = false;
         c.pr.watch = false;
+        c.accounts_sandbox = true;
         c.page_url = "taskboard://".into();
         c
     }

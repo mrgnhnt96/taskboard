@@ -447,7 +447,7 @@ pub fn expire(app: &App) -> Result<()> {
     Ok(())
 }
 
-mod base64_lite {
+pub mod base64_lite {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     pub fn encode(input: &[u8]) -> String {

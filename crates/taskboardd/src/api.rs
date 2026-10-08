@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{board, deliver, dispatch as alerts, fields, handoff, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
+use crate::{accounts, board, deliver, dispatch as alerts, fields, handoff, hours, jira, midna, ops, p, prflow, projects, reports, runner, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -51,6 +51,12 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
     let segs: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
     let r = match (method, segs.as_slice()) {
         ("GET", ["state"]) => get_state(app, query),
+        ("GET", ["accounts"]) => accounts::status(app, q(query, "fresh", "") == "1"),
+        ("POST", ["accounts", "github", "login"]) => accounts::github_login(app),
+        ("POST", ["accounts", "github", "cancel"]) => accounts::github_cancel(app),
+        ("POST", ["accounts", id, "check"]) => accounts::check(app, id),
+        ("POST", ["accounts", id, "disconnect"]) => accounts::disconnect(app, id),
+        ("POST", ["accounts", id]) => accounts::connect(app, id, body),
         ("GET", ["summary"]) => get_summary(app),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
         ("POST", ["projects", name]) => patch_project(app, name, body),

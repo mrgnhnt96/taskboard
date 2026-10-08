@@ -53,6 +53,7 @@ impl Signal {
 
 pub struct App {
     pub cfg: Config,
+    pub accounts: crate::accounts::Accounts,
     pub db: Db,
     pub shared: Mutex<Shared>,
     pub stopping: AtomicBool,
@@ -86,6 +87,7 @@ impl App {
 
     fn build(cfg: Config, db: Db, log_file: Option<std::fs::File>, log_stderr: bool, inline: bool) -> App {
         App {
+            accounts: crate::accounts::Accounts::new(&cfg),
             cfg,
             db,
             shared: Mutex::new(Shared::default()),
