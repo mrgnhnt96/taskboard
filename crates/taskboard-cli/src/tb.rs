@@ -191,6 +191,12 @@ enum Cmd {
     Hello,
     /// Claude Code hook (used by the plugin)
     Hook { event: Option<String> },
+    /// git credential helper for the board's sessions (set up by the plugin's SessionStart hook)
+    #[command(hide = true)]
+    GitCredential {
+        #[arg(value_parser = ["get", "store", "erase"])]
+        op: String,
+    },
     /// Claude Code status line: saves the rate limits for the board and prints a short line
     Statusline {
         /// Print the input unchanged (to chain into your own status line command)
@@ -891,6 +897,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Api { provider, path, method, data } => api_call(&c.cfg, &provider, &path, method, data),
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
+        Cmd::GitCredential { op } => Ok(crate::gitcred::run(&op)),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
     }
 }

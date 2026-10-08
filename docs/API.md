@@ -39,6 +39,7 @@ reader just changed doesn't vanish from under them).
   "alerts": [alert],
   "work_hours": work_hours,
   "usage": usage | null,                        // null when no usage reading is known: the pill is hidden
+  "accounts": [{"id", "label", "reason", "reauth": bool}],  // accounts needing the owner (missing scopes or a failed check): the amber status-bar pill
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
   "sessions": [session_row],                    // live (not gone) Claude terminals, filtered by ?project
   "session_projects": [str],                    // sorted project names of all live Claude terminals (unfiltered); seeds the goals rail
@@ -289,16 +290,21 @@ For a live or a gone terminal:
 
 ### `GET /accounts`
 
-Query: `fresh=1` asks GitHub again (`gh auth status` is otherwise trusted for 2 minutes). Returns
+Query: `fresh=1` asks each service again about its token (otherwise the last check is used). Returns
 `{"accounts": [account]}` for github, bitbucket and slack, in that order. Never a token.
+
+Every token is Taskboard's own, in the login Keychain (`taskboard-github`, `taskboard-bitbucket`,
+`taskboard-slack`). Nothing here changes the Mac's `gh` sign-in, `~/.gitconfig` or git's credential store.
 ```
 account = {"id": "github"|"bitbucket"|"slack", "label": str, "connected": bool,
            "user": str|null, "name": str|null, "detail": str|null,   // "@sam · sam@acme.com", "Acme · acme.slack.com"
            "scopes": [str], "checked_at": iso|null,
+           "required": [str],      // the scopes Taskboard needs (accounts::required_scopes)
+           "missing": [str],       // required scopes the token lacks; [] when the service lists none (fine-grained GitHub token)
+           "reauth": bool,         // missing isn't empty: the app asks the owner to sign in again
            "error": str|null,      // why the last check or sign-in failed
-           "git": bool|null,       // git push over HTTPS is set up (github: git uses gh; bitbucket: the token is in git's helper)
            "login": {"code": "ABCD-1234", "url": str}|null,   // github: a browser sign-in waiting for the code
-           "ready": bool, "setup": str|null}                 // github: false + "brew install gh" when gh is missing
+           "gh": bool, "setup": str|null}                    // github: false + "brew install gh" when gh is missing (only the browser sign-in and import need it)
 ```
 
 ---
@@ -434,11 +440,12 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 
 | Path | Body | Notes |
 |---|---|---|
-| `POST /accounts/github/login` | `{}` | Starts `gh auth login --web`; answers once gh has shown its one-time code (`login.code`). Poll `GET /accounts` until `login` is null. |
+| `POST /accounts/github/login` | `{}` | Starts `gh auth login --web --insecure-storage --scopes <required>` in a throwaway `GH_CONFIG_DIR` (gh's own sign-in is untouched); answers once gh has shown its one-time code (`login.code`). When it finishes, the token moves into `taskboard-github` and the folder is deleted. Poll `GET /accounts` until `login` is null. |
 | `POST /accounts/github/cancel` | `{}` | Stops a browser sign-in. |
-| `POST /accounts/:id` | `{token}` (bitbucket also `{email}`) | Checks the token with the service, then keeps it (GitHub: `gh auth login --with-token`; others: the Keychain). 400 with the reason when it's refused. |
-| `POST /accounts/:id/check` | `{}` | Asks the service again whether the token works. |
-| `POST /accounts/:id/disconnect` | `{}` | Forgets the token (GitHub: `gh auth logout` for github.com). |
+| `POST /accounts/github/import` | `{}` | Copies the token `gh auth token` prints into `taskboard-github` (read only; later gh changes don't follow). 400 when gh isn't signed in. |
+| `POST /accounts/:id` | `{token}` (bitbucket also `{email}`) | Checks the token with the service, then keeps it in the Keychain. 400 with the reason when it's refused. |
+| `POST /accounts/:id/check` | `{}` | Asks the service again whether the token works and what scopes it has. |
+| `POST /accounts/:id/disconnect` | `{}` | Forgets Taskboard's token. Nothing else on the Mac changes. |
 
 ### Sessions (Midna terminals)
 | Path | Body | Notes |

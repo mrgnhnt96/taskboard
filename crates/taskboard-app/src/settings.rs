@@ -3,10 +3,11 @@
 //! "Agent commands" adds under the rows the exact command an agent would run (copyable).
 //!
 //! Accounts is the one section so far: GitHub, Bitbucket and Slack, so the board and its agents can
-//! check PRs, comment, push and assign reviewers. The daemon owns them (`taskboardd::accounts`):
-//! GitHub signs in through `gh` (browser code or a pasted token), Bitbucket and Slack take a token
-//! that the daemon checks with the service and keeps in the Keychain. Tokens go to the daemon once
-//! and never come back to the window.
+//! check PRs, comment, push and assign reviewers. The daemon owns them (`taskboardd::accounts`): each
+//! is Taskboard's own token, checked with the service and kept in the Keychain, never the Mac's `gh`
+//! or git sign-in. GitHub's comes from a browser code, a pasted token or a copy of gh's. Tokens go to
+//! the daemon once and never come back to the window. An account missing scopes Taskboard needs shows
+//! "Sign in again".
 use crate::backend::Backend;
 use crate::theme::Theme;
 use crate::ui::kit::{self, Input, KeyOutcome};
@@ -72,7 +73,7 @@ impl Sec {
 
 /// Each account's card: id, a short mark and its color, and what it's used for.
 const CARDS: [(&str, &str, u32, &str); 3] = [
-    ("github", "GH", 0x24292f, "PR checks and reviews, comments, reviewers and git push, through the GitHub CLI"),
+    ("github", "GH", 0x24292f, "PR checks and reviews, comments, reviewers and git push"),
     ("bitbucket", "BB", 0x2684ff, "Pull requests, comments, reviewers and git push over HTTPS"),
     ("slack", "S", 0x4a154b, "Posting and reading messages for the board and its agents"),
 ];
@@ -108,6 +109,8 @@ pub struct SettingsWindow {
     copied: Option<(String, Instant)>,
     /// GitHub's "Use a token" form is open.
     gh_form: bool,
+    /// Bitbucket's token form is open while connected (to replace a token missing scopes).
+    bb_form: bool,
     gh_token: Input,
     bb_email: Input,
     bb_token: Input,
@@ -135,6 +138,7 @@ impl SettingsWindow {
             cli: false,
             copied: None,
             gh_form: false,
+            bb_form: false,
             gh_token: Input::secret(cx, "ghp_… or github_pat_…"),
             bb_email: Input::new(cx, "you@company.com", false),
             bb_token: Input::secret(cx, "ATATT…"),
@@ -241,6 +245,14 @@ impl SettingsWindow {
         self.post("github", "accounts/github/login".into(), json!({}), cx, |_, _| {});
     }
 
+    /// Copies the token `gh` already uses; gh's own sign-in isn't changed.
+    fn import_gh(&mut self, cx: &mut Context<Self>) {
+        self.post("github", "accounts/github/import".into(), json!({}), cx, |s, _| {
+            let a = s.account("github");
+            s.notes.insert("github", (format!("Using gh's sign-in: {}.", a["detail"].as_str().unwrap_or("connected")), false));
+        });
+    }
+
     fn connect(&mut self, id: &'static str, cx: &mut Context<Self>) {
         let body = match id {
             "github" => json!({"token": self.gh_token.text(cx)}),
@@ -255,6 +267,7 @@ impl SettingsWindow {
             };
             field.clear(cx);
             s.gh_form = false;
+            s.bb_form = false;
             let a = s.account(id);
             s.notes.insert(id, (format!("Connected as {}.", a["detail"].as_str().or(a["user"].as_str()).unwrap_or("you")), false));
         });
@@ -350,8 +363,8 @@ impl SettingsWindow {
         let mut list = div().id("sections").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.)).px(px(10.));
         for sec in SECS {
             let on = self.view == sec;
-            // amber count: accounts whose sign-in stopped working
-            let n = self.accounts.iter().filter(|a| a["connected"] == true && a["error"].is_string()).count();
+            // amber count: accounts whose sign-in stopped working or lacks scopes
+            let n = self.accounts.iter().filter(|a| needs_owner(a)).count();
             let hover = t.panel_2;
             list = list.child(
                 div()
@@ -511,7 +524,7 @@ impl SettingsWindow {
                 .text_size(px(11.5))
                 .line_height(px(16.))
                 .text_color(t.muted)
-                .child("Tokens are checked with the service, then kept in your login Keychain (GitHub's by the GitHub CLI). The board never shows them again; agents get them with tb token."),
+                .child("Tokens are checked with the service, then kept in your login Keychain as Taskboard's own. Your gh and git sign-ins aren't changed. The board never shows tokens again; agents get them with tb token, and push with them while on a task."),
         )
     }
 
@@ -519,37 +532,49 @@ impl SettingsWindow {
 
     fn github_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let busy = self.busy == Some("github");
+        let has_gh = a["gh"] != false;
         let mut rows = vec![];
-        if a["ready"] == false {
-            let setup = a["setup"].as_str().unwrap_or("brew install gh").to_string();
-            let copied = self.copied.as_ref().is_some_and(|(c, _)| *c == setup);
-            rows.push(
-                line(t, "gh-missing", true, true, "The GitHub CLI isn't installed", "Taskboard signs in through gh, the same tool agents use for pull requests.", None)
-                    .child(controls().child(kit::btn_small(t, "gh-recheck", "Check again").on_click(cx.listener(|s, _, _, cx| s.load(true, cx)))).child(
-                        kit::btn_primary(t, "gh-copy-install", if copied { "Copied".to_string() } else { format!("Copy “{setup}”") })
-                            .h(px(26.))
-                            .text_size(px(12.))
-                            .on_click(cx.listener(move |s, _, _, cx| s.copy(setup.clone(), cx))),
-                    ))
-                    .into_any_element(),
-            );
-            return rows;
-        }
         if let Some((code, url)) = self.login() {
             rows.push(self.github_code(t, code, url, cx));
             return rows;
         }
         if a["connected"] == true {
-            rows.push(self.signed_in_row(t, "github", a, "Signed in with the GitHub CLI", "Sign out", cx));
-            rows.push(git_row(t, "github", a["git"] == true, "git push over HTTPS asks gh for github.com passwords.", "git doesn't use gh for github.com yet. Run gh auth setup-git, or sign in again."));
+            rows.push(self.signed_in_row(t, "github", a, "Taskboard's own token", "Disconnect", cx));
+            if a["reauth"] == true {
+                let btn = if !has_gh {
+                    kit::btn_primary(t, "gh-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
+                        s.gh_form = true;
+                        window.focus(&s.gh_token.focus, cx);
+                        cx.notify();
+                    }))
+                } else if busy {
+                    kit::disabled(kit::btn_primary(t, "gh-reauth", "Starting…").h(px(26.)).text_size(px(12.)))
+                } else {
+                    kit::btn_primary(t, "gh-reauth", "Sign in again").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
+                };
+                rows.push(reauth_row(t, "github", a, "Sign in again (or use a token that has them).", btn.into_any_element()));
+            }
+            rows.push(push_row(t, "github", "github.com"));
         } else {
             let sign_in = if busy { kit::disabled(kit::btn_primary(t, "gh-sign-in", "Starting…").h(px(26.)).text_size(px(12.))) } else {
                 kit::btn_primary(t, "gh-sign-in", "Sign in with GitHub").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
             };
+            let note = if has_gh {
+                "Opens GitHub in your browser with a one-time code. Taskboard keeps its own token; gh's sign-in isn't changed."
+            } else {
+                "Paste a token, or install the GitHub CLI (brew install gh) to sign in with the browser."
+            };
             rows.push(
-                line(t, "gh-out", true, false, "Not signed in", "Opens GitHub in your browser with a one-time code. gh keeps the token in your Keychain.", None)
+                line(t, "gh-out", true, false, "Not signed in", note, None)
                     .child(
                         controls()
+                            .when(has_gh, |d| {
+                                d.child(
+                                    kit::btn_small(t, "gh-import", "Use my gh sign-in")
+                                        .tooltip(kit::tip("Copies the token gh already uses into Taskboard. gh isn't changed."))
+                                        .on_click(cx.listener(|s, _, _, cx| s.import_gh(cx))),
+                                )
+                            })
                             .when(!self.gh_form, |d| {
                                 d.child(kit::btn_small(t, "gh-use-token", "Use a token").on_click(cx.listener(|s, _, window, cx| {
                                     s.gh_form = true;
@@ -557,13 +582,13 @@ impl SettingsWindow {
                                     cx.notify();
                                 })))
                             })
-                            .child(sign_in),
+                            .when(has_gh, |d| d.child(sign_in)),
                     )
                     .into_any_element(),
             );
-            if self.gh_form {
-                rows.push(self.token_row(t, "github", "Token", "A classic token with repo, read:org and workflow, or a fine-grained one with Contents and Pull requests (read and write).", &self.gh_token, window, cx, true));
-            }
+        }
+        if self.gh_form {
+            rows.push(self.token_row(t, "github", "Token", "A classic token with repo, read:org and workflow, or a fine-grained one with Contents, Pull requests and Workflows (read and write).", &self.gh_token, window, cx, a["connected"] != true));
         }
         rows.extend(error_row(t, "github", a));
         rows
@@ -571,17 +596,27 @@ impl SettingsWindow {
 
     fn bitbucket_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![];
-        if a["connected"] == true {
+        let connected = a["connected"] == true;
+        if connected {
             rows.push(self.signed_in_row(t, "bitbucket", a, "API token in the Keychain (taskboard-bitbucket)", "Disconnect", cx));
-            rows.push(git_row(t, "bitbucket", a["git"] == true, "git push over HTTPS uses the token (x-bitbucket-api-token-auth).", "git has no credential helper to keep the token, so git push will still ask."));
-        } else {
+            if a["reauth"] == true && !self.bb_form {
+                let btn = kit::btn_primary(t, "bb-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
+                    s.bb_form = true;
+                    window.focus(&s.bb_email.focus, cx);
+                    cx.notify();
+                }));
+                rows.push(reauth_row(t, "bitbucket", a, "Make a new API token with them and connect it.", btn.into_any_element()));
+            }
+            rows.push(push_row(t, "bitbucket", "bitbucket.org"));
+        }
+        if !connected || self.bb_form {
             let email = self.bb_email.render(t, "bb-email", window).w(px(260.)).on_key_down(self.field_keys("bitbucket", &self.bb_email, cx));
-            rows.push(line(t, "bb-email-row", true, false, "Atlassian email", "The email you sign in to Bitbucket with.", None).child(email).into_any_element());
+            rows.push(line(t, "bb-email-row", !connected, false, "Atlassian email", "The email you sign in to Bitbucket with.", None).child(email).into_any_element());
             rows.push(self.token_row(
                 t,
                 "bitbucket",
                 "API token",
-                "An Atlassian API token with Bitbucket scopes: account (read), repositories and pull requests (read and write).",
+                "An Atlassian API token with Bitbucket scopes: read:user, read and write repository, read and write pullrequest.",
                 &self.bb_token,
                 window,
                 cx,
@@ -701,7 +736,7 @@ impl SettingsWindow {
         let check = if busy { kit::disabled(check) } else { check.tooltip(kit::tip("Ask the service whether the token still works")).on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/check"), json!({}), cx, |_, _| {}))) };
         let out_btn = kit::btn_small(t, SharedString::from(format!("{id}-out")), out.to_string()).text_color(t.down);
         let out_btn = if busy { kit::disabled(out_btn) } else { out_btn.on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/disconnect"), json!({}), cx, |_, _| {}))) };
-        let tip = if id == "github" { "Signs the GitHub CLI out of github.com on this Mac" } else { "Forgets the token on this Mac" };
+        let tip = "Forgets Taskboard's token. gh and git on this Mac aren't touched.";
         line(t, &format!("{id}-in"), true, false, "", &note, Some((&name, true)))
             .when(!scopes.is_empty(), |d| d.child(div().flex().flex_wrap().gap(px(4.)).max_w(px(260.)).justify_end().children(scopes.into_iter().take(6).map(|s| kit::chip(t, s.to_string())))))
             .child(controls().child(check).child(out_btn.tooltip(kit::tip(tip))))
@@ -782,11 +817,25 @@ fn controls() -> Div {
     div().flex().flex_none().items_center().gap(px(8.))
 }
 
-fn git_row(t: &Theme, id: &str, ok: bool, yes: &str, no: &str) -> AnyElement {
+/// Whether an account needs the owner: its sign-in stopped working or lacks scopes Taskboard needs.
+fn needs_owner(a: &Value) -> bool {
+    a["connected"] == true && (a["error"].is_string() || a["reauth"] == true)
+}
+
+/// Amber: the scopes Taskboard now needs that this sign-in lacks, and how to give them.
+fn reauth_row(t: &Theme, id: &str, a: &Value, how: &str, button: AnyElement) -> AnyElement {
+    let missing: Vec<&str> = a["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    line(t, &format!("{id}-reauth"), false, true, "Needs a new sign-in", &format!("Taskboard now needs {}. {how}", missing.join(", ")), None)
+        .child(div().flex().flex_wrap().gap(px(4.)).max_w(px(200.)).justify_end().children(missing.iter().map(|s| kit::chip(t, s.to_string()))))
+        .child(controls().child(button))
+        .into_any_element()
+}
+
+/// How agents push: only in the board's sessions, only while on a task.
+fn push_row(t: &Theme, id: &str, host: &str) -> AnyElement {
     row(t, &format!("{id}-git"), false)
-        .when(!ok, |d| d.bg(t.warn_soft))
-        .child(kit::dot(if ok { t.up } else { t.warn }, 7.))
-        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(if ok { t.muted } else { t.warn_fg }).child(if ok { yes.to_string() } else { no.to_string() }))
+        .child(kit::dot(t.up, 7.))
+        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.muted).child(format!("Agents on a task git push to {host} with this account. Other terminals keep their own git sign-in.")))
         .into_any_element()
 }
 
@@ -868,5 +917,49 @@ mod tests {
         settle(cx);
         assert!(rec.posts().iter().any(|(p, _)| p == "accounts/github/cancel"));
         w.update(cx, |s, _, _| assert!(s.login().is_none())).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_sign_in_missing_scopes_asks_for_a_new_one(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, _, cx| {
+            s.gh_token.set_text("narrow", cx);
+            s.connect("github", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, _| {
+            let gh = s.account("github");
+            assert_eq!(gh["connected"], true);
+            assert_eq!(gh["reauth"], true);
+            assert_eq!(gh["missing"], json!(["read:org", "workflow"]));
+            assert!(super::needs_owner(&gh), "the sidebar counts it");
+        })
+        .unwrap();
+        let st = rec.get("state", &[]).unwrap();
+        assert_eq!(st["accounts"][0]["id"], "github", "the board's status bar hears about it");
+        assert_eq!(st["accounts"][0]["reauth"], true);
+
+        w.update(cx, |s, _, cx| {
+            s.gh_token.set_text("ghp_full", cx);
+            s.connect("github", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, _| assert_eq!(s.account("github")["reauth"], false)).unwrap();
+        assert_eq!(rec.get("state", &[]).unwrap()["accounts"], json!([]));
+    }
+
+    #[gpui_kit::test]
+    fn uses_gh_sign_in_without_changing_it(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, _, cx| s.import_gh(cx)).unwrap();
+        settle(cx);
+        assert!(rec.posts().iter().any(|(p, _)| p == "accounts/github/import"));
+        w.update(cx, |s, _, _| {
+            assert_eq!(s.account("github")["connected"], true);
+            assert!(s.notes.get("github").is_some_and(|(n, bad)| !bad && n.starts_with("Using gh's sign-in")));
+        })
+        .unwrap();
     }
 }

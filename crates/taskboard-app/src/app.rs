@@ -1105,6 +1105,9 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
     if m.backend.label() == "fake" {
         bar = bar.child(kit::tone_pill(t, "goal", "Sample board"));
     }
+    if let Some(p) = accounts_pill(&st, t) {
+        bar = bar.child(p);
+    }
     let text = t.text;
     bar = bar.child(
         div()
@@ -1118,6 +1121,26 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
             .child("Settings"),
     );
     bar
+}
+
+/// Amber "GitHub: sign in again" when an account lacks scopes Taskboard needs (or stopped working);
+/// opens Settings. `state.accounts` is the daemon's `accounts::attention`.
+fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
+    let list = st.get("accounts")?.as_array().filter(|l| !l.is_empty())?;
+    let label = match list.as_slice() {
+        [one] => format!("{}: {}", one["label"].as_str().unwrap_or("Account"), if one["reauth"] == true { "sign in again" } else { "check sign-in" }),
+        many => format!("{} accounts need you", many.len()),
+    };
+    let tip = list.iter().map(|a| format!("{}: {}", a["label"].as_str().unwrap_or(""), a["reason"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
+    Some(
+        pill_shell(t, "accounts-pill", t.warn_fg, t.warn_soft)
+            .cursor_pointer()
+            .child(kit::dot(t.warn, 7.))
+            .child(label)
+            .tooltip(kit::tip(tip))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
+            .into_any_element(),
+    )
 }
 
 /// "Install hooks", "● Hooks" or an amber "Reinstall hooks", as in Midna's status bar.

@@ -356,7 +356,7 @@ pub fn read_github(app: &App, t: &Row) -> std::result::Result<Value, String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let o = proc::run(&gh, &args, None, 30.0).map_err(|_| "gh didn't answer in 30 seconds".to_string())?;
+    let o = proc::run_with(&gh, &args, None, 30.0, &crate::accounts::gh_env(&app.cfg), None).map_err(|_| "gh didn't answer in 30 seconds".to_string())?;
     if o.code != Some(0) {
         return Err(o.stderr.lines().next().unwrap_or("gh failed").to_string());
     }

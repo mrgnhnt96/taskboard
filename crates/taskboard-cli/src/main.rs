@@ -1,6 +1,7 @@
 //! tb: the agent CLI (`tb` inside Claude sessions), the Claude Code hooks
 //! (`tb hook <Event>`) and the status line (`tb statusline`).
 mod client;
+mod gitcred;
 mod hook;
 mod tb;
 

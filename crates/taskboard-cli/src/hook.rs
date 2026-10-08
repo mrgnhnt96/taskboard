@@ -82,6 +82,20 @@ fn tb_path() -> String {
     std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "tb".into())
 }
 
+/// When Taskboard has a GitHub or Bitbucket account, has this session's git ask `tb git-credential`
+/// first (through Claude Code's `CLAUDE_ENV_FILE`), so an agent on a task pushes with that account.
+/// Only this session's environment changes; `~/.gitconfig` doesn't.
+fn git_env(cfg: &Config, tb: &str) {
+    let Some(file) = std::env::var_os("CLAUDE_ENV_FILE").filter(|f| !f.is_empty()) else { return };
+    if !taskboardd::accounts::has_git_account(cfg) {
+        return;
+    }
+    let Some(env) = crate::gitcred::session_env(tb) else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+        let _ = f.write_all(env.as_bytes());
+    }
+}
+
 fn plugin_version() -> String {
     plugin_root()
         .and_then(|r| std::fs::read_to_string(r.join(".claude-plugin").join("plugin.json")).ok())
@@ -210,6 +224,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     };
     if hook == "SessionStart" {
         say_hello(&cfg, &base, &version, &path, left());
+        git_env(&cfg, &path);
     }
     let context = resp["context"].as_str().filter(|c| !c.trim().is_empty()).unwrap_or("").to_string();
     let deliver = &resp["deliver"];

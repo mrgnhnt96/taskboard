@@ -16,7 +16,7 @@ The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Acc
 - Reviewers: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n> -X PUT -d '{"title":"…","reviewers":[{"account_id":"…"}]}'` (send the title too)
 - Slack: `tb api slack chat.postMessage -d '{"channel":"#dev","text":"…"}'`
 
-`git push` over HTTPS already works for both hosts. `tb token <github|bitbucket|slack>` prints a token for a script; never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
+`git push` over HTTPS uses Taskboard's account for that host while you're on a task (`tb git-credential`, set up when the session starts); elsewhere git uses the Mac's own sign-in. `tb token <github|bitbucket|slack>` prints a token for a script; never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
 
 ## After the PR opens
 
