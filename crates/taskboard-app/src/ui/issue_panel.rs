@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-pub const WIDTH: f32 = 520.;
+/// `.panel`: `width: min(480px, 100vw)`.
+pub const WIDTH: f32 = 480.;
 
 /// Notes and busy buttons (the web board's `S.notes`, `S.busy` for issues), plus the open picker.
 #[derive(Default)]
@@ -236,7 +237,11 @@ pub struct HistRow {
     pub time: String,
     pub full: String,
     pub kind: String,
+    /// "who · text" (as the web joins them).
     pub text: String,
+    /// Who did it (bold in the panel), and the rest after " · ".
+    pub who: Option<String>,
+    pub what: String,
 }
 
 /// `issueDetail`.
@@ -271,6 +276,8 @@ pub fn detail_view(b: &Value) -> DetailView {
                 time: fmt::hhmm(s(h, "at")),
                 full: fmt::full_time(s(h, "at")),
                 kind: s(h, "kind").to_string(),
+                who: fmt::opt_s(h, "who").map(str::to_string),
+                what: s(h, "text").to_string(),
                 text: match fmt::opt_s(h, "who") {
                     Some(w) => format!("{w} · {}", s(h, "text")),
                     None => s(h, "text").to_string(),
@@ -768,13 +775,23 @@ pub fn act_button(t: &Theme, id: impl Into<ElementId>, a: &Act, style: &str, sma
         }
         _ => kit::btn(t, id, a.label.clone()),
     };
-    let b = if small { b.h(px(26.)).px(px(10.)).rounded(px(7.)).text_size(px(12.5)) } else { b };
+    // `.btn` is 36px tall, padding 0 14px (`.ghost` 0 10px), radius 8px, 13px; primary is bold.
+    let b = if small {
+        b.h(px(26.)).px(px(10.)).rounded(px(7.)).text_size(px(12.5))
+    } else {
+        let b = b.h(px(36.)).px(px(if style == "ghost" { 10. } else { 14. })).rounded(px(8.)).text_size(px(13.));
+        match style {
+            "primary" => b.font_weight(FontWeight::SEMIBOLD),
+            "ghost" => b,
+            _ => b.font_weight(FontWeight::NORMAL).border_color(t.border),
+        }
+    };
     if a.busy { kit::disabled(b) } else { b }
 }
 
 /// Buttons for [`issue_actions`], wired.
 pub fn action_row(t: &Theme, r: &str, acts: &[Act], small: bool, id: &str, cx: &mut Context<MainWindow>) -> Div {
-    let mut row = div().flex().flex_wrap().items_center().gap(px(6.));
+    let mut row = div().flex().flex_wrap().items_center().gap(px(if small { 6. } else { 8. }));
     for a in acts {
         let style = match (a.act, small) {
             ("promote", true) => "soft",
@@ -804,6 +821,16 @@ fn section(t: &Theme, title: &str) -> Div {
     div().flex().flex_col().gap(px(8.)).child(kit::h3(t, title.to_string()))
 }
 
+/// The panel's `.stack` (gap 6px) under a 13px `.h3`.
+fn panel_section(t: &Theme, title: &str, gap: f32) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(gap))
+        .min_w_0()
+        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(title.to_uppercase()))
+}
+
 fn hist_color(t: &Theme, kind: &str) -> Hsla {
     match kind {
         "report" => t.warn,
@@ -819,7 +846,8 @@ fn hist_color(t: &Theme, kind: &str) -> Hsla {
 pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
     let r = v.r.clone();
     let mut col = div().flex().flex_col().gap(px(18.));
-    let mut how = section(t, "How it was reported").child(div().text_size(px(if compact { 13. } else { 14. })).child(v.how.clone()));
+    let sec = |title: &str, gap: f32| if compact { section(t, title) } else { panel_section(t, title, gap) };
+    let mut how = sec("How it was reported", 6.).child(div().text_size(px(if compact { 13. } else { 14. })).child(v.how.clone()));
     if let Some(said) = &v.said {
         how = how.child(div().text_size(px(14.)).text_color(t.text_2).bg(t.bg).border_l(px(3.)).border_color(t.border_2).rounded_r(px(8.)).px(px(12.)).py(px(8.)).child(said.clone()));
     }
@@ -833,7 +861,7 @@ pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<
     }
     col = col.child(how);
 
-    let mut happening = section(t, "What was happening");
+    let mut happening = sec("What was happening", 6.);
     if v.snap.is_empty() {
         happening = happening.child(kit::help(t, "No snapshot was saved with this issue."));
     } else {
@@ -853,15 +881,34 @@ pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<
         happening = happening.child(kv);
     }
     if let Some((fr, label)) = v.found_log.clone() {
-        happening = happening.child(div().flex().text_size(px(13.)).child(kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label).on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx)))));
+        happening = happening.child(div().flex().text_size(px(13.)).child(kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label).when(!compact, |d| d.underline()).on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx)))));
     }
     col = col.child(happening);
 
-    let mut history = section(t, "History").gap(px(8.));
+    let mut history = sec("History", 8.);
     if v.history.is_empty() {
         history = history.child(kit::help(t, "Nothing yet."));
     }
     for (n, h) in v.history.iter().enumerate() {
+        if !compact {
+            // `.hist li`: 52px time · 10px dot · text, gap 8px.
+            let text = match &h.who {
+                Some(w) => div().flex_1().min_w_0().text_size(px(13.5)).child(
+                    StyledText::new(format!("{w} · {}", h.what)).with_highlights([(0..w.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })]),
+                ),
+                None => div().flex_1().min_w_0().text_size(px(13.5)).child(h.what.clone()),
+            };
+            history = history.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(52.)).whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
+                    .child(div().flex_none().w(px(10.)).pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 8.)))
+                    .child(text),
+            );
+            continue;
+        }
         history = history.child(
             div()
                 .flex()
@@ -884,7 +931,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         Some(Panel::Issue { r }) if !matches!(m.page, Page::Goal(_)) => r.clone(),
         _ => return div().into_any_element(),
     };
-    let close = kit::btn_small(&t, "issue-close", "✕").on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)));
+    let close = close_btn(&t).on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)));
     let issue = m.data.issue.clone().filter(|b| fmt::ref_of(b, "B") == r);
     let body = match issue {
         Some(b) => panel_body(m, &t, &b, close, cx),
@@ -894,13 +941,16 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .flex_col()
             .gap(px(18.))
             .px(px(24.))
-            .pt(px(20.))
-            .child(div().flex().items_center().gap(px(8.)).child(kit::tone_pill(&t, "muted", "Backlog")).child(div().flex_1()).child(close))
+            .pt(px(24.))
+            .line_height(relative(1.5))
+            .child(div().flex().items_center().gap(px(8.)).child(web_pill(&t, t.text_2, t.col, "Backlog", false)).child(div().flex_1()).child(close))
             .child(kit::help(&t, "Loading…")),
     };
     let picker = render_picker(m, &t, window, cx);
     deferred(
+        // The web's `.panel` sits over the board without dimming it; a click outside still closes it.
         kit::scrim(&t, "issue-scrim")
+            .bg(transparent_black())
             .on_mouse_down(MouseButton::Left, cx.listener(|m, _, _, cx| m.close_panel(cx)))
             .child(
                 div()
@@ -928,26 +978,50 @@ fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx
     let v = panel_view(&Ctx::of(m), b);
     let r = v.r.clone();
     let (kfg, kbg) = kind_colors(t, s(b, "kind"));
-    let top = div().flex().items_center().gap(px(6.)).child(kit::tone_pill(t, "muted", "Backlog")).child(kit::pill(kfg, kbg, v.kind.clone())).child(kit::chip(t, r.clone())).child(div().flex_1()).child(close);
+    // `.panel-top`: Backlog, the kind and the ref as `.pill`s, the close `.icon-btn`.
+    let top = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.))
+        .child(web_pill(t, t.text_2, t.col, "Backlog", false))
+        .child(web_pill(t, kfg, kbg, v.kind.clone(), false))
+        .child(web_pill(t, t.muted, t.panel_2, r.clone(), true))
+        .child(div().flex_1())
+        .child(close);
+    // `h2.title` (20px / 1.3) and the `.subline` (13px muted, gap 6px 12px).
     let title = div()
         .flex()
         .flex_col()
         .gap(px(4.))
-        .child(div().text_size(px(19.)).font_weight(FontWeight::BOLD).line_height(px(25.)).child(v.title.clone()))
+        .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).line_height(relative(1.3)).child(v.title.clone()))
         .child(
             div()
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(px(10.))
-                .text_size(px(12.5))
+                .gap_x(px(12.))
+                .gap_y(px(6.))
+                .text_size(px(13.))
                 .text_color(t.muted)
-                .child(kit::mono(t, v.project.clone()).text_color(t.muted))
+                .child(div().font_family(t.mono_font.clone()).child(v.project.clone()))
                 .child(div().flex().gap(px(4.)).child(v.state_line.clone()).when_some(v.open_task.clone(), |d, tr| {
-                    d.child("·").child(kit::link(t, "issue-open-task", "Open it").on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx))))
+                    d.child("·").child(kit::link(t, "issue-open-task", "Open it").underline().on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx))))
                 })),
         );
-    let mut col = div().id("issue-panel-body").flex().flex_col().gap(px(18.)).size_full().px(px(24.)).pt(px(20.)).pb(px(32.)).overflow_y_scroll().child(top).child(title);
+    let mut col = div()
+        .id("issue-panel-body")
+        .flex()
+        .flex_col()
+        .gap(px(18.))
+        .size_full()
+        .px(px(24.))
+        .pt(px(24.))
+        .pb(px(32.))
+        .line_height(relative(1.5))
+        .overflow_y_scroll()
+        .child(top)
+        .child(title);
     match &v.open_box {
         Some((what, acts)) => {
             col = col.child(
@@ -955,12 +1029,13 @@ fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .p(px(14.))
-                    .rounded(px(10.))
-                    .bg(t.accent_soft)
+                    .px(px(16.))
+                    .py(px(14.))
+                    .rounded(px(12.))
+                    .bg(accent_tint(t))
                     .border_1()
                     .border_color(t.accent_line)
-                    .child(div().text_size(px(13.)).text_color(t.text_2).child(what.clone()))
+                    .child(div().text_size(px(13.)).child(what.clone()))
                     .child(action_row(t, &r, acts, false, "issue", cx))
                     .children(note_el(t, &v.note)),
             )
@@ -969,7 +1044,51 @@ fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx
     }
     col = col.child(render_detail(t, &v.detail, false, cx));
     let rr = r.clone();
-    col.child(div().flex().text_size(px(13.)).child(kit::link(t, "issue-all", "See every backlog issue").on_click(cx.listener(move |m, _, _, cx| see_all(m, &rr, cx)))))
+    col.child(div().flex().text_size(px(13.)).child(kit::link(t, "issue-all", "See every backlog issue").underline().on_click(cx.listener(move |m, _, _, cx| see_all(m, &rr, cx)))))
+}
+
+/// `.pill` (12px semibold, padding 2px 10px); `mono` is `.pill.ref`.
+fn web_pill(t: &Theme, fg: Hsla, bg: Hsla, text: impl Into<SharedString>, mono: bool) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .px(px(10.))
+        .py(px(2.))
+        .rounded_full()
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(12.))
+        .line_height(relative(1.5))
+        .font_weight(if mono { FontWeight::MEDIUM } else { FontWeight::SEMIBOLD })
+        .when(mono, |d| d.font_family(t.mono_font.clone()))
+        .whitespace_nowrap()
+        .child(text.into())
+}
+
+/// `.icon-btn` (36px, bordered) holding `ICON.x`.
+fn close_btn(t: &Theme) -> Stateful<Div> {
+    let hover = t.border_2;
+    div()
+        .id("issue-close")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(36.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .cursor_pointer()
+        .hover(move |d| d.border_color(hover))
+        .tooltip(kit::tip("Close"))
+        .child(kit::glyph(kit::Glyph::X, 16., t.muted))
+}
+
+/// `--accent-tint` (#f5f8ff light, #172036 dark), which the theme doesn't carry.
+fn accent_tint(t: &Theme) -> Hsla {
+    if matches!(t.mode, crate::theme::ThemeMode::Dark) { rgb(0x172036).into() } else { rgb(0xf5f8ff).into() }
 }
 
 /// `issueAside`: the issue (and its view) beside the Backlog page's list. None = still loading

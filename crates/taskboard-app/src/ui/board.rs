@@ -17,7 +17,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const STRIP_MAX: usize = 6;
-const COL_MIN: f32 = 196.;
+const COL_MIN: f32 = 220.;
+const COL_GAP: f32 = 14.;
 /// `DONE_WINDOWS`: id, menu label, "Nothing in the …" phrase.
 const DONE_WINDOWS: [(&str, &str, &str); 3] = [("24h", "Last 24 hours", "last 24 hours"), ("7d", "Last 7 days", "last 7 days"), ("all", "Everything", "whole history")];
 const MENU_DONE: &str = "board-done";
@@ -847,13 +848,18 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     };
     let note = m.board.done_note.as_ref().map(|(t, e, _)| (t.clone(), *e));
     let cols = columns_vm(&st, &m.data.goals, &m.filters, down, sel_task.as_deref(), sel_issue.as_deref(), note);
+    // The page's width (the window less the sidebar): the strip's `auto-fill` grid and the
+    // columns' `minmax(220px, 1fr)` both size from it.
+    let rail = m.sidebar.drag.map(|_| m.sidebar_width).unwrap_or_else(crate::ui::sidebar::rail_width);
+    let main_w = (window.viewport_size().width.as_f32() - rail).max(0.);
 
-    let mut page = div().id("board-page").flex().flex_col().flex_1().min_w_0().h_full().gap(px(14.)).pt(px(16.)).pb(px(14.));
-    page = page.child(sessions_strip(m, &t, &strip, window, cx));
+    // `.board`: padding 28px 40px 0, gap 24px; the body's 14px/1.5 text.
+    let mut page = div().id("board-page").flex().flex_col().flex_1().min_w_0().h_full().gap(px(24.)).pt(px(28.)).line_height(relative(1.5));
+    page = page.child(sessions_strip(m, &t, &strip, main_w - PAGE_X * 2., window, cx));
     if let Some(bar) = bar {
         page = page.child(goal_bar(&t, &bar, cx));
     }
-    page = page.child(columns(m, &t, &st, cols, cx));
+    page = page.child(columns(m, &t, &st, cols, main_w, cx));
     let mut out = div().relative().flex().flex_1().min_w_0().h_full().child(page);
     if let Some(menu) = done_menu(m, &t, &st, cx) {
         out = out.child(menu);
@@ -861,9 +867,18 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     out.into_any_element()
 }
 
+/// `.board`'s side padding.
+const PAGE_X: f32 = 40.;
+
+/// `.h3`: 13px semibold muted uppercase.
+fn h3(t: &Theme, text: &str) -> Div {
+    div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
+}
+
 // ------------------------------------------------------------------ sessions strip
 
-fn sessions_strip(m: &mut MainWindow, t: &Theme, vm: &StripVm, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
+fn sessions_strip(m: &mut MainWindow, t: &Theme, vm: &StripVm, width: f32, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
+    let hover = t.accent_fg;
     let head = div()
         .flex()
         .items_center()
@@ -872,29 +887,44 @@ fn sessions_strip(m: &mut MainWindow, t: &Theme, vm: &StripVm, window: &mut Wind
             div()
                 .id("board-sessions-title")
                 .cursor_pointer()
-                .hover(|d| d.opacity(0.8))
                 .tooltip(kit::tip("See every session"))
-                .child(kit::h3(t, "Sessions"))
+                .child(h3(t, "Sessions").hover(move |d| d.text_color(hover)))
                 .on_click(cx.listener(|m, _, _, cx| m.go(Page::Sessions, cx))),
         )
         .children(vm.more.clone().map(|x| div().text_size(px(12.5)).text_color(t.muted).child(x)));
-    let mut row = div().flex().flex_wrap().gap(px(10.));
+    let mut out = div().flex().flex_col().flex_none().gap(px(10.)).px(px(PAGE_X)).child(head);
     if let Some(e) = &vm.empty {
-        row = row.child(div().text_size(px(13.)).text_color(t.muted).child(e.clone()));
+        // `.none-yet`.
+        out = out.child(div().py(px(10.)).text_size(px(13.)).text_color(t.muted).child(e.clone()));
     }
-    for c in &vm.cards {
-        row = row.child(session_card(m, t, c, window, cx));
+    if !vm.cards.is_empty() {
+        // `.sessions`: `repeat(auto-fill, minmax(190px, 1fr))`, gap 12px.
+        let n = (((width + 12.) / (190. + 12.)).floor() as u16).max(1);
+        let mut grid = div().grid().grid_cols(n).gap(px(12.));
+        for c in &vm.cards {
+            grid = grid.child(session_card(m, t, c, window, cx));
+        }
+        out = out.child(grid);
     }
-    div().flex().flex_col().flex_none().gap(px(8.)).px(px(20.)).child(head).child(row)
+    out
+}
+
+/// A status dot with the web's 3px halo (`box-shadow: 0 0 0 3px …`), which takes no space.
+fn halo_dot(color: Hsla, halo: Hsla) -> Div {
+    div()
+        .relative()
+        .flex_none()
+        .size(px(8.))
+        .child(div().absolute().top(px(-3.)).left(px(-3.)).size(px(14.)).rounded_full().bg(halo))
+        .child(div().absolute().top_0().left_0().size(px(8.)).rounded_full().bg(color))
 }
 
 fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let dot = match c.status {
-        "working" => t.accent,
-        "needs" => t.warn,
-        "offline" => t.down,
-        "gone" => t.border_2,
-        _ => t.faint,
+    let (dot, halo) = match c.status {
+        "working" => (t.accent, t.accent_soft),
+        "needs" => (t.warn, t.warn_soft),
+        "offline" => (t.down, t.down_soft),
+        _ => (t.faint, t.col),
     };
     let state_color = match c.status {
         "working" => t.accent,
@@ -987,8 +1017,7 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
         .flex()
         .flex_col()
         .gap(px(6.))
-        .w(px(230.))
-        .flex_none()
+        .min_w_0()
         .px(px(14.))
         .py(px(12.))
         .rounded(px(12.))
@@ -1010,7 +1039,7 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
                 .items_center()
                 .gap(px(8.))
                 .min_w_0()
-                .child(kit::dot(dot, 8.))
+                .child(halo_dot(dot, halo))
                 .child(name_el)
                 .child(div().flex_none().ml_auto().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(state_color).child(c.state_label)),
         )
@@ -1058,7 +1087,7 @@ fn goal_bar(t: &Theme, vm: &GoalBarVm, cx: &mut Context<MainWindow>) -> Div {
         .flex_none()
         .items_center()
         .gap(px(14.))
-        .mx(px(20.))
+        .mx(px(PAGE_X))
         .pl(px(16.))
         .pr(px(10.))
         .py(px(8.))
@@ -1066,7 +1095,7 @@ fn goal_bar(t: &Theme, vm: &GoalBarVm, cx: &mut Context<MainWindow>) -> Div {
         .border_1()
         .border_color(t.goal_line)
         .bg(t.goal_tint)
-        .child(div().text_color(t.goal).child("⚑"))
+        .child(kit::glyph(kit::Glyph::Flag, 12., t.goal))
         .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).whitespace_nowrap().child(vm.name.clone()))
         .child(div().text_size(px(13.)).text_color(t.muted).truncate().child(vm.summary.clone()))
         .child(div().flex_1())
@@ -1085,8 +1114,9 @@ fn goal_bar(t: &Theme, vm: &GoalBarVm, cx: &mut Context<MainWindow>) -> Div {
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
-                .hover(|d| d.opacity(0.85))
-                .child("Open goal ›")
+                .whitespace_nowrap()
+                .child("Open goal")
+                .child(kit::glyph(kit::Glyph::Fwd, 16., t.goal))
                 .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(r.clone()), cx))),
         )
         .child(
@@ -1097,11 +1127,9 @@ fn goal_bar(t: &Theme, vm: &GoalBarVm, cx: &mut Context<MainWindow>) -> Div {
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
-                .text_color(t.muted)
                 .cursor_pointer()
-                .hover(|d| d.opacity(0.7))
                 .tooltip(kit::tip("Show every goal"))
-                .child("✕")
+                .child(kit::glyph(kit::Glyph::X, 16., t.muted))
                 .on_click(cx.listener(|m, _, _, cx| goal_pick(m, "all", cx))),
         )
 }
@@ -1135,12 +1163,17 @@ impl Render for DragTask {
     }
 }
 
-fn columns(m: &mut MainWindow, t: &Theme, st: &Value, cols: Vec<ColVm>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn columns(m: &mut MainWindow, t: &Theme, st: &Value, cols: Vec<ColVm>, main_w: f32, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let colors: HashMap<&str, Hsla> = HashMap::from([("backlog", t.backlog_dot), ("queued", t.faint), ("working", t.accent), ("needs", t.warn), ("done", t.up)]);
     let dragging = cx.has_active_drag();
-    let mut row = div().flex().gap(px(10.)).h_full().min_w(px(COL_MIN * 5. + 40. + 40.)).px(px(20.));
+    // `.cols`: five `minmax(220px, 1fr)` columns 14px apart, scrolling sideways past the page's
+    // 40px padding; each column as tall as its cards (`align-items: start`).
+    let n = cols.len().max(1) as f32;
+    let col_w = ((main_w - PAGE_X * 2. - COL_GAP * (n - 1.)) / n).max(COL_MIN);
+    let mut row = div().flex().items_start().gap(px(COL_GAP)).h_full().w(px(col_w * n + COL_GAP * (n - 1.) + PAGE_X * 2.)).px(px(PAGE_X)).pb(px(24.));
     for c in cols {
-        let mut body = div().flex().flex_col().gap(px(10.)).pb(px(12.));
+        // `.col-body`: gap 10px, padding 2px 12px 12px.
+        let mut body = div().flex().flex_col().gap(px(10.)).pt(px(2.)).px(px(12.)).pb(px(12.));
         for card in &c.cards {
             body = body.child(match card {
                 CardVm::Task(x) => task_card(t, x, st, cx).into_any_element(),
@@ -1152,10 +1185,25 @@ fn columns(m: &mut MainWindow, t: &Theme, st: &Value, cols: Vec<ColVm>, cx: &mut
                 More::Backlog(text) => (text, None),
                 More::Done(text, next) => (text, Some(next)),
             };
-            kit::link(t, SharedString::from(format!("board-{}-more", c.key)), text).text_size(px(12.5)).px(px(4.)).on_click(cx.listener(move |m, _, _, cx| match el {
-                Some(next) => set_done_window(m, next, cx),
-                None => m.go(Page::Backlog, cx),
-            }))
+            // `.more`: centered 12.5px, padding 4px; the Done one is a `.btn.link` (28px tall).
+            let fg = if el.is_some() { t.accent_fg } else { t.accent };
+            div().flex().justify_center().child(
+                div()
+                    .id(SharedString::from(format!("board-{}-more", c.key)))
+                    .flex()
+                    .items_center()
+                    .when(el.is_some(), |d| d.min_h(px(28.)))
+                    .p(px(4.))
+                    .text_size(px(12.5))
+                    .text_color(fg)
+                    .underline()
+                    .cursor_pointer()
+                    .child(text)
+                    .on_click(cx.listener(move |m, _, _, cx| match el {
+                        Some(next) => set_done_window(m, next, cx),
+                        None => m.go(Page::Backlog, cx),
+                    })),
+            )
         });
         if c.cards.is_empty() {
             if let Some(e) = &c.empty {
@@ -1165,14 +1213,36 @@ fn columns(m: &mut MainWindow, t: &Theme, st: &Value, cols: Vec<ColVm>, cx: &mut
         body = body.children(more);
         let mut extra: Option<AnyElement> = None;
         if c.see_all {
-            extra = Some(kit::link(t, "board-backlog-all", "See all").text_size(px(12.5)).font_weight(FontWeight::MEDIUM).on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx))).into_any_element());
+            extra = Some(
+                kit::link(t, "board-backlog-all", "See all")
+                    .ml_auto()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .underline()
+                    .on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx)))
+                    .into_any_element(),
+            );
         }
         if c.done_menu {
+            // `.icon-btn.sm` with `ICON.more`.
+            let hover = t.border_2;
             extra = Some(
-                kit::btn_small(t, "board-done-menu", "•••")
-                    .w(px(28.))
-                    .px(px(0.))
+                div()
+                    .id("board-done-menu")
+                    .ml_auto()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.))
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.card)
+                    .cursor_pointer()
+                    .hover(move |d| d.border_color(hover))
                     .tooltip(kit::tip("Options"))
+                    .child(kit::glyph(kit::Glyph::More, 16., t.muted))
                     .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                         let p = e.position();
                         m.toggle_menu(MENU_DONE, point(p.x - px(200.), p.y + px(14.)), cx);
@@ -1185,12 +1255,14 @@ fn columns(m: &mut MainWindow, t: &Theme, st: &Value, cols: Vec<ColVm>, cx: &mut
             .id(SharedString::from(format!("col-shell-{}", c.key)))
             .flex()
             .flex_col()
-            .flex_1()
-            .min_w(px(COL_MIN))
-            .h_full()
-            .rounded(px(12.))
+            .flex_none()
+            .w(px(col_w))
+            .max_h_full()
+            .rounded(px(14.))
+            .overflow_hidden()
             .bg(t.col)
             .child(
+                // `.col-head`: padding 14px 16px 8px, min-height 52px.
                 div()
                     .flex()
                     .flex_none()
@@ -1203,13 +1275,13 @@ fn columns(m: &mut MainWindow, t: &Theme, st: &Value, cols: Vec<ColVm>, cx: &mut
                     .child(div().flex_none().size(px(10.)).rounded(px(3.)).bg(color))
                     .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(c.name))
                     .children(c.count.map(|n| div().px(px(8.)).rounded_full().bg(t.card).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(n.to_string())))
-                    .child(div().flex_1())
                     .children(extra),
             )
             .children(c.note.clone().map(|(text, err)| {
-                div().px(px(16.)).pb(px(6.)).text_size(px(12.5)).when(err, |d| d.font_weight(FontWeight::MEDIUM)).text_color(if err { t.down } else { t.up_fg }).child(text)
+                // `.col-note` holding a `.note`.
+                div().px(px(16.)).pb(px(6.)).mt(px(-4.)).text_size(px(12.5)).when(err, |d| d.font_weight(FontWeight::MEDIUM)).text_color(if err { t.down } else { t.up_fg }).child(text)
             }))
-            .child(div().id(SharedString::from(format!("col-{}", c.key))).flex_1().min_h_0().overflow_y_scroll().px(px(8.)).child(body));
+            .child(div().id(SharedString::from(format!("col-{}", c.key))).flex().flex_col().flex_shrink(1.).min_h_0().overflow_y_scroll().child(body));
         if c.takes_drop() {
             // `.drop-ready` / `.drop-over` (the web's --accent-tint is the theme's accent_soft here).
             let (line, over_bg, over_line) = (t.accent_line, t.accent_soft, t.accent);
@@ -1262,20 +1334,46 @@ fn chip(t: &Theme, cls: &str, text: impl Into<SharedString>) -> Div {
     let (fg, bg) = chip_colors(t, cls);
     let mono = matches!(cls, "repo" | "jira");
     let regular = mono || cls.starts_with("b-");
+    let icon = match cls {
+        "jira" => Some(kit::Glyph::Jira),
+        c if c.starts_with("b-") => Some(kit::Glyph::Pr),
+        _ => None,
+    };
     div()
         .flex()
         .flex_none()
         .items_center()
+        .gap(px(4.))
         .px(px(6.))
         .py(px(1.))
         .rounded(px(5.))
         .bg(bg)
         .text_color(fg)
         .text_size(px(11.5))
+        .line_height(relative(1.5))
         .font_weight(if regular { FontWeight::NORMAL } else { FontWeight::SEMIBOLD })
         .when(mono, |d| d.font_family(t.mono_font.clone()))
         .whitespace_nowrap()
+        .children(icon.map(|g| kit::glyph(g, 11., fg)))
         .child(text.into())
+}
+
+/// `.goal-line`: the flag and the goal's ref (muted when it's "Not in a goal").
+fn goal_line(t: &Theme, id: SharedString, text: String, title: String, in_goal: bool) -> Stateful<Div> {
+    let fg = if in_goal { t.goal } else { t.muted };
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .min_w_0()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(fg)
+        .when(!title.is_empty(), |d| d.tooltip(kit::tip(title)))
+        .child(kit::glyph(kit::Glyph::Flag, 12., fg))
+        .child(div().min_w_0().truncate().child(text))
 }
 
 fn task_card(t: &Theme, x: &TaskCardVm, st: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div> {
@@ -1285,7 +1383,7 @@ fn task_card(t: &Theme, x: &TaskCardVm, st: &Value, cx: &mut Context<MainWindow>
     let mut top = div().flex().items_center().gap(px(6.)).text_size(px(12.)).min_w_0();
     if let (Some(g), Some(name)) = (&x.goal_ref, &x.goal_name) {
         top = top
-            .child(div().id(SharedString::from(format!("tc-goal-{}", x.r))).flex_none().text_color(t.goal).font_weight(FontWeight::MEDIUM).child(format!("⚑ {g}")).tooltip(kit::tip(name.clone())))
+            .child(goal_line(t, SharedString::from(format!("tc-goal-{}", x.r)), g.clone(), name.clone(), true))
             .child(div().font_family(t.mono_font.clone()).text_color(t.faint).child("·"));
     }
     top = top
@@ -1296,7 +1394,7 @@ fn task_card(t: &Theme, x: &TaskCardVm, st: &Value, cx: &mut Context<MainWindow>
         .flex()
         .items_start()
         .gap(px(8.))
-        .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(px(19.)).line_clamp(3).child(x.title.clone()))
+        .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.35)).line_clamp(3).child(x.title.clone()))
         .when(x.high, |d| d.child(chip(t, "high", "High")));
     let mut chips = div().flex().flex_wrap().items_center().gap(px(6.)).min_w_0();
     for c in &x.chips {
@@ -1313,6 +1411,10 @@ fn task_card(t: &Theme, x: &TaskCardVm, st: &Value, cx: &mut Context<MainWindow>
         .border_1()
         .border_color(if x.selected { t.accent } else if x.needs { t.warn_line } else { t.border })
         .bg(t.card)
+        // `--shadow`: 0 1px 2px rgba(16, 24, 40, .05) in light, none in dark.
+        .when(!matches!(t.mode, crate::theme::ThemeMode::Dark), |d| {
+            d.shadow(vec![BoxShadow { color: hsla(220. / 360., 0.43, 0.11, 0.05), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }])
+        })
         .cursor_pointer()
         .when(!x.selected, |d| d.hover(move |s| s.border_color(hover)))
         .when(x.selected, |d| d.border_2())
@@ -1320,7 +1422,7 @@ fn task_card(t: &Theme, x: &TaskCardVm, st: &Value, cx: &mut Context<MainWindow>
         .child(top)
         .child(title)
         .child(chips)
-        .children(x.who.clone().map(|w| div().flex().items_center().text_size(px(12.)).child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(w))));
+        .children(x.who.clone().map(|w| div().flex().items_center().gap(px(6.)).min_w_0().text_size(px(12.)).child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).text_color(t.text).child(w))));
     if x.draggable {
         let drag = DragTask { r: x.r.clone(), title: x.title.clone() };
         card = card.cursor_grab().tooltip(kit::tip("Drag to Working to start it")).on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()));
@@ -1359,17 +1461,8 @@ fn issue_card(t: &Theme, x: &IssueCardVm, cx: &mut Context<MainWindow>) -> State
                 .child(div().flex_1())
                 .child(div().id(SharedString::from(format!("ic-when-{}", x.r))).text_size(px(12.)).text_color(t.faint).whitespace_nowrap().child(x.when.clone()).tooltip(kit::tip(x.when_title.clone()))),
         )
-        .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).line_height(px(18.)).line_clamp(3).child(x.title.clone()))
-        .child(
-            div()
-                .id(SharedString::from(format!("ic-goal-{}", x.r)))
-                .text_size(px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .truncate()
-                .text_color(if x.in_goal { t.goal } else { t.muted })
-                .when(!x.goal_title.is_empty(), |d| d.tooltip(kit::tip(x.goal_title.clone())))
-                .child(format!("⚑ {}", x.goal)),
-        )
+        .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).line_height(relative(1.35)).line_clamp(3).child(x.title.clone()))
+        .child(goal_line(t, SharedString::from(format!("ic-goal-{}", x.r)), x.goal.clone(), x.goal_title.clone(), x.in_goal))
 }
 
 // ================================================================== tests
