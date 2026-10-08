@@ -292,7 +292,10 @@ pub struct HeaderView {
     pub epic: Option<String>,
     pub epic_link: Option<String>,
     pub counts: String,
+    /// The Tasks / Backlog tab labels (the page draws the counts from `counts` itself).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub tabs: [String; 2],
+    #[cfg_attr(not(test), allow(dead_code))]
     pub backlog_hot: bool,
 }
 
@@ -1302,25 +1305,378 @@ fn checkbox(t: &Theme, on: bool, mixed: bool) -> Div {
         .size(px(16.))
         .rounded(px(4.))
         .border_1()
-        .border_color(if fill { t.accent_btn } else { t.border_2 })
-        .bg(if fill { t.accent_btn } else { t.card })
+        .border_color(if fill { t.accent } else { t.border_2 })
+        .bg(if fill { t.accent } else { t.card })
         .text_color(t.on_accent)
         .text_size(px(11.))
+        .line_height(px(14.))
         .font_weight(FontWeight::BOLD)
         .child(if on { "✓" } else if mixed { "–" } else { "" })
 }
 
-fn section(t: &Theme) -> Div {
-    kit::card(t).p(px(16.)).gap(px(10.))
+/// `--accent-tint` (the theme has no field for it).
+fn accent_tint(t: &Theme) -> Hsla {
+    match t.mode {
+        crate::theme::ThemeMode::Light => rgb(0xf5f8ff).into(),
+        crate::theme::ThemeMode::Dark => rgb(0x172036).into(),
+    }
 }
 
-/// The `.st-*` chip.
-fn st_chip(t: &Theme, tone: &str, label: impl Into<SharedString>) -> Div {
+/// `.card-box`: 14px 16px padding, 12px radius, 10px gap.
+fn card_box(t: &Theme) -> Div {
+    div().flex().flex_col().gap(px(10.)).px(px(16.)).py(px(14.)).rounded(px(12.)).border_1().border_color(t.border).bg(t.card)
+}
+
+/// `.aside-card`: 12px 14px padding, 12px radius, 10px gap.
+fn aside_card(t: &Theme) -> Div {
+    div().flex().flex_col().min_w_0().gap(px(10.)).px(px(14.)).py(px(12.)).rounded(px(12.)).border_1().border_color(t.border).bg(t.card)
+}
+
+/// `.h3` at a size (13px; 12.5px in an aside card): semibold, muted, uppercase.
+fn h3(t: &Theme, size: f32, text: &str) -> Div {
+    div().text_size(px(size)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
+}
+
+/// `.pill`: 12px semibold, 2px 10px, fully rounded.
+fn pill(fg: Hsla, bg: Hsla) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .px(px(10.))
+        .py(px(2.))
+        .rounded_full()
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(12.))
+        .line_height(px(18.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .whitespace_nowrap()
+}
+
+/// `.chip`: 11.5px semibold, 1px 6px, 5px radius.
+fn chip(fg: Hsla, bg: Hsla, text: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.))
+        .px(px(6.))
+        .py(px(1.))
+        .rounded(px(5.))
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(11.5))
+        .line_height(px(17.25))
+        .font_weight(FontWeight::SEMIBOLD)
+        .whitespace_nowrap()
+        .child(text.into())
+}
+
+/// The `.st-*` colors for a goal or task tone: (fg, bg, inset border).
+fn st_colors(t: &Theme, tone: &str) -> (Hsla, Hsla, Option<Hsla>) {
     match tone {
-        "planned" => kit::pill(t.muted, t.card, label).border_1().border_color(t.border),
-        "queued" => kit::pill(t.text_2, t.col, label),
-        other => kit::tone_pill(t, other, label),
+        "accent" => (t.accent_fg, t.accent_soft, None),
+        "warn" => (t.warn_fg, t.warn_soft, None),
+        "up" => (t.up_fg, t.up_soft, None),
+        "down" => (t.down, t.down_soft, None),
+        "planned" => (t.muted, t.card, Some(t.border)),
+        _ => (t.text_2, t.col, None),
     }
+}
+
+/// `.chip.st-*`.
+fn st_chip(t: &Theme, tone: &str, label: impl Into<SharedString>) -> Div {
+    let (fg, bg, line) = st_colors(t, tone);
+    chip(fg, bg, label).when_some(line, |d, c| d.shadow(vec![BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: true }]))
+}
+
+/// `.k-*`: a backlog issue's kind chip.
+fn kind_chip(t: &Theme, kind: &str, label: impl Into<SharedString>) -> Div {
+    let (fg, bg) = match kind {
+        "bug" => (t.down, t.down_soft),
+        "gap" => (t.warn_fg, t.warn_soft),
+        "follow" => (t.accent_fg, t.accent_soft),
+        _ => (t.text_2, t.col),
+    };
+    chip(fg, bg, label)
+}
+
+/// `.btn.md` (34px, 0 12px, 7px radius, 13px): `primary`, `danger` or outlined; the caller adds
+/// the icon and label.
+fn md_btn(t: &Theme, id: impl Into<ElementId>, kind: &str) -> Stateful<Div> {
+    let b = div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .h(px(34.))
+        .px(px(12.))
+        .rounded(px(7.))
+        .border_1()
+        .text_size(px(13.))
+        .whitespace_nowrap()
+        .cursor_pointer();
+    match kind {
+        "primary" => b.bg(t.accent_btn).border_color(t.accent_btn).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).hover(|s| s.opacity(0.94)),
+        "danger" => {
+            let h = t.down_soft;
+            b.bg(t.card).border_color(t.down_line).text_color(t.down).hover(move |s| s.bg(h))
+        }
+        _ => {
+            let h = t.border_2;
+            b.bg(t.card).border_color(t.border).text_color(t.text).hover(move |s| s.border_color(h))
+        }
+    }
+}
+
+/// `.btn.sm` (32px, 0 10px, 7px radius, 12.5px): `soft`, outlined, or `ghost`.
+fn btn_sm(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, style: &str) -> Stateful<Div> {
+    let b = div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .h(px(32.))
+        .px(px(10.))
+        .rounded(px(7.))
+        .border_1()
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .child(label.into());
+    match style {
+        "soft" => b.bg(t.accent_soft).border_color(t.accent_soft).text_color(t.accent).font_weight(FontWeight::SEMIBOLD),
+        "ghost" => {
+            let hover = t.text;
+            b.border_color(transparent_black()).text_color(t.muted).hover(move |s| s.text_color(hover))
+        }
+        _ => {
+            let h = t.border_2;
+            b.bg(t.card).border_color(t.border).text_color(t.text).hover(move |s| s.border_color(h))
+        }
+    }
+}
+
+/// `.seg.sm` with a `.count` in every button (the Tasks / Backlog tabs).
+fn seg_counts(t: &Theme, id: &str, items: &[(&str, i64, bool)], on: usize, mut f: impl FnMut(usize, Stateful<Div>) -> Stateful<Div>) -> Div {
+    let mut row = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
+    for (ix, (label, n, hot)) in items.iter().enumerate() {
+        let sel = ix == on;
+        let hover = t.text;
+        let (cfg, cbg) = if *hot { (t.warn_fg, t.warn_soft) } else { (t.muted, t.col) };
+        let item = div()
+            .id(SharedString::from(format!("{id}-{ix}")))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(32.))
+            .px(px(11.))
+            .rounded(px(7.))
+            .text_size(px(13.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .whitespace_nowrap()
+            .text_color(if sel { t.text } else { t.muted })
+            .when(sel, |d| d.bg(t.card).shadow(vec![BoxShadow { color: hsla(0., 0., 0., if t.mode == crate::theme::ThemeMode::Dark { 0.4 } else { 0.1 }), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]))
+            .hover(move |s| s.text_color(hover))
+            .child(label.to_string())
+            .child(div().px(px(7.)).rounded_full().bg(cbg).text_color(cfg).text_size(px(12.)).line_height(px(18.)).font_weight(FontWeight::SEMIBOLD).child(n.to_string()));
+        row = row.child(f(ix, item));
+    }
+    row
+}
+
+/// `PR_STAGE_ICON[phase]` (none for a phase it doesn't know).
+fn stage_icon(phase: &str) -> Option<&'static str> {
+    ["checks", "fix", "review", "comments", "merge", "merged", "declined"].into_iter().find(|p| *p == phase)
+}
+
+#[derive(Clone, Copy)]
+enum Ico {
+    Flag,
+    Play,
+    Pause,
+    Chat,
+    PrOpen,
+    Jira,
+    Chev,
+    Right,
+    Close,
+    Stage(&'static str),
+    Att(&'static str),
+}
+
+/// The web's inline SVG icons on this page, drawn on a canvas (`size` px square).
+fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let grid = if matches!(kind, Ico::Att(_)) { 16. } else { 24. };
+            let k = bounds.size.width.as_f32() / grid;
+            let o = bounds.origin;
+            let u = move |x: f32, y: f32| point(o.x + px(x * k), o.y + px(y * k));
+            let arc = |cx: f32, cy: f32, r: f32, a0: f32, a1: f32| -> Vec<(f32, f32)> {
+                (0..=12).map(|i| (a0 + (a1 - a0) * i as f32 / 12.).to_radians()).map(|a| (cx + r * a.cos(), cy + r * a.sin())).collect()
+            };
+            let line = |pts: &[(f32, f32)], w: f32, window: &mut Window| {
+                let mut p = PathBuilder::stroke(px(w * k));
+                p.move_to(u(pts[0].0, pts[0].1));
+                for (x, y) in &pts[1..] {
+                    p.line_to(u(*x, *y));
+                }
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, color);
+                }
+                // Round caps and joins.
+                for (x, y) in pts {
+                    let mut d = PathBuilder::fill();
+                    let r = w / 2.;
+                    d.move_to(u(x + r, *y));
+                    for i in 1..=10 {
+                        let a = std::f32::consts::TAU * i as f32 / 10.;
+                        d.line_to(u(x + r * a.cos(), y + r * a.sin()));
+                    }
+                    d.close();
+                    if let Ok(d) = d.build() {
+                        window.paint_path(d, color);
+                    }
+                }
+            };
+            let fill = |pts: &[(f32, f32)], window: &mut Window| {
+                let mut p = PathBuilder::fill();
+                p.move_to(u(pts[0].0, pts[0].1));
+                for (x, y) in &pts[1..] {
+                    p.line_to(u(*x, *y));
+                }
+                p.close();
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, color);
+                }
+            };
+            let circle = |cx: f32, cy: f32, r: f32| arc(cx, cy, r, 0., 360.);
+            match kind {
+                Ico::Flag => {
+                    line(&[(5., 21.), (5., 4.)], 2.2, window);
+                    line(&[(5., 4.), (16., 4.), (14., 8.), (16., 12.), (5., 12.)], 2.2, window);
+                }
+                Ico::Play => fill(&[(8., 5.), (19.7, 12.), (8., 19.)], window),
+                Ico::Pause => {
+                    fill(&[(6., 5.), (10., 5.), (10., 19.), (6., 19.)], window);
+                    fill(&[(14., 5.), (18., 5.), (18., 19.), (14., 19.)], window);
+                }
+                Ico::Chat => {
+                    let mut pts = vec![(20., 15.)];
+                    pts.extend(arc(18., 15., 2., 0., 90.));
+                    pts.extend([(8., 17.), (4., 21.), (4., 5.)]);
+                    pts.extend(arc(6., 5., 2., 180., 270.));
+                    pts.push((18., 3.));
+                    pts.extend(arc(18., 5., 2., 270., 360.));
+                    pts.push((20., 15.));
+                    line(&pts, 2., window);
+                }
+                Ico::PrOpen => {
+                    for (x, y) in [(6., 6.), (6., 18.), (18., 18.)] {
+                        fill(&circle(x, y, 2.6), window);
+                    }
+                    line(&[(6., 8.5), (6., 15.5)], 2.2, window);
+                    let mut pts = vec![(18., 15.5), (18., 9.)];
+                    pts.extend(arc(15., 9., 3., 0., -90.));
+                    pts.push((11., 6.));
+                    line(&pts, 2.2, window);
+                    line(&[(13., 3.5), (10.5, 6.), (13., 8.5)], 2.2, window);
+                }
+                Ico::Jira => {
+                    for (x0, y0) in [(11.45, 0.), (5.74, 5.76), (0., 11.51)] {
+                        let mut pts = vec![(x0, y0), (x0 + 11.56, y0), (x0 + 12.55, y0 + 1.)];
+                        pts.extend([(x0 + 12.55, y0 + 12.48), (x0 + 9.5, y0 + 11.), (x0 + 7.35, y0 + 7.27), (x0 + 7.35, y0 + 5.2), (x0 + 5.2, y0 + 5.2), (x0 + 1.5, y0 + 3.5)]);
+                        fill(&pts, window);
+                    }
+                }
+                Ico::Chev => line(&[(6., 9.), (12., 15.), (18., 9.)], 2.2, window),
+                Ico::Close => {
+                    line(&[(6., 6.), (18., 18.)], 2.2, window);
+                    line(&[(18., 6.), (6., 18.)], 2.2, window);
+                }
+                Ico::Right => line(&[(9., 6.), (15., 12.), (9., 18.)], 2.2, window),
+                // `PR_STAGE_ICON` (stroke 2.2).
+                Ico::Stage(phase) => match phase {
+                    "fix" => {
+                        line(&[(14.5, 6.5), (16.5, 8.5)], 2.2, window);
+                        line(&arc(17.5, 6.5, 3.5, 135., 405.), 2.2, window);
+                        line(&[(15., 9.), (7.5, 16.5)], 2.2, window);
+                        line(&arc(10.5, 17.5, 1.6, 0., 360.), 2.2, window);
+                    }
+                    "review" => {
+                        line(&[(2.5, 12.), (6., 7.), (12., 5.5), (18., 7.), (21.5, 12.), (18., 17.), (12., 18.5), (6., 17.), (2.5, 12.)], 2.2, window);
+                        line(&circle(12., 12., 2.8), 2.2, window);
+                    }
+                    "comments" => line(&[(4., 5.), (20., 5.), (20., 16.), (9., 16.), (4., 20.), (4., 5.)], 2.2, window),
+                    "merge" => {
+                        for (x, y) in [(6., 5.), (6., 19.), (18., 12.)] {
+                            line(&circle(x, y, 2.3), 2.2, window);
+                        }
+                        line(&[(6., 7.3), (6., 16.7)], 2.2, window);
+                        line(&[(6., 7.3), (7., 10.), (10., 11.5), (15.7, 12.)], 2.2, window);
+                    }
+                    "merged" => line(&[(5., 12.5), (9.5, 17.), (19., 7.5)], 2.2, window),
+                    "declined" => {
+                        line(&[(6., 6.), (18., 18.)], 2.2, window);
+                        line(&[(18., 6.), (6., 18.)], 2.2, window);
+                    }
+                    _ => {
+                        line(&circle(12., 12., 8.5), 2.2, window);
+                        line(&[(12., 7.5), (12., 12.), (15., 14.)], 2.2, window);
+                    }
+                },
+                Ico::Att(kind) => {
+                    let w = 1.6;
+                    match kind {
+                        "design" => {
+                            line(&[(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5), (2.5, 2.5)], w, window);
+                            line(&[(2.5, 6.5), (13.5, 6.5)], w, window);
+                            line(&[(6.5, 6.5), (6.5, 13.5)], w, window);
+                        }
+                        "proposal" => {
+                            let mut pts = arc(8., 6.5, 4., 140., 400.);
+                            pts.extend([(9.5, 11.3), (6.5, 11.3)]);
+                            pts.push(pts[0]);
+                            line(&pts, w, window);
+                            line(&[(6.5, 13.5), (9.5, 13.5)], w, window);
+                        }
+                        "doc" => {
+                            line(&[(4., 2.5), (9.5, 2.5), (12., 5.), (12., 13.5), (4., 13.5), (4., 2.5)], w, window);
+                            line(&[(6.5, 8.), (9.5, 8.)], w, window);
+                            line(&[(6.5, 10.5), (9.5, 10.5)], w, window);
+                        }
+                        "evidence" => {
+                            line(&[(2.5, 13.5), (13.5, 13.5)], w, window);
+                            line(&[(4.5, 11.), (4.5, 8.)], w, window);
+                            line(&[(8., 11.), (8., 4.5)], w, window);
+                            line(&[(11.5, 11.), (11.5, 6.5)], w, window);
+                        }
+                        "results" => {
+                            line(&[(2.5, 13.5), (13.5, 13.5)], w, window);
+                            line(&[(3.5, 10.5), (6.5, 7.5), (9., 9.5), (13., 5.)], w, window);
+                            line(&[(10., 5.), (13., 5.), (13., 8.)], w, window);
+                        }
+                        _ => {
+                            line(&arc(11.2, 5.2, 2.4, 135., 315.), w, window);
+                            line(&arc(4.8, 10.8, 2.4, -45., 135.), w, window);
+                            line(&[(6.2, 9.8), (9.8, 6.2)], w, window);
+                        }
+                    }
+                }
+            }
+        },
+    )
+    .size(px(size))
+    .flex_none()
 }
 
 fn open_attachment(url: &str, cx: &mut App) {
@@ -1336,31 +1692,44 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
     let h = header_view(g, m.jira_on());
     let c = counts(g);
     let pct = |x: i64| relative(if c.n == 0 { 0. } else { x as f32 / c.n as f32 });
+    // `.bar.lg`: 8px, 4px radius.
     let bar = div()
         .flex()
         .w_full()
-        .h(px(6.))
-        .rounded_full()
-        .bg(t.seg)
+        .h(px(8.))
+        .rounded(px(4.))
+        .bg(t.col)
         .overflow_hidden()
         .child(div().h_full().bg(t.up).w(pct(c.done)))
         .child(div().h_full().bg(t.accent).w(pct(c.active)))
-        .child(div().h_full().bg(t.faint).opacity(0.6).w(pct(c.queued)));
+        .child(div().h_full().bg(t.backlog_dot).w(pct(c.queued)));
     let epic: Option<AnyElement> = h.epic.clone().map(|text| match (&h.epic_link, fmt::opt_s(g, "epic_key")) {
         (Some(url), Some(key)) => {
             let url = url.clone();
-            let prefix = "Jira epic ".to_string();
             let rest = text.trim_start_matches("Jira epic ").trim_start_matches(key).to_string();
+            let fg = t.accent_fg;
             div()
                 .flex()
-                .child(prefix)
-                .child(kit::link(t, "goal-epic", key.to_string()).on_click(move |_, _, cx| if url != "#" { cx.open_url(&url) }))
+                .whitespace_nowrap()
+                .child("Jira epic ")
+                .child(
+                    div()
+                        .id("goal-epic")
+                        .cursor_pointer()
+                        .font_family(t.mono_font.clone())
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(fg)
+                        .underline()
+                        .child(key.to_string())
+                        .on_click(move |_, _, cx| if url != "#" { cx.open_url(&url) }),
+                )
                 .child(rest)
                 .into_any_element()
         }
         _ => div().child(text).into_any_element(),
     });
     let repo = fmt::opt_s(g, "repo_path").map(str::to_string);
+    let (sfg, sbg, _) = st_colors(t, h.state_tone);
     div()
         .flex()
         .flex_col()
@@ -1371,21 +1740,23 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                 .flex_wrap()
                 .items_center()
                 .gap(px(10.))
-                .child(kit::tone_pill(t, "goal", "⚑ Goal"))
-                .child(st_chip(t, h.state_tone, h.pills[1].clone()))
-                .child(kit::chip(t, h.pills[2].clone()))
+                .child(pill(t.goal, t.goal_soft).child(ico(Ico::Flag, 12., t.goal)).child("Goal"))
+                .child(pill(sfg, sbg).child(h.pills[1].clone()))
+                .child(pill(t.muted, t.panel_2).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(h.pills[2].clone()))
                 .child(div().flex_1())
                 .child(run_buttons(m, t, g, cx)),
         )
-        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).line_height(px(30.)).child(h.name.clone()))
+        .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).line_height(relative(1.25)).child(h.name.clone()))
         .when_some(h.tldr.clone(), |d, tl| {
             d.child(
                 div()
+                    .max_w(px(820.))
+                    .text_size(px(15.))
+                    .line_height(relative(1.55))
+                    .text_color(t.text)
                     .flex()
-                    .gap(px(6.))
-                    .text_size(px(14.))
-                    .text_color(t.text_2)
-                    .child(div().flex_none().font_weight(FontWeight::BOLD).child("TLDR"))
+                    .items_baseline()
+                    .child(div().flex_none().mr(px(8.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child("TLDR"))
                     .child(div().flex_1().min_w_0().child(tl)),
             )
         })
@@ -1394,12 +1765,14 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(px(12.))
-                .text_size(px(12.5))
+                .gap_x(px(16.))
+                .gap_y(px(8.))
+                .text_size(px(13.))
                 .text_color(t.muted)
                 .child(
-                    kit::chip(t, h.project.clone())
+                    chip(t.muted, t.panel_2, h.project.clone())
                         .font_family(t.mono_font.clone())
+                        .font_weight(FontWeight::NORMAL)
                         .id("goal-project")
                         .when_some(repo, |c, p| c.tooltip(kit::tip(p))),
                 )
@@ -1423,14 +1796,16 @@ fn run_buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         let gr2 = gr.clone();
         let el = match bt.act {
             "goal-run" => {
-                let main = act_btn(kit::btn_primary(t, "goal-run", format!("▶  {label}")).tooltip(kit::tip(bt.title.clone())), is_busy);
+                let main = md_btn(t, "goal-run", "primary").child(ico(Ico::Play, 14., t.on_accent)).child(label).tooltip(kit::tip(bt.title.clone()));
+                let main = act_btn(main, is_busy);
                 let main = if is_busy { main } else { main.on_click(cx.listener(move |m, _, _, cx| run_goal(m, &gr2, false, cx))) };
                 if split {
                     div()
                         .flex()
                         .child(main.rounded_r(px(0.)))
                         .child(
-                            kit::btn_primary(t, "goal-run-caret", "▾")
+                            md_btn(t, "goal-run-caret", "primary")
+                                .child(ico(Ico::Chev, 14., t.on_accent))
                                 .rounded_l(px(0.))
                                 .border_l_1()
                                 .border_color(t.accent_fg)
@@ -1447,14 +1822,14 @@ fn run_buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 }
             }
             "goal-pause" => {
-                let b = act_btn(kit::btn(t, "goal-pause", format!("❚❚  {label}")).tooltip(kit::tip(bt.title.clone())), is_busy);
+                let b = act_btn(md_btn(t, "goal-pause", "").child(ico(Ico::Pause, 14., t.text)).child(label).tooltip(kit::tip(bt.title.clone())), is_busy);
                 if is_busy { b } else { b.on_click(cx.listener(move |m, _, _, cx| set_paused(m, &gr2, true, cx))) }.into_any_element()
             }
             "goal-plan-edit" => {
-                let b = act_btn(kit::btn(t, "goal-plan", label).tooltip(kit::tip(bt.title.clone())), is_busy);
+                let b = act_btn(md_btn(t, "goal-plan", "").child(ico(Ico::Chat, 14., t.text)).child(label).tooltip(kit::tip(bt.title.clone())), is_busy);
                 if is_busy { b } else { b.on_click(cx.listener(move |m, _, _, cx| plan_goal(m, &gr2, cx))) }.into_any_element()
             }
-            _ => kit::btn_danger(t, "goal-deprio", label)
+            _ => md_btn(t, "goal-deprio", "danger").child(label)
                 .tooltip(kit::tip(bt.title.clone()))
                 .on_click(cx.listener(|m, _, window, cx| {
                     m.goal_page.deprio_open = true;
@@ -1501,7 +1876,7 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
     };
     let key = if act == "goal-deprio" { format!("goal-deprio:off:{gr}") } else { format!("goal-pause:off:{gr}") };
     let is_busy = busy(m, &key);
-    let bt = act_btn(kit::btn_primary(t, "goal-gate", if is_busy { "Sending…" } else { button }), is_busy);
+    let bt = act_btn(md_btn(t, "goal-gate", "primary").h(px(36.)).px(px(14.)).rounded(px(8.)).child(if is_busy { "Sending…" } else { button }), is_busy);
     let bt = if is_busy {
         bt
     } else {
@@ -1512,14 +1887,12 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
             .flex()
             .flex_col()
             .gap(px(8.))
-            .p(px(14.))
-            .rounded(px(10.))
-            .border_1()
-            .border_color(t.warn_line)
+            .px(px(16.))
+            .py(px(14.))
+            .rounded(px(12.))
             .bg(t.warn_soft)
-            .text_color(t.warn_text)
-            .child(div().text_size(px(11.5)).font_weight(FontWeight::BOLD).child(label.to_uppercase()))
-            .child(div().text_size(px(13.5)).child(text))
+            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn_fg).child(label.to_uppercase()))
+            .child(div().text_size(px(14.)).child(text))
             .child(div().flex().child(bt))
             .children(note),
     )
@@ -1528,51 +1901,63 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
 fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let tasks = arr(g, "tasks");
     if tasks.is_empty() {
-        return kit::card(t).border_dashed().child(kit::empty(t, "No tasks in this goal yet. Add one, or let Claude plan them."));
+        // `.empty-box`.
+        return div()
+            .p(px(24.))
+            .flex()
+            .justify_center()
+            .text_size(px(14.))
+            .text_color(t.muted)
+            .bg(t.card)
+            .border_1()
+            .border_dashed()
+            .border_color(t.border_2)
+            .rounded(px(12.))
+            .child("No tasks in this goal yet. Add one, or let Claude plan them.");
     }
     let open_task = match &m.panel {
         Some(Panel::Task { r, .. }) => Some(r.clone()),
         _ => None,
     };
-    let mut list = kit::card(t).overflow_hidden();
+    // `.rows.trows`.
+    let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
     for (ix, task) in tasks.iter().enumerate() {
         let row = task_row_view(task, ix, tasks, g);
-        let hover = t.tint;
+        let hover = accent_tint(t);
         let target = row.r.clone();
         let on = open_task.as_deref() == Some(row.r.as_str());
         let pr_color = match row.pr_phase.as_str() {
-            "merged" => t.up,
-            "declined" => t.down,
-            "fix" | "comments" => t.warn,
-            _ => t.accent,
+            "merged" => t.up_fg,
+            "declined" => t.muted,
+            "fix" => t.down,
+            "comments" => t.warn_fg,
+            _ => t.accent_fg,
         };
+        let fade = if row.planned { 0.85 } else { 1. };
         list = list.child(
             div()
                 .id(SharedString::from(format!("goal-task-{}", row.r)))
                 .flex()
-                .items_start()
+                .items_center()
                 .gap(px(12.))
                 .px(px(14.))
-                .py(px(10.))
+                .py(px(12.))
+                .bg(t.card)
                 .cursor_pointer()
                 .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
-                .when(on, |d| d.bg(t.accent_soft))
+                .when(on, |d| d.bg(hover))
                 .hover(move |d| d.bg(hover))
+                // `.n`: the plain step number in a 28px column.
                 .child(
                     div()
                         .flex()
                         .flex_none()
-                        .items_center()
                         .justify_center()
-                        .size(px(22.))
-                        .mt(px(1.))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(if row.key == "done" { t.up } else { t.border_2 })
-                        .bg(if row.key == "done" { t.up_soft } else { t.card })
-                        .text_size(px(11.))
+                        .w(px(28.))
+                        .opacity(fade)
+                        .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if row.key == "done" { t.up_fg } else { t.muted })
+                        .text_color(t.muted)
                         .child(row.n.to_string()),
                 )
                 .child(
@@ -1581,7 +1966,8 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .gap(px(3.))
+                        .gap(px(2.))
+                        .opacity(fade)
                         .child(
                             div()
                                 .flex()
@@ -1592,33 +1978,26 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                                 .children(row.jira_tip.clone().map(|tip| {
                                     div()
                                         .id(SharedString::from(format!("goal-jira-{}", row.r)))
+                                        .flex()
                                         .flex_none()
-                                        .text_size(px(12.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(t.jira)
-                                        .child("◆")
+                                        .child(ico(Ico::Jira, 14., t.jira))
                                         .tooltip(kit::tip(tip))
                                 }))
                                 .children(row.pr_text.clone().map(|txt| {
                                     div()
                                         .id(SharedString::from(format!("goal-pr-{}", row.r)))
+                                        .flex()
                                         .flex_none()
-                                        .text_size(px(11.5))
-                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .items_center()
+                                        .gap(px(3.))
+                                        .text_size(px(12.))
                                         .text_color(pr_color)
+                                        .child(ico(Ico::PrOpen, 13., pr_color))
                                         .child(txt)
+                                        .when_some(stage_icon(&row.pr_phase), |d, st| d.child(div().ml(px(3.)).child(ico(Ico::Stage(st), 13., pr_color))))
                                         .tooltip(kit::tip(row.pr_tip.clone().unwrap_or_default()))
                                 }))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(if row.planned { t.text_2 } else { t.text })
-                                        .child(row.title.clone()),
-                                ),
+                                .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(row.title.clone())),
                         )
                         .when(!row.meta.is_empty(), |d| d.child(div().text_size(px(12.5)).text_color(t.muted).truncate().child(row.meta.clone()))),
                 )
@@ -1647,8 +2026,8 @@ fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
             .on_click(cx.listener(move |m, _, _, cx| set_run_option(m, &gr, field, json!(!on), cx)))
     };
     let mk = menu_key.clone();
-    section(t)
-        .child(kit::h3(t, "How this goal runs"))
+    card_box(t)
+        .child(h3(t, 13., "How this goal runs"))
         .child(
             div()
                 .flex()
@@ -1657,10 +2036,29 @@ fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
                 .gap(px(10.))
                 .text_size(px(14.))
                 .child("At most")
-                .child(kit::btn_small(t, "goal-max", format!("{shown}  ▾")).on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+                // `.select.sm`: 34px, 0 8px, 7px radius, 13px.
+                .child(
+                    div()
+                        .id("goal-max")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .h(px(34.))
+                        .pl(px(8.))
+                        .pr(px(6.))
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(t.border_2)
+                        .bg(t.card)
+                        .text_size(px(13.))
+                        .cursor_pointer()
+                        .child(shown)
+                        .child(ico(Ico::Chev, 12., t.text))
+                        .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
                     let p = e.position();
                     m.toggle_menu(&mk, point(p.x - px(20.), p.y + px(14.)), cx);
-                })))
+                        })),
+                )
                 .child(div().text_size(px(13.)).text_color(t.muted).child("working on this goal at once")),
         )
         .child(toggle("goal-in-order", "run_in_order", v.run_in_order, "Run the tasks in order, one after another"))
@@ -1684,60 +2082,132 @@ fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
 fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let list = arr(g, "attachments");
-    let mut card = section(t).child(kit::h3(t, "Attached")).children(inline_note(m, t, &format!("att:goals:{gr}")));
+    let card = aside_card(t).child(h3(t, 12.5, "Attached")).children(inline_note(m, t, &format!("att:goals:{gr}")));
     if list.is_empty() {
-        return card.child(kit::help(t, ATTACH_HELP));
+        return card.child(div().text_size(px(13.)).text_color(t.muted).child(ATTACH_HELP));
     }
+    // `.atts`: one `.att` row each (kind icon, name over meta, the actions button on hover).
+    let mut atts = div().flex().flex_col();
     for (a, item) in list.iter().zip(attachments_view(list, &gr)) {
         let id = item.id;
         let url = s(a, "url").to_string();
         let name: AnyElement = if item.linked {
             let u = url.clone();
-            kit::link(t, SharedString::from(format!("att-open-{id}")), item.name.clone())
-                .text_size(px(13.5))
+            let fg = t.accent_fg;
+            div()
+                .id(SharedString::from(format!("att-open-{id}")))
+                .cursor_pointer()
+                .text_color(fg)
+                .font_weight(FontWeight::SEMIBOLD)
                 .truncate()
+                .hover(|s| s.underline())
+                .child(item.name.clone())
                 .tooltip(kit::tip(item.tip.clone()))
                 .on_click(move |_, _, cx| open_attachment(&u, cx))
                 .into_any_element()
         } else {
             div()
                 .id(SharedString::from(format!("att-name-{id}")))
-                .text_size(px(13.5))
+                .text_color(t.accent_fg)
+                .font_weight(FontWeight::SEMIBOLD)
                 .font_family(t.mono_font.clone())
                 .truncate()
                 .child(item.name.clone())
                 .tooltip(kit::tip(item.tip.clone()))
                 .into_any_element()
         };
-        let src = item.src.clone();
-        let meta = div().flex().gap(px(4.)).text_size(px(12.)).text_color(t.muted).child(item.meta.clone()).when_some(src, |d, src| {
-            let target = src.clone();
-            d.child(kit::link(t, SharedString::from(format!("att-src-{id}")), format!("Open {src}")).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
-                if target.starts_with('T') {
-                    m.open_task(target.clone(), cx);
-                } else {
-                    m.go(Page::Goal(target.clone()), cx);
-                }
-            })))
-        });
+        // `.att-m`: kind · source · age, the source (T4 / G2) as an `.att-src` chip.
+        let mut meta = div().flex().items_center().text_size(px(12.)).text_color(t.muted).whitespace_nowrap().overflow_hidden();
+        for (k, part) in item.meta.split(" · ").enumerate() {
+            if k > 0 {
+                meta = meta.child(div().flex_none().child("\u{a0}·\u{a0}"));
+            }
+            if item.src.as_deref() == Some(part) {
+                let target = part.to_string();
+                let (fg, bg) = if part.starts_with('T') { (t.accent_fg, t.accent_soft) } else { (t.goal, t.goal_soft) };
+                meta = meta.child(
+                    div()
+                        .id(SharedString::from(format!("att-src-{id}")))
+                        .flex_none()
+                        .cursor_pointer()
+                        .px(px(5.))
+                        .rounded(px(5.))
+                        .bg(bg)
+                        .text_color(fg)
+                        .font_family(t.mono_font.clone())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(11.5))
+                        .line_height(relative(1.5))
+                        .hover(|s| s.underline())
+                        .child(part.to_string())
+                        .tooltip(kit::tip(format!("Open {part}")))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            if target.starts_with('T') {
+                                m.open_task(target.clone(), cx);
+                            } else {
+                                m.go(Page::Goal(target.clone()), cx);
+                            }
+                        })),
+                );
+            } else {
+                meta = meta.child(div().truncate().child(part.to_string()));
+            }
+        }
+        let kind = att_kind(a);
+        let (kfg, kbg) = match kind {
+            "design" => (t.warn, t.warn_soft),
+            "proposal" => (t.goal, t.goal_soft),
+            "doc" => (t.accent_fg, t.accent_soft),
+            "evidence" => (t.up, t.up_soft),
+            "results" => (t.results, t.results_soft),
+            _ => (t.text_2, t.col),
+        };
         let menu_key = format!("{ATT_MENU}:{id}");
         let mk = menu_key.clone();
-        card = card.child(
+        let menu_open = m.menu_open(&menu_key).is_some();
+        let group = SharedString::from(format!("att-{id}"));
+        let (hover_fg, hover_line) = (t.text, t.border_2);
+        atts = atts.child(
             div()
+                .id(SharedString::from(format!("att-row-{id}")))
+                .group(group.clone())
                 .flex()
-                .items_start()
-                .gap(px(8.))
-                .child(div().flex().flex_col().flex_1().min_w_0().child(name).child(meta))
-                .child(kit::btn_small(t, SharedString::from(format!("att-menu-{id}")), "•••").tooltip(kit::tip(format!("Actions for {}", item.name))).on_click(
-                    cx.listener(move |m, e: &ClickEvent, _, cx| {
-                        let p = e.position();
-                        m.toggle_menu(&mk, point(p.x - px(150.), p.y + px(14.)), cx);
-                    }),
-                ))
+                .items_center()
+                .gap(px(10.))
+                .p(px(6.))
+                .mx(px(-6.))
+                .rounded(px(8.))
+                .text_size(px(13.))
+                .child(div().flex().flex_none().items_center().justify_center().size(px(26.)).rounded(px(7.)).bg(kbg).child(ico(Ico::Att(kind), 14., kfg)))
+                .child(div().flex().flex_col().flex_1().min_w_0().gap(px(1.)).child(name).child(meta))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("att-menu-{id}")))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(24.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(t.border)
+                        .bg(t.card)
+                        .text_color(t.muted)
+                        .cursor_pointer()
+                        .when(!menu_open, |d| d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.)))
+                        .hover(move |s| s.text_color(hover_fg).border_color(hover_line))
+                        .child("•••")
+                        .text_size(px(9.))
+                        .tooltip(kit::tip(format!("Actions for {}", item.name)))
+                        .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+                            let p = e.position();
+                            m.toggle_menu(&mk, point(p.x - px(150.), p.y + px(14.)), cx);
+                        })),
+                )
                 .children(m.menu_open(&menu_key).map(|at| att_menu(t, a, at, cx))),
         );
     }
-    card
+    card.child(atts)
 }
 
 fn att_menu(t: &Theme, a: &Value, at: Point<Pixels>, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -1772,13 +2242,14 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
         .flex()
         .items_center()
         .cursor_pointer()
-        .child(div().flex_none().w(px(16.)).text_color(t.muted).child(if folded_open { "▾" } else { "▸" }))
-        .child(div().flex_1().child(kit::h3(t, "Goal notes")))
+        .gap(px(8.))
+        .child(div().flex().flex_none().items_center().justify_center().w(px(10.)).child(ico(if folded_open { Ico::Chev } else { Ico::Right }, 14., t.muted)))
+        .child(div().flex_1().child(h3(t, 12.5, "Goal notes")))
         .on_click(cx.listener(move |_, _, _, cx| {
             crate::prefs::set(FOLD_NOTES, json!(if folded_open { "closed" } else { "open" }));
             cx.notify();
         }));
-    let mut card = section(t).child(head);
+    let mut card = aside_card(t).child(head);
     if !folded_open {
         return card;
     }
@@ -1786,7 +2257,7 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
     card = card.children(inline_note(m, t, &fk));
     for (title, items) in notes_view(arr(g, "notes")) {
         let mut grp = div().flex().flex_col().gap(px(4.)).child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(title));
-        let mut ul = div().flex().flex_col().gap(px(3.)).pl(px(16.));
+        let mut ul = div().flex().flex_col().gap(px(3.));
         for item in items {
             let id = i(&item.note, "id");
             // The pin mark, the text and (short notes) the byline flow as one wrapping line.
@@ -1820,7 +2291,7 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                         .items_baseline()
                         .gap(px(8.))
                         .mt(px(2.))
-                        .child(kit::link(t, SharedString::from(format!("gnote-open-{id}")), "Show all").text_size(px(12.5)).on_click(cx.listener(move |m, _, window, cx| {
+                        .child(kit::link(t, SharedString::from(format!("gnote-open-{id}")), "Show all").text_size(px(12.5)).text_color(t.accent_fg).underline().on_click(cx.listener(move |m, _, window, cx| {
                             m.goal_page.note_dialog = Some(n.clone());
                             open_dialog(m, window, cx);
                         })))
@@ -1829,7 +2300,7 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
             } else {
                 div().flex().flex_col().child(text)
             };
-            ul = ul.child(div().flex().gap(px(6.)).child(div().flex_none().text_color(t.muted).child("•")).child(row.flex_1().min_w_0()));
+            ul = ul.child(div().flex().text_size(px(13.5)).child(div().flex_none().w(px(16.)).pl(px(4.)).text_color(t.text_2).child("•")).child(row.flex_1().min_w_0()));
         }
         grp = grp.child(ul);
         card = card.child(grp);
@@ -1856,28 +2327,30 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         Some(Panel::Issue { r }) => Some(r.clone()),
         _ => None,
     };
-    let mut col = div().flex().flex_col().gap(px(10.)).child(div().text_size(px(13.)).text_color(t.muted).child(BACKLOG_HELP));
+    let mut col = div().flex().flex_col().gap(px(12.)).child(div().text_size(px(13.)).text_color(t.muted).child(BACKLOG_HELP));
     if let Some(bar) = &v.bar {
         let n = m.goal_page.sel.len();
         let all = n > 0 && n == pickable.len();
         let picks = pickable.clone();
+        // `.bl-head` (`.on` with a selection).
         let mut row = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(8.))
-            .px(px(12.))
-            .py(px(6.))
-            .rounded(px(8.))
-            .when(n > 0, |d| d.bg(t.accent_soft))
+            .min_h(px(36.))
+            .px(px(16.))
+            .when(n > 0, |d| d.pl(px(16.)).pr(px(12.)).py(px(8.)).bg(t.accent_soft).border_1().border_color(t.accent_line).rounded(px(12.)))
             .child(
                 div()
                     .id("bl-pick-all")
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(12.))
                     .cursor_pointer()
                     .text_size(px(13.))
+                    .text_color(t.muted)
+                    .when(n > 0, |d| d.text_color(t.text).font_weight(FontWeight::SEMIBOLD).mr(px(4.)))
                     .child(checkbox(t, all, n > 0 && !all))
                     .child(bar.label.clone())
                     .on_click(cx.listener(move |m, _, _, cx| {
@@ -1901,7 +2374,7 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
             let own_busy = busy(m, &format!("bl-bulk:{action}:"));
             let shown = if own_busy { "Sending…" } else { label };
             let el = match action {
-                "clear" => kit::link(t, "bl-pick-clear", label).text_size(px(12.5)).when(!bulk_busy, |d| {
+                "clear" => kit::link(t, "bl-pick-clear", label).text_color(t.accent_fg).underline().when(!bulk_busy, |d| {
                     d.on_click(cx.listener(|m, _, _, cx| {
                         m.goal_page.sel.clear();
                         m.goal_page.anchor = None;
@@ -1909,7 +2382,7 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                         cx.notify();
                     }))
                 }),
-                a => act_btn(kit::btn_small(t, SharedString::from(format!("bl-bulk-{a}")), shown), bulk_busy)
+                a => act_btn(btn_sm(t, SharedString::from(format!("bl-bulk-{a}")), shown, match a { "task" => "soft", "drop" => "ghost", _ => "" }), bulk_busy)
                     .when(!bulk_busy, |d| d.on_click(cx.listener(move |m, _, _, cx| bulk(m, a, json!({}), cx)))),
             };
             if action == "clear" {
@@ -1920,15 +2393,16 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         col = col.child(row);
     }
     if !v.rows.is_empty() {
-        let mut list = kit::card(t).overflow_hidden();
+        let picks_any = !pickable.is_empty();
+        let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
         for (ix, row) in v.rows.iter().enumerate() {
             let r = row.r.clone();
             let picked = m.goal_page.sel.contains(&r);
             let on = issue_open.as_deref() == Some(r.as_str());
-            let hover = t.tint;
+            let tint = accent_tint(t);
             let (pick_r, open_r) = (r.clone(), r.clone());
             let picks = pickable.clone();
-            let mut acts = div().flex().flex_none().gap(px(6.));
+            let mut acts = div().flex().flex_wrap().items_center().gap(px(6.));
             for a in &row.actions {
                 let act = match *a {
                     "Make it a task" => "promote",
@@ -1941,68 +2415,88 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 };
                 let is_busy = busy(m, &key);
                 let rr = r.clone();
-                let bt = act_btn(kit::btn_small(t, SharedString::from(format!("bl-{act}-{r}")), if is_busy { "Sending…" } else { a }), is_busy);
+                let style = match act {
+                    "promote" => "soft",
+                    "drop" => "ghost",
+                    _ => "",
+                };
+                let bt = act_btn(btn_sm(t, SharedString::from(format!("bl-{act}-{r}")), if is_busy { "Sending…" } else { a }, style), is_busy);
                 acts = acts.child(if is_busy { bt } else { bt.on_click(cx.listener(move |m, _, _, cx| issue_action(m, act, &rr, cx))) });
             }
+            let state_kind = s(arr(g, "backlog").iter().find(|x| fmt::ref_of(x, "B") == r).unwrap_or(&Value::Null), "state").to_string();
+            let (sfg, sbg) = match state_kind.as_str() {
+                "task" => (t.goal, t.goal_soft),
+                "ticket" => (t.accent_fg, t.accent_soft),
+                _ => (t.muted, t.col),
+            };
+            // `.irow`: 12px 14px (44px on the left when rows can be picked), kind chip + title,
+            // who found it, then the row's buttons or its state.
             list = list.child(
                 div()
+                    .id(SharedString::from(format!("goal-issue-{r}")))
+                    .relative()
                     .flex()
                     .flex_col()
+                    .gap(px(6.))
+                    .py(px(12.))
+                    .pr(px(14.))
+                    .pl(px(if picks_any { 44. } else { 14. }))
                     .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
+                    .when(picked && !on, |d| d.bg(tint.opacity(0.8)))
+                    .when(!on, |d| d.hover(move |s| s.bg(tint.opacity(0.6))))
+                    .when(on, |d| d.bg(tint).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(t.accent)))
+                    .when(row.checkbox, |d| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("bl-pick-{r}")))
+                                .absolute()
+                                .left(px(16.))
+                                .top(px(15.))
+                                .cursor_pointer()
+                                .child(checkbox(t, picked, false))
+                                .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+                                    let on = !m.goal_page.sel.contains(&pick_r);
+                                    pick(m, &pick_r, on, e.modifiers().shift, &picks);
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         div()
-                            .id(SharedString::from(format!("goal-issue-{r}")))
+                            .id(SharedString::from(format!("bl-open-{r}")))
                             .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .px(px(12.))
-                            .py(px(9.))
-                            .when(picked || on, |d| d.bg(t.accent_soft))
-                            .hover(move |d| d.bg(hover))
-                            .when(row.checkbox, |d| {
-                                d.child(div().id(SharedString::from(format!("bl-pick-{r}"))).cursor_pointer().child(checkbox(t, picked, false)).on_click(cx.listener(
-                                    move |m, e: &ClickEvent, _, cx| {
-                                        let on = !m.goal_page.sel.contains(&pick_r);
-                                        pick(m, &pick_r, on, e.modifiers().shift, &picks);
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    },
-                                )))
-                            })
+                            .flex_col()
+                            .min_w_0()
+                            .gap(px(4.))
+                            .cursor_pointer()
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("bl-open-{r}")))
                                     .flex()
-                                    .flex_col()
-                                    .flex_1()
+                                    .items_start()
+                                    .gap(px(8.))
                                     .min_w_0()
-                                    .gap(px(3.))
-                                    .cursor_pointer()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(8.))
-                                            .min_w_0()
-                                            .child(kit::chip(t, row.kind.clone()))
-                                            .child(div().flex_1().min_w_0().truncate().text_size(px(13.5)).font_weight(FontWeight::BOLD).child(row.title.clone())),
-                                    )
-                                    .child(div().text_size(px(12.)).text_color(t.muted).truncate().child(row.from.clone()))
-                                    .on_click(cx.listener(move |m, _, _, cx| m.open_issue(open_r.clone(), cx))),
+                                    .child(kind_chip(t, s(arr(g, "backlog").iter().find(|x| fmt::ref_of(x, "B") == r).unwrap_or(&Value::Null), "kind"), row.kind.clone()).mt(px(2.)))
+                                    .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.4)).child(row.title.clone())),
                             )
-                            .child(match &row.state {
-                                Some(state) if row.actions.is_empty() => div().flex_none().text_size(px(12.)).text_color(t.muted).child(state.clone()).into_any_element(),
-                                _ => acts.into_any_element(),
-                            }),
+                            .child(div().text_size(px(12.5)).text_color(t.muted).child(row.from.clone()))
+                            .on_click(cx.listener(move |m, _, _, cx| m.open_issue(open_r.clone(), cx))),
                     )
-                    .children(inline_note(m, t, &format!("issue:{r}")).map(|n| n.px(px(12.)).pb(px(8.)))),
+                    .child(match &row.state {
+                        Some(state) if row.actions.is_empty() => div()
+                            .flex()
+                            .child(div().px(px(8.)).py(px(2.)).rounded(px(6.)).bg(sbg).text_color(sfg).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(state.clone()))
+                            .into_any_element(),
+                        _ => acts.into_any_element(),
+                    })
+                    .children(inline_note(m, t, &format!("issue:{r}"))),
             );
         }
         col = col.child(list);
     }
     if let Some((line, button)) = v.closed {
         col = col.child(div().flex().items_center().gap(px(4.)).text_size(px(12.5)).text_color(t.muted).child(line.trim_end().to_string()).when_some(button, |d, label| {
-            d.child(kit::link(t, "show-dropped", label).text_size(px(12.5)).on_click(cx.listener(|m, _, _, cx| {
+            d.child(kit::link(t, "show-dropped", label).text_size(px(12.5)).text_color(t.accent_fg).underline().on_click(cx.listener(|m, _, _, cx| {
                 m.goal_page.show_dropped = !m.goal_page.show_dropped;
                 cx.notify();
             })))
@@ -2015,35 +2509,68 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
 fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let focus = m.goal_page.dialog_focus.clone()?;
     let gr = fmt::ref_of(g, "G");
+    // `.modal-head`: an 18px title and the 36px close button.
     let head = |title: AnyElement| {
+        let (fg, hover, line) = (t.muted, t.text, t.border_2);
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .child(div().flex_1().text_size(px(17.)).font_weight(FontWeight::BOLD).child(title))
-            .child(kit::btn_small(t, "goal-dialog-close", "Close").on_click(cx.listener(|m, _, _, cx| close_dialog(m, cx))))
+            .gap(px(8.))
+            .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child(title))
+            .child(
+                div()
+                    .id("goal-dialog-close")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(36.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.card)
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(hover).border_color(line))
+                    .child(ico(Ico::Close, 16., fg))
+                    .tooltip(kit::tip("Close"))
+                    .on_click(cx.listener(|m, _, _, cx| close_dialog(m, cx))),
+            )
     };
+    // `.modal.narrow`: 560px, 28px padding, 18px gap, 16px radius.
+    let shell = || kit::modal_box(t, 560.).border_0().rounded(px(16.)).p(px(28.)).gap(px(18.));
     let body: Div = if m.goal_page.deprio_open && !b(g, "deprioritized") {
         let (title, paras, buttons) = deprio_dialog_view(g);
         let name = fmt::opt_s(g, "name").map(str::to_string).unwrap_or_else(|| gr.clone());
         let rest = paras[0].strip_prefix(&name).unwrap_or(&paras[0]).to_string();
         let is_busy = busy(m, &format!("goal-deprio-yes::{gr}"));
-        let yes = act_btn(kit::btn_danger(t, "goal-deprio-yes", if is_busy { "Deprioritizing…" } else { buttons[1] }).bg(t.down).text_color(t.on_accent), is_busy);
+        let lg = |b: Stateful<Div>| b.h(px(42.)).px(px(16.)).rounded(px(8.)).text_size(px(14.));
+        let yes = act_btn(lg(md_btn(t, "goal-deprio-yes", "danger")).bg(t.down).border_color(t.down).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).child(if is_busy { "Deprioritizing…" } else { buttons[1] }), is_busy);
         let yes = if is_busy { yes } else { yes.on_click(cx.listener(move |m, _, _, cx| set_deprioritized(m, &gr, true, cx))) };
-        kit::modal_box(t, 480.)
-            .p(px(20.))
-            .gap(px(12.))
+        shell()
             .child(head(div().child(title).into_any_element()))
-            .child(div().flex().flex_wrap().text_size(px(14.)).child(div().font_weight(FontWeight::BOLD).child(name)).child(rest))
+            .child(div().text_size(px(14.)).child(StyledText::new(format!("{name}{rest}")).with_highlights([(0..name.len(), HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() })])))
             .child(kit::help(t, paras[1].clone()))
-            .child(div().flex().justify_end().gap(px(8.)).child(kit::btn(t, "goal-deprio-no", buttons[0]).on_click(cx.listener(|m, _, _, cx| close_dialog(m, cx)))).child(yes))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .items_center()
+                    .gap(px(8.))
+                    .pt(px(14.))
+                    .border_t_1()
+                    .border_color(t.divider)
+                    .child(lg(md_btn(t, "goal-deprio-no", "")).child(buttons[0]).on_click(cx.listener(|m, _, _, cx| close_dialog(m, cx))))
+                    .child(yes),
+            )
     } else if let Some(n) = &m.goal_page.note_dialog {
         let title = div()
             .flex()
+            .items_baseline()
             .gap(px(6.))
             .when(b(n, "pinned"), |d| d.child(div().text_color(t.goal).font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child("Pinned")))
             .child(note_dialog_title(n));
-        kit::modal_box(t, 560.).p(px(20.)).gap(px(12.)).child(head(title.into_any_element())).child(note_body(t, &note_blocks(s(n, "text")), i(n, "id")))
+        shell().child(head(title.into_any_element())).child(note_body(t, &note_blocks(s(n, "text")), i(n, "id")))
     } else {
         return None;
     };
@@ -2087,7 +2614,7 @@ fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
                 }
                 Inline::Link(u) => {
                     text.push_str(u);
-                    hl.push((start..text.len(), HighlightStyle { color: Some(t.accent), underline: Some(UnderlineStyle { thickness: px(1.), color: Some(t.accent), wavy: false }), ..Default::default() }));
+                    hl.push((start..text.len(), HighlightStyle { color: Some(t.accent_fg), underline: Some(UnderlineStyle { thickness: px(1.), color: Some(t.accent_fg), wavy: false }), ..Default::default() }));
                     links.push((start..text.len(), u.clone()));
                 }
             }
@@ -2100,7 +2627,7 @@ fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
         let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
         InteractiveText::new(SharedString::from(key), styled).on_click(ranges, move |ix, _, cx| if let Some(u) = urls.get(ix) { cx.open_url(u) }).into_any_element()
     };
-    let mut col = div().flex().flex_col().gap(px(10.)).text_size(px(14.)).line_height(px(21.)).text_color(t.text);
+    let mut col = div().flex().flex_col().gap(px(10.)).text_size(px(14.)).line_height(relative(1.55)).text_color(t.text);
     for (bi, block) in blocks.iter().enumerate() {
         col = col.child(match block {
             NoteBlock::P(lines) => {
@@ -2177,11 +2704,11 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             .into_any_element();
     };
     let backlog_view = m.goal_page.backlog_view;
-    let h = header_view(&g, m.jira_on());
-    let hot = h.backlog_hot;
-    let labels = [h.tabs[0].as_str(), h.tabs[1].as_str()];
-    let tabs = kit::seg(&t, "goal-view", &labels, if backlog_view { 1 } else { 0 }, |ix, item| {
-        item.when(ix == 1 && hot, |d| d.text_color(t.warn_fg)).on_click(cx.listener(move |m, _, _, cx| {
+    let c = counts(&g);
+    let open = open_issue_count(&g);
+    let items = [("Tasks", c.n, false), ("Backlog", open, open > 0)];
+    let tabs = seg_counts(&t, "goal-view", &items, if backlog_view { 1 } else { 0 }, |ix, item| {
+        item.on_click(cx.listener(move |m, _, _, cx| {
             m.goal_page.backlog_view = ix == 1;
             // `goal-view` also closes the open issue.
             if matches!(m.panel, Some(Panel::Issue { .. })) {
@@ -2190,38 +2717,43 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             cx.notify();
         }))
     });
-    let left = div()
+    // `.gbody`: the section (1.5fr) and the aside (1fr), 24px apart; the aside starts level with the
+    // list, under the `.gbar` (38px) and its 12px gap.
+    let mut left = div()
         .flex()
         .flex_col()
-        .flex_1()
-        .min_w(px(380.))
+        .min_w_0()
         .gap(px(12.))
         .child(div().flex().items_center().gap(px(8.)).child(tabs))
         .when(!backlog_view, |d| d.children(gate(m, &t, &g, cx)).child(task_rows(m, &t, &g, cx)).child(how_runs(m, &t, &g, cx)))
         .when(backlog_view, |d| d.child(backlog(m, &t, &g, cx)));
+    left.style().flex_grow = Some(1.5);
+    left.style().flex_shrink = Some(1.);
+    left.style().flex_basis = Some(relative(0.).into());
     // Tasks: Attached + Goal notes. Backlog: the picked issue (`issueAside(false)`: no move picker).
-    let right = if backlog_view {
-        issue_aside(m, &t, cx).map(|a| div().flex().flex_col().flex_none().w(px(360.)).child(a))
+    let right_body = if backlog_view {
+        issue_aside(m, &t, cx).map(|a| div().flex().flex_col().child(a))
     } else {
-        Some(div().flex().flex_col().flex_none().w(px(320.)).gap(px(16.)).child(attachments(m, &t, &g, cx)).child(notes(m, &t, &g, cx)))
+        Some(div().flex().flex_col().gap(px(16.)).child(attachments(m, &t, &g, cx)).child(notes(m, &t, &g, cx)))
     };
+    let right = div().flex_1().min_w_0().mt(px(50.)).children(right_body);
     let overlays: Vec<AnyElement> = [start_menu(m, &t, &g, cx), dialog(m, &t, &g, cx)].into_iter().flatten().collect();
     div()
         .id("goal-page")
         .flex_1()
         .min_w_0()
         .overflow_y_scroll()
+        .line_height(relative(1.5))
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(22.))
-                .max_w(px(1180.))
-                .pt(px(40.))
-                .px(px(28.))
-                .pb(px(40.))
+                .pt(px(32.))
+                .px(px(40.))
+                .pb(px(48.))
                 .child(header(m, &t, &g, cx))
-                .child(div().flex().items_start().gap(px(20.)).child(left).children(right)),
+                .child(div().flex().items_start().gap(px(24.)).child(left).child(right)),
         )
         .children(overlays)
         .into_any_element()
