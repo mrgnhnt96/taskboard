@@ -53,6 +53,9 @@ pub fn link_pr(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {
     if t.s("pr_url") == Some(pr.url.as_str()) || has(t.s("pr_repo")) {
         return Ok(false);
     }
+    if app.db.q1("SELECT id FROM tasks WHERE pr_repo = ? AND pr_num = ? AND id != ?", p![pr.repo, pr.num, t.id()])?.is_some() {
+        return Ok(false);
+    }
     let watched = pr.host == "github" && app.cfg.pr.watch;
     board::update_task(
         app,
@@ -358,7 +361,11 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     let mut out = vec![];
     for s in rows {
         let t = board::get_task(app, s.i0("pr_task"))?;
-        if !t.b("auto_close") || board::task_for_session(app, s.s("id"))?.is_some() || board::close_rule(Some(&s)).is_none() {
+        if !t.b("auto_close")
+            || board::task_for_session(app, s.s("id"))?.is_some()
+            || board::close_rule(Some(&s)).is_none()
+            || !board::opened_by_board(app, s.s("id"))?
+        {
             continue;
         }
         let finished = FINISHED.contains(&t.s("pr_phase").unwrap_or(""));

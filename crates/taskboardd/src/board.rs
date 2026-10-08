@@ -250,6 +250,9 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "position": position,
         "starting": t.i("start_job").is_some() && status == "queued",
         "waits_for": waits,
+        "waits_for_state": waitsfor::ids(t).into_iter().map(|n| Ok(json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref())}))).collect::<Result<Vec<_>>>()?,
+        "locks": crate::locks::names(t),
+        "alone": t.v("alone"),
         "waiting": waiting,
         "blocked": is_blocked(app, t)?,
         "step": crate::steps::waiting_card(app, t),
@@ -348,6 +351,12 @@ pub fn close_rule(s: Option<&Row>) -> Option<&'static str> {
         return None;
     }
     Some(if s.s("status").unwrap_or("idle") == "idle" { "close" } else { "force" })
+}
+
+/// Did the board open this terminal (an agent job's terminal)? Tabs the owner opened stay open.
+pub fn opened_by_board(app: &App, sid: Option<&str>) -> Result<bool> {
+    let Some(sid) = sid.filter(|s| !s.is_empty()) else { return Ok(false) };
+    Ok(!app.db.val("SELECT 1 FROM jobs WHERE kind = 'agent' AND json_extract(target, '$.session') = ? LIMIT 1", p![sid])?.is_null())
 }
 
 pub fn session_name(app: &App, sid: Option<&str>, fallback: Option<&str>) -> String {
@@ -492,7 +501,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "deprioritized": g.b("deprioritized"),
+        "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"),
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),
         "state": goal_state_line(&c),
         "peek": goal_peek(app, g)?,

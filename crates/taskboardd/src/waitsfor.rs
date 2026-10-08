@@ -124,9 +124,10 @@ pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
         if let Some(why) = crate::runner::goal_blocker(app, t, &g)? {
             return Ok(json!(why));
         }
-        return Ok(Value::Null);
+    } else if let Some(why) = hours::blocker(app) {
+        return Ok(json!(why));
     }
-    Ok(hours::blocker(app).map(Value::String).unwrap_or(Value::Null))
+    Ok(crate::locks::blocker(app, t)?.map(Value::String).unwrap_or(Value::Null))
 }
 
 pub fn blocked_by(app: &App, t: &Row) -> Result<Vec<Value>> {

@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, handoff, hooks, hours, jira, jobs, midna, p, prflow, projects, reports, usage, waitsfor};
+use crate::{board, deliver, dispatch, fields, handoff, hooks, hours, jira, jobs, locks, midna, p, prflow, projects, reports, usage, waitsfor, worktrees};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
@@ -34,6 +34,10 @@ pub fn start_task(
 ) -> Result<i64> {
     let cwd = match cwd {
         Some(c) => Some(c),
+        None if mode != "attach" => match worktrees::made(app, t)? {
+            Some(w) => Some(w),
+            None => task_cwd(app, t)?,
+        },
         None => task_cwd(app, t)?,
     };
     let title = short(&t.st("title"), 40);
@@ -112,6 +116,27 @@ pub fn skip_task(app: &App, t: &Row, d: &hooks::Decision) -> Result<()> {
 
 /// Why a goal holds this queued task back: paused, an earlier task not done, or too many terminals.
 pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
+    if let Some(why) = goal_order_blocker(app, t, g)? {
+        return Ok(Some(why));
+    }
+    let tasks = board::goal_tasks(app, g.id())?;
+    let max = g.i("max_terminals").unwrap_or(2).max(1);
+    let active = tasks
+        .iter()
+        .filter(|x| x.id() != t.id())
+        .filter(|x| {
+            (matches!(x.s("status"), Some("working") | Some("needs")) && x.s("needs_reason") != Some("start_failed"))
+                || (x.s("status") == Some("queued") && x.i("start_job").is_some())
+        })
+        .count() as i64;
+    if active >= max {
+        return Ok(Some(format!("Waits for a free slot: its goal runs {} at a time", plural(max, "terminal"))));
+    }
+    Ok(None)
+}
+
+/// `goal_blocker` without the terminal limit: paused, or an earlier wave or task not done.
+pub fn goal_order_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
     if g.b("deprioritized") {
         return Ok(Some("Its goal is deprioritized".into()));
     }
@@ -135,18 +160,6 @@ pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
                 return Ok(Some(format!("Waits for {} to finish first", rf("task", x.id()))));
             }
         }
-    }
-    let max = g.i("max_terminals").unwrap_or(2).max(1);
-    let active = tasks
-        .iter()
-        .filter(|x| x.id() != t.id())
-        .filter(|x| {
-            (matches!(x.s("status"), Some("working") | Some("needs")) && x.s("needs_reason") != Some("start_failed"))
-                || (x.s("status") == Some("queued") && x.i("start_job").is_some())
-        })
-        .count() as i64;
-    if active >= max {
-        return Ok(Some(format!("Waits for a free slot: its goal runs {} at a time", plural(max, "terminal"))));
     }
     Ok(None)
 }
@@ -184,7 +197,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
                 continue;
             }
         }
-        if jira::ticket_blocker(app, &t)? || waitsfor::blocker(app, &t)?.is_some() {
+        if jira::ticket_blocker(app, &t)? || waitsfor::blocker(app, &t)?.is_some() || locks::blocker(app, &t)?.is_some() {
             continue;
         }
         let tid = t.id();
@@ -196,6 +209,12 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             }
             d @ hooks::Decision::Skip { .. } => {
                 app.db.tx(|| skip_task(app, &t, &d))?;
+                continue;
+            }
+        }
+        if t.s("pickup") != Some("attach") {
+            if let Err(e) = worktrees::ensure(app, &t) {
+                app.db.tx(|| jobs::start_failed(app, &t, &format!("Couldn't start: {}", e.message), true, true).map(|_| ()))?;
                 continue;
             }
         }
@@ -260,7 +279,7 @@ pub fn auto_close_done(app: &App) -> Result<()> {
         p![],
     )? {
         let Some(s) = board::get_session(app, t.s("session_id"))? else { continue };
-        if !settled(&s) || board::task_for_session(app, s.s("id"))?.is_some() {
+        if !settled(&s) || board::task_for_session(app, s.s("id"))?.is_some() || !board::opened_by_board(app, s.s("id"))? {
             continue;
         }
         let tried = closes_since(app, &s.st("id"), t.s("finished_at").unwrap_or(""))?;
@@ -441,7 +460,8 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
 
 pub fn prs(app: &App) -> Result<()> {
     prflow::refresh(app)?;
-    app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))
+    app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
+    worktrees::clean_up(app).map(|_| ())
 }
 
 pub fn run(app: Arc<App>) {

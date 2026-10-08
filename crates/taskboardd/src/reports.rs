@@ -36,6 +36,8 @@ pub struct Report<'a> {
     pub background: usize,
     /// The files the turn edited, read before the transaction for a stop on a terminal with no task.
     pub turn_files: Vec<String>,
+    /// When that turn started.
+    pub turn_at: Option<String>,
 }
 
 fn s_of(v: &Value, k: &str) -> Option<String> {
@@ -64,6 +66,7 @@ impl<'a> Report<'a> {
             screened: None,
             background: 0,
             turn_files: vec![],
+            turn_at: None,
         }
     }
 
@@ -148,10 +151,22 @@ impl<'a> Report<'a> {
         Ok(projects::project_for_path(self.app, Some(cwd))?.as_deref() != Some(project))
     }
 
+    /// A hook from inside another open task's worktree: not this task's place.
+    fn in_other_task(&self, t: &Row) -> Result<bool> {
+        match &self.cwd {
+            Some(cwd) => Ok(crate::worktrees::owner(self.app, cwd, t)?.is_some()),
+            None => Ok(false),
+        }
+    }
+
+    fn away(&self, t: &Row) -> Result<bool> {
+        Ok(self.elsewhere(t)? || self.in_other_task(t)?)
+    }
+
     fn update_where(&self, t: &Row, turn: bool) -> Result<Row> {
         let mut ctx = board::task_context(t);
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-        let away = self.elsewhere(t)?;
+        let away = self.away(t)?;
         if !away {
             if let Some(b) = self.git.s("branch").filter(|s| !s.is_empty()) {
                 w.insert("branch".into(), json!(b));
@@ -359,7 +374,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     r.set_session_status("idle")?;
     let Some(t) = r.task()? else {
-        if let Some(ask) = untracked_change(r)? {
+        if let Some(ask) = changed_with_no_task(r)? {
             r.set_session_status("working")?;
             return Ok(with(ok(None, None), json!({"block": ask})));
         }
@@ -417,24 +432,60 @@ fn project_files(app: &App, s: &Row, files: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// A turn on a terminal with no task that changed code: what to tell the agent so the work gets tracked.
-fn untracked_change(r: &Report) -> Result<Option<String>> {
-    if r.turn_files.is_empty() || prflow::visited_by(r.app, r.sid().unwrap_or(""))?.is_some() {
-        return Ok(None);
-    }
-    let Some(s) = board::get_session(r.app, r.sid())? else { return Ok(None) };
-    let files = project_files(r.app, &s, &r.turn_files)?;
-    if files.is_empty() {
-        return Ok(None);
-    }
+fn shown_files(files: &[String]) -> String {
     let names: Vec<String> = files
         .iter()
         .take(UNTRACKED_FILES_SHOWN)
         .map(|f| std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()))
         .collect();
     let more = files.len() - names.len();
-    let shown = names.join(", ") + &if more > 0 { format!(" and {more} more") } else { String::new() };
+    names.join(", ") + &if more > 0 { format!(" and {more} more") } else { String::new() }
+}
+
+/// A done task this terminal finished (no PR, not failed) that a follow-up turn changed code for.
+fn reopens_on_change(t: &Row, sid: &str) -> bool {
+    t.s("status") == Some("done") && !t.b("failed") && t.i("pr_num").is_none() && t.s("session_id").map(|s| s == sid).unwrap_or(true)
+}
+
+fn reopen(r: &Report, t: &Row, sid: &str) -> Result<()> {
+    let app = r.app;
+    let name = r.name();
+    board::update_task(app, t.id(), fields!["session_id" => sid, "session_name" => name, "finished_at" => null, "lost" => 0])?;
+    board::set_working(app, &board::get_task(app, t.id())?, &name, Some(&format!("Reopened: {} asked for more changes in {name}", app.cfg.owner)))?;
+    board::update_task(app, t.id(), fields!["latest" => format!("Reopened for more changes in {name}.")])?;
+    board::upsert_session(app, sid, fields!["last_task" => t.id()])?;
+    Ok(())
+}
+
+/// A turn on a terminal with no task that changed code: what to tell the agent so the work gets
+/// tracked. A follow-up on the done task this terminal last finished reopens it instead.
+fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
+    let Some(sid) = r.sid.clone() else { return Ok(None) };
+    if r.turn_files.is_empty() || prflow::visited_by(r.app, &sid)?.is_some() {
+        return Ok(None);
+    }
+    let Some(s) = board::get_session(r.app, Some(&sid))? else { return Ok(None) };
+    let files = project_files(r.app, &s, &r.turn_files)?;
+    if files.is_empty() {
+        return Ok(None);
+    }
     let tb = board::tb_cmd(r.app);
+    let shown = shown_files(&files);
+    let last = board::find_task(r.app, s.i("last_task"))?;
+    if let Some(last) = last {
+        if last.s("status") == Some("done") && last.st("finished_at") >= r.turn_at.clone().unwrap_or_default() {
+            return Ok(None);
+        }
+        if reopens_on_change(&last, &sid) {
+            reopen(r, &last, &sid)?;
+            return Ok(Some(format!(
+                "[task-board] This turn changed code ({shown}) after {} was marked done, so the board reopened it. \
+                 Finish it again now: {tb} done \"<one paragraph covering all the work on it, old and new>\". \
+                 Then end your turn without repeating your answer.",
+                rf("task", last.id())
+            )));
+        }
+    }
     let owner = &r.app.cfg.owner;
     Ok(Some(format!(
         "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
@@ -494,7 +545,7 @@ fn on_commit(r: &mut Report) -> Result<Value> {
     let cmd = r.b("command");
     let out = clip(&r.b("output"), 1000);
     r.update_where(&t, false)?;
-    if r.elsewhere(&t)? {
+    if r.away(&t)? {
         return Ok(ok(Some(&t), None));
     }
     if cmd.contains("git commit") {
@@ -1149,19 +1200,60 @@ fn project_for(r: &Report, given: &str) -> Result<Option<String>> {
     Ok(s.and_then(|s| s.s("project").map(|x| x.to_string())).or_else(|| r.cwd.as_deref().and_then(base_name)))
 }
 
-fn planned(r: &Report, g: &Row, items: &Value) -> Result<Vec<String>> {
-    let mut created = vec![];
-    for item in items.as_array().cloned().unwrap_or_default() {
-        // "title::detail" or "title::detail::2" (its wave); or {title, detail, wave}.
-        let (title, detail, wave) = match &item {
-            Value::String(s) => {
-                let (a, b) = s.split_once("::").unwrap_or((s.as_str(), ""));
-                match b.rsplit_once("::").filter(|(_, n)| n.trim().parse::<i64>().is_ok()) {
-                    Some((d, n)) => (a.to_string(), d.to_string(), json!(n.trim().parse::<i64>().unwrap_or(0))),
-                    None => (a.to_string(), b.to_string(), Value::Null),
+static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
+static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
+static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
+
+/// "title::detail", "title::detail::2" (its wave) or "title::detail::<wave or nothing>::T14 #1" (what it
+/// waits for: a task, or the k-th task in the same command).
+fn split_planned(item: &str) -> (String, String, Value, Value) {
+    let (title, detail) = item.split_once("::").unwrap_or((item, ""));
+    if let Some(c) = PLANNED_WITH_REFS.captures(detail) {
+        let wave = c[2].parse::<i64>().map(|n| json!(n)).unwrap_or(Value::Null);
+        let waits: Vec<String> = c[3].replace(',', " ").split_whitespace().map(|x| x.to_string()).collect();
+        return (title.into(), c[1].into(), wave, if waits.is_empty() { Value::Null } else { json!(waits) });
+    }
+    if let Some(c) = PLANNED_WITH_WAVE.captures(detail) {
+        return (title.into(), c[1].into(), json!(c[2].parse::<i64>().unwrap_or(0)), Value::Null);
+    }
+    (title.into(), detail.into(), Value::Null, Value::Null)
+}
+
+/// `#k` in what a planned task waits for: the k-th task made earlier in the same command.
+fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
+    let items: Vec<String> = match value {
+        Value::Null => return Ok(Value::Null),
+        Value::Array(a) => a.iter().map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())).collect(),
+        Value::String(s) => s.replace(',', " ").split_whitespace().map(|x| x.to_string()).collect(),
+        v => vec![v.to_string()],
+    };
+    let mut out = vec![];
+    for v in items {
+        match EARLIER_REF.captures(v.trim()) {
+            Some(c) => {
+                let k: usize = c[1].parse().unwrap_or(0);
+                if k < 1 || k > created.len() {
+                    return err(400, format!("#{k} has to point at a task listed before it in the same command; #1 is the first."));
                 }
+                out.push(json!(created[k - 1]));
             }
-            Value::Object(o) => (o.s("title").unwrap_or("").to_string(), o.s("detail").unwrap_or("").to_string(), o.get("wave").cloned().unwrap_or(Value::Null)),
+            None => out.push(json!(v)),
+        }
+    }
+    Ok(json!(out))
+}
+
+fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+    let mut created: Vec<String> = vec![];
+    for item in items.as_array().cloned().unwrap_or_default() {
+        let (title, detail, wave, waits) = match &item {
+            Value::String(s) => split_planned(s),
+            Value::Object(o) => (
+                o.s("title").unwrap_or("").to_string(),
+                o.s("detail").unwrap_or("").to_string(),
+                o.get("wave").cloned().unwrap_or(Value::Null),
+                o.get("waits_for").cloned().unwrap_or(Value::Null),
+            ),
             _ => continue,
         };
         let title = one_line(&title, 300);
@@ -1172,11 +1264,19 @@ fn planned(r: &Report, g: &Row, items: &Value) -> Result<Vec<String>> {
             r.app,
             &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
                     "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
+                    "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
         )?;
         created.push(c["ref"].as_str().unwrap_or("").to_string());
+        for w in c["warnings"].as_array().cloned().unwrap_or_default() {
+            if let Some(w) = w.as_str().map(|w| w.to_string()) {
+                if !warnings.contains(&w) {
+                    warnings.push(w);
+                }
+            }
+        }
     }
     Ok(created)
 }
@@ -1185,8 +1285,9 @@ fn on_propose(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
-    let created = planned(r, &g, &tasks)?;
-    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id())})))
+    let mut warnings = vec![];
+    let created = planned(r, &g, &tasks, &mut warnings)?;
+    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "warnings": warnings})))
 }
 
 fn on_goal(r: &mut Report) -> Result<Value> {
@@ -1198,8 +1299,9 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     )?;
     let gid = g["id"].as_i64().unwrap_or(0);
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
-    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks)?;
-    Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created})))
+    let mut warnings = vec![];
+    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, &mut warnings)?;
+    Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created, "warnings": warnings})))
 }
 
 fn on_new_task(r: &mut Report) -> Result<Value> {
@@ -1213,9 +1315,11 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
-        let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave")}]);
-        let created = planned(r, &g, &item)?;
-        return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned"})));
+        let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
+                           "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone")}]);
+        let mut warnings = vec![];
+        let created = planned(r, &g, &item, &mut warnings)?;
+        return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
         return err(400, "Only a task in a goal can also finish other goals. Give it its home goal with --goal G<n>.");
@@ -1226,11 +1330,13 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         r.app,
         &json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
                 "status": if planned_flag { "planned" } else { "queued" },
+                "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                 "origin": {"from": "Added by an agent", "by": r.name()}}),
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
     )?;
-    Ok(with(ok(None, None), json!({"created": [c["ref"]], "status": c["status"], "project": c["project"]})))
+    Ok(with(ok(None, None), json!({"created": [c["ref"]], "status": c["status"], "project": c["project"],
+                                   "warnings": c.get("warnings").cloned().unwrap_or(json!([]))})))
 }
 
 /// `tb task new … --here`: a standalone task for the work this terminal is already doing, claimed at once.
@@ -1510,7 +1616,10 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     }
     if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) && r.task().ok().flatten().is_none() {
         if let Some(s) = board::get_session(app, r.sid()).ok().flatten() {
-            r.turn_files = transcript::last_turn(app, &s).map(|t| t.files).unwrap_or_default();
+            if let Some(turn) = transcript::last_turn(app, &s) {
+                r.turn_files = turn.files;
+                r.turn_at = turn.at.as_str().map(|s| s.to_string());
+            }
         }
     }
     if r.event == "tb.question" && !spooled {

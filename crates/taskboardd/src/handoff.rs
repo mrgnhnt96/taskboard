@@ -348,6 +348,31 @@ fn other_tasks(app: &App, t: &Row) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// The worktree the board made for the task, the locks it holds, and whether it runs alone.
+fn worktree_and_lock_lines(t: &Row, ctx: &Row) -> Vec<String> {
+    let mut lines = vec![];
+    if let Some(made) = ctx.s("worktree_made").filter(|m| !m.is_empty()) {
+        if ctx.get("worktree_removed").is_none() {
+            let base = ctx.s("worktree_base").map(|b| format!(", detached at {b}")).unwrap_or_default();
+            lines.push(format!(
+                "The board made this worktree for the task: {made}{base}. Work there and make the task's branch in it with \
+                 git switch -c <branch>; don't make another worktree. The board removes it once the task is done and its \
+                 PR is merged or closed, unless it has uncommitted changes."
+            ));
+        }
+    }
+    let held = crate::locks::names(t);
+    if !held.is_empty() {
+        lines.push(format!("This task holds {}: no other task that names the same lock runs while it does.", held.join(", ")));
+    }
+    match t.s("alone") {
+        Some("board") => lines.push("This task runs alone on the board: no other task starts until it's done.".into()),
+        Some(_) => lines.push("This task runs alone in its goal: no other task in the goal starts until it's done.".into()),
+        None => {}
+    }
+    lines
+}
+
 fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>) -> String {
     let all = |p: &[String]| p.iter().chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n\n");
     let text = all(&parts);
@@ -392,6 +417,7 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
         parts.push(format!("What to do:\n{}", d.trim()));
     }
     parts.extend(other_tasks(app, &t)?);
+    parts.extend(worktree_and_lock_lines(&t, &ctx));
     let tail = vec![pr_block(app, &t, &tb)?, report_block(app, &tb), CLOSING.to_string()];
     Ok(fit_to_limit(parts, tail))
 }
