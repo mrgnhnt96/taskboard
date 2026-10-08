@@ -1,0 +1,123 @@
+name: Release
+
+# Pushing a version tag (v1.1.0, see scripts/release.sh) builds the Apple
+# Silicon app, signs and notarizes it, packs it in a DMG and publishes a
+# GitHub release. The website's Download button links to the latest release.
+# A beta tag (v1.2.0-beta.1) is published as a prerelease, which the website
+# skips.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    if: github.actor == 'mrgnhnt96'
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/release.sh wrote this version into every file before tagging.
+      - name: Check version matches tag
+        run: ./scripts/set-version.sh --check "${GITHUB_REF_NAME#v}"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/package"
+
+      # The Developer ID certificate goes in a keychain of its own that lives
+      # only for this run.
+      - name: Import signing certificate
+        env:
+          CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          security find-identity -v -p codesigning "$keychain"
+
+      - name: App Store Connect API key
+        env:
+          API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          (umask 077; echo "$API_KEY" > "$RUNNER_TEMP/AuthKey.p8")
+          echo "TASKBOARD_NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build and sign app
+        env:
+          TASKBOARD_SIGN_IDENTITY: ${{ vars.DEVELOPER_ID_IDENTITY }}
+        run: packaging/build-app.sh --version "${GITHUB_REF_NAME#v}" --out dist/release
+
+      # Notarized and stapled before it goes in the DMG, so the ticket
+      # travels with the app.
+      - name: Notarize app
+        env:
+          TASKBOARD_NOTARY_KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
+          TASKBOARD_NOTARY_ISSUER: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          packaging/notarize.sh dist/release/Taskboard.app
+          xcrun stapler validate dist/release/Taskboard.app
+
+      # The branded window: background, icon positions and size come from
+      # scripts/dmg-settings.py and packaging/assets/dmg.
+      - name: Make DMG
+        id: dmg
+        run: |
+          name="Taskboard-${GITHUB_REF_NAME#v}-macos-arm64"
+          ./scripts/build-dmg.sh dist/release/Taskboard.app "$name.dmg"
+          echo "file=$name.dmg" >> "$GITHUB_OUTPUT"
+
+      # The DMG gets its own signature and notarization ticket, so the
+      # download itself passes Gatekeeper too.
+      - name: Sign and notarize DMG
+        env:
+          IDENTITY: ${{ vars.DEVELOPER_ID_IDENTITY }}
+          KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          DMG: ${{ steps.dmg.outputs.file }}
+        run: |
+          codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+          xcrun notarytool submit "$DMG" --key "$TASKBOARD_NOTARY_KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait
+          xcrun stapler staple "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+      - name: Clean up signing
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-beta.* ]]; then
+            flags=(--prerelease --latest=false)
+          else
+            flags=(--latest)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.file }}" \
+            --title "Taskboard ${GITHUB_REF_NAME#v}" --generate-notes "${flags[@]}"

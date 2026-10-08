@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Taskboard</title>
+  <meta name="description" content="A native macOS task board for Claude Code sessions running in Midna.">
+  <link rel="icon" href="icon.png" type="image/png">
+  <link rel="apple-touch-icon" href="icon.png">
+  <style>
+    :root {
+      --bg: #f4f6fb; --fg: #1f2a4d; --muted: #5b6583; --accent: #2f5ce0; --accent-fg: #fff; --card: #fff; --line: #dfe4f0;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0f1320; --fg: #e6eaf5; --muted: #98a2bd; --accent: #5a80f0; --accent-fg: #fff; --card: #171c2c; --line: #262d42; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: var(--bg); color: var(--fg);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    main { max-width: 560px; padding: 48px 16px; text-align: center; }
+    img.icon { width: 112px; height: 112px; }
+    h1 { font-size: 40px; margin: 12px 0 4px; letter-spacing: -0.02em; }
+    p.lede { color: var(--muted); font-size: 18px; margin: 0 0 28px; }
+    a.button {
+      display: inline-block; padding: 12px 24px; border-radius: 10px; background: var(--accent); color: var(--accent-fg);
+      font-weight: 600; text-decoration: none;
+    }
+    a.button:hover { filter: brightness(1.08); }
+    p.meta { color: var(--muted); font-size: 14px; margin: 10px 0 36px; }
+    ol { text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 18px 40px; margin: 0 0 28px; }
+    li + li { margin-top: 6px; }
+    footer { color: var(--muted); font-size: 14px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="icon" src="icon.png" alt="">
+    <h1>Taskboard</h1>
+    <p class="lede">A native macOS task board for Claude Code sessions running in <a href="https://midna.mrgnhnt.com">Midna</a>.</p>
+
+    <a class="button" id="download" href="https://github.com/mrgnhnt96/taskboard/releases/latest">Download for Mac</a>
+    <p class="meta" id="meta">Apple Silicon · macOS 13 or later</p>
+
+    <ol>
+      <li><b>Open the DMG</b> from your Downloads folder.</li>
+      <li><b>Drag Taskboard into Applications.</b></li>
+      <li><b>Open Taskboard.</b> If macOS asks, allow it in <b>Login Items</b> so its daemon keeps the board running.</li>
+    </ol>
+
+    <footer>
+      <a href="https://github.com/mrgnhnt96/taskboard">Source on GitHub</a> ·
+      <a href="https://github.com/mrgnhnt96/taskboard/releases">All releases</a> ·
+      <a href="https://github.com/mrgnhnt96/taskboard/issues/new">Report an issue</a>
+    </footer>
+  </main>
+  <script>
+    // Point the button straight at the newest release's DMG. Without this (or if
+    // GitHub's API is unreachable) it opens the latest release page instead.
+    fetch("https://api.github.com/repos/mrgnhnt96/taskboard/releases/latest")
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((release) => {
+        const dmg = (release.assets || []).find((a) => a.name.endsWith(".dmg"));
+        if (!dmg) return;
+        document.getElementById("download").href = dmg.browser_download_url;
+        const version = release.tag_name.replace(/^v/, "");
+        document.getElementById("meta").textContent = `Version ${version} · Apple Silicon · macOS 13 or later`;
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>

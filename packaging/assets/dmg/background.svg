@@ -1,0 +1,25 @@
+<!--
+  The background of the DMG window, in points. The design is 660 × 400; it's
+  drawn 420 tall so a Mac whose title bar is shorter than macOS 26's shows
+  more background rather than a white strip. scripts/render-dmg-background.sh
+  renders it to background.tiff.
+
+  Finder draws the two icons on top, centred where scripts/dmg-settings.py
+  puts them: Taskboard at (180, 170) and Applications at (480, 170). The
+  arrow runs between them, so moving an icon means moving it too. The
+  hint under them is drawn by the render script (ImageMagick's SVG
+  renderer can't find system fonts), in the app's own Atkinson Hyperlegible.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="420" viewBox="0 0 660 420">
+  <rect width="660" height="420" fill="#f4f6fb"/>
+  <!-- The arrow from Taskboard to Applications: dots, then a head. -->
+  <g fill="#2f5ce0">
+    <circle cx="282" cy="170" r="2.5"/>
+    <circle cx="300" cy="170" r="2.5"/>
+    <circle cx="318" cy="170" r="2.5"/>
+    <circle cx="336" cy="170" r="2.5"/>
+    <circle cx="354" cy="170" r="2.5"/>
+    <circle cx="372" cy="170" r="2.5"/>
+    <polygon points="384,160 398,170 384,180"/>
+  </g>
+</svg>
