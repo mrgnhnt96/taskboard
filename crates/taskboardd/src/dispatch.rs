@@ -76,9 +76,18 @@ fn new_alert_id() -> String {
     format!("{n:016x}")[..10].to_string()
 }
 
+/// An alert for a PR waiting on the owner's review: it can't be dismissed (it still snoozes), other alerts for
+/// the task don't replace it, and it only clears once the PR is reviewed (`resolved`).
+pub fn stays(a: &Value) -> bool {
+    a["review"] == true
+}
+
 pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, session_id: Option<&str>, extra: Option<&str>) -> Result<()> {
-    let mut rows: Vec<Value> =
-        alerts(app).into_iter().filter(|a| !(task_id.is_some() && a["task_id"].as_i64() == task_id)).collect();
+    let review = extra == Some("review");
+    let mut rows: Vec<Value> = alerts(app)
+        .into_iter()
+        .filter(|a| !(task_id.is_some() && a["task_id"].as_i64() == task_id) || (stays(a) && !review))
+        .collect();
     let now = now_iso();
     let mut new = json!({"id": new_alert_id(), "at": now, "text": text, "task_id": task_id, "session_id": session_id,
                          "task": rf_opt("task", task_id), "goal": rf_opt("goal", goal_id), "notified_at": now});
@@ -86,10 +95,13 @@ pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i6
         new[flag] = json!(true);
     }
     rows.push(new);
-    let n = rows.len();
+    // The newest 20 alerts, plus every one that stays, however many others came after it.
+    let (staying, mut rest): (Vec<Value>, Vec<Value>) = rows.into_iter().partition(stays);
+    let n = rest.len();
     if n > 20 {
-        rows.drain(..n - 20);
+        rest.drain(..n - 20);
     }
+    let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
     keep(app, &rows)?;
     notify(app, text, &alert_url(app, task_id, goal_id, session_id), None);
     Ok(())
@@ -99,7 +111,7 @@ pub fn clear_alerts(app: &App, task_id: Option<i64>, alert_id: Option<&str>) -> 
     let rows: Vec<Value> = alerts(app)
         .into_iter()
         .filter(|a| {
-            !((task_id.is_some() && a["task_id"].as_i64() == task_id) || (alert_id.is_some() && a["id"].as_str() == alert_id))
+            !((task_id.is_some() && a["task_id"].as_i64() == task_id && !stays(a)) || (alert_id.is_some() && a["id"].as_str() == alert_id))
         })
         .collect();
     keep(app, &rows)
@@ -169,7 +181,7 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     Ok(s.map(|s| s.s("status") == Some("working") && s.st("status_at").as_str() > at).unwrap_or(false))
 }
 
-fn prune_alerts(app: &App) -> Result<()> {
+pub fn prune_alerts(app: &App) -> Result<()> {
     let rows = alerts(app);
     let mut keep_rows = vec![];
     for a in &rows {

@@ -68,7 +68,9 @@ Planned tasks never appear in `columns`; they only show on the goal page. Column
 {"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null}
 ```
 Something that needs the reader (a task that couldn't start, an answer that didn't arrive…). `task`/`goal` give
-the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`. (The original's `urgent` "Master is red" alerts
+the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an alert with `"review": true` (a PR waiting
+for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
+by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). (The original's `urgent` "Master is red" alerts
 are gone.)
 
 #### `work_hours` (from `hours.state`)
@@ -161,6 +163,7 @@ A goal with `finished_at` (or all tasks done and no open PRs) shows as finished;
 ```
 {
   "tasks": [task_card],             // every task in the goal including planned, in goal order (position, then id)
+  "shared": [task_card],            // tasks from other goals that also finish this one (`tb task set T<n> --also G<n>`); they count in the totals
   "notes": [{"id": int, "kind": "finding"|"decision"|"reference", "text": str, "source": str|null, "pinned": bool, "at": iso}],
                                     // source: "you", a task ref like "T4", or free text; shown as the note's byline
   "backlog": [issue],               // the goal's issues that are NOT dropped, newest first (full issue shape, see GET /backlog/:id, history optional)
@@ -197,7 +200,8 @@ The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat objec
   "handoff": str,                   // the full handoff text a new terminal gets (or omit it and the UI calls GET /tasks/:id/handoff)
   "found": [{"id": int, "ref": "B7", "title": str}],   // issues this task reported
   "attachments": [attachment],      // on the task
-  "goal_attachments": [attachment]  // on its goal (omit or [] when no goal)
+  "goal_attachments": [attachment], // on its goal (omit or [] when no goal)
+  "origin": {"from": str, "by": str, "url": str|null} | null   // where the task came from; the task panel's "From" row
 }
 ```
 
@@ -389,6 +393,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "who": str|null,                // name of the terminal on it (or that last worked on it)
   "session_id": str|null,
   "goal": {"id": int, "ref": "G3", "name": str} | null,
+  "also": [{"id": int, "ref": "G4", "name": str}],   // other goals this task also finishes (shared task; its home goal runs it)
   "jira": {"key": str|null, "status": str|null, "url": str|null} | null,
           // null = no ticket. key null + status "Ticket asked for" = being created. url = the ticket's browse URL, built
           // by the server from the configured Jira site (the UI never builds Jira URLs).
@@ -414,7 +419,8 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
   "review": "approved"|"changes"|"pending"|"none"|null,   // approved = enough approvals; changes = changes requested;
                                  // pending = reviewers asked, nobody has decided; none = no review asked yet
   "stage": {
-    "phase": "checks"|"fix"|"review"|"comments"|"merge"|"merged"|"declined",
+    "phase": "checks"|"fix"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
+                                 // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")
     "label": str,                // plain words, e.g. "Watching checks", "Fixing checks", "Awaiting reviews", "Answering comments", "Merging", "Merged"
     "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge (links to it)
     "stopped": {"asked": bool, "message": str} | null

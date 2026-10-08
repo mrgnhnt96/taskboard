@@ -51,7 +51,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
 
 /// Every task in the goal is done and no PR of theirs is still open (`goal_counts`' finished_at, cheaply).
 pub fn goal_finished(app: &App, goal_id: i64) -> Result<bool> {
-    let rows = goal_tasks(app, goal_id)?;
+    let rows = crate::shared::counted_tasks(app, goal_id)?;
     Ok(!rows.is_empty()
         && rows.iter().all(|r| r.s("status") == Some("done"))
         && !rows.iter().any(|r| !r.b("failed") && pr_still_open(r)))
@@ -243,6 +243,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "updated_at": t.v("updated_at"), "finished_at": t.v("finished_at"),
         "who": t.v("session_name"), "session_id": t.v("session_id"),
         "goal": goal_ref(g.as_ref()),
+        "also": crate::shared::goals_of(app, t.id())?,
         "jira": jira_card(app, t)?,
         "pr": pr_card(t),
         "position": position,
@@ -422,7 +423,7 @@ pub fn is_blocked(app: &App, t: &Row) -> Result<bool> {
 }
 
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
-    let rows = goal_tasks(app, goal_id)?;
+    let rows = crate::shared::counted_tasks(app, goal_id)?;
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
     let done = n(&|r| r.s("status") == Some("done"));
     let mut blocked = 0;
@@ -513,7 +514,7 @@ fn peek_order(s: &str) -> u8 {
 
 pub fn goal_peek(app: &App, g: &Row) -> Result<Vec<Value>> {
     let mut out = vec![];
-    for t in goal_tasks(app, g.id())? {
+    for t in crate::shared::counted_tasks(app, g.id())? {
         let mut why = Value::Null;
         let key = match t.s("status") {
             Some("done") if !t.b("failed") => continue,

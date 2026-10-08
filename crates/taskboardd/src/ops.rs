@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, fields, handoff, hooks, jira, jobs, p, projects, transcript, waitsfor};
+use crate::{board, fields, handoff, hooks, jira, jobs, p, projects, shared, transcript, waitsfor};
 
 fn merge(mut v: Value, extra: Value) -> Value {
     if let (Some(o), Value::Object(e)) = (v.as_object_mut(), extra) {
@@ -50,6 +50,18 @@ pub fn opt_goal(body: &Value, key: &str) -> Result<Option<i64>> {
         Some(Value::String(s)) if s.trim().is_empty() || s.trim() == "none" => Ok(None),
         Some(v) => parse_ref(v, "goal"),
     }
+}
+
+/// Where a task came from, as the task panel's **From** row shows it: `{from, by, url?}`.
+pub fn origin(o: Option<&Value>, who: &str) -> Value {
+    let o = o.filter(|o| o.is_object());
+    let get = |k: &str| o.and_then(|o| o[k].as_str()).filter(|s| !s.trim().is_empty()).map(|s| s.to_string());
+    let from = get("from").unwrap_or_else(|| if who == board::OWNER { "Added on the board".into() } else { "Added by an agent".into() });
+    let mut out = json!({"from": one_line(&from, 200), "by": one_line(&get("by").unwrap_or_else(|| who.to_string()), 120)});
+    if let Some(url) = get("url").filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+        out["url"] = json!(clip(&url, 500));
+    }
+    out
 }
 
 pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> Result<Value> {
@@ -99,6 +111,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "from_issue_id" => body.get("from_issue_id"), "context" => "{}",
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
+                "origin" => jdumps(&origin(body.get("origin"), who)),
                 "latest" => if latest.is_empty() { None } else { Some(latest) }],
     )?;
     if body_has(body, "waits_for") {
@@ -112,6 +125,8 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     }
     board::log_event(app, tid, who, "status", &text)?;
     let t = board::get_task(app, tid)?;
+    let also = shared::clean(app, body.get("also"), Some(&t))?;
+    shared::add(app, &t, &also, who)?;
     hooks::fire(app, "task.created", &t, None);
     if jmode == "create" {
         jira::request_create_for_task(app, &t)?;
@@ -223,6 +238,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "meta": Value::Array(jloads_arr(t.s("meta"))), "context": Value::Object(board::task_context(&t)),
             "ctx_version": t.v("ctx_version"), "created_at": t.v("created_at"), "updated_at": t.v("updated_at"),
             "started_at": t.v("started_at"), "finished_at": t.v("finished_at"),
+            "origin": Some(jloads_obj(t.s("origin"))).filter(|o| !o.is_empty()).map(Value::Object).unwrap_or(Value::Null),
             "log": log, "handoff": handoff::build(app, id)?, "goal": gd,
             "blocked_by": waitsfor::blocked_by(app, &t)?, "attachable": attachable, "found": found,
             "from_issue": fi.map(|b| json!({"id": b.id(), "ref": rf("issue", b.id()), "title": b.v("title")})).unwrap_or(Value::Null),
@@ -247,10 +263,15 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
     for b in app.db.q("SELECT * FROM issues WHERE goal_id = ? AND state != 'drop' ORDER BY created_at DESC, id DESC", p![id])? {
         backlog.push(board::issue_dict(app, &b)?);
     }
+    let mut shared_cards = vec![];
+    for t in shared::tasks_for(app, id)? {
+        shared_cards.push(board::task_card(app, &t)?);
+    }
     Ok(merge(
         d,
         json!({
             "tasks": tasks,
+            "shared": shared_cards,
             "notes": board::goal_notes(app, id)?.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
             "backlog": backlog,
             "attachments": board::attachments(app, None, Some(id))?,

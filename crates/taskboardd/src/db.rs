@@ -104,6 +104,10 @@ CREATE INDEX IF NOT EXISTS attachments_goal ON attachments(goal_id);
 CREATE TABLE IF NOT EXISTS task_terminals(
   task_id INT NOT NULL, session_id TEXT NOT NULL, why TEXT, at TEXT, PRIMARY KEY(task_id, session_id));
 
+CREATE TABLE IF NOT EXISTS task_goals(
+  task_id INT NOT NULL, goal_id INT NOT NULL, at TEXT, PRIMARY KEY(task_id, goal_id));
+CREATE INDEX IF NOT EXISTS task_goals_goal ON task_goals(goal_id);
+
 CREATE TABLE IF NOT EXISTS task_states(
   id INTEGER PRIMARY KEY, task_id INT, at TEXT, status TEXT, needs_reason TEXT, failed INT, project TEXT);
 CREATE INDEX IF NOT EXISTS task_states_at ON task_states(at);
@@ -160,6 +164,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "grp_about", "TEXT"),
     ("issues", "grouped_at", "TEXT"),
     ("tasks", "wave", "INT"),
+    ("tasks", "origin", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection) -> rusqlite::Result<()> {

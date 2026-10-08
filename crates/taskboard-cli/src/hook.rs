@@ -233,7 +233,11 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     } else {
         vec![]
     };
-    let message = if ids.is_empty() { String::new() } else { deliver["text"].as_str().unwrap_or("").to_string() };
+    let mut message = if ids.is_empty() { String::new() } else { deliver["text"].as_str().unwrap_or("").to_string() };
+    if hook == "Stop" && message.is_empty() {
+        // The board's own reason to keep the turn going (code changed with no task to track it).
+        message = resp["block"].as_str().map(|b| b.trim().to_string()).unwrap_or_default();
+    }
     let out = if hook == "Stop" && !message.is_empty() {
         Some(json!({"decision": "block", "reason": clip(&message, MAX_CONTEXT)}))
     } else if CONTEXT_EVENTS.contains(&hook.as_str()) && (!context.is_empty() || !message.is_empty()) {

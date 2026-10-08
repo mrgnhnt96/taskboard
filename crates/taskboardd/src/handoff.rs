@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, p, projects, waitsfor};
+use crate::{board, p, projects, shared, waitsfor};
 
 const LIMIT: usize = 6000;
 const NOTES_LIMIT: usize = 1500;
@@ -160,6 +160,35 @@ fn goal_and_notes(app: &App, g: Option<&Row>) -> Result<Vec<String>> {
         line += &format!(" Read the goal notes first.\nGoal notes:\n{}", notes_block(&notes, NOTES_LIMIT));
     }
     Ok(vec![line])
+}
+
+/// The other goals a shared task also finishes, so its one change (and PR) serves them too.
+fn also_goals(app: &App, t: &Row) -> Result<Vec<String>> {
+    let mut gs = vec![];
+    for n in shared::goal_ids(app, t.id())? {
+        if let Some(g) = board::find_goal(app, Some(n))? {
+            gs.push(g);
+        }
+    }
+    if gs.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut lines = vec![format!(
+        "This task's work also finishes {}, so make the one change (and PR) serve them too:",
+        if gs.len() == 1 { "another goal".to_string() } else { format!("{} other goals", gs.len()) }
+    )];
+    for g in &gs {
+        let mut line = format!("- {} “{}”", rf("goal", g.id()), g.st("name"));
+        if let Some(o) = g.s("outcome").filter(|o| !o.trim().is_empty()) {
+            line += &format!(", done when {}", o.trim().trim_end_matches('.'));
+        }
+        lines.push(line + ".");
+        let notes = board::goal_notes(app, g.id())?;
+        if !notes.is_empty() {
+            lines.push(notes_block(&notes, NOTES_LIMIT / 2));
+        }
+    }
+    Ok(vec![lines.join("\n")])
 }
 
 fn branch_and_last_commit(w: &Row) -> Vec<String> {
@@ -346,6 +375,7 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     let w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     let mut parts = vec![first_line(&t)];
     parts.extend(goal_and_notes(app, g.as_ref())?);
+    parts.extend(also_goals(app, &t)?);
     parts.extend(branch_and_last_commit(&w));
     parts.extend(checkpoint_and_answers(app, &t, &ctx));
     parts.extend(attachments_block(app, &t, g.as_ref())?);
@@ -392,7 +422,11 @@ pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
         None => None,
     };
     let n = q.map(|q| rf("task", q.id())).unwrap_or_else(|| "T<n>".into());
-    Ok(format!("Task board: no task on this terminal. To take one, run {tb} take {n}, or ask {}.", app.cfg.owner))
+    let owner = &app.cfg.owner;
+    Ok(format!(
+        "Task board: no task on this terminal. To take one, run {tb} take {n}, or ask {owner}. \
+         If you change code for {owner} here, put it on the board as you start: {tb} task new \"<title>\" --detail \"…\" --here."
+    ))
 }
 
 pub fn is_full_handoff(prompt: &str, task_id: i64) -> bool {

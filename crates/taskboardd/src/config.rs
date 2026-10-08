@@ -100,7 +100,7 @@ impl Default for Questions {
     fn default() -> Self {
         Questions {
             screen: false,
-            model: "claude-haiku-4-5".into(),
+            model: "claude-haiku-5-5".into(),
             budget_usd: "0.30".into(),
             timeout_secs: 75,
             rules: vec![],

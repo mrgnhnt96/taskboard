@@ -30,7 +30,11 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 
 ## When there's no task
 
-Don't run `tb` unless the owner asks you to take, report or add something. PR work on a done task: `pr.md`.
+The owner's questions, screenshots and asks in this terminal are the task. Once you change code for them, put it on the board as a standalone task on this terminal, without asking:
+`tb task new "<short imperative title>" --detail "<what the owner asked for and what you're changing>" --here`.
+You're on it at once; from then on follow "When you're on a task". If a turn changes code with no task, the board stops it and asks for this.
+
+Otherwise don't run `tb` unless the owner asks you to take, report or add something. PR work on a done task: `pr.md`.
 
 ## Putting things on the board
 
@@ -42,12 +46,13 @@ Planning a goal? Read `planning.md` first.
 2. Pick the smallest thing that fits:
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`.
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
+   - Another goal's task does it: `tb task set T<n> --also G<n>`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
    - Remove an attachment by its link, path or title: `tb unattach "<link-or-title>"` with `--task T<n>` or `--goal G<n>`. To change one, unattach it and attach it again.
-3. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks; ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
+3. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks (a task that also finishes another goal moves there either way); ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
 4. The project defaults to this terminal's; `--project <name>` picks another.
 5. Nothing you add runs until the owner queues or starts it; don't take it unless asked.
 6. Give the owner the link `tb` printed.

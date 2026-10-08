@@ -293,10 +293,16 @@ enum TaskCmd {
         detail: Option<String>,
         #[arg(long)]
         goal: Option<String>,
+        /// Its work also finishes this goal (counted there, run by --goal); repeat for more
+        #[arg(long)]
+        also: Vec<String>,
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
         planned: bool,
+        /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
+        #[arg(long)]
+        here: bool,
     },
     /// Change a task
     Set {
@@ -307,6 +313,12 @@ enum TaskCmd {
         detail: Option<String>,
         #[arg(long)]
         goal: Option<String>,
+        /// Its work also finishes this goal: one task, counted in both; its own goal still runs it. Repeat for more
+        #[arg(long)]
+        also: Vec<String>,
+        /// It no longer finishes this other goal
+        #[arg(long = "not-also")]
+        not_also: Vec<String>,
         #[arg(long, value_parser = ["normal", "high"])]
         priority: Option<String>,
         #[arg(long = "waits-for")]
@@ -536,11 +548,25 @@ fn goal_lines(g: &Value) -> Vec<String> {
         for (i, t) in tasks.iter().enumerate() {
             let status = if t["failed"] == true { "failed".to_string() } else { t["status"].as_str().unwrap_or("").to_string() };
             let mut line = format!("  {}. {} [{status}] {}", i + 1, t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""));
+            if let Some(also) = t["also"].as_array().filter(|a| !a.is_empty()) {
+                line += &format!(" · also for {}", also.iter().filter_map(|x| x["ref"].as_str()).collect::<Vec<_>>().join(", "));
+            }
             if let Some(w) = t["waiting"].as_str() {
                 line += &format!(" — {w}");
             }
             if let Some(u) = t["pr"]["url"].as_str() {
                 line += &format!(" ({u})");
+            }
+            lines.push(line);
+        }
+    }
+    if let Some(shared) = g["shared"].as_array().filter(|a| !a.is_empty()) {
+        lines.push("From other goals (their home goal runs them):".into());
+        for t in shared {
+            let status = if t["failed"] == true { "failed".to_string() } else { t["status"].as_str().unwrap_or("").to_string() };
+            let mut line = format!("  {} [{status}] {} · from {}", t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""), t["goal"]["ref"].as_str().unwrap_or("?"));
+            if let Some(n) = t["pr"]["num"].as_i64() {
+                line += &format!(" · PR #{n}");
             }
             lines.push(line);
         }
@@ -769,18 +795,48 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         v["total"],
                         v["backlog"].as_array().map(|a| a.len()).unwrap_or(0)
                     ));
+                    for t in v["tasks"].as_array().cloned().unwrap_or_default() {
+                        let also: Vec<&str> = t["also"].as_array().map(|a| a.iter().filter_map(|x| x["ref"].as_str()).collect()).unwrap_or_default();
+                        if let Some(last) = also.last() {
+                            out(&format!("{} also finishes {}, so it moves to {last} whatever the owner chooses.", t["ref"].as_str().unwrap_or(""), also.join(", ")));
+                        }
+                    }
+                    if let Some(n) = v["shared"].as_array().map(|a| a.len()).filter(|n| *n > 0) {
+                        out(&format!("{n} task(s) from other goals stop counting toward it; their home goals keep them."));
+                    }
                     return Ok(2);
                 }
                 let v = c.call("POST", &format!("/goals/{g}/delete"), Some(json!({"tasks": delete_tasks, "backlog": delete_backlog})))?;
                 out(&format!("Deleted {g} with {} tasks and {} backlog issues.", v["tasks"], v["issues"]));
+                if let Some(moved) = v["moved"].as_array().filter(|a| !a.is_empty()) {
+                    out(&format!("Moved to the next goal they finish: {}.", moved.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+                }
                 Ok(0)
             }
         },
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, project, planned } => {
+            TaskCmd::New { title, detail, goal, also, project, planned, here } => {
+                if here && (goal.is_some() || !also.is_empty()) {
+                    return Err("--here makes a standalone task on this terminal; leave out --goal and --also".into());
+                }
+                if !also.is_empty() && goal.is_none() {
+                    return Err("--also needs --goal: the task's home goal, which runs it".into());
+                }
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
-                match c.report("tb.new_task", json!({"title": short_title(&title)?, "detail": detail, "goal": goal, "project": project, "planned": planned}), None, TB_TIMEOUT)? {
+                let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
+                let mut body = json!({"title": short_title(&title)?, "detail": detail, "goal": goal, "project": project, "planned": planned});
+                if !also.is_empty() {
+                    body["also"] = json!(also);
+                }
+                if here {
+                    body["here"] = json!(true);
+                }
+                match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
+                    Some(v) if here => {
+                        let r = v["created"][0].as_str().unwrap_or("").to_string();
+                        out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
+                    }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
@@ -789,7 +845,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, priority, waits_for, jira } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, priority, waits_for, jira } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -800,6 +856,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = goal {
                     b["goal_id"] = if x.eq_ignore_ascii_case("none") { Value::Null } else { json!(goal_ref(&x)?) };
+                }
+                if !also.is_empty() {
+                    b["also"] = json!(also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?);
+                }
+                if !not_also.is_empty() {
+                    b["not_also"] = json!(not_also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?);
+                }
+                if !also.is_empty() || !not_also.is_empty() {
+                    b["who"] = json!(c.who());
                 }
                 if let Some(x) = priority {
                     b["priority"] = json!(x);
@@ -1149,6 +1214,9 @@ mod tests {
     fn parses_commands() {
         assert!(Cli::try_parse_from(["tb", "checkpoint", "--done", "a", "--next", "b", "--decision", "c"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "found", "x", "--kind", "nope"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--goal", "G1", "--also", "G2", "--also", "G3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--also", "G2", "--not-also", "G3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--detail", "y", "--here"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());

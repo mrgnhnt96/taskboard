@@ -10,15 +10,18 @@ use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, p, proc, runner};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge"];
-pub const IN_REVIEW: &[&str] = &["review", "comments", "merge"];
+pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+/// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
+const MERGE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 
 pub fn label(phase: &str) -> &str {
     match phase {
         "checks" => "Watching checks",
         "fix" => "Fixing checks",
         "review" => "Awaiting review",
+        "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
         "merge" => "Ready to merge",
         "merged" => "Merged",
@@ -88,7 +91,9 @@ pub fn awaiting_owner(t: &Row) -> bool {
 }
 
 pub fn wake_stuck(t: &Row) -> bool {
-    WAKE.contains(&t.s("pr_phase").unwrap_or("")) && flow(t).contains_key("wake_tries")
+    let f = flow(t);
+    WAKE.contains(&t.s("pr_phase").unwrap_or(""))
+        && (f.contains_key("wake_tries") || (t.s("pr_phase") == Some("merge") && f.contains_key("merge_gave_up")))
 }
 
 pub fn live_job(app: &App, t: &Row) -> Result<Option<Row>> {
@@ -203,7 +208,31 @@ pub fn wake_failed(app: &App, t: &Row, text: &str) -> Result<bool> {
 }
 
 fn wake_key(phase: &str, rec: &Value) -> String {
-    format!("{phase}:{}:{}", rec["head"].as_str().unwrap_or(""), rec["comments"].as_i64().unwrap_or(0))
+    let key = format!("{phase}:{}:{}", rec["head"].as_str().unwrap_or(""), rec["comments"].as_i64().unwrap_or(0));
+    if phase != "merge" {
+        return key;
+    }
+    // A change in the reviews wakes the merge again.
+    format!("{key}:{}:{}", rec["review_decision"].as_str().unwrap_or(""), rec["approvals"].as_i64().unwrap_or(0))
+}
+
+fn since_handled(f: &Row) -> f64 {
+    now_ts() - f.s("handled_at").and_then(parse_iso).unwrap_or(0.0)
+}
+
+/// The agent finished its merge visit but the PR is still open: time to bring it back (1, 5, then 15 minutes on).
+fn merge_stalled(f: &Row, key: &str) -> bool {
+    let tries = f.i0("merge_tries") as usize;
+    f.s("handled") == Some(key) && !f.contains_key("woke") && tries < MERGE_RETRY_WAITS.len() && since_handled(f) >= MERGE_RETRY_WAITS[tries] as f64
+}
+
+/// Every retry is spent and it's still open: alert once.
+fn merge_given_up(f: &Row, key: &str) -> bool {
+    f.s("handled") == Some(key)
+        && !f.contains_key("woke")
+        && !f.contains_key("merge_gave_up")
+        && f.i0("merge_tries") as usize >= MERGE_RETRY_WAITS.len()
+        && since_handled(f) >= MERGE_RETRY_WAITS[MERGE_RETRY_WAITS.len() - 1] as f64
 }
 
 fn retry_later(f: &Row) -> bool {
@@ -455,6 +484,10 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         return "comments".into();
     }
     let review_skipped = f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false);
+    if decision == "CHANGES_REQUESTED" && answered && !review_skipped {
+        // The changes are pushed; the reviewer who asked for them hasn't looked again yet.
+        return "rereview".into();
+    }
     if review_skipped || decision == "APPROVED" || (decision.is_empty() && rec["approvals"].as_i64().unwrap_or(0) > 0) {
         return "merge".into();
     }
@@ -585,7 +618,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         task_fields.push(("pr_title", json!(title)));
     }
     if phase_changed {
-        changes.extend(fields!["stopped" => null, "handled" => null]);
+        changes.extend(fields!["stopped" => null, "handled" => null, "merge_tries" => null, "merge_gave_up" => null]);
         if !WAKE.contains(&phase.as_str()) {
             changes.extend(fields!["wake_tries" => null, "retry_at" => null]);
         }
@@ -624,11 +657,20 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     let key = wake_key(&phase, rec);
     let may_wake = app.cfg.pr.wake && (phase != "merge" || app.cfg.pr.agents_merge);
+    let mut now_flow = f.clone();
+    for (k, v) in &changes {
+        if v.is_null() {
+            now_flow.remove(*k);
+        } else {
+            now_flow.insert(k.to_string(), v.clone());
+        }
+    }
+    let stalled = phase == "merge" && merge_stalled(&now_flow, &key);
+    let fresh = f.s("woke") != Some(key.as_str()) && f.s("handled") != Some(key.as_str());
     if may_wake
         && WAKE.contains(&phase.as_str())
         && t.s("status") == Some("done")
-        && f.s("woke") != Some(key.as_str())
-        && f.s("handled") != Some(key.as_str())
+        && (fresh || stalled)
         && f.s("held") != Some(key.as_str())
         && !retry_later(&f)
         && live_job(app, t)?.is_none()
@@ -636,9 +678,33 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     {
         let mut probe = t.clone();
         probe.insert("pr_phase".into(), json!(phase));
+        let tries = now_flow.i0("merge_tries") + 1;
+        if stalled {
+            board::log_event(app, t.id(), board::BOARD, "status", &format!(
+                "PR #{} is ready to merge but still open, so bringing it back to merge (try {tries} of {})",
+                t.i0("pr_num"), MERGE_RETRY_WAITS.len()))?;
+        }
         if wake(app, &probe, &phase, rec, None)?.is_some() {
             changes.extend(fields!["woke" => key, "stopped" => null]);
+            if stalled {
+                changes.extend(fields!["handled" => null, "merge_tries" => tries]);
+            }
         }
+    } else if may_wake && phase == "merge" && t.s("status") == Some("done") && merge_given_up(&now_flow, &key) {
+        dispatch::add_alert(
+            app,
+            &format!(
+                "PR #{} for {} is ready to merge but still open after {} tries to merge it. Its log says why.",
+                t.i0("pr_num"),
+                rf("task", t.id()),
+                MERGE_RETRY_WAITS.len()
+            ),
+            Some(t.id()),
+            t.i("goal_id"),
+            None,
+            Some("pr"),
+        )?;
+        changes.push(("merge_gave_up", json!(now_iso())));
     }
     if phase == "merge"
         && !app.cfg.pr.agents_merge
@@ -756,6 +822,7 @@ pub fn waited(app: &App, t: &Row) -> Result<Row> {
     }
     if t.has_phase() {
         ch.push(("handled", json!(wake_key(&t.st("pr_phase"), &rec))));
+        ch.push(("handled_at", json!(now_iso())));
     }
     merge_flow(app, t.id(), ch)
 }

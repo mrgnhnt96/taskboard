@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, triage, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, shared, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -27,6 +27,17 @@ fn goal_match(goal_id: Option<i64>, want: &str) -> Result<bool> {
         "none" => goal_id.is_none(),
         w => goal_id.is_some() && goal_id == parse_ref_str(w, "goal")?,
     })
+}
+
+/// A task matches a goal filter through its home goal or a goal it also finishes.
+fn task_goal_match(app: &App, t: &Row, want: &str) -> Result<bool> {
+    if goal_match(t.i("goal_id"), want)? {
+        return Ok(true);
+    }
+    if matches!(want, "" | "all" | "none") {
+        return Ok(false);
+    }
+    Ok(parse_ref_str(want, "goal")?.map(|g| shared::goal_ids(app, t.id()).map(|ids| ids.contains(&g))).transpose()?.unwrap_or(false))
 }
 
 fn tid(s: &str) -> Result<i64> {
@@ -174,7 +185,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             app.db.tx(|| {
                 board::get_task(app, t)?;
                 prflow::merge_flow(app, t, fields!["reviewed" => now_iso()])?;
-                alerts::clear_alerts(app, Some(t), None)
+                alerts::clear_alerts(app, Some(t), None)?;
+                alerts::prune_alerts(app)
             })?;
             task_detail(app, t)
         }
@@ -247,6 +259,9 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at}))
         }
         ("POST", ["alerts", id, "dismiss"]) => {
+            if alerts::alerts(app).iter().any(|a| a["id"] == *id && alerts::stays(a)) {
+                return err(409, "A PR waiting for your review stays until you review it.");
+            }
             app.db.tx(|| alerts::clear_alerts(app, None, Some(id)))?;
             Ok(json!({"alerts": alerts::alerts(app)}))
         }
@@ -283,7 +298,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         cols.insert(k, vec![]);
     }
     for t in app.db.q("SELECT * FROM tasks WHERE status != 'planned'", p![])? {
-        if !project_match(t.s("project"), project) || !goal_match(t.i("goal_id"), goal)? {
+        if !project_match(t.s("project"), project) || !task_goal_match(app, &t, goal)? {
             continue;
         }
         let st = t.st("status");
@@ -351,7 +366,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
     counts.insert("untriaged".into(), json!(app.db.count("SELECT COUNT(*) FROM issues WHERE state = 'open' AND goal_id IS NULL", p![])?));
     let mut planned = vec![];
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'planned' ORDER BY goal_id, position, id", p![])? {
-        if project_match(t.s("project"), project) && goal_match(t.i("goal_id"), goal)? {
+        if project_match(t.s("project"), project) && task_goal_match(app, &t, goal)? {
             planned.push(board::task_card(app, &t)?);
         }
     }
@@ -506,7 +521,7 @@ fn list_tasks(app: &App, query: &Query) -> Result<Value> {
     let (status, project, goal) = (q(query, "status", "all"), q(query, "project", "all"), q(query, "goal", "all"));
     let mut out = vec![];
     for t in app.db.q("SELECT * FROM tasks ORDER BY id DESC", p![])? {
-        if (status == "all" || t.s("status") == Some(status)) && project_match(t.s("project"), project) && goal_match(t.i("goal_id"), goal)? {
+        if (status == "all" || t.s("status") == Some(status)) && project_match(t.s("project"), project) && task_goal_match(app, &t, goal)? {
             out.push(board::task_card(app, &t)?);
         }
     }
@@ -571,7 +586,11 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         let mut new_goal_id: Option<Option<i64>> = None;
         if has_key("goal_id") {
-            let g = opt_goal(body, "goal_id")?;
+            let mut g = opt_goal(body, "goal_id")?;
+            if g.is_none() {
+                // Out of its home goal: it runs in the newest other goal it finishes, if any.
+                g = shared::next_home(app, id, t.i("goal_id"))?.or(g);
+            }
             if g != t.i("goal_id") {
                 if let Some(g) = g {
                     board::get_goal(app, g)?;
@@ -581,6 +600,11 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 new_goal_id = Some(g);
                 bump = true;
             }
+        }
+        let also = shared::clean(app, body.get("also"), Some(&t))?;
+        let not_also = shared::clean(app, body.get("not_also"), Some(&t))?;
+        if let Some(g) = new_goal_id {
+            shared::moved_home(app, id, g)?;
         }
         if has_key("meta") {
             f.push(("meta", json!(jdumps(&meta(body.get("meta"))?))));
@@ -639,6 +663,21 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                     board::log_event(app, id, OWNER, "jira", &format!("Linked {key}"))?;
                     bump = true;
                 }
+            }
+        }
+        if !also.is_empty() || !not_also.is_empty() {
+            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            let mut nt = t.clone();
+            if let Some(g) = new_goal_id {
+                nt.insert("goal_id".into(), json!(g));
+            }
+            let dropped = shared::drop(app, &nt, &not_also, &who)?;
+            let added = shared::add(app, &nt, &also, &who)?;
+            if !dropped.is_empty() || !added.is_empty() {
+                if f.is_empty() {
+                    return board::bump_ctx(app, id);
+                }
+                bump = true;
             }
         }
         if f.is_empty() {
@@ -1018,6 +1057,7 @@ fn purge_tasks(app: &App, ids: &[i64]) -> Result<()> {
         app.db.x("DELETE FROM events WHERE task_id = ?", p![id])?;
         app.db.x("DELETE FROM attachments WHERE task_id = ?", p![id])?;
         app.db.x("DELETE FROM task_terminals WHERE task_id = ?", p![id])?;
+        shared::forget_tasks(app, &[*id])?;
         app.db.x(
             "UPDATE issues SET state = CASE WHEN state = 'task' THEN 'open' ELSE state END, task_id = NULL, updated_at = ? WHERE task_id = ?",
             p![now, id],
@@ -1064,7 +1104,7 @@ fn close_done_terminals(app: &App, body: &Value, query: &Query) -> Result<Value>
             .collect();
         let mut n = 0;
         for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND session_id IS NOT NULL", p![])? {
-            if !project_match(t.s("project"), &project) || !goal_match(t.i("goal_id"), &goal)? {
+            if !project_match(t.s("project"), &project) || !task_goal_match(app, &t, &goal)? {
                 continue;
             }
             let Some(s) = board::get_session(app, t.s("session_id"))? else { continue };
@@ -1148,11 +1188,25 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
 fn delete_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
     let del_tasks = as_bool(body.get("tasks"), true);
     let del_issues = as_bool(body.get("backlog"), false);
-    let (tids, n_issues, name) = app.db.tx(|| {
+    let (tids, n_issues, name, moved) = app.db.tx(|| {
         let g = board::get_goal(app, id)?;
         let mut tasks = app.db.q("SELECT * FROM tasks WHERE goal_id = ?", p![id])?;
         let mut issues = app.db.q("SELECT id FROM issues WHERE goal_id = ?", p![id])?;
         let gname = format!("{} ({})", rf("goal", id), g.st("name"));
+        // A task that also finishes another goal moves there instead of going with this one.
+        let mut moved = vec![];
+        for t in &tasks {
+            let Some(home) = shared::next_home(app, t.id(), Some(id))? else { continue };
+            let ng = board::get_goal(app, home)?;
+            shared::moved_home(app, t.id(), Some(home))?;
+            board::update_task(app, t.id(), fields!["goal_id" => home, "position" => board::next_position(app, Some(home))?])?;
+            board::bump_ctx(app, t.id())?;
+            board::log_event(app, t.id(), OWNER, "status",
+                &format!("Its goal {gname} was deleted; it moved to {} “{}”, which it also finishes", rf("goal", home), ng.st("name")))?;
+            moved.push(t.id());
+        }
+        tasks.retain(|t| !moved.contains(&t.id()));
+        shared::forget_goal(app, id)?;
         if !del_tasks {
             for t in &tasks {
                 let mut f = fields!["goal_id" => null, "position" => null];
@@ -1190,11 +1244,21 @@ fn delete_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         app.db.x("DELETE FROM goal_notes WHERE goal_id = ?", p![id])?;
         app.db.x("DELETE FROM attachments WHERE goal_id = ?", p![id])?;
         app.db.x("DELETE FROM goals WHERE id = ?", p![id])?;
-        Ok((tids, issues.len(), g.st("name")))
+        let mut homes: Vec<i64> = vec![];
+        for n in &moved {
+            if let Some(h) = board::get_task(app, *n)?.i("goal_id") {
+                if !homes.contains(&h) {
+                    homes.push(h);
+                    board::renumber_goal(app, h)?;
+                }
+            }
+        }
+        Ok((tids, issues.len(), g.st("name"), moved))
     })?;
     remove_md(app, &tids);
     app.info(format!("deleted {} ({name}) with {} tasks and {n_issues} issues", rf("goal", id), tids.len()));
-    Ok(json!({"ok": true, "goal": rf("goal", id), "tasks": tids.len(), "issues": n_issues}))
+    Ok(json!({"ok": true, "goal": rf("goal", id), "tasks": tids.len(), "issues": n_issues,
+              "moved": moved.iter().map(|n| rf("task", *n)).collect::<Vec<_>>()}))
 }
 
 fn goal_order(app: &App, id: i64, body: &Value) -> Result<Value> {
@@ -1272,7 +1336,7 @@ fn goal_note_edit(app: &App, id: i64, nid: &str, body: &Value) -> Result<Value> 
     goal_detail(app, id)
 }
 
-fn status_label(t: &Row) -> &'static str {
+pub(crate) fn status_label(t: &Row) -> &'static str {
     if t.b("failed") {
         return "Failed";
     }
@@ -1345,6 +1409,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
             }
         }
     }
+    lines.extend(shared::lines(app, g.id(), if for_planner { "" } else { "  " })?);
     let issues = app.db.q("SELECT id, title FROM issues WHERE goal_id = ? AND state = 'open'", p![g.id()])?;
     if !issues.is_empty() {
         lines.extend(["".into(), "Open backlog issues:".into()]);
@@ -1354,6 +1419,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
     if for_planner {
         lines.extend([
             "Suggest the tasks still needed to reach the outcome, in order, each small enough for one terminal. Read the code as much as you need, but don't change anything.".to_string(),
+            format!("Before adding a task, check the project's other open goals ({tb} goals --project {}, then {tb} goal show G<n>) for a task that already does that work (same files, same change). Don't add a second one: make the existing task finish this goal too with {tb} task set T<n> --also {gref}, without asking {owner}.", g.st("project")),
             "Send them to the board with:".to_string(),
             format!("  {tb} propose {gref} --task \"title::what to do\" --task \"title::what to do\""),
             format!("They arrive as planned tasks for {owner} to edit, reorder and queue. Nothing runs until {owner} queues it."),
@@ -1586,7 +1652,8 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
                 "status": if planned { "planned" } else { "queued" }, "from_issue_id": id,
                 "priority": body.get("priority").cloned().unwrap_or(json!("normal")),
                 "pickup": body.get("pickup").cloned().unwrap_or(json!({"mode": "queue"})),
-                "latest": format!("From the backlog: {}.", board::issue_from_line(&b))}),
+                "latest": format!("From the backlog: {}.", board::issue_from_line(&b)),
+                "origin": {"from": format!("Backlog {}: {}", rf("issue", id), b.st("title")), "by": OWNER}}),
         OWNER,
         Some(&format!("Added from the backlog ({}){}", rf("issue", id), if planned { " as planned" } else { "" })),
     )?;

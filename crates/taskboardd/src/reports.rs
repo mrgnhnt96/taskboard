@@ -34,6 +34,8 @@ pub struct Report<'a> {
     pub screened: Option<Value>,
     /// Background commands still running in the transcript, read before the transaction.
     pub background: usize,
+    /// The files the turn edited, read before the transaction for a stop on a terminal with no task.
+    pub turn_files: Vec<String>,
 }
 
 fn s_of(v: &Value, k: &str) -> Option<String> {
@@ -61,6 +63,7 @@ impl<'a> Report<'a> {
             stalled: false,
             screened: None,
             background: 0,
+            turn_files: vec![],
         }
     }
 
@@ -356,6 +359,10 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     r.set_session_status("idle")?;
     let Some(t) = r.task()? else {
+        if let Some(ask) = untracked_change(r)? {
+            r.set_session_status("working")?;
+            return Ok(with(ok(None, None), json!({"block": ask})));
+        }
         return pr_visit_paused(r, &one_line(&r.b("last_message"), 500));
     };
     let msg = clip(&r.b("last_message"), 2000);
@@ -384,6 +391,57 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     }
     app.wake_runner();
     Ok(ok(Some(&t), None))
+}
+
+const UNTRACKED_FILES_SHOWN: usize = 3;
+
+/// The turn's edits that fall in a known project or the terminal's own folder.
+fn project_files(app: &App, s: &Row, files: &[String]) -> Result<Vec<String>> {
+    let here = s.s("project_path").filter(|p| !p.is_empty()).or(s.s("cwd")).unwrap_or("").trim_end_matches('/').to_string();
+    let mut roots: Vec<String> = crate::projects::list_projects(app)?
+        .iter()
+        .filter_map(|p| p["path"].as_str().map(|x| x.trim_end_matches('/').to_string()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !here.is_empty() {
+        roots.push(here.clone());
+    }
+    let mut out: Vec<String> = vec![];
+    for f in files {
+        let full = if f.starts_with('/') { f.clone() } else { format!("{}/{f}", if here.is_empty() { "" } else { &here }) };
+        let full = std::path::Path::new(&full).components().collect::<std::path::PathBuf>().to_string_lossy().to_string();
+        if !out.contains(f) && roots.iter().any(|root| full == *root || full.starts_with(&format!("{root}/"))) {
+            out.push(f.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// A turn on a terminal with no task that changed code: what to tell the agent so the work gets tracked.
+fn untracked_change(r: &Report) -> Result<Option<String>> {
+    if r.turn_files.is_empty() || prflow::visited_by(r.app, r.sid().unwrap_or(""))?.is_some() {
+        return Ok(None);
+    }
+    let Some(s) = board::get_session(r.app, r.sid())? else { return Ok(None) };
+    let files = project_files(r.app, &s, &r.turn_files)?;
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let names: Vec<String> = files
+        .iter()
+        .take(UNTRACKED_FILES_SHOWN)
+        .map(|f| std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()))
+        .collect();
+    let more = files.len() - names.len();
+    let shown = names.join(", ") + &if more > 0 { format!(" and {more} more") } else { String::new() };
+    let tb = board::tb_cmd(r.app);
+    let owner = &r.app.cfg.owner;
+    Ok(Some(format!(
+        "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
+         Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
+         --detail \"<what {owner} asked for and what you changed>\" --here. Then end your turn without repeating your answer. \
+         If {owner} said not to track it, just end your turn."
+    )))
 }
 
 fn carry_on_text(app: &App, task: &str) -> String {
@@ -1012,7 +1070,8 @@ fn planned(r: &Report, g: &Row, items: &Value) -> Result<Vec<String>> {
         let c = ops::new_task(
             r.app,
             &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
-                    "status": "planned", "pickup": {"mode": "queue"}}),
+                    "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"),
+                    "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
         )?;
@@ -1048,21 +1107,63 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     if title.is_empty() {
         return err(400, "A task needs a title.");
     }
+    if as_bool(r.body.get("here"), false) {
+        return new_task_here(r, &title);
+    }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
-        let created = planned(r, &g, &json!([{"title": title, "detail": r.b("detail")}]))?;
+        let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also")}]);
+        let created = planned(r, &g, &item)?;
         return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned"})));
+    }
+    if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
+        return err(400, "Only a task in a goal can also finish other goals. Give it its home goal with --goal G<n>.");
     }
     let project = project_for(r, &r.b("project"))?;
     let planned_flag = as_bool(r.body.get("planned"), false);
     let c = ops::new_task(
         r.app,
         &json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
-                "status": if planned_flag { "planned" } else { "queued" }}),
+                "status": if planned_flag { "planned" } else { "queued" },
+                "origin": {"from": "Added by an agent", "by": r.name()}}),
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
     )?;
     Ok(with(ok(None, None), json!({"created": [c["ref"]], "status": c["status"], "project": c["project"]})))
+}
+
+/// `tb task new … --here`: a standalone task for the work this terminal is already doing, claimed at once.
+fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
+    let app = r.app;
+    let Some(sid) = r.sid.clone() else { return err(400, "--here only works inside a Midna terminal.") };
+    if body_has(&r.body, "goal") || r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
+        return err(400, "--here makes a standalone task on this terminal; leave out --goal and --also.");
+    }
+    if let Some(mine) = board::task_for_session(app, Some(&sid))? {
+        return err(409, format!("This terminal is already on {} “{}”; its work is tracked there.", rf("task", mine.id()), mine.st("title")));
+    }
+    let name = r.name();
+    let owner = app.cfg.owner.clone();
+    let project = project_for(r, &r.b("project"))?;
+    let c = ops::new_task(
+        app,
+        &json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
+                "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}}),
+        &name,
+        Some(&format!("Added by {name} for the code it changed with {owner}")),
+    )?;
+    let t = board::get_task(app, c["id"].as_i64().unwrap_or(0))?;
+    if let Err(why) = board::claim(app, &t, &sid, r.claude.as_deref(), None, "Tracked", false)? {
+        return err(409, why);
+    }
+    let t = board::get_task(app, t.id())?;
+    r.sent(&t)?;
+    let tr = rf("task", t.id());
+    let text = format!(
+        "Task board: you're on {tr} now, and the board tracks this terminal's work on it. Keep working with {owner}; \
+         follow the task-board skill's “When you're on a task”, and finish with tb done when the work is."
+    );
+    Ok(with(ok(Some(&t), Some(text)), json!({"created": [tr], "status": "working", "project": c["project"]})))
 }
 
 fn on_attach(r: &mut Report) -> Result<Value> {
@@ -1298,6 +1399,11 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     if r.event == "hook.stop" || r.event == "hook.attention" {
         let path = r.body.get("transcript_path").and_then(|v| v.as_str()).map(|s| s.to_string());
         r.background = transcript::background_running(&app.cfg.claude_projects, path.as_deref()).unwrap_or(0);
+    }
+    if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) && r.task().ok().flatten().is_none() {
+        if let Some(s) = board::get_session(app, r.sid()).ok().flatten() {
+            r.turn_files = transcript::last_turn(app, &s).map(|t| t.files).unwrap_or_default();
+        }
     }
     if r.event == "tb.question" && !spooled {
         let t = r.task().ok().flatten();
