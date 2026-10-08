@@ -2,10 +2,11 @@
 """The task board's app icon, drawn in code (no image tools needed): a board.
 
 Three cards-columns on a blue squircle, the middle one shorter, with an orange "needs you"
-dot on the last column. The colors are the board's accent and warn tokens.
+dot on the last column. The colors are the board's accent and warn tokens. The dev icon is
+purple with a yellow "DEV" band across the bottom, so it can't be mistaken for the real one.
 
 Usage: packaging/make-icon.py packaging/assets/Taskboard.icns
-       packaging/make-icon.py --dev packaging/assets/TaskboardDev.icns   (Taskboard Dev: purple body)
+       packaging/make-icon.py --dev packaging/assets/TaskboardDev.icns   (Taskboard Dev: purple, "DEV" band)
 Writes a 1024px PNG with the stdlib only, then uses sips + iconutil for the .icns sizes.
 The design is on a 100-unit grid (the body is 9..91, the macOS 824px icon body).
 """
@@ -19,6 +20,17 @@ COLUMN = (0xF4, 0xF6, 0xFB)
 CARD = (0xC9, 0xD6, 0xF8)
 CARD_DEV = (0xD6, 0xCC, 0xF5)
 DOT = (0xF2, 0x8A, 0x4B)
+BAND = (0xFF, 0xC8, 0x3D)
+INK = (0x1E, 0x14, 0x3D)
+BAND_TOP = 63
+# "DEV" as strokes on the 100-unit grid: line segments plus the D's half-circle (cx, cy, r).
+DEV_LINES = (
+    ((32, 71.5), (32, 84.5)), ((32, 71.5), (36, 71.5)), ((32, 84.5), (36, 84.5)),
+    ((46, 71.5), (46, 84.5)), ((46, 71.5), (55, 71.5)), ((46, 78), (53.5, 78)), ((46, 84.5), (55, 84.5)),
+    ((58, 71.5), (63, 84.5)), ((63, 84.5), (68, 71.5)),
+)
+DEV_ARC = (36, 78, 6.5)
+STROKE = 3.2
 
 
 def rrect_sdf(x, y, cx, cy, hw, hh, r):
@@ -38,6 +50,22 @@ def box(x, y, left, top, w, h, r):
     return cov(rrect_sdf(x, y, (left + w / 2) * U, (top + h / 2) * U, w / 2 * U, h / 2 * U, r * U))
 
 
+def segment_sdf(x, y, a, b):
+    (ax, ay), (bx, by) = a, b
+    dx, dy = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+    return math.hypot(x - ax - t * dx, y - ay - t * dy)
+
+
+def dev_ink(x, y):  # coverage of the "DEV" letters at pixel (x, y)
+    ux, uy = x / U, y / U
+    d = min(segment_sdf(ux, uy, a, b) for a, b in DEV_LINES)
+    cx, cy, r = DEV_ARC
+    if ux >= cx:  # the D's right half-circle
+        d = min(d, abs(math.hypot(ux - cx, uy - cy) - r))
+    return cov((d - STROKE / 2) * U)
+
+
 def pixel(x, y, dev):
     body = box(x, y, 9, 9, 82, 82, 18.5)
     if body <= 0:
@@ -51,9 +79,12 @@ def pixel(x, y, dev):
     for left, tops in ((20, (25, 37, 49)), (40, (25, 37)), (60, (25, 37))):
         for top in tops:
             c = blend(c, card, box(x, y, left + 3, top, 11, 8.5, 2.2))
-    # The "needs you" dot.
-    d = math.hypot(x - 73 * U, y - 70 * U) - 6.5 * U
+    # The "needs you" dot; on the dev icon it moves up, clear of the band.
+    d = math.hypot(x - 73 * U, y - (56 if dev else 70) * U) - 6.5 * U
     c = blend(c, DOT, cov(d))
+    if dev:
+        c = blend(c, BAND, cov(BAND_TOP * U - y))
+        c = blend(c, INK, dev_ink(x, y))
     return (*c, round(255 * body))
 
 

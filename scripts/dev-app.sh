@@ -2,7 +2,7 @@
 # Build "Taskboard Dev" from this checkout, install it to ~/Applications/Taskboard Dev.app and
 # (re)start it. It runs side by side with the real Taskboard and never touches it: its own bundle
 # id (com.mrgnhnt.taskboard.dev), its own daemon (label com.mrgnhnt.taskboard.dev.daemon) on its
-# own port (18792), its own data folder, a purple icon, and it leaves ~/.local/bin/tb
+# own port (18792), its own data folder, a purple icon with a yellow "DEV" band, and it leaves ~/.local/bin/tb
 # alone. Its data folder isn't the default one, so its runner is off: it never opens, messages
 # or closes Midna terminals (set TASKBOARD_RUNNER=1 in its environment to change that).
 #
