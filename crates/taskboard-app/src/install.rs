@@ -81,12 +81,46 @@ fn from_status(s: SMAppServiceStatus) -> LoginItem {
     }
 }
 
-/// Register the bundled LaunchAgent (idempotent). Returns the resulting state.
+/// The agent's launchd label (`Label` in its plist).
+fn agent_label(plist: &Path) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/plutil").args(["-extract", "Label", "raw", "-o", "-"]).arg(plist).output().ok()?;
+    let label = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !label.is_empty()).then_some(label)
+}
+
+/// `launchctl print` for a job launchd won't start under its registration: the binary's signature
+/// no longer matches the one recorded when it was registered (each ad-hoc dev build has a new one),
+/// so every spawn fails with EX_CONFIG (78).
+fn stale_registration(launchctl_print: &str) -> bool {
+    launchctl_print.lines().map(str::trim).any(|l| l == "job state = spawn failed" || l.starts_with("last exit code = 78"))
+}
+
+fn launchd_job(label: &str) -> Option<String> {
+    let uid = String::from_utf8_lossy(&std::process::Command::new("/usr/bin/id").arg("-u").output().ok()?.stdout).trim().to_string();
+    let out = std::process::Command::new("/bin/launchctl").arg("print").arg(format!("gui/{uid}/{label}")).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Register the bundled LaunchAgent (idempotent). Returns the resulting state. A registration
+/// launchd can't start (see [`stale_registration`]) is dropped and made again for this bundle.
 pub fn register(bundle: &Path) -> LoginItem {
     let Some(plist) = bundled_agent_plist(bundle) else {
         return LoginItem::Failed("The launch agent isn't in the app bundle.".into());
     };
     let svc = agent_service(&plist);
+    let stale = matches!(unsafe { svc.status() }, SMAppServiceStatus::Enabled)
+        && agent_label(&plist).and_then(|l| launchd_job(&l)).is_some_and(|p| stale_registration(&p));
+    if stale {
+        eprintln!("taskboard-app: launchd can't start the daemon under its old registration; registering it again");
+        let _ = unsafe { svc.unregisterAndReturnError() };
+        // macOS drops the registration in the background; registering before it's gone is a no-op.
+        for _ in 0..50 {
+            if !matches!(unsafe { svc.status() }, SMAppServiceStatus::Enabled) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
     match unsafe { svc.status() } {
         SMAppServiceStatus::Enabled | SMAppServiceStatus::RequiresApproval => {}
         _ => {
@@ -203,6 +237,18 @@ pub fn start(backend: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_daemon_launchd_cant_start_needs_registering_again() {
+        let failed = "\tlast exit code = 78: EX_CONFIG\n\tjob state = spawn failed\n";
+        let retrying = "\tstate = spawn scheduled\n\tlast exit code = 78: EX_CONFIG\n";
+        let running = "\tlast exit code = (never exited)\n\tjob state = running\n";
+        let exited = "\tlast exit code = 1\n\tjob state = exited\n";
+        assert!(stale_registration(failed));
+        assert!(stale_registration(retrying));
+        assert!(!stale_registration(running));
+        assert!(!stale_registration(exited), "an ordinary crash isn't a registration problem");
+    }
 
     #[test]
     fn bundle_detection() {

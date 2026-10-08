@@ -91,6 +91,13 @@ if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   echo "==> unregister the old daemon"
   [ -x "$DEST/Contents/MacOS/taskboard-app" ] && "$DEST/Contents/MacOS/taskboard-app" --uninstall >/dev/null 2>&1 || true
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  # macOS drops the registration in the background. Opening the new app before it's gone leaves the
+  # stale one in place (the app sees it still enabled), so wait for launchd to forget the job.
+  for _ in $(seq 1 40); do
+    launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.25
+  done
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && echo "    the old daemon is still registered; the app re-registers it if launchd can't start it" >&2
 fi
 [ -e "$DEST" ] && mv "$DEST" "$OLD"
 mv "$NEW" "$DEST"
