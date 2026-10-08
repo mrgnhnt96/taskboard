@@ -85,15 +85,16 @@ NEW="$(dirname "$DEST")/.Taskboard Dev.new.app" OLD="$(dirname "$DEST")/.Taskboa
 rm -rf "$NEW" "$OLD"
 ditto "$OUT/Taskboard Dev.app" "$NEW"
 quit_dev_app || { rm -rf "$NEW"; exit 1; }
+# Each ad-hoc build has a new signature, and launchd won't spawn it under the old registration
+# (EX_CONFIG, "needs LWCR update"): unregister the old daemon so the new app registers its own.
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  echo "==> unregister the old daemon"
+  [ -x "$DEST/Contents/MacOS/taskboard-app" ] && "$DEST/Contents/MacOS/taskboard-app" --uninstall >/dev/null 2>&1 || true
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+fi
 [ -e "$DEST" ] && mv "$DEST" "$OLD"
 mv "$NEW" "$DEST"
 rm -rf "$OLD"
-
-# The daemon still runs the old binary: restart it (it's registered on first launch otherwise).
-if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-  echo "==> restart its daemon"
-  launchctl kickstart -k "gui/$(id -u)/$LABEL" || true
-fi
 
 echo "==> open $DEST"
 open "$DEST"
@@ -104,4 +105,5 @@ for _ in $(seq 1 20); do
     break
   fi
 done
+curl -fsS "http://127.0.0.1:$PORT/tasks/api/state" >/dev/null 2>&1 || echo "    its daemon isn't answering on :$PORT yet (launchctl print gui/$(id -u)/$LABEL)" >&2
 echo "==> done"
