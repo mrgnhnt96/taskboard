@@ -8,6 +8,8 @@ use crate::hook;
 use taskboardd::accounts::{self, Provider};
 use taskboardd::config::Config;
 use taskboardd::hooks;
+use taskboardd::steps::{self, Step};
+use std::collections::BTreeMap;
 
 const TB_TIMEOUT: f64 = 5.0;
 const QUESTION_TIMEOUT: f64 = 100.0;
@@ -80,6 +82,16 @@ enum Cmd {
         /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d
         #[arg(long)]
         human: Option<String>,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// Record one of the owner's steps as done (from config.toml's [[steps]])
+    Step {
+        #[command(subcommand)]
+        action: StepCmd,
+    },
+    /// The task's steps (config.toml's [[steps]]) and which are done
+    Steps {
         #[command(flatten)]
         t: TaskArg,
     },
@@ -249,6 +261,42 @@ enum HooksCmd {
     Log {
         #[arg(short, default_value_t = 20)]
         n: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum StepCmd {
+    /// The step is done (runs its check first): tb step done "Author-side review" --note "fixed two findings"
+    Done {
+        name: String,
+        /// What came of it
+        #[arg(long)]
+        note: Option<String>,
+        /// The owner skips the step (not from the task's own terminal)
+        #[arg(long)]
+        skip: bool,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// Run a script step (and its check); it counts once it exits 0
+    Run {
+        name: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// Ask the owner to do their step; the task waits for them, so end your turn after
+    Ask {
+        name: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// A step can't pass: the task waits for the owner's answer, so end your turn after
+    Fail {
+        name: String,
+        #[arg(long)]
+        why: String,
+        #[command(flatten)]
+        t: TaskArg,
     },
 }
 
@@ -633,6 +681,171 @@ fn goal_lines(g: &Value) -> Vec<String> {
     lines
 }
 
+/// The task's steps (`GET /steps`) and the step called `name`.
+fn find_step(c: &Ctx, task: Option<String>, name: &str) -> Result<(Value, Step), String> {
+    let v = c.call("GET", &steps_path(c, task)?, None)?;
+    if !v["task"].is_string() {
+        return Err(NO_TASK.into());
+    }
+    let all = steps::from_listing(&v);
+    match all.iter().find(|(s, _)| steps::key(&s.name) == steps::key(name)) {
+        Some((s, _)) => Ok((v.clone(), s.clone())),
+        None if all.is_empty() => Err(format!("{} has no steps.", v["task"].as_str().unwrap_or("The task"))),
+        None => Err(format!("“{name}” isn't one of its steps: {}.", steps::names(&all.into_iter().map(|(s, _)| s).collect::<Vec<_>>()))),
+    }
+}
+
+fn steps_path(c: &Ctx, task: Option<String>) -> Result<String, String> {
+    Ok(match task {
+        Some(x) => format!("/steps?task={}", task_ref(&x)?),
+        None => format!("/steps?session={}", c.session),
+    })
+}
+
+/// The placeholders' values for a script: the board's, with this checkout's branch.
+fn step_vars(c: &Ctx, v: &Value, name: &str) -> BTreeMap<String, String> {
+    let mut vars: BTreeMap<String, String> = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
+    if let Some(b) = client::git_info(&c.cwd, 0.5)["branch"].as_str().filter(|b| !b.is_empty()) {
+        vars.insert("branch".into(), b.to_string());
+    }
+    vars.insert("step".into(), name.to_string());
+    vars
+}
+
+/// Runs a step's script in the repo (else here), its output shown as it comes; the exit and the
+/// output's tail.
+fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String>, timeout: u64) -> (bool, String) {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let dir = vars.get("repo").filter(|r| !r.is_empty() && std::path::Path::new(r).is_dir()).cloned().unwrap_or_else(|| c.cwd.clone());
+    out(&format!("{label}: {script}"));
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(format!("exec 2>&1\n{script}")).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::piped());
+    // Its own process group, so a timeout stops everything the script started.
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    for (k, v) in vars {
+        cmd.env(format!("TASKBOARD_{}", k.to_uppercase()), v);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(ch) => ch,
+        Err(e) => return (false, format!("couldn't start it: {e}")),
+    };
+    let stdout = child.stdout.take().expect("piped");
+    let reader = std::thread::spawn(move || {
+        let mut tail: std::collections::VecDeque<String> = Default::default();
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            println!("{line}");
+            tail.push_back(line);
+            if tail.len() > 200 {
+                tail.pop_front();
+            }
+        }
+        tail.into_iter().collect::<Vec<_>>().join("\n")
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if start.elapsed() > Duration::from_secs(timeout) => {
+                let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => break None,
+        }
+    };
+    let mut output = reader.join().unwrap_or_default();
+    let passed = match status {
+        Some(s) if s.success() => true,
+        Some(s) => {
+            let line = format!("({label} exited {})", s.code().map(|c| c.to_string()).unwrap_or_else(|| "on a signal".into()));
+            out(&line);
+            output += &format!("\n{line}");
+            false
+        }
+        None => {
+            let line = format!("({label} stopped after {timeout}s)");
+            out(&line);
+            output += &format!("\n{line}");
+            false
+        }
+    };
+    (passed, output)
+}
+
+fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
+    match action {
+        StepCmd::Done { name, note, skip, t } => {
+            let (v, step) = find_step(c, t.task.clone(), &name)?;
+            let mine = !c.session.is_empty() && v["session"].as_str() == Some(c.session.as_str());
+            if skip || (step.owner && !mine) {
+                let task = v["task"].as_str().unwrap_or("").to_string();
+                c.call("POST", &format!("/tasks/{task}/step"), Some(json!({"name": step.name, "note": note, "skip": skip, "session": c.session})))?;
+                out(&format!("{} {} on {task}.", step.name, if skip { "skipped" } else { "done" }));
+                return Ok(0);
+            }
+            let mut f = json!({"name": step.name, "note": note, "via": "done"});
+            if !step.check.is_empty() && !step.owner {
+                let vars = step_vars(c, &v, &step.name);
+                let (passed, output) = run_script(c, "Check", &steps::fill(&step.check, &vars), &vars, step.timeout_secs());
+                f["ok"] = json!(passed);
+                f["output"] = json!(output);
+            }
+            step_report(c, f, t.task)
+        }
+        StepCmd::Run { name, t } => {
+            let (v, step) = find_step(c, t.task.clone(), &name)?;
+            if step.run.is_empty() {
+                return Err(format!("“{}” has no script to run: {}.", step.name, step.how("tb")));
+            }
+            let vars = step_vars(c, &v, &step.name);
+            let (mut passed, mut output) = run_script(c, "Script", &steps::fill(&step.run, &vars), &vars, step.timeout_secs());
+            if passed && !step.check.is_empty() {
+                let (p, o) = run_script(c, "Check", &steps::fill(&step.check, &vars), &vars, step.timeout_secs());
+                passed = p;
+                output = format!("{output}\n{o}");
+            }
+            step_report(c, json!({"name": step.name, "via": "run", "ok": passed, "output": output}), t.task)
+        }
+        StepCmd::Ask { name, t } => c.run_report("tb.step_ask", json!({"name": name}), t.task, true, |v| {
+            if v["already"] == true {
+                return format!("{} is already done; carry on.", v["step"].as_str().unwrap_or("The step"));
+            }
+            let mut s = format!("Asked {} to do {}; the task waits for them. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"));
+            if let Some(o) = v["open"].as_str().filter(|o| !o.is_empty()) {
+                s += &format!(" (It happens at {o}.)");
+            }
+            s
+        }),
+        StepCmd::Fail { name, why, t } => c.run_report("tb.step_fail", json!({"name": name, "why": why}), t.task, true, |v| {
+            format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
+        }),
+    }
+}
+
+/// Reports a step's outcome; a failed one exits 1 so the agent sees it.
+fn step_report(c: &Ctx, f: Value, task: Option<String>) -> Result<i32, String> {
+    let task = task.map(|t| task_ref(&t)).transpose()?;
+    let passed = f["ok"] != false;
+    match c.report("tb.step", f, task.as_deref(), TB_TIMEOUT)? {
+        None => out(SAVED),
+        Some(v) if !v["task"].is_string() => out(NO_TASK),
+        Some(v) => {
+            let step = v["step"].as_str().unwrap_or("The step");
+            let left: Vec<&str> = v["left"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+            if !passed {
+                out(&format!("{step} didn't pass (output above). Fix what it reports and try again, or tb step fail \"{step}\" --why \"…\" if it can't pass."));
+                return Ok(1);
+            }
+            out(&if left.is_empty() { format!("{step} is done. No steps left.") } else { format!("{step} is done. Still to do: {}.", left.join(", ")) });
+        }
+    }
+    Ok(if passed { 0 } else { 1 })
+}
+
 fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
     match cmd {
         Cmd::Note { text, goal, kind, t } => {
@@ -645,6 +858,25 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Some(g) => format!("Noted on {g}."),
                 None => format!("Noted on {}.", v["task"].as_str().unwrap_or("the task")),
             })
+        }
+        Cmd::Step { action } => step_cmd(c, action),
+        Cmd::Steps { t } => {
+            let v = c.call("GET", &steps_path(c, t.task)?, None)?;
+            let Some(task) = v["task"].as_str() else {
+                out(NO_TASK);
+                return Ok(0);
+            };
+            let all = steps::from_listing(&v);
+            if all.is_empty() {
+                out(&format!("{task} has no steps."));
+            }
+            let vars = step_vars(c, &v, "");
+            for (st, done) in all {
+                let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
+                let st = st.filled(&vars);
+                out(&format!("[{}] {} ({when}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
+            }
+            Ok(0)
         }
         Cmd::Checkpoint { done, next, decisions, files, t } => {
             let mut f = json!({"done": done, "next": next, "decisions": decisions});

@@ -94,3 +94,25 @@ merged = ""                          # status once its PR merges, e.g. "Ready fo
 # labels = ["web"]
 # components = ["Frontend"]
 # fields = { customfield_10001 = { id = "team-uuid" } }
+
+# Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
+# (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
+# script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
+# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {pr_url} {jira}. The board
+# refuses the PR and `tb done` until they pass. See docs/HOOKS.md ("Steps").
+# [[steps]]
+# name = "Author-side review"
+# projects = "work-app|work-api"
+# prompt = "Run /author-review on {branch} against {base}, and fix what it finds."
+# check = "test -f .review/{branch}.passed"
+#
+# [[steps]]
+# name = "Lint and unit tests"
+# run = "make lint test"
+# timeout = 900
+#
+# [[steps]]
+# name = "Design sign-off"
+# owner = true
+# open = "https://figma.com/file/abc?branch={branch}"
+# prompt = "Sign off the screens this task changes."

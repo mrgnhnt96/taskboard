@@ -175,7 +175,7 @@ pub fn load(cfg: &Config) -> std::result::Result<HooksFile, String> {
     Ok(file)
 }
 
-fn matches(matcher: &str, project: &str) -> bool {
+pub fn matches(matcher: &str, project: &str) -> bool {
     let m = matcher.trim();
     if m.is_empty() || m == "*" {
         return true;

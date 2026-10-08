@@ -252,6 +252,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "waits_for": waits,
         "waiting": waiting,
         "blocked": is_blocked(app, t)?,
+        "step": crate::steps::waiting_card(app, t),
     }))
 }
 
