@@ -1105,6 +1105,18 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
     if m.backend.label() == "fake" {
         bar = bar.child(kit::tone_pill(t, "goal", "Sample board"));
     }
+    let text = t.text;
+    bar = bar.child(
+        div()
+            .id("open-settings")
+            .text_size(px(12.5))
+            .text_color(t.muted)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(text))
+            .tooltip(kit::tip("Settings: GitHub, Bitbucket and Slack accounts (⌘,)"))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
+            .child("Settings"),
+    );
     bar
 }
 

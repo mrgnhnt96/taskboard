@@ -5,7 +5,7 @@
 //!   no runner, no Midna).
 //! - `TASKBOARD_URL` — where taskboardd answers (default from `config.toml`: 127.0.0.1:8792).
 //! - `TASKBOARD_THEME=dark|light` — override the system appearance.
-//! - `TASKBOARD_PAGE=board|backlog|sessions|G3`, `TASKBOARD_OPEN=T2|B1` — initial page / panel.
+//! - `TASKBOARD_PAGE=board|backlog|sessions|settings|G3`, `TASKBOARD_OPEN=T2|B1` — initial page / panel.
 //! - `TASKBOARD_W` / `TASKBOARD_H` — window size.
 //! - `taskboard://task/T12` (also `goal/G3`, `issue/B7`, `session/<id>`) opens that page; the
 //!   daemon's notifications link there.
@@ -17,6 +17,7 @@ mod fmt;
 mod hooks;
 mod install;
 mod prefs;
+mod settings;
 #[cfg(test)]
 mod parity;
 mod theme;
@@ -25,7 +26,7 @@ mod ui;
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow]);
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings]);
 
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
@@ -52,7 +53,12 @@ fn main() {
             KeyBinding::new("cmd-h", Hide, None),
             KeyBinding::new("cmd-alt-h", HideOthers, None),
             KeyBinding::new("cmd-w", CloseWindow, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
         ]);
+        let b = backend.clone();
+        cx.on_action(move |_: &OpenSettings, cx| {
+            let _ = settings::open(b.clone(), cx);
+        });
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -66,6 +72,8 @@ fn main() {
             Menu {
                 name: "Task board".into(),
                 items: vec![
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
                     MenuItem::action("Hide Task board", Hide),
                     MenuItem::action("Hide Others", HideOthers),
                     MenuItem::action("Show All", ShowAll),
@@ -128,8 +136,11 @@ fn main() {
             }
         })
         .detach();
+        let settings_page = std::env::var("TASKBOARD_PAGE").as_deref() == Ok("settings");
+        let settings = settings_page.then(|| settings::open(backend.clone(), cx)).flatten();
         #[cfg(feature = "snapshot")]
-        snapshot(handle, cx);
+        snapshot(settings.map_or(handle.into(), Into::into), cx);
+        let _ = settings;
         let _ = handle;
         if std::env::var("TASKBOARD_NO_ACTIVATE").is_err() {
             cx.activate(true);
@@ -140,12 +151,11 @@ fn main() {
 /// Dev: render the main window offscreen to `TASKBOARD_SNAPSHOT` after
 /// `TASKBOARD_SNAPSHOT_DELAY_MS` (default 1500), then quit.
 #[cfg(feature = "snapshot")]
-fn snapshot(handle: WindowHandle<app::MainWindow>, cx: &mut App) {
+fn snapshot(any: AnyWindowHandle, cx: &mut App) {
     let Ok(path) = std::env::var("TASKBOARD_SNAPSHOT") else {
         return;
     };
     let delay: u64 = std::env::var("TASKBOARD_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
-    let any: AnyWindowHandle = handle.into();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
         for _ in 0..2 {

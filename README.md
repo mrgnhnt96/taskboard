@@ -67,6 +67,10 @@ the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/REA
   PRs are watched with `gh`: failed checks or new review comments bring the task's conversation back
   (`--resume`) with what to do; an approved, green PR is flagged for you (or merged by the agent if
   `pr.agents_merge` is on).
+- **Accounts**: Settings (⌘,) ▸ Accounts signs in to GitHub (through `gh`: a browser code or a token), Bitbucket (an
+  Atlassian API token with Bitbucket scopes) and Slack (an app token). Tokens are checked, then kept in the Keychain,
+  and `git push` over HTTPS is set up for both hosts. Agents use `gh`, `tb api bitbucket|slack <path>` and
+  `tb token <provider>` to comment, push and assign reviewers.
 - **Jira** (optional): REST API with your token. Tickets for tasks and backlog issues, epics for goals, and
   status moves as work starts, reaches review and merges.
 - **Work hours** and **usage**: outside the hours (or with the 5-hour usage used up) nothing new starts, and

@@ -261,6 +261,13 @@ impl Input {
         Input { field, focus }
     }
 
+    /// A one-line field that shows bullets and never copies its text out (tokens).
+    pub fn secret(cx: &mut App, placeholder: impl Into<SharedString>) -> Input {
+        let field = cx.new(|cx| TextField::new(cx, true, placeholder));
+        let focus = field.read(cx).focus.clone();
+        Input { field, focus }
+    }
+
     pub fn with_text(cx: &mut App, placeholder: impl Into<SharedString>, multi: bool, text: &str) -> Input {
         let i = Input::new(cx, placeholder, multi);
         i.set_text(text, cx);
