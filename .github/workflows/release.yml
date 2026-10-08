@@ -2,9 +2,9 @@ name: Release
 
 # Pushing a version tag (v1.1.0, see scripts/release.sh) builds the Apple
 # Silicon app, signs and notarizes it, packs it in a DMG and publishes a
-# GitHub release. The website's Download button links to the latest release.
-# A beta tag (v1.2.0-beta.1) is published as a prerelease, which the website
-# skips.
+# GitHub release. The website's Download button links to the newest release
+# with a DMG. A beta tag (v1.2.0-beta.1) is published as a prerelease, which
+# the website still offers while it's the newest.
 on:
   push:
     tags: ["v*"]

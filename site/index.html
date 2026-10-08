@@ -42,7 +42,7 @@
     <h1>Taskboard</h1>
     <p class="lede">A native macOS task board for Claude Code sessions running in <a href="https://midna.mrgnhnt.com">Midna</a>.</p>
 
-    <a class="button" id="download" href="https://github.com/mrgnhnt96/taskboard/releases/latest">Download for Mac</a>
+    <a class="button" id="download" href="https://github.com/mrgnhnt96/taskboard/releases">Download for Mac</a>
     <p class="meta" id="meta">Apple Silicon · macOS 13 or later</p>
 
     <ol>
@@ -58,16 +58,20 @@
     </footer>
   </main>
   <script>
-    // Point the button straight at the newest release's DMG. Without this (or if
-    // GitHub's API is unreachable) it opens the latest release page instead.
-    fetch("https://api.github.com/repos/mrgnhnt96/taskboard/releases/latest")
+    // Point the button straight at the newest release's DMG, betas included.
+    // Without this (or if GitHub's API is unreachable) it opens the releases page.
+    fetch("https://api.github.com/repos/mrgnhnt96/taskboard/releases?per_page=20")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((release) => {
-        const dmg = (release.assets || []).find((a) => a.name.endsWith(".dmg"));
-        if (!dmg) return;
-        document.getElementById("download").href = dmg.browser_download_url;
-        const version = release.tag_name.replace(/^v/, "");
-        document.getElementById("meta").textContent = `Version ${version} · Apple Silicon · macOS 13 or later`;
+      .then((releases) => {
+        for (const release of releases) {
+          if (release.draft) continue;
+          const dmg = (release.assets || []).find((a) => a.name.endsWith(".dmg"));
+          if (!dmg) continue;
+          document.getElementById("download").href = dmg.browser_download_url;
+          const version = release.tag_name.replace(/^v/, "");
+          document.getElementById("meta").textContent = `Version ${version} · Apple Silicon · macOS 13 or later`;
+          return;
+        }
       })
       .catch(() => {});
   </script>

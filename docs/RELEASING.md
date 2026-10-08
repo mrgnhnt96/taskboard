@@ -2,7 +2,7 @@
 
 Taskboard ships the way Midna does: a version tag builds, signs and notarizes the app in CI,
 packs it in a DMG and publishes a GitHub release. The website (`site/`, taskboard.mrgnhnt.com)
-points its Download button at the newest non-prerelease DMG.
+points its Download button at the newest release with a DMG, betas included.
 
 ## Cut a release
 
