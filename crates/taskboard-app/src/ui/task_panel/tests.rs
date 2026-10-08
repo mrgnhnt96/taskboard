@@ -17,7 +17,6 @@ fn ui_from(v: &Value) -> Ui {
         drafts: strs("drafts"),
         handoffs: strs("handoffs"),
         busy: v["busy"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
-        reveal: v["reveal"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
         notes: v["notes"]
             .as_object()
             .map(|o| o.iter().map(|(k, n)| (k.clone(), (n["text"].as_str().unwrap_or("").to_string(), n["err"].as_bool().unwrap_or(false)))).collect())
@@ -225,24 +224,6 @@ fn manage_box_actions(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn mark_done_and_failed(cx: &mut gpui_kit::TestAppContext) {
-    let (w, rec) = parity::window(cx);
-    open(cx, &w, "T2");
-    press(cx, &w, "reveal", Some("done:T2"));
-    assert!(control(cx, &w, "hide", Some("done:T2")).act == "hide", "the form offers Cancel");
-    typed(cx, &w, "summary:T2", " Shipped it ");
-    press(cx, &w, "mark-done", None);
-    assert_eq!(rec.last("tasks/T2/done"), Some(json!({"summary": "Shipped it"})));
-    assert!(!ui(|u| u.reveal.contains("done:T2")), "the form closes");
-
-    let (w, rec) = parity::window(cx);
-    open(cx, &w, "T2");
-    press(cx, &w, "reveal", Some("fail:T2"));
-    press(cx, &w, "mark-fail", None);
-    assert_eq!(rec.last("tasks/T2/fail"), Some(json!({})), "an empty reason sends {{}}");
-}
-
-#[gpui_kit::test]
 fn lost_task_resumes(cx: &mut gpui_kit::TestAppContext) {
     let (w, rec) = parity::window(cx);
     w.update(cx, |m, _, cx| {
@@ -389,4 +370,30 @@ fn links_leave_the_panel(cx: &mut gpui_kit::TestAppContext) {
         assert!(m.panel.is_none());
     })
     .unwrap();
+}
+
+/// A done task whose green PR waits for its owner.
+fn awaiting_review(awaiting: bool) -> Value {
+    json!({"ref": "T1", "id": 1, "title": "Add passkeys", "status": "done", "project": "webapp",
+           "pr": {"num": 42, "repo": "acme/webapp", "url": "https://github.com/acme/webapp/pull/42", "state": "OPEN",
+                  "stage": {"phase": "review", "label": "Ready for review", "awaiting_you": awaiting}}})
+}
+
+#[::core::prelude::v1::test]
+fn reviewed_button_shows_only_while_the_pr_waits_for_you() {
+    for (awaiting, shown) in [(true, true), (false, false)] {
+        let task = awaiting_review(awaiting);
+        let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
+        assert_eq!(view::acts(&tree).iter().any(|a| a.starts_with("pr-reviewed")), shown, "awaiting_you {awaiting}: {:?}", view::acts(&tree));
+    }
+}
+
+#[gpui_kit::test]
+fn reviewed_button_tells_the_board(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    open(cx, &w, "T1");
+    w.update(cx, |m, _, cx| act(m, &Act::new("pr-reviewed", "", "T1", "pr:T1"), cx)).unwrap();
+    settle(cx);
+    assert_eq!(rec.last("tasks/T1/pr/reviewed"), Some(json!({})));
+    assert_eq!(note("pr:T1"), Some(("Marked reviewed".into(), false)));
 }

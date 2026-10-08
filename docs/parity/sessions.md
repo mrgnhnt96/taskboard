@@ -49,7 +49,7 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | meta | Branch as plain mono text | `detail` | 🔧 (had a ⎇ glyph) | ssDetail * |
 | `diffView` | "N files +A −R" with "Not committed yet · N new"; "No changes"; dirty count when no diff; hidden when closed | `diff_vm` | ✅ | diffView *, ssDetail * |
 | actions | Live: Show in Midna + Close terminal (close) or hold-to-Force close (force); none while closing or confirming | `detail_vm` | ✅ | ssDetail * acts |
-| actions | No "New task here" | `detail` | 🔧 (the app added it; the New task form's "In an idle terminal" covers it) | ssDetail * acts |
+| actions | No "New task here" | `detail` | 🔧 (the app added it; there are no forms, so tasks reach a terminal through Claude: `tb take`) | ssDetail * acts |
 | closed actions | Reopen when the closed row can reopen; note "can’t reopen" / "Reopening starts…" (also when it isn't in the closed list) | `detail_vm` | 🔧 (the note was missing without a closed row) | ssDetail gone * |
 | `ss-focus` | POST `sessions/:id/focus` `{}`; "Sending…" while busy; then "Sent to Midna" / "Saved. It runs once Midna is back." under the buttons (errors there too, 15 s) | `focus`, `run`, `sent_note` | 🔧 (was a toast) | `show_in_midna_says_so_under_the_buttons`, sentNote * |
 | `ss-reopen` | POST `sessions/:id/reopen` `{}`; note "Asked Midna to reopen it in a new terminal." | `reopen` | 🔧 (was a toast) | `reopen_from_the_detail_and_the_menu` |

@@ -447,39 +447,40 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 ### Tasks
 | Path | Body | Notes |
 |---|---|---|
-| `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | New task form. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the UI opens it. |
+| `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | `tb task new`. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the caller shows it. |
 | `POST /tasks/:id` | `{status: "queued"}` | "Queue it now" on a planned task (planned → queued only). |
 | `POST /tasks/:id/start` | `{mode: "new"\|"queue"}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
 | `POST /tasks/:id/detach` | `{}` | Take it off its terminal; back to queued. |
-| `POST /tasks/:id/done` | `{summary?}` | Your manual "Mark done". |
-| `POST /tasks/:id/fail` | `{reason?}` | Your manual "Mark failed". |
+| `POST /tasks/:id/done` | `{summary?}` | Mark done by hand (the app has no button; `tb done` reports through `/report`). |
+| `POST /tasks/:id/fail` | `{reason?}` | Mark failed by hand (the app has no button; `tb fail` reports through `/report`). |
 | `POST /tasks/:id/close-terminal` | `{force: bool}` | `force` false from the done box; true from Manage when the terminal is busy. |
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
+| `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
 ### Goals
 | Path | Body | Notes |
 |---|---|---|
-| `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | New goal. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the UI navigates to it. |
-| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool}` | Edit goal form (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
+| `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | `tb goal new`. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the caller shows it. |
+| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool}` | `tb goal set` (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
 | `POST /goals/:id/run` | `{}` or `{now: true}` | Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
-| `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note. |
+| `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
 
 ### Backlog
 | Path | Body | Notes |
 |---|---|---|
-| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?}` | Add an issue (source `you`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
+| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?}` | Add an issue (source `you`; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
 | `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task: `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
 | `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira). |
 | `POST /backlog/:id/drop` | `{}` | Won't do. |
-| `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none. |
-| `POST /backlog/:id/note` | `{text}` | Add a note to its history. |
-| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
+| `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none (`tb backlog move`; `goal_id` also takes a ref like `"G2"`). |
+| `POST /backlog/:id/note` | `{text}` | Add a note to its history (no app button). |
+| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
 | `POST /backlog/plan` | `{ids: ["B1", …]}` | Plan waves for these open issues (Backlog page). With Claude it answers `state: "planning"` at once and plans on its own thread; poll `GET /backlog/plan`. **Response read:** the plan (below). |
 | `POST /backlog/goal` | `{name, waves: [{why, items: [{ref: "B1", after: ["B2"]}]}]}` | A new goal from a plan: one project's open issues, none in a goal yet. Each becomes a planned task in its wave (`tasks.wave`); `after` becomes the task's wait-for; the waves go in a pinned goal note. The goal doesn't run in order: a wave starts once every task in the waves before it is done. **Response read:** the goal detail. |
 

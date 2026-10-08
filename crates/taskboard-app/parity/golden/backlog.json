@@ -2814,11 +2814,8 @@
             ]
           }
         ],
-        "aside": "Test gap Open · reported at 2:05 PM B1 No test for an expired challenge Goal Sign-in with passkeys How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. Add a note",
-        "aside_acts": [
-          "open-picker",
-          "reveal"
-        ]
+        "aside": "Test gap Open · reported at 2:05 PM B1 No test for an expired challenge How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too.",
+        "aside_acts": []
       }
     },
     {
@@ -3278,11 +3275,8 @@
             ]
           }
         ],
-        "aside": "Follow-up Made into task T7 B3 Retry webhook deliveries Open task T7 Goal Billing revamp How it was reported It came from one of your answers. What was happening No snapshot was saved with this issue. Open T5’s log at 1:00 PM History 2:40 PM you · Made into T7 Add a note",
-        "aside_acts": [
-          "open-picker",
-          "reveal"
-        ]
+        "aside": "Follow-up Made into task T7 B3 Retry webhook deliveries Open task T7 How it was reported It came from one of your answers. What was happening No snapshot was saved with this issue. Open T5’s log at 1:00 PM History 2:40 PM you · Made into T7",
+        "aside_acts": []
       }
     },
     {
@@ -3747,11 +3741,8 @@
             ]
           }
         ],
-        "aside": "Clean-up Jira PROJ-12 B4 Remove the old auth flag Goal Not in a goal How it was reported The api shell terminal reported it. What was happening Step cleanup File src/flags.rs History Nothing yet. Add a note",
-        "aside_acts": [
-          "open-picker",
-          "reveal"
-        ]
+        "aside": "Clean-up Jira PROJ-12 B4 Remove the old auth flag How it was reported The api shell terminal reported it. What was happening Step cleanup File src/flags.rs History Nothing yet.",
+        "aside_acts": []
       }
     },
     {
@@ -5239,11 +5230,8 @@
             ]
           }
         ],
-        "aside": "Bug Open · reported at Oct 6 B2 Login button flickers Goal Not in a goal How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. Add a note",
-        "aside_acts": [
-          "open-picker",
-          "reveal"
-        ]
+        "aside": "Bug Open · reported at Oct 6 B2 Login button flickers How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet.",
+        "aside_acts": []
       }
     },
     {
@@ -5570,12 +5558,8 @@
             ]
           }
         ],
-        "aside": "Test gap Open · reported at 2:05 PM B1 No test for an expired challenge Goal Sign-in with passkeys Moved How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. half a note Save note Cancel Write the note first.",
-        "aside_acts": [
-          "open-picker",
-          "issue-note",
-          "hide"
-        ]
+        "aside": "Test gap Open · reported at 2:05 PM B1 No test for an expired challenge How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too.",
+        "aside_acts": []
       }
     },
     {
@@ -5870,11 +5854,8 @@
             ]
           }
         ],
-        "aside": "Test gap Closed as won’t do B6 Flaky e2e on CI Goal Sign-in with passkeys How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do Add a note",
-        "aside_acts": [
-          "open-picker",
-          "reveal"
-        ]
+        "aside": "Test gap Closed as won’t do B6 Flaky e2e on CI How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do",
+        "aside_acts": []
       }
     },
     {
@@ -5972,13 +5953,11 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B1 No test for an expired challenge webapp Open · reported at 2:05 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do Goal Sign-in with passkeys How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. Add a note See every backlog issue",
+        "text": "Backlog Test gap B1 No test for an expired challenge webapp Open · reported at 2:05 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -6077,14 +6056,12 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B1 No test for an expired challenge webapp Open · reported at 2:05 PM Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do Goal Sign-in with passkeys How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. Add a note See every backlog issue",
+        "text": "Backlog Test gap B1 No test for an expired challenge webapp Open · reported at 2:05 PM Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
           "ticket",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -6146,13 +6123,11 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Bug B2 Login button flickers webapp Open · reported at Oct 6 Not part of any task yet. Make it a task to queue it. Make it a task Won’t do Goal Not in a goal How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Bug B2 Login button flickers webapp Open · reported at Oct 6 Not part of any task yet. Make it a task to queue it. Make it a task Won’t do How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -6214,14 +6189,12 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Bug B2 Login button flickers webapp Open · reported at Oct 6 Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do Goal Not in a goal How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Bug B2 Login button flickers webapp Open · reported at Oct 6 Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
           "ticket",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -6290,11 +6263,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Follow-up B3 Retry webhook deliveries api Made into task T7 · Open it Goal Billing revamp How it was reported It came from one of your answers. What was happening No snapshot was saved with this issue. Open T5’s log at 1:00 PM History 2:40 PM you · Made into T7 Add a note See every backlog issue",
+        "text": "Backlog Follow-up B3 Retry webhook deliveries api Made into task T7 · Open it How it was reported It came from one of your answers. What was happening No snapshot was saved with this issue. Open T5’s log at 1:00 PM History 2:40 PM you · Made into T7 See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6363,11 +6334,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Follow-up B3 Retry webhook deliveries api Made into task T7 · Open it Goal Billing revamp How it was reported It came from one of your answers. What was happening No snapshot was saved with this issue. Open T5’s log at 1:00 PM History 2:40 PM you · Made into T7 Add a note See every backlog issue",
+        "text": "Backlog Follow-up B3 Retry webhook deliveries api Made into task T7 · Open it How it was reported It came from one of your answers. What was happening No snapshot was saved with this issue. Open T5’s log at 1:00 PM History 2:40 PM you · Made into T7 See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6436,11 +6405,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Clean-up B4 Remove the old auth flag api Jira PROJ-12 Goal Not in a goal How it was reported The api shell terminal reported it. What was happening Step cleanup File src/flags.rs History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Clean-up B4 Remove the old auth flag api Jira PROJ-12 How it was reported The api shell terminal reported it. What was happening Step cleanup File src/flags.rs History Nothing yet. See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6509,11 +6476,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Clean-up B4 Remove the old auth flag api Jira PROJ-12 Goal Not in a goal How it was reported The api shell terminal reported it. What was happening Step cleanup File src/flags.rs History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Clean-up B4 Remove the old auth flag api Jira PROJ-12 How it was reported The api shell terminal reported it. What was happening Step cleanup File src/flags.rs History Nothing yet. See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6580,11 +6545,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Bug B5 Crash on empty cart api Jira ticket being created Goal Billing revamp How it was reported A terminal reported it while working on T9. What was happening No snapshot was saved with this issue. Open T9’s log at 2:55 PM History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Bug B5 Crash on empty cart api Jira ticket being created How it was reported A terminal reported it while working on T9. What was happening No snapshot was saved with this issue. Open T9’s log at 2:55 PM History Nothing yet. See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6651,11 +6614,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Bug B5 Crash on empty cart api Jira ticket being created Goal Billing revamp How it was reported A terminal reported it while working on T9. What was happening No snapshot was saved with this issue. Open T9’s log at 2:55 PM History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Bug B5 Crash on empty cart api Jira ticket being created How it was reported A terminal reported it while working on T9. What was happening No snapshot was saved with this issue. Open T9’s log at 2:55 PM History Nothing yet. See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6735,11 +6696,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Goal Sign-in with passkeys How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do Add a note See every backlog issue",
+        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6819,11 +6778,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Goal Sign-in with passkeys How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do Add a note See every backlog issue",
+        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6884,11 +6841,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Follow-up B7 Doc the API api Made into a task Goal Not in a goal How it was reported The docs terminal reported it. What was happening From T2 review Step docs History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Follow-up B7 Doc the API api Made into a task How it was reported The docs terminal reported it. What was happening From T2 review Step docs History Nothing yet. See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -6949,11 +6904,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Follow-up B7 Doc the API api Made into a task Goal Not in a goal How it was reported The docs terminal reported it. What was happening From T2 review Step docs History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Follow-up B7 Doc the API api Made into a task How it was reported The docs terminal reported it. What was happening From T2 review Step docs History Nothing yet. See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     },
@@ -7015,13 +6968,11 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Perf B8 Slow search webapp Open · reported at 2:59 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do Goal Not in a goal How it was reported A terminal reported it. What was happening Last turn Profiled the query Custom key x Obj {\"a\":1} History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Perf B8 Slow search webapp Open · reported at 2:59 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do How it was reported A terminal reported it. What was happening Last turn Profiled the query Custom key x Obj {\"a\":1} History Nothing yet. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -7083,14 +7034,12 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Perf B8 Slow search webapp Open · reported at 2:59 PM Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do Goal Not in a goal How it was reported A terminal reported it. What was happening Last turn Profiled the query Custom key x Obj {\"a\":1} History Nothing yet. Add a note See every backlog issue",
+        "text": "Backlog Perf B8 Slow search webapp Open · reported at 2:59 PM Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do How it was reported A terminal reported it. What was happening Last turn Profiled the query Custom key x Obj {\"a\":1} History Nothing yet. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
           "ticket",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -7163,13 +7112,11 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Issue B9 Odd snapshot api Open · reported at 2:58 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do Goal Billing revamp How it was reported A terminal reported it. What was happening Snapshot not json at all History 2:59 PM Moved to G2 2:59 PM T3 · y 3:00 PM x Add a note See every backlog issue",
+        "text": "Backlog Issue B9 Odd snapshot api Open · reported at 2:58 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do How it was reported A terminal reported it. What was happening Snapshot not json at all History 2:59 PM Moved to G2 2:59 PM T3 · y 3:00 PM x See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -7242,14 +7189,12 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Issue B9 Odd snapshot api Open · reported at 2:58 PM Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do Goal Billing revamp How it was reported A terminal reported it. What was happening Snapshot not json at all History 2:59 PM Moved to G2 2:59 PM T3 · y 3:00 PM x Add a note See every backlog issue",
+        "text": "Backlog Issue B9 Odd snapshot api Open · reported at 2:58 PM Not part of any task yet. Make it a task to queue it, or send it to Jira. Make it a task Create ticket Won’t do How it was reported A terminal reported it. What was happening Snapshot not json at all History 2:59 PM Moved to G2 2:59 PM T3 · y 3:00 PM x See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
           "ticket",
-          "drop",
-          "open-picker",
-          "reveal"
+          "drop"
         ]
       }
     },
@@ -7365,14 +7310,11 @@
         }
       },
       "expect": {
-        "text": "Backlog Test gap B1 No test for an expired challenge webapp Open · reported at 2:05 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do Asked Jira for a ticket Goal Sign-in with passkeys No such goal. How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. draft text Save note Cancel Note added See every backlog issue",
+        "text": "Backlog Test gap B1 No test for an expired challenge webapp Open · reported at 2:05 PM Not part of any task yet. Make it a task to queue it. Make it a task Won’t do Asked Jira for a ticket How it was reported The T1 terminal reported it while working on T1. “The register endpoint has no test for an expired challenge.” Seen while writing the happy path. The expiry is 5 minutes. What was happening Task T1 · Add the WebAuthn registration endpoint Branch feature/passkeys Not committed Nothing Folder /tmp/webapp Open T1’s log at 2:05 PM History 2:05 PM Reported 2:10 PM T1 Add the WebAuthn · Seen again 2:50 PM Alex · Check the clock skew too. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
-          "drop",
-          "open-picker",
-          "issue-note",
-          "hide"
+          "drop"
         ]
       }
     },
@@ -7439,15 +7381,12 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Bug B2 Login button flickers webapp Open · reported at Oct 6 Not part of any task yet. Make it a task to queue it, or send it to Jira. Sending… Create ticket Won’t do Goal Not in a goal How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. Sending… Cancel See every backlog issue",
+        "text": "Backlog Bug B2 Login button flickers webapp Open · reported at Oct 6 Not part of any task yet. Make it a task to queue it, or send it to Jira. Sending… Create ticket Won’t do How it was reported You added it. On Safari only. What was happening Branch main Not committed 3 files History Nothing yet. See every backlog issue",
         "acts": [
           "close-panel",
           "promote",
           "ticket",
-          "drop",
-          "open-picker",
-          "issue-note",
-          "hide"
+          "drop"
         ]
       }
     },
@@ -7532,11 +7471,9 @@
         "drafts": {}
       },
       "expect": {
-        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Closed as won’t do Goal Sign-in with passkeys How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do Add a note See every backlog issue",
+        "text": "Backlog Test gap B6 Flaky e2e on CI webapp Closed as won’t do Closed as won’t do How it was reported A terminal reported it while working on T4. What was happening Worktree /tmp/wt Last commit abc123 fix Last commit def456 Output FAIL 1 test Open T4’s log at Oct 4 History 1:59 PM Terminal lost 2:00 PM you · Closed as won’t do See every backlog issue",
         "acts": [
-          "close-panel",
-          "open-picker",
-          "reveal"
+          "close-panel"
         ]
       }
     }

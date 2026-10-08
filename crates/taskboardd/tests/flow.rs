@@ -513,3 +513,26 @@ fn a_backlog_goal_holds_one_project() {
     let (code, _) = b.post_err("backlog/plan", json!({"ids": []}));
     assert_eq!(code, 400);
 }
+
+#[test]
+fn tb_moves_issues_by_ref_and_unattaches_by_link() {
+    let b = new_board();
+    b.post("/goals", json!({"name": "Docs", "project": "webapp"}));
+    b.post("/backlog", json!({"title": "Typo on the home page", "kind": "clean", "project": "webapp"}));
+    // What `tb backlog move B1 G1` / `tb backlog move B1 none` send.
+    assert_eq!(b.post("/backlog/B1/move", json!({"goal_id": "G1"}))["goal"]["ref"], "G1");
+    assert!(b.post("/backlog/B1/move", json!({"goal_id": null}))["goal"].is_null());
+
+    let att = |b: &Board| b.get("/goals/G1")["attachments"].as_array().unwrap().iter().map(|a| a["title"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    b.report("tb.attach", "s1", json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc", "goal": "G1"}));
+    b.report("tb.attach", "s1", json!({"url": "~/notes.md", "title": "Notes", "kind": "other", "goal": "G1"}));
+    assert_eq!(att(&b), vec!["Spec", "Notes"]);
+    // By link, then by title.
+    assert_eq!(b.report("tb.unattach", "s1", json!({"url": "https://example.com/spec", "goal": "G1"}))["removed"], "Spec");
+    assert_eq!(b.report("tb.unattach", "s1", json!({"url": "Notes", "goal": "G1"}))["removed"], "Notes");
+    assert!(att(&b).is_empty());
+    let mut body = json!({"event": "tb.unattach", "session": "s1", "url": "Notes", "goal": "G1"});
+    body["cwd"] = json!("");
+    let e = reports::handle(&b.app, body, false).expect_err("nothing left to remove");
+    assert_eq!(e.status, 404);
+}

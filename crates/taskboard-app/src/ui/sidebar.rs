@@ -10,7 +10,7 @@
 use crate::app::{Filters, MainWindow, Page};
 use crate::fmt::{self, arr, b, i, s};
 use crate::theme::Theme;
-use crate::ui::{kit, modals};
+use crate::ui::kit;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -845,8 +845,6 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
                     .on_click(cx.listener(|m, _, _, cx| m.open_goals(cx))),
             )
             .child(div().text_size(px(12.)).text_color(t.faint).child(view.count.to_string()))
-            .child(div().flex_1())
-            .child(kit::btn_small(t, "rail-new-goal", "+").w(px(26.)).px(px(0.)).tooltip(kit::tip("New goal")).on_click(cx.listener(|m, _, window, cx| modals::open_goal_form(m, None, window, cx))))
             .into_any_element(),
     );
     let mut list = div().id("goals-rail").flex().flex_col().gap(px(1.)).flex_1().min_h_0().overflow_y_scroll();
@@ -898,7 +896,6 @@ fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindo
             .gap(px(8.))
             .px(px(6.))
             .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Goals"))
-            .child(kit::btn_small(t, "gnav-new-goal", "+ New goal").on_click(cx.listener(|m, _, window, cx| modals::open_goal_form(m, None, window, cx))))
             .into_any_element(),
     );
     let tabs: Vec<String> = nv.tabs.iter().map(|(_, l, n)| format!("{l} {n}")).collect();
@@ -1115,10 +1112,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .items_center()
         .gap(px(10.))
         .px(px(4.))
-        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"))
-        .child(kit::btn_primary(&t, "new-task", "+ New task").h(px(26.)).px(px(10.)).text_size(px(12.5)).on_click(cx.listener(|m, _, window, cx| {
-            modals::open_task_form(m, Default::default(), window, cx);
-        })));
+        .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"));
     let nav = div()
         .flex()
         .flex_col()

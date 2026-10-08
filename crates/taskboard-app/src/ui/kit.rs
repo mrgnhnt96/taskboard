@@ -322,17 +322,6 @@ impl Input {
     }
 }
 
-/// A labeled form row: label above, control below, optional help under it.
-pub fn field(t: &Theme, label: &str, control: impl IntoElement, help_text: Option<&str>) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(5.))
-        .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(label.to_string()))
-        .child(control)
-        .children(help_text.map(|h| help(t, h.to_string())))
-}
-
 // ------------------------------------------------------------------ tooltips
 
 struct Tip {

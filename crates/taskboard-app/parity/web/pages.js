@@ -330,17 +330,12 @@ function notesAside(g) {
     .map(([k, title]) => [title, notes.filter(n => (['decision', 'reference'].includes(n.kind) ? n.kind : 'finding') === k)])
     .filter(([, l]) => l.length);
   const fk = 'gnote:' + gr;
-  const kind = S.drafts['gnotekind:' + gr] || 'finding';
-  const form = S.reveal[fk] ? `<div class="stack" style="gap:8px">
-      <div class="seg sm" role="group" aria-label="Kind of note">${[['finding', 'Finding'], ['decision', 'Decision'], ['reference', 'Reference']].map(([id, l]) => `<button type="button" data-act="gnote-kind" data-id="${esc(gr)}" data-arg="${id}" aria-pressed="${kind === id}">${l}</button>`).join('')}</div>
-      <label class="sr" for="gn-${esc(gr)}">Note</label><textarea class="input" id="gn-${esc(gr)}" data-k="${esc(fk)}" rows="3" placeholder="What every task in this goal should know">${esc(S.drafts[fk] || '')}</textarea>
-      <div class="row">${btn('Save note', 'gnote-save', { id: gr, cls: 'soft sm', grp: fk })}${btn('Cancel', 'hide', { arg: fk, cls: 'ghost sm' })}</div></div>` : '';
   const open = foldOpen('gnotes');
   return `<aside class="aside-card" aria-label="Goal notes"><details class="card-fold" data-fold="gnotes"${open ? ' open' : ''}>
-    <summary><h3 class="h3 grow">Goal notes</h3>${S.reveal[fk] ? '' : btn('Add a note', 'reveal', { arg: fk, cls: 'plain' })}</summary>
+    <summary><h3 class="h3 grow">Goal notes</h3></summary>
     <div class="card-fold-body">
     <p style="font-size:13px;color:var(--muted)">Every task in this goal gets these, and the open backlog, in its handoff. A new terminal starts with what earlier tasks learned.</p>
-    ${form}${note(fk)}
+    ${note(fk)}
     ${groups.length ? groups.map(([title, l]) => `<div class="notes-g"><b>${title}</b><ul>${l.map(noteItem).join('')}</ul></div>`).join('')
       : '<div class="notes-g"><b>Nothing yet</b><ul><li>Notes from tasks and from you collect here.</li></ul></div>'}
     </div></details>
@@ -366,7 +361,6 @@ function bulkBar(pickable) {
   const b = (label, arg, cls) => btn(label, 'bl-bulk', { arg, cls, grp: 'bulk', disabled: busy });
   return `<div class="bl-head on" role="toolbar" aria-label="Change the selected issues"><label class="bl-all">${box}${esc(n)} selected</label>
     ${b('Make tasks', 'task', 'soft sm')}${jiraOn() ? b('Create tickets', 'ticket', 'sm') : ''}${b('Won’t do', 'drop', 'ghost sm')}
-    ${goalButton('bl-bulk-move', '', { target: 'change:bl-bulk-move', placeholder: 'Move to a goal', specials: [['none', 'Not in a goal']], cls: 'sm', grp: 'bulk', disabled: busy })}
     ${note('bulk')}<div class="grow"></div>${btn('Clear', 'bl-pick-clear', { cls: 'link', disabled: busy })}</div>`;
 }
 function goalBacklog(g) {
@@ -401,7 +395,7 @@ function issueAside(showMove) {
     <div class="stack"><span class="row" style="gap:8px;flex-wrap:nowrap"><span class="chip k-${esc(b.kind)}">${esc(kindLabel(b.kind))}</span><span class="help grow">${esc(info ? info.text : `Open · reported at ${hhmm(b.created_at)}`)}</span><span class="pill ref">${esc(ref(b, 'B'))}</span></span>
       <h2 class="it">${esc(b.title)}</h2>${b.state === 'task' && b.task_id != null ? `<a href="${esc(hashWith({ task: 'T' + b.task_id, tab: null }))}" style="font-size:12.5px;align-self:flex-start">Open task T${esc(b.task_id)}</a>` : ''}</div>
     ${S.issueErr ? `<p class="note err">${esc(S.issueErr)}</p>` : ''}
-    ${issueDetail(b, { move: showMove, compact: true })}
+    ${issueDetail(b, { compact: true })}
   </aside>`;
 }
 

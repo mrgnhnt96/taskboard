@@ -218,18 +218,6 @@ for (const [n, notes] of Object.entries(NOTES)) {
   const notes = [{ id: 1, kind: 'finding', text: 'x', source: 'you', at: '2026-10-07T14:05:00Z' }, { id: 2, kind: 'finding', text: 'y', at: '2026-10-03T09:00:00Z' }];
   add('noteFromTimes', 'you today / none earlier', { notes }, notes.map(n => w.call('noteFrom', n)));
 }
-// The open add-note form (labels, placeholder).
-{
-  w.run("S.reveal = {'gnote:G1': true}; S.drafts = {}");
-  const html = w.call('notesAside', G({}));
-  add('noteForm', 'open', {}, {
-    kinds: [...html.matchAll(/data-act="gnote-kind"[^>]*>([\s\S]*?)<\/button>/g)].map(m => vis(m[1])),
-    placeholder: attr(html, /placeholder="([^"]*)"/),
-    buttons: [...html.matchAll(/<button[^>]*data-act="(gnote-save|hide)"[^>]*>([\s\S]*?)<\/button>/g)].map(m => vis(m[2])),
-    add_button: acts(html).includes('reveal'),
-  });
-  w.run('S.reveal = {}');
-}
 // noteBody -> blocks; inline links/code.
 const blocks = html => [...String(html).matchAll(/<(p|ul|pre)>([\s\S]*?)<\/\1>/g)].map(([, tag, body]) => {
   const inline = s => [...s.matchAll(/<a href="([^"]*)"[^>]*>[\s\S]*?<\/a>|<code>([\s\S]*?)<\/code>|([^<]+)/g)]
@@ -282,17 +270,6 @@ for (const a of ATTS) {
   add('attMenu', `att ${a.id}`, { att: a }, [...menu.matchAll(/<(?:a|button)[^>]*role="menuitem"[^>]*>([\s\S]*?)<\/(?:a|button)>/g)].map(m => vis(m[1])));
 }
 w.run('S.attMenu = null');
-{
-  w.run("S.attEdit = '2'; S.drafts = {}");
-  const html = w.call('attachAside', G({ attachments: [ATTS[1]] }));
-  add('attEdit', 'att 2', { att: ATTS[1] }, {
-    kinds: [...html.matchAll(/data-act="att-ekind" data-arg="(\w+)"[^>]*aria-pressed="(true|false)">([\s\S]*?)<\/button>/g)].map(m => [vis(m[3]), m[2] === 'true']),
-    title: attr(html, /data-k="attedit:2:title" placeholder="Title" value="([^"]*)"/),
-    url: attr(html, /data-k="attedit:2:url" placeholder="([^"]*)" value="([^"]*)"/),
-    buttons: [...html.matchAll(/data-act="(att-esave|att-ecancel)"[^>]*>([\s\S]*?)<\/button>/g)].map(m => vis(m[2])),
-  });
-  w.run('S.attEdit = null');
-}
 
 // ---------------------------------------------------------------- backlog
 const B = (id, o) => ({ id, ref: 'B' + id, kind: 'bug', title: `Issue ${id}`, goal: { id: 1, ref: 'G1', name: 'Passkeys' }, goal_id: 1, project: 'webapp', state: 'open',
@@ -342,20 +319,6 @@ for (const [n, g, jira, sel, showDropped] of [
 // issueFrom with times (hhmm) kept apart, like noteFrom.
 add('issueFromTimes', 'today / earlier', {}, [w.call('issueFrom', B(1, { created_at: '2026-10-07T14:05:00Z' }), true), w.call('issueFrom', B(2, { source: 'you', created_at: '2026-10-03T09:00:00Z' }), true)]);
 
-// ---------------------------------------------------------------- goal picker (bulk move)
-const GOALS_ALL = [
-  { id: 3, ref: 'G3', name: 'beta release', project: 'api', epic_key: 'API-1', archived: false },
-  { id: 1, ref: 'G1', name: 'Sign-in with passkeys', project: 'webapp', epic_key: null, archived: false },
-  { id: 2, ref: 'G2', name: 'Alpha cleanup', project: 'webapp', epic_key: null, archived: false },
-  { id: 4, ref: 'G4', name: 'Archived one', project: 'webapp', archived: true },
-  { id: 5, ref: 'G5', name: 'Sign out everywhere', project: 'api', epic_key: null, archived: false },
-];
-w.set('S.goalsAll', GOALS_ALL);
-for (const q of ['', 'sign', 'out', 'api', 'zzz', 'ALPHA']) {
-  w.set('S.picker', { kind: 'goal', target: 'change:bl-bulk-move', value: '', specials: [['none', 'Not in a goal']], proj: '', q, active: 0 });
-  add('goalPicker', `q=${JSON.stringify(q)}`, { goals: GOALS_ALL, q }, w.run('pickerItems()').map(it => ({ v: it.v, name: it.name, sub: it.sub || '' })));
-}
-
 // ---------------------------------------------------------------- actions: request + feedback, from the web's own handlers
 // post() is a const over api(); stub api (a function declaration) and the page's side effects.
 w.run(`var __posts = [], __runs = [];
@@ -390,19 +353,6 @@ act('pause', 'goal-pause', { dataset: { id: 'G1', arg: 'on' } });
 act('resume (gate)', 'goal-pause', { dataset: { id: 'G1', arg: 'off', grp: 'ggate:G1' } });
 act('deprioritize (dialog)', 'goal-deprio-yes', { dataset: { id: 'G1' } });
 act('bring back (gate)', 'goal-deprio', { dataset: { id: 'G1', arg: 'off', grp: 'ggate:G1' } });
-w.run("S.drafts = {'gnote:G1': '  A note  '}; S.reveal = {'gnote:G1': true}");
-act('note, finding', 'gnote-save', { dataset: { id: 'G1', grp: 'gnote:G1' } });
-w.run("S.drafts = {'gnote:G1': 'Decided', 'gnotekind:G1': 'decision'}");
-act('note, decision', 'gnote-save', { dataset: { id: 'G1', grp: 'gnote:G1' } });
-w.run("S.drafts = {'gnote:G1': '   '}");
-act('note, empty', 'gnote-save', { dataset: { id: 'G1', grp: 'gnote:G1' } });
-act('remove attachment', 'att-remove', { dataset: { id: '2', grp: 'att:goals:G1' } });
-w.run("S.drafts = {'attedit:2:title': 'New title', 'attedit:2:kind': 'doc'}");
-act('edit attachment, title + kind', 'att-esave', { dataset: { id: '2' } });
-w.run("S.drafts = {'attedit:2:url': '~/x.md'}");
-act('edit attachment, url', 'att-esave', { dataset: { id: '2' } });
-w.run("S.drafts = {}");
-act('edit attachment, untouched', 'att-esave', { dataset: { id: '2' } });
 w.run("S.route = {page: 'goal', id: 'G1', q: {}}; S.keepIssues = []");
 act('promote (goal row)', 'promote', { dataset: { id: 'B1', arg: 'goal', grp: 'issue:B1' } }, null, { task: { id: 7, ref: 'T7' } });
 act('ticket (goal row)', 'ticket', { dataset: { id: 'B1', grp: 'issue:B1' } });
@@ -417,12 +367,6 @@ for (const [n, a, extra, setup] of [
   w.run(`bulkChange({ dataset: { act: 'bl-bulk', arg: '${a}' } }, '${a}', {})`);
   const r = w.run('__runs[0]');
   ACTS.push({ name: n, expect: { posts: w.run('__posts'), feedback: null, bulk_toast: [w.run(`BULK_DONE['${a}'](2)`), w.run(`BULK_DONE['${a}'](1)`)] } });
-}
-for (const [n, v] of [['bulk move to G2', 'G2'], ['bulk move out', 'none']]) {
-  w.run("P.sel = new Set(['B1'])");
-  w.run('__posts = []; __runs = []');
-  w.run(`CHANGES['bl-bulk-move']({ value: '${v}', dataset: {} })`);
-  ACTS.push({ name: n, expect: { posts: w.run('__posts'), feedback: null, bulk_toast: [w.run("BULK_DONE.move(2)"), w.run("BULK_DONE.move(1)")] } });
 }
 for (const [n, field, el] of [
   ['set max terminals', 'max_terminals', { type: 'select-one', value: '3', checked: false, dataset: { field: 'max_terminals', id: 'G1', grp: 'gset:G1' } }],

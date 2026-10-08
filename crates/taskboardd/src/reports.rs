@@ -1080,6 +1080,32 @@ fn on_attach(r: &mut Report) -> Result<Value> {
     Ok(with(ok(Some(&t), None), json!({"attachment": a})))
 }
 
+/// `tb unattach`: remove the task's (or, with `goal`, the goal's) attachment whose link, path or
+/// title is `url`; the newest one when several match.
+fn on_unattach(r: &mut Report) -> Result<Value> {
+    r.touch_session(true)?;
+    let what = r.b("url");
+    let (col, owner, task, goal) = if body_has(&r.body, "goal") {
+        let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
+        ("goal_id", g.id(), None, Some(g))
+    } else {
+        let Some(t) = r.task()? else {
+            return err(400, "No task on this terminal. Name one with --task T<n>, or a goal with --goal G<n>.");
+        };
+        ("task_id", t.id(), Some(t), None)
+    };
+    let sql = format!("SELECT * FROM attachments WHERE {col} = ? AND removed_at IS NULL AND (url = ? OR title = ?) ORDER BY id DESC");
+    let Some(a) = r.app.db.q1(&sql, p![owner, what, what])? else {
+        return err(404, "Nothing attached there has that link, path or title.");
+    };
+    r.app.db.x("UPDATE attachments SET removed_at = ? WHERE id = ?", p![now_iso(), a.id()])?;
+    if let Some(t) = &task {
+        board::log_event(r.app, t.id(), &r.name(), "note", &format!("Removed the attachment {}", a.st("title")))?;
+    }
+    let goal = goal.map(|g| json!(rf("goal", g.id()))).unwrap_or(Value::Null);
+    Ok(with(ok(task.as_ref(), None), json!({"removed": a.st("title"), "goal": goal})))
+}
+
 fn on_hello(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     store_plugin(r)?;
@@ -1220,6 +1246,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.propose" => on_propose,
         "tb.goal" => on_goal,
         "tb.attach" => on_attach,
+        "tb.unattach" => on_unattach,
         "tb.new_task" => on_new_task,
         "tb.hello" => on_hello,
         "tb.status" => on_status,

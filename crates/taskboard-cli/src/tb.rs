@@ -142,6 +142,14 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Remove an attachment from the task (or, with --goal, the goal), by its link, path or title
+    Unattach {
+        url: String,
+        #[arg(long)]
+        goal: Option<String>,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// Show or change the work hours
     Hours {
         #[arg(long)]
@@ -332,7 +340,8 @@ enum BacklogCmd {
         title: Option<String>,
         #[arg(long)]
         detail: Option<String>,
-    },
+    },    /// Move a backlog issue to another goal (G2), or out of its goal (none)
+    Move { issue: String, goal: String },
 }
 
 #[derive(Subcommand)]
@@ -841,6 +850,24 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let v = c.call("POST", &format!("/backlog/{r}"), Some(b))?;
             out(&format!("Changed {r} “{}”.", v["title"].as_str().unwrap_or("")));
             Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Move { issue, goal } } => {
+            let r = issue_ref(&issue)?;
+            let to = if goal.trim().eq_ignore_ascii_case("none") { Value::Null } else { json!(goal_ref(&goal)?) };
+            let v = c.call("POST", &format!("/backlog/{r}/move"), Some(json!({"goal_id": to, "who": c.who()})))?;
+            let issue = v.get("issue").filter(|x| x.is_object()).unwrap_or(&v);
+            match issue["goal"]["ref"].as_str().or(to.as_str()) {
+                Some(g) => out(&format!("Moved {r} to {g}.")),
+                None => out(&format!("Moved {r} out of its goal.")),
+            }
+            Ok(0)
+        }
+        Cmd::Unattach { url, goal, t } => {
+            let goal = goal.map(|g| goal_ref(&g)).transpose()?;
+            let needs = goal.is_none();
+            c.run_report("tb.unattach", json!({"url": url, "goal": goal}), t.task, needs, |v| {
+                format!("Removed {} from {}.", v["removed"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
+            })
         }
         Cmd::Attach { url, kind, title, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;

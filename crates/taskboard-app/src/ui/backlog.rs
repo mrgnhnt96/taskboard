@@ -10,7 +10,13 @@
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
+<<<<<<< Updated upstream
 use crate::ui::issue_panel as ip;
+=======
+use crate::ui::issue_panel::{self as ip, Act, AsideView, Ctx};
+#[cfg(test)]
+use crate::ui::issue_panel::flat;
+>>>>>>> Stashed changes
 use crate::ui::kit;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -261,6 +267,7 @@ pub fn draft(issues: &[Value], plan: Option<&Value>, picked: &[String]) -> Draft
                 waves.push(WaveView { name: format!("Wave {}", waves.len() + 1), why: s(&w, "why").to_string(), items });
             }
         }
+<<<<<<< Updated upstream
     }
     let planned: Vec<String> = waves.iter().flat_map(|w| w.items.iter().map(|i| i.r.clone())).collect();
     let unplanned: Vec<Item> = if planning { vec![] } else { picks.iter().filter(|r| !planned.contains(r)).map(|r| item(r, vec![])).collect() };
@@ -273,6 +280,25 @@ pub fn draft(issues: &[Value], plan: Option<&Value>, picked: &[String]) -> Draft
         note: plan.and_then(|p| fmt::opt_s(p, "note")).filter(|_| state == "ready").map(str::to_string),
         suggest: plan.map(|p| s(p, "name").to_string()).unwrap_or_default(),
         mixed,
+=======
+    };
+    let aside = match &p.aside {
+        None => AsideState::None,
+        Some((_, None)) => AsideState::Loading(None),
+        Some((_, Some(Err(e)))) => AsideState::Loading(Some(e.clone())),
+        Some((_, Some(Ok(b)))) => AsideState::Issue(Box::new(ip::aside_view(b))),
+    };
+    let pspec = [("all".to_string(), "All projects".to_string())];
+    let gspec = [("all".to_string(), "All goals".to_string()), ("none".to_string(), "Not in a goal".to_string())];
+    PageView {
+        open,
+        project_label: ip::picker_label(false, st.f_project(), &pspec, goals),
+        goal_label: ip::picker_label(true, st.f_goal(), &gspec, goals),
+        kind_on: KINDS.iter().position(|(k, _)| *k == st.f_kind()).unwrap_or(0),
+        state_options: STATES.iter().map(|(k, _)| *k).filter(|k| *k != "ticket" || p.ctx.jira || st.f_state() == "ticket").collect(),
+        list,
+        aside,
+>>>>>>> Stashed changes
     }
 }
 
@@ -579,6 +605,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let pct = if total > 0 { triaged as f32 / total as f32 } else { 1. };
     let meter = div()
         .flex()
+<<<<<<< Updated upstream
         .flex_col()
         .gap(px(5.))
         .child(
@@ -608,6 +635,29 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         kit::btn_small(&t, "plan-project-btn", format!("{label}  ▾")).on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
             let p = e.position();
             m.toggle_menu(MENU_PROJECT, point(p.x - px(10.), p.y + px(14.)), cx);
+=======
+        .flex_none()
+        .items_center()
+        .gap(px(12.))
+        .child(kit::link(&t, "bl-back", "‹ Task board").text_size(px(13.5)).on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))))
+        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Backlog"))
+        .children(v.open.map(|n| kit::tone_pill(&t, "warn", format!("{n} open"))))
+        .child(div().flex_1())
+        .child(kit::link(&t, "bl-goals", "Goals").text_size(px(13.5)).on_click(cx.listener(|m, _, _, cx| {
+            if let Some(g) = goals_landing(m) {
+                m.go(Page::Goal(g), cx);
+            }
+        })));
+
+    // ---- filters
+    let st = &m.backlog;
+    let (fp, fg) = (st.f_project().to_string(), st.f_goal().to_string());
+    let labels: Vec<&str> = KINDS.iter().map(|(_, l)| *l).collect();
+    let kinds = kit::seg(&t, "bl-kind", &labels, v.kind_on, |i, item| {
+        item.on_click(cx.listener(move |m, _, _, cx| {
+            m.backlog.kind = KINDS[i].0.to_string();
+            filters_changed(m, cx);
+>>>>>>> Stashed changes
         }))
     });
     let lens_on = Lens::ALL.iter().position(|l| *l == m.backlog.lens).unwrap_or(0);
@@ -722,6 +772,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         col = col.child(div().flex().flex_col().gap(px(6.)).child(head).child(rows));
     }
 
+<<<<<<< Updated upstream
     // ---- the new goal
     let aside = draft_el(m, &t, &d, window, cx);
 
@@ -738,6 +789,15 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 m.backlog.data = None;
                 resync(m, cx);
             })));
+=======
+    // ---- the issue beside it
+    let aside_el = match &v.aside {
+        AsideState::None => None,
+        AsideState::Loading(e) => Some(ip::render_aside(&t, None, e.as_deref(), cx)),
+        AsideState::Issue(view) => {
+            let b = aside.as_ref().and_then(|(_, g)| g.as_ref()).and_then(|g| g.as_ref().ok()).cloned();
+            Some(ip::render_aside(&t, b.as_ref().map(|b| (b, &**view)), None, cx))
+>>>>>>> Stashed changes
         }
         menus.push(kit::popover(at, list.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
     }
@@ -1016,6 +1076,7 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+<<<<<<< Updated upstream
     fn groups_follow_the_lens_and_the_checks() {
         let picked = vec!["B1".to_string()];
         let g = groups(&list(), Lens::Similar, [true; 4], &picked);
@@ -1026,6 +1087,57 @@ mod tests {
         assert_eq!(g[0].check, Check::All);
         let g = groups(&list(), Lens::Priority, [true, false, true, true], &[]);
         assert_eq!(g.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(), ["P1", "P3"], "test gaps hidden");
+=======
+    fn page_matches_web() {
+        golden("backlog").only("page").check(|i| {
+            let f = &i["filter"];
+            let mut st = State {
+                project: s(f, "project").into(),
+                goal: s(f, "goal").into(),
+                kind: s(f, "kind").into(),
+                state: s(f, "state").into(),
+                sort: s(f, "sort").into(),
+                ..Default::default()
+            };
+            st.open_all = i["openAll"].as_i64();
+            let mut kept: HashMap<String, Value> = i["kept"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            let order: Vec<String> = arr(i, "order").iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            let backlog = i.get("backlog").filter(|b| b.is_object());
+            let rows = backlog.map(|b| with_kept(arr(b, "issues"), &mut kept, &order)).unwrap_or_default();
+            let now = Instant::now();
+            let notes: HashMap<String, (String, bool, Instant)> = i["notes"].as_object().map(|o| o.iter().map(|(k, n)| (k.clone(), (s(n, "text").to_string(), fmt::b(n, "err"), now))).collect()).unwrap_or_default();
+            let busy: HashSet<String> = arr(i, "busy").iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            let goals = arr(i, "goals").to_vec();
+            let state = json!({"projects": i["projects"], "counts": i["counts"]});
+            let aside = fmt::opt_s(i, "selected").map(|r| (r.to_string(), Some(Ok(i["issue"].clone()))));
+            let v = page_view(&PageInput {
+                st: &st,
+                ctx: Ctx { jira: fmt::b(i, "jira"), goals: &goals, notes: &notes, busy: &busy },
+                state: &state,
+                backlog,
+                backlog_err: i["backlogErr"].as_str(),
+                rows,
+                aside,
+            });
+            let rows: Vec<Value> = match &v.list {
+                ListView::Rows { rows, .. } => rows
+                    .iter()
+                    .map(|r| {
+                        let (text, acts) = r.text_and_acts();
+                        json!({"text": text, "acts": acts})
+                    })
+                    .collect(),
+                ListView::Loading(_) => vec![],
+            };
+            let (aside, aside_acts) = v.aside_text_and_acts();
+            json!({
+                "header": v.header_text(), "header_acts": ["add-issue"],
+                "filters": v.filters_text(), "filter_values": [v.project_label, v.goal_label],
+                "state_options": v.state_options, "list_head": v.list_head(),
+                "rows": rows, "aside": aside, "aside_acts": aside_acts,
+            })
+        });
+>>>>>>> Stashed changes
     }
 
     #[::core::prelude::v1::test]

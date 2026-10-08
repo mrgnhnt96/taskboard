@@ -13,40 +13,20 @@
 use crate::app::{MainWindow, Page, Panel};
 use crate::fmt::{self, arr, b, i, s};
 use crate::theme::Theme;
-use crate::ui::text_input::FieldChanged;
-use crate::ui::{kit, modals};
+use crate::ui::kit;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 const START_MENU: &str = "goal-start";
-const MOVE_MENU: &str = "goal-bulk-move";
 const ATT_MENU: &str = "goal-att";
-const NOTE_KINDS: [(&str, &str); 3] = [("finding", "Finding"), ("decision", "Decision"), ("reference", "Reference")];
 const MAX_TERMINALS: [i64; 7] = [1, 2, 3, 4, 5, 6, 8];
 const ATT_KINDS: [(&str, &str); 6] = [("design", "Design"), ("proposal", "Proposal"), ("doc", "Doc"), ("evidence", "Evidence"), ("results", "Results"), ("other", "Link")];
 const FOLD_NOTES: &str = "tb.fold.gnotes";
 const BACKLOG_HELP: &str = "Issues found while testing, building or reviewing that no task covers yet. Terminals add them instead of fixing them on the side.";
 const NOTES_HELP: &str = "Every task in this goal gets these, and the open backlog, in its handoff. A new terminal starts with what earlier tasks learned.";
 const ATTACH_HELP: &str = "Designs, proposals and docs for the whole goal. Every task’s handoff lists them.";
-
-/// The bulk move's goal picker (the web's picker dialog for kind `goal`).
-struct Picker {
-    input: kit::Input,
-    active: usize,
-    _sub: Subscription,
-}
-
-/// An attachment being edited (`S.attEdit` and its drafts). A field is sent only once touched.
-struct AttEdit {
-    id: i64,
-    kind: Option<String>,
-    title: kit::Input,
-    url: kit::Input,
-    touched: HashSet<&'static str>,
-    _subs: Vec<Subscription>,
-}
 
 #[derive(Default)]
 pub struct State {
@@ -63,14 +43,9 @@ pub struct State {
     deprio_open: bool,
     note_dialog: Option<Value>,
     dialog_focus: Option<FocusHandle>,
-    picker: Option<Picker>,
-    // Kept across goals, like the web's S.notes / S.busy / S.drafts / S.reveal / S.attEdit.
+    // Kept across goals, like the web's S.notes / S.busy.
     notes: HashMap<String, (String, bool)>,
     busy: HashSet<String>,
-    note_inputs: HashMap<String, kit::Input>,
-    note_kinds: HashMap<String, &'static str>,
-    note_open: HashSet<String>,
-    att_edit: Option<AttEdit>,
 }
 
 impl State {
@@ -84,7 +59,6 @@ impl State {
         self.show_dropped = false;
         self.deprio_open = false;
         self.note_dialog = None;
-        self.picker = None;
     }
 }
 
@@ -229,9 +203,6 @@ pub fn issue_from(bl: &Value, long: bool) -> String {
 fn js_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
-
-/// `String.prototype.localeCompare` (node-verified port in the forms module).
-use crate::ui::modals::locale_cmp;
 
 // ------------------------------------------------------------------ goal state and counts
 
@@ -964,7 +935,6 @@ pub fn att_menu_items(a: &Value) -> Vec<&'static str> {
         v.push("Open");
     }
     v.push(if att_web(a) { "Copy link" } else { "Copy path" });
-    v.extend(["Edit", "Remove"]);
     v
 }
 
@@ -1035,7 +1005,7 @@ pub fn backlog_view(g: &Value, sel: &[String], show_dropped: bool, kept: &HashMa
             if jira {
                 buttons.push("Create tickets");
             }
-            buttons.extend(["Won’t do", "Move to a goal", "Clear"]);
+            buttons.extend(["Won’t do", "Clear"]);
             BulkBar { label: format!("{n} selected"), buttons }
         }
     });
@@ -1082,43 +1052,8 @@ pub fn bulk_toast(action: &str, n: i64) -> String {
     match action {
         "task" => format!("Made {}", fmt::plural(n, "task", "tasks")),
         "ticket" => format!("Asked Jira for {}", fmt::plural(n, "ticket", "tickets")),
-        "drop" => format!("Closed {} as won’t do", fmt::plural(n, "issue", "issues")),
-        _ => format!("Moved {}", fmt::plural(n, "issue", "issues")),
+        _ => format!("Closed {} as won’t do", fmt::plural(n, "issue", "issues")),
     }
-}
-
-/// The goal picker's items (`pickerItems` for kind `goal`, special "Not in a goal"): (value, name, sub).
-pub fn goal_picker_items(goals: &[Value], q: &str) -> Vec<(String, String, String)> {
-    let q = q.trim().to_lowercase();
-    let mut items: Vec<(String, String, String)> = goals
-        .iter()
-        .filter(|g| !b(g, "archived"))
-        .map(|g| {
-            let sub = [fmt::opt_s(g, "project"), fmt::opt_s(g, "epic_key")].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-            (fmt::ref_of(g, "G"), s(g, "name").to_string(), sub)
-        })
-        .collect();
-    items.sort_by(|a, c| locale_cmp(&a.1, &c.1));
-    if q.is_empty() {
-        let mut out = vec![("none".to_string(), "Not in a goal".to_string(), String::new())];
-        out.extend(items);
-        return out;
-    }
-    let rank = |name: &str| {
-        let l = name.to_lowercase();
-        if l.starts_with(&q) {
-            0
-        } else if l.split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit())).any(|w| w.starts_with(&q)) {
-            1
-        } else if l.contains(&q) {
-            2
-        } else {
-            3
-        }
-    };
-    let mut items: Vec<_> = items.into_iter().filter(|(_, name, sub)| name.to_lowercase().contains(&q) || sub.to_lowercase().contains(&q)).collect();
-    items.sort_by(|a, c| rank(&a.1).cmp(&rank(&c.1)).then_with(|| locale_cmp(&a.1, &c.1)));
-    items
 }
 
 // ------------------------------------------------------------------ actions (the web's run())
@@ -1227,52 +1162,6 @@ pub fn set_run_option(m: &mut MainWindow, gr: &str, field: &'static str, v: Valu
     run(m, format!("goal-set::{gr}"), Some(format!("gset:{gr}")), false, format!("goals/{gr}"), json!({ field: v }), cx, |_, _, _| "Saved".into());
 }
 
-/// `gnote-save`.
-pub fn save_note(m: &mut MainWindow, gr: &str, cx: &mut Context<MainWindow>) {
-    let k = format!("gnote:{gr}");
-    let text = m.goal_page.note_inputs.get(gr).map(|n| n.text(cx).trim().to_string()).unwrap_or_default();
-    if text.is_empty() {
-        m.goal_page.notes.insert(k, ("Write the note first.".into(), true));
-        cx.notify();
-        return;
-    }
-    let kind = m.goal_page.note_kinds.get(gr).copied().unwrap_or("finding");
-    let g = gr.to_string();
-    run(m, format!("gnote-save::{gr}"), Some(k), false, format!("goals/{gr}/notes"), json!({"kind": kind, "text": text, "source": "you"}), cx, move |m, _, cx| {
-        if let Some(n) = m.goal_page.note_inputs.get(&g) {
-            n.clear(cx);
-        }
-        m.goal_page.note_open.remove(&g);
-        "Note added".into()
-    });
-}
-
-/// `att-remove`.
-pub fn remove_attachment(m: &mut MainWindow, id: i64, gr: &str, cx: &mut Context<MainWindow>) {
-    m.menu = None;
-    run(m, format!("att-remove::{id}"), Some(format!("att:goals:{gr}")), false, format!("attachments/{id}/remove"), json!({}), cx, |_, _, _| "Removed".into());
-}
-
-/// `att-esave`: only the fields touched since Edit.
-pub fn save_attachment(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let Some(e) = m.goal_page.att_edit.as_ref() else { return };
-    let id = e.id;
-    let mut body = serde_json::Map::new();
-    if e.touched.contains("title") {
-        body.insert("title".into(), json!(e.title.text(cx)));
-    }
-    if e.touched.contains("url") {
-        body.insert("url".into(), json!(e.url.text(cx)));
-    }
-    if let Some(k) = &e.kind {
-        body.insert("kind".into(), json!(k));
-    }
-    run(m, format!("att-esave::{id}"), Some(format!("attedit:{id}")), true, format!("attachments/{id}"), Value::Object(body), cx, |m, _, _| {
-        m.goal_page.att_edit = None;
-        "Saved".into()
-    });
-}
-
 /// `keepIssue`: hold the row where it is, then refresh it from the board (`refreshKept`).
 fn keep_issue(m: &mut MainWindow, r: &str) {
     if let Some(row) = m.data.goal.as_ref().and_then(|g| arr(g, "backlog").iter().find(|x| fmt::ref_of(x, "B") == r).cloned()) {
@@ -1325,7 +1214,6 @@ pub fn bulk(m: &mut MainWindow, action: &'static str, extra: Value, cx: &mut Con
         return;
     }
     m.menu = None;
-    m.goal_page.picker = None;
     for r in &ids {
         keep_issue(m, r);
     }
@@ -1348,12 +1236,6 @@ pub fn bulk(m: &mut MainWindow, action: &'static str, extra: Value, cx: &mut Con
         refresh_kept(m, ids, cx);
         String::new()
     });
-}
-
-/// `bl-bulk-move`: a goal ref or "none".
-pub fn move_selected(m: &mut MainWindow, v: &str, cx: &mut Context<MainWindow>) {
-    let goal_id = if v == "none" { Value::Null } else { v.trim_start_matches(|c: char| c.is_ascii_alphabetic()).parse::<i64>().map(Value::from).unwrap_or(Value::Null) };
-    bulk(m, "move", json!({"goal_id": goal_id}), cx);
 }
 
 /// `bl-pick` (shift extends from the last one picked) and `bl-pick-all`.
@@ -1799,7 +1681,7 @@ fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
         }))
 }
 
-fn attachments(m: &MainWindow, t: &Theme, g: &Value, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
+fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let list = arr(g, "attachments");
     let mut card = section(t).child(kit::h3(t, "Attached")).children(inline_note(m, t, &format!("att:goals:{gr}")));
@@ -1808,10 +1690,6 @@ fn attachments(m: &MainWindow, t: &Theme, g: &Value, window: &mut Window, cx: &m
     }
     for (a, item) in list.iter().zip(attachments_view(list, &gr)) {
         let id = item.id;
-        if let Some(e) = m.goal_page.att_edit.as_ref().filter(|e| e.id == id) {
-            card = card.child(att_edit_form(m, t, a, e, window, cx));
-            continue;
-        }
         let url = s(a, "url").to_string();
         let name: AnyElement = if item.linked {
             let u = url.clone();
@@ -1856,97 +1734,39 @@ fn attachments(m: &MainWindow, t: &Theme, g: &Value, window: &mut Window, cx: &m
                         m.toggle_menu(&mk, point(p.x - px(150.), p.y + px(14.)), cx);
                     }),
                 ))
-                .children(m.menu_open(&menu_key).map(|at| att_menu(t, a, &gr, at, cx))),
+                .children(m.menu_open(&menu_key).map(|at| att_menu(t, a, at, cx))),
         );
     }
     card
 }
 
-fn att_menu(t: &Theme, a: &Value, gr: &str, at: Point<Pixels>, cx: &mut Context<MainWindow>) -> AnyElement {
+fn att_menu(t: &Theme, a: &Value, at: Point<Pixels>, cx: &mut Context<MainWindow>) -> AnyElement {
     let id = i(a, "id");
     let url = s(a, "url").to_string();
     let mut menu = kit::menu_box(t, 170.).id("att-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     for label in att_menu_items(a) {
-        let (url, gr, a2) = (url.clone(), gr.to_string(), a.clone());
+        let url = url.clone();
         let item = kit::menu_item(t, SharedString::from(format!("att-{id}-{label}")), label, false);
         let item = match label {
             "Open" => item.on_click(cx.listener(move |m, _, _, cx| {
                 m.menu = None;
                 open_attachment(&url, cx);
             })),
-            "Edit" => item.on_click(cx.listener(move |m, _, _, cx| start_att_edit(m, &a2, cx))),
-            "Remove" => item.text_color(t.down).on_click(cx.listener(move |m, _, _, cx| remove_attachment(m, id, &gr, cx))),
             _ => item.on_click(cx.listener(move |m, _, _, cx| {
                 m.menu = None;
                 cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
                 m.toast("Copied", false, cx);
             })),
         };
-        menu = menu.when(label == "Remove", |d| d.child(kit::divider(t).my(px(4.)))).child(item);
+        menu = menu.child(item);
     }
     kit::popover(at, menu)
 }
 
-fn start_att_edit(m: &mut MainWindow, a: &Value, cx: &mut Context<MainWindow>) {
-    m.menu = None;
-    let title = kit::Input::with_text(cx, "Title", false, s(a, "title"));
-    let url = kit::Input::with_text(cx, "https://… or /path/to/file", false, s(a, "url"));
-    let subs = vec![
-        cx.subscribe(&title.field, |m, _, _: &FieldChanged, _| {
-            if let Some(e) = m.goal_page.att_edit.as_mut() {
-                e.touched.insert("title");
-            }
-        }),
-        cx.subscribe(&url.field, |m, _, _: &FieldChanged, _| {
-            if let Some(e) = m.goal_page.att_edit.as_mut() {
-                e.touched.insert("url");
-            }
-        }),
-    ];
-    let id = i(a, "id");
-    m.goal_page.notes.remove(&format!("attedit:{id}"));
-    m.goal_page.att_edit = Some(AttEdit { id, kind: None, title, url, touched: HashSet::new(), _subs: subs });
-    cx.notify();
-}
-
-fn att_edit_form(m: &MainWindow, t: &Theme, a: &Value, e: &AttEdit, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
-    let id = e.id;
-    let cur = e.kind.clone().unwrap_or_else(|| fmt::opt_s(a, "kind").unwrap_or("other").to_string());
-    let labels: Vec<&str> = ATT_KINDS.iter().map(|(_, l)| *l).collect();
-    let on = ATT_KINDS.iter().position(|(k, _)| *k == cur).unwrap_or(usize::MAX);
-    let is_busy = busy(m, &format!("att-esave::{id}"));
-    let save = act_btn(kit::btn_small(t, "att-esave", if is_busy { "Sending…" } else { "Save" }), is_busy);
-    let save = if is_busy { save } else { save.on_click(cx.listener(|m, _, _, cx| save_attachment(m, cx))) };
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .w_full()
-        .child(kit::seg(t, "att-ekind", &labels, on, |ix, item| {
-            item.on_click(cx.listener(move |m, _, _, cx| {
-                if let Some(e) = m.goal_page.att_edit.as_mut() {
-                    e.kind = Some(ATT_KINDS[ix].0.to_string());
-                }
-                cx.notify();
-            }))
-        }))
-        .child(e.title.render(t, "att-etitle", window))
-        .child(e.url.render(t, "att-eurl", window).font_family(t.mono_font.clone()))
-        .child(
-            div().flex().gap(px(8.)).child(save).child(kit::btn_small(t, "att-ecancel", "Cancel").on_click(cx.listener(|m, _, _, cx| {
-                m.goal_page.att_edit = None;
-                cx.notify();
-            }))),
-        )
-        .children(inline_note(m, t, &format!("attedit:{id}")))
-}
-
-fn notes(m: &mut MainWindow, t: &Theme, g: &Value, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
+fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let fk = format!("gnote:{gr}");
-    let open_form = m.goal_page.note_open.contains(&gr);
     let folded_open = crate::prefs::get_str(FOLD_NOTES).map(|v| v == "open").unwrap_or(true);
-    let add_gr = gr.clone();
     let head = div()
         .id("gnotes-head")
         .flex()
@@ -1954,22 +1774,6 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, window: &mut Window, cx: &mut
         .cursor_pointer()
         .child(div().flex_none().w(px(16.)).text_color(t.muted).child(if folded_open { "▾" } else { "▸" }))
         .child(div().flex_1().child(kit::h3(t, "Goal notes")))
-        .when(!open_form, |d| {
-            d.child(kit::link(t, "gnote-add", "Add a note").text_size(px(12.5)).on_click(cx.listener(move |m, _, window, cx| {
-                let gr = add_gr.clone();
-                if !m.goal_page.note_inputs.contains_key(&gr) {
-                    let input = kit::Input::new(cx, "What every task in this goal should know", true);
-                    m.goal_page.note_inputs.insert(gr.clone(), input);
-                }
-                m.goal_page.note_open.insert(gr.clone());
-                crate::prefs::set(FOLD_NOTES, json!("open"));
-                if let Some(n) = m.goal_page.note_inputs.get(&gr) {
-                    window.focus(&n.focus, cx);
-                }
-                cx.stop_propagation();
-                cx.notify();
-            })))
-        })
         .on_click(cx.listener(move |_, _, _, cx| {
             crate::prefs::set(FOLD_NOTES, json!(if folded_open { "closed" } else { "open" }));
             cx.notify();
@@ -1979,46 +1783,6 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, window: &mut Window, cx: &mut
         return card;
     }
     card = card.child(div().text_size(px(13.)).text_color(t.muted).child(NOTES_HELP));
-    if open_form {
-        if let Some(input) = m.goal_page.note_inputs.get(&gr) {
-            let kind = m.goal_page.note_kinds.get(&gr).copied().unwrap_or("finding");
-            let labels: Vec<&str> = NOTE_KINDS.iter().map(|(_, l)| *l).collect();
-            let on = NOTE_KINDS.iter().position(|(k, _)| *k == kind).unwrap_or(0);
-            let (key_gr, save_gr, kind_gr, cancel_gr) = (gr.clone(), gr.clone(), gr.clone(), gr.clone());
-            let field = input.render(t, "gnote-input", window).min_h(px(68.)).items_start().on_key_down(cx.listener(move |m, ev: &KeyDownEvent, window, cx| {
-                let outcome = m.goal_page.note_inputs.get(&key_gr).map(|n| n.on_key(ev, cx));
-                if let Some(kit::KeyOutcome::Cancel) = outcome {
-                    m.goal_page.note_open.remove(&key_gr);
-                    window.focus(&m.focus, cx);
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }));
-            let is_busy = busy(m, &format!("gnote-save::{gr}"));
-            let save = act_btn(kit::btn_small(t, "gnote-save", if is_busy { "Sending…" } else { "Save note" }), is_busy);
-            let save = if is_busy { save } else { save.on_click(cx.listener(move |m, _, _, cx| save_note(m, &save_gr, cx))) };
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(kit::seg(t, "gnote-kind", &labels, on, |ix, item| {
-                        let gr = kind_gr.clone();
-                        item.on_click(cx.listener(move |m, _, _, cx| {
-                            m.goal_page.note_kinds.insert(gr.clone(), NOTE_KINDS[ix].0);
-                            cx.notify();
-                        }))
-                    }))
-                    .child(field)
-                    .child(div().flex().items_center().gap(px(8.)).child(save).child(kit::btn_small(t, "gnote-cancel", "Cancel").on_click(cx.listener(
-                        move |m, _, _, cx| {
-                            m.goal_page.note_open.remove(&cancel_gr);
-                            cx.notify();
-                        },
-                    )))),
-            );
-        }
-    }
     card = card.children(inline_note(m, t, &fk));
     for (title, items) in notes_view(arr(g, "notes")) {
         let mut grp = div().flex().flex_col().gap(px(4.)).child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(title));
@@ -2132,7 +1896,6 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 "Make tasks" => "task",
                 "Create tickets" => "ticket",
                 "Won’t do" => "drop",
-                "Move to a goal" => "move",
                 _ => "clear",
             };
             let own_busy = busy(m, &format!("bl-bulk:{action}:"));
@@ -2144,12 +1907,6 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                         m.goal_page.anchor = None;
                         m.goal_page.notes.remove("bulk");
                         cx.notify();
-                    }))
-                }),
-                "move" => act_btn(kit::btn_small(t, "bl-bulk-move", format!("⌕ {label}")), bulk_busy).when(!bulk_busy, |d| {
-                    d.on_click(cx.listener(|m, e: &ClickEvent, window, cx| {
-                        let p = e.position();
-                        open_picker(m, point(p.x - px(20.), p.y + px(14.)), window, cx);
                     }))
                 }),
                 a => act_btn(kit::btn_small(t, SharedString::from(format!("bl-bulk-{a}")), shown), bulk_busy)
@@ -2252,79 +2009,6 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         }));
     }
     col
-}
-
-fn open_picker(m: &mut MainWindow, at: Point<Pixels>, window: &mut Window, cx: &mut Context<MainWindow>) {
-    let input = kit::Input::new(cx, "Search goals by name, project or epic", false);
-    let sub = cx.subscribe(&input.field, |m, _, _: &FieldChanged, cx| {
-        if let Some(p) = m.goal_page.picker.as_mut() {
-            p.active = 0;
-        }
-        cx.notify();
-    });
-    window.focus(&input.focus, cx);
-    m.goal_page.picker = Some(Picker { input, active: 0, _sub: sub });
-    m.menu = Some((MOVE_MENU.to_string(), at));
-    cx.notify();
-}
-
-fn picker(m: &MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
-    let at = m.menu_open(MOVE_MENU)?;
-    let p = m.goal_page.picker.as_ref()?;
-    let q = p.input.text(cx);
-    let items = goal_picker_items(&m.data.goals, &q);
-    let active = p.active.min(items.len().saturating_sub(1));
-    let keys = items.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
-    let field = p.input.render(t, "goal-picker-q", window).on_key_down(cx.listener(move |m, ev: &KeyDownEvent, _, cx| {
-        let n = keys.len();
-        match ev.keystroke.key.as_str() {
-            "down" | "up" if n > 0 => {
-                if let Some(p) = m.goal_page.picker.as_mut() {
-                    p.active = if ev.keystroke.key == "down" { (p.active.min(n - 1) + 1) % n } else { (p.active.min(n - 1) + n - 1) % n };
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }
-            "enter" if n > 0 => {
-                let ix = m.goal_page.picker.as_ref().map(|p| p.active.min(n - 1)).unwrap_or(0);
-                move_selected(m, &keys[ix], cx);
-                cx.stop_propagation();
-            }
-            _ => {}
-        }
-    }));
-    let mut list = div().id("goal-picker-list").flex().flex_col().max_h(px(300.)).overflow_y_scroll();
-    if items.is_empty() {
-        list = list.child(div().px(px(10.)).py(px(8.)).text_size(px(13.)).text_color(t.muted).child(format!("No goal matches “{}”.", q.trim())));
-    }
-    for (ix, (v, name, sub)) in items.iter().enumerate() {
-        let v = v.clone();
-        let hover = t.panel_2;
-        list = list.child(
-            div()
-                .id(SharedString::from(format!("goal-pick-{v}")))
-                .flex()
-                .flex_col()
-                .px(px(10.))
-                .py(px(6.))
-                .rounded(px(6.))
-                .cursor_pointer()
-                .when(ix == active, |d| d.bg(t.accent_soft))
-                .hover(move |d| d.bg(hover))
-                .child(div().text_size(px(13.)).when(v == "none", |d| d.text_color(t.muted)).child(name.clone()))
-                .when(!sub.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.faint).child(sub.clone())))
-                .on_click(cx.listener(move |m, _, _, cx| move_selected(m, &v, cx))),
-        );
-    }
-    let menu = kit::menu_box(t, 320.)
-        .id("goal-picker")
-        .p(px(8.))
-        .gap(px(6.))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(div().px(px(4.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Choose a goal"))
-        .child(field)
-        .child(list);
-    Some(kit::popover(at, menu))
 }
 
 /// The Deprioritize confirmation and the full-note dialog (the web's `gdeprio` / `gnote` modals).
@@ -2449,7 +2133,7 @@ fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
 }
 
 /// `issueAside(false)`: the issue picked in the goal's backlog, beside it (nothing when none is).
-fn issue_aside(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+fn issue_aside(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     use crate::ui::issue_panel as ip;
     let r = match &m.panel {
         Some(Panel::Issue { r }) => r.clone(),
@@ -2458,24 +2142,19 @@ fn issue_aside(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Cont
     let b = m.data.issue.clone().filter(|b| fmt::ref_of(b, "B") == r);
     Some(match b {
         Some(b) => {
-            let view = {
-                let ctx = ip::Ctx::of(m);
-                let mut v = ip::aside_view(&ctx, &b);
-                v.detail = ip::detail_view(&ctx, &b, false);
-                v
-            };
-            ip::render_aside(m, t, Some((&b, &view)), None, window, cx)
+            let view = ip::aside_view(&b);
+            ip::render_aside(t, Some((&b, &view)), None, cx)
         }
         None => {
             let err = m.data.errs.issue.clone();
-            ip::render_aside(m, t, None, err.as_deref(), window, cx)
+            ip::render_aside(t, None, err.as_deref(), cx)
         }
     })
 }
 
 // ------------------------------------------------------------------ page
 
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let want = match &m.page {
         Page::Goal(r) => r.clone(),
@@ -2497,7 +2176,6 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             })
             .into_any_element();
     };
-    let gr = fmt::ref_of(&g, "G");
     let backlog_view = m.goal_page.backlog_view;
     let h = header_view(&g, m.jira_on());
     let hot = h.backlog_hot;
@@ -2512,32 +2190,22 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             cx.notify();
         }))
     });
-    let tool = if backlog_view {
-        let gr = gr.clone();
-        kit::btn(&t, "goal-add-issue", "Add an issue").on_click(cx.listener(move |m, _, window, cx| modals::open_issue_form(m, Some(gr.clone()), window, cx)))
-    } else {
-        let (gid, project) = (i(&g, "id"), fmt::opt_s(&g, "project").map(str::to_string));
-        kit::btn(&t, "goal-add-task", "+  Add a task").on_click(cx.listener(move |m, _, window, cx| {
-            let opts = modals::TaskFormOpts { goal_id: Some(gid), project: project.clone(), planned: true, ..Default::default() };
-            modals::open_task_form(m, opts, window, cx);
-        }))
-    };
     let left = div()
         .flex()
         .flex_col()
         .flex_1()
         .min_w(px(380.))
         .gap(px(12.))
-        .child(div().flex().items_center().gap(px(8.)).child(tabs).child(div().flex_1()).child(tool))
+        .child(div().flex().items_center().gap(px(8.)).child(tabs))
         .when(!backlog_view, |d| d.children(gate(m, &t, &g, cx)).child(task_rows(m, &t, &g, cx)).child(how_runs(m, &t, &g, cx)))
         .when(backlog_view, |d| d.child(backlog(m, &t, &g, cx)));
     // Tasks: Attached + Goal notes. Backlog: the picked issue (`issueAside(false)`: no move picker).
     let right = if backlog_view {
-        issue_aside(m, &t, window, cx).map(|a| div().flex().flex_col().flex_none().w(px(360.)).child(a))
+        issue_aside(m, &t, cx).map(|a| div().flex().flex_col().flex_none().w(px(360.)).child(a))
     } else {
-        Some(div().flex().flex_col().flex_none().w(px(320.)).gap(px(16.)).child(attachments(m, &t, &g, window, cx)).child(notes(m, &t, &g, window, cx)))
+        Some(div().flex().flex_col().flex_none().w(px(320.)).gap(px(16.)).child(attachments(m, &t, &g, cx)).child(notes(m, &t, &g, cx)))
     };
-    let overlays: Vec<AnyElement> = [start_menu(m, &t, &g, cx), picker(m, &t, window, cx), dialog(m, &t, &g, cx)].into_iter().flatten().collect();
+    let overlays: Vec<AnyElement> = [start_menu(m, &t, &g, cx), dialog(m, &t, &g, cx)].into_iter().flatten().collect();
     div()
         .id("goal-page")
         .flex_1()
@@ -2648,9 +2316,7 @@ mod tests {
                     let (title, body, buttons) = deprio_dialog_view(goal);
                     json!({"title": title, "body": body, "buttons": buttons})
                 }
-                "notes" => json!({"help": NOTES_HELP, "groups": note_items_json(notes_view(arr(i, "notes"))), "add_button": true}),
-                "noteForm" => json!({"kinds": NOTE_KINDS.iter().map(|(_, l)| *l).collect::<Vec<_>>(), "placeholder": "What every task in this goal should know",
-                                     "buttons": ["Save note", "Cancel"], "add_button": false}),
+                "notes" => json!({"help": NOTES_HELP, "groups": note_items_json(notes_view(arr(i, "notes"))), "add_button": false}),
                 "noteBody" => blocks_json(&note_blocks(i["text"].as_str().unwrap())),
                 "noteDialog" => {
                     let n = &i["note"];
@@ -2662,12 +2328,6 @@ mod tests {
                            "items": attachments_view(list, &fmt::ref_of(goal, "G")).iter().map(|a| json!({"name": a.name, "linked": a.linked, "meta": a.meta, "tip": a.tip})).collect::<Vec<_>>()})
                 }
                 "attMenu" => json!(att_menu_items(&i["att"])),
-                "attEdit" => {
-                    let a = &i["att"];
-                    let cur = fmt::opt_s(a, "kind").unwrap_or("other");
-                    json!({"kinds": ATT_KINDS.iter().map(|(k, l)| json!([l, *k == cur])).collect::<Vec<_>>(), "title": s(a, "title"),
-                           "url": "https://… or /path/to/file", "buttons": ["Save", "Cancel"]})
-                }
                 "backlog" => {
                     let sel: Vec<String> = arr(i, "sel").iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
                     let v = backlog_view(goal, &sel, b(i, "showDropped"), &HashMap::new(), &[], b(i, "jira"), false);
@@ -2678,7 +2338,6 @@ mod tests {
                         "closed_line": v.closed.map(|(l, b)| match b { Some(b) => format!("{} {b}", l.trim_end()), None => l }),
                     })
                 }
-                "goalPicker" => json!(goal_picker_items(arr(i, "goals"), i["q"].as_str().unwrap()).into_iter().map(|(v, n, s)| json!({"v": v, "name": n, "sub": s})).collect::<Vec<_>>()),
                 f => panic!("no app function for {f}"),
             }
         });
@@ -2697,7 +2356,7 @@ mod tests {
         assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 3}), &closed)}), find("run after hours")["feedback"]);
         assert_eq!(json!({"toast": run_now_toast(&json!({"queued_now": 2}))}), find("run now")["feedback"]);
         assert_eq!(json!({"toast": run_now_toast(&json!({}))}), find("run now, none")["feedback"]);
-        for (name, action) in [("bulk make tasks", "task"), ("bulk tickets", "ticket"), ("bulk drop", "drop"), ("bulk move to G2", "move")] {
+        for (name, action) in [("bulk make tasks", "task"), ("bulk tickets", "ticket"), ("bulk drop", "drop")] {
             assert_eq!(json!([bulk_toast(action, 2), bulk_toast(action, 1)]), find(name)["bulk_toast"], "{name}");
         }
     }
@@ -2781,67 +2440,8 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn notes_attachments_and_issues_send_what_the_web_sent(cx: &mut gpui_kit::TestAppContext) {
+    fn issues_send_what_the_web_sent(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = goal_window(cx);
-        // A note: trimmed, kind defaults to finding; then a decision.
-        w.update(cx, |m, _, cx| {
-            let input = kit::Input::new(cx, "", true);
-            input.set_text("  A note  ", cx);
-            m.goal_page.note_inputs.insert("G1".into(), input);
-            save_note(m, "G1", cx);
-        })
-        .unwrap();
-        parity::settle(cx);
-        let (path, body, fb) = expect_post("note, finding");
-        assert_eq!(sent(&rec, &path), body);
-        assert_eq!(feedback(&w, cx, Some("gnote:G1")), fb);
-        w.update(cx, |m, _, cx| {
-            m.goal_page.note_inputs["G1"].set_text("Decided", cx);
-            m.goal_page.note_kinds.insert("G1".into(), "decision");
-            save_note(m, "G1", cx);
-        })
-        .unwrap();
-        parity::settle(cx);
-        assert_eq!(sent(&rec, &path), expect_post("note, decision").1);
-        // An empty note sends nothing and says so.
-        rec.clear();
-        w.update(cx, |m, _, cx| {
-            m.goal_page.note_inputs["G1"].set_text("   ", cx);
-            save_note(m, "G1", cx);
-        })
-        .unwrap();
-        assert!(rec.posts().is_empty());
-        assert_eq!(feedback(&w, cx, Some("gnote:G1")), json!({"error": "Write the note first."}));
-
-        // Attachments: remove, and edits that send only what was touched.
-        rec.clear();
-        w.update(cx, |m, _, cx| remove_attachment(m, 2, "G1", cx)).unwrap();
-        parity::settle(cx);
-        assert_eq!(sent(&rec, "attachments/2/remove"), expect_post("remove attachment").1);
-        let att = json!({"id": 2, "kind": "results", "title": "Bench numbers", "url": "~/bench/results.md"});
-        for (name, edit) in [
-            ("edit attachment, title + kind", Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| {
-                let e = m.goal_page.att_edit.as_mut().unwrap();
-                e.kind = Some("doc".into());
-                let title = e.title.field.clone();
-                title.update(cx, |f, cx| f.set_text("New title", cx));
-            }) as Box<dyn Fn(&mut MainWindow, &mut Context<MainWindow>)>),
-            ("edit attachment, url", Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| {
-                let url = m.goal_page.att_edit.as_ref().unwrap().url.field.clone();
-                url.update(cx, |f, cx| f.set_text("~/x.md", cx));
-            })),
-            ("edit attachment, untouched", Box::new(|_: &mut MainWindow, _: &mut Context<MainWindow>| {})),
-        ] {
-            rec.clear();
-            let a = att.clone();
-            w.update(cx, |m, _, cx| start_att_edit(m, &a, cx)).unwrap();
-            w.update(cx, |m, _, cx| edit(m, cx)).unwrap();
-            parity::settle(cx);
-            w.update(cx, |m, _, cx| save_attachment(m, cx)).unwrap();
-            parity::settle(cx);
-            assert_eq!(sent(&rec, "attachments/2"), expect_post(name).1, "{name}");
-        }
-
         // Backlog rows and the bulk bar.
         for (name, act) in [("promote (goal row)", "promote"), ("ticket (goal row)", "ticket"), ("drop (goal row)", "drop")] {
             rec.clear();
@@ -2855,8 +2455,6 @@ mod tests {
             ("bulk make tasks", vec!["B1", "B2"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| bulk(m, "task", json!({}), cx)) as Box<dyn Fn(&mut MainWindow, &mut Context<MainWindow>)>),
             ("bulk tickets", vec!["B2"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| bulk(m, "ticket", json!({}), cx))),
             ("bulk drop", vec!["B3", "B1"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| bulk(m, "drop", json!({}), cx))),
-            ("bulk move to G2", vec!["B1"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| move_selected(m, "G2", cx))),
-            ("bulk move out", vec!["B1"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| move_selected(m, "none", cx))),
         ] {
             rec.clear();
             w.update(cx, |m, _, cx| {

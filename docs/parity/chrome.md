@@ -17,8 +17,8 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `goalRing` | ring: done arc (green), done+active arc (accent), track; tick when finished, else the status glyph | `sidebar::ring` + `ring_el` (canvas) | 🔧 (was a flat progress bar) | `goalRing` cases |
 | `GOAL_GLYPH` | play (working/starting), ! (needs), pause, moon (held), lock (blocked), clock (queued) | `ring_el` | 🔧 | snapshot |
 | `goalRowHtml` | ring, "G3" + name, done/n, status as hidden label (tooltip natively), selected row highlighted with an "Open the goal" button, finished/deprioritized greyed | `sidebar::row`, `rail_row` | 🔧 | `rail_matches_web` |
-| `goalsRailHtml` brand | "Task board" + New task | `sidebar::render` brand | 🔧 (button was below the nav) | `rail_matches_web` (brand) |
-| `goalsRailHtml` head | "Goals ›" (opens the goal list) + count of active goals + New goal | `rail_list` head | 🔧 | `rail_matches_web` (head) |
+| `goalsRailHtml` brand | "Task board" (no New task: the app has no forms) | `sidebar::render` brand | 🔧 (button was below the nav) | `rail_matches_web` (brand) |
+| `goalsRailHtml` head | "Goals ›" (opens the goal list) + count of active goals (no New goal) | `rail_list` head | 🔧 | `rail_matches_web` (head) |
 | `goalsRailHtml` groups | projects = live terminals' projects ∪ active goals' projects ∪ the filter's project, sorted (`localeCompare`); each group folds (`tb.rail.shut`), stays open while it holds the picked goal, shows a needs dot when folded, highlights the filtered project, counts its goals | `sidebar::rail_view` | 🔧 (was a flat list) ↔ a project with no active goals isn't listed unless the board is filtered to it (asked for: empty projects were noise) | `rail_matches_web` (9 rails) |
 | `goalsRailHtml` filter | active = not finished and not deprioritized (deprioritized goals hidden) | `rail_view` | 🔧 (showed them) | same |
 | `goalsRailHtml` none | "No goals yet" / "Loading…" when there's no project at all | `rail_view.none` | 🔧 | same |
@@ -44,7 +44,7 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `P.gnav` | the view follows the current goal when the goal changes, else keeps the chosen tab | `sidebar::nav_view_for`, `State.gnav` | 🔧 | same |
 | `goalNavStatus` | Awaiting merge / Finished / Needs you / N need you / Paused / Running / N running / Blocked / Queued / No tasks yet / Not running / Not started, with kind colours and a dot unless idle | `sidebar::nav_status` | 🔧 | `status_counts_ring_match_web` |
 | `goalItem` | ring, ref + name, status, "· d of n done", current goal highlighted | `nav_list` | 🔧 | `goal_list_matches_web` |
-| `gnav-head` | "Goals" + New goal | `nav_list` | 🔧 | snapshot |
+| `gnav-head` | "Goals" (no New goal) | `nav_list` | 🔧 | snapshot |
 | `gnav` back link | "← Task board" | Board in the sidebar's page list | ↔ the page list is always there | — |
 | `renderGoalPage` with no id (`#/goals`) | open the board's goal, else the first active goal by project, else the first | `sidebar::landing`, `MainWindow::open_goals` | 🔧 — note: in the web this branch threw (`nav` used before its `const`), so the link never worked there | `goal_list_matches_web` (landing), `goals_link_opens_the_first_active_goal` |
 
@@ -88,7 +88,7 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `renderAll` title | "Task board" / "Goals" / "Backlog" / "Sessions", "(n) " in front while tasks need you | `app::page_title`, `MainWindow::title` | 🔧 (always "Task board") | `title_matches_web` |
 | keydown Esc | in order: picker (forms), hours menu, rename field, a read-only dialog (alerts; forms keep their typing), the task panel / an issue panel on the board, then `railClear` on the board when nothing is typed in | `MainWindow::escape` | 🔧 (closed any dialog, never cleared filters) | `escape_follows_the_web_order` |
 | keydown Enter/Space on `role=button`, `data-enter`, ⌘↩ answer | | — / owning pages | ↔ native buttons are clicked; ⌘↩ lives in the answer box (task panel) | — |
-| ⌘N, ⌘⇧N, ⌘⇧B, ⌘1–3, ⌘R | — | `app::bind_keys` | ↔ native additions (menu bar) | — |
+| ⌘1–3, ⌘R (⌘N / ⌘⇧N / ⌘⇧B removed with the forms) | — | `app::bind_keys` | ↔ native additions (menu bar) | — |
 | `visibilitychange` refresh / 3 s poll | | `start_polling` | ✅ | — |
 
 ## mdLite
@@ -101,4 +101,4 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 
 - `modals.rs` (alerts dialog): use `app::alerts_dialog_view` for the rows and `app::dismiss_all_alerts` for "Dismiss all", and don't close the dialog immediately (it closes itself when the alerts are gone, as the web did).
 - `backend.rs`: the web's error texts were "Can’t reach the task board server." (no connection) and "The board answered N." (non-JSON error); `Daemon::answer` says "The board isn't answering at …: …". The banner shows whatever the backend says.
-- Esc now leaves forms open (web `READ_ONLY_MODALS` = `gnote`, `alerts`): forms must close with their own Cancel / esc handling; the goal note dialog (`gnote`, goal page) should close on Esc itself.
+- Esc closes the alerts dialog (the app has no forms); the goal note dialog (`gnote`, goal page) closes on Esc itself.

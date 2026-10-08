@@ -17269,7 +17269,7 @@
             ]
           }
         ],
-        "add_button": true
+        "add_button": false
       }
     },
     {
@@ -17396,7 +17396,7 @@
             ]
           }
         ],
-        "add_button": true
+        "add_button": false
       }
     },
     {
@@ -17467,7 +17467,7 @@
             ]
           }
         ],
-        "add_button": true
+        "add_button": false
       }
     },
     {
@@ -17494,25 +17494,6 @@
         "you, 2:05 PM",
         "Oct 3"
       ]
-    },
-    {
-      "name": "noteForm open",
-      "input": {
-        "fn": "noteForm"
-      },
-      "expect": {
-        "kinds": [
-          "Finding",
-          "Decision",
-          "Reference"
-        ],
-        "placeholder": "What every task in this goal should know",
-        "buttons": [
-          "Save note",
-          "Cancel"
-        ],
-        "add_button": false
-      }
     },
     {
       "name": "noteBody plain",
@@ -17954,9 +17935,7 @@
       },
       "expect": [
         "Open",
-        "Copy link",
-        "Edit",
-        "Remove"
+        "Copy link"
       ]
     },
     {
@@ -17975,9 +17954,7 @@
       },
       "expect": [
         "Open",
-        "Copy path",
-        "Edit",
-        "Remove"
+        "Copy path"
       ]
     },
     {
@@ -17995,9 +17972,7 @@
         }
       },
       "expect": [
-        "Copy path",
-        "Edit",
-        "Remove"
+        "Copy path"
       ]
     },
     {
@@ -18016,59 +17991,8 @@
       },
       "expect": [
         "Open",
-        "Copy path",
-        "Edit",
-        "Remove"
+        "Copy path"
       ]
-    },
-    {
-      "name": "attEdit att 2",
-      "input": {
-        "fn": "attEdit",
-        "att": {
-          "id": 2,
-          "kind": "results",
-          "title": "Bench numbers",
-          "url": "~/bench/results.md",
-          "at": "2026-10-06T09:00:00.000Z",
-          "task": "T4",
-          "goal": null
-        }
-      },
-      "expect": {
-        "kinds": [
-          [
-            "Design",
-            false
-          ],
-          [
-            "Proposal",
-            false
-          ],
-          [
-            "Doc",
-            false
-          ],
-          [
-            "Evidence",
-            false
-          ],
-          [
-            "Results",
-            true
-          ],
-          [
-            "Link",
-            false
-          ]
-        ],
-        "title": "Bench numbers",
-        "url": "https://… or /path/to/file",
-        "buttons": [
-          "Save",
-          "Cancel"
-        ]
-      }
     },
     {
       "name": "backlog empty",
@@ -21445,7 +21369,6 @@
             "Make tasks",
             "Create tickets",
             "Won’t do",
-            "Move to a goal",
             "Clear"
           ]
         },
@@ -22130,7 +22053,6 @@
           "buttons": [
             "Make tasks",
             "Won’t do",
-            "Move to a goal",
             "Clear"
           ]
         },
@@ -22656,360 +22578,6 @@
       ]
     },
     {
-      "name": "goalPicker q=\"\"",
-      "input": {
-        "fn": "goalPicker",
-        "goals": [
-          {
-            "id": 3,
-            "ref": "G3",
-            "name": "beta release",
-            "project": "api",
-            "epic_key": "API-1",
-            "archived": false
-          },
-          {
-            "id": 1,
-            "ref": "G1",
-            "name": "Sign-in with passkeys",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 2,
-            "ref": "G2",
-            "name": "Alpha cleanup",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 4,
-            "ref": "G4",
-            "name": "Archived one",
-            "project": "webapp",
-            "archived": true
-          },
-          {
-            "id": 5,
-            "ref": "G5",
-            "name": "Sign out everywhere",
-            "project": "api",
-            "epic_key": null,
-            "archived": false
-          }
-        ],
-        "q": ""
-      },
-      "expect": [
-        {
-          "v": "none",
-          "name": "Not in a goal",
-          "sub": ""
-        },
-        {
-          "v": "G2",
-          "name": "Alpha cleanup",
-          "sub": "webapp"
-        },
-        {
-          "v": "G3",
-          "name": "beta release",
-          "sub": "api · API-1"
-        },
-        {
-          "v": "G5",
-          "name": "Sign out everywhere",
-          "sub": "api"
-        },
-        {
-          "v": "G1",
-          "name": "Sign-in with passkeys",
-          "sub": "webapp"
-        }
-      ]
-    },
-    {
-      "name": "goalPicker q=\"sign\"",
-      "input": {
-        "fn": "goalPicker",
-        "goals": [
-          {
-            "id": 3,
-            "ref": "G3",
-            "name": "beta release",
-            "project": "api",
-            "epic_key": "API-1",
-            "archived": false
-          },
-          {
-            "id": 1,
-            "ref": "G1",
-            "name": "Sign-in with passkeys",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 2,
-            "ref": "G2",
-            "name": "Alpha cleanup",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 4,
-            "ref": "G4",
-            "name": "Archived one",
-            "project": "webapp",
-            "archived": true
-          },
-          {
-            "id": 5,
-            "ref": "G5",
-            "name": "Sign out everywhere",
-            "project": "api",
-            "epic_key": null,
-            "archived": false
-          }
-        ],
-        "q": "sign"
-      },
-      "expect": [
-        {
-          "v": "G5",
-          "name": "Sign out everywhere",
-          "sub": "api"
-        },
-        {
-          "v": "G1",
-          "name": "Sign-in with passkeys",
-          "sub": "webapp"
-        }
-      ]
-    },
-    {
-      "name": "goalPicker q=\"out\"",
-      "input": {
-        "fn": "goalPicker",
-        "goals": [
-          {
-            "id": 3,
-            "ref": "G3",
-            "name": "beta release",
-            "project": "api",
-            "epic_key": "API-1",
-            "archived": false
-          },
-          {
-            "id": 1,
-            "ref": "G1",
-            "name": "Sign-in with passkeys",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 2,
-            "ref": "G2",
-            "name": "Alpha cleanup",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 4,
-            "ref": "G4",
-            "name": "Archived one",
-            "project": "webapp",
-            "archived": true
-          },
-          {
-            "id": 5,
-            "ref": "G5",
-            "name": "Sign out everywhere",
-            "project": "api",
-            "epic_key": null,
-            "archived": false
-          }
-        ],
-        "q": "out"
-      },
-      "expect": [
-        {
-          "v": "G5",
-          "name": "Sign out everywhere",
-          "sub": "api"
-        }
-      ]
-    },
-    {
-      "name": "goalPicker q=\"api\"",
-      "input": {
-        "fn": "goalPicker",
-        "goals": [
-          {
-            "id": 3,
-            "ref": "G3",
-            "name": "beta release",
-            "project": "api",
-            "epic_key": "API-1",
-            "archived": false
-          },
-          {
-            "id": 1,
-            "ref": "G1",
-            "name": "Sign-in with passkeys",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 2,
-            "ref": "G2",
-            "name": "Alpha cleanup",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 4,
-            "ref": "G4",
-            "name": "Archived one",
-            "project": "webapp",
-            "archived": true
-          },
-          {
-            "id": 5,
-            "ref": "G5",
-            "name": "Sign out everywhere",
-            "project": "api",
-            "epic_key": null,
-            "archived": false
-          }
-        ],
-        "q": "api"
-      },
-      "expect": [
-        {
-          "v": "G3",
-          "name": "beta release",
-          "sub": "api · API-1"
-        },
-        {
-          "v": "G5",
-          "name": "Sign out everywhere",
-          "sub": "api"
-        }
-      ]
-    },
-    {
-      "name": "goalPicker q=\"zzz\"",
-      "input": {
-        "fn": "goalPicker",
-        "goals": [
-          {
-            "id": 3,
-            "ref": "G3",
-            "name": "beta release",
-            "project": "api",
-            "epic_key": "API-1",
-            "archived": false
-          },
-          {
-            "id": 1,
-            "ref": "G1",
-            "name": "Sign-in with passkeys",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 2,
-            "ref": "G2",
-            "name": "Alpha cleanup",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 4,
-            "ref": "G4",
-            "name": "Archived one",
-            "project": "webapp",
-            "archived": true
-          },
-          {
-            "id": 5,
-            "ref": "G5",
-            "name": "Sign out everywhere",
-            "project": "api",
-            "epic_key": null,
-            "archived": false
-          }
-        ],
-        "q": "zzz"
-      },
-      "expect": []
-    },
-    {
-      "name": "goalPicker q=\"ALPHA\"",
-      "input": {
-        "fn": "goalPicker",
-        "goals": [
-          {
-            "id": 3,
-            "ref": "G3",
-            "name": "beta release",
-            "project": "api",
-            "epic_key": "API-1",
-            "archived": false
-          },
-          {
-            "id": 1,
-            "ref": "G1",
-            "name": "Sign-in with passkeys",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 2,
-            "ref": "G2",
-            "name": "Alpha cleanup",
-            "project": "webapp",
-            "epic_key": null,
-            "archived": false
-          },
-          {
-            "id": 4,
-            "ref": "G4",
-            "name": "Archived one",
-            "project": "webapp",
-            "archived": true
-          },
-          {
-            "id": 5,
-            "ref": "G5",
-            "name": "Sign out everywhere",
-            "project": "api",
-            "epic_key": null,
-            "archived": false
-          }
-        ],
-        "q": "ALPHA"
-      },
-      "expect": [
-        {
-          "v": "G2",
-          "name": "Alpha cleanup",
-          "sub": "webapp"
-        }
-      ]
-    },
-    {
       "name": "action run",
       "input": {
         "fn": "action"
@@ -23213,137 +22781,6 @@
       }
     },
     {
-      "name": "action note, finding",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/goals/G1/notes",
-            {
-              "kind": "finding",
-              "text": "A note",
-              "source": "you"
-            }
-          ]
-        ],
-        "feedback": {
-          "note": "gnote:G1",
-          "text": "Note added"
-        }
-      }
-    },
-    {
-      "name": "action note, decision",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/goals/G1/notes",
-            {
-              "kind": "decision",
-              "text": "Decided",
-              "source": "you"
-            }
-          ]
-        ],
-        "feedback": {
-          "note": "gnote:G1",
-          "text": "Note added"
-        }
-      }
-    },
-    {
-      "name": "action note, empty",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [],
-        "feedback": null
-      }
-    },
-    {
-      "name": "action remove attachment",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/attachments/2/remove",
-            {}
-          ]
-        ],
-        "feedback": {
-          "note": "att:goals:G1",
-          "text": "Removed"
-        }
-      }
-    },
-    {
-      "name": "action edit attachment, title + kind",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/attachments/2",
-            {
-              "title": "New title",
-              "kind": "doc"
-            }
-          ]
-        ],
-        "feedback": {
-          "note": "attedit:2",
-          "text": "Saved"
-        }
-      }
-    },
-    {
-      "name": "action edit attachment, url",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/attachments/2",
-            {
-              "url": "~/x.md"
-            }
-          ]
-        ],
-        "feedback": {
-          "note": "attedit:2",
-          "text": "Saved"
-        }
-      }
-    },
-    {
-      "name": "action edit attachment, untouched",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/attachments/2",
-            {}
-          ]
-        ],
-        "feedback": {
-          "note": "attedit:2",
-          "text": "Saved"
-        }
-      }
-    },
-    {
       "name": "action promote (goal row)",
       "input": {
         "fn": "action"
@@ -23468,56 +22905,6 @@
         "bulk_toast": [
           "Closed 2 issues as won’t do",
           "Closed 1 issue as won’t do"
-        ]
-      }
-    },
-    {
-      "name": "action bulk move to G2",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/backlog/bulk",
-            {
-              "ids": [
-                "B1"
-              ],
-              "action": "move",
-              "goal_id": 2
-            }
-          ]
-        ],
-        "feedback": null,
-        "bulk_toast": [
-          "Moved 2 issues",
-          "Moved 1 issue"
-        ]
-      }
-    },
-    {
-      "name": "action bulk move out",
-      "input": {
-        "fn": "action"
-      },
-      "expect": {
-        "posts": [
-          [
-            "/backlog/bulk",
-            {
-              "ids": [
-                "B1"
-              ],
-              "action": "move",
-              "goal_id": null
-            }
-          ]
-        ],
-        "feedback": null,
-        "bulk_toast": [
-          "Moved 2 issues",
-          "Moved 1 issue"
         ]
       }
     },

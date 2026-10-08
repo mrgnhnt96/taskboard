@@ -324,14 +324,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 The board answered 500. Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 The board answered 500. Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -461,7 +459,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -470,8 +468,6 @@
           "answer",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -619,7 +615,7 @@
         }
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Write an answer first. Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Write an answer first. Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -628,8 +624,6 @@
           "answer",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -771,7 +765,7 @@
         }
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Sending… Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Sending… Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -780,8 +774,6 @@
           "answer!",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -919,7 +911,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Send at Thu 6am Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Send at Thu 6am Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -929,8 +921,6 @@
           "answer:morning",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -1069,7 +1059,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Send at 6pm Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Send at 6pm Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1079,8 +1069,6 @@
           "answer:morning",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -1203,7 +1191,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey needs you Waiting at its prompt. Send answer Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey needs you Waiting at its prompt. Send answer Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1213,8 +1201,6 @@
           "focus",
           "detach",
           "close-term",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -1332,15 +1318,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log The terminal needs you It’s waiting for you in Midna. Send answer Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log The terminal needs you It’s waiting for you in Midna. Send answer Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "answer"
         ],
         "titles": [],
         "values": [
@@ -1480,7 +1464,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Needs you Your answer to T7 didn’t arrive. Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Needs you Your answer to T7 didn’t arrive. Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1489,8 +1473,6 @@
           "answer",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -1629,7 +1611,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you High priority T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you High priority T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1638,8 +1620,6 @@
           "answer",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -1773,7 +1753,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation See what the new terminal gets Detach Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1782,9 +1762,7 @@
           "resume:fresh",
           "resume:reopen",
           "tab:context",
-          "detach",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "detach"
         ],
         "titles": [
           "Take it off its terminal and put it back in the queue",
@@ -1909,7 +1887,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation See what the new terminal gets Detach Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1918,9 +1896,7 @@
           "resume:fresh",
           "resume:reopen!",
           "tab:context",
-          "detach",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "detach"
         ],
         "titles": [
           "No conversation was saved for this task",
@@ -2057,7 +2033,7 @@
         }
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Sent to Midna See what the new terminal gets Detach Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Sent to Midna See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -2066,9 +2042,7 @@
           "resume:fresh",
           "resume:reopen",
           "tab:context",
-          "detach",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "detach"
         ],
         "titles": [
           "Take it off its terminal and put it back in the queue",
@@ -2181,16 +2155,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Couldn’t start in Midna Midna didn’t start a terminal for this task. New Midna terminal Queue in Midna Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Couldn’t start in Midna Midna didn’t start a terminal for this task. New Midna terminal Queue in Midna Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
           "start:new",
-          "start:queue",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "start:queue"
         ],
         "titles": [],
         "values": []
@@ -2300,16 +2272,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Couldn’t start in Midna Midna answered: no such project. New Midna terminal Queue in Midna Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Couldn’t start in Midna Midna answered: no such project. New Midna terminal Queue in Midna Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
           "start:new",
-          "start:queue",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "start:queue"
         ],
         "titles": [],
         "values": []
@@ -2419,16 +2389,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "Queued T7 Sign in with a passkey webapp Added 5m ago Overview Context Log Start Start when the repo’s free Not starting yet: Waits for work hours (tomorrow 6am). Start runs it now anyway. Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Queued T7 Sign in with a passkey webapp Added 5m ago Overview Context Log Start Start when the repo’s free Not starting yet: Waits for work hours (tomorrow 6am). Start runs it now anyway. Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
           "start:new",
-          "start:queue",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "start:queue"
         ],
         "titles": [],
         "values": []
@@ -2548,16 +2516,14 @@
         }
       },
       "expect": {
-        "text": "Queued T7 Sign in with a passkey webapp Added 5m ago Overview Context Log Sending… Start when the repo’s free Sent to Midna Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Queued T7 Sign in with a passkey webapp Added 5m ago Overview Context Log Sending… Start when the repo’s free Sent to Midna Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
           "start:new!",
-          "start:queue",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "start:queue"
         ],
         "titles": [],
         "values": []
@@ -2667,14 +2633,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Starting T7 Sign in with a passkey webapp Added 4m ago Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Starting T7 Sign in with a passkey webapp Added 4m ago Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -2810,14 +2774,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Blocked T7 Sign in with a passkey webapp Added 4m ago Overview Context Log Mark done… Mark failed… Details Blocked by T4 Working Add the registration endpoint T5 Blocked Migrations Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Blocked T7 Sign in with a passkey webapp Added 4m ago Overview Context Log Details Blocked by T4 Working Add the registration endpoint T5 Blocked Migrations Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "open-task"
         ],
@@ -3432,14 +3394,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal G Task 4 of 4 Last task in this goal Nothing in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal G Task 4 of 4 Last task in this goal Nothing in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -3555,14 +3515,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal G Last task in this goal Nothing in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal G Last task in this goal Nothing in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -3698,7 +3656,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -3707,8 +3665,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -3854,7 +3810,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals T7 first try Closed Task 11:40 AM PR fixer Closed PR Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals T7 first try Closed Task 11:40 AM PR fixer Closed PR Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -3863,8 +3819,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -4011,7 +3965,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -4019,9 +3973,7 @@
           "tab:log",
           "focus",
           "detach",
-          "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "close-term:force"
         ],
         "titles": [
           "Take it off its terminal and put it back in the queue",
@@ -4164,7 +4116,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do Add the login ceremony. POST /auth/passkeys/login button on sign-in.tsx continued code line See https://example.com/spec .",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do Add the login ceremony. POST /auth/passkeys/login button on sign-in.tsx continued code line See https://example.com/spec .",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -4173,8 +4125,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -4323,7 +4273,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done Cancel Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -4332,8 +4282,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "mark-done",
-          "hide:done:T7",
           "term-focus"
         ],
         "titles": [
@@ -4342,9 +4290,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          "All done"
-        ]
+        "values": []
       }
     },
     {
@@ -4481,7 +4427,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark failed Cancel Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -4490,8 +4436,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "mark-fail",
-          "hide:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -4500,9 +4444,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -4613,7 +4555,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -4622,8 +4564,6 @@
           "focus",
           "detach",
           "close-term",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -4743,15 +4683,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Detach Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 x Closed Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Detach Details Goal Not in a goal. Terminal T7 x Closed Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "detach",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "detach"
         ],
         "titles": [
           "Take it off its terminal and put it back in the queue"
@@ -4867,7 +4805,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 10m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 Sign in with a passkey Working Attached 2:50 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 10m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Working Attached 2:50 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -4876,8 +4814,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -5012,7 +4948,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminals Current Working Task 2:55 PM Older Idle Looked at it 2:10 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals Current Working Task 2:55 PM Older Idle Looked at it 2:10 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -5021,8 +4957,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus",
           "term-focus"
         ],
@@ -5174,7 +5108,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Detached. It’s back in the queue. Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Detached. It’s back in the queue. Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -5183,8 +5117,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -5304,14 +5236,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Jira PROJ-12 In Progress Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira PROJ-12 In Progress Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [
           "Open PROJ-12 in Jira"
@@ -5427,14 +5357,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Jira PROJ-12 Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira PROJ-12 Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -5548,14 +5476,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Jira Ticket asked for Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira Ticket asked for Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -5665,14 +5591,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Jira No ticket. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira No ticket. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7"
+          "tab:log"
         ],
         "titles": [],
         "values": []
@@ -8724,7 +8648,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminal T7 Sign in with a passkey Working Attached 12:55 PM Pull request #42 Passkey sign-in webapp Checks Failed Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Working Attached 12:55 PM Pull request #42 Passkey sign-in webapp Checks Failed Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -8733,8 +8657,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [
@@ -9042,14 +8964,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "att-menu",
           "open-task",
@@ -9221,14 +9141,12 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago Open Copy link Edit Remove bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago Open Copy link Edit Remove bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "att-menu",
           "att-menu-close",
@@ -9404,14 +9322,12 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Open Copy path Edit Remove Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Open Copy path Edit Remove Spec Link Plan Proposal · G1 · 10h ago What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "att-menu",
           "open-task",
@@ -9587,14 +9503,12 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Copy path Edit Remove Plan Proposal · G1 · 10h ago What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Copy path Edit Remove Plan Proposal · G1 · 10h ago What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "att-menu",
           "open-task",
@@ -9769,14 +9683,12 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Design Proposal Doc Evidence Results Link Save Cancel bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Design Proposal Doc Evidence Results Link Save Cancel bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "att-ekind:design",
           "att-ekind:proposal",
           "att-ekind:doc",
@@ -9959,14 +9871,12 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago Design Proposal Doc Evidence Results Link Save Cancel Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago Design Proposal Doc Evidence Results Link Save Cancel Spec Link Plan Proposal · G1 · 10h ago What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "att-menu",
           "att-ekind:design",
@@ -10142,14 +10052,12 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Mark done… Mark failed… Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Removed What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Removed What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "open-task",
           "att-menu",
           "open-task",
@@ -13137,7 +13045,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Mark done… Mark failed… Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "task-back",
           "close-panel",
@@ -13147,8 +13055,6 @@
           "focus",
           "detach",
           "close-term:force",
-          "reveal:done:T7",
-          "reveal:fail:T7",
           "term-focus"
         ],
         "titles": [

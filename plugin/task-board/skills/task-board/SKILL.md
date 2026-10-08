@@ -34,6 +34,8 @@ Don't run `tb` unless the owner asks you to take, report or add something. PR wo
 
 ## Putting things on the board
 
+The owner can't make or change anything in the Taskboard app: new tasks, goals and issues, notes, edits, moves and attachments all go through you when they ask. The app only starts and stops work.
+
 Planning a goal? Read `planning.md` first.
 
 1. Reuse an open goal that fits (`tb goals`; `--project <name>` narrows it).
@@ -41,8 +43,10 @@ Planning a goal? Read `planning.md` first.
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`.
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
-   - Retitle or rewrite an issue (the owner asks you to; they can't edit it in the app): `tb backlog set B<n> --title "..." [--detail "..."]`.
+   - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
+   - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
+   - Remove an attachment by its link, path or title: `tb unattach "<link-or-title>"` with `--task T<n>` or `--goal G<n>`. To change one, unattach it and attach it again.
 3. Delete a goal only when the owner asks: `tb goal delete G<n>` asks whether to keep its tasks; ask the owner, then run it with `--keep-tasks` or `--delete-tasks`.
 4. The project defaults to this terminal's; `--project <name>` picks another.
 5. Nothing you add runs until the owner queues or starts it; don't take it unless asked.

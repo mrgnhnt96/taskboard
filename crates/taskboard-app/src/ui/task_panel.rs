@@ -49,8 +49,6 @@ pub struct State {
     r: String,
     fields: HashMap<String, kit::Input>,
     subs: Vec<Subscription>,
-    /// Focus this field on the next draw (`reveal` focuses the new textarea).
-    focus_next: Option<String>,
     /// The field that had focus at the last draw.
     focused: Option<FocusHandle>,
 }
@@ -256,21 +254,6 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             ui(|u| u.log_filter = a.arg.clone());
             cx.notify();
         }
-        "reveal" => {
-            ui(|u| u.reveal.insert(a.arg.clone()));
-            let (kind, rest) = a.arg.split_once(':').unwrap_or((&a.arg, ""));
-            let field = match kind {
-                "done" => "summary",
-                "fail" => "reason",
-                other => other,
-            };
-            m.task_panel.focus_next = Some(format!("{field}:{rest}"));
-            cx.notify();
-        }
-        "hide" => {
-            ui(|u| u.reveal.remove(&a.arg));
-            cx.notify();
-        }
         "start" => {
             let body = json!({"mode": a.arg});
             run(m, a, tp("/start"), body, |m, _| sent(m), cx);
@@ -303,29 +286,8 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             );
         }
         "requeue" => run(m, a, tp("/requeue"), json!({}), |_, _| "Back in the queue".into(), cx),
+        "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
         "detach" => run(m, a, tp("/detach"), json!({}), |_, _| "Detached. It’s back in the queue.".into(), cx),
-        "mark-done" | "mark-fail" => {
-            let done = a.act == "mark-done";
-            let k = format!("{}:{id}", if done { "summary" } else { "reason" });
-            let text = ui(|u| u.drafts.get(&k).cloned().unwrap_or_default()).trim().to_string();
-            let body = if text.is_empty() { json!({}) } else if done { json!({"summary": text}) } else { json!({"reason": text}) };
-            let reveal = format!("{}:{id}", if done { "done" } else { "fail" });
-            run(
-                m,
-                a,
-                tp(if done { "/done" } else { "/fail" }),
-                body,
-                move |m, _| {
-                    ui(|u| {
-                        u.drafts.remove(&k);
-                        u.reveal.remove(&reveal);
-                    });
-                    drop_field(m, &k);
-                    if done { "Marked done".into() } else { "Marked failed".into() }
-                },
-                cx,
-            );
-        }
         "close-term" => run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx),
         "focus" => run(m, a, tp("/focus"), json!({}), |m, _| sent(m), cx),
         "term-focus" => run(m, a, format!("sessions/{id}/focus"), json!({}), |m, _| sent(m), cx),
@@ -602,11 +564,6 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let Some(tree) = build(m) else { return div().into_any_element() };
     sync_fields(m, &tree, window, cx);
     m.task_panel.focused = m.task_panel.fields.values().find(|i| i.focus.is_focused(window)).map(|i| i.focus.clone());
-    if let Some(k) = m.task_panel.focus_next.take() {
-        if let Some(i) = m.task_panel.fields.get(&k) {
-            window.focus(&i.focus, cx);
-        }
-    }
     let mut d = Draw { t: &t, window, path: Vec::new() };
     let body = d.panel(m, &tree, cx);
     deferred(

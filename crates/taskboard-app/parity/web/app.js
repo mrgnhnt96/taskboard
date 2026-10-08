@@ -1000,20 +1000,12 @@ function manageBox(t) {
   const r = ref(t, 'T');
   const grp = 'manage:' + r;
   const live = sessionLive(t);
-  const finish = S.reveal['done:' + r] ? 'done' : S.reveal['fail:' + r] ? 'fail' : null;
   const buttons = [
     live && t.status === 'working' ? btn('Focus in Midna', 'focus', { id: r, cls: 'sm', grp }) : '',
     t.session_id || live ? btn('Detach', 'detach', { id: r, cls: 'sm', grp, title: 'Take it off its terminal and put it back in the queue' }) : '',
     live ? btn('Close its terminal', 'close-term', { id: r, arg: t.session && t.session.status === 'idle' ? '' : 'force', cls: 'sm danger', grp, title: 'Close the terminal; a busy one is stopped' }) : '',
-    finish ? '' : btn('Mark done…', 'reveal', { arg: 'done:' + r, cls: 'sm ghost' }),
-    finish ? '' : btn('Mark failed…', 'reveal', { arg: 'fail:' + r, cls: 'sm ghost' }),
   ].filter(Boolean).join('');
-  const k = finish === 'done' ? 'summary:' + r : 'reason:' + r;
-  const form = !finish ? '' : `<div class="stack" style="gap:8px">
-      <label class="sr" for="fin-${esc(r)}">${finish === 'done' ? 'Summary' : 'Why it failed'}</label>
-      <textarea class="input" id="fin-${esc(r)}" data-k="${esc(k)}" rows="2" placeholder="${finish === 'done' ? 'What got done (optional)' : 'Why it stopped (optional)'}">${esc(S.drafts[k] || '')}</textarea>
-      <div class="row">${btn(finish === 'done' ? 'Mark done' : 'Mark failed', finish === 'done' ? 'mark-done' : 'mark-fail', { id: r, cls: finish === 'done' ? 'soft sm' : 'danger sm', grp })}${btn('Cancel', 'hide', { arg: finish + ':' + r, cls: 'ghost sm' })}</div></div>`;
-  return `<div class="stack manage" style="gap:8px"><div class="row" style="gap:6px">${buttons}</div>${form}${note(grp)}</div>`;
+  return `<div class="stack manage" style="gap:8px"><div class="row" style="gap:6px">${buttons}</div>${note(grp)}</div>`;
 }
 
 function linkedOpen() { try { return localStorage.getItem('tb.linked') !== 'closed'; } catch { return true; } }
@@ -1190,16 +1182,16 @@ function attachList(list, owner, r) {
     const meta = [esc(ATT_KIND[kind]), src, a.at ? esc(ago(a.at)) : ''].filter(Boolean).join(' · ');
     const open = S.attMenu === String(a.id);
     return `<li class="att${open ? ' menu-open' : ''}"><span class="att-k ${kind}" aria-hidden="true">${ATT_ICON[kind]}</span><span class="att-t">${name}<span class="att-m">${meta}</span></span>
-      <span class="att-acts"><button type="button" class="icon-btn xs" data-act="att-menu" data-id="${esc(a.id)}" aria-haspopup="menu" aria-expanded="${open}" aria-label="Actions for ${esc(a.title)}">${ICON.more}</button>${attMenuHtml(a, web, fk)}</span></li>`;
-  }).map((html, k) => S.attEdit === String((list || [])[k].id) ? attEditHtml(list[k]) : html).join('');
+      <span class="att-acts"><button type="button" class="icon-btn xs" data-act="att-menu" data-id="${esc(a.id)}" aria-haspopup="menu" aria-expanded="${open}" aria-label="Actions for ${esc(a.title)}">${ICON.more}</button>${attMenuHtml(a, web, fk, owner !== 'goals')}</span></li>`;
+  }).map((html, k) => owner !== 'goals' && S.attEdit === String((list || [])[k].id) ? attEditHtml(list[k]) : html).join('');
   return { items, fk, n: (list || []).length };
 }
-function attMenuHtml(a, web, fk) {
+function attMenuHtml(a, web, fk, edit) {
   if (S.attMenu !== String(a.id)) return '';
   const item = (act, label, extra = '') => `<button type="button" role="menuitem" data-act="${act}" data-id="${esc(a.id)}" data-grp="${esc(fk)}"${extra}>${esc(label)}</button>`;
   return `<div class="ctxmenu att-menu" role="menu" aria-label="Actions for ${esc(a.title)}">
     ${attHref(a) ? `<a role="menuitem" href="${esc(attHref(a))}" target="_blank" rel="noopener" data-act="att-menu-close">Open</a>` : ''}
-    ${item('att-copy', web ? 'Copy link' : 'Copy path', ` data-url="${esc(a.url)}"`)}${item('att-edit', 'Edit')}<hr>${item('att-remove', 'Remove')}</div>`;
+    ${item('att-copy', web ? 'Copy link' : 'Copy path', ` data-url="${esc(a.url)}"`)}${edit ? `${item('att-edit', 'Edit')}<hr>${item('att-remove', 'Remove')}` : ''}</div>`;
 }
 function attEditHtml(a) {
   const k = 'attedit:' + a.id;
@@ -1311,23 +1303,14 @@ function issueDetail(b, o = {}) {
   const snap = snapRows(b.snapshot);
   const ft = foundTask(b);
   const hist = (Array.isArray(b.history) ? b.history : []).slice().sort((x, y) => String(x.at).localeCompare(String(y.at)));
-  const gid = issueGoalId(b);
-  const nk = 'inote:' + r;
-  const move = o.move ? `<div class="form-grid"><label for="mv-${esc(r)}">Goal</label>
-      ${goalButton('mv-' + r, gid == null ? 'none' : ref({ id: gid }, 'G'), { target: 'change:issue-move', id: r, grp: 'move:' + r, cls: 'sm', specials: [['none', 'Not in a goal']] })}</div>${note('move:' + r)}` : '';
-  const noteForm = S.reveal[nk]
-    ? `<label class="sr" for="in-${esc(r)}">Note</label><textarea class="input" id="in-${esc(r)}" data-k="${esc(nk)}" rows="2" placeholder="Add a note to this issue">${esc(S.drafts[nk] || '')}</textarea>
-       <div class="row">${btn('Save note', 'issue-note', { id: r, cls: 'soft sm', grp: nk })}${btn('Cancel', 'hide', { arg: nk, cls: 'ghost sm' })}</div>`
-    : `<div class="row">${btn('Add a note', 'reveal', { arg: nk, cls: 'link' })}</div>`;
   return `<div class="issue-d">
-    ${move}
     <div class="stack"><h3 class="h3">How it was reported</h3><span style="font-size:${o.compact ? 13 : 14}px">${esc(issueHow(b))}</span>${b.said ? `<p class="quote">${esc(b.said)}</p>` : ''}${b.detail ? `<p class="what" style="font-size:13px">${esc(b.detail)}</p>` : ''}</div>
     <div class="stack"><h3 class="h3">What was happening</h3>
       ${snap.length ? `<div class="kv${o.compact ? ' compact' : ''}">${snap.map(([k, v]) => `<div><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('')}</div>` : '<span class="help">No snapshot was saved with this issue.</span>'}
       ${ft ? `<a href="#/?task=${esc(ft.ref)}&tab=log" style="font-size:13px;align-self:flex-start">Open ${esc(ft.ref)}’s log${b.created_at ? ` at ${esc(hhmm(b.created_at))}` : ''}</a>` : ''}</div>
     <div class="stack" style="gap:8px"><h3 class="h3">History</h3>
       ${hist.length ? `<ol class="hist">${hist.map(h => `<li><span class="time" title="${esc(fullTime(h.at))}">${esc(hhmm(h.at))}</span><span class="dot" style="background:${HIST_DOT[h.kind] || 'var(--faint)'}"></span><span class="txt">${h.who ? `<b>${esc(h.who)}</b> · ` : ''}${esc(h.text)}</span></li>`).join('')}</ol>` : '<span class="help">Nothing yet.</span>'}
-      ${noteForm}${note(nk)}</div>
+</div>
   </div>`;
 }
 function issueActions(b, where, o = {}) {
@@ -1350,7 +1333,7 @@ function issuePanel() {
     ${S.issueErr ? `<p class="note err">${esc(S.issueErr)}</p>` : ''}
     <div class="stack" style="gap:4px"><h2 class="title">${esc(b.title)}</h2><div class="subline"><span class="mono">${esc(b.project)}</span><span>${esc(state)}${b.state === 'task' && b.task_id != null ? ` · <a href="#/?task=T${esc(b.task_id)}">Open it</a>` : ''}</span></div></div>
     ${(b.state || 'open') === 'open' ? `<div class="box info"><span style="font-size:13px">Not part of any task yet. Make it a task to queue it${jiraOn() ? ', or send it to Jira' : ''}.</span><div class="row">${issueActions(b, 'board')}</div>${note('issue:' + ref(b, 'B'))}</div>` : note('issue:' + ref(b, 'B'))}
-    ${issueDetail(b, { move: true })}
+    ${issueDetail(b)}
     <a href="#/backlog?issue=${esc(ref(b, 'B'))}" style="font-size:13px;align-self:flex-start">See every backlog issue</a>
   </aside>`;
 }

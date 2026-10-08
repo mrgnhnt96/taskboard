@@ -11,7 +11,7 @@ This is the audit of the native app against it, one web behaviour per row, with 
 | Goal page | `goalMain`, `goalTasks`, `notesAside`, `goalBacklog`, `bulkBar`, `goalRunButtons`, … | [goal.md](parity/goal.md) | 10 | 34 | 2 |
 | Issue panel (the web's Backlog page is replaced by the native planning page, `ui/backlog.rs`) | `issueAside`, `issuePanel`, `issueActions`, … | [backlog.md](parity/backlog.md) | 12 | 29 | 0 |
 | Sessions page | all of `sessions.js` + the rename helpers | [sessions.md](parity/sessions.md) | 23 | 32 | 5 |
-| Forms and pickers | `taskFormHtml`, `goalFormHtml`, `newIssueHtml`, `submit*`, pickers, drafts | [forms.md](parity/forms.md) | 19 | 23 | 7 |
+| Forms and pickers | removed (the app has no forms); `localeCompare` still checked | [forms.md](parity/forms.md) | — | — | — |
 | **Total** | | | **111** | **200** | **24** |
 
 "Fixed in the audit" means the first native version differed from the web and now matches it: wording,
@@ -19,9 +19,26 @@ what shows when, ordering, which buttons are offered, request bodies, keys, save
 difference is listed with its reason in the area's file; none drops a capability. They are layout
 (one sidebar on every page instead of a rail on the board and a list on the goal page), things a native
 window does differently (no URL routes, no keyboard focus on plain buttons, popovers that close on
-outside click), native additions (menu-bar shortcuts, "New task here", the login-item banner), and two
+outside click), native additions (menu-bar shortcuts, the login-item banner), and two
 web bugs not carried over (the `#/goals` landing threw; a terminal from another project could be sent
 with a new task).
+
+## The app doesn't edit anything
+
+The owner never makes or changes board data in the app; Claude does that through `tb` when asked.
+The app keeps one-click signals only: start, resume, pause and stop a task or goal (drag to Working,
+Run, Pause, Close its terminal, Detach, Requeue, Queue it), answer a task's question, "I reviewed it"
+on a PR waiting for you, triage buttons (Make it a task, Create ticket, Won't do), dismiss alerts,
+and Settings / work hours. Removed on 2026-10-08, from the app and from the frozen web copy so the
+goldens still match:
+
+- the New task, New goal, Edit goal and Add an issue forms (and their ⌘N / ⌘⇧N / ⌘⇧B shortcuts,
+  File menu items, sidebar buttons, and the goal page's "Add a task" / "Add an issue");
+- Mark done… / Mark failed… in the task panel (`tb done`, `tb fail`);
+- the goal page's Add a note (`tb note --goal`) and its attachments' Edit / Remove (`tb attach`, `tb unattach`);
+- the issue's Add a note and goal picker, and the goal page's bulk "Move to a goal" (`tb backlog move`).
+
+The task panel keeps its metadata and attachment editing and terminal rename, which the owner chose to keep.
 
 ## How it's tested
 
@@ -33,7 +50,7 @@ with a new task).
 - **Action tests.** A headless `MainWindow` (`parity::window`) on a recording backend (the real board
   in-process) presses each button the app offers and checks the exact request it sends, and what the
   window does next. `parity::Recording::fail` makes fetches fail to check the error states.
-- `cargo test --workspace` runs all of it (152 tests: 118 app, 21 daemon, 3 CLI, 10 end-to-end).
+- `cargo test --workspace` runs all of it (182 tests: 115 app, 7 CLI, the rest daemon and end-to-end).
 
 Shared pieces checked the same way: `fmt` (times, durations, refs: `fmt_matches_web`), `localeCompare`
 (`modals::locale_cmp`), `mdLite` (exact HTML for 32 inputs), the saved UI state (`prefs`, the web's

@@ -364,10 +364,7 @@ impl MainWindow {
 
     pub fn set_modal(&mut self, modal: Option<ui::modals::Modal>, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = modal;
-        match &self.modal {
-            Some(m) => m.focus_first(window, cx),
-            None => window.focus(&self.focus, cx),
-        }
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -407,8 +404,7 @@ impl MainWindow {
         page_title(&self.page, self.needs_count())
     }
 
-    /// Esc (the web's keydown handler, in its order): an open menu, then a read-only dialog (the
-    /// alerts; a form keeps its typing), then the task panel (or an issue panel on the board),
+    /// Esc (the web's keydown handler, in its order): an open menu, then the alerts dialog, then the task panel (or an issue panel on the board),
     /// then, on the board with nothing focused, the rail's filters.
     pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // On the Backlog page esc unchecks everything, closing its menu too.
@@ -424,9 +420,7 @@ impl MainWindow {
             return;
         }
         if self.modal.is_some() {
-            if matches!(self.modal, Some(ui::modals::Modal::Alerts)) {
-                self.set_modal(None, window, cx);
-            }
+            self.set_modal(None, window, cx);
             return;
         }
         match &self.panel {
@@ -739,14 +733,11 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, NewTask, NewGoal, NewIssue, GoBoard, GoBacklog, GoSessions, GoDays, Refresh]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, Refresh]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", CloseOverlay, Some("MainWindow")),
-        KeyBinding::new("cmd-n", NewTask, Some("MainWindow")),
-        KeyBinding::new("cmd-shift-n", NewGoal, Some("MainWindow")),
-        KeyBinding::new("cmd-shift-b", NewIssue, Some("MainWindow")),
         KeyBinding::new("cmd-1", GoBoard, Some("MainWindow")),
         KeyBinding::new("cmd-2", GoBacklog, Some("MainWindow")),
         KeyBinding::new("cmd-3", GoSessions, Some("MainWindow")),
@@ -764,7 +755,7 @@ impl Render for MainWindow {
 
         let page = match self.page.clone() {
             Page::Board => ui::board::render(self, window, cx),
-            Page::Goal(_) => ui::goal::render(self, window, cx),
+            Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
@@ -799,9 +790,6 @@ impl Render for MainWindow {
                     }
                 }),
             )
-            .on_action(cx.listener(|m, _: &NewTask, window, cx| ui::modals::open_task_form(m, Default::default(), window, cx)))
-            .on_action(cx.listener(|m, _: &NewGoal, window, cx| ui::modals::open_goal_form(m, None, window, cx)))
-            .on_action(cx.listener(|m, _: &NewIssue, window, cx| ui::modals::open_issue_form(m, None, window, cx)))
             .on_action(cx.listener(|m, _: &GoBoard, _, cx| m.go(Page::Board, cx)))
             .on_action(cx.listener(|m, _: &GoBacklog, _, cx| m.go(Page::Backlog, cx)))
             .on_action(cx.listener(|m, _: &GoSessions, _, cx| m.go(Page::Sessions, cx)))
@@ -1317,10 +1305,6 @@ mod tests {
     fn escape_follows_the_web_order(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, window, cx| {
-            // A form keeps its typing: Esc doesn't close it.
-            ui::modals::open_issue_form(m, None, window, cx);
-            m.escape(window, cx);
-            assert!(m.modal.is_some(), "a form stays open");
             m.set_modal(Some(ui::modals::Modal::Alerts), window, cx);
             m.escape(window, cx);
             assert!(m.modal.is_none(), "the alerts dialog closes");

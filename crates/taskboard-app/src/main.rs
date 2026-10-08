@@ -86,10 +86,6 @@ fn main() {
             Menu {
                 name: "File".into(),
                 items: vec![
-                    MenuItem::action("New Task", app::NewTask),
-                    MenuItem::action("New Goal", app::NewGoal),
-                    MenuItem::action("New Issue", app::NewIssue),
-                    MenuItem::separator(),
                     MenuItem::action("Close Window", CloseWindow),
                 ],
                 disabled: false,

@@ -292,7 +292,6 @@ pub struct Ui {
     pub drafts: HashMap<String, String>,
     pub busy: HashSet<String>,
     pub notes: HashMap<String, (String, bool)>,
-    pub reveal: HashSet<String>,
     pub meta_edit: HashMap<String, Vec<(String, String)>>,
     pub handoffs: HashMap<String, String>,
     /// "" means "all".
@@ -783,7 +782,7 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(manage_box(c, t));
     }
 
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), Some(pr_row(t)), Some(attach_row(c, t))].into_iter().flatten().collect();
+    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), Some(pr_row(c, t)), Some(attach_row(c, t))].into_iter().flatten().collect();
     out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
     let what = match opt_s(t, "detail") {
         Some(d) => note_body(d),
@@ -800,18 +799,11 @@ fn fold(f: Fold, open: bool, summary: Node, body: Vec<Node>) -> Node {
     el(K::Fold(f, open), kids)
 }
 
-/// `manageBox(t)`.
+/// `manageBox(t)`. No Mark done / Mark failed: Claude finishes a task (`tb done`, `tb fail`).
 fn manage_box(c: &Ctx, t: &Value) -> Node {
     let r = rf(t, "T");
     let grp = format!("manage:{r}");
     let live = session_live(t);
-    let finish = if c.ui.reveal.contains(&format!("done:{r}")) {
-        Some("done")
-    } else if c.ui.reveal.contains(&format!("fail:{r}")) {
-        Some("fail")
-    } else {
-        None
-    };
     let mut buttons = Vec::new();
     if live && s(t, "status") == "working" {
         buttons.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Small, false, None));
@@ -823,40 +815,7 @@ fn manage_box(c: &Ctx, t: &Value) -> Node {
         let arg = if s(&t["session"], "status") == "idle" { "" } else { "force" };
         buttons.push(c.btn("Close its terminal", Act::new("close-term", arg, &r, &grp), Look::DangerSmall, false, Some("Close the terminal; a busy one is stopped")));
     }
-    if finish.is_none() {
-        buttons.push(c.btn("Mark done…", Act::new("reveal", format!("done:{r}"), "", ""), Look::Ghost, false, None));
-        buttons.push(c.btn("Mark failed…", Act::new("reveal", format!("fail:{r}"), "", ""), Look::Ghost, false, None));
-    }
     let mut kids = vec![el(K::Row, buttons)];
-    if let Some(f) = finish {
-        let done = f == "done";
-        let k = if done { format!("summary:{r}") } else { format!("reason:{r}") };
-        kids.push(el(
-            K::Stack,
-            vec![
-                Node::Field {
-                    value: c.draft(&k),
-                    key: k,
-                    placeholder: if done { "What got done (optional)" } else { "Why it stopped (optional)" },
-                    multi: true,
-                    mono: false,
-                },
-                el(
-                    K::Row,
-                    vec![
-                        c.btn(
-                            if done { "Mark done" } else { "Mark failed" },
-                            Act::new(if done { "mark-done" } else { "mark-fail" }, "", &r, &grp),
-                            if done { Look::SoftSmall } else { Look::DangerSmall },
-                            false,
-                            None,
-                        ),
-                        c.btn("Cancel", Act::new("hide", format!("{f}:{r}"), "", ""), Look::Ghost, false, None),
-                    ],
-                ),
-            ],
-        ));
-    }
     kids.extend(c.note(&grp));
     el(K::Stack, kids)
 }
@@ -1106,7 +1065,7 @@ fn js_lower(v: &Value) -> String {
 }
 
 /// `prRow(t)` with `prBar`.
-fn pr_row(t: &Value) -> Node {
+fn pr_row(c: &Ctx, t: &Value) -> Node {
     let Some(p) = pr_of(t) else {
         return lrow("Pull request", vec![txt("No PR yet.", St::Small)]);
     };
@@ -1154,6 +1113,13 @@ fn pr_row(t: &Value) -> Node {
         };
         let _ = go;
         body.push(Node::El { k: K::PrBar { warn: stopped && opt_s(stage, "session").is_some() }, tip: Some(tip.into()), kids });
+    }
+    // Native: the owner's one-click "I reviewed it" while a green PR waits for them.
+    if obj(p, "stage").is_some_and(|st| b(st, "awaiting_you")) {
+        let r = rf(t, "T");
+        let grp = format!("pr:{r}");
+        body.push(el(K::Row, vec![c.btn("I reviewed it", Act::new("pr-reviewed", "", &r, &grp), Look::SoftSmall, false, Some("Tell the board you've looked at this PR"))]));
+        body.extend(c.note(&grp));
     }
     lrow("Pull request", body)
 }

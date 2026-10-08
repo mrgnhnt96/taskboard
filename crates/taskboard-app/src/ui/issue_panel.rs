@@ -21,20 +21,13 @@ use std::time::{Duration, Instant};
 
 pub const WIDTH: f32 = 520.;
 
-/// Notes, busy buttons, revealed note forms and their drafts (the web board's `S.notes`,
-/// `S.busy`, `S.reveal`, `S.drafts` for issues), plus the open picker.
+/// Notes and busy buttons (the web board's `S.notes`, `S.busy` for issues), plus the open picker.
 #[derive(Default)]
 pub struct State {
-    /// Inline notes by group (`issue:B1`, `move:B1`, `inote:B1`): text, error, when set.
+    /// Inline notes by group (`issue:B1`): text, error, when set.
     pub notes: HashMap<String, (String, bool, Instant)>,
-    /// Running calls by button key (`promote:board:B1`, `ticket::B1`, `drop::B1`, `issue-note::B1`).
+    /// Running calls by button key (`promote:board:B1`, `ticket::B1`, `drop::B1`).
     pub busy: HashSet<String>,
-    /// Revealed note forms (`inote:B1`).
-    pub reveal: HashSet<String>,
-    /// Unsent note text by form (`inote:B1`).
-    pub drafts: HashMap<String, String>,
-    /// The note field of the revealed form.
-    pub note: Option<(String, kit::Input)>,
     pub picker: Option<Picker>,
 }
 
@@ -210,14 +203,12 @@ pub struct Ctx<'a> {
     pub goals: &'a [Value],
     pub notes: &'a HashMap<String, (String, bool, Instant)>,
     pub busy: &'a HashSet<String>,
-    pub reveal: &'a HashSet<String>,
-    pub drafts: &'a HashMap<String, String>,
 }
 
 impl<'a> Ctx<'a> {
     pub fn of(m: &'a MainWindow) -> Ctx<'a> {
         let st = &m.issue_panel;
-        Ctx { jira: m.jira_on(), goals: &m.data.goals, notes: &st.notes, busy: &st.busy, reveal: &st.reveal, drafts: &st.drafts }
+        Ctx { jira: m.jira_on(), goals: &m.data.goals, notes: &st.notes, busy: &st.busy, }
     }
 
     pub fn note(&self, grp: &str) -> Option<(String, bool)> {
@@ -251,9 +242,6 @@ pub struct HistRow {
 /// `issueDetail`.
 pub struct DetailView {
     pub r: String,
-    /// The move picker's label, when shown.
-    pub move_label: Option<String>,
-    pub move_note: Option<(String, bool)>,
     pub how: String,
     pub said: Option<String>,
     pub detail: Option<String>,
@@ -261,26 +249,14 @@ pub struct DetailView {
     /// (task ref, "Open T4’s log at 3:05 PM").
     pub found_log: Option<(String, String)>,
     pub history: Vec<HistRow>,
-    /// The note form: None = "Add a note", Some(draft) = the field with its text.
-    pub note_form: Option<String>,
-    pub save: Act,
-    pub inote: Option<(String, bool)>,
 }
 
-pub fn detail_view(cx: &Ctx, b: &Value, with_move: bool) -> DetailView {
+pub fn detail_view(b: &Value) -> DetailView {
     let r = fmt::ref_of(b, "B");
-    let nk = format!("inote:{r}");
-    let gid = goal_id(b);
-    let move_label = with_move.then(|| match gid {
-        None => "Not in a goal".to_string(),
-        Some(id) => live_goals(cx.goals).into_iter().find(|g| fmt::i(g, "id") == id).map(|g| s(g, "name").to_string()).unwrap_or_else(|| "Choose a goal".into()),
-    });
     let mut hist: Vec<&Value> = arr(b, "history").iter().collect();
     let at = |h: &Value| h.get("at").map(|a| a.as_str().map(str::to_string).unwrap_or_else(|| a.to_string())).unwrap_or_else(|| "undefined".into());
     hist.sort_by(|x, y| locale_cmp(&at(x), &at(y)));
     DetailView {
-        move_label,
-        move_note: with_move.then(|| cx.note(&format!("move:{r}"))).flatten(),
         how: issue_how(b),
         said: fmt::opt_s(b, "said").map(str::to_string),
         detail: fmt::opt_s(b, "detail").map(str::to_string),
@@ -301,22 +277,13 @@ pub fn detail_view(cx: &Ctx, b: &Value, with_move: bool) -> DetailView {
                 },
             })
             .collect(),
-        note_form: cx.reveal.contains(&nk).then(|| cx.drafts.get(&nk).cloned().unwrap_or_default()),
-        save: cx.act("issue-note", "Save note", "", &r),
-        inote: cx.note(&nk),
         r,
     }
 }
 
 impl DetailView {
     #[cfg(test)]
-    pub fn parts(&self, out: &mut Vec<String>, acts: &mut Vec<&'static str>) {
-        if let Some(l) = &self.move_label {
-            out.push("Goal".into());
-            acts.push("open-picker");
-            out.push(l.clone());
-            out.extend(self.move_note.as_ref().map(|n| n.0.clone()));
-        }
+    pub fn parts(&self, out: &mut Vec<String>) {
         out.push("How it was reported".into());
         out.push(self.how.clone());
         out.extend(self.said.clone());
@@ -338,20 +305,6 @@ impl DetailView {
             out.push(h.time.clone());
             out.push(h.text.clone());
         }
-        match &self.note_form {
-            Some(draft) => {
-                out.push(draft.clone());
-                out.push(self.save.label.clone());
-                acts.push("issue-note");
-                out.push("Cancel".into());
-                acts.push("hide");
-            }
-            None => {
-                out.push("Add a note".into());
-                acts.push("reveal");
-            }
-        }
-        out.extend(self.inote.as_ref().map(|n| n.0.clone()));
     }
 }
 
@@ -385,7 +338,7 @@ pub fn panel_view(cx: &Ctx, b: &Value) -> PanelView {
             (what, issue_actions(cx, &r, "board"))
         }),
         note: cx.note(&format!("issue:{r}")),
-        detail: detail_view(cx, b, true),
+        detail: detail_view(b),
         r,
     }
 }
@@ -409,7 +362,7 @@ impl PanelView {
             }
         }
         out.extend(self.note.as_ref().map(|n| n.0.clone()));
-        self.detail.parts(&mut out, &mut acts);
+        self.detail.parts(&mut out);
         out.push("See every backlog issue".into());
         (flat(&out), acts)
     }
@@ -427,14 +380,14 @@ pub struct AsideView {
     pub detail: DetailView,
 }
 
-pub fn aside_view(cx: &Ctx, b: &Value) -> AsideView {
+pub fn aside_view(b: &Value) -> AsideView {
     AsideView {
         r: fmt::ref_of(b, "B"),
         kind: kind_label(s(b, "kind")),
         help: issue_state(b).map(|x| x.1).unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at")))),
         title: s(b, "title").to_string(),
         open_task: (s(b, "state") == "task").then(|| b.get("task_id").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}")),
-        detail: detail_view(cx, b, true),
+        detail: detail_view(b),
     }
 }
 
@@ -442,11 +395,10 @@ impl AsideView {
     #[cfg(test)]
     pub fn text_and_acts(&self, err: Option<&str>) -> (String, Vec<&'static str>) {
         let mut out = vec![self.kind.clone(), self.help.clone(), self.r.clone(), self.title.clone()];
-        let mut acts = vec![];
         out.extend(self.open_task.as_ref().map(|t| format!("Open task {t}")));
         out.extend(err.map(str::to_string));
-        self.detail.parts(&mut out, &mut acts);
-        (flat(&out), acts)
+        self.detail.parts(&mut out);
+        (flat(&out), vec![])
     }
 }
 
@@ -541,62 +493,6 @@ pub fn ticket(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
 pub fn drop_issue(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
     run(m, format!("drop::{r}"), format!("issue:{r}"), format!("backlog/{r}/drop"), json!({}), cx, |_, _, _| Some("Closed as won’t do".into()));
-}
-
-/// `issue-move`: `POST /backlog/:id/move {goal_id}`.
-pub fn move_issue(m: &mut MainWindow, r: &str, goal: Option<i64>, cx: &mut Context<MainWindow>) {
-    keep_issue(m, r);
-    run(m, format!("issue-move::{r}"), format!("move:{r}"), format!("backlog/{r}/move"), json!({"goal_id": goal}), cx, |_, _, _| Some("Moved".into()));
-}
-
-/// `reveal` the note form (with its draft).
-pub fn reveal_note(m: &mut MainWindow, r: &str, window: &mut Window, cx: &mut Context<MainWindow>) {
-    let nk = format!("inote:{r}");
-    m.issue_panel.reveal.insert(nk.clone());
-    let draft = m.issue_panel.drafts.get(&nk).cloned().unwrap_or_default();
-    let input = kit::Input::with_text(cx, "Add a note to this issue", true, &draft);
-    window.focus(&input.focus, cx);
-    m.issue_panel.note = Some((nk, input));
-    cx.notify();
-}
-
-/// `hide` the note form; its text stays as the draft.
-pub fn hide_note(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
-    let nk = format!("inote:{r}");
-    sync_draft(m, cx);
-    m.issue_panel.reveal.remove(&nk);
-    if m.issue_panel.note.as_ref().is_some_and(|(k, _)| *k == nk) {
-        m.issue_panel.note = None;
-    }
-    cx.notify();
-}
-
-/// Copy the note field's text into its draft.
-fn sync_draft(m: &mut MainWindow, cx: &App) {
-    if let Some((k, input)) = m.issue_panel.note.as_ref() {
-        let t = input.text(cx);
-        m.issue_panel.drafts.insert(k.clone(), t);
-    }
-}
-
-/// `issue-note`: "Write the note first." when empty, else `POST /backlog/:id/note {text}`.
-pub fn save_note(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
-    let nk = format!("inote:{r}");
-    sync_draft(m, cx);
-    let text = m.issue_panel.drafts.get(&nk).map(|t| t.trim().to_string()).unwrap_or_default();
-    if text.is_empty() {
-        set_note(m, &nk, "Write the note first.", true, cx);
-        return;
-    }
-    let key = nk.clone();
-    run(m, format!("issue-note::{r}"), nk, format!("backlog/{r}/note"), json!({"text": text}), cx, move |m, _, _| {
-        m.issue_panel.drafts.remove(&key);
-        m.issue_panel.reveal.remove(&key);
-        if m.issue_panel.note.as_ref().is_some_and(|(k, _)| *k == key) {
-            m.issue_panel.note = None;
-        }
-        Some("Note added".into())
-    });
 }
 
 /// "Open T4’s log": the Board, with that task's Log tab.
@@ -920,39 +816,9 @@ fn hist_color(t: &Theme, kind: &str) -> Hsla {
 }
 
 /// `issueDetail`, drawn. `compact` is the aside's smaller text.
-pub fn render_detail(m: &mut MainWindow, t: &Theme, b: &Value, v: &DetailView, compact: bool, window: &mut Window, cx: &mut Context<MainWindow>) -> Div {
+pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
     let r = v.r.clone();
     let mut col = div().flex().flex_col().gap(px(18.));
-    if let Some(label) = &v.move_label {
-        let gid = goal_id(b);
-        let value = gid.map(|g| format!("G{g}")).unwrap_or_else(|| "none".into());
-        let rr = r.clone();
-        let key = format!("issue-move-{r}");
-        let empty = label == "Choose a goal";
-        col = col.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(div().w(px(44.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child("Goal"))
-                        .child(picker_button(t, SharedString::from(format!("mv-{r}")), label.clone(), empty).on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            let p = e.position();
-                            let rr = rr.clone();
-                            open_picker(m, &key, true, value.clone(), vec![("none".into(), "Not in a goal".into())], String::new(), point(p.x - px(10.), p.y + px(14.)), window, cx, move |m, v, cx| {
-                                move_issue(m, &rr, if v == "none" { None } else { v.trim_start_matches('G').parse().ok() }, cx)
-                            });
-                        }))),
-                )
-                .children(note_el(t, &v.move_note)),
-        );
-    }
-
     let mut how = section(t, "How it was reported").child(div().text_size(px(if compact { 13. } else { 14. })).child(v.how.clone()));
     if let Some(said) = &v.said {
         how = how.child(div().text_size(px(14.)).text_color(t.text_2).bg(t.bg).border_l(px(3.)).border_color(t.border_2).rounded_r(px(8.)).px(px(12.)).py(px(8.)).child(said.clone()));
@@ -1007,41 +873,7 @@ pub fn render_detail(m: &mut MainWindow, t: &Theme, b: &Value, v: &DetailView, c
                 .child(div().flex_1().min_w_0().child(h.text.clone())),
         );
     }
-    history = history.child(note_form(m, t, v, window, cx)).children(note_el(t, &v.inote));
     col.child(history)
-}
-
-fn note_form(m: &mut MainWindow, t: &Theme, v: &DetailView, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
-    let r = v.r.clone();
-    let nk = format!("inote:{r}");
-    if v.note_form.is_none() {
-        return div()
-            .flex()
-            .child(kit::link(t, SharedString::from(format!("issue-note-open-{r}")), "Add a note").text_size(px(13.)).on_click(cx.listener(move |m, _, window, cx| reveal_note(m, &r, window, cx))))
-            .into_any_element();
-    }
-    // A form revealed before this view existed (another page): give it a field.
-    if !m.issue_panel.note.as_ref().is_some_and(|(k, _)| *k == nk) {
-        let draft = v.note_form.clone().unwrap_or_default();
-        m.issue_panel.note = Some((nk.clone(), kit::Input::with_text(cx, "Add a note to this issue", true, &draft)));
-    }
-    let Some((_, input)) = m.issue_panel.note.as_ref() else { return div().into_any_element() };
-    let (r1, r2) = (r.clone(), r.clone());
-    let save = act_button(t, SharedString::from(format!("issue-note-save-{r}")), &v.save, "soft", true);
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .child(input.render(t, SharedString::from(format!("issue-note-input-{r}")), window).min_h(px(56.)).items_start())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(if v.save.busy { save } else { save.on_click(cx.listener(move |m, _, _, cx| save_note(m, &r1, cx))) })
-                .child(act_button(t, SharedString::from(format!("issue-note-cancel-{r}")), &Act { act: "hide", label: "Cancel".into(), arg: "", busy: false }, "ghost", true).on_click(cx.listener(move |m, _, _, cx| hide_note(m, &r2, cx)))),
-        )
-        .into_any_element()
 }
 
 /// The issue panel on the Board and the Backlog page (the Goal page draws [`render_aside`] beside
@@ -1055,7 +887,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let close = kit::btn_small(&t, "issue-close", "✕").on_click(cx.listener(|m, _, _, cx| m.close_panel(cx)));
     let issue = m.data.issue.clone().filter(|b| fmt::ref_of(b, "B") == r);
     let body = match issue {
-        Some(b) => panel_body(m, &t, &b, close, window, cx),
+        Some(b) => panel_body(m, &t, &b, close, cx),
         None => div()
             .id("issue-panel-body")
             .flex()
@@ -1092,7 +924,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     .into_any_element()
 }
 
-fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, window: &mut Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let v = panel_view(&Ctx::of(m), b);
     let r = v.r.clone();
     let (kfg, kbg) = kind_colors(t, s(b, "kind"));
@@ -1135,14 +967,14 @@ fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, wi
         }
         None => col = col.children(note_el(t, &v.note)),
     }
-    col = col.child(render_detail(m, t, b, &v.detail, false, window, cx));
+    col = col.child(render_detail(t, &v.detail, false, cx));
     let rr = r.clone();
     col.child(div().flex().text_size(px(13.)).child(kit::link(t, "issue-all", "See every backlog issue").on_click(cx.listener(move |m, _, _, cx| see_all(m, &rr, cx)))))
 }
 
 /// `issueAside`: the issue (and its view) beside the Backlog page's list. None = still loading
 /// (or `err`).
-pub fn render_aside(m: &mut MainWindow, t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<&str>, cx: &mut Context<MainWindow>) -> AnyElement {
     let card = div().flex().flex_col().gap(px(16.)).p(px(18.)).rounded(px(14.)).border_1().border_color(t.border).bg(t.card);
     let Some((b, v)) = issue else {
         return card.child(div().text_size(px(13.)).text_color(if err.is_some() { t.down } else { t.muted }).child(err.unwrap_or("Loading…").to_string())).into_any_element();
@@ -1170,14 +1002,14 @@ pub fn render_aside(m: &mut MainWindow, t: &Theme, issue: Option<(&Value, &Aside
         });
     card.child(head)
         .children(err.map(|e| div().text_size(px(12.5)).text_color(t.down).child(e.to_string())))
-        .child(render_detail(m, t, b, &v.detail, true, window, cx))
+        .child(render_detail(t, &v.detail, true, cx))
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Ctx, drop_issue, hide_note, issue_from, issue_how, issue_state, kind_label, move_issue, panel_view, picker_items, picker_label, promote, reveal_note, save_note, snap_rows, ticket};
+    use super::{Ctx, drop_issue, issue_from, issue_how, issue_state, kind_label, panel_view, picker_items, picker_label, promote, snap_rows, ticket};
     use crate::app::Panel;
     use crate::backend::Backend;
     use crate::fmt::{self, arr, s};
@@ -1189,8 +1021,6 @@ mod tests {
     struct Fix {
         notes: HashMap<String, (String, bool, Instant)>,
         busy: HashSet<String>,
-        reveal: HashSet<String>,
-        drafts: HashMap<String, String>,
         goals: Vec<Value>,
         jira: bool,
     }
@@ -1201,14 +1031,12 @@ mod tests {
             Fix {
                 notes: i["notes"].as_object().map(|o| o.iter().map(|(k, n)| (k.clone(), (s(n, "text").to_string(), fmt::b(n, "err"), now))).collect()).unwrap_or_default(),
                 busy: arr(i, "busy").iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
-                reveal: arr(i, "reveal").iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
-                drafts: i["drafts"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default(),
                 goals: arr(i, "goals").to_vec(),
                 jira: fmt::b(i, "jira"),
             }
         }
         fn ctx(&self) -> Ctx<'_> {
-            Ctx { jira: self.jira, goals: &self.goals, notes: &self.notes, busy: &self.busy, reveal: &self.reveal, drafts: &self.drafts }
+            Ctx { jira: self.jira, goals: &self.goals, notes: &self.notes, busy: &self.busy }
         }
     }
 
@@ -1276,18 +1104,8 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/ticket")), Some(json!({})));
-        w.update(cx, |m, _, cx| move_issue(m, &r, Some(1), cx)).unwrap();
-        parity::settle(cx);
-        assert_eq!(rec.last(&format!("backlog/{r}/move")), Some(json!({"goal_id": 1})));
-        w.update(cx, |m, _, cx| {
-            // The Board keeps the changed issue in its Backlog column (`keepIssue`).
-            assert!(m.board.keep.contains(&r));
-            assert_eq!(m.issue_panel.notes.get(&format!("move:{r}")).map(|n| n.0.clone()), Some("Moved".into()));
-            move_issue(m, &r, None, cx);
-        })
-        .unwrap();
-        parity::settle(cx);
-        assert_eq!(rec.last(&format!("backlog/{r}/move")), Some(json!({"goal_id": null})));
+        // The Board keeps the changed issue in its Backlog column (`keepIssue`).
+        w.update(cx, |m, _, _| assert!(m.board.keep.contains(&r))).unwrap();
         w.update(cx, |m, _, cx| drop_issue(m, &r, cx)).unwrap();
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/drop")), Some(json!({})));
@@ -1306,42 +1124,5 @@ mod tests {
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/promote")), Some(json!({"where": "board"})));
         w.update(cx, |m, _, _| assert!(matches!(&m.panel, Some(Panel::Task { .. })), "the new task's panel opens")).unwrap();
-    }
-
-    #[gpui_kit::test]
-    fn notes_need_text_and_post_it(cx: &mut gpui_kit::TestAppContext) {
-        let (w, rec) = parity::window(cx);
-        let r = add_issue(&rec, json!({"title": "Odd log line", "kind": "bug", "project": "webapp"}));
-        let nk = format!("inote:{r}");
-        w.update(cx, |m, window, cx| {
-            reveal_note(m, &r, window, cx);
-            save_note(m, &r, cx);
-            assert_eq!(m.issue_panel.notes.get(&nk).map(|n| (n.0.clone(), n.1)), Some(("Write the note first.".into(), true)));
-            m.issue_panel.note.as_ref().unwrap().1.set_text("  Seen twice today.  ", cx);
-            save_note(m, &r, cx);
-        })
-        .unwrap();
-        parity::settle(cx);
-        assert_eq!(rec.posts().iter().filter(|(p, _)| p.ends_with("/note")).count(), 1);
-        assert_eq!(rec.last(&format!("backlog/{r}/note")), Some(json!({"text": "Seen twice today."})));
-        w.update(cx, |m, _, _| {
-            assert!(!m.issue_panel.reveal.contains(&nk), "the form closes");
-            assert!(!m.issue_panel.drafts.contains_key(&nk), "the draft is spent");
-            assert_eq!(m.issue_panel.notes.get(&nk).map(|n| n.0.clone()), Some("Note added".into()));
-        })
-        .unwrap();
-    }
-
-    #[gpui_kit::test]
-    fn a_hidden_note_keeps_its_draft(cx: &mut gpui_kit::TestAppContext) {
-        let (w, _rec) = parity::window(cx);
-        w.update(cx, |m, window, cx| {
-            reveal_note(m, "B1", window, cx);
-            m.issue_panel.note.as_ref().unwrap().1.set_text("half a thought", cx);
-            hide_note(m, "B1", cx);
-            reveal_note(m, "B1", window, cx);
-            assert_eq!(m.issue_panel.note.as_ref().unwrap().1.text(cx), "half a thought");
-        })
-        .unwrap();
     }
 }
