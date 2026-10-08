@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::client::{self, CallError};
 use taskboardd::config::Config;
+use taskboardd::steps::{from_listing, Before, Step};
 
 const CONTEXT_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit"];
 const WAITING_NOTIFICATIONS: &[&str] = &["permission_prompt", "idle_prompt"];
@@ -21,6 +22,43 @@ const MAX_CONTEXT: usize = 9900;
 const MAX_PROMPT: usize = 8000;
 const MAX_LAST_MESSAGE: usize = 2000;
 const MAX_OUTPUT: usize = 1000;
+
+/// A command that opens a pull request: `gh pr create`, `glab mr create`, or a POST to GitHub's
+/// `…/pulls` or Bitbucket's `…/pullrequests` (through `gh api`, `tb api` or curl).
+static PR_CLI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b").unwrap());
+static PR_API_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"/(?:pulls|pullrequests)/?["']?(?:\s|$)"#).unwrap());
+static POST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|\s)(?:-d|--data\S*|-f|-F|--field|--raw-field|--input|-X\s*POST|--method\s+POST)(?:\s|=|$)").unwrap());
+/// An MCP tool that opens a pull request (GitHub's, Bitbucket's, …).
+static PR_TOOL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^mcp__.*(?:create_?pull_?request|create_pr$|pull_?request_?create)").unwrap());
+
+fn opens_pr(tool: &str, input: &Value) -> bool {
+    if tool != "Bash" {
+        return PR_TOOL_RE.is_match(tool);
+    }
+    let cmd = input["command"].as_str().unwrap_or("");
+    PR_CLI_RE.is_match(cmd) || (PR_API_RE.is_match(cmd) && POST_RE.is_match(cmd))
+}
+
+/// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
+/// (config.toml's `[[steps]]`) aren't recorded. Anything else, no task, or no board: carry on.
+fn pre_tool_use(payload: &Value, session: &str) -> i32 {
+    if !opens_pr(payload["tool_name"].as_str().unwrap_or(""), &payload["tool_input"]) {
+        return 0;
+    }
+    let cfg = client::config();
+    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return 0 };
+    let vars = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
+    let left: Vec<Step> = from_listing(&v).into_iter().filter(|(s, done)| s.before == Before::Pr && !done).map(|(s, _)| s.filled(&vars)).collect();
+    if left.is_empty() {
+        return 0;
+    }
+    let reason = taskboardd::steps::refusal(&tb_path(), "opening the PR", &left);
+    let o = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}});
+    let mut so = std::io::stdout();
+    let _ = so.write_all(o.to_string().as_bytes());
+    let _ = so.flush();
+    0
+}
 
 static GIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(commit|push)\b").unwrap());
 
@@ -136,6 +174,9 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     let _ = std::io::stdin().read_to_string(&mut raw);
     let payload: Value = serde_json::from_str(&raw).ok().filter(|v: &Value| v.is_object()).unwrap_or(json!({}));
     let hook = event_arg.map(|s| s.to_string()).filter(|s| !s.is_empty()).or_else(|| payload["hook_event_name"].as_str().map(|s| s.to_string())).unwrap_or_default();
+    if hook == "PreToolUse" {
+        return pre_tool_use(&payload, &session);
+    }
     let Some(event) = board_event(&hook) else { return 0 };
     let s = |k: &str| payload[k].as_str().unwrap_or("").to_string();
     let mut extra = serde_json::Map::new();
@@ -310,6 +351,21 @@ pub fn statusline(pass: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_openings_are_recognised() {
+        let bash = |c: &str| opens_pr("Bash", &json!({"command": c}));
+        assert!(bash("gh pr create --fill"));
+        assert!(bash("cd x && gh pr create -t T -b B"));
+        assert!(bash("glab mr create"));
+        assert!(bash("tb api bitbucket repositories/acme/web/pullrequests -d '{\"title\":\"x\"}'"));
+        assert!(bash("gh api repos/acme/web/pulls -f title=x -f head=b -f base=main"));
+        assert!(!bash("gh pr view 9"));
+        assert!(!bash("gh api repos/acme/web/pulls"));
+        assert!(!bash("tb api bitbucket repositories/acme/web/pullrequests/9/comments -d '{}'"));
+        assert!(opens_pr("mcp__github__create_pull_request", &json!({})));
+        assert!(!opens_pr("mcp__github__get_pull_request", &json!({})));
+    }
 
     #[test]
     fn git_commands_are_recognised() {

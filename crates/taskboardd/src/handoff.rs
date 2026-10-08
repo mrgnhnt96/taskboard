@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, p, projects, waitsfor};
+use crate::{board, p, projects, steps, waitsfor};
 
 const LIMIT: usize = 6000;
 const NOTES_LIMIT: usize = 1500;
@@ -113,8 +113,15 @@ pub fn report_block(app: &App, tb: &str) -> String {
     .join("\n")
 }
 
-fn pr_block(app: &App, t: &Row) -> Result<String> {
-    if !projects::ships_prs(app, &t.st("project"))? {
+fn pr_block(app: &App, t: &Row, tb: &str) -> Result<String> {
+    let ships = projects::ships_prs(app, &t.st("project"))?;
+    let own = steps::handoff_block(app, t, tb, ships);
+    let s = pr_lines(app, t, ships)?;
+    Ok(if own.is_empty() { s } else { format!("{s}\n{own}") })
+}
+
+fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
+    if !ships {
         return Ok("This project has no git remote, so the task ends without a pull request.".into());
     }
     let mut s = "If this task changes code, it ends in one pull request: finished code that builds, breaks nothing \
@@ -355,7 +362,7 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
         parts.push(format!("What to do:\n{}", d.trim()));
     }
     parts.extend(other_tasks(app, &t)?);
-    let tail = vec![pr_block(app, &t)?, report_block(app, &tb), CLOSING.to_string()];
+    let tail = vec![pr_block(app, &t, &tb)?, report_block(app, &tb), CLOSING.to_string()];
     Ok(fit_to_limit(parts, tail))
 }
 

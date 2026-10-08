@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, fields, handoff, hooks, midna, ops, p, prflow, projects, screen, transcript, waitsfor};
+use crate::{board, deliver, fields, handoff, hooks, midna, ops, p, prflow, projects, screen, steps, transcript, waitsfor};
 
 static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[Tt](\d+)\]").unwrap());
 static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)$").unwrap());
@@ -813,6 +813,10 @@ fn on_question(r: &mut Report) -> Result<Value> {
         );
     }
     let asked = screened["question"].as_str().map(|s| s.to_string()).unwrap_or_else(|| text.clone());
+    let mut ctx = board::task_context(&t);
+    if ctx.remove("step_waiting").is_some() {
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
     board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => asked, "answered_at" => null, "lost" => 0])?;
     let mut line = format!("Asked: {asked}");
     if asked != text {
@@ -934,6 +938,16 @@ fn finishing(r: &Report) -> Result<()> {
         return Ok(());
     }
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
+    let with_pr = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || board::pr_still_open(&t);
+    let before: &[steps::Before] = if with_pr { &[steps::Before::Pr, steps::Before::Done] } else { &[steps::Before::Done] };
+    let left = steps::missing(app, &t, before)?;
+    if !left.is_empty() {
+        if r.spooled {
+            let line = format!("Not finished: {} waits for {}", rf("task", t.id()), steps::names(&left));
+            app.db.tx(|| crate::dispatch::add_alert(app, &line, Some(t.id()), t.i("goal_id"), None, None).map(|_| ()))?;
+        }
+        return err(409, steps::refusal(&board::tb_cmd(app), "finishing", &left));
+    }
     let done = json!({"summary": summary, "pr": r.b("pr")});
     let d = hooks::gate(app, "task.finishing", &t, json!({"by": r.name(), "done": done}));
     if d == hooks::Decision::Go {
@@ -948,6 +962,89 @@ fn finishing(r: &Report) -> Result<()> {
         Ok(())
     })?;
     err(409, format!("{line}. The task is still open: deal with that, then run tb done again."))
+}
+
+/// Is this report from the terminal working on the task (rather than the owner's, elsewhere)?
+fn from_agent(r: &Report, t: &Row) -> bool {
+    r.sid().is_some() && r.sid() == t.s("session_id")
+}
+
+/// `tb step done` / `tb step run`: a step passed, or its check or script failed (`ok: false`).
+fn on_step(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let step = steps::find(app, &t, &r.b("name"))?;
+    let tb = board::tb_cmd(app);
+    if step.owner && from_agent(r, &t) {
+        return err(409, format!("“{}” is {} step: {}.", step.name, app.cfg.owners(), step.how(&tb)));
+    }
+    if !step.run.is_empty() && r.b("via") != "run" {
+        return err(400, format!("“{}” is a script: {}.", step.name, step.how(&tb)));
+    }
+    let passed = as_bool(r.body.get("ok"), true);
+    let note = one_line(&r.b("note"), 2000);
+    let output = clip(r.b("output").trim(), 4000);
+    let text = match (passed, note.is_empty()) {
+        (true, true) => format!("Step done: {}", step.name),
+        (true, false) => format!("Step done: {}: {note}", step.name),
+        (false, _) => format!("Step didn't pass: {}{}", step.name, if note.is_empty() { String::new() } else { format!(": {note}") }),
+    };
+    r.log(t.id(), "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": passed, "note": note, "output": output})))?;
+    board::update_task(app, t.id(), fields!["latest" => one_line(&text, 200)])?;
+    let left: Vec<String> = steps::missing(app, &t, &[steps::Before::Pr, steps::Before::Done])?.into_iter().map(|s| s.name).collect();
+    Ok(with(ok(Some(&t), None), json!({"step": step.name, "passed": passed, "left": left})))
+}
+
+/// Puts the task in Needs you for a step, as a question the owner answers or acknowledges.
+fn wait_on_owner(r: &Report, t: &Row, step: &steps::Step, question: &str, failed: bool) -> Result<()> {
+    let app = r.app;
+    let mut ctx = board::task_context(t);
+    ctx.insert("step_waiting".into(), json!(step.name));
+    ctx.insert("step_failed".into(), json!(failed));
+    board::save_context(app, t.id(), &ctx, false)?;
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => question, "answered_at" => null, "lost" => 0])?;
+    r.log(t.id(), "question", &format!("Asked: {question}"), None)?;
+    r.set_session_status("needs")?;
+    crate::dispatch::add_alert(app, &format!("{}: {question}", rf("task", t.id())), Some(t.id()), t.i("goal_id"), None, None)
+}
+
+/// `tb step ask`: the agent reached one of the owner's steps; the task waits for them.
+fn on_step_ask(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let step = steps::find(app, &t, &r.b("name"))?;
+    if !step.owner {
+        return err(400, format!("“{}” is yours to do: {}.", step.name, step.how(&board::tb_cmd(app))));
+    }
+    if steps::recorded(app, t.id())?.contains(&steps::key(&step.name)) {
+        return Ok(with(ok(Some(&t), None), json!({"step": step.name, "already": true})));
+    }
+    let s = step.filled(&steps::vars(&t));
+    let mut q = format!("Step “{}”", s.name);
+    if !s.prompt.trim().is_empty() {
+        q += &format!(": {}", s.prompt.trim().trim_end_matches('.'));
+    }
+    if !s.open.is_empty() {
+        q += &format!(" (at {})", s.open);
+    }
+    wait_on_owner(r, &t, &step, &format!("{q}. Press Done once it's done."), false)?;
+    Ok(with(ok(Some(&t), None), json!({"step": step.name, "open": s.open})))
+}
+
+/// `tb step fail`: a step can't pass; the task waits for the owner's answer (or their skip).
+fn on_step_fail(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let step = steps::find(app, &t, &r.b("name"))?;
+    let why = one_line(&r.b("why"), 2000);
+    if why.is_empty() {
+        return err(400, "Say why the step can't pass (--why).");
+    }
+    wait_on_owner(r, &t, &step, &format!("Step “{}” can't pass: {why}. Answer, or skip the step.", step.name), true)?;
+    Ok(with(ok(Some(&t), None), json!({"step": step.name})))
 }
 
 fn on_fail(r: &mut Report) -> Result<Value> {
@@ -1216,6 +1313,10 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
             }
         }
         "tb.done" => Some(("done", format!("Finished {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("summary")))),
+        "tb.step" if out["passed"] == false => out["step"].as_str().map(|s| ("step", format!("The step {s} didn't pass"))),
+        "tb.step" => out["step"].as_str().map(|s| ("step", format!("Did the step {s}"))),
+        "tb.step_ask" => out["step"].as_str().map(|s| ("ask", format!("Asked you to do the step {s}"))),
+        "tb.step_fail" => out["step"].as_str().map(|s| ("ask", format!("The step {s} can't pass: {}", r.b("why")))),
         "tb.fail" => Some(("fail", format!("Gave up on {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("reason")))),
         "tb.take" => out["task"].as_str().map(|t| ("take", format!("Picked up {t}"))),
         _ => None,
@@ -1242,6 +1343,9 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.wait_for" => on_wait_for,
         "tb.done" => on_done,
         "tb.fail" => on_fail,
+        "tb.step" => on_step,
+        "tb.step_ask" => on_step_ask,
+        "tb.step_fail" => on_step_fail,
         "tb.take" => on_take,
         "tb.propose" => on_propose,
         "tb.goal" => on_goal,
