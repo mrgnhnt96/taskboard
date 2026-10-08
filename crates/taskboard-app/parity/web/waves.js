@@ -57,6 +57,16 @@ function attentionFacts(t) {
   }
   return facts;
 }
+const ALONE_LABEL = { goal: 'Alone in the goal', board: 'Alone on the board' };
+function planFacts(t) {
+  if (t.status === 'done') return [];
+  const out = [];
+  const open = (t.waits_for_state || []).filter(x => !x.done).map(x => x.ref);
+  if (open.length && (t.status === 'planned' || t.status === 'queued')) out.push({ text: `Waits for ${open.join(', ')}`, refs: true });
+  (t.locks || []).forEach(n => out.push({ text: `Holds ${n}` }));
+  if (t.alone) out.push({ text: ALONE_LABEL[t.alone] || 'Alone' });
+  return out;
+}
 function waveTask(t, w) {
   const live = isLive(t);
   const facts = attentionFacts(t);
@@ -65,6 +75,7 @@ function waveTask(t, w) {
   if (t.status === 'queued' && t.starting) facts.push(wchip('Starting', 'quiet'));
   if (t.priority === 'high' && t.status !== 'done') facts.push(wchip('High priority', 'warn'));
   if ((t.also || []).length) facts.push(wchip(`Also for ${t.also.map(x => x.ref).join(', ')}`, 'quiet'));
+  planFacts(t).filter(f => !(f.refs && t.waiting)).forEach(f => facts.push(wchip(f.text, 'quiet', f.refs ? `<span>${refLinks(f.text)}</span>` : esc(f.text))));
   return `<li class="wt${t.status === 'planned' ? ' planned' : ''}">
     ${waveTaskLine(t)}
     ${facts.length ? `<span class="wt-facts">${facts.join('')}</span>` : ''}</li>`;

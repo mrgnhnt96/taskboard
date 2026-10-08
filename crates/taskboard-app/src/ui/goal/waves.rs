@@ -149,6 +149,29 @@ fn wtask(t: &Value) -> WTask {
     }
 }
 
+/// `planFacts(t)`: what an unfinished task waits for (planned or queued), the locks it holds and
+/// whether it runs alone. The bool marks the "Waits for" fact, which the card's waiting line replaces.
+pub fn plan_facts(t: &Value) -> Vec<(String, bool)> {
+    if s(t, "status") == "done" {
+        return vec![];
+    }
+    let mut out = vec![];
+    let open: Vec<&str> = arr(t, "waits_for_state").iter().filter(|x| !b(x, "done")).map(|x| s(x, "ref")).collect();
+    if !open.is_empty() && matches!(s(t, "status"), "planned" | "queued") {
+        out.push((format!("Waits for {}", open.join(", ")), true));
+    }
+    for n in arr(t, "locks").iter().filter_map(|x| x.as_str()) {
+        out.push((format!("Holds {n}"), false));
+    }
+    match t.get("alone").and_then(|a| a.as_str()) {
+        Some("goal") => out.push(("Alone in the goal".into(), false)),
+        Some("board") => out.push(("Alone on the board".into(), false)),
+        Some(_) => out.push(("Alone".into(), false)),
+        None => {}
+    }
+    out
+}
+
 /// `waveTask(t, w)`: the task line, its attention facts, and what it waits for.
 fn wave_task(t: &Value, w: Option<&Value>) -> WTask {
     let mut x = wtask(t);
@@ -171,6 +194,12 @@ fn wave_task(t: &Value, w: Option<&Value>) -> WTask {
     let also: Vec<&str> = arr(t, "also").iter().map(|a| s(a, "ref")).collect();
     if !also.is_empty() {
         x.facts.push(("quiet", format!("Also for {}", also.join(", "))));
+    }
+    let waiting = fmt::opt_s(t, "waiting").is_some();
+    for (text, refs) in plan_facts(t) {
+        if !(refs && waiting) {
+            x.facts.push(("quiet", text));
+        }
     }
     x
 }
