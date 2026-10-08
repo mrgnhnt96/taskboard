@@ -234,6 +234,7 @@ function goalTaskMeta(t, i, tasks, g) {
   else if (t.status === 'queued') { const p = g.run_in_order ? prevOpen() : 0; parts = [t.priority === 'high' && 'High', p ? `after task ${p}` : 'starts when a terminal is free', key]; }
   else { const p = g.run_in_order ? prevOpen() : 0; parts = [p && `after task ${p}`]; }
   if ((t.also || []).length) parts.push(`also for ${t.also.map(x => x.ref).join(', ')}`);
+  planFacts(t).filter(f => !(f.refs && t.waiting)).forEach(f => parts.push(f.text));
   const list = parts.filter(Boolean);
   if (list[0] && list[0] !== t.who) list[0] = firstUpper(list[0]);
   return list.join(' · ');

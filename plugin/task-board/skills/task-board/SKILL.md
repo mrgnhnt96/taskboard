@@ -13,16 +13,16 @@ If a bare `tb` isn't on the PATH, use `${CLAUDE_PLUGIN_ROOT}/bin/tb`. The `.md` 
 
 You're on a task when your prompt or context starts with `[task-board:T<n>]`, or after `tb take T<n>`. Then:
 
-- **At milestones**, save a checkpoint a new terminal could carry on from:
+- **At milestones**, save a checkpoint a new terminal can resume from:
   `tb checkpoint --done "what's finished" --next "what's next" --decision "a choice to keep"`
   Flags repeat; `--file path` for key files.
-- **Notes** worth keeping on the task: `tb note "..."`. For the whole goal: `tb note --goal --kind finding|decision|reference "..."`.
+- **Notes** worth keeping: `tb note "..."`. For the whole goal: `tb note --goal --kind finding|decision|reference "..."`.
 - **Something outside the task**: don't fix it. Report it and carry on:
   `tb found "<short summary, 80 chars max>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
 - **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"`, then end your turn. Never ask the owner; see `questions.md`.
 - **Blocked on the owner**: read `questions.md` first; most calls are yours. Still the owner's? `tb question "<the question>"`, then stop.
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..."` (`--goal G<n>` for the goal).
-- **Written results** (measurements, a write-up): attach a link with `--kind results`. Lead with the answer.
+- **Written results**: attach a link with `--kind results`. Lead with the answer.
 - **A design is attached**: open it before you touch UI and build to it; note anything that can't match.
 - **The owner's steps** (in your handoff, or `tb steps`): work the owner wants on every task in this project, before the PR or before `tb done`, in order. Each says how to get past it:
   - agent work: do it as its prompt says, then `tb step done "<name>" --note "what came of it"` (it runs the step's check first; fix what fails);
@@ -52,6 +52,7 @@ Planning a goal? Read `planning.md` first.
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`.
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
    - Another goal's task does it: `tb task set T<n> --also G<n>`.
+   - Waves, waits, locks, running alone and worktrees: `planning.md`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.

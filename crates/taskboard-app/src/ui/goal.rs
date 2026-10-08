@@ -584,6 +584,8 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
     if !also.is_empty() {
         parts.push(Some(format!("also for {}", also.join(", "))));
     }
+    let waiting = fmt::opt_s(t, "waiting").is_some();
+    parts.extend(waves::plan_facts(t).into_iter().filter(|(_, refs)| !(*refs && waiting)).map(|(text, _)| Some(text)));
     let mut list: Vec<String> = parts.into_iter().flatten().filter(|x| !x.is_empty()).collect();
     if let Some(first) = list.first_mut() {
         if Some(first.as_str()) != who.as_deref() {

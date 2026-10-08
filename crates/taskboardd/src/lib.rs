@@ -15,6 +15,7 @@ pub mod hooks;
 pub mod hours;
 pub mod jira;
 pub mod jobs;
+pub mod locks;
 pub mod mdcopy;
 pub mod midna;
 pub mod ops;
@@ -35,6 +36,7 @@ pub mod usage;
 pub mod util;
 pub mod waitsfor;
 pub mod waves;
+pub mod worktrees;
 
 
 use std::sync::Arc;

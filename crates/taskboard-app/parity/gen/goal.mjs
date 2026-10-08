@@ -69,6 +69,13 @@ const GOALS = {
   'empty run_in_order 0': G({ run_in_order: 0, auto_close: 0, max_terminals: 7, tasks: [T(1, { status: 'planned' })] }),
   'max missing': G({ max_terminals: null, auto_close: undefined, run_in_order: undefined }),
   // Shared tasks (`tb task set T<n> --also G<n>`): a home goal runs them, other goals count them.
+  // Waits, locks and running alone (`tb task set T<n> --waits-for/--lock/--alone`).
+  'plan facts': G({ run_in_order: false, tasks: [
+    T(1, { status: 'working', who: 'T1 Measure', started_at: at(20), when: at(2), locks: ['local-core'], alone: 'goal' }),
+    T(2, { status: 'queued', waits_for_state: [{ ref: 'T1', done: false }, { ref: 'T9', done: true }], locks: ['local-core', 'emulator-5554'] }),
+    T(3, { status: 'queued', waiting: 'Waits for local-core (T1 has it)', waits_for_state: [{ ref: 'T1', done: false }], locks: ['local-core'] }),
+    T(4, { status: 'planned', waits_for_state: [{ ref: 'T2', done: false }], alone: 'board' }),
+    T(5, { status: 'done', when: at(40), locks: ['local-core'], alone: 'goal' })] }),
   'shared': G({ tasks: [T(1, { status: 'done', who: 'T1 Add the endpoint', when: at(30), also: [{ id: 2, ref: 'G2', name: 'Sign-up' }, { id: 4, ref: 'G4', name: 'Audit' }] }),
     T(2, { status: 'planned', also: [{ id: 2, ref: 'G2', name: 'Sign-up' }] })],
     shared: [T(20, { status: 'working', who: 'T20 Auth client', goal: { id: 3, ref: 'G3', name: 'Auth client' }, pr: openPr({ num: 41, stage: { phase: 'rereview', label: 'Awaiting re-review' } }) }),
@@ -173,6 +180,16 @@ const WAVE_GOALS = {
       W(2, { state: 'running', total: 3, active: 3, starting: 1 }),
       W(3, { name: 'Polish', state: 'waiting', blocked: true, held_by: 'running', hold: 'Waits for wave 2', stop_after: true, total: 2, planned: 1 })],
   }),
+  'waves plan facts': G({
+    tasks: [
+      T(1, { status: 'working', wave: 1, who: 'T1 Measure', session_id: 's1', started_at: at(20), when: at(2), locks: ['local-core'], alone: 'board' }),
+      T(2, { status: 'queued', wave: 1, waiting: 'Waits for local-core (T1 has it)', waits_for_state: [{ ref: 'T1', done: false }], locks: ['local-core'] }),
+      T(3, { status: 'queued', wave: 1, waits_for_state: [{ ref: 'T1', done: false }, { ref: 'T7', done: true }] }),
+      T(4, { status: 'planned', wave: 1, alone: 'goal', waits_for_state: [{ ref: 'T3', done: false }] }),
+      T(5, { status: 'done', wave: 1, locks: ['local-core'] }),
+    ],
+    waves: [W(1, { state: 'running', total: 5, done: 1, active: 1, planned: 1 })],
+  }),
   'waves stopped': G({
     tasks: [T(1, { status: 'done', wave: 1 }), T(2, { status: 'queued', wave: 2, waiting: 'Stopped for your review after wave 1 (Basics)' })],
     waves: [W(1, { name: 'Basics', state: 'stopped', stop_after: true, total: 1, done: 1 }),
@@ -267,7 +284,7 @@ for (const [hn, hours] of Object.entries(HOURS)) {
 w.run('S.startMenu = null');
 
 // ---------------------------------------------------------------- task rows + how it runs
-for (const n of ['rich', 'rich, not in order', 'no tasks', 'planned only', 'empty run_in_order 0', 'max missing', 'shared', 'shared only']) {
+for (const n of ['rich', 'rich, not in order', 'no tasks', 'planned only', 'empty run_in_order 0', 'max missing', 'shared', 'shared only', 'plan facts']) {
   const g = GOALS[n];
   setState({});
   const html = w.call('goalTasks', g);

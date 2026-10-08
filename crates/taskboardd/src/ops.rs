@@ -116,6 +116,9 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         .and_then(|g| g.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()))
         .or(projects::project_path(app, Some(&project))?);
     let latest = one_line(&body_str(body, "latest"), 240);
+    let lock_names = crate::locks::clean(body.get("locks"))?;
+    let lock_warning = crate::locks::unseen_warning(app, lock_names.as_deref(), None)?;
+    let alone = crate::locks::clean_alone(body.get("alone"))?;
     let tid = app.db.insert(
         "tasks",
         fields!["title" => title, "detail" => body_str(body, "detail"), "project" => project, "repo_path" => repo,
@@ -125,7 +128,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "from_issue_id" => body.get("from_issue_id"), "context" => "{}",
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
-                "origin" => jdumps(&origin(body.get("origin"), who)),
+                "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone,
                 "latest" => if latest.is_empty() { None } else { Some(latest) }],
     )?;
     if let Some(w) = body.get("wave").filter(|w| !w.is_null()) {
@@ -155,7 +158,11 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         jira::request(app, "status", tid, k, None, None)?;
     }
     app.wake_runner();
-    board::task_card(app, &t)
+    let mut card = board::task_card(app, &t)?;
+    if let Some(w) = lock_warning {
+        card["warnings"] = json!([w]);
+    }
+    Ok(card)
 }
 
 pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
@@ -190,6 +197,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
                 "project" => project, "repo_path" => projects::project_path(app, Some(&project))?, "epic_key" => ekey,
                 "run_in_order" => as_bool(body.get("run_in_order"), true) as i64, "max_terminals" => max_t,
                 "auto_close" => as_bool(body.get("auto_close"), true) as i64, "product" => product,
+                "worktree_base" => crate::worktrees::clean_base(body.get("worktree_base"))?,
                 "created_at" => now, "updated_at" => now, "archived" => 0],
     )?;
     let g = board::get_goal(app, gid)?;

@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   start_job INT,
   answered_at TEXT,
   waits_for TEXT,
-  start_tries INT DEFAULT 0, retry_at TEXT
+  start_tries INT DEFAULT 0, retry_at TEXT,
+  locks TEXT, alone TEXT
 );
 CREATE INDEX IF NOT EXISTS tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS tasks_session ON tasks(session_id);
@@ -49,7 +50,7 @@ CREATE TABLE IF NOT EXISTS goals(
   id INTEGER PRIMARY KEY, name TEXT, outcome TEXT, tldr TEXT, project TEXT, repo_path TEXT,
   epic_key TEXT, epic_status TEXT, product TEXT,
   run_in_order INT DEFAULT 1, max_terminals INT DEFAULT 2, auto_close INT DEFAULT 1,
-  paused INT DEFAULT 0, deprioritized INT DEFAULT 0, hours_until TEXT,
+  paused INT DEFAULT 0, deprioritized INT DEFAULT 0, hours_until TEXT, worktree_base TEXT,
   created_at TEXT, updated_at TEXT, archived INT DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS goal_notes(
@@ -175,6 +176,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "grouped_at", "TEXT"),
     ("tasks", "wave", "INT"),
     ("tasks", "origin", "TEXT"),
+    ("tasks", "locks", "TEXT"),
+    ("tasks", "alone", "TEXT"),
+    ("goals", "worktree_base", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection) -> rusqlite::Result<()> {

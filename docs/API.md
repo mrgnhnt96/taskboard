@@ -139,6 +139,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "epic_url": str|null,                     // NEW: browse URL of the epic, built by the server from the Jira site. null without Jira.
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
+  "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
@@ -404,7 +405,11 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "starting": bool,               // queued and a start job is pending/running ("Starting")
   "waiting": str|null,            // queued only: why it isn't starting yet, one plain line
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
-  "blocked": bool                 // queued and waiting on another task (waits_for), shown as "Blocked"
+  "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
+  "waits_for": ["T14"],           // tasks it starts after
+  "waits_for_state": [{"ref": "T14", "done": bool}],   // the same, each with whether it's done; the goal page's "Waits for" chip
+  "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
+  "alone": "goal"|"board"|null    // nothing else in its goal (or on the board) runs while it does
 }
 ```
 The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
@@ -457,7 +462,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 |---|---|---|
 | `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | `tb task new`. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the caller shows it. |
 | `POST /tasks/:id` | `{status: "queued"}` | "Queue it now" on a planned task (planned → queued only). |
-| `POST /tasks/:id/start` | `{mode: "new"\|"queue"}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). |
+| `POST /tasks/:id/start` | `{mode: "new"\|"queue"}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
@@ -571,3 +576,20 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 | `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave or make it a review stop (`tb goal wave`). Answers the goal detail. |
 | `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task. Answers the goal detail. |
 | `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |
+
+## Locks, running alone and worktrees
+
+All opt-in (`tb task set --lock/--alone`, `tb goal set --worktrees`). A task holds its locks while it's active: working
+or needing the owner (not a failed start), or queued with a start job. The next in start order waits ("Waits for
+local-core (T12 has it)"). A task with `alone` waits until its goal (or the board) has nothing active ("Waits to run
+alone (T1 and T2 are working)"), queued tasks behind it wait for it ("Waits for T13 to run alone first"), and while it
+runs nothing else in its scope starts ("Waits while T13 runs alone").
+
+| Request | Body | What |
+|---|---|---|
+| `POST /tasks/:id` | `{locks: [str]\|"a, b"\|"none", alone: "goal"\|"board"\|"none"\|bool}` | Lock names are lowercase letters, digits, `.`, `_`, `:` and `-` (400 otherwise). A name no other task uses comes back in `warnings` (a spelling hint). Also on `POST /tasks` and `tb.new_task` / `tb.propose` items. |
+| `GET /locks` | | `{locks: [{name, held_by: "T12"\|null, tasks: ["T13"]}], alone: [{ref, title, scope, goal, running}]}` (`tb locks`). |
+| `POST /goals/:id` | `{worktree_base: "origin/main"\|"off"}` | Each task starts in `<repo>/.claude/worktrees/T<n>`, made with `git fetch` and `git worktree add --detach` at the base. Once the task is finished (failed, or no open PR) and its terminal is gone, the board removes the worktree, or keeps one with uncommitted changes. |
+
+`tb propose` and `--task` items take a fourth `::` field, what the task waits for: `"title::detail::2::#1, T14"`, where
+`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one).

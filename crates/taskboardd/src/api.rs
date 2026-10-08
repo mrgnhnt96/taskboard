@@ -107,6 +107,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["accounts", id, "disconnect"]) => accounts::disconnect(app, id),
         ("POST", ["accounts", id]) => accounts::connect(app, id, body),
         ("GET", ["summary"]) => get_summary(app),
+        ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
         ("POST", ["projects", name]) => patch_project(app, name, body),
@@ -619,6 +620,7 @@ fn meta(v: Option<&Value>) -> Result<Value> {
 }
 
 fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let mut warnings: Vec<String> = vec![];
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let mut f: Vec<(&str, Value)> = vec![];
@@ -711,6 +713,25 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 bump = true;
             }
         }
+        let mut locks_changed = None;
+        if has_key("locks") {
+            let lk = crate::locks::clean(body.get("locks"))?;
+            if lk.as_deref() != t.s("locks") {
+                warnings.extend(crate::locks::unseen_warning(app, lk.as_deref(), Some(id))?);
+                locks_changed = Some(lk.clone());
+                f.push(("locks", json!(lk)));
+                bump = true;
+            }
+        }
+        let mut alone_changed = None;
+        if has_key("alone") {
+            let al = crate::locks::clean_alone(body.get("alone"))?;
+            if al.as_deref() != t.s("alone") {
+                alone_changed = Some(al.clone());
+                f.push(("alone", json!(al)));
+                bump = true;
+            }
+        }
         if has_key("jira_key") && app.cfg.jira_on() {
             let k = body_str(body, "jira_key");
             if k.is_empty() || k.eq_ignore_ascii_case("none") {
@@ -773,6 +794,17 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             let names: Vec<String> = jloads_arr(wf.as_deref()).iter().filter_map(|v| v.as_i64()).map(|n| rf("task", n)).collect();
             board::log_event(app, id, OWNER, "note", &if names.is_empty() { "Waits for no other task".to_string() } else { format!("Waits for {}", names.join(", ")) })?;
         }
+        if let Some(lk) = locks_changed {
+            let names: Vec<String> = jloads_arr(lk.as_deref()).iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+            board::log_event(app, id, OWNER, "note", &if names.is_empty() {
+                "Holds no lock".to_string()
+            } else {
+                format!("Holds the lock{} {} while it runs", if names.len() > 1 { "s" } else { "" }, names.join(", "))
+            })?;
+        }
+        if let Some(al) = alone_changed {
+            board::log_event(app, id, OWNER, "note", crate::locks::alone_text(al.as_deref().unwrap_or("")))?;
+        }
         if let Some(g) = t.i("goal_id") {
             board::renumber_goal(app, g)?;
         }
@@ -781,7 +813,11 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    task_detail(app, id)
+    let mut d = task_detail(app, id)?;
+    if !warnings.is_empty() {
+        d["warnings"] = json!(warnings);
+    }
+    Ok(d)
 }
 
 fn live_session(app: &App, t: &Row) -> Result<Option<Row>> {
@@ -826,6 +862,9 @@ fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
+    }
+    if mode != "attach" {
+        crate::worktrees::ensure(app, &board::get_task(app, id)?)?;
     }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
@@ -1272,6 +1311,9 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         if hk("product") {
             f.push(("product", json!(jira::clean_product(app, &body_str(body, "product"))?)));
         }
+        if hk("worktree_base") {
+            f.push(("worktree_base", json!(crate::worktrees::clean_base(body.get("worktree_base"))?)));
+        }
         let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr"));
         if !f.is_empty() {
             f.push(("updated_at", json!(now_iso())));
@@ -1482,6 +1524,9 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
     if let Some(e) = g.s("epic_key").filter(|t| !t.is_empty()) {
         lines.push(format!("Jira epic: {e}"));
     }
+    if let Some(b) = g.s("worktree_base").filter(|b| !b.is_empty()) {
+        lines.push(format!("Each task starts in its own git worktree, detached at {b}."));
+    }
     let notes = board::goal_notes(app, g.id())?;
     if !notes.is_empty() {
         lines.extend(["".into(), "Goal notes:".into(), handoff::notes_block(&notes, if for_planner { 2500 } else { 4000 })]);
@@ -1498,6 +1543,17 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
             }
             if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
                 extra.push(k.to_string());
+            }
+            let waits = crate::waitsfor::ids(t);
+            if !waits.is_empty() {
+                extra.push(format!("waits for {}", waits.iter().map(|n| rf("task", *n)).collect::<Vec<_>>().join(", ")));
+            }
+            let held = crate::locks::names(t);
+            if !held.is_empty() {
+                extra.push(format!("holds {}", held.join(", ")));
+            }
+            if let Some(a) = t.s("alone") {
+                extra.push(crate::locks::alone_text(a).to_lowercase());
             }
             lines.push(format!(
                 "  {}. {} [{}] {}{}",
@@ -1527,6 +1583,8 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
             format!("Before adding a task, check the project's other open goals ({tb} goals --project {}, then {tb} goal show G<n>) for a task that already does that work (same files, same change). Don't add a second one: make the existing task finish this goal too with {tb} task set T<n> --also {gref}, without asking {owner}.", g.st("project")),
             "Send them to the board with:".to_string(),
             format!("  {tb} propose {gref} --task \"title::what to do\" --task \"title::what to do\""),
+            "A task that needs another one's work first lists it after a fourth ::, by ref or as #k for the k-th --task in the same command: \"title::what to do::2::#1\" or \"title::what to do::::T14\". It starts only once those are done.".to_string(),
+            format!("Tasks that must not run together name the same lock: {tb} task set T<n> --lock <name> (like a device or a shared service). A task that needs the goal to itself gets --alone; --alone board stops everything else on the board while it runs."),
             format!("They arrive as planned tasks for {owner} to edit, reorder and queue. Nothing runs until {owner} queues it."),
         ]);
     } else {

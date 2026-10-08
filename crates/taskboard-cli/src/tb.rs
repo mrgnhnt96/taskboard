@@ -119,9 +119,12 @@ enum Cmd {
     /// Propose planned tasks for a goal: --task "title::what to do"
     Propose {
         goal: String,
-        #[arg(long = "task")]
+        /// A planned task: "title::detail", "title::detail::<wave>" or "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS]")]
         tasks: Vec<String>,
     },
+    /// Named locks, who holds each, and tasks that run alone
+    Locks,
     /// List goals
     Goals {
         #[arg(long)]
@@ -313,7 +316,8 @@ enum GoalCmd {
         project: Option<String>,
         #[arg(long)]
         product: Option<String>,
-        #[arg(long = "task")]
+        /// A planned task: "title::detail", "title::detail::<wave>" or "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS]")]
         tasks: Vec<String>,
     },
     /// The goal, its tasks and why each queued one waits
@@ -337,6 +341,9 @@ enum GoalCmd {
         epic: Option<String>,
         #[arg(long)]
         product: Option<String>,
+        /// Start each task in its own git worktree, detached at this branch (like origin/main); off for the shared folder
+        #[arg(long, value_name = "BASE|off")]
+        worktrees: Option<String>,
     },
     /// Name a wave, or stop the goal after it for the owner's review
     Wave {
@@ -384,6 +391,15 @@ enum TaskCmd {
         /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
         #[arg(long)]
         here: bool,
+        /// It starts only once this task (any goal) is done; repeat for more
+        #[arg(long = "waits-for", value_name = "T12")]
+        waits_for: Vec<String>,
+        /// A named lock it holds while it runs; tasks sharing a lock never run together. Repeat for more
+        #[arg(long, value_name = "NAME")]
+        lock: Vec<String>,
+        /// Nothing else in its goal runs while it does (board: nothing else on the board)
+        #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
+        alone: Option<String>,
     },
     /// Change a task
     Set {
@@ -407,6 +423,12 @@ enum TaskCmd {
         priority: Option<String>,
         #[arg(long = "waits-for")]
         waits_for: Option<String>,
+        /// A named lock it holds while it runs; tasks sharing a lock never run together. Repeat for more, none for none
+        #[arg(long, value_name = "NAME|none")]
+        lock: Vec<String>,
+        /// Nothing else in its goal runs while it does (board: nothing else on the board); none to run alongside others
+        #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
+        alone: Option<String>,
         /// A Jira key to link, `new` for a new ticket, or `none`
         #[arg(long)]
         jira: Option<String>,
@@ -608,6 +630,40 @@ fn midna_attention(text: &str) {
     }
 }
 
+/// "holds local-core" and "runs alone in its goal".
+fn lock_bits(t: &Value) -> Vec<String> {
+    let mut bits = vec![];
+    if let Some(l) = t["locks"].as_array().filter(|a| !a.is_empty()) {
+        bits.push(format!("holds {}", l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    if let Some(a) = t["alone"].as_str() {
+        bits.push(alone_text(a).into());
+    }
+    bits
+}
+
+fn alone_text(scope: &str) -> &'static str {
+    match scope {
+        "board" => "runs alone on the board",
+        "goal" => "runs alone in its goal",
+        _ => "runs alone",
+    }
+}
+
+/// `--lock a,b --lock c` → [a, b, c]; `--lock none` → [].
+fn lock_arg(values: &[String]) -> Vec<String> {
+    if values.len() == 1 && values[0].trim().eq_ignore_ascii_case("none") {
+        return vec![];
+    }
+    values.iter().flat_map(|v| v.replace(',', " ").split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>()).collect()
+}
+
+fn print_warnings(v: &Value) {
+    for w in v["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str()) {
+        out(&format!("Note: {w}"));
+    }
+}
+
 fn goal_lines(g: &Value) -> Vec<String> {
     let mut lines = vec![format!(
         "{} · {} · {} · {}/{} done",
@@ -637,6 +693,12 @@ fn goal_lines(g: &Value) -> Vec<String> {
             }
             if let Some(also) = t["also"].as_array().filter(|a| !a.is_empty()) {
                 line += &format!(" · also for {}", also.iter().filter_map(|x| x["ref"].as_str()).collect::<Vec<_>>().join(", "));
+            }
+            if let Some(w) = t["waits_for"].as_array().filter(|a| !a.is_empty()) {
+                line += &format!(" · waits for {}", w.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "));
+            }
+            for b in lock_bits(t) {
+                line += &format!(" · {b}");
             }
             if let Some(w) = t["waiting"].as_str() {
                 line += &format!(" — {w}");
@@ -986,7 +1048,35 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             short_task_titles(&tasks)?;
             match c.report("tb.propose", json!({"goal": g, "tasks": tasks}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
-                Some(v) => out(&format!("Added {} to {g} as planned.", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default())),
+                Some(v) => {
+                    out(&format!("Added {} to {g} as planned.", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()));
+                    print_warnings(&v);
+                }
+            }
+            Ok(0)
+        }
+        Cmd::Locks => {
+            let v = c.call("GET", "/locks", None)?;
+            let locks = v["locks"].as_array().cloned().unwrap_or_default();
+            let alone = v["alone"].as_array().cloned().unwrap_or_default();
+            if locks.is_empty() && alone.is_empty() {
+                out("No task holds a lock or runs alone.");
+            }
+            for e in locks {
+                let holder = e["held_by"].as_str().map(|h| format!("held by {h}")).unwrap_or_else(|| "free".into());
+                let rest = e["tasks"].as_array().filter(|a| !a.is_empty()).map(|a| format!(" · waiting or planned: {}", a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
+                out(&format!("{} · {holder}{rest}", e["name"].as_str().unwrap_or("")));
+            }
+            for x in alone {
+                let scope = x["scope"].as_str().unwrap_or("");
+                out(&format!(
+                    "{} {} · {}{}{}",
+                    x["ref"].as_str().unwrap_or(""),
+                    x["title"].as_str().unwrap_or(""),
+                    alone_text(scope),
+                    x["goal"].as_str().filter(|_| scope == "goal").map(|g| format!(" ({g})")).unwrap_or_default(),
+                    if x["running"] == true { " · running" } else { "" }
+                ));
             }
             Ok(0)
         }
@@ -1025,6 +1115,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                             c.cfg.page_url,
                             format!("#/goals/{}", v["goal"].as_str().unwrap_or(""))
                         ));
+                        print_warnings(&v);
                     }
                 }
                 Ok(0)
@@ -1036,7 +1127,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -1062,6 +1153,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = product {
                     b["product"] = json!(x);
+                }
+                if let Some(x) = worktrees {
+                    b["worktree_base"] = json!(x);
                 }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb goal set G3 --paused on".into());
@@ -1188,7 +1282,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, project, planned, here } => {
+            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -1210,6 +1304,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(w) = wave {
                     body["wave"] = json!(w);
                 }
+                if !waits_for.is_empty() {
+                    body["waits_for"] = json!(waits_for.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?);
+                }
+                if !lock.is_empty() {
+                    body["locks"] = json!(lock_arg(&lock));
+                }
+                if let Some(a) = alone {
+                    body["alone"] = json!(a);
+                }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) if here => {
@@ -1220,11 +1323,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
+                        print_warnings(&v);
                     }
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, jira } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -1254,6 +1358,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = waits_for {
                     b["waits_for"] = json!(x);
                 }
+                if !lock.is_empty() {
+                    b["locks"] = json!(lock_arg(&lock));
+                }
+                if let Some(x) = alone {
+                    b["alone"] = json!(x);
+                }
                 if let Some(x) = jira {
                     b["jira_key"] = json!(x);
                 }
@@ -1261,7 +1371,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
                 }
                 let v = c.call("POST", &format!("/tasks/{t}"), Some(b))?;
-                out(&format!("Changed {t} “{}”.", v["title"].as_str().unwrap_or("")));
+                let mut bits = String::new();
+                for x in lock_bits(&v) {
+                    bits += &format!(" · {x}");
+                }
+                out(&format!("Changed {t} “{}”{bits}.", v["title"].as_str().unwrap_or("")));
+                print_warnings(&v);
                 Ok(0)
             }
             TaskCmd::Delete { task } => {
@@ -1599,6 +1714,12 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--goal", "G1", "--also", "G2", "--also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--also", "G2", "--not-also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--detail", "y", "--here"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--lock", "local-core,emulator", "--alone"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--alone", "board"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--alone", "nope"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--goal", "G1", "--waits-for", "T2", "--lock", "a", "--alone"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--worktrees", "origin/main"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "locks"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "qa", "task", "Q3", "--note", "do it", "--no-pr"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "qa", "waiting"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--stop", "on"]).is_ok());
@@ -1609,6 +1730,13 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());
         assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
+    }
+
+    #[test]
+    fn lock_args() {
+        assert_eq!(lock_arg(&["local-core,emulator-5554".into()]), vec!["local-core", "emulator-5554"]);
+        assert_eq!(lock_arg(&["a".into(), "b c".into()]), vec!["a", "b", "c"]);
+        assert!(lock_arg(&["none".into()]).is_empty());
     }
 
     #[test]
