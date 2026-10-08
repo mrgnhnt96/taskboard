@@ -103,10 +103,10 @@ pub struct State {
 
 // ------------------------------------------------------------------ helpers (sessions.js)
 
-/// `SESS[s.status] ? s.status : 'idle'`.
+/// `SESS[s.status] ? s.status : 'idle'`, plus the native "offline": its last turn lost the network.
 fn display_status(x: &Value) -> &str {
     match s(x, "status") {
-        st @ ("working" | "needs" | "idle" | "gone") => st,
+        st @ ("working" | "needs" | "idle" | "gone" | "offline") => st,
         _ => "idle",
     }
 }
@@ -121,6 +121,7 @@ fn sess_label(st: &str) -> &'static str {
     match st {
         "working" => "Working",
         "needs" => "Needs you",
+        "offline" => "No network",
         "gone" => "Gone",
         _ => "Idle",
     }
@@ -129,15 +130,19 @@ fn sess_label(st: &str) -> &'static str {
 /// `SESS_ORDER[s.status] ?? 2`.
 fn rank(x: &Value) -> u8 {
     match s(x, "status") {
-        "needs" => 0,
+        "needs" | "offline" => 0,
         "working" => 1,
         "gone" => 3,
         _ => 2,
     }
 }
 
-/// `idleMs`: since `last_activity` (else `seen_at`), 0 when neither parses.
+/// `idleMs`: since `last_activity` (else `seen_at`), 0 when neither parses. The board's `idle_secs`
+/// wins when it sends one: it leaves out the time the Mac slept.
 fn idle_ms(x: &Value) -> i64 {
+    if let Some(secs) = x.get("idle_secs").and_then(|v| v.as_i64()) {
+        return secs * 1000;
+    }
     opt_s(x, "last_activity").or(opt_s(x, "seen_at")).and_then(fmt::parse).map(|t| (fmt::now() - t).num_milliseconds()).unwrap_or(0)
 }
 
@@ -154,6 +159,7 @@ pub fn for_filter(x: &Value, f: &str) -> bool {
     match f {
         "" | "all" => true,
         "stale" => is_stale(x),
+        "needs" => matches!(raw_status(x), "needs" | "offline"),
         f => raw_status(x) == f,
     }
 }
@@ -212,7 +218,7 @@ pub fn status_line(d: &Value) -> String {
     let at = |k: &str| opt_s(d, "status_at").or_else(|| obj(d, k).and_then(|o| opt_s(o, "at"))).unwrap_or("");
     match st {
         "working" => since(at("prompt")),
-        "needs" => since(at("waiting")),
+        "needs" | "offline" => since(at("waiting")),
         _ => format!("for {}", long_ago(idle_ms(d))),
     }
 }
@@ -585,7 +591,7 @@ pub fn list_vm(c: &ListCtx) -> ListVm {
         .into_iter()
         .map(|(proj, rows)| {
             let open = !c.collapsed.contains(&proj) || !q.is_empty() || c.holds_sel(&rows);
-            let needs = rows.iter().filter(|x| s(x, "status") == "needs").count();
+            let needs = rows.iter().filter(|x| matches!(s(x, "status"), "needs" | "offline")).count();
             let mut count = fmt::plural(rows.len() as i64, "terminal", "terminals");
             if !open && needs > 0 {
                 count.push_str(&format!(" · {needs} need{} you", if needs == 1 { "s" } else { "" }));
@@ -1630,6 +1636,7 @@ fn dot_color(t: &Theme, status: &str) -> Hsla {
     match status {
         "working" => t.accent,
         "needs" => t.warn,
+        "offline" => t.down,
         "gone" => t.border_2,
         _ => t.faint,
     }
@@ -1700,6 +1707,7 @@ fn row(t: &Theme, r: &RowVm, cx: &mut Context<MainWindow>) -> AnyElement {
                 .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(match r.status.as_str() {
                     "working" => t.accent_fg,
                     "needs" => t.warn_fg,
+                    "offline" => t.down,
                     _ => t.muted,
                 }).child(r.state.clone()))
                 .child(div().text_size(px(11.5)).text_color(t.faint).child(r.when.clone())),
@@ -1867,6 +1875,7 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
         ("Closed", _) => "muted",
         (_, "working") => "accent",
         (_, "needs") => "warn",
+        (_, "offline") => "down",
         _ => "muted",
     };
     let status_row = div().flex().items_center().gap(px(8.)).child(kit::tone_pill(t, tone, v.pill)).children(v.status_line.clone().map(|l| div().text_size(px(12.5)).text_color(t.muted).child(l)));

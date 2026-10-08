@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, handoff, hours, jira, jobs, p, prflow, projects, reports, usage, waitsfor};
+use crate::{board, deliver, dispatch, fields, handoff, hours, jira, jobs, midna, p, prflow, projects, reports, usage, waitsfor};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
@@ -225,7 +225,7 @@ fn worth_retrying(tried: &[Row]) -> bool {
 }
 
 fn settled(s: &Row) -> bool {
-    s.s("status") == Some("idle") && age_secs(s.s("status_at")).unwrap_or(0.0) >= AUTO_CLOSE_SETTLE_SECS
+    s.s("status") == Some("idle") && !board::offline(s) && age_secs(s.s("status_at")).unwrap_or(0.0) >= AUTO_CLOSE_SETTLE_SECS
 }
 
 pub fn auto_close_done(app: &App) -> Result<()> {
@@ -320,12 +320,30 @@ pub fn close_for_usage(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// Midna stops waiting for the network after six hours. A task still on an offline terminal by then
+/// needs the owner.
+pub fn offline_too_long(app: &App) -> Result<()> {
+    for s in app.db.q("SELECT * FROM sessions WHERE api_error_kind = 'network' AND api_error IS NOT NULL AND status != 'gone'", p![])? {
+        if age_secs(s.s("api_error_at")).unwrap_or(0.0) < midna::RESUME_GIVES_UP_SECS {
+            continue;
+        }
+        let Some(t) = board::task_for_session(app, s.s("id"))? else { continue };
+        if t.s("status") != Some("working") || t.b("lost") {
+            continue;
+        }
+        let ask = "It lost its network connection over 6 hours ago and Midna has stopped waiting; type anything in the terminal to carry on";
+        board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "offline", "question" => ask, "answered_at" => null])?;
+        board::log_event(app, t.id(), board::MIDNA, "question", ask)?;
+    }
+    Ok(())
+}
+
 pub fn close_idle_after_hours(app: &App) -> Result<()> {
     if hours::is_open(app) {
         return Ok(());
     }
     for (s, t) in task_terminals(app)? {
-        if s.s("status") != Some("idle") || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
+        if s.s("status") != Some("idle") || board::offline(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
             continue;
         }
         if hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
@@ -382,6 +400,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| jira::expire(app))?;
     jira::run_pending(app)?;
     auto_close_done(app)?;
+    app.db.tx(|| offline_too_long(app))?;
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
     close_pr_tabs(app)?;

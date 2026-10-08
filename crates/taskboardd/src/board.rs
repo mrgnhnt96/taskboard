@@ -281,6 +281,25 @@ pub fn session_event(app: &App, sid: &str, kind: &str, text: &str, at: Option<&s
 }
 
 /// How the board may close a terminal: "close" when idle, "force" when busy, None when it's gone.
+/// The terminal's last turn died on a lost connection, and nothing has reached the API since.
+pub fn offline(s: &Row) -> bool {
+    has(s.s("api_error")) && s.s("api_error_kind") == Some("network")
+}
+
+/// A session's status for the page. A terminal whose last turn ended on an API error and that hasn't
+/// started another shows it: "offline" when the network went, else "needs".
+pub fn shown_status(s: &Row) -> &str {
+    let st = s.s("status").unwrap_or("idle");
+    if matches!(st, "working" | "gone") || !has(s.s("api_error")) {
+        return st;
+    }
+    if s.s("api_error_kind") == Some("network") {
+        "offline"
+    } else {
+        "needs"
+    }
+}
+
 pub fn close_rule(s: Option<&Row>) -> Option<&'static str> {
     let s = s?;
     if s.s("status") == Some("gone") {

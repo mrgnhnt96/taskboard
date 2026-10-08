@@ -359,3 +359,63 @@ fn work_hours_hold_tasks_back() {
     b.post("/hours", json!({"on": false}));
     assert_eq!(runner::start_queued(&b.app).unwrap().len(), 1);
 }
+
+#[test]
+fn a_turn_that_loses_the_network_waits_for_midna_to_carry_it_on() {
+    let b = new_board();
+    let id = new_task(&b, "Add login", json!({}));
+    runner::start_queued(&b.app).unwrap();
+    let prompt = board::job_args(&b.jobs("agent")[0]).st("prompt");
+    b.add_session("s1", "working");
+    b.report("hook.prompt", "s1", json!({"prompt": prompt}));
+    let lost = json!({"error": "unknown", "error_details": "Connection error.", "last_message": "API Error: Connection error."});
+
+    b.report("hook.api_error", "s1", lost.clone());
+    b.add_session("s1", "idle");
+    let s = &b.get("/sessions")["sessions"][0];
+    assert_eq!(s["status"], "offline", "Midna's idle doesn't hide the lost network");
+    assert_eq!(s["can_take"], false);
+    let t = b.task(id);
+    assert_eq!(t.s("status"), Some("working"), "Midna carries it on when the network is back; nothing for the owner to do");
+    assert!(t.st("latest").contains("Midna will tell it to carry on"));
+
+    // Midna's `continue` once the network is back, and the turn gets through.
+    b.report("hook.prompt", "s1", json!({"prompt": "continue"}));
+    assert_eq!(b.get("/sessions")["sessions"][0]["status"], "working");
+    b.report("hook.stop", "s1", json!({"last_message": "Carried on."}));
+    assert_eq!(b.task(id).s("status"), Some("working"));
+
+    // Midna tries three times; the fourth failure in a row means it gave up.
+    b.report("hook.api_error", "s1", lost.clone());
+    for _ in 0..3 {
+        assert_eq!(b.task(id).s("status"), Some("working"));
+        b.report("hook.prompt", "s1", json!({"prompt": "continue"}));
+        b.report("hook.api_error", "s1", lost.clone());
+    }
+    let t = b.task(id);
+    assert_eq!(t.s("status"), Some("needs"));
+    assert_eq!(t.s("needs_reason"), Some("offline"));
+    assert!(t.st("question").contains("still couldn't connect"));
+
+    b.report("hook.prompt", "s1", json!({"prompt": "try again"}));
+    assert_eq!(b.task(id).s("status"), Some("working"), "your prompt puts it back to work");
+
+    b.report("hook.api_error", "s1", json!({"error": "rate_limit", "error_details": "429 rate_limit_error"}));
+    assert_eq!(b.get("/sessions")["sessions"][0]["status"], "needs", "an API refusal isn't the network");
+    assert_eq!(b.task(id).s("needs_reason"), Some("api_error"));
+}
+
+#[test]
+fn with_midnas_network_resume_off_a_lost_network_needs_you() {
+    let b = new_board();
+    b.app.shared.lock().midna_resumes_network = Some((std::time::Instant::now(), false));
+    let id = new_task(&b, "Add login", json!({}));
+    runner::start_queued(&b.app).unwrap();
+    let prompt = board::job_args(&b.jobs("agent")[0]).st("prompt");
+    b.add_session("s1", "working");
+    b.report("hook.prompt", "s1", json!({"prompt": prompt}));
+    b.report("hook.api_error", "s1", json!({"error": "unknown", "error_details": "fetch failed: ECONNRESET"}));
+    let t = b.task(id);
+    assert_eq!(t.s("status"), Some("needs"));
+    assert_eq!(t.s("needs_reason"), Some("offline"));
+}

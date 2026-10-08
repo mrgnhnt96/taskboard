@@ -113,6 +113,7 @@ fn send(app: &App, j: &Row, t: &Row, s: &Row, target: &mut Row) -> Result<Option
     let failed_ago = age_secs(target.s("send_failed_at")).unwrap_or(SEND_RETRY_SECS);
     if !board::runs_claude(s)
         || s.s("status") != Some("idle")
+        || board::offline(s)
         || (purpose == "checkpoint" && t.s("status") == Some("needs"))
         || (BOARD_PURPOSES.contains(&purpose.as_str()) && !hours_open(app, t)?)
         || age_secs(s.s("status_at")).unwrap_or(0.0) < SEND_SETTLE_SECS
@@ -348,7 +349,8 @@ pub fn tick(app: &App) -> Result<()> {
             continue;
         }
         let waits_for_hours = BOARD_PURPOSES.contains(&purpose.as_str()) && !hours_open(app, &t)?;
-        let mid_turn = s.as_ref().map(|s| s.s("status") == Some("working")).unwrap_or(false);
+        // Offline counts as mid-turn: Midna carries it on when the network is back, so it isn't idle.
+        let mid_turn = s.as_ref().map(|s| s.s("status") == Some("working") || board::offline(s)).unwrap_or(false);
         if mid_turn && target.contains_key("alerted") {
             target.remove("alerted");
             save_target(app, &j, &target)?;

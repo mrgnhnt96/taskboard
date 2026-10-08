@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   ctx_task INT, ctx_version INT,
   last_task INT,
   board_prompt INT,
-  branch TEXT, dirty INT, status_at TEXT
+  branch TEXT, dirty INT, status_at TEXT,
+  api_error TEXT, api_error_kind TEXT, api_error_at TEXT, api_error_tries INT DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS jobs(
@@ -109,6 +110,27 @@ CREATE TRIGGER IF NOT EXISTS sessions_status_at AFTER UPDATE OF status ON sessio
 CREATE TRIGGER IF NOT EXISTS sessions_status_at_new AFTER INSERT ON sessions
   BEGIN UPDATE sessions SET status_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END;
 "#;
+
+/// Columns added since the first schema, which `CREATE TABLE IF NOT EXISTS` won't add to an older board.
+const ADDED: &[(&str, &str, &str)] = &[
+    ("sessions", "api_error", "TEXT"),
+    ("sessions", "api_error_kind", "TEXT"),
+    ("sessions", "api_error_at", "TEXT"),
+    ("sessions", "api_error_tries", "INT DEFAULT 0"),
+];
+
+fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, col, ty) in ADDED {
+        let have: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !have.iter().any(|c| c == col) {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"))?;
+        }
+    }
+    Ok(())
+}
 
 struct Inner {
     conn: RefCell<Connection>,
@@ -166,6 +188,7 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
+        add_columns(&conn)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }
 

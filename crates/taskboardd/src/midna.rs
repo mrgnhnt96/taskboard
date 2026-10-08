@@ -395,6 +395,27 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
     Ok((gone, to_close))
 }
 
+const SETTINGS_EVERY: Duration = Duration::from_secs(60);
+/// What Midna does after a lost connection, and how long it keeps trying (from its setting's text).
+pub const RESUME_TRIES: i64 = 3;
+pub const RESUME_GIVES_UP_SECS: f64 = 6.0 * 3600.0;
+
+/// Whether Midna sends a lost-network turn `continue` once the network is back. On unless Midna
+/// says it's off: that's its default.
+pub fn resumes_after_network(app: &App) -> bool {
+    app.shared.lock().midna_resumes_network.map(|(_, on)| on).unwrap_or(true)
+}
+
+fn read_settings(app: &App) {
+    if app.shared.lock().midna_resumes_network.is_some_and(|(at, _)| at.elapsed() < SETTINGS_EVERY) {
+        return;
+    }
+    if let Ok(v) = call_timeout(app, "settings.get", json!({"key": "agents.resume_after_network"}), 5.0) {
+        let on = v["value"].as_bool().unwrap_or(true);
+        app.shared.lock().midna_resumes_network = Some((Instant::now(), on));
+    }
+}
+
 pub fn sync_once(app: &App) -> MResult<()> {
     let sessions = call_timeout(app, "session.list", json!({}), 10.0)?;
     let projects = call_timeout(app, "project.list", json!({}), 10.0)?;
@@ -402,6 +423,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     let (_, to_close) = sync(app, sessions.as_array().unwrap_or(&empty), projects.as_array().unwrap_or(&empty))?;
     let usage = call_timeout(app, "usage.get", json!({}), 10.0).ok();
     app.shared.lock().midna_usage = usage.and_then(|u| u.get("claude").cloned()).filter(|v| v.is_object());
+    read_settings(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         if let Err(e) = call(app, "session.close", json!({"id": sid})) {
             app.info(format!("midna: couldn't close {sid} after Claude exited: {e}"));

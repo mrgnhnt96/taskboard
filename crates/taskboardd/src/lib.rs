@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod api;
 pub mod app;
 pub mod board;
+pub mod clock;
 pub mod config;
 pub mod db;
 pub mod deliver;
@@ -37,6 +38,8 @@ use app::App;
 /// Starts the board's background threads: the md writer, deferred work, Midna sync and, with the
 /// runner on, Midna jobs and the runner.
 pub fn start_threads(app: &Arc<App>) {
+    let a = app.clone();
+    std::thread::Builder::new().name("clock".into()).spawn(move || clock::watch(a)).ok();
     let a = app.clone();
     std::thread::Builder::new().name("md".into()).spawn(move || mdcopy::writer_loop(a)).ok();
     let a = app.clone();

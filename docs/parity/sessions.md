@@ -72,3 +72,4 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `ss-filter` | Changes filter, drops confirmation | `set_filter` | ✅ | `filter_and_open_drop_a_close_confirmation` |
 | Esc (keydown) | Menu first; then bulk dialog / confirmation; then leaves picking (not while typing) | `escape` (+ app.rs hook) | 🔧 (missing) | `escape_closes_confirmations_then_picking` |
 | route `s=` / `f=` | Selection and filter live in the URL | `State.selected`, `State.filter` | ↔ kept in the window's state (no URL); the selection survives leaving the page | — |
+| status "offline" | — (native addition) | A terminal whose last turn lost the network: "No network" in red, sorted and filtered with Needs you; idle times use the board's `idle_secs`, which leave out time the Mac slept | `display_status`, `sess_label`, `idle_ms` | ↔ native addition | `a_turn_that_loses_the_network_shows_offline_until_the_next_prompt` |

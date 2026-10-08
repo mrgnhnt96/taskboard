@@ -104,7 +104,10 @@ window at 100 % makes goals show "Queued until agents can start".
   "name": str,                 // never empty: fall back to "Terminal <first 8 of id>"
   "project": str|null,
   "project_path": str|null,
-  "status": "idle"|"working"|"needs",   // ("gone" never appears in this list)
+  "status": "idle"|"working"|"needs"|"offline",   // ("gone" never appears in this list)
+                               // offline: its last turn ended on a lost connection (StopFailure); needs: on another API error
+  "api_error": str|null,       // that error, until the next prompt, turn or session start
+  "idle_secs": int|null,       // idle time from last_activity (else seen_at), not counting time the Mac slept
   "task_ref": "T12"|null,      // the task currently on this terminal (status != done)
   "task_title": str|null,
   "last_activity": iso|null,
@@ -266,7 +269,7 @@ For a live or a gone terminal:
 ```
 {
   "id": str, "name": str, "project": str|null, "project_path": str|null,
-  "status": "idle"|"working"|"needs"|"gone",
+  "status": "idle"|"working"|"needs"|"offline"|"gone", "api_error": str|null, "idle_secs": int|null,   // as session_row
   "status_at": iso|null,         // when it entered this status ("Working for 12 min")
   "last_activity": iso|null, "gone_at": iso|null,
   "branch": str|null,

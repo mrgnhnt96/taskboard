@@ -88,6 +88,7 @@ fn sess_status(status: &str) -> (&'static str, &'static str) {
     match status {
         "working" => ("working", "Working"),
         "needs" => ("needs", "Needs you"),
+        "offline" => ("offline", "No network"),
         "gone" => ("gone", "Gone"),
         _ => ("idle", "Idle"),
     }
@@ -151,7 +152,7 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
         return StripVm { more: None, cards: vec![], empty: Some(if down { "Can’t load the sessions." } else { "Loading…" }.into()) };
     }
     let order = |x: &Value| match sess_status(s(x, "status")).0 {
-        "needs" => 0,
+        "needs" | "offline" => 0,
         "working" => 1,
         "gone" => 3,
         _ => 2,
@@ -891,12 +892,14 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
     let dot = match c.status {
         "working" => t.accent,
         "needs" => t.warn,
+        "offline" => t.down,
         "gone" => t.border_2,
         _ => t.faint,
     };
     let state_color = match c.status {
         "working" => t.accent,
         "needs" => t.warn,
+        "offline" => t.down,
         _ => t.muted,
     };
     let editing = m.board.rename.as_ref().filter(|(id, _, _)| *id == c.id).map(|(_, i, _)| i.field.clone());
@@ -990,7 +993,11 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
         .py(px(12.))
         .rounded(px(12.))
         .border_1()
-        .border_color(if c.status == "needs" { t.warn_line } else { t.border })
+        .border_color(match c.status {
+            "needs" => t.warn_line,
+            "offline" => t.down_line,
+            _ => t.border,
+        })
         .bg(t.card)
         .cursor_pointer()
         .when(c.status == "gone", |d| d.opacity(0.65))

@@ -266,7 +266,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         let mut cards: Vec<Value> = v.into_iter().map(|(c, _)| c).collect();
         if k == "done" {
             let all = cards.len();
-            cards.retain(|c| window.map(|w| age_secs(c["when"].as_str()).unwrap_or(0.0) <= w).unwrap_or(true));
+            cards.retain(|c| window.map(|w| wall_age_secs(c["when"].as_str()).unwrap_or(0.0) <= w).unwrap_or(true));
             cards.truncate(DONE_SHOWN_MAX);
             done_hidden = all - cards.len();
         } else {

@@ -9,10 +9,14 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, fields, handoff, ops, p, prflow, projects, screen, transcript, waitsfor};
+use crate::{board, deliver, fields, handoff, midna, ops, p, prflow, projects, screen, transcript, waitsfor};
 
 static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[Tt](\d+)\]").unwrap());
 static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)$").unwrap());
+/// An API error that means the Mac lost its connection, not that the API refused.
+static NETWORK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)connection error|unable to connect|network|offline|timed? ?out|fetch failed|socket hang up|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH").unwrap()
+});
 static LEADING_MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*\[task-board:[TJ]\d+\]\s*").unwrap());
 
 pub struct Report<'a> {
@@ -248,7 +252,7 @@ fn back_to_work(r: &Report, t: &Row, prompt: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let reason = t.st("needs_reason");
-    if reason == "attention" || (reason == "question" && (prompt.map(|p| !p.is_empty()).unwrap_or(false) || has(t.s("answered_at")))) {
+    if matches!(reason.as_str(), "attention" | "offline" | "api_error") || (reason == "question" && (prompt.map(|p| !p.is_empty()).unwrap_or(false) || has(t.s("answered_at")))) {
         let text = if has(t.s("answered_at")) { "Back to work after your answer" } else { "Back to work" };
         board::set_working(r.app, t, &r.name(), Some(text))?;
     }
@@ -476,6 +480,68 @@ fn pr_visit_paused(r: &Report, message: &str) -> Result<Value> {
         }
     }
     Ok(ok(t.as_ref(), None))
+}
+
+/// Events that show the terminal's Claude is trying the API again, which ends "offline"; and the ones
+/// that show a turn got through (or it started over), which also end the run of failed tries.
+const API_RETRY_EVENTS: &[&str] = &["hook.session_start", "hook.prompt", "hook.stop"];
+const API_BACK_EVENTS: &[&str] = &["hook.session_start", "hook.stop"];
+
+/// A turn that ended on an API error: `("network", ..)` when the connection went, else `("api", ..)`,
+/// with the sentence the board shows for it.
+fn api_error_of(r: &Report) -> (&'static str, String) {
+    let error = r.b("error");
+    let detail = one_line(&{ let d = r.b("error_details"); if d.is_empty() { r.b("last_message") } else { d } }, 300);
+    let (kind, what) = if NETWORK_RE.is_match(&format!("{error} {detail}")) {
+        ("network", "Lost its network connection")
+    } else {
+        ("api", match error.as_str() {
+            "rate_limit" => "Hit a usage limit",
+            "overloaded" => "The Claude API is overloaded",
+            "authentication_failed" | "oauth_org_not_allowed" | "cloud_credential_error" => "Claude Code isn't logged in",
+            "billing_error" | "account_on_hold" | "verification_required" => "The Claude account needs attention",
+            "server_error" => "The Claude API failed",
+            _ => "The Claude API returned an error",
+        })
+    };
+    (kind, if detail.is_empty() { what.to_string() } else { format!("{what} ({detail})") })
+}
+
+/// A turn that died on an API error. A lost connection is Midna's to fix: it sends `continue` once
+/// the network is back (`agents.resume_after_network`), so the task stays Working until Midna is off
+/// or has given up. Any other error needs the owner.
+fn on_api_error(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let (kind, text) = api_error_of(r);
+    let network = kind == "network";
+    let prev = board::get_session(app, r.sid())?;
+    let streak = prev.as_ref().filter(|s| network && s.i0("api_error_tries") > 0);
+    let tries = streak.map(|s| s.i0("api_error_tries")).unwrap_or(0) + network as i64;
+    let since = streak.and_then(|s| s.s("api_error_at").map(str::to_string)).unwrap_or_else(now_iso);
+    app.db.x(
+        "UPDATE sessions SET api_error = ?, api_error_kind = ?, api_error_at = ?, api_error_tries = ? WHERE id = ?",
+        p![text, kind, since, tries, r.sid()],
+    )?;
+    r.set_session_status("idle")?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    if t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != r.sid() {
+        return Ok(ok(Some(&t), None));
+    }
+    if network && midna::resumes_after_network(app) && tries <= midna::RESUME_TRIES {
+        let note = format!("{text}. Midna will tell it to carry on once the network is back");
+        board::update_task(app, t.id(), fields!["latest" => one_line(&note, 200)])?;
+        r.log(t.id(), "status", &note, None)?;
+        return Ok(ok(Some(&t), None));
+    }
+    let ask = if network && tries > midna::RESUME_TRIES {
+        format!("{text}. Midna told it to carry on {} and it still couldn't connect; type anything in the terminal to try again", plural(midna::RESUME_TRIES, "time"))
+    } else {
+        format!("{text}. Its turn stopped; type anything in the terminal to carry on")
+    };
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => if network { "offline" } else { "api_error" }, "question" => ask, "answered_at" => null])?;
+    r.log(t.id(), "question", &ask, None)?;
+    Ok(ok(Some(&t), None))
 }
 
 fn on_attention(r: &mut Report) -> Result<Value> {
@@ -1055,6 +1121,7 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
                 Some(("commit", format!("Committed: {}", commit_subject(r, &r.b("output")))))
             }
         }
+        "hook.api_error" => Some(("wait", api_error_of(r).1)),
         "hook.attention" => {
             if r.waiting_on_background {
                 return None;
@@ -1107,6 +1174,7 @@ fn handler(event: &str) -> Option<Handler> {
         "hook.commit" => on_commit,
         "hook.session_end" => on_session_end,
         "hook.attention" => on_attention,
+        "hook.api_error" => on_api_error,
         "hook.delivered" => on_delivered,
         "tb.note" => on_note,
         "tb.checkpoint" => on_checkpoint,
@@ -1176,6 +1244,12 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
     }
     app.db.tx(|| {
+        if API_RETRY_EVENTS.contains(&r.event.as_str()) {
+            app.db.x("UPDATE sessions SET api_error = NULL, api_error_kind = NULL WHERE id = ?", p![r.sid()])?;
+        }
+        if API_BACK_EVENTS.contains(&r.event.as_str()) {
+            app.db.x("UPDATE sessions SET api_error_at = NULL, api_error_tries = 0 WHERE id = ?", p![r.sid()])?;
+        }
         let mut out = f(&mut r)?;
         if let Some(sid) = r.sid.clone() {
             if let Some((kind, text)) = session_history(&r, &out) {

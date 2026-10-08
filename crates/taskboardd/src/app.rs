@@ -21,6 +21,8 @@ pub struct Shared {
     pub midna_down: bool,
     pub midna_opened: Option<Instant>,
     pub midna_usage: Option<Value>,
+    /// Midna's `agents.resume_after_network`, and when the board last read it.
+    pub midna_resumes_network: Option<(Instant, bool)>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,

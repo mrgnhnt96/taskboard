@@ -49,7 +49,6 @@ pub fn background_running(root: &Path, path: Option<&str>) -> Option<usize> {
     }
     let data = std::fs::read(&p).ok()?;
     let ended: Vec<&[u8]> = BG_ENDED.captures_iter(&data).filter_map(|c| c.get(1).map(|m| m.as_bytes())).collect();
-    let now = now_ts();
     let mut running = 0;
     for line in data.split(|b| *b == b'\n') {
         let Some(c) = BG_STARTED.captures(line) else { continue };
@@ -58,7 +57,7 @@ pub fn background_running(root: &Path, path: Option<&str>) -> Option<usize> {
         }
         let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
         let Some(at) = v["timestamp"].as_str().and_then(parse_iso) else { continue };
-        if now - at < CLAUDE_STOPS_BACKGROUND_AFTER {
+        if crate::clock::awake_since(at) < CLAUDE_STOPS_BACKGROUND_AFTER {
             running += 1;
         }
     }

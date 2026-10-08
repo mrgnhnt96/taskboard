@@ -88,7 +88,13 @@ pub fn parse_iso(s: &str) -> Option<f64> {
     None
 }
 
+/// Seconds since `s` that the Mac was awake: what waits and timeouts measure.
 pub fn age_secs(s: Option<&str>) -> Option<f64> {
+    s.and_then(parse_iso).map(crate::clock::awake_since)
+}
+
+/// Seconds since `s` on the wall clock, sleep included: for "in the last day" windows.
+pub fn wall_age_secs(s: Option<&str>) -> Option<f64> {
     s.and_then(parse_iso).map(|t| now_ts() - t)
 }
 

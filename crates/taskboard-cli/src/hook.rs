@@ -29,6 +29,7 @@ fn board_event(hook: &str) -> Option<&'static str> {
         "SessionStart" => "hook.session_start",
         "UserPromptSubmit" => "hook.prompt",
         "Stop" => "hook.stop",
+        "StopFailure" => "hook.api_error",
         "PreCompact" => "hook.pre_compact",
         "PostToolUse" => "hook.commit",
         "SessionEnd" => "hook.session_end",
@@ -162,6 +163,11 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
             extra.insert("transcript_path".into(), json!(s("transcript_path")));
             extra.insert("stop_hook_active".into(), json!(payload["stop_hook_active"] == true));
+        }
+        "StopFailure" => {
+            extra.insert("error".into(), json!(s("error")));
+            extra.insert("error_details".into(), json!(clip(&s("error_details"), MAX_OUTPUT)));
+            extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_OUTPUT)));
         }
         "PreCompact" => {
             extra.insert("trigger".into(), json!(s("trigger")));

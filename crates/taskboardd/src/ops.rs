@@ -271,6 +271,11 @@ fn project_match(project: Option<&str>, want: &str) -> bool {
     want.is_empty() || want == "all" || project == Some(want)
 }
 
+/// How long a terminal has been idle, counting only the time the Mac was awake.
+fn idle_secs(s: &Row) -> Value {
+    age_secs(s.s("last_activity").or(s.s("seen_at"))).map(|a| json!(a.max(0.0).round() as i64)).unwrap_or(Value::Null)
+}
+
 pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
     let mut tasks: std::collections::HashMap<String, Row> = std::collections::HashMap::new();
     for t in app.db.q("SELECT * FROM tasks WHERE session_id IS NOT NULL AND status != 'done' ORDER BY updated_at", p![])? {
@@ -285,12 +290,13 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         let t = tasks.get(&sid);
         let mut row = json!({
             "id": sid, "name": s.s("name").filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("Terminal {}", sid.chars().take(8).collect::<String>())),
-            "project": s.v("project"), "project_path": s.v("project_path"), "status": s.s("status").unwrap_or("idle"),
+            "project": s.v("project"), "project_path": s.v("project_path"), "status": board::shown_status(&s),
+            "api_error": s.v("api_error"), "idle_secs": idle_secs(&s),
             "task_ref": t.map(|t| json!(rf("task", t.id()))).unwrap_or(Value::Null),
             "task_title": t.map(|t| t.v("title")).unwrap_or(Value::Null),
             "task_id": t.map(|t| json!(t.id())).unwrap_or(Value::Null),
             "last_activity": s.v("last_activity"), "seen_at": s.v("seen_at"),
-            "can_take": s.s("status").unwrap_or("idle") == "idle" && t.is_none(),
+            "can_take": board::shown_status(&s) == "idle" && t.is_none(),
             "closing": jobs::closing(app, &sid)?, "close": board::close_rule(Some(&s)),
             "branch": s.v("branch"), "dirty": s.v("dirty"), "renaming": null, "rename_error": null,
         });
@@ -431,12 +437,12 @@ pub fn session_detail(app: &App, sid: &str) -> Result<Value> {
         "project": s.v("project"), "project_path": s.v("project_path"), "agent": s.v("agent"),
         "last_activity": s.v("last_activity"), "seen_at": s.v("seen_at"), "branch": s.v("branch"), "dirty": s.v("dirty"),
         "gone_at": s.v("gone_at"), "claude_session_id": s.v("claude_session_id"), "status_at": s.v("status_at"),
-        "status": s.s("status").unwrap_or("idle"),
+        "status": board::shown_status(&s), "api_error": s.v("api_error"), "idle_secs": idle_secs(&s),
         "close": board::close_rule(Some(&s)), "closing": jobs::closing(app, sid)?, "renaming": null, "rename_error": null,
         "task": match &t { Some(t) => board::task_card(app, t)?, None => Value::Null },
         "last_task": last.map(|l| json!({"ref": rf("task", l.id()), "title": l.v("title"), "status": l.v("status")})).unwrap_or(Value::Null),
         "prompt": prompt, "reply": latest("reply"),
-        "waiting": if s.s("status") == Some("needs") { latest("wait") } else { None },
+        "waiting": if matches!(board::shown_status(&s), "needs" | "offline") { latest("wait") } else { None },
         "stats": {"turns": turns["count"].as_i64().unwrap_or(0).max(n_prompts),
                   "commits": events.iter().filter(|e| e.s("kind") == Some("commit")).count(),
                   "files": turns["files"]},

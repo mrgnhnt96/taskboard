@@ -436,7 +436,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     let running = rec["running"].as_i64().unwrap_or(0) > 0;
     let f = flow(t);
     let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
-    let waited = first.map(|f| now_ts() - f).unwrap_or(0.0);
+    let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
     if running || (checks == 0 && waited < app.cfg.pr.no_checks_after_mins * 60.0) {
         return "checks".into();
     }

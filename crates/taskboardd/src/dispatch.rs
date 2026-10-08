@@ -125,11 +125,12 @@ fn repeat_alerts(app: &App) -> Result<()> {
     let now = now_ts();
     let mut sent = false;
     for a in rows.iter_mut() {
+        // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
         let due = match a["snoozed_until"].as_str().and_then(parse_iso) {
-            Some(s) => s,
-            None => a["notified_at"].as_str().or(a["at"].as_str()).and_then(parse_iso).unwrap_or(now) + every,
+            Some(s) => now >= s,
+            None => age_secs(a["notified_at"].as_str().or(a["at"].as_str())).unwrap_or(0.0) >= every,
         };
-        if now >= due {
+        if due {
             a["notified_at"] = json!(now_iso());
             a["snoozed_until"] = Value::Null;
             sent = true;
