@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, shared, triage, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, reports, runner, shared, steps, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -125,6 +125,16 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                       "task": match t { Some(t) => board::task_card(app, &t)?, None => Value::Null },
                       "visiting": match v { Some(v) => board::task_card(app, &v)?, None => Value::Null }}))
         }
+        ("GET", ["steps"]) => {
+            let t = match query.get("task").filter(|s| !s.is_empty()) {
+                Some(r) => Some(board::get_task(app, tid(r)?)?),
+                None => board::task_for_session(app, query.get("session").map(|s| s.as_str()))?,
+            };
+            match t {
+                Some(t) => steps::list(app, &t),
+                None => Ok(json!({"task": null, "steps": []})),
+            }
+        }
         ("GET", ["jobs"]) => {
             let st = q(query, "state", "");
             let rows = if st.is_empty() {
@@ -151,6 +161,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
         ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, body),
         ("POST", ["tasks", id, "answer"]) => answer(app, tid(id)?, body),
+        ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
         ("POST", ["tasks", id, "close-terminal"]) => close_terminal(app, tid(id)?, body),
         ("POST", ["tasks", id, "focus"]) => focus_task(app, tid(id)?),
@@ -274,7 +285,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"alert": a}))
         }
         _ => {
-            let known = ["state", "summary", "projects", "sessions", "whoami", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "usage", "prs", "alerts"];
+            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "usage", "prs", "alerts"];
             if segs.first().map(|s| known.contains(s)).unwrap_or(false) && (method == "GET" || method == "POST") {
                 return err(404, "There's nothing at that address.");
             }
@@ -839,6 +850,41 @@ fn answer(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    task_detail(app, id)
+}
+
+/// The owner did (or skips) a step: the app's Done on a task waiting for one, or `tb step done --task T<n>`
+/// from another terminal. A task waiting on that step carries on, as after an answer.
+fn owner_step(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let named = body_str(body, "name");
+    let name = if named.is_empty() { steps::waiting(&t).unwrap_or_default() } else { named };
+    if name.is_empty() {
+        return err(400, format!("{} isn't waiting on a step; name one.", rf("task", id)));
+    }
+    let step = steps::find(app, &t, &name)?;
+    let session = body_str(body, "session");
+    if !session.is_empty() && t.s("session_id") == Some(session.as_str()) {
+        return err(409, format!("This is the agent's terminal for {}. Record {} steps from the app or another terminal.", rf("task", id), app.cfg.owners()));
+    }
+    let skip = as_bool(body.get("skip"), false);
+    let note = one_line(&body_str(body, "note"), 2000);
+    let mut text = format!("Step {}: {}", if skip { "skipped" } else { "done" }, step.name);
+    if !note.is_empty() {
+        text += &format!(": {note}");
+    }
+    let resumes = steps::waiting(&t).map(|w| steps::key(&w) == steps::key(&step.name)).unwrap_or(false);
+    app.db.tx(|| {
+        board::log_event_full(app, id, OWNER, "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": true, "note": note, "skipped": skip})), None)?;
+        let mut ctx = board::task_context(&t);
+        if resumes && ctx.remove("step_waiting").is_some() {
+            board::save_context(app, id, &ctx, false)?;
+        }
+        alerts::clear_alerts(app, Some(id), None)
+    })?;
+    if resumes {
+        return answer(app, id, &json!({"text": format!("{text}. Carry on.")}));
+    }
     task_detail(app, id)
 }
 

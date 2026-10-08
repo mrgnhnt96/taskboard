@@ -27,6 +27,7 @@ pub mod screen;
 pub mod seed;
 pub mod server;
 pub mod shared;
+pub mod steps;
 pub mod transcript;
 pub mod triage;
 pub mod usage;
