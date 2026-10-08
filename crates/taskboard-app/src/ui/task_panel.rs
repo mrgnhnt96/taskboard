@@ -9,7 +9,7 @@ mod view;
 
 use crate::app::{MainWindow, Page, Panel, TaskTab};
 use crate::fmt::{self, s};
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeMode};
 use crate::ui::kit;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -20,7 +20,8 @@ use std::time::Duration;
 pub use view::{Act, Go, Node};
 use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, Tone};
 
-pub const WIDTH: f32 = 580.;
+/// `.panel { width: min(480px, 100vw) }`.
+pub const WIDTH: f32 = 480.;
 
 /// How long an inline note stays (`setNote`: 5 s, errors 15 s).
 const NOTE_OK: Duration = Duration::from_secs(5);
@@ -564,10 +565,14 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let Some(tree) = build(m) else { return div().into_any_element() };
     sync_fields(m, &tree, window, cx);
     m.task_panel.focused = m.task_panel.fields.values().find(|i| i.focus.is_focused(window)).map(|i| i.focus.clone());
-    let mut d = Draw { t: &t, window, path: Vec::new() };
+    let mut d = Draw { t: &t, window, path: Vec::new(), within: Vec::new() };
     let body = d.panel(m, &tree, cx);
+    // `.panel`: a 480px sheet on the right with a soft shadow; the board stays undimmed behind it
+    // (a click outside still closes it).
+    let shadow = if t.mode == ThemeMode::Dark { hsla(0., 0., 0., 0.45) } else { rgba(0x10182819).into() };
     deferred(
         kit::scrim(&t, "task-scrim")
+            .bg(transparent_black())
             .on_mouse_down(MouseButton::Left, cx.listener(|m, _, _, cx| act(m, &Act::new("close-panel", "", "", ""), cx)))
             .child(
                 div()
@@ -577,13 +582,13 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                     .right_0()
                     .bottom_0()
                     .w(px(WIDTH))
-                    .max_w(relative(0.94))
+                    .max_w(relative(1.))
                     .flex()
                     .flex_col()
                     .bg(t.card)
                     .border_l_1()
                     .border_color(t.border)
-                    .shadow_lg()
+                    .shadow(vec![BoxShadow { color: shadow, offset: point(px(-12.), px(0.)), blur_radius: px(32.), spread_radius: px(0.), inset: false }])
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(body),
             ),
@@ -592,10 +597,23 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     .into_any_element()
 }
 
+/// `--accent-tint` (not in the shared theme).
+fn accent_tint(t: &Theme) -> Hsla {
+    if t.mode == ThemeMode::Dark { rgb(0x172036).into() } else { rgb(0xf5f8ff).into() }
+}
+
+/// `--warn-input`: the answer box's border.
+fn warn_input(t: &Theme) -> Hsla {
+    if t.mode == ThemeMode::Dark { rgb(0x6b3a1c).into() } else { rgb(0xe0c3b2).into() }
+}
+
 struct Draw<'a> {
     t: &'a Theme,
     window: &'a mut Window,
     path: Vec<usize>,
+    /// The containers the node being drawn sits in (innermost last): some leaves look different
+    /// inside some containers, as the web's descendant selectors made them.
+    within: Vec<K>,
 }
 
 impl Draw<'_> {
@@ -604,40 +622,67 @@ impl Draw<'_> {
         SharedString::from(format!("tp-{tag}-{}", p.join("-")))
     }
 
-    /// The whole drawer: the head (top row, title, subline, alert, tabs) fixed, the body scrolling.
+    fn parent(&self) -> Option<K> {
+        self.within.last().copied()
+    }
+
+    /// The whole sheet scrolls as one (`.panel { overflow-y: auto; gap: 18px; padding: 24px 24px 32px }`),
+    /// the title and its subline stacked 4px apart.
     fn panel(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
         let Node::El { kids, .. } = tree else { return div().into_any_element() };
-        let mut head = div().flex().flex_col().flex_none().gap(px(10.)).px(px(22.)).pt(px(18.)).pb(px(14.)).border_b_1().border_color(t.divider);
-        let mut body = None;
+        let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(24.)).pb(px(32.)).line_height(relative(1.5));
+        let mut title: Option<Div> = None;
+        self.within.push(K::Col);
         for (i, k) in kids.iter().enumerate() {
             self.path.push(i);
-            if matches!(k, Node::El { k: K::Body, .. }) {
-                body = Some(self.node(m, k, None, cx));
-            } else {
-                head = head.child(self.node(m, k, None, cx));
-            }
+            let e = self.node(m, k, None, cx);
             self.path.pop();
+            match k {
+                Node::Text { st: St::Title, .. } => title = Some(div().flex().flex_col().gap(px(4.)).min_w_0().child(e)),
+                Node::El { k: K::Sub, .. } if title.is_some() => {
+                    if let Some(x) = title.take() {
+                        col = col.child(x.child(e));
+                    }
+                }
+                _ => {
+                    if let Some(x) = title.take() {
+                        col = col.child(x);
+                    }
+                    col = col.child(e);
+                }
+            }
+        }
+        self.within.pop();
+        if let Some(x) = title.take() {
+            col = col.child(x);
         }
         let r = m.task_panel.r.clone();
-        let scroll = div()
-            .id(SharedString::from(format!("task-body-{r}")))
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(div().flex().flex_col().px(px(22.)).py(px(18.)).children(body));
-        div().flex().flex_col().size_full().child(head).child(scroll).into_any_element()
+        div().id(SharedString::from(format!("task-body-{r}"))).size_full().overflow_y_scroll().text_size(px(14.)).child(col).into_any_element()
     }
 
     fn kids(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
-        let Node::El { kids, .. } = n else { return Vec::new() };
+        let Node::El { kids, k, .. } = n else { return Vec::new() };
+        self.within.push(*k);
         let mut out = Vec::new();
-        for (i, k) in kids.iter().enumerate() {
+        for (i, kid) in kids.iter().enumerate() {
             self.path.push(i);
-            out.push(self.node(m, k, boxed, cx));
+            out.push(self.node(m, kid, boxed, cx));
             self.path.pop();
         }
+        self.within.pop();
         out
+    }
+
+    /// Draw one kid of `n` (index `i`) as if inside `n`.
+    fn kid(&mut self, m: &MainWindow, n: &Node, i: usize, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+        let Node::El { kids, k, .. } = n else { return None };
+        let kid = kids.get(i)?;
+        self.within.push(*k);
+        self.path.push(i);
+        let e = self.node(m, kid, boxed, cx);
+        self.path.pop();
+        self.within.pop();
+        Some(e)
     }
 
     // Every element kind is built in its own small function: the tree is drawn recursively, and
@@ -647,7 +692,7 @@ impl Draw<'_> {
         match n {
             Node::Text { s, st, tip } => self.leaf_text(s, *st, tip, boxed),
             Node::Pill { s, tone, tip } => self.leaf_pill(s, *tone, tip),
-            Node::Btn { label, act: a, look, disabled, tip } => self.leaf_btn(label, a, *look, *disabled, tip, cx),
+            Node::Btn { label, act: a, look, disabled, tip } => self.leaf_btn(label, a, *look, *disabled, tip, boxed, cx),
             Node::Link { s, go: g, tip, look } => self.leaf_link(s, g, tip, *look, cx),
             Node::Field { key, multi, mono, .. } => self.leaf_field(m, key, *multi, *mono, boxed, cx),
             Node::Note { s, err } => self.leaf_note(s, *err),
@@ -673,22 +718,34 @@ impl Draw<'_> {
 
     #[inline(never)]
     fn leaf_pill(&self, s: &str, tone: Tone, tip: &Option<String>) -> AnyElement {
-        let p = pill(self.t, s, tone);
+        // `.pill.sm` for the repo, a Jira status and a terminal's state.
+        let small = matches!(tone, Tone::Repo | Tone::Jira) || self.parent() == Some(K::TlSub);
+        let p = pill(self.t, s, tone, small);
         match tip {
-            Some(tip) => div().id(self.id("pill")).child(p).tooltip(kit::tip(tip.clone())).into_any_element(),
+            Some(tip) => div().id(self.id("pill")).flex_none().child(p).tooltip(kit::tip(tip.clone())).into_any_element(),
             None => p.into_any_element(),
         }
     }
 
     #[inline(never)]
-    fn leaf_btn(&self, label: &str, a: &Act, look: Look, disabled: bool, tip: &Option<String>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let b = button(self.t, self.id("btn"), label, look);
+    #[allow(clippy::too_many_arguments)]
+    fn leaf_btn(&self, label: &str, a: &Act, look: Look, disabled: bool, tip: &Option<String>, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let chip = self.parent() == Some(K::Chips);
+        let tab = self.parent() == Some(K::Tabs);
+        let b = match look {
+            Look::Tab { on } if tab => tab_btn(self.t, self.id("btn"), label, on),
+            Look::Tab { on } if chip => fchip(self.t, self.id("btn"), label, on),
+            // `.box .btn { padding: 0 12px }`
+            _ if boxed.is_some() && !matches!(look, Look::Icon(_) | Look::Menu | Look::Src | Look::Ref) => button(self.t, self.id("btn"), label, look).px(px(12.)),
+            _ => button(self.t, self.id("btn"), label, look),
+        };
         let b = if disabled {
             kit::disabled(b)
         } else {
             let a = a.clone();
             b.on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx)))
         };
+        let b = if look == Look::Icon(Icon::More) { b.opacity(0.).group_hover("tp-att", |s| s.opacity(1.)) } else { b };
         match tip {
             Some(tip) => b.tooltip(kit::tip(tip.clone())).into_any_element(),
             None => b.into_any_element(),
@@ -698,7 +755,18 @@ impl Draw<'_> {
     #[inline(never)]
     fn leaf_link(&self, s: &str, g: &Go, tip: &Option<String>, look: LinkLook, cx: &mut Context<MainWindow>) -> AnyElement {
         let g = g.clone();
-        let l = link(self.t, self.id("link"), s, look).on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx)));
+        let t = self.t;
+        let l = if self.parent() == Some(K::PrHead) {
+            // `.pr-link`: the PR's number and title in the text colour, underlined on hover.
+            div().id(self.id("link")).flex_none().cursor_pointer().text_size(px(13.)).text_color(t.text).hover(|d| d.underline()).child(pr_label(s))
+        } else if self.parent() == Some(K::PrBar { warn: false }) || self.parent() == Some(K::PrBar { warn: true }) {
+            // `.pr-bar .go`.
+            let fg = if self.parent() == Some(K::PrBar { warn: true }) { t.warn_fg } else { t.accent_fg };
+            div().id(self.id("link")).flex_none().cursor_pointer().whitespace_nowrap().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(s.to_string())
+        } else {
+            link(t, self.id("link"), s, look)
+        };
+        let l = l.on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx)));
         match tip {
             Some(tip) => l.tooltip(kit::tip(tip.clone())).into_any_element(),
             None => l.into_any_element(),
@@ -710,11 +778,23 @@ impl Draw<'_> {
         let t = self.t;
         let Some(input) = m.task_panel.fields.get(key) else { return div().into_any_element() };
         let k = key.to_string();
+        let focused = input.focus.is_focused(self.window);
+        let meta = self.parent() == Some(K::MetaRow);
+        let name = meta && key.ends_with(":0");
         input
             .render(t, self.id("field"), self.window)
-            .when(multi, |d| d.min_h(px(58.)).items_start())
+            // `.input`: 14px, 10px 12px, 9px corners.
+            .text_size(px(14.))
+            .px(px(12.))
+            .py(px(10.))
+            .rounded(px(9.))
+            .when(multi, |d| d.min_h(px(64.)).items_start())
             .when(mono, |d| d.font_family(t.mono_font.clone()))
-            .when(boxed == Some(BoxTone::Ask), |d| d.border_color(t.warn_line))
+            .when(boxed == Some(BoxTone::Ask) && !focused, |d| d.border_color(warn_input(t)))
+            // `.meta-row .input`: 36px, 13px, 7px corners, the light border; the name in semibold.
+            .when(meta, |d| d.min_h(px(36.)).py(px(0.)).px(px(10.)).text_size(px(13.)).rounded(px(7.)).when(!focused, |d| d.border_color(t.border)))
+            .when(name, |d| d.w(px(140.)).flex_none().font_weight(FontWeight::SEMIBOLD))
+            .when(meta && !name, |d| d.flex_1().min_w_0())
             .on_key_down(cx.listener(move |m, ev: &KeyDownEvent, _, cx| on_key(m, &k, ev, cx)))
             .into_any_element()
     }
@@ -722,14 +802,21 @@ impl Draw<'_> {
     #[inline(never)]
     fn leaf_note(&self, s: &str, err: bool) -> AnyElement {
         let t = self.t;
-        div().text_size(px(12.5)).text_color(if err { t.down } else { t.up_fg }).child(s.to_string()).into_any_element()
+        div()
+            .text_size(px(12.5))
+            .text_color(if err { t.down } else { t.up_fg })
+            .when(err, |d| d.font_weight(FontWeight::MEDIUM))
+            .child(s.to_string())
+            .into_any_element()
     }
 
     #[inline(never)]
     fn leaf_dot(&self, d: Dot) -> AnyElement {
+        // `.tl-dot` is 9px (an empty ring for a closed terminal); `.dot` 8px.
+        let size = if self.parent() == Some(K::TlItem) { 9. } else { 8. };
         match dot_color(self.t, d) {
-            Some(c) => kit::dot(c, 8.).into_any_element(),
-            None => div().flex_none().size(px(8.)).rounded_full().border_1().border_color(self.t.border_2).into_any_element(),
+            Some(c) => kit::dot(c, size).into_any_element(),
+            None => div().flex_none().size(px(size)).rounded_full().border_1().border_color(self.t.faint).bg(self.t.card).into_any_element(),
         }
     }
 
@@ -738,32 +825,43 @@ impl Draw<'_> {
         let t = self.t;
         let d = div().child(s.to_string());
         match st {
-            St::Plain => d.text_size(px(13.5)),
-            St::Title => d.text_size(px(19.)).font_weight(FontWeight::BOLD).line_height(px(25.)),
-            St::Sub | St::Small | St::Help => d.text_size(px(12.5)).text_color(t.muted),
-            St::Muted => d.text_size(px(13.)).text_color(t.muted),
+            // Inherits the container's size and colour.
+            St::Plain => d.min_w_0(),
+            St::Title => d.text_size(px(20.)).font_weight(FontWeight::BOLD).line_height(px(26.)),
+            St::Sub => d.text_size(px(13.)).text_color(t.muted),
+            St::Small if boxed.is_some() && self.parent() != Some(K::Lrow) => d.text_size(px(13.)).text_color(t.text_2),
+            St::Small | St::Help => d.text_size(px(12.5)).text_color(t.muted),
+            St::Muted => d.text_color(t.muted).when(self.parent() == Some(K::Body), |d| d.text_size(px(13.))),
             St::WarnHelp => d.text_size(px(12.5)).text_color(t.warn_fg),
-            St::BoxLabel => d.text_size(px(12.5)).font_weight(FontWeight::BOLD).text_color(match boxed {
+            St::BoxLabel => div().child(s.to_uppercase()).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(match boxed {
                 Some(BoxTone::Ask) => t.warn_fg,
                 Some(BoxTone::Lost | BoxTone::Failed) => t.down,
                 Some(BoxTone::Done) => t.up_fg,
                 _ => t.accent_fg,
             }),
-            St::H3 => d.text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(if boxed == Some(BoxTone::Info) { t.accent_fg } else { t.muted }).whitespace_nowrap(),
-            St::Strong => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2),
-            St::Mono => d.font_family(t.mono_font.clone()).text_size(px(12.5)),
-            St::Empty => d.py(px(20.)).flex().justify_center().text_size(px(13.)).text_color(t.muted),
-            St::Time => d.flex_none().w(px(66.)).text_size(px(12.)).text_color(t.faint),
-            St::Kind => d.text_size(px(12.5)).text_color(t.muted),
-            St::Handoff => d.p(px(10.)).rounded(px(8.)).bg(t.card).border_1().border_color(t.border).font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.text_2),
-            St::Code => d.px(px(4.)).rounded(px(4.)).bg(t.panel_2).font_family(t.mono_font.clone()).text_size(px(12.5)),
-            St::Pre => d.p(px(10.)).rounded(px(8.)).bg(t.panel_2).font_family(t.mono_font.clone()).text_size(px(12.)),
-            St::StepName => d.text_size(px(12.)).font_weight(FontWeight::SEMIBOLD),
-            St::StepSub => d.text_size(px(11.5)).text_color(t.muted),
-            St::LrowKey => d.flex_none().w(px(104.)).pt(px(1.)).text_size(px(12.5)).text_color(t.muted),
-            St::Count => d.px(px(6.)).rounded_full().bg(t.seg).text_size(px(11.5)).text_color(t.muted),
+            St::H3 => div()
+                .child(s.to_uppercase())
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(if boxed == Some(BoxTone::Info) { t.accent_fg } else { t.muted })
+                .whitespace_nowrap(),
+            St::Strong => d.font_weight(FontWeight::SEMIBOLD),
+            St::Mono => d.font_family(t.mono_font.clone()),
+            St::Empty => d.py(px(20.)).px(px(8.)).flex().justify_center().text_size(px(13.)).text_color(t.muted),
+            St::Time => d.text_size(px(12.)).text_color(t.muted).whitespace_nowrap(),
+            St::Kind => d.flex_none().px(px(5.)).rounded(px(4.)).bg(t.panel_2).text_size(px(11.5)).text_color(t.muted),
+            // `.handoff`: 13px pre-wrap, at most 360px tall (it scrolls past that).
+            St::Handoff => div().child(
+                div().id(self.id("handoff")).max_h(px(360.)).overflow_y_scroll().text_size(px(13.)).line_height(relative(1.5)).text_color(t.text).child(s.to_string()),
+            ),
+            St::Code => d.px(px(5.)).py(px(1.)).rounded(px(5.)).bg(t.bg).border_1().border_color(t.border).font_family(t.mono_font.clone()).text_size(px(12.3)),
+            St::Pre => d.px(px(12.)).py(px(10.)).rounded(px(8.)).bg(t.bg).border_1().border_color(t.border).font_family(t.mono_font.clone()).text_size(px(12.5)),
+            St::StepName => d.text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap(),
+            St::StepSub => d.text_size(px(11.5)).text_center(),
+            St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
+            St::Count => d.flex_none().px(px(7.)).rounded_full().bg(t.col).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             St::Jkey => d.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg),
-            St::Glyph(dot) => d.flex_none().w(px(14.)).text_size(px(13.5)).text_color(dot_color(t, dot).unwrap_or(t.muted)),
+            St::Glyph(dot) => d.flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot).unwrap_or(t.muted)),
         }
     }
 
@@ -773,7 +871,11 @@ impl Draw<'_> {
             K::Fold(f, open) => self.c_fold(m, n, f, open, boxed, cx),
             K::Box(tone) => self.c_box(m, n, tone, cx),
             K::Top => self.c_top(m, n, boxed, cx),
+            K::Tabs => self.c_tabs(m, n, boxed, cx),
+            K::Linked => self.c_linked(m, n, boxed, cx),
             K::Lrow => self.c_lrow(m, n, boxed, cx),
+            K::Lsec => self.c_lsec(m, n, boxed, cx),
+            K::Tl => self.c_tl(m, n, boxed, cx),
             K::TlItem => self.c_tl_item(m, n, boxed, cx),
             K::Steps => self.c_steps(m, n, boxed, cx),
             K::Step(st) => self.c_step(m, n, st, boxed, cx),
@@ -782,6 +884,7 @@ impl Draw<'_> {
             K::Files => self.c_files(m, n, boxed, cx),
             K::LogItem => self.c_log_item(m, n, boxed, cx),
             K::MdLi => self.c_md_li(m, n, boxed, cx),
+            K::Li => self.c_li(m, n, boxed, cx),
             _ => self.c_simple(m, n, k, boxed, cx),
         }
     }
@@ -790,85 +893,168 @@ impl Draw<'_> {
     #[inline(never)]
     fn c_simple(&mut self, m: &MainWindow, n: &Node, k: K, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
+        let in_lrow = self.parent() == Some(K::Lrow);
         let kids = self.kids(m, n, boxed, cx);
+        let small_btns = matches!(n, Node::El { kids, .. } if kids.iter().any(|x| matches!(x, Node::Btn { look: Look::Small | Look::DangerSmall, .. })));
+        // `.stack` is 6px apart; the manage box, Files touched and Details 8px.
+        let wide = small_btns
+            || matches!(n, Node::El { kids, .. } if kids.iter().any(|x| matches!(x, Node::El { k: K::Row, kids, .. } if kids.iter().any(|b| matches!(b, Node::Btn { look: Look::Small | Look::DangerSmall, .. })))
+                || matches!(kids.first(), Some(Node::Text { s, st: St::H3, .. }) if s == "Files touched" || s == "Details")));
         let d = match k {
-            K::Sub => div().flex().flex_wrap().items_center().gap(px(8.)),
-            K::Tabs | K::Chips | K::Seg => div().self_start().flex().flex_wrap().gap(px(2.)).p(px(2.)).rounded(px(8.)).bg(t.seg),
-            K::Body => div().flex().flex_col().gap(px(16.)),
-            K::Row | K::Line | K::PrHead => div().flex().flex_wrap().items_center().gap(px(8.)),
-            K::TlName => div().flex().flex_wrap().items_center().gap(px(6.)),
-            K::TlSub | K::AttMeta => div().flex().flex_wrap().items_center().gap(px(4.)),
-            K::Stack | K::Tl | K::Md => div().flex().flex_col().gap(px(8.)).min_w_0(),
-            K::Atts | K::List | K::MdUl => div().flex().flex_col().gap(px(4.)).min_w_0(),
-            K::Col => div().flex().flex_col().gap(px(12.)).min_w_0(),
-            K::Lsec => div().flex().flex_col().gap(px(6.)).py(px(10.)).border_t_1().border_color(t.divider),
+            // `.subline`
+            K::Sub => div().flex().flex_wrap().items_center().gap_x(px(12.)).gap_y(px(6.)).text_size(px(13.)).text_color(t.muted),
+            // `.fchips`
+            K::Chips => div().flex().flex_wrap().gap(px(6.)),
+            K::Seg => div().self_start().flex().flex_wrap().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg),
+            // `.tabbody`
+            K::Body => div().flex().flex_col().gap(px(18.)),
+            // `.manage .row` is 6px apart; `.row` 8px.
+            K::Row => div().flex().flex_wrap().items_center().gap(px(if small_btns { 6. } else { 8. })),
+            // `.lrow .line`
+            K::Line if in_lrow => div().flex().flex_wrap().items_center().gap(px(8.)).text_size(px(13.)),
+            K::Line => div().flex().flex_wrap().items_center(),
+            // `.pr-head`
+            K::PrHead => div().flex().flex_col().gap(px(2.)),
+            // `.tl-name` / `.tl-sub` are styled by the item (live or not).
+            K::TlName => div().flex().flex_wrap().items_center().gap(px(6.)).min_h(px(24.)),
+            K::TlSub => div().flex().flex_wrap().items_center().gap(px(6.)),
+            K::AttMeta => div().flex().items_center().gap(px(4.)).text_size(px(12.)).text_color(t.muted).whitespace_nowrap().overflow_hidden(),
+            // `.stack` (the manage box and files 8px apart; lists 6px).
+            K::Stack => div().flex().flex_col().gap(px(if wide { 8. } else { 6. })).min_w_0(),
+            K::Md => div().flex().flex_col().gap(px(10.)).min_w_0().text_size(px(14.)).line_height(relative(1.55)).text_color(t.text),
+            K::List => div().flex().flex_col().gap(px(4.)).min_w_0(),
+            K::Atts => div().flex().flex_col().min_w_0(),
+            K::MdUl => div().flex().flex_col().gap(px(4.)).pl(px(4.)).min_w_0(),
+            K::Col => div().flex().flex_col().gap(px(18.)).min_w_0(),
+            // `.pr-bar`
             K::PrBar { warn } => {
-                let (fg, bg) = if warn { (t.warn_fg, t.warn_soft) } else { (t.accent_fg, t.accent_soft) };
-                div().flex().items_center().gap(px(8.)).px(px(10.)).py(px(6.)).rounded(px(8.)).bg(bg).text_color(fg).text_size(px(12.5))
+                let (fg, bg, line) = if warn { (t.warn_text, t.warn_soft, t.warn_line) } else { (t.text_2, t.panel_2, transparent_black()) };
+                div().flex().items_center().gap(px(8.)).w_full().px(px(12.)).py(px(7.)).rounded(px(8.)).bg(bg).border_1().border_color(line).text_color(fg).text_size(px(13.))
             }
-            K::AttMenu => kit::menu_box(t, 200.),
-            K::AttEdit => div().flex().flex_col().gap(px(8.)).p(px(8.)).rounded(px(8.)).border_1().border_color(t.border),
-            K::KvRow | K::Li => div().flex().items_center().gap(px(8.)),
-            K::MetaRow => div().flex().items_center().gap(px(6.)),
+            K::AttMenu => kit::menu_box(t, 160.),
+            K::AttEdit => div().flex().flex_col().gap(px(8.)).w_full().py(px(6.)),
+            K::KvRow => div().flex().gap(px(12.)),
+            // `.meta-row`: 140px name, value, 32px remove.
+            K::MetaRow => div().flex().items_center().gap(px(8.)),
+            // `.log`
+            K::Log => div().flex().flex_col(),
+            // `.note-body p`: lines joined by line breaks.
+            K::MdP => div().flex().flex_col().min_w_0(),
             // Linked, Log, MdP
             _ => div().flex().flex_col().min_w_0(),
         };
-        d.children(kids).into_any_element()
+        let d = match k {
+            K::PrBar { .. } => d.children(kids.into_iter().enumerate().map(|(i, e)| if i == 1 { div().flex_1().min_w_0().child(e).into_any_element() } else { e })),
+            _ => d.children(kids),
+        };
+        d.into_any_element()
     }
 
+    /// `<details>`: the board's folds (`.linked-d`, `.box-fold`, `.tl-more`).
     #[inline(never)]
     fn c_fold(&mut self, m: &MainWindow, n: &Node, f: Fold, open: bool, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let Node::El { kids, .. } = n else { return div().into_any_element() };
-        self.path.push(0);
-        let summary = kids.first().map(|s| self.node(m, s, boxed, cx));
-        self.path.pop();
         let hover = t.text;
-        let head = div()
-            .id(self.id("fold"))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .cursor_pointer()
-            .hover(move |d| d.text_color(hover))
-            .child(div().w(px(12.)).text_size(px(12.)).text_color(t.faint).child(if open { "▾" } else { "▸" }))
-            .children(summary)
-            .on_click(cx.listener(move |_, _, _, cx| {
-                crate::prefs::set(f.key(), json!(if open { "closed" } else { "open" }));
-                cx.notify();
-            }));
-        let mut col = div().flex().flex_col().gap(px(8.)).child(head);
+        let toggle = cx.listener(move |_, _, _, cx| {
+            crate::prefs::set(f.key(), json!(if open { "closed" } else { "open" }));
+            cx.notify();
+        });
+        let label = match kids.first() {
+            Some(Node::Text { s, .. }) => s.clone(),
+            _ => String::new(),
+        };
+        let head = match f {
+            // `.linked-d > summary`: 12.5px semibold uppercase muted, a chevron before.
+            Fold::Linked | Fold::What => div()
+                .id(self.id("fold"))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .pt(px(2.))
+                .pb(px(8.))
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.muted)
+                .hover(move |d| d.text_color(hover))
+                .child(div().mr(px(2.)).child(chevron(open, t.muted)))
+                .child(label.to_uppercase()),
+            // `.box-fold > summary`: the box label with a chevron, 8px apart.
+            Fold::Summary => {
+                let summary = self.kid(m, n, 0, boxed, cx);
+                let c = match boxed {
+                    Some(BoxTone::Failed | BoxTone::Lost) => t.down,
+                    Some(BoxTone::Ask) => t.warn_fg,
+                    _ => t.up_fg,
+                };
+                div().id(self.id("fold")).flex().items_center().gap(px(8.)).cursor_pointer().child(chevron(open, c)).children(summary)
+            }
+            // `.tl-more > summary`: 12.5px muted, the browser's disclosure triangle.
+            Fold::Terms => div()
+                .id(self.id("fold"))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .self_start()
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .text_color(t.muted)
+                .hover(move |d| d.text_color(hover))
+                .child(div().text_size(px(9.)).child(if open { "▼" } else { "▶" }))
+                .child(label),
+        };
+        let head = head.on_click(toggle);
+        let mut col = div().flex().flex_col().min_w_0().child(head);
         if open {
-            for (i, kid) in kids.iter().enumerate().skip(1) {
-                self.path.push(i);
-                let e = self.node(m, kid, boxed, cx);
-                self.path.pop();
-                col = col.child(div().pl(px(18.)).child(e));
+            let gap = match f {
+                Fold::Linked => 0.,
+                Fold::What => 2.,
+                Fold::Summary => 8.,
+                Fold::Terms => 10.,
+            };
+            for i in 1..kids.len() {
+                if let Some(e) = self.kid(m, n, i, boxed, cx) {
+                    col = col.child(div().mt(px(gap)).min_w_0().when(f == Fold::What, |d| d.text_size(px(14.))).child(e));
+                }
             }
         }
         col.into_any_element()
     }
 
+    /// `.box`: 14px 16px, 12px corners, tinted by kind.
     #[inline(never)]
     fn c_box(&mut self, m: &MainWindow, n: &Node, tone: BoxTone, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
-        let (bg, line) = match tone {
-            BoxTone::Ask => (t.warn_soft, t.warn_line),
-            BoxTone::Lost | BoxTone::Failed => (t.down_soft, t.down_line),
-            BoxTone::Done => (t.up_soft, t.up_soft),
-            BoxTone::Info => (t.accent_soft, t.accent_line),
+        let (bg, line, gap) = match tone {
+            BoxTone::Ask => (t.warn_soft, None, 8.),
+            BoxTone::Lost => (t.down_soft, None, 10.),
+            BoxTone::Failed => (t.down_soft, None, 8.),
+            BoxTone::Done => (t.up_soft, None, 8.),
+            BoxTone::Info => (accent_tint(t), Some(t.accent_line), 10.),
         };
         let kids = self.kids(m, n, Some(tone), cx);
-        div().flex().flex_col().gap(px(10.)).p(px(14.)).rounded(px(10.)).bg(bg).border_1().border_color(line).children(kids).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(gap))
+            .px(px(16.))
+            .py(px(14.))
+            .rounded(px(12.))
+            .bg(bg)
+            .when_some(line, |d, c| d.border_1().border_color(c))
+            .text_size(px(14.))
+            .children(kids)
+            .into_any_element()
     }
 
+    /// `.panel-top`: the pills, then the close button at the far end.
     #[inline(never)]
     fn c_top(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let kids = self.kids(m, n, boxed, cx);
         let n_kids = kids.len();
-        let mut row = div().flex().flex_none().items_center().gap(px(6.));
+        let mut row = div().flex().flex_none().flex_wrap().items_center().gap(px(8.));
         for (i, e) in kids.into_iter().enumerate() {
-            // The close button sits at the far end.
             if i + 1 == n_kids {
                 row = row.child(div().flex_1());
             }
@@ -877,111 +1063,248 @@ impl Draw<'_> {
         row.into_any_element()
     }
 
+    /// `.tabs`: underlined tabs on a rule that runs the sheet's full width.
+    #[inline(never)]
+    fn c_tabs(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let kids = self.kids(m, n, boxed, cx);
+        div().flex().flex_none().gap(px(4.)).mx(px(-24.)).px(px(24.)).border_b_1().border_color(t.border).children(kids).into_any_element()
+    }
+
+    /// `.linked`: a bordered card of rows split by hairlines.
+    #[inline(never)]
+    fn c_linked(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let kids = self.kids(m, n, boxed, cx);
+        let mut col = div().flex().flex_col().min_w_0().rounded(px(12.)).border_1().border_color(t.border);
+        for (i, e) in kids.into_iter().enumerate() {
+            col = col.child(div().min_w_0().when(i > 0, |d| d.border_t_1().border_color(t.divider)).child(e));
+        }
+        col.into_any_element()
+    }
+
+    /// `.lrow`: a 92px key, then the value column (8px apart), 14px 16px.
     #[inline(never)]
     fn c_lrow(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
+        let blocked = matches!(n, Node::El { kids, .. } if matches!(kids.first(), Some(Node::Text { s, .. }) if s == "Blocked by"));
         let mut kids = self.kids(m, n, boxed, cx).into_iter();
         let key = kids.next();
         div()
             .flex()
             .gap(px(12.))
-            .py(px(10.))
-            .border_t_1()
-            .border_color(t.divider)
-            .children(key)
-            .child(div().flex().flex_col().gap(px(4.)).flex_1().min_w_0().text_size(px(13.5)).children(kids))
+            .px(px(16.))
+            .py(px(14.))
+            .when(blocked, |d| d.border_1().border_color(t.warn).rounded_t(px(11.)))
+            .child(div().flex_none().w(px(92.)).pt(px(2.)).children(key))
+            .child(div().flex().flex_col().gap(px(8.)).flex_1().min_w_0().children(kids))
             .into_any_element()
     }
 
+    /// `.lsec`: a titled section in the linked card (Attached).
+    #[inline(never)]
+    fn c_lsec(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let mut kids = self.kids(m, n, boxed, cx).into_iter();
+        let head = kids.next();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .px(px(16.))
+            .py(px(14.))
+            .min_w_0()
+            // `.lsec-h`
+            .child(div().text_size(px(12.5)).text_color(t.muted).children(head))
+            .children(kids)
+            .into_any_element()
+    }
+
+    /// `.tl`: terminals 12px apart, joined by a thin line.
+    #[inline(never)]
+    fn c_tl(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let kids = self.kids(m, n, boxed, cx);
+        let last = kids.len().saturating_sub(1);
+        let mut col = div().flex().flex_col().gap(px(12.)).min_w_0();
+        for (i, e) in kids.into_iter().enumerate() {
+            col = col.child(
+                div()
+                    .relative()
+                    .min_w_0()
+                    .when(i < last, |d| d.child(div().absolute().left(px(4.)).top(px(20.)).bottom(px(-10.)).w(px(1.)).bg(t.border_2)))
+                    .child(e),
+            );
+        }
+        col.into_any_element()
+    }
+
+    /// `.tl-item`: dot, name and state, time.
     #[inline(never)]
     fn c_tl_item(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
+        let live = !matches!(n, Node::El { kids, .. } if matches!(kids.first(), Some(Node::Dot(Dot::None))));
         let mut kids = self.kids(m, n, boxed, cx).into_iter();
         let (dot, name, sub, at) = (kids.next(), kids.next(), kids.next(), kids.next());
         div()
             .flex()
             .items_start()
-            .gap(px(8.))
-            .child(div().pt(px(6.)).children(dot))
-            .child(div().flex().flex_col().gap(px(3.)).flex_1().min_w_0().children(name).children(sub))
-            .children(at.map(|a| div().text_color(t.faint).child(a)))
+            .gap(px(10.))
+            .child(div().flex_none().w(px(9.)).pt(px(8.)).children(dot))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(if live { FontWeight::BOLD } else { FontWeight::SEMIBOLD })
+                            .when(!live, |d| d.text_color(t.muted))
+                            .children(name),
+                    )
+                    .child(div().text_size(px(12.5)).text_color(if live { t.muted } else { t.faint }).children(sub)),
+            )
+            .children(at.map(|a| div().flex_none().pt(px(4.)).text_color(if live { t.muted } else { t.faint }).child(a)))
             .into_any_element()
     }
 
+    /// `.pr-steps`: three steps joined by lines.
     #[inline(never)]
     fn c_steps(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let kids = self.kids(m, n, boxed, cx);
-        let mut row = div().flex().items_start().pt(px(4.));
+        let mut row = div().flex().items_start().pt(px(4.)).pb(px(2.));
         for (i, e) in kids.into_iter().enumerate() {
             if i > 0 {
-                row = row.child(div().flex_1().h(px(2.)).mt(px(9.)).bg(t.border));
+                row = row.child(div().flex_1().min_w(px(14.)).h(px(2.)).mt(px(10.)).rounded(px(1.)).bg(t.border_2));
             }
             row = row.child(e);
         }
         row.into_any_element()
     }
 
+    /// `.pr-step`: a 22px dot, the name, the state below.
     #[inline(never)]
     fn c_step(&mut self, m: &MainWindow, n: &Node, st: StepSt, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
-        let (fg, bg, glyph) = match st {
-            StepSt::Done => (t.on_accent, t.up, "✓"),
-            StepSt::Fail => (t.on_accent, t.down, "✕"),
-            StepSt::Ask => (t.on_accent, t.warn, "!"),
-            StepSt::Wait => (t.muted, t.seg, "◷"),
-            StepSt::Now => (t.on_accent, t.accent, "•"),
-            StepSt::Todo => (t.faint, t.seg, ""),
+        let (name_c, sub_c) = match st {
+            StepSt::Done => (t.text_2, t.up),
+            StepSt::Fail => (t.down, t.down),
+            StepSt::Ask => (t.warn, t.warn),
+            StepSt::Wait | StepSt::Now => (t.text_2, t.accent_fg),
+            StepSt::Todo => (t.muted, t.faint),
         };
-        let kids = self.kids(m, n, boxed, cx);
+        let bold = matches!(st, StepSt::Fail | StepSt::Ask);
+        let dot = step_dot(t, st);
+        let mut kids = self.kids(m, n, boxed, cx).into_iter();
+        let (name, sub) = (kids.next(), kids.next());
         div()
             .flex()
             .flex_col()
+            .flex_none()
             .items_center()
-            .gap(px(3.))
-            .min_w(px(78.))
-            .child(div().size(px(20.)).rounded_full().bg(bg).text_color(fg).flex().items_center().justify_center().text_size(px(11.)).font_weight(FontWeight::BOLD).child(glyph))
-            .children(kids)
+            .gap(px(4.))
+            .child(dot)
+            .child(div().text_color(name_c).when(bold, |d| d.font_weight(FontWeight::BOLD)).children(name))
+            .children(sub.map(|s| div().text_color(sub_c).child(s)))
             .into_any_element()
     }
 
+    /// `.att`: the kind's icon, the name over its kind / source / age, the menu button.
     #[inline(never)]
     fn c_att(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
+        let kind = match n {
+            Node::El { kids, .. } => match kids.get(1) {
+                Some(Node::El { kids: meta, .. }) => match meta.first() {
+                    Some(Node::Text { s, .. }) => view::ATT_KINDS.iter().find(|k| view::att_kind_label(k) == s).copied().unwrap_or("other"),
+                    _ => "other",
+                },
+                _ => "other",
+            },
+            _ => "other",
+        };
+        let (fg, bg) = match kind {
+            "design" => (t.warn, t.warn_soft),
+            "proposal" => (t.goal, t.goal_soft),
+            "doc" => (t.accent_fg, t.accent_soft),
+            "evidence" => (t.up, t.up_soft),
+            "results" => (t.results, t.results_soft),
+            _ => (t.text_2, t.col),
+        };
         let mut it = self.kids(m, n, boxed, cx).into_iter();
         let (name, meta, more, menu) = (it.next(), it.next(), it.next(), it.next());
+        let tint = t.tint;
         div()
+            .id(self.id("att"))
+            .group("tp-att")
             .flex()
-            .flex_col()
-            .gap(px(4.))
-            .px(px(8.))
-            .py(px(6.))
+            .items_center()
+            .gap(px(10.))
+            .p(px(6.))
+            .mx(px(-6.))
             .rounded(px(8.))
-            .border_1()
-            .border_color(t.border)
-            .child(div().flex().items_center().gap(px(8.)).child(div().flex().flex_col().flex_1().min_w_0().children(name).children(meta)).children(more))
-            .children(menu)
+            .text_size(px(13.))
+            .hover(move |d| d.bg(tint))
+            .child(div().flex_none().size(px(26.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(kind, fg)))
+            .child(div().flex().flex_col().gap(px(1.)).flex_1().min_w_0().children(name).children(meta))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .w(px(24.))
+                    .children(more)
+                    .children(menu.map(|x| div().absolute().right_0().top(px(28.)).child(deferred(x).with_priority(2)))),
+            )
             .into_any_element()
     }
 
+    /// `.kv`: a bordered card of 110px keys and values.
     #[inline(never)]
     fn c_kv(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
-        let kids = self.kids(m, n, boxed, cx);
-        let mut col = div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.border).overflow_hidden();
-        for (i, e) in kids.into_iter().enumerate() {
-            col = col.child(div().px(px(12.)).py(px(8.)).when(i > 0, |d| d.border_t_1().border_color(t.divider)).child(e));
+        let Node::El { kids: rows, .. } = n else { return div().into_any_element() };
+        let mut col = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border);
+        self.within.push(K::Kv);
+        for (i, row) in rows.iter().enumerate() {
+            self.path.push(i);
+            let mut kv = self.kids(m, row, boxed, cx).into_iter();
+            self.path.pop();
+            let (k, v) = (kv.next(), kv.next());
+            col = col.child(
+                div()
+                    .flex()
+                    .gap(px(12.))
+                    .px(px(16.))
+                    .py(px(9.))
+                    .when(i > 0, |d| d.border_t_1().border_color(t.divider))
+                    .child(div().flex_none().w(px(110.)).children(k))
+                    .child(div().flex_1().min_w_0().text_size(px(13.)).children(v)),
+            );
         }
+        self.within.pop();
         col.into_any_element()
     }
 
+    /// `.files`: file names in mono chips.
     #[inline(never)]
     fn c_files(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let kids = self.kids(m, n, boxed, cx);
-        div().flex().flex_wrap().gap(px(6.)).children(kids.into_iter().map(|e| div().px(px(7.)).rounded(px(6.)).border_1().border_color(t.border).child(e))).into_any_element()
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(6.))
+            .children(kids.into_iter().map(|e| {
+                div().px(px(8.)).py(px(2.)).rounded(px(5.)).bg(t.panel_2).font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.text_2).whitespace_nowrap().child(e)
+            }))
+            .into_any_element()
     }
 
+    /// `.log li`: 52px time, 14px dot, who / kind over the text.
     #[inline(never)]
     fn c_log_item(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
@@ -989,22 +1312,59 @@ impl Draw<'_> {
         let (time, dot, who, kind, text) = (it.next(), it.next(), it.next(), it.next(), it.next());
         div()
             .flex()
-            .gap(px(10.))
-            .py(px(8.))
-            .border_t_1()
-            .border_color(t.divider)
-            .children(time)
-            .child(div().pt(px(5.)).children(dot))
-            .child(div().flex().flex_col().flex_1().min_w_0().gap(px(2.)).child(div().flex().items_center().gap(px(8.)).children(who).children(kind)).children(text))
+            .gap(px(8.))
+            .pb(px(12.))
+            .child(div().flex_none().w(px(52.)).pt(px(1.)).children(time))
+            .child(div().flex_none().w(px(14.)).pt(px(6.)).children(dot))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().flex().flex_wrap().items_center().gap(px(6.)).child(div().text_size(px(13.)).children(who)).children(kind))
+                    .child(div().text_size(px(13.)).text_color(t.text_2).children(text)),
+            )
             .into_any_element()
+    }
+
+    /// `.list li`: the glyph, then the text. A found issue's link and "(in the backlog)" flow as
+    /// one run of text, as the web's inline `<a>` did.
+    #[inline(never)]
+    fn c_li(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        if let Node::El { kids, .. } = n {
+            if let [g @ Node::Text { st: St::Glyph(_), .. }, Node::Link { s: name, go: target, .. }, Node::Text { s: rest, st: St::Muted, .. }] = kids.as_slice() {
+                let glyph = self.node(m, g, boxed, cx);
+                let text = format!("{name} {rest}");
+                let under = UnderlineStyle { thickness: px(1.), color: Some(t.accent), wavy: false };
+                let runs = vec![
+                    (0..name.len(), HighlightStyle { color: Some(t.accent), underline: Some(under), ..Default::default() }),
+                    (name.len() + 1..text.len(), HighlightStyle { color: Some(t.muted), ..Default::default() }),
+                ];
+                let this = cx.entity().downgrade();
+                let target = target.clone();
+                let body = InteractiveText::new(self.id("li"), StyledText::new(text).with_highlights(runs)).on_click(vec![0..name.len()], move |_, _, cx| {
+                    let _ = this.update(cx, |m, cx| go(m, &target, cx));
+                });
+                return div().flex().items_start().gap(px(8.)).child(glyph).child(div().flex_1().min_w_0().child(body)).into_any_element();
+            }
+        }
+        let kids = self.kids(m, n, boxed, cx);
+        div().flex().items_start().gap(px(8.)).children(kids).into_any_element()
     }
 
     #[inline(never)]
     fn c_md_li(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
         let kids = self.kids(m, n, boxed, cx);
-        div().flex().gap(px(6.)).child(div().text_color(t.muted).child("•")).child(div().flex().flex_wrap().items_center().gap(px(4.)).children(kids)).into_any_element()
+        div().flex().gap(px(6.)).child(div().flex_none().w(px(8.)).child("•")).child(div().flex().flex_wrap().items_center().gap(px(4.)).min_w_0().children(kids)).into_any_element()
     }
+}
+
+/// "#101 Store sessions…" with the number in bold (`<b>#101</b> title`).
+fn pr_label(s: &str) -> Div {
+    let (num, rest) = s.split_once(' ').unwrap_or((s, ""));
+    div().flex().flex_wrap().gap(px(4.)).child(div().font_weight(FontWeight::BOLD).child(num.to_string())).child(rest.to_string())
 }
 
 fn on_key(m: &mut MainWindow, key: &str, ev: &KeyDownEvent, cx: &mut Context<MainWindow>) {
@@ -1039,25 +1399,47 @@ fn dot_color(t: &Theme, d: Dot) -> Option<Hsla> {
     })
 }
 
-fn pill(t: &Theme, s: &str, tone: Tone) -> Div {
+/// `.pill` (12px semibold, 2px 10px, round) / `.pill.sm` (1px 8px).
+fn pill(t: &Theme, s: &str, tone: Tone, small: bool) -> Div {
     let (fg, bg, line) = match tone {
         Tone::Queued | Tone::Neutral => (t.text_2, t.col, None),
         Tone::Review => (t.warn_fg, t.col, Some(t.warn)),
-        Tone::Needs | Tone::Blocked | Tone::High => (t.warn_fg, t.warn_soft, None),
+        Tone::Needs | Tone::Blocked => (t.warn_fg, t.warn_soft, None),
+        Tone::High => (t.warn, t.warn_soft, None),
         Tone::Done => (t.up_fg, t.up_soft, None),
         Tone::Failed => (t.down, t.down_soft, None),
         Tone::Planned => (t.muted, t.card, Some(t.border)),
         Tone::Working | Tone::Jira => (t.accent_fg, t.accent_soft, None),
-        Tone::Idle | Tone::Ref | Tone::Repo => (t.text_2, t.panel_2, None),
-        Tone::Gone => (t.muted, t.panel_2, None),
-        Tone::Closed => (t.faint, t.card, Some(t.border)),
+        Tone::Idle | Tone::Repo => (t.text_2, t.panel_2, None),
+        Tone::Ref | Tone::Gone => (t.muted, t.panel_2, None),
+        Tone::Closed => (t.faint, transparent_black(), Some(t.border)),
     };
-    let p = kit::pill(fg, bg, s.to_string()).when_some(line, |d, c| d.border_1().border_color(c));
+    let p = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .h(px(if small { 20. } else { 22. }))
+        .px(px(if small { 8. } else { 10. }))
+        .rounded_full()
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(12.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .whitespace_nowrap()
+        .when_some(line, |d, c| d.border_1().border_color(c))
+        .child(s.to_string());
     if matches!(tone, Tone::Ref | Tone::Repo) { p.font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM) } else { p }
 }
 
-/// A button without a hover style yet (the kit's buttons already carry one; GPUI allows one).
+/// `.btn`: 36px, 13px, 14px sides, 8px corners, the light border; hover darkens the border.
 fn base(t: &Theme, id: SharedString, label: String) -> Stateful<Div> {
+    let h = t.border_2;
+    raw(t, id, label).hover(move |d| d.border_color(h))
+}
+
+/// `.btn` without a hover style (GPUI keeps one per element).
+fn raw(t: &Theme, id: SharedString, label: String) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -1065,72 +1447,170 @@ fn base(t: &Theme, id: SharedString, label: String) -> Stateful<Div> {
         .items_center()
         .justify_center()
         .gap(px(6.))
-        .h(px(30.))
-        .px(px(12.))
+        .h(px(36.))
+        .px(px(14.))
         .rounded(px(8.))
         .border_1()
-        .border_color(t.border_2)
+        .border_color(t.border)
+        .bg(t.card)
+        .text_color(t.text)
         .text_size(px(13.))
-        .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
         .child(label)
 }
 
-/// `.btn.soft`: accent-tinted.
+/// `.btn.sm`: 32px, 12.5px, 10px sides, 7px corners.
+fn sm(b: Stateful<Div>) -> Stateful<Div> {
+    b.h(px(32.)).px(px(10.)).text_size(px(12.5)).rounded(px(7.))
+}
+
+/// `.btn.soft`: accent text on the accent tint, no border.
 fn soft(t: &Theme, id: SharedString, label: String) -> Stateful<Div> {
-    let h = t.accent_line;
-    base(t, id, label).bg(t.accent_soft).border_color(t.accent_line).text_color(t.accent_fg).hover(move |d| d.bg(h))
+    raw(t, id, label).bg(t.accent_soft).border_color(transparent_black()).text_color(t.accent).font_weight(FontWeight::SEMIBOLD)
+}
+
+fn danger(t: &Theme, id: SharedString, label: String) -> Stateful<Div> {
+    raw(t, id, label).text_color(t.down).border_color(t.down_line)
+}
+
+/// `.tab`: 14px semibold, 42px, an accent underline when selected.
+fn tab_btn(t: &Theme, id: SharedString, label: &str, on: bool) -> Stateful<Div> {
+    let hover = t.text;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .min_h(px(42.))
+        .px(px(10.))
+        .mb(px(-1.))
+        .border_b_2()
+        .border_color(if on { t.accent } else { transparent_black() })
+        .text_size(px(14.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .whitespace_nowrap()
+        .text_color(if on { t.text } else { t.muted })
+        .hover(move |s| s.text_color(hover))
+        .child(label.to_string())
+}
+
+/// `.fchip`: a round 32px filter chip; the pressed one inverted.
+fn fchip(t: &Theme, id: SharedString, label: &str, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .h(px(32.))
+        .px(px(12.))
+        .rounded_full()
+        .border_1()
+        .border_color(if on { t.text } else { t.border })
+        .bg(if on { t.text } else { t.card })
+        .text_color(if on { t.bg } else { t.text_2 })
+        .text_size(px(12.5))
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .whitespace_nowrap()
+        .child(label.to_string())
 }
 
 fn link(t: &Theme, id: SharedString, s: &str, look: LinkLook) -> Stateful<Div> {
-    if look == LinkLook::Term {
-        let h = t.accent_fg;
-        return div().id(id).flex_none().cursor_pointer().text_color(t.text).font_weight(FontWeight::MEDIUM).hover(move |d| d.text_color(h).underline()).child(s.to_string());
-    }
-    let l = kit::link(t, id, s.to_string());
+    let text = s.to_string();
+    let a = div().id(id).flex_none().cursor_pointer();
     match look {
-        LinkLook::Plain => l,
-        LinkLook::Small => l.text_size(px(12.5)),
-        LinkLook::Term => l,
-        LinkLook::GoalName => l.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.goal),
-        LinkLook::Jkey => l.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg),
-        LinkLook::AttName => l.font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).truncate(),
-        LinkLook::SrcGoal => l.px(px(5.)).rounded(px(5.)).font_family(t.mono_font.clone()).text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).bg(t.goal_soft),
+        // `.term-link`: the text colour, underlined in the accent on hover.
+        LinkLook::Term => {
+            let h = t.accent_fg;
+            a.hover(move |d| d.text_color(h).underline()).child(text)
+        }
+        // `<a>`: accent, underlined.
+        LinkLook::Plain => a.flex_shrink(1.).text_color(t.accent).underline().child(text),
+        LinkLook::Small => a.text_size(px(12.5)).text_color(t.accent).underline().child(text),
+        LinkLook::GoalName => a.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).underline().child(text),
+        LinkLook::Jkey => a.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).underline().child(text),
+        LinkLook::AttName => a.flex_shrink(1.).min_w_0().font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).truncate().hover(|d| d.underline()).child(text),
+        LinkLook::SrcGoal => a
+            .px(px(5.))
+            .rounded(px(5.))
+            .font_family(t.mono_font.clone())
+            .text_size(px(11.5))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(t.goal)
+            .bg(t.goal_soft)
+            .hover(|d| d.underline())
+            .child(text),
     }
+}
+
+/// `.icon-btn` (36px), `.sm` (32px) and `.xs` (24px).
+fn icon_btn(t: &Theme, id: SharedString, size: f32, radius: f32, glyph: impl IntoElement) -> Stateful<Div> {
+    let (h, hb) = (t.text, t.border_2);
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(size))
+        .rounded(px(radius))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .text_color(t.muted)
+        .cursor_pointer()
+        .hover(move |d| d.text_color(h).border_color(hb))
+        .child(glyph)
 }
 
 fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div> {
     let label = label.to_string();
     match look {
-        Look::Plain => kit::btn(t, id, label),
-        Look::Primary => kit::btn_primary(t, id, label),
-        Look::PrimaryWide => kit::btn_primary(t, id, label).flex_1().h(px(36.)),
-        Look::SoftWide => soft(t, id, label).flex_1().h(px(36.)),
-        Look::Soft => soft(t, id, label),
-        Look::SoftSmall => soft(t, id, label).h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.)),
-        Look::Small => kit::btn_small(t, id, label),
-        Look::Danger => kit::btn_danger(t, id, label),
-        Look::DangerSmall => kit::btn_danger(t, id, label).h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.)),
-        Look::Ghost => {
-            let h = t.panel_2;
-            base(t, id, label).h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.)).border_color(transparent_black()).bg(transparent_black()).text_color(t.text_2).hover(move |d| d.bg(h))
+        Look::Plain => base(t, id, label),
+        Look::Primary | Look::PrimaryWide => {
+            let b = raw(t, id, label).bg(t.accent_btn).border_color(transparent_black()).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).hover(|d| d.opacity(0.94));
+            // `.lg.wide`: 42px, 14px, sharing the row.
+            if look == Look::PrimaryWide { b.flex_1().h(px(42.)).px(px(16.)).text_size(px(14.)) } else { b }
         }
-        Look::Link => kit::link(t, id, label).text_size(px(12.5)),
-        Look::Ref => kit::link(t, id, label).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD),
-        Look::Src => div().id(id).px(px(5.)).rounded(px(5.)).cursor_pointer().font_family(t.mono_font.clone()).text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).bg(t.accent_soft).child(label),
+        Look::SoftWide => soft(t, id, label).flex_1().h(px(42.)).px(px(16.)).text_size(px(14.)),
+        Look::Soft => soft(t, id, label),
+        Look::SoftSmall => sm(soft(t, id, label)),
+        Look::Small => sm(base(t, id, label)),
+        Look::Danger => danger(t, id, label),
+        Look::DangerSmall => sm(danger(t, id, label)),
+        Look::Ghost => {
+            let h = t.text;
+            sm(raw(t, id, label).border_color(transparent_black()).bg(transparent_black()).text_color(t.muted).hover(move |d| d.text_color(h)))
+        }
+        // `.btn.link`: accent text, underlined.
+        Look::Link => div().id(id).flex_none().self_start().cursor_pointer().min_h(px(28.)).flex().items_center().text_size(px(13.)).text_color(t.accent_fg).underline().child(label),
+        // `.btn.link.inline`
+        Look::Ref => div().id(id).flex_none().cursor_pointer().text_color(t.accent_fg).underline().child(label),
+        Look::Src => div()
+            .id(id)
+            .px(px(5.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .font_family(t.mono_font.clone())
+            .text_size(px(11.5))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(t.accent_fg)
+            .bg(t.accent_soft)
+            .hover(|d| d.underline())
+            .child(label),
         Look::Menu => kit::menu_item(t, id, label, false),
+        // Segmented buttons (the attachment kind picker).
         Look::Tab { on } => {
             let hover = t.text;
             div()
                 .id(id)
                 .flex()
                 .items_center()
-                .h(px(24.))
-                .px(px(10.))
-                .rounded(px(6.))
-                .text_size(px(12.5))
-                .font_weight(FontWeight::MEDIUM)
+                .h(px(32.))
+                .px(px(11.))
+                .rounded(px(7.))
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
                 .whitespace_nowrap()
                 .text_color(if on { t.text } else { t.muted })
@@ -1138,29 +1618,178 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
                 .hover(move |s| s.text_color(hover))
                 .child(label)
         }
-        Look::Icon(icon) => {
-            let glyph = match icon {
-                Icon::Close | Icon::Remove => "✕",
-                Icon::Back => "‹",
-                Icon::External => "↗",
-                Icon::More => "⋯",
+        Look::Icon(icon) => match icon {
+            Icon::Close => icon_btn(t, id, 36., 8., paint(Ic::X, 16., 2.2, t.muted)),
+            Icon::Back => icon_btn(t, id, 36., 8., paint(Ic::Back, 16., 2.2, t.muted)),
+            Icon::Remove => icon_btn(t, id, 32., 7., paint(Ic::X, 16., 2.2, t.muted)),
+            Icon::External => icon_btn(t, id, 24., 6., paint(Ic::Ext, 12., 2.4, t.muted)),
+            Icon::More => icon_btn(t, id, 24., 6., paint(Ic::More, 16., 0., t.muted)),
+        },
+    }
+}
+
+// ------------------------------------------------------------------ icons (the web's inline SVGs)
+
+#[derive(Clone, Copy)]
+enum Ic {
+    X,
+    Back,
+    Ext,
+    More,
+    Check,
+    Clock,
+    Comment,
+    /// `.s-now`: a ring with its right quarter open.
+    Spinner,
+    Att(&'static str),
+}
+
+/// A stroked icon on the web's 24-unit (attachments: 16-unit) viewbox, `size` px square.
+fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
+    use std::f32::consts::PI;
+    canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let vb = if matches!(ic, Ic::Att(_)) { 16. } else { 24. };
+            let k = b.size.width.as_f32() / vb;
+            let u = |x: f32, y: f32| point(b.origin.x + px(x * k), b.origin.y + px(y * k));
+            let line = |pts: &[(f32, f32)], window: &mut Window| {
+                let mut p = PathBuilder::stroke(px(stroke * k));
+                p.move_to(u(pts[0].0, pts[0].1));
+                for (x, y) in &pts[1..] {
+                    p.line_to(u(*x, *y));
+                }
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, color);
+                }
             };
-            let h = t.panel_2;
-            let size = if matches!(icon, Icon::External | Icon::More) { 20. } else { 28. };
-            div()
-                .id(id)
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .size(px(size))
-                .rounded(px(6.))
-                .cursor_pointer()
-                .text_color(t.muted)
-                .text_size(px(if size < 24. { 12. } else { 15. }))
-                .hover(move |d| d.bg(h))
-                .child(glyph)
-        }
+            // An arc on a circle, angles in degrees clockwise from 3 o'clock.
+            let arc = |c: (f32, f32), r: f32, from: f32, to: f32, window: &mut Window| {
+                let n = (((to - from).abs() / 360.) * 48.).ceil().max(2.) as usize;
+                let pts: Vec<(f32, f32)> = (0..=n)
+                    .map(|i| {
+                        let a = (from + (to - from) * i as f32 / n as f32) * PI / 180.;
+                        (c.0 + r * a.cos(), c.1 + r * a.sin())
+                    })
+                    .collect();
+                line(&pts, window);
+            };
+            let fill_dot = |c: (f32, f32), r: f32, window: &mut Window| {
+                let mut p = PathBuilder::fill();
+                p.move_to(u(c.0 + r, c.1));
+                for i in 1..=24 {
+                    let a = 2. * PI * i as f32 / 24.;
+                    p.line_to(u(c.0 + r * a.cos(), c.1 + r * a.sin()));
+                }
+                p.close();
+                if let Ok(p) = p.build() {
+                    window.paint_path(p, color);
+                }
+            };
+            match ic {
+                Ic::X => {
+                    line(&[(6., 6.), (18., 18.)], window);
+                    line(&[(18., 6.), (6., 18.)], window);
+                }
+                Ic::Back => line(&[(15., 6.), (9., 12.), (15., 18.)], window),
+                Ic::Ext => {
+                    line(&[(14., 4.), (20., 4.), (20., 10.)], window);
+                    line(&[(20., 4.), (11., 13.)], window);
+                    line(&[(18., 14.), (18., 20.), (4., 20.), (4., 6.), (10., 6.)], window);
+                }
+                Ic::More => {
+                    for x in [5., 12., 19.] {
+                        fill_dot((x, 12.), 1.8, window);
+                    }
+                }
+                Ic::Check => line(&[(5., 12.5), (9.5, 17.), (19., 7.5)], window),
+                Ic::Clock => {
+                    arc((12., 12.), 8.5, 0., 360., window);
+                    line(&[(12., 7.5), (12., 12.), (15., 14.)], window);
+                }
+                Ic::Comment => {
+                    arc((12., 12.), 8., 0., 117., window);
+                    line(&[(8.4, 19.1), (4., 20.), (5., 15.9)], window);
+                    arc((12., 12.), 8., 151., 360., window);
+                }
+                Ic::Spinner => arc((12., 12.), 11., 45., 315., window),
+                Ic::Att(kind) => match kind {
+                    "design" => {
+                        line(&[(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5), (2.5, 2.5)], window);
+                        line(&[(2.5, 6.5), (13.5, 6.5)], window);
+                        line(&[(6.5, 6.5), (6.5, 13.5)], window);
+                    }
+                    "proposal" => {
+                        arc((8., 6.5), 4., 127., 413., window);
+                        line(&[(5.6, 9.7), (6.5, 11.3), (6.5, 11.5), (9.5, 11.5), (9.5, 11.3), (10.4, 9.7)], window);
+                        line(&[(6.5, 13.5), (9.5, 13.5)], window);
+                    }
+                    "doc" => {
+                        line(&[(4., 2.5), (9.5, 2.5), (12., 5.), (12., 13.5), (4., 13.5), (4., 2.5)], window);
+                        line(&[(6.5, 8.), (9.5, 8.)], window);
+                        line(&[(6.5, 10.5), (9.5, 10.5)], window);
+                    }
+                    "evidence" => {
+                        line(&[(2.5, 13.5), (13.5, 13.5)], window);
+                        line(&[(4.5, 11.), (4.5, 8.)], window);
+                        line(&[(8., 11.), (8., 4.5)], window);
+                        line(&[(11.5, 11.), (11.5, 6.5)], window);
+                    }
+                    "results" => {
+                        line(&[(2.5, 13.5), (13.5, 13.5)], window);
+                        line(&[(3.5, 10.5), (6.5, 7.5), (9., 9.5), (13., 5.)], window);
+                        line(&[(10., 5.), (13., 5.), (13., 8.)], window);
+                    }
+                    _ => {
+                        arc((10.3, 5.7), 2.5, -145., 55., window);
+                        arc((5.7, 10.3), 2.5, 35., 235., window);
+                        line(&[(6.8, 9.2), (9.2, 6.8)], window);
+                    }
+                },
+            }
+        },
+    )
+    .size(px(size))
+    .flex_none()
+}
+
+fn att_icon(kind: &'static str, color: Hsla) -> impl IntoElement {
+    paint(Ic::Att(kind), 14., 1.6, color)
+}
+
+/// The `<details>` marker: a 6px chevron, right when shut, down when open.
+fn chevron(open: bool, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let u = |x: f32, y: f32| point(b.origin.x + px(x), b.origin.y + px(y));
+            let pts = if open { [(1.5, 3.), (5., 6.5), (8.5, 3.)] } else { [(3., 1.5), (6.5, 5.), (3., 8.5)] };
+            let mut p = PathBuilder::stroke(px(1.6));
+            p.move_to(u(pts[0].0, pts[0].1));
+            for (x, y) in &pts[1..] {
+                p.line_to(u(*x, *y));
+            }
+            if let Ok(p) = p.build() {
+                window.paint_path(p, color);
+            }
+        },
+    )
+    .size(px(10.))
+    .flex_none()
+}
+
+/// `.pr-step-dot` in each state.
+fn step_dot(t: &Theme, st: StepSt) -> AnyElement {
+    let d = div().flex_none().size(px(22.)).rounded_full().flex().items_center().justify_center();
+    // `box-shadow: 0 0 0 2px`: a 2px ring outside the dot.
+    let ring = |c: Hsla, inner: Div| div().flex_none().size(px(26.)).m(px(-2.)).p(px(2.)).rounded_full().bg(c).child(inner).into_any_element();
+    match st {
+        StepSt::Done => d.bg(t.up_soft).child(paint(Ic::Check, 12., 3., t.up)).into_any_element(),
+        StepSt::Fail => ring(t.down, d.bg(t.down_soft).child(paint(Ic::X, 11., 3., t.down))),
+        StepSt::Ask => ring(t.warn, d.bg(t.warn_soft).child(paint(Ic::Comment, 11., 2.6, t.warn))),
+        StepSt::Wait => d.border_1().border_color(t.accent).child(paint(Ic::Clock, 12., 2.6, t.accent_fg)).into_any_element(),
+        StepSt::Now => d.child(paint(Ic::Spinner, 22., 2., t.accent)).into_any_element(),
+        StepSt::Todo => d.border_1().border_color(t.border_2).into_any_element(),
     }
 }
 
