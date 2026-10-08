@@ -184,6 +184,57 @@ api` / `tb token` for a connected account.
 - Every run goes to `~/.config/taskboard/hooks.log` (JSON lines with the decision, output clipped to 4000
   characters) and `server.log`. A hook that fails is also noted in the task's history.
 
+## Steps
+
+A hook runs a command on the board's side. To have work done on every task in a project before its PR opens
+(an author-side review, the test suite, a design sign-off), add steps to `config.toml`. They run in file order.
+
+```toml
+[[steps]]                        # agent work, with a check that decides whether it passed
+name = "Author-side review"
+projects = "work-app|work-api"   # a regex on the whole project name, as a hook's matcher; empty for every project
+before = "pr"                    # "pr" (the default): before the PR opens. "done": before tb done
+prompt = "Run /author-review on {branch} against {base}, and fix what it finds."
+check = "test -f .review/{branch}.passed"
+
+[[steps]]                        # a script: it passes when it exits 0
+name = "Lint and unit tests"
+run = "make lint test"
+timeout = 900                    # seconds for run and check, each (default 600)
+
+[[steps]]                        # yours: the task waits in Needs you
+name = "Design sign-off"
+owner = true
+open = "https://figma.com/file/abc?branch={branch}"
+prompt = "Sign off the screens this task changes."
+```
+
+| Kind | Made by | The agent | It passes when |
+|------|---------|-----------|----------------|
+| Agent work | `prompt` | does it, then `tb step done "<name>" --note "…"` | it's recorded, after `check` exits 0 if there is one |
+| Script | `run` | `tb step run "<name>"` (`tb step done` is refused) | the script exits 0, then `check` if there is one |
+| Yours | `owner = true` | `tb step ask "<name>"`, then ends its turn | you press **Done** on the task, or run `tb step done "<name>" --task T12` from another terminal |
+
+- **Success is decided by an exit code.** `check` and `run` run in the task's repo through `tb`, in the agent's
+  terminal, so long runs and their output are fine; past `timeout` everything they started is stopped. A step
+  that doesn't pass is in the task's history with the tail of its output, and the agent is told to fix it and
+  try again. When it can't pass, the agent runs `tb step fail "<name>" --why "…"`: the task goes to Needs you,
+  and you answer it, or press **Skip this step** (or `tb step done "<name>" --skip --task T12`).
+- **Your steps send you somewhere.** `tb step ask` puts the task in Needs you with an alert. The task shows the
+  step with **Open** (the `open` link: a URL, an app's URL scheme or a file path) and **Done**, which brings the
+  agent back to carry on.
+- **Placeholders** in `prompt`, `run`, `check` and `open`: `{task}`, `{title}`, `{project}`, `{repo}`, `{branch}`,
+  `{base}` (origin's default branch), `{pr_url}`, `{jira}`. Scripts also get them as `TASKBOARD_TASK`,
+  `TASKBOARD_BRANCH`, … and `TASKBOARD_STEP`. One with no value is left as written.
+- **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
+  create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like
+  `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do
+  each. `tb done` is refused while a `before = "done"` step hasn't passed, and also a `before = "pr"` step when the
+  task has a PR. Done in the app isn't held: that's your call.
+- A step passes once per task. Steps are read fresh, like hooks.json. A step that can't be done (no name; none of
+  `prompt`, `run` or `owner`; an unknown key or `before`; two with one name) turns all steps off, and
+  `server.log` says why.
+
 ## `tb hooks`
 
 ```
