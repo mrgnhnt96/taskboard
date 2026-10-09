@@ -25,6 +25,13 @@
 //! - **Re-check.** While a break is open, a new head brings new suspects and decides again (unless a
 //!   person set the verdict); an `unsure` one is decided again after `recheck_mins`; an `ours` one
 //!   whose fix task has finished while the branch is still red raises the urgent alert again.
+//! - **Cover.** Before a break of the owner's gets a new fix task, the board looks for a fix already
+//!   in flight on the same project and branch (the break's own task first, then the other breaks'):
+//!   a fix task covers the break when it isn't done, or its PR is still open, or its PR merged after
+//!   the failing build was queued (that build couldn't hold the fix). The build's time is when its
+//!   failed checks were queued, else when the board first saw that head red. Only when nothing
+//!   covers it does the break get a new fix task. A fix that finished without a PR, or whose PR was
+//!   declined, hands its break to a covering task (logged there) and raises no alert again.
 //! - **Close.** Green again: the break closes, the alert clears and the fix task's log says so.
 //!
 //! The branch is `[master.projects.<name>] branch`, else the one the import carried over, else the
@@ -50,6 +57,7 @@
 //! | `task_id` | the fix task (`ours` only) |
 //! | `proof` | JSON list of the links a person gave with `not-ours` |
 //! | `escalated_at` | when the urgent alert was raised again after the fix task finished |
+//! | `queued_at` | when the failing build on `last_head` was queued (NULL when the host doesn't say); `seen_at` when the board first saw `last_head` red |
 //! | `opened_at`, `closed_at`, `checked_at` | ISO times |
 //!
 //! The setting `master_watch` keeps, per project, `{checked_at, green_head, branch?, error?}`.
@@ -78,7 +86,7 @@ CREATE INDEX IF NOT EXISTS breaks_project ON breaks(project, state);
 "#;
 
 /// Columns added to `breaks` since it was made: (table, column, type).
-pub const ADDED: &[(&str, &str, &str)] = &[("breaks", "proof", "TEXT")];
+pub const ADDED: &[(&str, &str, &str)] = &[("breaks", "proof", "TEXT"), ("breaks", "queued_at", "TEXT"), ("breaks", "seen_at", "TEXT")];
 
 /// At most this many suspects are kept for one break.
 const SUSPECTS_MAX: usize = 100;
@@ -145,12 +153,14 @@ pub struct Commit {
     pub message: String,
 }
 
-/// One read of a branch: its head, the head's checks, and its latest commits (newest first).
+/// One read of a branch: its head, the head's checks, its latest commits (newest first), and when
+/// the head's failed checks were queued (the earliest, ISO; None when the host doesn't say).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BranchRead {
     pub head: String,
     pub checks: Vec<Check>,
     pub commits: Vec<Commit>,
+    pub queued_at: Option<String>,
 }
 
 impl BranchRead {
@@ -219,6 +229,7 @@ impl BranchCi for GithubBranch {
         let commits: Vec<Commit> = list.as_array().cloned().unwrap_or_default().iter().map(gh_commit).collect();
         let head = commits.first().map(|c| c.sha.clone()).ok_or_else(|| format!("{repo} has no commits on {branch}"))?;
         let mut checks = vec![];
+        let mut queued = vec![];
         for r in self.api(&format!("repos/{repo}/commits/{head}/check-runs?per_page=100"))?["check_runs"].as_array().cloned().unwrap_or_default() {
             let state = match (r["status"].as_str(), r["conclusion"].as_str()) {
                 (Some("completed"), Some("success" | "neutral" | "skipped")) => "passed",
@@ -226,6 +237,9 @@ impl BranchCi for GithubBranch {
                 (Some("completed"), _) => "failed",
                 _ => "running",
             };
+            if state == "failed" {
+                queued.extend(r["started_at"].as_str().map(|s| s.to_string()));
+            }
             checks.push(Check { name: r["name"].as_str().unwrap_or("").to_string(), state: state.into(), url: r["html_url"].as_str().map(|s| s.to_string()) });
         }
         for s in self.api(&format!("repos/{repo}/commits/{head}/status"))?["statuses"].as_array().cloned().unwrap_or_default() {
@@ -234,10 +248,13 @@ impl BranchCi for GithubBranch {
                 Some("failure" | "error") => "failed",
                 _ => "running",
             };
+            if state == "failed" {
+                queued.extend(s["created_at"].as_str().map(|s| s.to_string()));
+            }
             checks.push(Check { name: s["context"].as_str().unwrap_or("").to_string(), state: state.into(), url: s["target_url"].as_str().map(|s| s.to_string()) });
         }
         checks.retain(|c| !c.name.is_empty());
-        Ok(BranchRead { head, checks, commits })
+        Ok(BranchRead { head, checks, commits, queued_at: earliest(&queued) })
     }
 }
 
@@ -290,6 +307,14 @@ impl BranchCi for BitbucketBranch {
         let commits: Vec<Commit> = list["values"].as_array().cloned().unwrap_or_default().iter().take(commits).map(bb_commit).collect();
         let head = commits.first().map(|c| c.sha.clone()).ok_or_else(|| format!("{repo} has no commits on {branch}"))?;
         let st = self.http.call("GET", &format!("{base}/commit/{head}/statuses?pagelen=100"), None)?;
+        let queued: Vec<String> = st["values"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|s| s["state"] == "FAILED")
+            .filter_map(|s| s["created_on"].as_str().map(|t| t.to_string()))
+            .collect();
         let checks = st["values"]
             .as_array()
             .cloned()
@@ -308,8 +333,13 @@ impl BranchCi for BitbucketBranch {
             })
             .filter(|c| !c.name.is_empty())
             .collect();
-        Ok(BranchRead { head, checks, commits })
+        Ok(BranchRead { head, checks, commits, queued_at: earliest(&queued) })
     }
+}
+
+/// The earliest of these host times, as the board's ISO time.
+fn earliest(times: &[String]) -> Option<String> {
+    times.iter().filter_map(|t| parse_iso(t)).min_by(|a, b| a.total_cmp(b)).map(iso)
 }
 
 /// Uses `ci` for every branch on its host on this board (tests).
@@ -474,7 +504,8 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
                 "breaks",
                 fields!["project" => name, "host" => host, "repo" => repo, "branch" => branch, "state" => "open", "head" => r.head.clone(),
                         "last_head" => r.head.clone(), "green_head" => green, "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
-                        "suspects" => jdumps(&suspects), "opened_at" => now_iso(), "checked_at" => now_iso()],
+                        "suspects" => jdumps(&suspects), "queued_at" => r.queued_at.clone(), "seen_at" => now_iso(),
+                        "opened_at" => now_iso(), "checked_at" => now_iso()],
             )?;
             app.info(format!("master: {} opened: {branch} on {name} fails {}", bref(id), failed.join(", ")));
             decide_and_act(app, &get(app, id)?)?;
@@ -489,12 +520,15 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
                 }
             }
             let new_suspects = merged.len() != before.len();
-            app.db.update(
-                "breaks",
-                &json!(b.id()),
-                fields!["last_head" => r.head.clone(), "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
-                        "suspects" => jdumps(&Value::Array(merged)), "checked_at" => now_iso()],
-            )?;
+            let mut changes = fields!["last_head" => r.head.clone(), "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
+                                      "suspects" => jdumps(&Value::Array(merged)), "checked_at" => now_iso()];
+            if moved || r.queued_at.is_some() {
+                changes.push(("queued_at", json!(r.queued_at.clone())));
+            }
+            if moved {
+                changes.push(("seen_at", json!(now_iso())));
+            }
+            app.db.update("breaks", &json!(b.id()), changes)?;
             let b = get(app, b.id())?;
             let by_person = b.s("verdict_by").is_some_and(|v| !matches!(v, "commits" | "claude" | "fallback"));
             let recheck = app.cfg.master.recheck_mins * 60.0;
@@ -502,7 +536,8 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
             if !by_person && ((moved && new_suspects) || unsure_due || b.s("verdict").is_none()) {
                 decide_and_act(app, &b)?;
             } else {
-                escalate(app, &b)?;
+                let made = app.db.tx(|| escalate(app, &b))?;
+                start_fix(app, made)?;
             }
         }
     }
@@ -701,17 +736,118 @@ fn set_verdict(app: &App, b: &Row, verdict: &str, by: &str, why: &str, proof: Op
         dispatch::clear_alert_key(app, &alert_key(b.id()))?;
         return Ok(None);
     }
-    let (tid, made) = match b.i("task_id").and_then(|t| board::find_task(app, Some(t)).ok().flatten()) {
-        Some(t) => (t.id(), None),
-        None => {
-            let card = crate::ops::new_task(app, &fix_task(app, &b), board::BOARD, Some(&format!("Added to fix {}", bref(b.id()))))?;
-            let tid = card["id"].as_i64().unwrap_or(0);
-            app.db.update("breaks", &json!(b.id()), fields!["task_id" => tid])?;
-            (tid, Some(tid))
-        }
+    let (tid, made) = match fix_for(app, &b)? {
+        Fix::Own(t) | Fix::Joined(t) | Fix::Unfixed(t) => (t.id(), None),
+        Fix::New => new_fix(app, &b)?,
     };
     alert(app, &get(app, b.id())?, tid, false)?;
     Ok(made)
+}
+
+/// A new fix task for the break: (its id, and the same again as the one to start).
+fn new_fix(app: &App, b: &Row) -> Result<(i64, Option<i64>)> {
+    let card = crate::ops::new_task(app, &fix_task(app, b), board::BOARD, Some(&format!("Added to fix {}", bref(b.id()))))?;
+    let tid = card["id"].as_i64().unwrap_or(0);
+    app.db.update("breaks", &json!(b.id()), fields!["task_id" => tid])?;
+    Ok((tid, Some(tid)))
+}
+
+/// Who fixes an `ours` break.
+enum Fix {
+    /// Its own task still covers it.
+    Own(Row),
+    /// Another break's fix covers it: the break now points at that task (logged there).
+    Joined(Row),
+    /// Its own task finished without a fix PR (or its PR was declined) and nothing else covers it.
+    Unfixed(Row),
+    /// Nothing covers it: it needs a new fix task.
+    New,
+}
+
+/// When the failing build on the break's head was queued: the host's word, else when the board
+/// first saw that head red, else when the break opened.
+fn build_time(b: &Row) -> Option<f64> {
+    b.s("queued_at").or(b.s("seen_at")).or(b.s("opened_at")).and_then(parse_iso)
+}
+
+/// When the task's PR merged: its "PR #n was merged" (or "Merged PR #n") event.
+fn merged_at(app: &App, t: &Row) -> Result<Option<f64>> {
+    let n = t.i0("pr_num");
+    let e = app.db.q1(
+        "SELECT at FROM events WHERE task_id = ? AND (text = ? OR text = ?) ORDER BY id DESC LIMIT 1",
+        p![t.id(), format!("PR #{n} was merged"), format!("Merged PR #{n}")],
+    )?;
+    Ok(e.and_then(|e| e.s("at").and_then(parse_iso)))
+}
+
+fn pr_merged(t: &Row) -> bool {
+    t.st("pr_state").eq_ignore_ascii_case("MERGED") || t.s("pr_phase") == Some("merged")
+}
+
+fn pr_declined(t: &Row) -> bool {
+    matches!(t.st("pr_state").to_uppercase().as_str(), "DECLINED" | "CLOSED" | "SUPERSEDED") || t.s("pr_phase") == Some("declined")
+}
+
+/// A fix that finished without a PR, or whose PR was declined.
+fn no_fix_pr(t: &Row) -> bool {
+    t.s("status") == Some("done") && (t.i("pr_num").is_none() || pr_declined(t))
+}
+
+/// The task covers the break: it isn't done, or its PR is open, or its PR merged after the failing
+/// build was queued (that build couldn't hold the fix).
+fn covers(app: &App, t: &Row, b: &Row) -> Result<bool> {
+    if t.s("status") != Some("done") {
+        return Ok(true);
+    }
+    if no_fix_pr(t) {
+        return Ok(false);
+    }
+    if !pr_merged(t) {
+        return Ok(true);
+    }
+    Ok(match (merged_at(app, t)?, build_time(b)) {
+        (Some(m), Some(q)) => m > q,
+        _ => false,
+    })
+}
+
+/// The fix in flight that covers the break: its own task first, then the other `ours` breaks' of
+/// the same project and branch, newest first. Joining another break's fix points the break at it
+/// and logs that on both tasks.
+fn fix_for(app: &App, b: &Row) -> Result<Fix> {
+    let own = board::find_task(app, b.i("task_id"))?;
+    if let Some(t) = &own {
+        if covers(app, t, b)? {
+            return Ok(Fix::Own(t.clone()));
+        }
+    }
+    let others = app.db.q(
+        "SELECT task_id FROM breaks WHERE project = ? AND branch IS ? AND id != ? AND verdict = 'ours' AND task_id IS NOT NULL ORDER BY id DESC",
+        p![b.st("project"), b.v("branch"), b.id()],
+    )?;
+    for o in others {
+        if o.i("task_id") == b.i("task_id") {
+            continue;
+        }
+        let Some(t) = board::find_task(app, o.i("task_id"))? else { continue };
+        if !covers(app, &t, b)? {
+            continue;
+        }
+        app.db.update("breaks", &json!(b.id()), fields!["task_id" => t.id()])?;
+        let text = match &own {
+            Some(old) => format!("{} handed over to this fix from {}", bref(b.id()), rf("task", old.id())),
+            None => format!("{} joins this fix: {} fails again at {}", bref(b.id()), b.st("branch"), b.st("last_head").chars().take(10).collect::<String>()),
+        };
+        board::log_event(app, t.id(), board::BOARD, "status", &text)?;
+        if let Some(old) = &own {
+            board::log_event(app, old.id(), board::BOARD, "status", &format!("{} handed over to {}, which covers it", bref(b.id()), rf("task", t.id())))?;
+        }
+        return Ok(Fix::Joined(t));
+    }
+    Ok(match own {
+        Some(t) if no_fix_pr(&t) => Fix::Unfixed(t),
+        _ => Fix::New,
+    })
 }
 
 fn alert_key(id: i64) -> String {
@@ -771,24 +907,32 @@ fn fix_task(app: &App, b: &Row) -> Value {
            "origin": {"from": format!("{} ({} is red)", bref(b.id()), b.st("branch")), "by": board::BOARD}})
 }
 
-/// An `ours` break whose fix task finished while the branch is still red: raise the alert again,
-/// once per `recheck_mins`.
-fn escalate(app: &App, b: &Row) -> Result<()> {
-    if b.s("verdict") != Some("ours") {
-        return Ok(());
+/// An `ours` break whose fix task finished while the branch is still red. A fix in flight covers it
+/// (its own, or another break's it's handed to); a fix whose PR merged before the failing build was
+/// queued gets a new fix task (the one to start); one that finished without a fix PR, with nothing
+/// covering it, raises the alert again once per `recheck_mins`.
+fn escalate(app: &App, b: &Row) -> Result<Option<i64>> {
+    if b.s("verdict") != Some("ours") || b.i("task_id").is_none() {
+        return Ok(None);
     }
-    let Some(t) = board::find_task(app, b.i("task_id"))? else { return Ok(()) };
-    if t.s("status") != Some("done") {
-        return Ok(());
-    }
+    let t = match fix_for(app, b)? {
+        Fix::Own(_) | Fix::Joined(_) => return Ok(None),
+        Fix::New => {
+            let (tid, made) = new_fix(app, b)?;
+            alert(app, &get(app, b.id())?, tid, true)?;
+            return Ok(made);
+        }
+        Fix::Unfixed(t) => t,
+    };
     let recheck = app.cfg.master.recheck_mins * 60.0;
     let since = b.s("escalated_at").or(t.s("finished_at"));
     if age_secs(since).unwrap_or(f64::MAX) < recheck {
-        return Ok(());
+        return Ok(None);
     }
     app.db.update("breaks", &json!(b.id()), fields!["escalated_at" => now_iso()])?;
     board::log_event(app, t.id(), board::BOARD, "status", &format!("{} is still red after this task finished", b.st("branch")))?;
-    alert(app, b, t.id(), true)
+    alert(app, b, t.id(), true)?;
+    Ok(None)
 }
 
 fn close(app: &App, b: &Row, head: &str) -> Result<()> {

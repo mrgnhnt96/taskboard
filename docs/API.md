@@ -679,6 +679,12 @@ fault_check`), or without it: every suspect the owner's makes it `ours`, else `u
 (`[master] start_fix`; when it can't start it waits in the queue)) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
 branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
 again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
+A fix already in flight on the same project and branch covers an `ours` break (its own task first, then the other
+breaks'), so no new fix task starts: the task isn't done, or its PR is still open, or its PR merged after the failing
+build was queued (the failed checks' queue time from the host, else when the board first saw that head red). Only when
+nothing covers it does it get a new fix task, so a build queued after the fix merged that still fails gets one. A fix
+that finished without a PR, or whose PR was declined, hands its break to a covering task (logged on both) and raises no
+alert again.
 
 **CI token** (`tb ci-token`): `GET /ci-token` → `{set, source: "board"|"env"|null, env}` (never the token); `POST /ci-token {token}`
 keeps an Azure DevOps personal access token in the Keychain (`taskboard-azure-devops`), which the board reads Azure
