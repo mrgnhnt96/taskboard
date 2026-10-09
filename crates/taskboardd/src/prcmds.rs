@@ -596,10 +596,19 @@ fn review_gate(app: &App, t: &Row) -> Vec<String> {
     crate::steps::for_task(app, t).into_iter().filter(|s| s.per_head).map(|s| s.how(&tb)).collect()
 }
 
-/// After the push: republish each `per_head` step that has a `publish` script, for the pushed head.
+/// After the push: republish each `per_head` step's passing round for the pushed head, as the Python board
+/// always said: with `tb step publish` when it has a `publish` script, else in words.
 fn review_republish(app: &App, t: &Row) -> Vec<String> {
     let tb = board::tb_cmd(app);
-    crate::steps::for_task(app, t).into_iter().filter(|s| s.per_head && !s.publish.trim().is_empty()).map(|s| s.republish(&tb)).collect()
+    crate::steps::for_task(app, t).into_iter().filter(|s| s.per_head).map(|s| republish_line(&tb, &s)).collect()
+}
+
+fn republish_line(tb: &str, s: &crate::steps::Step) -> String {
+    if s.publish.trim().is_empty() {
+        format!("publish {}'s round for the pushed head where the PR shows it", s.name)
+    } else {
+        s.republish(tb)
+    }
 }
 
 #[cfg(test)]
@@ -638,6 +647,14 @@ mod tests {
         assert_eq!(rebase_commands("origin", "main", "", &[], &[])[2], "git push --force-with-lease");
         assert_eq!(rebase_commands("origin", "main", "feat/x", &gate, &[])[4], "Don't push only to rebase.");
         assert!(rebase_commands("origin", "", "feat/x", &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_per_head_step_is_republished_with_or_without_a_publish_script() {
+        let s = crate::steps::parse("[[steps]]\nname = \"Owner review\"\nprompt = \"x\"\nper_head = true\n").unwrap();
+        assert_eq!(republish_line("tb", &s[0]), "publish Owner review's round for the pushed head where the PR shows it");
+        let s = crate::steps::parse("[[steps]]\nname = \"Owner review\"\nprompt = \"x\"\nper_head = true\npublish = \"wd review publish\"\n").unwrap();
+        assert_eq!(republish_line("tb", &s[0]), "tb step publish \"Owner review\"");
     }
 
     #[test]

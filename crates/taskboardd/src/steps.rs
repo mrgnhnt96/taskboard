@@ -283,10 +283,11 @@ pub fn key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// `{name}` → its value; a placeholder with no value stays as it is.
+/// `{name}` → its value, empty while it has none (a task with no PR yet has no `{pr}`); a placeholder the
+/// board doesn't know stays as it is.
 pub fn fill(text: &str, vars: &BTreeMap<String, String>) -> String {
     let mut out = text.to_string();
-    for (k, v) in vars.iter().filter(|(_, v)| !v.is_empty()) {
+    for (k, v) in vars {
         out = out.replace(&format!("{{{k}}}"), v);
     }
     out
@@ -429,18 +430,21 @@ pub fn branch_tip(t: &Row, aim: &Value, branch: &str) -> Option<String> {
     rev_in(&dir, &format!("refs/heads/{}", branch.trim().trim_start_matches("refs/heads/")))
 }
 
-/// A saved aim's pin: its sha, its branch, and the branch's tip when it was pinned.
-fn pin_of(a: &Value) -> Option<(String, String, String)> {
+/// A saved aim's pin: its sha, its branch, and the branch's tip when it was pinned (none on a pin saved
+/// before the board kept it).
+fn pin_of(a: &Value) -> Option<(String, String, Option<String>)> {
     let s = |k: &str| a[k].as_str().map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string());
-    Some((s("sha")?, s("branch")?, s("tip")?))
+    Some((s("sha")?, s("branch")?, s("tip")))
 }
 
 /// The aim as it stands now: the saved one, except that a pinned sha whose branch has moved on since it
-/// was pinned is dropped (the aim then follows the branch), with `dropped` naming it. A pin can't outlive
-/// new work on its branch, as the Python board refreshed the task's place on every report.
+/// was pinned is dropped (the aim then follows the branch), with `dropped` naming it. A pin with no tip
+/// kept goes once the branch's tip isn't the pinned sha. A pin can't outlive new work on its branch, as
+/// the Python board refreshed the task's place on every report.
 pub fn aim_now(t: &Row) -> Value {
     let mut a = saved_aim(t);
     if let Some((sha, branch, tip)) = pin_of(&a) {
+        let tip = tip.unwrap_or_else(|| sha.clone());
         if branch_tip(t, &a, &branch).is_some_and(|now| !same_head(&now, &tip)) {
             if let Some(o) = a.as_object_mut() {
                 o.remove("sha");
@@ -567,7 +571,28 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
         })
         .collect();
     Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_for(app, t),
-              "head": known, "aim": aim_now(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t)}))
+              "head": known, "aim": aim_now(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t),
+              "passed_rounds": passed_rounds(app, t, &rounds, known.as_deref())?}))
+}
+
+/// For each step that has passed (on `head`, for a per-head step), its latest passing round there, as
+/// `results` shows a round: what `tb step publish` hands its script, keyed by the step's name.
+fn passed_rounds(app: &App, t: &Row, all: &[Round], head: Option<&str>) -> Result<Value> {
+    let triage = triage_of(app, t)?;
+    let mut out = serde_json::Map::new();
+    for st in for_task(app, t) {
+        let k = key(&st.name);
+        let on_head = |r: &&Round| match (head, r.head.as_deref()) {
+            _ if !st.per_head => true,
+            (Some(h), Some(rh)) => same_head(h, rh),
+            (Some(_), None) => false,
+            (None, _) => true,
+        };
+        if let Some(r) = all.iter().rev().filter(|r| r.key == k && r.passed).find(on_head) {
+            out.insert(st.name.clone(), round_card(&st, r, all, &triage, head));
+        }
+    }
+    Ok(Value::Object(out))
 }
 
 /// The steps in a `GET /steps` answer, with whether each has passed.
@@ -588,7 +613,13 @@ pub fn from_listing(v: &Value) -> Vec<(Step, bool)> {
         .collect()
 }
 
-/// The refusal an agent reads when it tries to open the PR or finish with steps left.
+/// `refusal`, with the steps' placeholders filled for the task.
+pub fn refusal_for(app: &App, t: &Row, what: &str, left: &[Step]) -> String {
+    let v = vars_for(app, t);
+    refusal(&board::tb_cmd(app), what, &left.iter().map(|s| s.filled(&v)).collect::<Vec<_>>())
+}
+
+/// The refusal an agent reads when it tries to open the PR or finish with steps left (its steps filled).
 pub fn refusal(tb: &str, what: &str, left: &[Step]) -> String {
     let mut lines = vec![format!("Not yet: {what} waits for {} first.", if left.len() == 1 { "this step" } else { "these steps" })];
     for s in left {
@@ -746,7 +777,20 @@ pub fn results(app: &App, t: &Row) -> Result<Vec<Value>> {
     if all.is_empty() {
         return Ok(vec![]);
     }
-    let triage: Vec<Value> = app
+    let triage = triage_of(app, t)?;
+    let head = judged_head(t, None);
+    let mut out = vec![];
+    for st in for_task(app, t) {
+        let k = key(&st.name);
+        let Some(last) = all.iter().rev().find(|r| r.key == k) else { continue };
+        out.push(round_card(&st, last, &all, &triage, head.as_deref()));
+    }
+    Ok(out)
+}
+
+/// The task's `tb step triage` answers, oldest first, each with when it was given.
+fn triage_of(app: &App, t: &Row) -> Result<Vec<Value>> {
+    Ok(app
         .db
         .q("SELECT at, data FROM events WHERE task_id = ? AND kind = 'step_triage' ORDER BY id", p![t.id()])?
         .iter()
@@ -755,24 +799,23 @@ pub fn results(app: &App, t: &Row) -> Result<Vec<Value>> {
             d["at"] = json!(r.st("at"));
             Some(d)
         })
-        .collect();
-    let head = judged_head(t, None);
-    let mut out = vec![];
-    for st in for_task(app, t) {
-        let k = key(&st.name);
-        let Some(last) = all.iter().rev().find(|r| r.key == k) else { continue };
-        let mine: Vec<Value> = triage.iter().filter(|x| x["name"].as_str().map(key).as_deref() == Some(k.as_str())).cloned().collect();
-        let fs = findings(last, &mine);
-        let stale = st.per_head && matches!((&head, &last.head), (Some(h), Some(rh)) if !same_head(h, rh));
-        out.push(json!({
-            "name": st.name, "bar": if st.bar.is_empty() { Value::Null } else { json!(st.bar) },
-            "at": last.at, "head": last.head, "passed": last.passed, "stale": stale,
-            "verdict": last.data["result"]["verdict"], "headline": headline(last, &fs),
-            "open": fs.iter().filter(|f| finding_open(f)).count(), "findings": fs,
-            "rounds": all.iter().filter(|r| r.key == k).count(),
-        }));
-    }
-    Ok(out)
+        .collect())
+}
+
+/// One round of a step as the app shows it: its headline and findings (with triage), and whether the
+/// head (`head`) has moved since.
+fn round_card(st: &Step, round: &Round, all: &[Round], triage: &[Value], head: Option<&str>) -> Value {
+    let k = key(&st.name);
+    let mine: Vec<Value> = triage.iter().filter(|x| x["name"].as_str().map(key).as_deref() == Some(k.as_str())).cloned().collect();
+    let fs = findings(round, &mine);
+    let stale = st.per_head && matches!((head, &round.head), (Some(h), Some(rh)) if !same_head(h, rh));
+    json!({
+        "name": st.name, "bar": if st.bar.is_empty() { Value::Null } else { json!(st.bar) },
+        "at": round.at, "head": round.head, "passed": round.passed, "stale": stale,
+        "verdict": round.data["result"]["verdict"], "headline": headline(round, &fs),
+        "open": fs.iter().filter(|f| finding_open(f)).count(), "findings": fs,
+        "rounds": all.iter().filter(|r| r.key == k).count(),
+    })
 }
 
 /// The latest round of the step the PR bar names (`bar = "WD"`), as in `results`; null when the task's
@@ -833,7 +876,7 @@ mod tests {
         let mut v = BTreeMap::new();
         v.insert("branch".to_string(), "feat/login".to_string());
         v.insert("pr_url".to_string(), String::new());
-        assert_eq!(fill("diff {base}...{branch} {pr_url}", &v), "diff {base}...feat/login {pr_url}");
+        assert_eq!(fill("diff {base}...{branch} {pr_url}", &v), "diff {base}...feat/login ", "a known one with no value is empty");
     }
 
     #[test]

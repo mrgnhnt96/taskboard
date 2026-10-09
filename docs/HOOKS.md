@@ -236,7 +236,8 @@ prompt = "Sign off the screens this task changes."
   `{base}` (the branch the PR goes into: a stacked task's parent branch while that's unmerged, else origin's
   default branch), `{base_ref}` (`{base}` with the remote, like `origin/main`), `{pr_url}`, `{pr}` (its number), `{jira}`. Scripts also
   get them as `TASKBOARD_TASK`, `TASKBOARD_BRANCH`, … and `TASKBOARD_STEP`, and `TASKBOARD_RESULT` (below). One with
-  no value is left as written.
+  no value yet (`{pr}` before the PR opens) is empty; one the board doesn't know is left as written. Refusals
+  (the PR, `tb done`) show the steps filled in.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
   comment that starts with a `pragmas` entry passes. An Edit is judged on the whole file: it's applied to the
@@ -262,7 +263,7 @@ A review tool that runs on every push is a step with a check, plus three keys:
 name = "Author-side review"
 prompt = "Run the review on {branch} against {base_ref} and deal with each finding."
 check = "author-review --since {base_ref} --json > $TASKBOARD_RESULT"
-publish = "wd review publish {repo} {pr}"   # optional: republishes a passing round for the PR (tb step publish)
+publish = "wd review publish {worktree} {pr}"   # optional: republishes a passing round for the PR (tb step publish)
 per_head = true       # it passes for the head commit it ran on; every new push needs another round
 min_gap_mins = 10     # at least this long between two rounds (on the same commit or not)
 bar = "WD"            # its name in the app's PR bar
@@ -289,7 +290,8 @@ bar = "WD"            # its name in the app's PR bar
   `HEAD~1`, a short sha) and stores its full sha.
 - **Aiming a round.** `tb step done|run|again "<step>"` looks at this checkout's head. `--worktree <dir>` runs it in
   that checkout; `--branch <name>` runs it in the worktree that has the branch checked out, and is refused when none
-  has ("No worktree has <name> checked out. Say which one with --worktree."); `--commit <ref>` looks at that commit
+  has ("No worktree has <name> checked out. Say which checkout with --worktree <dir> --branch <name>."); both
+  together look at that checkout, and name the branch a detached one is on; `--commit <ref>` looks at that commit
   (with `--branch` or `--worktree`, on that checkout), which must be on the checkout's branch ("<sha> isn't on
   <branch>."). A commit other than the checkout's head runs on a throwaway detached checkout of it, removed after
   the round, so a check that doesn't read `{head}` still reviews the commit the round records. The round is
@@ -306,9 +308,14 @@ bar = "WD"            # its name in the app's PR bar
   branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
 - **Republishing.** A step with `publish` (a script, with the placeholders, `{head}`, and the round's
   `step_result` as `$TASKBOARD_RESULT`) is republished with `tb step publish "<step>"` once it has passed on the
-  head (the aim's, else this checkout's); report `tb.step_publish`. When the base moved, `tb pr status`'s rebase
-  commands end with it for each `per_head` step that has one: rebase, test, pass the step, push, then
-  `tb step publish "<step>"`.
+  head (the aim's, else this checkout's), with the round that passed on that head (not a later one on another
+  commit); report `tb.step_publish`. The script runs in the task's repo unless the aim names a worktree, so give
+  it `{worktree}` or `{branch}` rather than leaning on what the main checkout has checked out. When the base
+  moved, `tb pr status`'s rebase commands end with republishing each `per_head` step: rebase, test, pass the
+  step, push, then `tb step publish "<step>"` (or, for a step with no `publish`, "publish <step>'s round for the
+  pushed head where the PR shows it").
+- **Older pins.** A pin saved without the branch's `tip` (before the board kept it) is dropped once the
+  branch's tip isn't the pinned sha.
 
 ## Stacked PRs, the PR plan, and `tb done --pr-body`
 
