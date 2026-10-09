@@ -1045,8 +1045,13 @@ pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&s
     Ok(Ok(()))
 }
 
-const DELIBERATE_EXITS: &[&str] = &["prompt_input_exit", "logout"];
+/// The reason given when Morgan closed the terminal in Midna.
+pub const CLOSED_BY_YOU: &str = "closed in Midna";
+const DELIBERATE_EXITS: &[&str] = &["prompt_input_exit", "logout", CLOSED_BY_YOU];
 const LOST_RESTARTS_PER_HOUR: i64 = 2;
+/// How long a lost task waits before it starts again: Midna's `session.closed` can land a moment
+/// after Claude's SessionEnd, and a close by Morgan means it shouldn't restart at all.
+pub const LOST_RESTART_GRACE_SECS: f64 = 15.0;
 
 pub fn restarts_left(app: &App, t: &Row) -> Result<bool> {
     let since = iso(now_ts() - 3600.0);
@@ -1069,7 +1074,7 @@ pub fn mark_lost(app: &App, t: &Row, reason: &str) -> Result<()> {
             app,
             t.id(),
             fields!["status" => "queued", "lost" => 0, "needs_reason" => null, "session_id" => null, "start_job" => null,
-                    "pickup" => pickup, "pickup_session" => null,
+                    "pickup" => pickup, "pickup_session" => null, "retry_at" => iso(now_ts() + LOST_RESTART_GRACE_SECS),
                     "latest" => format!("{closed} It starts again from its handoff.")],
         )?;
         log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({reason}) before the task was done; queued to start again from its handoff"))?;
@@ -1098,12 +1103,38 @@ pub fn session_gone(app: &App, sid: &str, reason: &str) -> Result<()> {
     if let Some(t) = t {
         if closing_session(app, sid)? {
             detach_closed(app, &t)?;
+        } else if closed_by_you(app, sid)? {
+            mark_lost(app, &t, CLOSED_BY_YOU)?;
         } else {
             mark_lost(app, &t, reason)?;
         }
     }
     for b in app.db.q("SELECT id FROM issues WHERE found_by_session = ? AND state = 'open'", p![sid])? {
         add_issue_event(app, b.id(), MIDNA, "lost", "The terminal that reported it closed. The issue and its snapshot are kept.", None)?;
+    }
+    Ok(())
+}
+
+fn closed_by_you(app: &App, sid: &str) -> Result<bool> {
+    Ok(get_session(app, Some(sid))?.map(|s| s.s("closed_by") == Some("human")).unwrap_or(false))
+}
+
+/// Midna said who closed a terminal. When Morgan closed it, its task waits for them instead of
+/// starting again, also when the terminal's SessionEnd got there first and queued it to restart.
+pub fn terminal_closed(app: &App, sid: &str, by: &str) -> Result<()> {
+    let Some(s) = get_session(app, Some(sid))? else { return Ok(()) };
+    app.db.update("sessions", &json!(sid), fields!["closed_by" => by])?;
+    if by != "human" || s.s("status") != Some("gone") {
+        return Ok(());
+    }
+    let Some(t) = s.i("last_task").map(|id| get_task(app, id)).transpose()? else { return Ok(()) };
+    let restarting = t.s("status") == Some("queued")
+        && t.s("session_id").is_none()
+        && !t.b("lost")
+        && t.s("retry_at").is_some_and(|r| r > now_iso().as_str())
+        && !closing_session(app, sid)?;
+    if restarting && live_start_job(app, &t)?.is_none() {
+        mark_lost(app, &t, CLOSED_BY_YOU)?;
     }
     Ok(())
 }
