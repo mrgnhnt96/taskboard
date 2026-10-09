@@ -192,6 +192,12 @@ pub fn clear_alert_key(app: &App, key: &str) -> Result<()> {
     keep(app, &rows)
 }
 
+/// Clears every alert whose key starts with `prefix` (`pr-builds:`).
+pub fn clear_alert_prefix(app: &App, prefix: &str) -> Result<()> {
+    let rows: Vec<Value> = alerts(app).into_iter().filter(|a| !a["key"].as_str().is_some_and(|k| k.starts_with(prefix))).collect();
+    keep(app, &rows)
+}
+
 /// Clears an alert by id, or a task's alerts: all but the ones that stay (a PR waiting on review, an urgent
 /// alert), which clear on their own condition or by their id or key.
 pub fn clear_alerts(app: &App, task_id: Option<i64>, alert_id: Option<&str>) -> Result<()> {

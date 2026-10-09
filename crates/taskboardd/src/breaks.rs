@@ -8,23 +8,29 @@
 //!   the branch's head commit, its checks and its last `commits` commits ([`BranchCi`]: GitHub
 //!   through `gh api`, Bitbucket through REST 2.0). A failed check on the head opens a break (one per
 //!   project at a time); a head whose checks all passed closes it.
-//! - **Investigate.** The suspects are the commits since the last green head the board saw (the head
-//!   alone when it hasn't seen one). Each is the owner's when its author's email is in `owner_emails`.
+//! - **Investigate.** The suspects are the commits since the last green head the board saw: the whole
+//!   range from the host (git's `green..head`) when it's further back than the commits read, every
+//!   commit read when the board never saw it green. Each is the owner's when its author's email is in
+//!   `owner_emails`.
 //!   The evidence is the failing checks (with their failed steps and tests where the CI can be read)
 //!   and the suspects.
 //! - **Decide.** No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` reads the
 //!   evidence and answers `ours`, `not_ours` or `unsure` with a reason (`[master] fault_check`); when
 //!   it can't be asked, every suspect being the owner's makes it `ours`, else `unsure`.
-//! - **Act.** Only `ours` gets a fix task (queued, high priority, in the project) and an urgent alert
-//!   (`master:M<n>`, with the task). `unsure` isn't the owner's to fix.
+//! - **Act.** Only `ours` gets a fix task (high priority, in the project, with a new Jira ticket when
+//!   Jira is on, started at once: `[master] start_fix`) and an urgent alert (`master:M<n>`, with the
+//!   task). `unsure` isn't the owner's to fix.
 //! - **Override.** `tb master M<n> ours|not-ours|unsure` is the owner's word: it acts the same way and
-//!   is never re-decided.
+//!   is never re-decided. `not-ours` takes at least one proof link (`--proof`: a build, an issue).
 //! - **Re-check.** While a break is open, a new head brings new suspects and decides again (unless a
 //!   person set the verdict); an `unsure` one is decided again after `recheck_mins`; an `ours` one
 //!   whose fix task has finished while the branch is still red raises the urgent alert again.
 //! - **Close.** Green again: the break closes, the alert clears and the fix task's log says so.
 //!
-//! The app shows a "Master is red" banner for each open break (`state.master`).
+//! The branch is `[master.projects.<name>] branch`, else the one the import carried over, else the
+//! repo's default branch (from the host, else the clone's `origin/HEAD`), else `main`.
+//!
+//! The app shows a "Master is red" banner line for each open break that's the owner's (`state.master`).
 //!
 //! # The `breaks` table
 //!
@@ -42,10 +48,11 @@
 //! | `verdict_by` | `commits` (no suspect is the owner's), `claude`, `fallback`, or the person who overrode it |
 //! | `verdict_why`, `verdict_at` | the reason, and when |
 //! | `task_id` | the fix task (`ours` only) |
+//! | `proof` | JSON list of the links a person gave with `not-ours` |
 //! | `escalated_at` | when the urgent alert was raised again after the fix task finished |
 //! | `opened_at`, `closed_at`, `checked_at` | ISO times |
 //!
-//! The setting `master_watch` keeps, per project, `{checked_at, green_head, error?}`.
+//! The setting `master_watch` keeps, per project, `{checked_at, green_head, branch?, error?}`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -70,6 +77,12 @@ CREATE TABLE IF NOT EXISTS breaks(
 CREATE INDEX IF NOT EXISTS breaks_project ON breaks(project, state);
 "#;
 
+/// Columns added to `breaks` since it was made: (table, column, type).
+pub const ADDED: &[(&str, &str, &str)] = &[("breaks", "proof", "TEXT")];
+
+/// At most this many suspects are kept for one break.
+const SUSPECTS_MAX: usize = 100;
+
 /// `[master]` in config.toml.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -86,6 +99,10 @@ pub struct MasterConfig {
     /// An `unsure` break is decided again after this many minutes; an `ours` one whose fix task
     /// finished while it's still red raises its alert again after it.
     pub recheck_mins: f64,
+    /// Start the fix task at once (in a new terminal) rather than leaving it queued.
+    pub start_fix: bool,
+    /// Ask for a new Jira ticket for the fix task (when Jira is on).
+    pub fix_ticket: bool,
     /// The projects whose default branch is watched, by the board's project name.
     pub projects: BTreeMap<String, MasterProject>,
 }
@@ -100,6 +117,8 @@ impl Default for MasterConfig {
             budget_usd: "0.50".into(),
             timeout_secs: 180,
             recheck_mins: 30.0,
+            start_fix: true,
+            fix_ticket: true,
             projects: BTreeMap::new(),
         }
     }
@@ -109,7 +128,7 @@ impl Default for MasterConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct MasterProject {
-    /// The branch (default `main`).
+    /// The branch (default: the repo's default branch).
     pub branch: Option<String>,
     /// `owner/name` or `workspace/repo`. Unset: from the project's `origin` remote.
     pub repo: Option<String>,
@@ -147,6 +166,14 @@ impl BranchRead {
 /// Reads a branch's CI on its host.
 pub trait BranchCi: Send + Sync {
     fn read(&self, repo: &str, branch: &str, commits: usize) -> HostResult<BranchRead>;
+    /// The commits after `base` up to `head`, newest first (git's `base..head`).
+    fn since(&self, _repo: &str, _base: &str, _head: &str) -> HostResult<Vec<Commit>> {
+        Err("this host can't list a range of commits".into())
+    }
+    /// The repo's default branch.
+    fn default_branch(&self, _repo: &str) -> HostResult<String> {
+        Err("this host can't say the default branch".into())
+    }
 }
 
 /// GitHub, through `gh api`: `commits?sha=<branch>`, then the head's `check-runs` and `status`.
@@ -167,21 +194,29 @@ impl GithubBranch {
     }
 }
 
+fn gh_commit(c: &Value) -> Commit {
+    Commit {
+        sha: c["sha"].as_str().unwrap_or("").to_string(),
+        name: c["commit"]["author"]["name"].as_str().unwrap_or("").to_string(),
+        email: c["commit"]["author"]["email"].as_str().unwrap_or("").to_string(),
+        message: one_line(c["commit"]["message"].as_str().unwrap_or(""), 200),
+    }
+}
+
 impl BranchCi for GithubBranch {
+    fn since(&self, repo: &str, base: &str, head: &str) -> HostResult<Vec<Commit>> {
+        // Oldest first, up to 250.
+        let v = self.api(&format!("repos/{repo}/compare/{base}...{head}"))?;
+        let mut list: Vec<Commit> = v["commits"].as_array().cloned().unwrap_or_default().iter().map(gh_commit).collect();
+        list.reverse();
+        Ok(list)
+    }
+    fn default_branch(&self, repo: &str) -> HostResult<String> {
+        self.api(&format!("repos/{repo}"))?["default_branch"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string()).ok_or_else(|| format!("{repo} has no default branch"))
+    }
     fn read(&self, repo: &str, branch: &str, commits: usize) -> HostResult<BranchRead> {
         let list = self.api(&format!("repos/{repo}/commits?sha={branch}&per_page={commits}"))?;
-        let commits: Vec<Commit> = list
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|c| Commit {
-                sha: c["sha"].as_str().unwrap_or("").to_string(),
-                name: c["commit"]["author"]["name"].as_str().unwrap_or("").to_string(),
-                email: c["commit"]["author"]["email"].as_str().unwrap_or("").to_string(),
-                message: one_line(c["commit"]["message"].as_str().unwrap_or(""), 200),
-            })
-            .collect();
+        let commits: Vec<Commit> = list.as_array().cloned().unwrap_or_default().iter().map(gh_commit).collect();
         let head = commits.first().map(|c| c.sha.clone()).ok_or_else(|| format!("{repo} has no commits on {branch}"))?;
         let mut checks = vec![];
         for r in self.api(&format!("repos/{repo}/commits/{head}/check-runs?per_page=100"))?["check_runs"].as_array().cloned().unwrap_or_default() {
@@ -220,26 +255,39 @@ fn split_author(raw: &str) -> (String, String) {
     }
 }
 
+fn bb_commit(c: &Value) -> Commit {
+    let (name, email) = split_author(c["author"]["raw"].as_str().unwrap_or(""));
+    Commit {
+        sha: c["hash"].as_str().unwrap_or("").to_string(),
+        name: c["author"]["user"]["display_name"].as_str().map(|s| s.to_string()).unwrap_or(name),
+        email,
+        message: one_line(c["message"].as_str().unwrap_or(""), 200),
+    }
+}
+
 impl BranchCi for BitbucketBranch {
+    fn since(&self, repo: &str, base: &str, head: &str) -> HostResult<Vec<Commit>> {
+        let root = format!("{}/repositories/{repo}", self.api.trim_end_matches('/'));
+        let mut url = format!("{root}/commits/{head}?exclude={base}&pagelen=100");
+        let mut out = vec![];
+        for _ in 0..5 {
+            let page = self.http.call("GET", &url, None)?;
+            out.extend(page["values"].as_array().cloned().unwrap_or_default().iter().map(bb_commit));
+            match page["next"].as_str() {
+                Some(n) if out.len() < SUSPECTS_MAX => url = n.to_string(),
+                _ => break,
+            }
+        }
+        Ok(out)
+    }
+    fn default_branch(&self, repo: &str) -> HostResult<String> {
+        let v = self.http.call("GET", &format!("{}/repositories/{repo}", self.api.trim_end_matches('/')), None)?;
+        v["mainbranch"]["name"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string()).ok_or_else(|| format!("{repo} has no main branch"))
+    }
     fn read(&self, repo: &str, branch: &str, commits: usize) -> HostResult<BranchRead> {
         let base = format!("{}/repositories/{repo}", self.api.trim_end_matches('/'));
         let list = self.http.call("GET", &format!("{base}/commits/{branch}?pagelen={commits}"), None)?;
-        let commits: Vec<Commit> = list["values"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .take(commits)
-            .map(|c| {
-                let (name, email) = split_author(c["author"]["raw"].as_str().unwrap_or(""));
-                Commit {
-                    sha: c["hash"].as_str().unwrap_or("").to_string(),
-                    name: c["author"]["user"]["display_name"].as_str().map(|s| s.to_string()).unwrap_or(name),
-                    email,
-                    message: one_line(c["message"].as_str().unwrap_or(""), 200),
-                }
-            })
-            .collect();
+        let commits: Vec<Commit> = list["values"].as_array().cloned().unwrap_or_default().iter().take(commits).map(bb_commit).collect();
         let head = commits.first().map(|c| c.sha.clone()).ok_or_else(|| format!("{repo} has no commits on {branch}"))?;
         let st = self.http.call("GET", &format!("{base}/commit/{head}/statuses?pagelen=100"), None)?;
         let checks = st["values"]
@@ -287,17 +335,56 @@ fn ci_for(app: &App, host: &str) -> HostResult<Arc<dyn BranchCi>> {
     }
 }
 
-/// Where a watched project's branch lives: (host, repo, branch).
-fn target(app: &App, name: &str, p: &MasterProject) -> HostResult<(String, String, String)> {
-    let branch = p.branch.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "main".into());
+/// Where a watched project's repo lives: (host, repo).
+fn target(app: &App, name: &str, p: &MasterProject) -> HostResult<(String, String)> {
     if let (Some(h), Some(r)) = (p.host.clone().filter(|h| !h.is_empty()), p.repo.clone().filter(|r| !r.is_empty())) {
-        return Ok((h, r, branch));
+        return Ok((h, r));
     }
     let path = projects::project_path(app, Some(name)).ok().flatten().ok_or_else(|| format!("the board doesn't know where {name} is"))?;
     let git = proc::which("git").ok_or("git isn't installed")?;
     let o = proc::run(&git, &["-C".into(), path, "remote".into(), "get-url".into(), "origin".into()], None, 10.0).map_err(|_| "git didn't answer".to_string())?;
     let (host, repo) = crate::prhost::repo_of_remote(o.stdout.trim()).ok_or_else(|| format!("{name}'s origin isn't on GitHub or Bitbucket; set host and repo in [master.projects.{name}]"))?;
-    Ok((p.host.clone().filter(|h| !h.is_empty()).unwrap_or(host), p.repo.clone().filter(|r| !r.is_empty()).unwrap_or(repo), branch))
+    Ok((p.host.clone().filter(|h| !h.is_empty()).unwrap_or(host), p.repo.clone().filter(|r| !r.is_empty()).unwrap_or(repo)))
+}
+
+/// The branch set for a project, or the one the board found (or the import carried over) before.
+fn known_branch(app: &App, name: &str, p: &MasterProject) -> Option<String> {
+    p.branch.clone().filter(|b| !b.trim().is_empty()).or_else(|| watch_state(app).get(name).and_then(|v| v["branch"].as_str()).filter(|b| !b.is_empty()).map(|b| b.to_string()))
+}
+
+/// The clone's `origin/HEAD` (`main` for `origin/main`), when it has one.
+fn local_default(app: &App, name: &str) -> Option<String> {
+    let path = projects::project_path(app, Some(name)).ok().flatten()?;
+    let git = proc::which("git")?;
+    let o = proc::run(&git, &["-C".into(), path, "symbolic-ref".into(), "--short".into(), "refs/remotes/origin/HEAD".into()], None, 10.0).ok()?;
+    let b = o.stdout.trim().strip_prefix("origin/")?.to_string();
+    (o.code == Some(0) && !b.is_empty()).then_some(b)
+}
+
+/// The branch to watch: the one set or found before, else the repo's default branch (kept for next
+/// time), else `main`.
+fn branch_for(app: &App, name: &str, p: &MasterProject, ci: &dyn BranchCi, repo: &str) -> Result<String> {
+    if let Some(b) = known_branch(app, name, p) {
+        return Ok(b);
+    }
+    match ci.default_branch(repo).ok().or_else(|| local_default(app, name)) {
+        Some(b) => {
+            note_watch(app, name, fields!["branch" => b.clone()])?;
+            Ok(b)
+        }
+        None => Ok("main".into()),
+    }
+}
+
+/// The import's word on a project's branch: the old board's, unless one is set or already found.
+pub fn carry_branch(app: &App, project: &str, branch: &str) -> Result<()> {
+    if branch.trim().is_empty() || app.cfg.master.projects.get(project).and_then(|p| p.branch.as_ref()).is_some_and(|b| !b.trim().is_empty()) {
+        return Ok(());
+    }
+    if watch_state(app).get(project).and_then(|v| v["branch"].as_str()).is_some() {
+        return Ok(());
+    }
+    note_watch(app, project, fields!["branch" => branch.trim()])
 }
 
 fn watch_state(app: &App) -> Row {
@@ -349,11 +436,15 @@ pub fn tick(app: &App) -> Result<()> {
 
 /// Reads one project's branch now and opens, updates or closes its break.
 pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
-    let read = target(app, name, p).and_then(|(host, repo, branch)| {
-        let ci = ci_for(app, &host)?;
-        ci.read(&repo, &branch, app.cfg.master.commits.max(1)).map(|r| (host, repo, branch, r))
-    });
-    let (host, repo, branch, r) = match read {
+    let found = target(app, name, p).and_then(|(host, repo)| Ok((ci_for(app, &host)?, host, repo)));
+    let read = match found {
+        Ok((ci, host, repo)) => {
+            let branch = branch_for(app, name, p, ci.as_ref(), &repo)?;
+            ci.read(&repo, &branch, app.cfg.master.commits.max(1)).map(|r| (ci, host, repo, branch, r))
+        }
+        Err(e) => Err(e),
+    };
+    let (ci, host, repo, branch, r) = match read {
         Ok(x) => x,
         Err(e) => {
             app.info(format!("master: couldn't read {name}: {e}"));
@@ -375,7 +466,7 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
         return Ok(());
     }
     let green = watch_state(app).get(name).and_then(|v| v["green_head"].as_str()).map(|s| s.to_string());
-    let suspects = suspects(app, &r, green.as_deref());
+    let suspects = suspects(app, ci.as_ref(), &repo, &r, green.as_deref());
     let evidence = evidence(app, name, &host, &repo, &r);
     match open {
         None => {
@@ -418,13 +509,26 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
     Ok(())
 }
 
-/// The commits since the last green head (the head alone without one), each marked ours or not.
-fn suspects(app: &App, r: &BranchRead, green: Option<&str>) -> Value {
-    let list: Vec<&Commit> = match green.and_then(|g| r.commits.iter().position(|c| c.sha == g)) {
-        Some(i) if i > 0 => r.commits[..i].iter().collect(),
-        _ => r.commits.iter().take(1).collect(),
+/// The commits since the last green head, each marked ours or not: from the commits read when it's
+/// among them, else the whole range from the host; every commit read when there's no green head (or
+/// the host can't give the range).
+fn suspect_commits(ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<&str>) -> Vec<Commit> {
+    let mut list = match green {
+        Some(g) => match r.commits.iter().position(|c| c.sha == g) {
+            Some(i) => r.commits[..i.max(1)].to_vec(),
+            None => ci.since(repo, g, &r.head).ok().filter(|l| !l.is_empty()).unwrap_or_else(|| r.commits.clone()),
+        },
+        None => r.commits.clone(),
     };
-    json!(list
+    if list.is_empty() {
+        list = r.commits.iter().take(1).cloned().collect();
+    }
+    list.truncate(SUSPECTS_MAX);
+    list
+}
+
+fn suspects(app: &App, ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<&str>) -> Value {
+    json!(suspect_commits(ci, repo, r, green)
         .iter()
         .map(|c| json!({"sha": c.sha, "name": c.name, "email": c.email, "message": c.message, "ours": is_owners(app, &c.email)}))
         .collect::<Vec<_>>())
@@ -556,30 +660,58 @@ fn ask_claude(app: &App, b: &Row) -> Option<(String, String)> {
 
 fn decide_and_act(app: &App, b: &Row) -> Result<()> {
     let (v, by, why) = decide(app, b);
-    app.db.tx(|| set_verdict(app, b, &v, &by, &why))
+    let made = app.db.tx(|| set_verdict(app, b, &v, &by, &why, None))?;
+    start_fix(app, made)
+}
+
+/// Starts a new fix task at once (`[master] start_fix`), outside the verdict's transaction. When it
+/// can't start now it stays queued, high priority, for the runner.
+fn start_fix(app: &App, made: Option<i64>) -> Result<()> {
+    let Some(tid) = made.filter(|_| app.cfg.master.start_fix) else { return Ok(()) };
+    let t = board::get_task(app, tid)?;
+    if !matches!(crate::hooks::gate(app, "task.starting", &t, json!({})), crate::hooks::Decision::Go) {
+        return Ok(());
+    }
+    if let Err(e) = crate::worktrees::ensure(app, &t) {
+        return board::log_event(app, tid, board::BOARD, "status", &format!("Couldn't start it at once: {}. It waits in the queue.", e.message)).map(|_| ());
+    }
+    let r = app.db.tx(|| {
+        let t = board::get_task(app, tid)?;
+        if t.s("status") != Some("queued") || board::live_start_job(app, &t)?.is_some() {
+            return Ok(());
+        }
+        crate::runner::start_task(app, &t, "new", None, None, None, None).map(|_| ())
+    });
+    match r {
+        Err(e) if e.status < 500 => board::log_event(app, tid, board::BOARD, "status", &format!("Couldn't start it at once: {}. It waits in the queue.", e.message)).map(|_| ()),
+        other => other,
+    }
 }
 
 /// Records a verdict and acts on it: `ours` gets the fix task and the urgent alert; anything else
-/// takes the alert down.
-fn set_verdict(app: &App, b: &Row, verdict: &str, by: &str, why: &str) -> Result<()> {
-    app.db.update("breaks", &json!(b.id()), fields!["verdict" => verdict, "verdict_by" => by, "verdict_why" => why, "verdict_at" => now_iso()])?;
+/// takes the alert down. The fix task, when it made one.
+fn set_verdict(app: &App, b: &Row, verdict: &str, by: &str, why: &str, proof: Option<&[String]>) -> Result<Option<i64>> {
+    app.db.update("breaks", &json!(b.id()), fields!["verdict" => verdict, "verdict_by" => by, "verdict_why" => why, "verdict_at" => now_iso(),
+                                                   "proof" => proof.map(|p| jdumps(&json!(p)))])?;
     let b = get(app, b.id())?;
     if let Some(tid) = b.i("task_id") {
         board::log_event(app, tid, board::BOARD, "status", &format!("{}: {} ({by}): {why}", bref(b.id()), verdict_label(verdict)))?;
     }
     if verdict != "ours" {
-        return dispatch::clear_alert_key(app, &alert_key(b.id()));
+        dispatch::clear_alert_key(app, &alert_key(b.id()))?;
+        return Ok(None);
     }
-    let tid = match b.i("task_id").and_then(|t| board::find_task(app, Some(t)).ok().flatten()) {
-        Some(t) => t.id(),
+    let (tid, made) = match b.i("task_id").and_then(|t| board::find_task(app, Some(t)).ok().flatten()) {
+        Some(t) => (t.id(), None),
         None => {
             let card = crate::ops::new_task(app, &fix_task(app, &b), board::BOARD, Some(&format!("Added to fix {}", bref(b.id()))))?;
             let tid = card["id"].as_i64().unwrap_or(0);
             app.db.update("breaks", &json!(b.id()), fields!["task_id" => tid])?;
-            tid
+            (tid, Some(tid))
         }
     };
-    alert(app, &get(app, b.id())?, tid, false)
+    alert(app, &get(app, b.id())?, tid, false)?;
+    Ok(made)
 }
 
 fn alert_key(id: i64) -> String {
@@ -634,7 +766,9 @@ fn fix_task(app: &App, b: &Row) -> Value {
         .collect();
     detail.push(format!("Suspect commits:\n{}", suspects.join("\n")));
     json!({"title": short(&format!("Fix red {} on {}: {}", b.st("branch"), b.st("project"), checks.join(", ")), 80), "detail": detail.join("\n\n"),
-           "project": b.st("project"), "priority": "high", "origin": {"from": format!("{} ({} is red)", bref(b.id()), b.st("branch")), "by": board::BOARD}})
+           "project": b.st("project"), "priority": "high", "pickup": if app.cfg.master.start_fix { "new" } else { "queue" },
+           "jira": {"mode": if app.cfg.master.fix_ticket { "create" } else { "none" }},
+           "origin": {"from": format!("{} ({} is red)", bref(b.id()), b.st("branch")), "by": board::BOARD}})
 }
 
 /// An `ours` break whose fix task finished while the branch is still red: raise the alert again,
@@ -687,15 +821,15 @@ pub fn dict(app: &App, b: &Row) -> Result<Value> {
         "state": b.v("state"), "head": b.v("head"), "last_head": b.v("last_head"), "green_head": b.v("green_head"), "fixed_head": b.v("fixed_head"),
         "checks": jloads_arr(b.s("checks")), "evidence": serde_json::from_str::<Value>(b.s("evidence").unwrap_or("null")).unwrap_or(Value::Null),
         "suspects": jloads_arr(b.s("suspects")), "verdict": b.v("verdict"), "verdict_label": b.s("verdict").map(verdict_label),
-        "verdict_by": b.v("verdict_by"), "verdict_why": b.v("verdict_why"), "verdict_at": b.v("verdict_at"), "task": task,
+        "verdict_by": b.v("verdict_by"), "verdict_why": b.v("verdict_why"), "verdict_at": b.v("verdict_at"), "proof": jloads_arr(b.s("proof")), "task": task,
         "opened_at": b.v("opened_at"), "closed_at": b.v("closed_at"), "checked_at": b.v("checked_at"),
     }))
 }
 
-/// `state.master`: the open breaks, for the app's "Master is red" banner.
+/// `state.master`: the open breaks that are the owner's, for the app's "Master is red" banner.
 pub fn banner(app: &App) -> Result<Vec<Value>> {
     let mut out = vec![];
-    for b in app.db.q("SELECT * FROM breaks WHERE state = 'open' ORDER BY id", p![])? {
+    for b in app.db.q("SELECT * FROM breaks WHERE state = 'open' AND verdict = 'ours' ORDER BY id", p![])? {
         out.push(dict(app, &b)?);
     }
     Ok(out)
@@ -719,7 +853,7 @@ pub fn list(app: &App) -> Result<Value> {
         .iter()
         .map(|(name, p)| {
             let s = w.get(name).cloned().unwrap_or(json!({}));
-            json!({"project": name, "branch": p.branch.clone().unwrap_or_else(|| "main".into()), "checked_at": s.get("checked_at"),
+            json!({"project": name, "branch": known_branch(app, name, p), "checked_at": s.get("checked_at"),
                    "green_head": s.get("green_head"), "error": s.get("error")})
         })
         .collect();
@@ -736,9 +870,21 @@ pub fn override_verdict(app: &App, id: i64, body: &Value) -> Result<Value> {
     if b.s("state") != Some("open") {
         return err(409, format!("{} is closed: the branch is green again.", bref(id)));
     }
+    let proof: Vec<String> = match &body["proof"] {
+        Value::String(s) => vec![s.trim().to_string()],
+        Value::Array(a) => a.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        _ => vec![],
+    };
+    if v == "not_ours" && proof.is_empty() {
+        return err(400, "Add at least one --proof link for not-ours: the build that shows it, or an issue about it.");
+    }
+    if let Some(bad) = proof.iter().find(|p| !crate::prcmds::is_link(p)) {
+        return err(400, format!("{bad} isn't a link: proof is http(s) links."));
+    }
     let who = { let w = one_line(&body_str(body, "who"), 80); if w.is_empty() { app.cfg.owner.clone() } else { w } };
     let why = { let w = one_line(&body_str(body, "why"), 300); if w.is_empty() { format!("{who} said so.") } else { w } };
-    set_verdict(app, &b, &v, &who, &why)?;
+    let made = app.db.tx(|| set_verdict(app, &b, &v, &who, &why, (!proof.is_empty()).then_some(proof.as_slice())))?;
+    start_fix(app, made)?;
     dict(app, &get(app, id)?)
 }
 
@@ -752,19 +898,35 @@ pub fn route(app: &App, method: &str, rest: &[&str], body: &Value) -> Result<Val
             list(app)
         }
         ("GET", [id]) => dict(app, &get(app, need_ref(&json!(id), "break")?)?),
-        ("POST", [id]) => app.db.tx(|| override_verdict(app, need_ref(&json!(id), "break")?, body)),
+        ("POST", [id]) => override_verdict(app, need_ref(&json!(id), "break")?, body),
         _ => err(404, "There's nothing at that address."),
     }
 }
 
-/// A branch for tests: answers each read with what it's given.
+/// A branch for tests: answers each read with what it's given, a range from `history` (every
+/// commit, newest first), and `default` as the default branch.
+#[derive(Default)]
 pub struct FakeBranch {
     pub read: parking_lot::Mutex<BranchRead>,
+    pub history: parking_lot::Mutex<Vec<Commit>>,
+    pub default: parking_lot::Mutex<Option<String>>,
+    /// The branches read, in order.
+    pub branches: parking_lot::Mutex<Vec<String>>,
 }
 
 impl BranchCi for FakeBranch {
-    fn read(&self, _repo: &str, _branch: &str, _commits: usize) -> HostResult<BranchRead> {
+    fn read(&self, _repo: &str, branch: &str, _commits: usize) -> HostResult<BranchRead> {
+        self.branches.lock().push(branch.to_string());
         Ok(self.read.lock().clone())
+    }
+    fn since(&self, _repo: &str, base: &str, head: &str) -> HostResult<Vec<Commit>> {
+        let h = self.history.lock();
+        let from = h.iter().position(|c| c.sha == head).ok_or("no such head")?;
+        let to = h.iter().position(|c| c.sha == base).ok_or("no such base")?;
+        Ok(h[from..to.max(from)].to_vec())
+    }
+    fn default_branch(&self, _repo: &str) -> HostResult<String> {
+        self.default.lock().clone().ok_or_else(|| "no default branch".into())
     }
 }
 
@@ -797,6 +959,32 @@ mod tests {
         assert_eq!(r.failed(), vec!["build"]);
         assert!(!r.green());
         assert_eq!(r.checks.iter().map(|c| c.state.as_str()).collect::<Vec<_>>(), vec!["failed", "running", "passed"]);
+    }
+
+    #[test]
+    fn reads_a_github_range_and_default_branch() {
+        let gh = CannedGh(Mutex::new(vec![
+            ("repos/a/b/compare/c0...c3".into(), json!({"commits": [{"sha": "c1", "commit": {"author": {"email": "a@x"}, "message": "one"}},
+                                                                     {"sha": "c2", "commit": {"author": {"email": "b@x"}, "message": "two"}},
+                                                                     {"sha": "c3", "commit": {"author": {"email": "c@x"}, "message": "three"}}]}).to_string()),
+            ("repos/a/b".into(), json!({"default_branch": "master"}).to_string()),
+        ]));
+        let ci = GithubBranch { gh: Box::new(gh) };
+        let shas: Vec<String> = ci.since("a/b", "c0", "c3").unwrap().into_iter().map(|c| c.sha).collect();
+        assert_eq!(shas, vec!["c3", "c2", "c1"], "newest first");
+        assert_eq!(ci.default_branch("a/b").unwrap(), "master");
+    }
+
+    #[test]
+    fn reads_a_bitbucket_range_and_main_branch() {
+        let http = CannedHttp(vec![
+            ("/commits/h3?exclude=h0".into(), json!({"values": [{"hash": "h3", "author": {"raw": "Ann <ann@x.dev>"}, "message": "c"},
+                                                                 {"hash": "h2", "author": {"raw": "Bo <bo@x.dev>"}, "message": "b"}]})),
+            ("/repositories/ws/r".into(), json!({"mainbranch": {"name": "master"}})),
+        ]);
+        let ci = BitbucketBranch { http: Box::new(http), api: "https://api/2.0".into() };
+        assert_eq!(ci.since("ws/r", "h0", "h3").unwrap().len(), 2);
+        assert_eq!(ci.default_branch("ws/r").unwrap(), "master");
     }
 
     struct CannedHttp(Vec<(String, Value)>);

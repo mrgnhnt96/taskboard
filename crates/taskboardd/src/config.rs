@@ -534,11 +534,37 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// The `[terminals]` line `init` wrote before the Jira desk moved to the Background group by default:
+/// a live empty list that would keep it out. Exactly this line (the owner's own `background = []`
+/// wouldn't carry init's example) becomes `INIT_BACKGROUND`.
+const OLD_INIT_BACKGROUND: &str = r#"background = []                      # example: ["plan"]"#;
+const INIT_BACKGROUND: &str = r#"background = ["jira_desk"]           # example: ["jira_desk", "plan"]"#;
+
+/// An old `init`'s config.toml brought up to date, or None when there's nothing to change.
+pub fn migrate_text(text: &str) -> Option<String> {
+    if !text.lines().any(|l| l.trim_end() == OLD_INIT_BACKGROUND) {
+        return None;
+    }
+    let mut out = text.lines().map(|l| if l.trim_end() == OLD_INIT_BACKGROUND { INIT_BACKGROUND } else { l }).collect::<Vec<_>>().join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    Some(out)
+}
+
 impl Config {
     pub fn load() -> anyhow_like::Result<Config> {
         let path = default_config_path();
         let file = if path.is_file() {
-            let text = std::fs::read_to_string(&path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+            let mut text = std::fs::read_to_string(&path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+            if let Some(new) = migrate_text(&text) {
+                // Best effort: the file keeps working the old way if it can't be written.
+                let tmp = path.with_extension("toml.taskboard.tmp");
+                if std::fs::write(&tmp, &new).and_then(|_| std::fs::rename(&tmp, &path)).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                text = new;
+            }
             toml::from_str::<FileConfig>(&text).map_err(|e| format!("{} doesn't parse: {e}", path.display()))?
         } else {
             FileConfig::default()
@@ -727,6 +753,17 @@ mod tests {
         assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, vec!["jira_desk"]);
         let f: FileConfig = toml::from_str("[terminals]\nbackground = []").unwrap();
         assert!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background.is_empty());
+    }
+
+    #[test]
+    fn an_old_init_s_empty_background_gets_the_jira_desk() {
+        let old = "[terminals]\nbackground = []                      # example: [\"plan\"]\n\n[limits]\n";
+        let new = migrate_text(old).unwrap();
+        assert_eq!(new, format!("[terminals]\n{INIT_BACKGROUND}\n\n[limits]\n"));
+        let f: FileConfig = toml::from_str(&new).unwrap();
+        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, vec!["jira_desk"]);
+        assert_eq!(migrate_text("[terminals]\nbackground = []\n"), None, "the owner's own empty list stays");
+        assert_eq!(migrate_text(EXAMPLE), None, "today's init has nothing to change");
     }
 
     #[test]

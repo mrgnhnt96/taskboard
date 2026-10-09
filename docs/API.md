@@ -611,12 +611,14 @@ A board-wide switch for when CI time is scarce, set only on the owner's word (`p
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int}`; also `state.pr_builds` (the app's "PR builds stopped" pill). |
-| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. **Response:** as `GET`. |
+| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int, recent: [{at, ok, what, task, repo, num, branch, head, follow_up}]}` (`recent`: the last 10 cancels and give-ups, newest first); also `state.pr_builds` (the app's "PR builds stopped" pill). |
+| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. Both take down the `pr-builds:*` give-up alerts. **Response:** as `GET`. |
 
 While stopped: a build event (`POST /prs/event` with `kind: build`, a running `state` such as `started`) on one of the
-board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails`, queues a cancel
-(once per push). It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
+board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails` or whose `branch` is
+the branch of one of the board's open PRs in that `repo` (merges, rebases, others' commits; cancelled as that PR's),
+queues a cancel (once per push). After a cancel the push is swept again after each of `follow_up_secs` (10, 30, 60,
+120 s) for builds queued just after it. It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
 bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
 way to cancel alerts at once. A cancelled push is logged on its task. The PRs' checks count as passed: the build reads
@@ -624,7 +626,7 @@ way to cancel alerts at once. A cancelled push is logged on its task. The PRs' c
 
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
 started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
-`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?}` says what happened.
+`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?, task?}` says what happened.
 
 ### Master breaks (`tb master`)
 An optional watch on each project's default branch (`[master.projects.<name>]`); `breaks.rs` documents the flow and
@@ -632,22 +634,26 @@ the `breaks` table.
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. |
+| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. `branch` is `[master.projects.<name>] branch`, else the one the import carried over (the old board's), else the repo's default branch read from the host (else the clone's `origin/HEAD`); null before the first read. |
 | `GET /master/:ref` | | `tb master M3`. **Response:** the break. |
-| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?}` | `tb master M3 ours\|not-ours\|unsure`: the owner's word, never decided again. `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
+| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?, proof?: [url]}` | `tb master M3 ours\|not-ours\|unsure [--proof <url>]…`: the owner's word, never decided again. `not-ours` needs at least one http(s) `proof` link (a build or an issue that shows it; 400 without). `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
 | `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
 
 `break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
 checks: [str], evidence: {checks: [{name, url, steps, tests}]}, suspects: [{sha, name, email, message, ours}], verdict:
 "ours"|"not_ours"|"unsure"|null, verdict_label, verdict_by: "commits"|"claude"|"fallback"|<who>, verdict_why,
-verdict_at, task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the open ones: the
-app's "Master is red" banner lines, with Open T<n> for the fix task.
+verdict_at, proof: [url], task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the
+open ones that are `ours`: the app's one "Master is red" banner line each, with Open T<n> for the fix task (the app
+doesn't show the break's urgent alert as a row of its own beside it).
 
 A failed check on the branch's head opens a break; a head whose checks all passed closes it. Suspects are the commits
-since the last green head the board saw (or the head alone), each `ours` when its author's email is in `owner_emails`.
+since the last green head the board saw: the whole `green..head` range from the host (GitHub's compare, Bitbucket's
+`commits?exclude=`) when it's further back than the `commits` read, every commit read when the board never saw it
+green; each `ours` when its author's email is in `owner_emails`.
 No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` decides from the evidence (`[master]
 fault_check`), or without it: every suspect the owner's makes it `ours`, else `unsure`. Only `ours` gets a fix task
-(queued, high priority) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
+(high priority, with a new Jira ticket when Jira is on (`[master] fix_ticket`), started at once in a new terminal
+(`[master] start_fix`; when it can't start it waits in the queue)) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
 branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
 again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
 
@@ -704,7 +710,9 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 `POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
 comma-separated string, or `"none"`) with an optional `project` for that project's own globs, and `reset: true`.
 It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes),
-and takes the block out of a repo it no longer looks after (its project removed, its work done).
+and takes the block out of a repo it no longer looks after (its project off Midna's list with no open goal, task, PR or terminal
+there; its work done). The Python board's block (`# task-board: generated files …` to `# task-board: end`) is replaced
+by the board's, and once after an upgrade every repo the board has known is swept for blocks from before they were tracked.
 
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
@@ -779,7 +787,8 @@ linked by hand; a failed ask waits for `tb task set T<n> --jira new` (try again)
 covers its work (over REST: the open epic sharing the most of its name's words, stopwords aside, when they're at least
 half of either's; through Claude or the desk, the one it judges covers it), and only gets a new one when none fits.
 With `desk`, new tickets go to the Jira desk: one Claude terminal the board opens in Midna's Background group (an
-`agent` job, purpose `jira_desk`; take `jira_desk` out of `[terminals] background` to open it with the project tabs)
+`agent` job, purpose `jira_desk`; take `jira_desk` out of `[terminals] background` to open it with the project tabs; an
+older `init`'s `background = []                      # example: ["plan"]` line is rewritten to `["jira_desk"]` on load)
 and never closes. Its `--allowedTools` are `claude_tools` plus `Bash(tb jira:*)` and
 `Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
 at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.

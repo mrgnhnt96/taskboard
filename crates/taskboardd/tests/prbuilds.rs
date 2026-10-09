@@ -103,13 +103,17 @@ fn stopping_records_who_and_the_checks_count_as_passed_while_builds_are_cancelle
     assert_eq!(b.task(id).st("pr_build"), "Builds stopped");
     prbuilds::tick(&b.app).unwrap();
     assert!(h.calls().contains(&"cancel h1".to_string()), "{:?}", h.calls());
-    assert!(b.queue().is_empty());
+    assert_eq!(b.queue().len(), 1, "a follow-up sweep waits");
+    assert_eq!(b.queue()[0]["round"], 1);
+    assert_eq!(b.get("/pr-builds")["cancelling"], 0, "follow-ups aren't counted as cancelling");
     assert!(b.flow(id)["builds_cancelled"]["h1"].is_string());
     taskboardd::runner::prs(&b.app).unwrap();
-    assert!(b.queue().is_empty(), "a push's builds are cancelled once");
+    assert_eq!(b.queue().len(), 1, "a push's builds are cancelled once, then followed up");
 
     let v = b.post("/pr-builds", json!({"stopped": false, "who": "Sam"}));
     assert_eq!((v["stopped"].as_bool(), v["resumed_by"].as_str()), (Some(false), Some("Sam")));
+    assert!(b.queue().is_empty(), "resuming drops the follow-ups");
+    assert_eq!(v["recent"][0]["what"], "stopped 0 builds");
     prflow::refresh(&b.app).unwrap();
     assert_eq!(b.task(id).st("pr_phase"), "checks", "resumed: the checks count again");
     assert!(api::dispatch(&b.app, "POST", "/pr-builds", &Query::new(), &json!({})).is_err());
@@ -174,6 +178,75 @@ fn the_owner_s_own_push_builds_are_cancelled_too() {
     prbuilds::tick(&b.app).unwrap();
     assert_eq!(std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap().trim(), "wip p1");
     assert!(dispatch::alerts(&b.app).is_empty());
+}
+
+#[test]
+fn a_push_is_swept_again_on_the_follow_up_schedule() {
+    let b = board_with(|c, dir| {
+        c.owner_emails = vec!["sam@acme.dev".into()];
+        c.pr_builds.follow_up_secs = vec![10.0, 30.0];
+        c.pr_builds.cancel.insert("github".into(), format!("echo \"$TB_HEAD\" >> '{}'", dir.join("cancels.log").display()));
+    });
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"kind": "build", "state": "started", "repo": "acme/webapp", "host": "github", "branch": "wip", "head": "p1",
+                                "author": "sam@acme.dev"}));
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(b.queue().len(), 1);
+    let first_at = b.queue()[0]["first_at"].as_f64().unwrap();
+    let next = taskboardd::util::iso(first_at + 10.0);
+    assert_eq!(b.queue()[0]["next_at"].as_str(), Some(next.as_str()), "the first follow-up is 10 seconds after the cancel");
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(b.queue()[0]["round"], 1, "not due yet");
+    b.due_now();
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(b.queue()[0]["round"], 2);
+    b.due_now();
+    prbuilds::tick(&b.app).unwrap();
+    assert!(b.queue().is_empty(), "two follow-ups, then it's done");
+    let log = std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap();
+    assert_eq!(log.lines().count(), 3);
+    let recent = b.get("/pr-builds")["recent"].as_array().cloned().unwrap();
+    assert_eq!(recent.len(), 3);
+    assert_eq!((recent[0]["follow_up"].as_bool(), recent[2]["follow_up"].as_bool()), (Some(true), Some(false)));
+}
+
+#[test]
+fn a_push_on_the_branch_of_an_owner_s_pr_is_cancelled_whoever_wrote_it() {
+    let b = board_with(|c, _| c.owner_emails = vec!["sam@acme.dev".into()]);
+    let id = b.pr_task(GH);
+    let mut rec = running();
+    rec.branch = "feature/login".into();
+    let h = FakeHost::new("github", rec);
+    prhost::install(&b.app, h.clone());
+    prflow::refresh(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.due_now();
+    prbuilds::tick(&b.app).unwrap();
+    b.app.db.set_setting("pr_build_cancels", None).unwrap();
+
+    let ev = |branch: &str| json!({"kind": "build", "state": "started", "repo": "acme/webapp", "host": "github", "branch": branch, "head": "m1",
+                                   "author": "pat@acme.dev"});
+    let v = b.post("/prs/event", ev("other"));
+    assert_eq!(v["builds"]["owners"], false);
+    assert!(b.queue().is_empty());
+    let v = b.post("/prs/event", ev("feature/login"));
+    assert_eq!((v["builds"]["owners"].as_bool(), v["builds"]["task"].as_str()), (Some(true), Some(format!("T{id}").as_str())));
+    assert_eq!(b.queue()[0]["key"], format!("T{id}:m1"));
+    prbuilds::tick(&b.app).unwrap();
+    assert!(h.calls().contains(&"cancel m1".to_string()), "{:?}", h.calls());
+}
+
+#[test]
+fn stopping_or_resuming_takes_down_the_give_up_alerts() {
+    let b = board_with(|_, _| {});
+    b.pr_task(GH);
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h3", "provider": "jenkins"}));
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(dispatch::alerts(&b.app).len(), 1);
+    assert_eq!(b.get("/pr-builds")["recent"][0]["ok"], false);
+    b.post("/pr-builds", json!({"stopped": false}));
+    assert!(dispatch::alerts(&b.app).is_empty(), "resume clears the give-up alert");
 }
 
 #[test]

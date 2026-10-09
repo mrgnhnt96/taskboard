@@ -1,6 +1,7 @@
 //! The board's PR watch in the window's chrome: the status-bar pills of an unhealthy PR feed
 //! (`state.pr_feed`) and of stopped PR builds (`state.pr_builds`), and the "Master is red" banner
-//! line for each open break of a watched default branch (`state.master`).
+//! line for each open break of a watched default branch that's the owner's (`state.master`), which
+//! stands in for that break's urgent alert.
 
 use crate::app::{MainWindow, Pill, pill_shell};
 use crate::fmt::{self, arr, s};
@@ -43,30 +44,33 @@ pub fn builds_pill(v: &Value) -> Option<Pill> {
 /// One "Master is red" line: its text, and the fix task to open.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MasterRow {
+    pub r#ref: String,
     pub text: String,
     pub ago: String,
     pub task: Option<String>,
 }
 
-/// The open breaks, oldest first.
+/// The open breaks that are the owner's, oldest first.
 pub fn master_rows(st: &Value) -> Vec<MasterRow> {
     arr(st, "master")
         .iter()
+        .filter(|m| s(m, "verdict") == "ours")
         .map(|m| {
             let checks: Vec<&str> = arr(m, "checks").iter().filter_map(|c| c.as_str()).collect();
-            let verdict = match s(m, "verdict") {
-                "ours" => " Yours to fix.",
-                "not_ours" => " Not yours.",
-                "unsure" => " Unsure, so not yours to fix.",
-                _ => "",
-            };
             MasterRow {
-                text: format!("Master is red on {}: {} {} on {}.{verdict}", s(m, "project"), checks.join(", "), if checks.len() == 1 { "fails" } else { "fail" }, s(m, "branch")),
+                r#ref: s(m, "ref").to_string(),
+                text: format!("Master is red on {}: {} {} on {}. Yours to fix.", s(m, "project"), checks.join(", "), if checks.len() == 1 { "fails" } else { "fail" }, s(m, "branch")),
                 ago: fmt::ago(s(m, "opened_at")),
                 task: fmt::opt_s(&m["task"], "ref").map(str::to_string),
             }
         })
         .collect()
+}
+
+/// Whether an alert is a break's urgent alert (`master:M<n>`) that its "Master is red" line already shows.
+pub fn shown_as_master(st: &Value, a: &Value) -> bool {
+    let Some(r) = a["key"].as_str().and_then(|k| k.strip_prefix("master:")) else { return false };
+    master_rows(st).iter().any(|m| m.r#ref == r)
 }
 
 /// The banner's "Master is red" lines (red, like urgent alerts), above the alerts.
@@ -147,16 +151,21 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn master_is_red_for_each_open_break_with_its_fix_task() {
+    fn master_is_red_once_for_each_open_break_that_is_the_owner_s() {
         assert!(master_rows(&json!({})).is_empty());
         let st = json!({"master": [
             {"ref": "M3", "project": "webapp", "branch": "main", "checks": ["build"], "verdict": "ours", "task": {"ref": "T12"}, "opened_at": "2026-10-08T10:00:00Z"},
-            {"ref": "M4", "project": "api", "branch": "master", "checks": ["lint", "test"], "verdict": "unsure", "task": null}]});
+            {"ref": "M4", "project": "api", "branch": "master", "checks": ["lint", "test"], "verdict": "unsure", "task": null},
+            {"ref": "M5", "project": "ios", "branch": "master", "checks": ["lint", "test"], "verdict": "ours", "task": null}]});
         let rows = master_rows(&st);
+        assert_eq!(rows.len(), 2, "not the unsure one");
         assert_eq!(rows[0].text, "Master is red on webapp: build fails on main. Yours to fix.");
         assert_eq!(rows[0].task.as_deref(), Some("T12"));
-        assert_eq!(rows[1].text, "Master is red on api: lint, test fail on master. Unsure, so not yours to fix.");
+        assert_eq!(rows[1].text, "Master is red on ios: lint, test fail on master. Yours to fix.");
         assert_eq!(rows[1].task, None);
+        assert!(shown_as_master(&st, &json!({"key": "master:M3", "urgent": true})), "its urgent alert isn't a second line");
+        assert!(!shown_as_master(&st, &json!({"key": "master:M4", "urgent": true})));
+        assert!(!shown_as_master(&st, &json!({"key": "qa:3"})));
     }
 
     #[::core::prelude::v1::test]

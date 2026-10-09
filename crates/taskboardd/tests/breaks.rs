@@ -26,7 +26,7 @@ fn board_with(f: impl FnOnce(&mut Config, &std::path::Path)) -> (Board, tempfile
     cfg.master.projects.insert("webapp".into(), MasterProject { host: Some("github".into()), repo: Some("acme/webapp".into()), branch: None });
     f(&mut cfg, dir.path());
     let app = App::for_tests(cfg);
-    let ci = Arc::new(FakeBranch { read: parking_lot::Mutex::new(BranchRead::default()) });
+    let ci = Arc::new(FakeBranch::default());
     breaks::install(&app, "github", ci.clone());
     (Board { app, ci }, dir)
 }
@@ -70,7 +70,7 @@ fn someone_else_s_break_is_recorded_and_closes_when_green() {
     assert_eq!((m["verdict"].as_str(), m["verdict_by"].as_str()), (Some("not_ours"), Some("commits")));
     assert_eq!(b.tasks(), 0, "not the owner's to fix");
     assert!(dispatch::alerts(&b.app).is_empty());
-    assert_eq!(b.get("/state")["master"][0]["ref"], "M1", "the app's banner");
+    assert!(b.get("/state")["master"].as_array().unwrap().is_empty(), "the app's banner is only for the owner's breaks");
 
     b.branch("running", vec![commit("c3", "bob@acme.dev"), commit("c2", "bob@acme.dev")]);
     assert_eq!(b.get("/master")["open"].as_array().unwrap().len(), 1, "a running build doesn't close it");
@@ -120,8 +120,12 @@ fn an_unsure_break_is_not_the_owner_s_until_they_say_so() {
 
     b.branch("failed", vec![commit("c3", "bob@acme.dev"), commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev")]);
     assert_eq!(b.get("/master/M1")["verdict_by"], "Sam", "the owner's word isn't decided again");
-    let m = b.post("/master/M1", json!({"verdict": "not-ours"}));
+    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "not-ours"})).unwrap_err();
+    assert!(e.message.contains("--proof"), "{}", e.message);
+    assert!(api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "not-ours", "proof": ["flaky"]})).is_err());
+    let m = b.post("/master/M1", json!({"verdict": "not-ours", "proof": ["https://github.com/acme/webapp/actions/runs/77"]}));
     assert_eq!(m["verdict"], "not_ours");
+    assert_eq!(m["proof"], json!(["https://github.com/acme/webapp/actions/runs/77"]));
     assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M1"));
     assert!(api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "maybe"})).is_err());
     assert!(api::dispatch(&b.app, "GET", "/master/M9", &Query::new(), &json!({})).is_err());
@@ -155,4 +159,72 @@ fn a_fix_that_leaves_it_red_alerts_again() {
     let a = dispatch::alerts(&b.app);
     assert_eq!(a.len(), 1);
     assert!(a[0]["text"].as_str().unwrap().contains("still"), "{}", a[0]);
+}
+
+#[test]
+fn suspects_reach_back_to_the_last_green_head_past_the_commits_read() {
+    let (b, _d) = board_with(|c, _| c.master.commits = 2);
+    b.branch("passed", vec![commit("c0", "bob@acme.dev")]);
+    *b.ci.history.lock() = vec![commit("c4", "bob@acme.dev"), commit("c3", "bob@acme.dev"), commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev"),
+                                commit("c0", "bob@acme.dev")];
+    b.branch("failed", vec![commit("c4", "bob@acme.dev"), commit("c3", "bob@acme.dev")]);
+    let m = b.get("/master/M1");
+    let shas: Vec<&str> = m["suspects"].as_array().unwrap().iter().map(|s| s["sha"].as_str().unwrap()).collect();
+    assert_eq!(shas, vec!["c4", "c3", "c2", "c1"], "the whole range since c0");
+    assert_eq!(m["verdict"], "unsure", "the owner's c2 is among them");
+}
+
+#[test]
+fn without_a_green_head_every_commit_read_is_a_suspect() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("failed", vec![commit("c3", "bob@acme.dev"), commit("c2", "sam@acme.dev")]);
+    let m = b.get("/master/M1");
+    assert_eq!(m["suspects"].as_array().unwrap().len(), 2);
+    assert_eq!(m["verdict"], "unsure");
+}
+
+#[test]
+fn the_branch_is_the_repo_s_default_unless_set_or_carried_over() {
+    let (b, _d) = board_with(|_, _| {});
+    *b.ci.default.lock() = Some("master".into());
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    assert_eq!(b.ci.branches.lock().last().map(|s| s.as_str()), Some("master"));
+    assert_eq!(b.get("/master")["watched"][0]["branch"], "master");
+
+    let (b, _d) = board_with(|_, _| {});
+    breaks::carry_branch(&b.app, "webapp", "develop").unwrap();
+    *b.ci.default.lock() = Some("master".into());
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    assert_eq!(b.ci.branches.lock().last().map(|s| s.as_str()), Some("develop"), "the import's branch");
+
+    let (b, _d) = board_with(|c, _| c.master.projects.get_mut("webapp").unwrap().branch = Some("trunk".into()));
+    breaks::carry_branch(&b.app, "webapp", "develop").unwrap();
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    assert_eq!(b.ci.branches.lock().last().map(|s| s.as_str()), Some("trunk"), "config.toml's word first");
+
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    assert_eq!(b.ci.branches.lock().last().map(|s| s.as_str()), Some("main"), "main when nothing says");
+}
+
+#[test]
+fn the_fix_task_starts_at_once() {
+    let (b, d) = board_with(|_, _| {});
+    let repo = d.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    b.app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let tid: i64 = b.get("/master/M1")["task"]["ref"].as_str().unwrap()[1..].parse().unwrap();
+    let t = board::get_task(&b.app, tid).unwrap();
+    assert!(t.i("start_job").is_some(), "started, not left queued");
+    assert_eq!(t.st("pickup"), "new");
+    assert_eq!(b.get("/state")["master"][0]["ref"], "M1", "the owner's break is on the banner");
+
+    let (b, d) = board_with(|c, _| c.master.start_fix = false);
+    let repo = d.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    b.app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let tid: i64 = b.get("/master/M1")["task"]["ref"].as_str().unwrap()[1..].parse().unwrap();
+    assert!(board::get_task(&b.app, tid).unwrap().i("start_job").is_none());
 }

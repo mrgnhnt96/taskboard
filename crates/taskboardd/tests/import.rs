@@ -102,6 +102,8 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         INSERT INTO master_breaks VALUES (1, 'web', 'fixed', 'abc1', 'yours', 'My commit broke the build', 12, 'build, test', '2026-09-03T09:00:00Z', '2026-09-03T10:00:00Z');
         INSERT INTO master_breaks VALUES (2, 'web', 'red', 'def2', 'not_yours', NULL, NULL, '["lint"]', '2026-09-04T09:00:00Z', NULL);
         INSERT INTO master_breaks VALUES (4, 'api', 'red', 'fed4', 'unsure', 'Flaky?', NULL, NULL, '2026-09-04T09:00:00Z', NULL);
+        ALTER TABLE master_breaks ADD COLUMN default_branch TEXT;
+        UPDATE master_breaks SET default_branch = 'master' WHERE id = 4;
         INSERT INTO photos VALUES (1, 'x.png');
         INSERT INTO devices VALUES ('pixel', 'Pixel 9', 'android', 'phone', 'open -a Pixel', 0);
         INSERT INTO devices VALUES ('emu', 'emu-1', 'android', NULL, NULL, 0);
@@ -266,7 +268,8 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert!(br(2).s("closed_at").is_some());
     assert!(rep.skipped.iter().any(|s| s.starts_with("M2: open on the old board")));
     assert_eq!((br(4).st("state"), br(4).st("verdict")), ("open".into(), "unsure".into()), "api is watched");
-    assert_eq!(taskboardd::breaks::banner(&app).unwrap().len(), 1);
+    assert!(taskboardd::breaks::banner(&app).unwrap().is_empty(), "the banner is only for the owner's breaks");
+    assert_eq!(app.db.get_setting("master_watch").unwrap().map(|w| serde_json::from_str::<Value>(&w).unwrap()["api"]["branch"].clone()), Some(json!("master")), "the old branch carries over");
 
     // Mapped tables aren't parked; a table the board has no place for is kept whole.
     for t in ["devices", "device_loans", "goal_devices", "bits", "reviewers", "review_asks", "master_breaks"] {

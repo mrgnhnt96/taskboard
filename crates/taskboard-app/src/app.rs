@@ -1034,7 +1034,8 @@ fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString
 /// The banner lines: the board down, the login item (native), the alerts.
 fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let mut out = Vec::new();
-    let alerts = arr(m.state(), "alerts").to_vec();
+    // A break's urgent alert is already its "Master is red" line.
+    let alerts: Vec<Value> = arr(m.state(), "alerts").iter().filter(|a| !ui::prwatch::shown_as_master(m.state(), a)).cloned().collect();
     let rows = banner_view(m.down.as_deref(), &alerts);
     for r in rows.iter().filter(|r| r.kind == "down") {
         let text = r.text.clone();

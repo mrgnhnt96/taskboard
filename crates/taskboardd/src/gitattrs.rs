@@ -2,7 +2,10 @@
 //! from `tb limits --generated`) in each active project's and worktree's `.git/info/attributes`, so
 //! `git diff` shows them as one line instead of every generated line. Only the block is the board's:
 //! the rest of the file is left alone, and with no globs the block goes. A repo that stops being
-//! looked after (its project removed, its work done) has its block taken out.
+//! looked after (its project off Midna's list with no open work, its work done) has its block taken
+//! out. The Python board's block (`# task-board: generated files …` to `# task-board: end`) is taken
+//! out wherever the board writes, and once, after an upgrade, every repo the board has ever known is
+//! swept for old blocks, since blocks were only tracked from beta.7 on.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,23 +16,30 @@ use crate::{board, limits, p, projects};
 
 pub const BEGIN: &str = "# >>> taskboard: generated files (kept by the board; change them with tb limits --generated)";
 pub const END: &str = "# <<< taskboard";
+/// The Python board's block: from a line starting with this to `OLD_END`.
+pub const OLD_BEGIN: &str = "# task-board: generated files";
+pub const OLD_END: &str = "# task-board: end";
 /// How often the runner puts the blocks back.
 pub const EVERY_SECS: f64 = 300.0;
 const GIT_SECS: f64 = 5.0;
 /// The attributes files the board last kept a block in.
 const MANAGED_KEY: &str = "gitattrs_managed";
+/// Set once every repo the board has known was swept for blocks from before they were tracked.
+const SWEPT_KEY: &str = "gitattrs_swept";
 
 /// `text` with the board's block set to `globs` (or taken out, with none).
 pub fn apply(text: &str, globs: &[String]) -> String {
     let mut kept: Vec<&str> = vec![];
-    let mut inside = false;
+    // The end line of the block we're in, ours or the Python board's.
+    let mut inside: Option<&str> = None;
     for l in text.lines() {
-        if l.trim_end() == BEGIN {
-            inside = true;
-        } else if inside && l.trim_end() == END {
-            inside = false;
-        } else if !inside {
-            kept.push(l);
+        let t = l.trim_end();
+        match inside {
+            Some(end) if t == end => inside = None,
+            Some(_) => {}
+            None if t == BEGIN => inside = Some(END),
+            None if t.starts_with(OLD_BEGIN) => inside = Some(OLD_END),
+            None => kept.push(l),
         }
     }
     while kept.last().is_some_and(|l| l.trim().is_empty()) {
@@ -82,8 +92,9 @@ pub fn attributes_file(dir: &str) -> Option<PathBuf> {
     Some(if p.is_absolute() { p.to_path_buf() } else { Path::new(dir).join(p) })
 }
 
-/// The folders to look after, with their project: every known project, plus the worktrees and
-/// terminal folders of open work.
+/// The folders to look after, with their project: Midna's projects, plus the folders of open work
+/// (goals, tasks and their worktrees, open PRs, live terminals). A project the db has only seen on
+/// finished work isn't one.
 pub fn targets(app: &App) -> Result<Vec<(Option<String>, String)>> {
     let mut out: Vec<(Option<String>, String)> = vec![];
     let mut add = |project: Option<&str>, dir: Option<&str>| {
@@ -92,13 +103,17 @@ pub fn targets(app: &App) -> Result<Vec<(Option<String>, String)>> {
             out.push((project.filter(|p| !p.is_empty()).map(|p| p.to_string()), dir.to_string()));
         }
     };
-    for p in projects::list_projects(app)? {
+    for p in jloads_arr(app.db.get_setting("midna_projects")?.as_deref()) {
         add(p["name"].as_str(), p["path"].as_str());
+    }
+    for g in app.db.q("SELECT project, repo_path FROM goals WHERE COALESCE(archived, 0) = 0", p![])? {
+        add(g.s("project"), g.s("repo_path"));
     }
     for t in app.db.q("SELECT * FROM tasks WHERE status != 'done' OR pr_num IS NOT NULL", p![])? {
         if t.s("status") == Some("done") && !board::pr_still_open(&t) {
             continue;
         }
+        add(t.s("project"), t.s("repo_path"));
         let ctx = board::task_context(&t);
         add(t.s("project"), ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()));
         add(t.s("project"), ctx.s("worktree_made"));
@@ -128,6 +143,14 @@ pub fn sync(app: &App) -> Result<usize> {
     for old in before {
         files.entry(PathBuf::from(&old)).or_default();
     }
+    let sweep = app.db.get_setting(SWEPT_KEY)?.is_none();
+    if sweep {
+        for dir in known_dirs(app)? {
+            if let Some(f) = attributes_file(&dir) {
+                files.entry(f).or_default();
+            }
+        }
+    }
     let mut changed = 0;
     for (f, globs) in files {
         match write(&f, &globs) {
@@ -146,10 +169,34 @@ pub fn sync(app: &App) -> Result<usize> {
         }
     }
     app.db.set_setting(MANAGED_KEY, Some(&serde_json::to_string(&managed).unwrap_or_default()))?;
+    if sweep {
+        app.db.set_setting(SWEPT_KEY, Some(&now_iso()))?;
+    }
     if changed > 0 {
         app.info(format!("attributes: updated the generated files in {}", plural(changed as i64, "repo")));
     }
     Ok(changed)
+}
+
+/// Every folder the board has known: every project's, and every task's worktree still on disk.
+fn known_dirs(app: &App) -> Result<Vec<String>> {
+    let mut out: Vec<String> = vec![];
+    let mut add = |dir: Option<&str>| {
+        if let Some(d) = dir.map(|d| d.trim_end_matches('/')).filter(|d| !d.is_empty() && Path::new(d).is_dir()) {
+            if !out.iter().any(|o| o == d) {
+                out.push(d.to_string());
+            }
+        }
+    };
+    for p in projects::list_projects(app)? {
+        add(p["path"].as_str());
+    }
+    for t in app.db.q("SELECT * FROM tasks", p![])? {
+        let ctx = board::task_context(&t);
+        add(ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()));
+        add(ctx.s("worktree_made"));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -166,5 +213,13 @@ mod tests {
         assert!(fewer.contains("*.g.dart -diff") && !fewer.contains("Cargo.lock"));
         assert_eq!(apply(&once, &[]), "*.png binary\n");
         assert_eq!(apply("", &[]), "");
+    }
+
+    #[test]
+    fn takes_out_the_python_board_s_block() {
+        let old = "*.png binary\n\n# task-board: generated files (agents' diffs skip them)\n*.g.dart -diff\n# task-board: end\n";
+        assert_eq!(apply(old, &[]), "*.png binary\n");
+        let globs = vec!["*.g.dart".to_string()];
+        assert_eq!(apply(old, &globs), format!("*.png binary\n\n{BEGIN}\n*.g.dart -diff\n{END}\n"), "one block, the board's");
     }
 }
