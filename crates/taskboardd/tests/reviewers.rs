@@ -1013,6 +1013,42 @@ fn the_owner_s_review_gates_a_first_ask_whatever_the_status_and_not_a_later_swap
 }
 
 #[test]
+fn someone_asked_on_the_host_or_a_pr_past_asking_doesn_t_wait_for_the_owner() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("hasn't reviewed PR #9 yet"), "{e}");
+    // The board's own account on the PR isn't an ask.
+    h.rec.lock().viewer = "{me}".into();
+    h.rec.lock().reviewers = vec![Reviewer { user: "{me}".into(), name: "Me".into(), state: "commented".into(), ..Default::default() }];
+    poll(&b);
+    assert!(b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err().contains("hasn't reviewed"));
+    // Dee was asked on the host: the PR has been asked, so the board may ask more.
+    h.rec.lock().reviewers.push(Reviewer { user: "{dee}".into(), name: "Dee".into(), state: "pending".into(), requested: true, ..Default::default() });
+    poll(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")]);
+
+    // Past asking (approved, re-review…), the owner's review doesn't gate an ask, whoever is on it.
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    poll(&b);
+    let gated = |phase: &str| {
+        b.app.db.x("UPDATE tasks SET pr_phase = ? WHERE id = ?", vec![json!(phase), json!(id)]).unwrap();
+        taskboardd::asks::needs_owner_review(&b.app, &b.task(id)).unwrap()
+    };
+    assert!(gated("review"));
+    assert!(gated("comments"));
+    for p in ["rereview", "merge", "waits", "merged", "declined"] {
+        assert!(!gated(p), "{p}");
+    }
+}
+
+#[test]
 fn a_bot_run_starts_at_its_earliest_comment_and_a_failed_read_is_tried_again() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);

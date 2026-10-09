@@ -142,16 +142,28 @@ pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(crate::feed::holding(app, first))
 }
 
+/// PR phases past asking: the reviewers have been at it (or the PR is done), so the owner's review
+/// no longer gates an ask.
+const PAST_ASKING: &[&str] = &["rereview", "merge", "waits", "merged", "declined"];
+
 /// Whether the owner's review gates this ask (the `ask` stage): it's on for the project, the owner
-/// hasn't reviewed the PR, and nobody has been asked on it yet. Whatever the task's status, so a
-/// reopened task waits too; a later swap or drop doesn't.
+/// hasn't reviewed the PR, the PR isn't past asking, and nobody has been asked on it yet (by the
+/// board, or on the host: anyone on the PR's reviewer list or who reviewed it, the board's own
+/// account aside). Whatever the task's status, so a reopened task waits too; a later swap or drop
+/// doesn't.
 pub fn needs_owner_review(app: &App, t: &Row) -> Result<bool> {
-    if !reviewers::ask_stage_on(app, t.s("project")) {
+    if !reviewers::ask_stage_on(app, t.s("project")) || PAST_ASKING.contains(&t.s("pr_phase").unwrap_or("")) {
         return Ok(false);
     }
     let f = flow(t);
     if f.contains_key("reviewed") || f.contains_key("asked") {
         return Ok(false);
+    }
+    if let Some(rec) = f.get("rec").filter(|r| r.is_object()) {
+        let viewer = rec["viewer"].as_str().filter(|v| !v.is_empty());
+        if on_pr(&f, rec).iter().any(|w| !w.user.is_empty() && Some(w.user.as_str()) != viewer) {
+            return Ok(false);
+        }
     }
     Ok(app.db.count("SELECT COUNT(*) FROM review_asks WHERE task_id = ?", crate::p![t.id()])? == 0)
 }

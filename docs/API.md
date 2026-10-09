@@ -1006,7 +1006,9 @@ spent. Then the phase moves on to `review`. While the feed holds (`feed::holding
 ask and the board doesn't ask; the sweep brings the agent back once the feed has settled. `tb pr reviewers` (besides
 `--dry-run`) answers 409 while the feed holds, and, with the stage on, when it would ask someone before the owner
 has reviewed the PR and before anyone was asked on it, whatever the task's status (a reopened task waits too); a
-later `--replace` or `--drop` doesn't wait for the owner.
+later `--replace` or `--drop` doesn't wait for the owner. Asked on it counts the host too: anyone on the PR's
+reviewer list or who reviewed it (not the board's own account). Nor does it wait once the PR is past asking
+(`rereview`, `merge`, `waits`, `merged`, `declined`).
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 
