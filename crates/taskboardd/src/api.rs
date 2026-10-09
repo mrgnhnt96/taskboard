@@ -125,6 +125,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
+        ("GET", ["projects", "agents-merge"]) => Ok(projects::describe_agents_merge(app)),
+        ("POST", ["projects", "agents-merge"]) => set_agents_merge(app, body),
         ("POST", ["projects", name]) => patch_project(app, name, body),
         ("GET", ["sessions"]) => Ok(json!({"sessions": ops::session_list(app, q(query, "project", "all"))?})),
         ("GET", ["sessions", "closed"]) => {
@@ -569,6 +571,19 @@ fn get_summary(app: &App) -> Result<Value> {
     Ok(json!({"now": now_iso(), "queued": n("queued")?, "working": n("working")?, "needs": needs,
               "open_issues": app.db.count("SELECT COUNT(*) FROM issues WHERE state = 'open'", p![])?,
               "attention": needs > 0, "midna_up": midna::up(app), "goals": goals}))
+}
+
+/// `tb project agents-merge on|off|default`: whether agents merge on projects that don't say.
+fn set_agents_merge(app: &App, body: &Value) -> Result<Value> {
+    let on = match body.get("agents_merge") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) if s == "on" => Some(true),
+        Some(Value::String(s)) if s == "off" => Some(false),
+        Some(Value::Null) => None,
+        _ => return err(400, "agents_merge is true (on), false (off) or null (config.toml's pr.agents_merge)."),
+    };
+    app.db.tx(|| projects::set_agents_merge(app, on))?;
+    Ok(projects::describe_agents_merge(app))
 }
 
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {

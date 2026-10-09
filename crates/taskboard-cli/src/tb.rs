@@ -1084,6 +1084,11 @@ enum ProjectCmd {
         #[arg(long = "agents-merge", value_parser = ["on", "off", "default"])]
         agents_merge: Option<String>,
     },
+    /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
+    AgentsMerge {
+        #[arg(value_parser = ["on", "off", "default"])]
+        value: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3864,6 +3869,20 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             let v = c.call("POST", &format!("/projects/{name}"), Some(Value::Object(body)))?;
             out(&format!("Changed {}.", project_line(&v)));
+            Ok(0)
+        }
+        ProjectCmd::AgentsMerge { value } => {
+            let v = match value {
+                None => c.call("GET", "/projects/agents-merge", None)?,
+                Some(s) => {
+                    let mut body = serde_json::Map::new();
+                    project_switch(&mut body, "agents_merge", Some(s));
+                    c.call("POST", "/projects/agents-merge", Some(Value::Object(body)))?
+                }
+            };
+            let on = if v["agents_merge"] == true { "on" } else { "off" };
+            let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.agents_merge" };
+            out(&format!("Agents merge {on} on projects that don't say ({from})."));
             Ok(0)
         }
     }

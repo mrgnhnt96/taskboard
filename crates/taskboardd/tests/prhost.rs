@@ -245,6 +245,22 @@ fn a_project_with_no_review_step_and_agents_merge_on_merges_without_anyone() {
 }
 
 #[test]
+fn the_board_wide_agents_merge_switch_sits_over_config_and_under_a_project() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    assert_eq!(b.get("/projects/agents-merge", &[]), json!({"agents_merge": false, "set": null, "config": false}));
+    let v = b.post("/projects/agents-merge", json!({"agents_merge": "on"}));
+    assert_eq!((v["agents_merge"].clone(), v["set"].clone()), (json!(true), json!(true)));
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], true);
+    b.post("/projects/webapp", json!({"agents_merge": "off"}));
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], false, "the project's own rule wins");
+    b.post("/projects/webapp", json!({"agents_merge": null}));
+    let v = b.post("/projects/agents-merge", json!({"agents_merge": null}));
+    assert_eq!((v["agents_merge"].clone(), v["set"].clone()), (json!(false), json!(null)));
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], false, "back to config.toml's");
+}
+
+#[test]
 fn a_stacked_base_must_merge_first() {
     let b = board_with(|_| {});
     let below = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/8");

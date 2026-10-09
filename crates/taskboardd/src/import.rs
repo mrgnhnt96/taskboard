@@ -1498,7 +1498,8 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
 /// - swaps: always on there, so every project that came over with a PR or a review ask (with or
 ///   without a swap in its history);
 /// - agents merging (`agents_merge`): the old board's agents always merged their own approved, green
-///   PRs, so every project that came over with a PR.
+///   PRs, so every project that came over with a PR, and the board-wide switch (`tb project
+///   agents-merge`) for the rest, unless the board already says.
 fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     let used: &[(&str, &str, &str)] = &[(
         "ask_stage",
@@ -1524,6 +1525,12 @@ fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
             crate::projects::set_pr_rules(app, &project, &json!({ *key: true }))?;
             rep.switched.push(format!("{project}: {label}"));
         }
+    }
+    // The old board's agents merged on every project, so the board-wide switch comes on too: projects
+    // with no PR yet, and ones added later. A project's own rule still wins.
+    if crate::projects::agents_merge_set(app).is_none() && !app.cfg.pr.agents_merge {
+        crate::projects::set_agents_merge(app, Some(true))?;
+        rep.switched.push("every other project: agents merge (pr.agents_merge; tb project agents-merge off to turn it off)".into());
     }
     Ok(())
 }

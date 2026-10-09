@@ -532,8 +532,14 @@ fn the_review_switches_the_old_board_used_come_on() {
     assert!(!swaps("blog"), "a project that came over with no PR or ask");
     let merges = |p: &str| taskboardd::prflow::agents_merge_on(&app, Some(p));
     assert!(merges("web") && merges("api") && merges("docs"), "the old board's agents merged their own PRs");
-    assert!(!merges("blog"), "a project that came over with no PR");
     assert!(rep.lines().iter().any(|l| l.contains("turned on") && l.contains("web: agents merge")), "{:?}", rep.lines());
+    assert!(merges("blog") && merges("added-later"), "the board-wide switch: no PR before the import, or a new project");
+    assert_eq!(taskboardd::projects::agents_merge_set(&app), Some(true));
+    assert!(rep.lines().iter().any(|l| l.contains("every other project: agents merge") && l.contains("tb project agents-merge off")), "{:?}", rep.lines());
+    taskboardd::projects::set_pr_rules(&app, "blog", &json!({"agents_merge": false})).unwrap();
+    assert!(!merges("blog"), "a project's own rule still wins");
+    taskboardd::projects::set_agents_merge(&app, None).unwrap();
+    assert!(!merges("added-later"), "default: back to config.toml's pr.agents_merge");
 
     // A project that already says keeps its word.
     let again = old_dir.path().join("again.db");
@@ -550,6 +556,14 @@ fn the_review_switches_the_old_board_used_come_on() {
     let rep = import::import(&app, &again).unwrap();
     assert!(!taskboardd::prflow::agents_merge_on(&app, Some("shop")), "left as the project set it");
     assert!(!rep.lines().iter().any(|l| l.contains("shop: agents merge")), "{:?}", rep.lines());
+
+    // The owner already turned the board-wide switch off: the import leaves it.
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    taskboardd::projects::set_agents_merge(&app, Some(false)).unwrap();
+    let rep = import::import(&app, &again).unwrap();
+    assert!(!taskboardd::prflow::agents_merge_on(&app, Some("new")), "left as the owner set it");
+    assert!(!rep.lines().iter().any(|l| l.contains("every other project")), "{:?}", rep.lines());
 }
 
 #[test]
