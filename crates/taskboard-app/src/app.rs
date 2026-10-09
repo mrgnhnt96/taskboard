@@ -1165,6 +1165,7 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
     if let Some(u) = st.get("usage").and_then(usage_view) {
         bar = bar.child(usage_pill(t, &u));
     }
+    bar = bar.children(ui::prwatch::pills(&st, t));
     bar = bar.child(div().flex_1());
     if let Some(h) = hooks_item(m, t, cx) {
         bar = bar.child(h);

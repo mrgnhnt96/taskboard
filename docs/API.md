@@ -40,6 +40,7 @@ reader just changed doesn't vanish from under them).
   "work_hours": work_hours,
   "usage": usage | null,                        // null when no usage reading is known: the pill is hidden
   "accounts": [{"id", "label", "reason", "reauth": bool}],  // accounts needing the owner (missing scopes or a failed check): the amber status-bar pill
+  "pr_feed": {"on", "healthy", "problem", "why", …},  // the PR feed's health (GET /prs/feed); the app shows a pill while it's unhealthy
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
   "sessions": [session_row],                    // live (not gone) Claude terminals, filtered by ?project
   "session_projects": [str],                    // sorted project names of all live Claude terminals (unfiltered); seeds the goals rail
@@ -569,6 +570,26 @@ grace), `failures_cmd` and `merge_strategy`.
 **`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
 `TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
 line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
+### The PR feed (`tb feed`)
+PR activity can come as events instead of the poll: any listener posts one event per PR change or build, and the
+board reads that one PR again and steps it (`feed.rs` documents the health rules). Events work whether or not
+`[feed] on` is set; with it, the board watches the feed's health.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
+| `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null}`; also `state.pr_feed`. |
+
+While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
+reviewer asks, nudges and swaps (the first ask on a PR still goes out outside the work hours); the PR poll runs (while
+healthy it rests unless `poll_while_healthy`); the board restarts the feed at `restart_mins` (1, 5, 15) after it went
+bad with `restart_cmd` (or by restarting its own `listener`), and raises the `pr-feed` alert if a restart fails or it's
+still bad 5 minutes after the last one. The alert clears when the feed is healthy again.
+
+A request for changes only counts (moves the PR to "Addressing comments", blocks the merge, is asked again by `tb pr
+addressed`) when the reviewer also wrote on the PR: started or spoke on a thread, a review summary included.
+
 ### Projects
 | Path | Body | Notes |
 |---|---|---|

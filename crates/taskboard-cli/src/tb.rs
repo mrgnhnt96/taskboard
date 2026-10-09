@@ -307,6 +307,11 @@ enum Cmd {
         #[command(subcommand)]
         action: PrCmd,
     },
+    /// The PR feed: its health (with no action), or post an event or heartbeat for a listener
+    Feed {
+        #[command(subcommand)]
+        action: Option<FeedCmd>,
+    },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
     /// Print an account's token for a script: github, bitbucket or slack
@@ -830,6 +835,46 @@ enum PrCmd {
         #[arg(long)]
         check: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum FeedCmd {
+    /// One PR changed (or one of its builds did): the board reads it again
+    Event {
+        /// The PR's link (or use --repo and --num, or --task)
+        url: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        num: Option<i64>,
+        #[arg(long)]
+        task: Option<String>,
+        /// pr (the default) or build
+        #[arg(long, value_parser = ["pr", "build"])]
+        kind: Option<String>,
+        /// A build's state: started, running, passed, failed or stopped
+        #[arg(long)]
+        state: Option<String>,
+        /// The commit the build is for
+        #[arg(long)]
+        head: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        /// The build's CI: github, bitbucket, azure, or a name in [pr_builds.cancel]
+        #[arg(long)]
+        provider: Option<String>,
+        /// The build's link
+        #[arg(long = "build-url")]
+        build_url: Option<String>,
+        /// Who pushed (an email): a push build of the owner's is cancelled too while PR builds are stopped
+        #[arg(long)]
+        author: Option<String>,
+        /// Where the event came from (slack, webhook, …)
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// The feed is alive
+    Heartbeat,
 }
 
 /// Splits `[T<n>] rest…` into the task (if named) and the rest.
@@ -1932,6 +1977,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Device { action } => device_cmd(c, action),
+        Cmd::Feed { action } => feed_cmd(c, action),
         Cmd::Bits { goal, t } => {
             let mut path = "/bits".to_string();
             if let Some(g) = goal {
@@ -2799,6 +2845,55 @@ fn basic(user: &str, secret: &str) -> String {
     taskboardd::jira::base64_lite::encode(format!("{user}:{secret}").as_bytes())
 }
 
+/// "The PR feed is healthy · last event 3:04 PM" for `tb feed`.
+fn feed_line(v: &Value) -> String {
+    if v["on"] != true {
+        return "The PR feed is off ([feed] on in config.toml); PRs are polled.".into();
+    }
+    let mut line = if v["healthy"] == true {
+        "The PR feed is healthy".to_string()
+    } else {
+        format!("The PR feed is {}: {}", v["problem"].as_str().unwrap_or("unhealthy"), v["why"].as_str().unwrap_or(""))
+    };
+    for (k, label) in [("last_event_at", "last event"), ("last_heartbeat_at", "last heartbeat")] {
+        if let Some(t) = v[k].as_str() {
+            line += &format!(" · {label} {}", taskboardd::util::local_clock(Some(t)));
+        }
+    }
+    let restarts = v["restarts"].as_array().map(|a| a.len()).unwrap_or(0);
+    if restarts > 0 {
+        line += &format!(" · restarted {restarts}×");
+    }
+    if let Some(h) = v["holding"].as_str() {
+        line += &format!("\n{h}");
+    }
+    line
+}
+
+fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
+    match action {
+        None => {
+            let v = c.call("GET", "/prs/feed", None)?;
+            out(&feed_line(&v));
+        }
+        Some(FeedCmd::Heartbeat) => {
+            c.call("POST", "/prs/heartbeat", Some(json!({})))?;
+        }
+        Some(FeedCmd::Event { url, repo, num, task, kind, state, head, branch, provider, build_url, author, source }) => {
+            let task = task.map(|t| task_ref(&t)).transpose()?;
+            let body = json!({"url": url, "repo": repo, "num": num, "task": task, "kind": kind, "state": state, "head": head, "branch": branch,
+                              "provider": provider, "build_url": build_url, "author": author, "source": source});
+            let v = c.call("POST", "/prs/event", Some(body))?;
+            match v["task"].as_str() {
+                Some(t) if v["refreshed"] == true => out(&format!("Read {t}'s PR again: {}.", v["phase"].as_str().unwrap_or("no stage"))),
+                Some(t) => out(&format!("Noted for {t}.{}", v["read_error"].as_str().map(|e| format!(" Its PR couldn't be read: {e}")).unwrap_or_default())),
+                None => out("Noted; no task on the board has that PR."),
+            }
+        }
+    }
+    Ok(0)
+}
+
 pub fn main_with(args: Vec<String>) -> i32 {
     if args.get(1).map(|a| a == "hook").unwrap_or(false) {
         return hook::run(args.get(2).map(|s| s.as_str()));
@@ -2855,6 +2950,9 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--hold"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--hold", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "devices"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed", "heartbeat"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed", "event", "https://bitbucket.org/a/b/pull-requests/9", "--kind", "build", "--state", "started", "--head", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "focus", "pixel-7"]).is_ok());

@@ -473,6 +473,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
     close_pr_tabs(app)?;
+    app.db.tx(|| crate::feed::check(app))?;
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;
@@ -482,7 +483,10 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
 }
 
 pub fn prs(app: &App) -> Result<()> {
-    prflow::refresh(app)?;
+    // With a healthy PR feed, events refresh each PR as it changes (`feed.rs`).
+    if crate::feed::poll_due(app) {
+        prflow::refresh(app)?;
+    }
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
     worktrees::clean_up(app).map(|_| ())
 }

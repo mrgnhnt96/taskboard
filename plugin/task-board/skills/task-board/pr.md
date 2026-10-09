@@ -42,3 +42,7 @@ The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` comma
 ## The owner wants changes to a done task's PR
 
 When the owner comes to you in a terminal with changes for a done task whose PR is still open, run `tb take T<n>` first. Make the changes, push them, then `tb done "<summary>"` again. A merged or closed PR can't be taken back: open a new task instead.
+
+## A PR feed
+
+When the owner asks you to set up something that hears about PR changes (a Slack listener, a webhook relay), have it run `tb feed event <PR link>` for each PR change (`--kind build --state started|running|passed|failed --head <sha> --provider <ci>` for a build) and `tb feed heartbeat` every minute or so; the board reads that PR again at once. `tb feed` shows whether the board trusts the feed.

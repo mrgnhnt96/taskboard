@@ -334,7 +334,7 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
     let mut rec = green();
     rec.checks = vec![check("build", "passed"), check("e2e", "failed")];
     rec.reviewers = vec![reviewer("a", "approved"), reviewer("r", "changes")];
-    rec.threads = vec![thread("1", "rev")];
+    rec.threads = vec![Thread { author: "r".into(), ..thread("1", "rev") }];
     rec.review_decision = "CHANGES_REQUESTED".into();
     let h = fake(&b, rec);
     *h.base_failing.lock() = vec!["e2e".into()];
@@ -366,6 +366,7 @@ fn the_pr_bar_has_a_pill_per_reviewer_from_the_host() {
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("t1".into());
     rec.reviewers = vec![reviewer("ok", "approved"), reviewer("rev", "changes"), reviewer("new", "pending"), reviewer("gone", "changes")];
+    rec.threads = vec![Thread { resolved: true, ..thread("1", "rev") }];
     fake(&b, rec);
     prflow::merge_flow(&b.app, id, vec![("swapped_off", json!(["gone"]))]).unwrap();
     poll(&b);

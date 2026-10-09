@@ -88,6 +88,21 @@ azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, 
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 
+# PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
+# relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
+# the board reads that PR again. Events refresh their PR whether or not this is on. With `on`, the
+# board watches the feed's health: stuck (heartbeats stopped) or silent (nothing at all inside the
+# work hours) holds reviewer asks, nudges and swaps, brings back the poll, restarts the feed at
+# restart_mins and raises the `pr-feed` alert when that doesn't help. See docs/API.md ("The PR feed").
+[feed]
+on = false
+listener = ""                        # a command the board runs and keeps running (gets TASKBOARD_URL, TB_EVENT_URL)
+restart_cmd = ""                     # example: "launchctl kickstart -k gui/501/com.me.pr-listener" (empty: restart the listener)
+stuck_secs = 180.0                   # no heartbeat (POST /prs/heartbeat) this long, once the feed has sent one
+silent_secs = 3600.0                 # no event or heartbeat this long inside the work hours
+restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the board restarts it
+poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
+
 # Context limits for the board's agents. `tb limits` changes them on the board; these are where it
 # starts. 0 turns one off.
 [limits]

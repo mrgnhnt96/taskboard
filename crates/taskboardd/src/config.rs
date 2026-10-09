@@ -39,6 +39,7 @@ pub struct FileConfig {
     pub comments: CommentsConfig,
     pub devices: crate::devices::DevicesConfig,
     pub bits: crate::bits::BitsConfig,
+    pub feed: crate::feed::FeedConfig,
 }
 
 /// Alerts' desktop notifications.
@@ -475,6 +476,7 @@ pub struct Config {
     pub comments: CommentsConfig,
     pub devices: crate::devices::DevicesConfig,
     pub bits: crate::bits::BitsConfig,
+    pub feed: crate::feed::FeedConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -567,6 +569,7 @@ impl Config {
             comments: f.comments,
             devices: f.devices,
             bits: f.bits,
+            feed: f.feed,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }
