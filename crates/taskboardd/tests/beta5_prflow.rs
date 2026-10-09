@@ -107,7 +107,9 @@ fn fake_gh(dir: &Path) -> std::path::PathBuf {
     std::fs::write(
         &gh,
         format!(
-            "#!/bin/sh\nif [ -f '{}' ]; then echo 'HTTP 502: bad gateway' >&2; exit 1; fi\necho \"$@\" >> '{}'\necho https://github.com/acme/webapp/pull/77\n",
+            "#!/bin/sh\nif [ -f '{}' ]; then echo 'HTTP 502: bad gateway' >&2; exit 1; fi\necho \"$@\" >> '{}'\n\
+             case \"$*\" in\n  \"api -X GET repos/\"*) printf '{{\"body\":\"## Summary\\\\nAdds it.\"}}\\n'; exit 0;;\n  \"api -X PATCH \"*) echo '{{}}'; exit 0;;\nesac\n\
+             echo https://github.com/acme/webapp/pull/77\n",
             fail.display(),
             log.display()
         ),
@@ -189,7 +191,7 @@ fn the_stack_parent_is_listed_as_a_wait() {
     let refs: Vec<&str> = w.as_array().unwrap().iter().map(|x| x["ref"].as_str().unwrap()).collect();
     assert_eq!(refs, vec![format!("T{other}"), format!("T{parent}")], "{w}");
     assert_eq!(w[1]["stack"], true);
-    assert_eq!(w[0]["stack"], false);
+    assert!(w[0].get("stack").is_none());
     assert_eq!(w[1]["done"], false);
 }
 
@@ -280,4 +282,124 @@ fn one_bad_step_is_left_out_and_named_in_an_alert() {
     std::fs::write(&b.app.cfg.config_path, REVIEW).unwrap();
     assert_eq!(taskboardd::steps::load(&b.app).len(), 1);
     assert!(dispatch::alerts(&b.app).iter().all(|a| !a["key"].as_str().unwrap_or("").starts_with("steps:")));
+}
+
+// ------------------------------------------------------------------ #56 tb done
+
+fn git(path: &Path, args: &[&str]) -> String {
+    let o = Command::new("git").arg("-C").arg(path).args(args).output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// The board's project folder as a clone of a bare origin with one commit on main.
+fn git_repo(b: &Board) -> std::path::PathBuf {
+    let origin = b.dir.path().join("origin.git");
+    let repo = b.dir.path().join("webapp");
+    std::fs::remove_dir_all(&repo).unwrap();
+    git(b.dir.path(), &["init", "-q", "--bare", "-b", "main", &origin.to_string_lossy()]);
+    git(b.dir.path(), &["clone", "-q", &origin.to_string_lossy(), &repo.to_string_lossy()]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    git(&repo, &["switch", "-q", "-c", "main"]);
+    std::fs::write(repo.join("README"), "webapp\n").unwrap();
+    git(&repo, &["add", "README"]);
+    git(&repo, &["commit", "-q", "-m", "First"]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    repo
+}
+
+#[test]
+fn plain_done_on_a_pr_task_with_no_pr_is_refused() {
+    let b = new_board();
+    git_repo(&b);
+    let id = b.task("Add passkeys", json!({}));
+    b.take(id);
+    let (code, why) = b.report("tb.done", json!({"summary": "Passkeys"})).unwrap_err();
+    assert_eq!(code, 409, "{why}");
+    assert!(why.contains("--pr-body") && why.contains("--no-pr"), "{why}");
+    assert_eq!(b.row(id).st("status"), "working");
+
+    // With its PR's link, it finishes.
+    b.report("tb.done", json!({"summary": "Passkeys", "pr": "https://github.com/acme/webapp/pull/5"})).unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+
+    // A task that doesn't end in a PR finishes as before.
+    let n = b.task("Write it up", json!({"ships_pr": false}));
+    b.take(n);
+    b.report("tb.done", json!({"summary": "Notes"})).unwrap();
+    assert_eq!(b.row(n).st("status"), "done");
+}
+
+#[test]
+fn a_blank_or_long_no_pr_is_refused() {
+    let b = new_board();
+    let id = b.task("Fix the flicker", json!({}));
+    b.take(id);
+    let (code, why) = b.report("tb.done", json!({"summary": "Done", "no_pr": "   "})).unwrap_err();
+    assert_eq!(code, 400, "{why}");
+    assert!(why.contains("Say why"), "{why}");
+    let (code, why) = b.report("tb.done", json!({"summary": "Done", "no_pr": "x".repeat(201)})).unwrap_err();
+    assert_eq!(code, 400, "{why}");
+    assert!(why.contains("one short line"), "{why}");
+    b.report("tb.done", json!({"summary": "Done", "no_pr": "T3 fixed it"})).unwrap();
+    assert_eq!(b.card(id)["no_pr"], "T3 fixed it");
+}
+
+#[test]
+fn a_task_with_a_design_finishes_with_evidence() {
+    let b = new_board();
+    let id = b.task("New sign-in screen", json!({"ships_pr": false}));
+    b.post(&format!("/tasks/T{id}/attachments"), json!({"url": "https://figma.com/file/abc", "title": "Sign-in mock", "kind": "design"}));
+    b.take(id);
+    let (code, why) = b.report("tb.done", json!({"summary": "Done"})).unwrap_err();
+    assert_eq!(code, 409, "{why}");
+    assert!(why.contains("Sign-in mock") && why.contains("--kind evidence") && why.contains("--no-evidence"), "{why}");
+    b.post(&format!("/tasks/T{id}/attachments"), json!({"url": "https://cdn.example/shot.png", "title": "Screenshot", "kind": "evidence"}));
+    b.report("tb.done", json!({"summary": "Done"})).unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+
+    let id2 = b.task("Other screen", json!({"ships_pr": false}));
+    b.post(&format!("/tasks/T{id2}/attachments"), json!({"url": "https://figma.com/file/def", "title": "Mock", "kind": "design"}));
+    b.take(id2);
+    b.report("tb.done", json!({"summary": "Done", "no_evidence": "the design changed; owner checks it"})).unwrap();
+    assert_eq!(b.row(id2).st("status"), "done");
+}
+
+#[test]
+fn evidence_is_added_to_the_open_pr_once() {
+    let b = new_board();
+    let id = b.task("Add passkeys", json!({}));
+    b.link(id, 13, "feat/passkeys");
+    b.post(&format!("/tasks/T{id}/attachments"), json!({"url": "https://cdn.example/shot.png", "title": "Screenshot", "kind": "evidence"}));
+    assert_eq!(taskboardd::propen::add_evidence(&b.app).unwrap(), 1);
+    let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap();
+    assert!(log.contains("api -X PATCH repos/acme/webapp/pulls/13 -f body=## Summary"), "{log}");
+    assert!(log.contains("## Context\n- Evidence: [Screenshot](https://cdn.example/shot.png)"), "{log}");
+    assert_eq!(b.flow(id)["evidence_added"], json!(["https://cdn.example/shot.png"]));
+    assert_eq!(taskboardd::propen::add_evidence(&b.app).unwrap(), 0, "only once");
+}
+
+#[test]
+fn evidence_goes_under_the_context_section() {
+    use taskboardd::propen::with_evidence;
+    let links = vec![("Shot".to_string(), "https://x/s.png".to_string())];
+    assert_eq!(
+        with_evidence("## Summary\nA\n\n## Context\n- Ticket: ABC-1\n\n## Notes\nN", &links).unwrap(),
+        "## Summary\nA\n\n## Context\n- Ticket: ABC-1\n- Evidence: [Shot](https://x/s.png)\n\n## Notes\nN"
+    );
+    assert_eq!(with_evidence("## Summary\nA\n", &links).unwrap(), "## Summary\nA\n\n## Context\n- Evidence: [Shot](https://x/s.png)");
+    assert_eq!(with_evidence("See https://x/s.png", &links), None);
+}
+
+#[test]
+fn a_failed_fetch_shows_all_of_gits_error() {
+    let b = new_board();
+    let repo = git_repo(&b);
+    git(&repo, &["remote", "set-url", "origin", &b.dir.path().join("nowhere.git").to_string_lossy()]);
+    let cfg = taskboardd::config::PrBodyConfig::default();
+    git(&repo, &["switch", "-q", "-c", "feat/x"]);
+    let e = taskboardd::propen::check_branch(&cfg, &repo.to_string_lossy(), "main").unwrap_err();
+    assert!(e.starts_with("git fetch origin main failed:\n"), "{e}");
+    assert!(e.lines().count() > 2, "every line git said: {e}");
 }

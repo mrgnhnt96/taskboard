@@ -440,7 +440,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
   "waits_for": ["T14"],           // tasks it starts after
-  "waits_for_state": [{"ref": "T14", "done": bool, "stack": bool}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done; the goal page's "Waits for" chip
+  "waits_for_state": [{"ref": "T14", "done": bool, "stack"?: true}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done; the goal page's "Waits for" chip
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
   "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
