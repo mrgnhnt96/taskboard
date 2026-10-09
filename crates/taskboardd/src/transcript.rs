@@ -13,6 +13,9 @@ use crate::util::*;
 const ENDED: &[&str] = &["turn_duration", "stop_hook_summary"];
 const NEUTRAL_PREFIXES: &[&str] = &["<command-name>", "<command-message>", "<local-command", "<system-reminder>", "[Request interrupted by user"];
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+/// Tools that can change files the transcript doesn't name: a shell command, or a subagent.
+const SHELL_TOOLS: &[&str] = &["Bash"];
+const SUBAGENT_TOOLS: &[&str] = &["Task", "Agent"];
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 pub const CLAUDE_STOPS_BACKGROUND_AFTER: f64 = 2.0 * 3600.0;
 const AGENT_LAUNCHED: &[u8] = b"async_launched";
@@ -20,6 +23,9 @@ const AGENT_LAUNCHED: &[u8] = b"async_launched";
 static DASH: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"[^A-Za-z0-9]").unwrap());
 static BG_STARTED: Lazy<Regex> = Lazy::new(|| Regex::new(r#""backgroundTaskId":\s*"([^"]+)""#).unwrap());
 static BG_ENDED: Lazy<Regex> = Lazy::new(|| Regex::new(r"<task-id>([^<]+)</task-id>").unwrap());
+/// A directory a shell command works in: `cd <dir>`, `pushd <dir>` or `git -C <dir>`.
+static SHELL_DIR: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r#"(?:^|[;&|(]|\s)(?:cd|pushd|git\s+-C)\s+("[^"]+"|'[^']+'|[^\s;&|()]+)"#).unwrap());
 
 pub fn project_dir(root: &Path, project_path: &str) -> PathBuf {
     root.join(DASH.replace_all(project_path.trim_end_matches('/'), "-").as_ref())
@@ -154,6 +160,17 @@ fn prompt_of(e: &Value) -> Option<String> {
     Some(text)
 }
 
+/// The main conversation's tool calls in one event, as (name, input).
+fn tool_uses(e: &Value) -> Vec<(&str, &Value)> {
+    if e["type"] != "assistant" || e["isSidechain"] == true {
+        return vec![];
+    }
+    e["message"]["content"]
+        .as_array()
+        .map(|a| a.iter().filter(|b| b["type"] == "tool_use").map(|b| (b["name"].as_str().unwrap_or(""), &b["input"])).collect())
+        .unwrap_or_default()
+}
+
 fn edits(e: &Value) -> Vec<String> {
     if e["type"] != "assistant" || e["isSidechain"] == true {
         return vec![];
@@ -174,13 +191,19 @@ pub struct Turn {
     pub prompt: String,
     pub files: Vec<String>,
     pub closed: bool,
+    /// The turn ran a shell command, which can change files without naming them.
+    pub ran_shell: bool,
+    /// The turn ran a subagent, whose edits aren't in this transcript.
+    pub ran_subagent: bool,
+    /// Directories the turn's shell commands moved into (`cd`, `pushd`, `git -C`), as written.
+    pub shell_dirs: Vec<String>,
 }
 
 fn turns_of(events: &[Value]) -> Vec<Turn> {
     let mut out: Vec<Turn> = vec![];
     for e in events {
         if let Some(p) = prompt_of(e) {
-            out.push(Turn { at: e["timestamp"].clone(), prompt: p, files: vec![], closed: false });
+            out.push(Turn { at: e["timestamp"].clone(), prompt: p, files: vec![], closed: false, ran_shell: false, ran_subagent: false, shell_dirs: vec![] });
             continue;
         }
         let Some(cur) = out.last_mut() else { continue };
@@ -190,6 +213,20 @@ fn turns_of(events: &[Value]) -> Vec<Turn> {
             for p in edits(e) {
                 if !cur.files.contains(&p) {
                     cur.files.push(p);
+                }
+            }
+            for (name, input) in tool_uses(e) {
+                if SUBAGENT_TOOLS.contains(&name) {
+                    cur.ran_subagent = true;
+                }
+                if SHELL_TOOLS.contains(&name) {
+                    cur.ran_shell = true;
+                    for c in SHELL_DIR.captures_iter(input["command"].as_str().unwrap_or("")) {
+                        let d = c[1].trim_matches(|ch| ch == '"' || ch == '\'').to_string();
+                        if !d.is_empty() && d != "-" && !cur.shell_dirs.contains(&d) {
+                            cur.shell_dirs.push(d);
+                        }
+                    }
                 }
             }
         }
@@ -267,6 +304,24 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].files, vec!["/a.rs"]);
         assert!(t[0].closed);
+        assert!(!t[0].ran_shell && !t[0].ran_subagent);
+    }
+
+    #[test]
+    fn reads_the_shell_commands_and_subagents_a_turn_ran() {
+        let bash = |c: &str| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": c}}]}});
+        let ev = vec![
+            json!({"type": "user", "message": {"content": "Do it"}, "timestamp": "2026-10-01T10:00:00Z"}),
+            bash("cd /repo/app && cargo fmt; git -C '/repo/lib' status"),
+            bash("(cd sub && make) | tail; cd -"),
+            json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "tool_use", "name": "Agent", "input": {}}]}}),
+        ];
+        let t = turns_of(&ev);
+        assert!(t[0].ran_shell && !t[0].ran_subagent, "a sidechain's own calls aren't the turn's");
+        assert_eq!(t[0].shell_dirs, vec!["/repo/app", "/repo/lib", "sub"]);
+        let mut ev = ev;
+        ev.push(json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Task", "input": {"prompt": "x"}}]}}));
+        assert!(turns_of(&ev)[0].ran_subagent);
     }
 
     #[test]

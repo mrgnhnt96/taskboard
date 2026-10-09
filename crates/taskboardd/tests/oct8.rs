@@ -218,22 +218,53 @@ fn a_turn_that_changed_code_with_no_task_is_asked_to_track_it() {
 }
 
 fn tree(b: &Board, head: &str, files: &[(&str, &str)]) -> Value {
+    tree_with(b, head, files, &[("aaa", "commit (initial): start")])
+}
+
+/// A tree stamp whose reflog is `reflog`, newest first, as (sha, how).
+fn tree_with(b: &Board, head: &str, files: &[(&str, &str)], reflog: &[(&str, &str)]) -> Value {
     let files: serde_json::Map<String, Value> = files.iter().map(|(f, s)| (format!("{}/{f}", b.repo()), json!(s))).collect();
-    json!({"root": b.repo(), "head": head, "files": files})
+    let n = reflog.len() as i64;
+    let reflog: Vec<Value> = reflog.iter().enumerate().map(|(i, (sha, how))| json!({"sha": sha, "at": 1_800_000_000 + n - i as i64, "how": how})).collect();
+    json!({"root": b.repo(), "head": head, "files": files, "reflog": reflog})
+}
+
+fn bash(command: &str) -> Value {
+    json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": command}}]}})
+}
+
+/// Writes the session's transcript as one turn: `prompt`, then `calls`.
+fn turn(b: &Board, sid: &str, prompt: &str, calls: &[Value]) {
+    let s = board::get_session(&b.app, Some(sid)).unwrap().unwrap();
+    let file = taskboardd::transcript::transcript_file(&b.app.cfg.claude_projects, &s.st("project_path"), &s.st("claude_session_id"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut lines = vec![json!({"type": "user", "message": {"content": prompt}, "timestamp": "2026-10-08T10:00:00Z"})];
+    lines.extend(calls.iter().cloned());
+    std::fs::write(&file, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+}
+
+/// A prompt stamped `before`, a turn that ran `calls`, and the Stop stamped `after`: the Stop's block.
+fn stop_after(b: &Board, calls: &[Value], before: Value, after: Value) -> Option<String> {
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tree": before}));
+    turn(b, "s1", "Go", calls);
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": after}));
+    out["block"].as_str().map(|s| s.to_string())
 }
 
 #[test]
 fn a_turn_that_changed_code_through_bash_is_asked_to_track_it() {
     let b = new_board();
     b.add_session("s1");
-    b.report("hook.prompt", "s1", json!({"prompt": "This is clipping", "tree": tree(&b, "aaa", &[("src/old.rs", "1:10")])}));
-    let after = tree(&b, "aaa", &[("src/old.rs", "1:10"), ("src/charts.rs", "2:40")]);
+    b.report("hook.prompt", "s1", json!({"prompt": "This is clipping", "tree": tree(&b, "aaa", &[("src/old.rs", "h1:10")])}));
+    turn(&b, "s1", "This is clipping", &[bash("python3 fix.py")]);
+    let after = tree(&b, "aaa", &[("src/old.rs", "h1:10"), ("src/charts.rs", "h2:40")]);
     let out = b.report("hook.stop", "s1", json!({"last_message": "Fixed.", "tree": after}));
     let block = out["block"].as_str().expect("an edit made by a script still blocks the stop");
     assert!(block.contains("charts.rs") && !block.contains("old.rs"), "{block}");
 
-    b.report("hook.prompt", "s1", json!({"prompt": "What does this do?", "tree": tree(&b, "aaa", &[("src/charts.rs", "2:40")])}));
-    let read_only = b.report("hook.stop", "s1", json!({"last_message": "It draws bars.", "tree": tree(&b, "aaa", &[("src/charts.rs", "2:40")])}));
+    b.report("hook.prompt", "s1", json!({"prompt": "What does this do?", "tree": tree(&b, "aaa", &[("src/charts.rs", "h2:40")])}));
+    turn(&b, "s1", "What does this do?", &[bash("cat src/charts.rs")]);
+    let read_only = b.report("hook.stop", "s1", json!({"last_message": "It draws bars.", "tree": tree(&b, "aaa", &[("src/charts.rs", "h2:40")])}));
     assert!(read_only.get("block").is_none(), "a turn that changed nothing isn't asked: {read_only}");
 }
 
@@ -241,11 +272,85 @@ fn a_turn_that_changed_code_through_bash_is_asked_to_track_it() {
 fn a_turn_that_only_committed_is_asked_to_track_it() {
     let b = new_board();
     b.add_session("s1");
-    b.report("hook.prompt", "s1", json!({"prompt": "Commit", "tree": tree(&b, "aaa", &[])}));
-    let out = b.report("hook.stop", "s1", json!({"last_message": "Committed.", "git": {"commit": "fix(app): rows scroll"}, "tree": tree(&b, "bbb", &[])}));
-    let block = out["block"].as_str().expect("a commit with no task blocks the stop");
+    let after = tree_with(&b, "bbb", &[], &[("bbb", "commit: fix(app): rows scroll"), ("aaa", "commit (initial): start")]);
+    let block = stop_after(&b, &[bash("git commit -am 'fix(app): rows scroll'")], tree(&b, "aaa", &[]), after).expect("a commit with no task blocks the stop");
     assert!(block.contains("a commit: fix(app): rows scroll"), "{block}");
 }
+
+#[test]
+fn a_turn_that_ran_no_shell_or_subagent_isnt_blamed_for_the_tree() {
+    let b = new_board();
+    b.add_session("s1");
+    let read = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": format!("{}/a.rs", b.repo())}}]}});
+    let owner_saved = tree(&b, "aaa", &[("a.rs", "h9:5")]);
+    assert_eq!(stop_after(&b, &[read], tree(&b, "aaa", &[]), owner_saved.clone()), None, "the owner's save in their editor isn't this turn's");
+
+    let agent = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Agent", "input": {"prompt": "fix it"}}]}});
+    let block = stop_after(&b, &[agent], tree(&b, "aaa", &[]), owner_saved).expect("a subagent's edits aren't in the transcript");
+    assert!(block.contains("a.rs"), "{block}");
+}
+
+#[test]
+fn junk_files_and_unchanged_content_dont_block_the_stop() {
+    let b = new_board();
+    b.add_session("s1");
+    let before = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let after = tree(&b, "aaa", &[("a.rs", "h1:5"), (".DS_Store", "h7:6148"), ("src/._a.rs", "h8:4"), ("src/a.rs.swp", "h9:12")]);
+    assert_eq!(stop_after(&b, &[bash("ls")], before, after), None, "Finder's and editors' files, and a touched file with the same bytes");
+}
+
+#[test]
+fn a_head_moved_by_pull_or_checkout_isnt_a_commit() {
+    let b = new_board();
+    b.add_session("s1");
+    let start = ("aaa", "commit (initial): start");
+    for how in ["pull: Fast-forward", "checkout: moving from main to other", "reset: moving to HEAD~1", "rebase (finish): returning to refs/heads/main", "merge feature: Fast-forward"] {
+        let after = tree_with(&b, "ccc", &[], &[("ccc", how), start]);
+        assert_eq!(stop_after(&b, &[bash("git pull")], tree(&b, "aaa", &[]), after), None, "{how}");
+    }
+    let after = tree_with(&b, "ccc", &[], &[("ccc", "pull: Fast-forward"), ("bbb", "commit (amend): mine"), start]);
+    let block = stop_after(&b, &[bash("git commit --amend")], tree(&b, "aaa", &[]), after).expect("a commit made before the pull still counts");
+    assert!(block.contains("a commit: mine"), "{block}");
+    let old_hook = json!({"root": b.repo(), "head": "ddd", "files": {}});
+    assert_eq!(stop_after(&b, &[bash("git pull")], json!({"root": b.repo(), "head": "aaa", "files": {}}), old_hook), None, "no reflog, no commit");
+}
+
+#[test]
+fn files_outside_where_the_turn_worked_dont_block_the_stop() {
+    let b = new_board();
+    b.add_session("s1");
+    let app = format!("{}/app", b.repo());
+    std::fs::create_dir_all(&app).unwrap();
+    let before = tree(&b, "aaa", &[]);
+    let after = tree(&b, "aaa", &[("lib/other.rs", "h1:5")]);
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tree": before.clone()}));
+    turn(&b, "s1", "Go", &[bash("cargo fmt")]);
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": app, "tree": after.clone()}));
+    assert!(out.get("block").is_none(), "another terminal's file outside this one's folder: {out}");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tree": before}));
+    turn(&b, "s1", "Go", &[bash("cd ../lib && sed -i '' s/a/b/ other.rs")]);
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": app, "tree": after}));
+    assert!(out["block"].as_str().is_some_and(|x| x.contains("other.rs")), "a folder the shell moved into is the turn's: {out}");
+}
+
+#[test]
+fn a_second_stop_with_no_prompt_doesnt_reuse_the_stamp() {
+    let b = new_board();
+    b.add_session("s1");
+    assert_eq!(stop_after(&b, &[bash("ls")], tree(&b, "aaa", &[]), tree(&b, "aaa", &[])), None);
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": tree(&b, "aaa", &[("a.rs", "h1:5")])}));
+    assert!(out.get("block").is_none(), "the owner's edit after the turn ended: {out}");
+}
+
+#[test]
+fn the_jira_desk_isnt_asked_to_track_its_turns() {
+    let b = new_board();
+    b.add_session("s1");
+    b.app.db.x("INSERT INTO jobs(kind, state, purpose, target) VALUES ('agent', 'done', ?, ?)", p![taskboardd::jira_desk::PURPOSE, json!({"session": "s1"}).to_string()]).unwrap();
+    assert_eq!(stop_after(&b, &[bash("python3 fix.py")], tree(&b, "aaa", &[]), tree(&b, "aaa", &[("a.rs", "h1:5")])), None);
+}
+
 
 #[test]
 fn a_review_alert_stays_until_the_pr_is_reviewed() {

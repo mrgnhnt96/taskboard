@@ -38,8 +38,8 @@ pub struct Report<'a> {
     pub turn_files: Vec<String>,
     /// When that turn started.
     pub turn_at: Option<String>,
-    /// The checkout the turn committed in, when its HEAD moved.
-    pub turn_commit: Option<String>,
+    /// The checkout the turn committed in and the commit's subject, when the reflog shows a commit.
+    pub turn_commit: Option<(String, String)>,
 }
 
 fn s_of(v: &Value, k: &str) -> Option<String> {
@@ -432,6 +432,10 @@ fn ledger_files(app: &App, sid: &str, task_id: i64, event_id: i64) -> Result<()>
 fn on_stop(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
+    if let Some(sid) = r.sid().filter(|_| !r.spooled) {
+        // The prompt's stamp was this turn's: a later Stop with no prompt between has nothing to diff.
+        app.db.x("UPDATE sessions SET turn_tree = NULL WHERE id = ?", p![sid])?;
+    }
     r.set_session_status("idle")?;
     r.note_background(r.background)?;
     let Some(t) = r.task()? else {
@@ -469,9 +473,19 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     Ok(ok(Some(&t), None))
 }
 
-/// What changed in a checkout between two of the hook's tree stamps: the files whose stamp is new,
-/// different or gone (committed or reverted, still on disk), and the checkout's root when HEAD moved.
-fn tree_changes(before: &Value, after: &Value) -> (Vec<String>, Option<String>) {
+/// Files a turn's tools didn't make that turn up in a checkout anyway: the OS's and editors' own.
+fn junk_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini" | ".localized")
+        || name.starts_with("._")
+        || [".swp", ".swo", "~"].iter().any(|x| name.ends_with(x))
+}
+
+/// What changed in a checkout between two of the hook's tree stamps: the files whose content stamp is
+/// new, different or gone (committed or reverted, still on disk), and the checkout's root with the
+/// subject of a commit the reflog shows was made in between. HEAD moved by a pull, merge, rebase,
+/// checkout or reset isn't a commit.
+fn tree_changes(before: &Value, after: &Value) -> (Vec<String>, Option<(String, String)>) {
     let root = after["root"].as_str().unwrap_or("");
     if root.is_empty() || before["root"].as_str() != Some(root) {
         return (vec![], None);
@@ -482,8 +496,75 @@ fn tree_changes(before: &Value, after: &Value) -> (Vec<String>, Option<String>) 
     if let Some(w) = was.as_object() {
         files.extend(w.keys().filter(|f| now.get(f.as_str()).is_none() && std::path::Path::new(f).exists()).cloned());
     }
-    let moved = after["head"].as_str().filter(|h| !h.is_empty()).is_some_and(|h| before["head"].as_str() != Some(h));
-    (files, moved.then(|| root.to_string()))
+    files.retain(|f| !junk_file(f));
+    let commit = new_commit(before, after).map(|subject| (root.to_string(), subject));
+    (files, commit)
+}
+
+const COMMIT_KINDS: &[&str] = &["commit", "cherry-pick", "revert"];
+
+/// The subject of the newest commit made between two stamps, from the reflog entries the later one
+/// has that the earlier one doesn't. A stamp with no reflog (an older hook) shows no commit.
+fn new_commit(before: &Value, after: &Value) -> Option<String> {
+    let (Some(was), Some(now)) = (before["reflog"].as_array(), after["reflog"].as_array()) else { return None };
+    let fresh: &[Value] = match was.first() {
+        Some(top) => match now.iter().position(|e| e == top) {
+            Some(i) => &now[..i],
+            None => {
+                let since = top["at"].as_i64().unwrap_or(0);
+                &now[..now.iter().take_while(|e| e["at"].as_i64().unwrap_or(0) > since).count()]
+            }
+        },
+        None => now,
+    };
+    fresh.iter().find_map(|e| {
+        let how = e["how"].as_str().unwrap_or("");
+        let (kind, subject) = how.split_once(": ").unwrap_or((how, ""));
+        COMMIT_KINDS.iter().any(|k| kind == *k || kind.starts_with(&format!("{k} ("))).then(|| subject.to_string())
+    })
+}
+
+/// The directories a turn worked in: the terminal's folder, the folders of the files it edited and
+/// the ones its shell commands moved into. None when the terminal's folder isn't known.
+fn turn_scope(cwd: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
+    let cwd = cwd.trim_end_matches('/');
+    if cwd.is_empty() {
+        return None;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut dirs = vec![clean_path(cwd)];
+    for d in &turn.shell_dirs {
+        let d = if d == "~" { home.clone() } else if let Some(rest) = d.strip_prefix("~/") { format!("{home}/{rest}") } else { d.clone() };
+        dirs.push(clean_path(&if d.starts_with('/') { d } else { format!("{cwd}/{d}") }));
+    }
+    for f in &turn.files {
+        if let Some(parent) = std::path::Path::new(f).parent().filter(|p| p.is_absolute()) {
+            dirs.push(clean_path(&parent.to_string_lossy()));
+        }
+    }
+    // Git names the checkout by its real path; the terminal may sit in it through a symlink.
+    let real: Vec<String> = dirs.iter().filter_map(|d| std::fs::canonicalize(d).ok()).map(|d| d.to_string_lossy().to_string()).collect();
+    dirs.extend(real);
+    Some(dirs)
+}
+
+/// A path with `.` and `..` resolved by name, without touching the disk.
+fn clean_path(p: &str) -> String {
+    let mut out: Vec<&str> = vec![];
+    for part in p.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            x => out.push(x),
+        }
+    }
+    format!("/{}", out.join("/"))
+}
+
+fn under_any(f: &str, dirs: &[String]) -> bool {
+    dirs.iter().any(|d| d == "/" || f == d || f.starts_with(&format!("{d}/")))
 }
 
 const UNTRACKED_FILES_SHOWN: usize = 3;
@@ -542,14 +623,24 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     if (r.turn_files.is_empty() && r.turn_commit.is_none()) || prflow::visited_by(r.app, &sid)?.is_some() {
         return Ok(None);
     }
+    // The ticket desk works Jira, not code: its turns are never asked to track themselves.
+    if crate::jira_desk::is_desk(r.app, Some(&sid))? {
+        return Ok(None);
+    }
     let Some(s) = board::get_session(r.app, Some(&sid))? else { return Ok(None) };
     let files = project_files(r.app, &s, &r.turn_files)?;
-    let committed = !project_files(r.app, &s, r.turn_commit.as_slice())?.is_empty();
-    if files.is_empty() && !committed {
+    let commit = match &r.turn_commit {
+        Some((root, subject)) if !project_files(r.app, &s, std::slice::from_ref(root))?.is_empty() => Some(subject),
+        _ => None,
+    };
+    if files.is_empty() && commit.is_none() {
         return Ok(None);
     }
     let tb = board::tb_cmd(r.app);
-    let shown = if files.is_empty() { format!("a commit: {}", r.git.st("commit")) } else { shown_files(&files) };
+    let shown = match commit {
+        Some(subject) if files.is_empty() => format!("a commit: {subject}"),
+        _ => shown_files(&files),
+    };
     let last = board::find_task(r.app, s.i("last_task"))?;
     if let Some(last) = last {
         if last.s("status") == Some("done") && last.st("finished_at") >= r.turn_at.clone().unwrap_or_default() {
@@ -2171,19 +2262,24 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     }
     if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) && r.task().ok().flatten().is_none() {
         if let Some(s) = board::get_session(app, r.sid()).ok().flatten() {
-            if let Some(turn) = transcript::last_turn(app, &s) {
-                r.turn_files = turn.files;
+            let turn = transcript::last_turn(app, &s);
+            if let Some(turn) = &turn {
+                r.turn_files = turn.files.clone();
                 r.turn_at = turn.at.as_str().map(|s| s.to_string());
             }
             let before = s.s("turn_tree").and_then(|t| serde_json::from_str::<Value>(t).ok());
-            if let (Some(before), Some(after)) = (before, r.body.get("tree")) {
-                let (files, commit) = tree_changes(&before, after);
-                for f in files {
-                    if !r.turn_files.contains(&f) {
-                        r.turn_files.push(f);
+            if let (Some(turn), Some(before), Some(after)) = (&turn, before, r.body.get("tree")) {
+                // The stamp only speaks for turns that could change files without naming them.
+                if turn.ran_shell || turn.ran_subagent {
+                    let (files, commit) = tree_changes(&before, after);
+                    let scope = if turn.ran_subagent { None } else { turn_scope(&r.b("cwd"), turn) };
+                    for f in files {
+                        if !r.turn_files.contains(&f) && scope.as_ref().is_none_or(|dirs| under_any(&f, dirs)) {
+                            r.turn_files.push(f);
+                        }
                     }
+                    r.turn_commit = commit;
                 }
-                r.turn_commit = commit;
             }
         }
     }

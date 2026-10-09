@@ -176,23 +176,31 @@ pub fn git_info(cwd: &str, timeout: f64) -> Value {
 }
 
 const TREE_FILES_MAX: usize = 2000;
+const REFLOG_KEPT: &str = "30";
+/// Past this many bytes in one file, or in all of a stamp's files together, a file is stamped by
+/// mtime and size instead of its content, so the hook stays fast.
+const HASH_FILE_MAX: u64 = 8 * 1024 * 1024;
+const HASH_TOTAL_MAX: u64 = 64 * 1024 * 1024;
 
-/// The checkout's root, full HEAD and a stamp (mtime and size) per changed or untracked file, so the
-/// board can tell whether a turn changed code however it did it (an edit tool, a Bash script, a
-/// subagent or a commit).
+/// The checkout's root, full HEAD, its newest reflog entries and a stamp (a hash of the content) per
+/// changed or untracked file, so the board can tell whether a turn changed code however it did it
+/// (an edit tool, a Bash script, a subagent or a commit) and how HEAD moved.
 pub fn tree_stamp(cwd: &str, timeout: f64) -> Value {
     if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
         return Value::Null;
     }
     let rev = spawn_git(cwd, &["rev-parse", "--show-toplevel", "HEAD"]);
     let status = spawn_git(cwd, &["status", "--porcelain", "-z", "--untracked-files=all"]);
+    let reflog = spawn_git(cwd, &["reflog", "-n", REFLOG_KEPT, "--date=unix", "--format=%H%x09%gd%x09%gs", "HEAD"]);
     let deadline = Instant::now() + Duration::from_secs_f64(timeout);
     let (Some(rev), Some(status)) = (finish(rev, deadline), finish(status, deadline)) else { return Value::Null };
+    let reflog = finish(reflog, deadline).unwrap_or_default();
     let mut rev = rev.lines();
     let (Some(root), head) = (rev.next().map(str::trim).filter(|r| !r.is_empty()), rev.next().unwrap_or("").trim()) else {
         return Value::Null;
     };
     let mut files = serde_json::Map::new();
+    let mut budget = HASH_TOTAL_MAX;
     let mut entries = status.split('\0');
     while let Some(entry) = entries.next() {
         if entry.len() < 4 || files.len() >= TREE_FILES_MAX {
@@ -203,13 +211,33 @@ pub fn tree_stamp(cwd: &str, timeout: f64) -> Value {
             entries.next();
         }
         let full = format!("{root}/{path}");
-        files.insert(full.clone(), json!(file_stamp(&full)));
+        files.insert(full.clone(), json!(file_stamp(&full, &mut budget)));
     }
-    json!({"root": root, "head": head, "files": files})
+    json!({"root": root, "head": head, "files": files, "reflog": reflog_entries(&reflog)})
 }
 
-fn file_stamp(path: &str) -> String {
+/// `git reflog --date=unix --format=%H%x09%gd%x09%gs` lines, newest first, as `{sha, at, how}`.
+fn reflog_entries(out: &str) -> Vec<Value> {
+    out.lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\t');
+            let (sha, sel, how) = (parts.next()?, parts.next()?, parts.next().unwrap_or(""));
+            let at = sel.rsplit_once('{').and_then(|(_, t)| t.trim_end_matches('}').parse::<i64>().ok()).unwrap_or(0);
+            Some(json!({"sha": sha, "at": at, "how": how}))
+        })
+        .collect()
+}
+
+fn file_stamp(path: &str, budget: &mut u64) -> String {
     let Ok(m) = std::fs::metadata(path) else { return "gone".into() };
+    if m.is_file() && m.len() <= HASH_FILE_MAX && m.len() <= *budget {
+        if let Ok(bytes) = std::fs::read(path) {
+            *budget -= m.len();
+            // FNV-1a over the content: a touch, or a save of the same bytes, reads as no change.
+            let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3));
+            return format!("h{hash:016x}:{}", m.len());
+        }
+    }
     let nanos = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
     format!("{nanos}:{}", m.len())
 }
@@ -259,6 +287,32 @@ mod tests {
         let dirty = tree_stamp(&dir.to_string_lossy(), 5.0);
         let files: Vec<&String> = dirty["files"].as_object().unwrap().keys().collect();
         assert_eq!(files, [&format!("{root}/src/a.rs"), &format!("{root}/src/new.rs")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stamp_follows_content_and_reads_the_reflog() {
+        let dir = std::env::temp_dir().join(format!("tb-tree-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.rs"), "a").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "first one"]);
+        std::fs::write(dir.join("a.rs"), "dirty").unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        let before = tree_stamp(&cwd, 5.0);
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(dir.join("a.rs"), "dirty").unwrap();
+        let touched = tree_stamp(&cwd, 5.0);
+        assert_eq!(before["files"], touched["files"], "the same bytes saved again are the same stamp");
+
+        git(&dir, &["checkout", "-qb", "other"]);
+        let reflog = tree_stamp(&cwd, 5.0)["reflog"].clone();
+        assert!(reflog[0]["how"].as_str().unwrap().starts_with("checkout: moving from "), "{reflog}");
+        assert_eq!(reflog[1]["how"], json!("commit (initial): first one"));
+        assert!(reflog[1]["at"].as_i64().unwrap() > 1_700_000_000, "{reflog}");
+        assert_eq!(reflog[1]["sha"], before["head"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
