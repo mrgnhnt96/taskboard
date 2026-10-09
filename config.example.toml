@@ -16,7 +16,7 @@ midna_bundle = "com.mrgnhnt.midna"   # opened with `open -g -b` when Midna isn't
 open_midna = true
 notify = true                        # desktop notifications through Midna
 
-claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening
+claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening (and Jira with via = "claude")
 claude_projects = "~/.claude/projects"
 
 # The runner starts terminals, sends messages and moves Jira tickets. It's on for the default data
@@ -71,7 +71,8 @@ gh = "gh"
 no_checks_after_mins = 15.0
 
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
-# env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email).
+# env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email). No token? Set via = "claude":
+# each Jira op then runs through a headless `claude -p` that may use only the Atlassian connector's tools.
 [jira]
 site = ""                            # example: "acme.atlassian.net"
 project = ""                         # example: "PROJ"
@@ -87,13 +88,32 @@ in_progress = "In Progress"
 in_review = "In Review"
 done = ""                            # status for a finished task without a PR; empty = leave it
 merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
+via = "rest"                         # "rest" (the API token) or "claude" (the Atlassian connector through claude -p)
+claude_tools = ["mcp__claude_ai_Atlassian", "mcp__atlassian"]   # the connector's tools, for via = "claude" and the desk
+claude_model = "sonnet"
+claude_budget_usd = "0.50"
+claude_timeout_secs = 180
+auto_ticket = false                  # every queued or working task in a project with PRs gets a ticket, and waits for it
+desk = false                         # new tickets go to the Jira desk: a Claude terminal in Midna's Background group
+                                     # that searches for an open ticket covering the work before it makes one
+desk_dir = ""                        # the desk's folder; empty = the board's data folder
+default_product = ""                 # a ticket's product when its goal has none and the work's words pick none
 
 # Products decide the labels, components and extra fields on a goal's tickets (`tb goal set G1 --product web`).
+# A goal with none gets the product its work best matches by `what` (Claude or the desk picks it), or default_product.
 # [jira.products.web]
 # what = "the customer-facing web app"
 # labels = ["web"]
 # components = ["Frontend"]
 # fields = { customfield_10001 = { id = "team-uuid" } }
+
+# What every handoff adds. `branch` names the branch a task's PR goes on: {type} (feat, or fix for a backlog
+# bug), {key} (its Jira key; dropped with the separator after it when there's none), {slug} (from the title),
+# {task} (T12) and {n} (12). Empty: the repo's own convention. A goal's own setup (`tb goal setup`) can override it.
+[handoff]
+footer = ""                          # example: "Code style: follow ~/code-style.md."
+footer_file = ""                     # example: "~/.config/taskboard/handoff-footer.md" (read for every handoff)
+branch = ""                          # example: "{type}/{key}-{slug}"
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a

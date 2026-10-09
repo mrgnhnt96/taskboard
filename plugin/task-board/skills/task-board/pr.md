@@ -26,7 +26,7 @@ Read this when the board brings you back about a done task's PR (`[task-board:T<
 1. `tb pr status T<n>` shows the PR's stage, its checks and its open reviews.
 2. Do the work:
    - **A check failed**: read its log (on GitHub, `gh pr checks` and `gh run view --log-failed`). Work from the error, never a guess. If the PR's change causes it, fix exactly that. If it fails the same way on the base branch without the change, it isn't ours: say so with `tb note`, and don't fix someone else's failure.
-   - **Comments or changes requested**: fix each one, or put one that can fairly wait in the backlog (`tb backlog add "<title>" --kind follow`). Reply to each thread with what you did.
+   - **Comments or changes requested**: fix each one this PR's change caused, or put one that can fairly wait in the backlog (`tb backlog add "<title>" --kind follow`). A comment on base code the PR didn't change goes to the backlog too: reply that it's tracked and resolve it. Never reverse an earlier decision (a goal note, a checkpoint decision, the owner's answer) for a comment; reply with the decision instead. Reply to each thread with what you did.
    - **Ready to merge**: merge only if the wake prompt says merging is allowed. Then merge with the repo's tools and run `tb pr merged T<n>`.
 3. Push the fixes. If the base branch has moved, rebase onto it first and push with `--force-with-lease`. Don't push only to rebase.
 4. Finish every visit with `tb pr wait T<n>` (or `tb pr merged T<n>` after a merge): the board closes the terminal and keeps watching the PR.

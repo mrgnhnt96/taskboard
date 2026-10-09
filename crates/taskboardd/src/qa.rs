@@ -159,9 +159,9 @@ fn read(app: &App, id: i64) -> Result<()> {
         return Ok(());
     }
     if c.s("text").map(|t| t.trim().is_empty()).unwrap_or(true) {
-        match jira::api(app, "GET", &format!("issue/{}/comment/{}", c.st("jira_key"), c.st("comment_id")), None) {
+        match jira::read_comment(app, &c.st("jira_key"), &c.st("comment_id")) {
             Ok(d) => {
-                let text = clip(&jira::adf_text(&d["body"]), 3000);
+                let text = clip(d["text"].as_str().unwrap_or(""), 3000);
                 let author = one_line(d["author"]["displayName"].as_str().unwrap_or(""), 120);
                 if is_owner(app, &d["author"]) {
                     return app.db.tx(|| decide(app, &c, &json!({"verdict": "none", "mine": true})));
@@ -465,20 +465,17 @@ pub fn poll(app: &App) -> std::result::Result<usize, String> {
         return Ok(0);
     }
     // Jira's JQL takes minutes, not seconds: look back a little past the last check.
-    let jql = format!("key in ({}) AND updated >= -{}m", keys.join(","), (POLL_SECS / 60.0) as i64 * 2 + 5);
-    let found = jira::api(app, "POST", "search/jql", Some(json!({"jql": jql, "fields": ["summary"], "maxResults": 100})))?;
+    let comments = jira::recent_comments(app, &keys, (POLL_SECS / 60.0) as i64 * 2 + 5)?;
+    let since = parse_iso(&since).unwrap_or(0.0);
     let mut new = 0;
-    for issue in found["issues"].as_array().cloned().unwrap_or_default() {
-        let key = issue["key"].as_str().unwrap_or("").to_string();
-        let d = jira::api(app, "GET", &format!("issue/{key}/comment?orderBy=-created&maxResults=50"), None)?;
-        for cm in d["comments"].as_array().cloned().unwrap_or_default() {
-            if cm["created"].as_str().and_then(parse_iso).unwrap_or(0.0) < parse_iso(&since).unwrap_or(0.0) || is_owner(app, &cm["author"]) {
-                continue;
-            }
-            let ev = json!({"key": key, "comment_id": cm["id"], "author": cm["author"]["displayName"], "text": jira::adf_text(&cm["body"])});
-            if intake(app, &ev).map(|r| r["new"] == true).unwrap_or(false) {
-                new += 1;
-            }
+    for cm in comments {
+        let older = cm["created"].as_str().and_then(jira::comment_time).map(|t| t < since).unwrap_or(false);
+        if older || is_owner(app, &cm["author"]) {
+            continue;
+        }
+        let ev = json!({"key": cm["key"], "comment_id": cm["id"], "author": cm["author"]["displayName"], "text": cm["text"]});
+        if intake(app, &ev).map(|r| r["new"] == true).unwrap_or(false) {
+            new += 1;
         }
     }
     Ok(new)

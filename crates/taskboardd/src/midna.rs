@@ -196,7 +196,7 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     let (agent_args, resume) = claude_args(a)?;
     let mut params = json!({"kind": "agent", "agent": "claude", "cwd": cwd,
                             "name": tab_title(a.s("title").unwrap_or("Claude"), j.i("task_id")),
-                            "background": false, "close_on_exit": true, "agent_args": agent_args});
+                            "background": as_bool(a.get("background"), false), "close_on_exit": true, "agent_args": agent_args});
     if let Some(r) = resume {
         params["resume"] = json!(r);
     }

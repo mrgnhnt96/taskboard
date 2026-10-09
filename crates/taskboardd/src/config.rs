@@ -29,6 +29,7 @@ pub struct FileConfig {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub handoff: HandoffConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -148,6 +149,18 @@ impl Default for PrConfig {
     }
 }
 
+/// What every handoff adds: the branch name to use and a footer (the owner's code style, say).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct HandoffConfig {
+    /// Text added to the end of every handoff.
+    pub footer: String,
+    /// A file whose text is added to the end of every handoff (read each time), after `footer`.
+    pub footer_file: String,
+    /// The branch name a task's PR goes on: {type} {key} {slug} {task} {n}. Empty: the repo's convention.
+    pub branch: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct JiraProduct {
@@ -178,6 +191,24 @@ pub struct JiraConfig {
     pub done: String,
     pub merged: String,
     pub products: BTreeMap<String, JiraProduct>,
+    /// How the board talks to Jira: "rest" (the API token) or "claude" (a headless `claude -p` with
+    /// the Atlassian connector's tools, for a board with no token).
+    pub via: String,
+    /// The tools `claude -p` may use for Jira ("claude" via and the desk): the Atlassian connector's.
+    pub claude_tools: Vec<String>,
+    pub claude_model: String,
+    pub claude_budget_usd: String,
+    pub claude_timeout_secs: u64,
+    /// Ask for a ticket for every queued or working task in a project that ships PRs; the task
+    /// waits until it has one.
+    pub auto_ticket: bool,
+    /// Tickets are found or made by the Jira desk: one Claude terminal in Midna's Background group
+    /// that searches Jira for an open ticket covering the work before it makes one.
+    pub desk: bool,
+    /// The folder the desk's terminal opens in (the board's data folder when empty).
+    pub desk_dir: String,
+    /// The product a ticket gets when its goal has none and nothing in the work picks one.
+    pub default_product: String,
 }
 
 impl Default for JiraConfig {
@@ -198,6 +229,15 @@ impl Default for JiraConfig {
             done: String::new(),
             merged: String::new(),
             products: BTreeMap::new(),
+            via: "rest".into(),
+            claude_tools: vec!["mcp__claude_ai_Atlassian".into(), "mcp__atlassian".into()],
+            claude_model: "sonnet".into(),
+            claude_budget_usd: "0.50".into(),
+            claude_timeout_secs: 180,
+            auto_ticket: false,
+            desk: false,
+            desk_dir: String::new(),
+            default_product: String::new(),
         }
     }
 }
@@ -223,6 +263,7 @@ pub struct Config {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub handoff: HandoffConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -305,6 +346,7 @@ impl Config {
             backlog: f.backlog,
             pr: f.pr,
             jira,
+            handoff: f.handoff,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }
@@ -348,6 +390,10 @@ impl Config {
     }
     pub fn jira_on(&self) -> bool {
         !self.jira.site.trim().is_empty() && !self.jira.project.trim().is_empty()
+    }
+    /// Jira goes through headless Claude and the Atlassian connector instead of the REST API.
+    pub fn jira_via_claude(&self) -> bool {
+        self.jira.via.trim().eq_ignore_ascii_case("claude")
     }
     /// The owner's name with a possessive, for agent-facing text ("Sam's answers").
     pub fn owners(&self) -> String {

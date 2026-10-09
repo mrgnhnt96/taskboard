@@ -20,6 +20,8 @@ If the owner's board has products configured, give the goal one: `--product <nam
 - Aim for PRs that are easy to review and have a small impact, not for as many PRs as possible.
 - A goal runs its tasks in order, so list them in the order they should run; a task that needs an earlier one's code goes after it.
 - A task that needs work from another goal: say so in its detail. Mid-task, the agent runs `tb wait-for T<n>` (see `questions.md`). Never assume the other goal will have it merged in time.
+- Review findings are in scope only when this task's change caused them. Say so in a task's detail when it runs a review: findings on base code go to the backlog and are dismissed, and an earlier decision is never reversed for one.
+- Every task in the goal starts the same way (a bootstrap command, a branch rule, a service to start)? Put it in the goal's setup when the owner asks: `tb goal setup G<n> "Run make bootstrap; branch from origin/develop as feature/{task}"`. {task}, {n}, {wave} and {goal} are filled in per task.
 - A task that changes no code (an investigation, a measurement): say in its detail that the agent attaches its write-up or numbers with `tb attach <link> --kind results`.
 - A task that builds or changes UI from a design gets the design attached: `tb attach <url-or-path> --kind design --task T<n>` (or `--goal G<n>` for every task).
 

@@ -179,6 +179,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "locks", "TEXT"),
     ("tasks", "alone", "TEXT"),
     ("goals", "worktree_base", "TEXT"),
+    ("goals", "setup", "TEXT"),
+    ("tasks", "jira_none", "INT DEFAULT 0"),
 ];
 
 fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
