@@ -40,6 +40,7 @@ reader just changed doesn't vanish from under them).
   "work_hours": work_hours,
   "usage": usage | null,                        // null when no usage reading is known: the pill is hidden
   "accounts": [{"id", "label", "reason", "reauth": bool}],  // accounts needing the owner (missing scopes or a failed check): the amber status-bar pill
+  "master": [break],                            // open master breaks (GET /master): the "Master is red" banner lines
   "pr_builds": {"stopped", "by", "at", "reason", …},  // PR builds stopped (GET /pr-builds): the "PR builds stopped" pill
   "pr_feed": {"on", "healthy", "problem", "why", …},  // the PR feed's health (GET /prs/feed); the app shows a pill while it's unhealthy
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
@@ -610,6 +611,31 @@ way to cancel alerts at once. A cancelled push is logged on its task. The PRs' c
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
 started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
 `builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?}` says what happened.
+
+### Master breaks (`tb master`)
+An optional watch on each project's default branch (`[master.projects.<name>]`); `breaks.rs` documents the flow and
+the `breaks` table.
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. |
+| `GET /master/:ref` | | `tb master M3`. **Response:** the break. |
+| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?}` | `tb master M3 ours\|not-ours\|unsure`: the owner's word, never decided again. `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
+| `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
+
+`break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
+checks: [str], evidence: {checks: [{name, url, steps, tests}]}, suspects: [{sha, name, email, message, ours}], verdict:
+"ours"|"not_ours"|"unsure"|null, verdict_label, verdict_by: "commits"|"claude"|"fallback"|<who>, verdict_why,
+verdict_at, task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the open ones: the
+app's "Master is red" banner lines, with Open T<n> for the fix task.
+
+A failed check on the branch's head opens a break; a head whose checks all passed closes it. Suspects are the commits
+since the last green head the board saw (or the head alone), each `ours` when its author's email is in `owner_emails`.
+No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` decides from the evidence (`[master]
+fault_check`), or without it: every suspect the owner's makes it `ours`, else `unsure`. Only `ours` gets a fix task
+(queued, high priority) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
+branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
+again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
 
 ### Projects
 | Path | Body | Notes |

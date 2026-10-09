@@ -1057,6 +1057,7 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
     for p in crate::install::in_the_way() {
         out.push(bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)).child(div().flex_1().min_w_0().child(p)).into_any_element());
     }
+    out.extend(ui::prwatch::banner(m, t, cx));
     if alerts.len() > 1 {
         let r = rows.iter().find(|r| r.kind == "alert").cloned();
         if let Some(r) = r {

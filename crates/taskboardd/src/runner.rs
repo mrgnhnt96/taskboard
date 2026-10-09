@@ -475,6 +475,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     close_pr_tabs(app)?;
     app.db.tx(|| crate::feed::check(app))?;
     crate::prbuilds::tick(app)?;
+    crate::breaks::tick(app)?;
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;

@@ -5,6 +5,7 @@ pub mod api;
 pub mod app;
 pub mod bits;
 pub mod board;
+pub mod breaks;
 pub mod clock;
 pub mod comments;
 pub mod config;

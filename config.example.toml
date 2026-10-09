@@ -122,6 +122,25 @@ timeout_secs = 30.0
 [pr_builds.cancel]
 # azure = "az pipelines runs cancel --id \"$TB_BUILD_ID\""   # example
 
+# Master breaks: watch each listed project's default branch. A failed check on its head opens a
+# break (M<n>, `tb master`); it's yours when your commits (owner_emails) are among the suspects and
+# a headless Claude agrees. Only yours gets a fix task and an urgent alert; green closes it. The app
+# shows "Master is red". See docs/API.md ("Master breaks").
+[master]
+every_mins = 5.0                     # how often each branch is read
+commits = 10                         # how many of its latest commits are read for suspects
+fault_check = true                   # ask `claude -p` whether one of your commits broke it
+model = "sonnet"
+budget_usd = "0.50"
+timeout_secs = 180
+recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished and it's still red
+
+# One table per watched project, by its name. Every key is optional.
+# [master.projects.webapp]
+# branch = "main"                     # default: main
+# repo = "acme/webapp"                # default: from the project's origin remote
+# host = "github"                     # github or bitbucket; default: from the remote
+
 # Context limits for the board's agents. `tb limits` changes them on the board; these are where it
 # starts. 0 turns one off.
 [limits]

@@ -379,6 +379,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["prs", "feed"]) => Ok(crate::feed::health(app)),
         ("POST", ["prs", "event"]) => crate::feed::intake(app, body),
         ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app)),
+        (_, ["master", rest @ ..]) => crate::breaks::route(app, method, rest, body),
         ("GET", ["pr-builds"]) => Ok(crate::prbuilds::status(app)),
         ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),
         ("POST", ["prs", "refresh"]) => {
@@ -527,6 +528,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         "prs_checked_at": app.shared.lock().prs_checked_at,
         "pr_feed": crate::feed::health(app),
         "pr_builds": crate::prbuilds::status(app),
+        "master": crate::breaks::banner(app)?,
         "projects": projects::list_projects(app)?, "sessions": sessions, "session_projects": sp, "goals": goals,
         "columns": Value::Object(out_cols), "counts": Value::Object(counts), "planned": planned,
     });
