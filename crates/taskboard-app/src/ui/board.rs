@@ -90,6 +90,7 @@ fn sess_status(status: &str) -> (&'static str, &'static str) {
         "working" => ("working", "Working"),
         "needs" => ("needs", "Needs you"),
         "offline" => ("offline", "No network"),
+        "waiting" => ("waiting", "Waiting"),
         "gone" => ("gone", "Gone"),
         _ => ("idle", "Idle"),
     }
@@ -101,7 +102,7 @@ pub struct SessCardVm {
     pub id: String,
     pub name: NameView,
     pub status: &'static str,
-    pub state_label: &'static str,
+    pub state_label: String,
     pub project: String,
     /// Tooltip on the project: its folder.
     pub project_title: String,
@@ -115,7 +116,7 @@ pub struct SessCardVm {
 #[cfg(test)]
 impl SessCardVm {
     pub fn text(&self) -> String {
-        join([self.name.text.as_str(), self.state_label, &self.project, self.compacting.as_deref().unwrap_or(""), self.sub.as_deref().unwrap_or("")])
+        join([self.name.text.as_str(), &self.state_label, &self.project, self.compacting.as_deref().unwrap_or(""), self.sub.as_deref().unwrap_or("")])
     }
     pub fn acts(&self) -> Vec<&'static str> {
         let mut a = vec!["open-session"];
@@ -156,7 +157,7 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
     }
     let order = |x: &Value| match sess_status(s(x, "status")).0 {
         "needs" | "offline" => 0,
-        "working" => 1,
+        "working" | "waiting" => 1,
         "gone" => 3,
         _ => 2,
     };
@@ -168,7 +169,8 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
         .into_iter()
         .take(STRIP_MAX)
         .map(|x| {
-            let (status, state_label) = sess_status(s(x, "status"));
+            let (status, label) = sess_status(s(x, "status"));
+            let state_label = if status == "waiting" { fmt::background_label(&x["background"]) } else { label.to_string() };
             let id = s(x, "id").to_string();
             let sub = opt_s(x, "task_title").map(str::to_string);
             let task_ref = opt_s(x, "task_ref").map(str::to_string);
@@ -940,13 +942,13 @@ fn halo_dot(color: Hsla, halo: Hsla) -> Div {
 
 fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let (dot, halo) = match c.status {
-        "working" => (t.accent, t.accent_soft),
+        "working" | "waiting" => (t.accent, t.accent_soft),
         "needs" => (t.warn, t.warn_soft),
         "offline" => (t.down, t.down_soft),
         _ => (t.faint, t.col),
     };
     let state_color = match c.status {
-        "working" => t.accent,
+        "working" | "waiting" => t.accent,
         "needs" => t.warn,
         "offline" => t.down,
         _ => t.muted,
@@ -1060,7 +1062,7 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
                 .min_w_0()
                 .child(halo_dot(dot, halo))
                 .child(name_el)
-                .child(div().flex_none().ml_auto().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(state_color).child(c.state_label)),
+                .child(div().flex_none().ml_auto().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(state_color).child(c.state_label.clone())),
         )
         .child(
             div()

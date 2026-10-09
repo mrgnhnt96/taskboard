@@ -193,6 +193,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     // A typed prompt as the human typed it (newlines kept, not clipped to the line `text` shows), for
     // the `tb start` word check.
     ("session_events", "full", "TEXT"),
+    // Background commands and agents its last turn left running, and when the board counted them.
+    ("sessions", "background", "INT DEFAULT 0"),
+    ("sessions", "background_agents", "INT DEFAULT 0"),
+    ("sessions", "background_at", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

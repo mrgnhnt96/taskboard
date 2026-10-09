@@ -52,7 +52,7 @@ pub fn start_task(
         let Some(s) = s.filter(|s| s.s("status") != Some("gone")) else {
             return err(409, "That Midna terminal isn't open any more.");
         };
-        if s.s("status") == Some("idle") && board::runs_claude(&s) {
+        if s.s("status") == Some("idle") && !board::waiting_on_background(&s) && board::runs_claude(&s) {
             board::create_job(
                 app,
                 "agent",
@@ -291,7 +291,7 @@ fn worth_retrying(tried: &[Row]) -> bool {
 }
 
 fn settled(s: &Row) -> bool {
-    s.s("status") == Some("idle") && !board::offline(s) && age_secs(s.s("status_at")).unwrap_or(0.0) >= AUTO_CLOSE_SETTLE_SECS
+    s.s("status") == Some("idle") && !board::offline(s) && !board::waiting_on_background(s) && age_secs(s.s("status_at")).unwrap_or(0.0) >= AUTO_CLOSE_SETTLE_SECS
 }
 
 pub fn auto_close_done(app: &App) -> Result<()> {
@@ -409,7 +409,7 @@ pub fn close_idle_after_hours(app: &App) -> Result<()> {
         return Ok(());
     }
     for (s, t) in task_terminals(app)? {
-        if s.s("status") != Some("idle") || board::offline(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
+        if s.s("status") != Some("idle") || board::offline(&s) || board::waiting_on_background(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
             continue;
         }
         if hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {

@@ -366,12 +366,40 @@ pub fn offline(s: &Row) -> bool {
     has(s.s("api_error")) && s.s("api_error_kind") == Some("network")
 }
 
+/// How many background commands and agents an idle terminal's last turn left running: 0 once a turn
+/// starts, or once Claude would have stopped them.
+pub fn background(s: &Row) -> i64 {
+    if s.s("status").unwrap_or("idle") != "idle" || age_secs(s.s("background_at")).is_none_or(|a| a >= crate::transcript::CLAUDE_STOPS_BACKGROUND_AFTER) {
+        return 0;
+    }
+    s.i("background").unwrap_or(0).max(0)
+}
+
+/// Idle at its prompt, but its background commands or agents are still running: not free for work.
+pub fn waiting_on_background(s: &Row) -> bool {
+    background(s) > 0
+}
+
+/// What a waiting terminal is waiting on, for the page: `{"agents": 1, "commands": 1}`, or null.
+pub fn background_view(s: &Row) -> Value {
+    let total = background(s);
+    if total == 0 {
+        return Value::Null;
+    }
+    let agents = s.i("background_agents").unwrap_or(0).clamp(0, total);
+    json!({"agents": agents, "commands": total - agents})
+}
+
 /// A session's status for the page. A terminal whose last turn ended on an API error and that hasn't
-/// started another shows it: "offline" when the network went, else "needs".
+/// started another shows it: "offline" when the network went, else "needs". One whose turn ended
+/// with background work still running shows "waiting".
 pub fn shown_status(s: &Row) -> &str {
     let st = s.s("status").unwrap_or("idle");
-    if matches!(st, "working" | "gone") || !has(s.s("api_error")) {
+    if matches!(st, "working" | "gone") {
         return st;
+    }
+    if !has(s.s("api_error")) {
+        return if waiting_on_background(s) { "waiting" } else { st };
     }
     if s.s("api_error_kind") == Some("network") {
         "offline"
@@ -397,7 +425,7 @@ pub fn close_rule(s: Option<&Row>) -> Option<&'static str> {
     if s.s("status") == Some("gone") {
         return None;
     }
-    Some(if s.s("status").unwrap_or("idle") == "idle" { "close" } else { "force" })
+    Some(if s.s("status").unwrap_or("idle") == "idle" && !waiting_on_background(s) { "close" } else { "force" })
 }
 
 /// Did the board open this terminal (an agent job's terminal)? Tabs the owner opened stay open.
@@ -433,9 +461,18 @@ pub fn add_terminal(app: &App, task_id: i64, sid: &str, why: &str) -> Result<()>
     Ok(())
 }
 
+/// A task's terminal's status: its own, but "waiting" while its background work runs.
+pub fn terminal_status(s: Option<&Row>) -> &str {
+    match s {
+        Some(s) if waiting_on_background(s) => "waiting",
+        Some(s) => s.s("status").unwrap_or("gone"),
+        None => "gone",
+    }
+}
+
 pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
     let rows = app.db.q(
-        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status FROM task_terminals tt \
+        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_agents, s.background_at FROM task_terminals tt \
          LEFT JOIN sessions s ON s.id = tt.session_id WHERE tt.task_id = ? ORDER BY tt.rowid DESC",
         p![t.id()],
     )?;
@@ -444,14 +481,14 @@ pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
         .map(|r| {
             let sid = r.st("session_id");
             json!({"id": sid, "name": r.s("name").map(|s| s.to_string()).unwrap_or_else(|| session_name(app, Some(&sid), t.s("session_name"))),
-                   "status": r.s("status").unwrap_or("gone"), "why": r.v("why"), "at": r.v("at")})
+                   "status": terminal_status(Some(r)), "background": background_view(r), "why": r.v("why"), "at": r.v("at")})
         })
         .collect();
     if let Some(sid) = t.s("session_id").filter(|s| !s.is_empty()) {
         if !out.iter().any(|x| x["id"] == sid) {
             let s = get_session(app, Some(sid))?;
             out.push(json!({"id": sid, "name": session_name(app, Some(sid), t.s("session_name")),
-                            "status": s.as_ref().and_then(|s| s.s("status")).unwrap_or("gone"),
+                            "status": terminal_status(s.as_ref()), "background": s.as_ref().map_or(Value::Null, background_view),
                             "why": "Worked on the task", "at": t.v("started_at")}));
         }
     }
