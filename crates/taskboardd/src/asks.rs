@@ -374,7 +374,8 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
     })
 }
 
-/// After each poll: brings the ledger up to date with what the PRs say, then applies the stand-in
+/// The review sweep (`runner::reviews`, every `[intervals] reviews` seconds whatever the feed's
+/// state): brings the ledger up to date with what the PRs say, then applies the stand-in
 /// rules and swaps reviewers who took too long.
 ///
 /// - An ask is answered when its reviewer has reviewed (their speed is the work minutes it took),

@@ -395,6 +395,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
+            crate::runner::reviews(app)?;
             Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at}))
         }
         ("POST", ["alerts"]) => {

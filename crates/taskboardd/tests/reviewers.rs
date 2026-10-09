@@ -113,8 +113,10 @@ pub fn fake(b: &Board, rec: Record) -> Arc<FakeHost> {
     h
 }
 
+/// One poll of the PRs, then the review sweep (which runs on its own timer, `runner::reviews`).
 pub fn poll(b: &Board) {
     prflow::refresh(&b.app).unwrap();
+    taskboardd::runner::reviews(&b.app).unwrap();
 }
 
 pub fn set_state(h: &FakeHost, user: &str, state: &str) {
@@ -461,6 +463,25 @@ fn a_swapped_off_request_for_changes_is_waived_and_someone_else_asked() {
     assert_eq!(b.asks(id)[2].st("why"), "fill_in");
     poll(&b);
     assert_eq!(b.asks(id).len(), 3, "once");
+}
+
+#[test]
+fn the_sweep_swaps_while_a_healthy_feed_drives_the_prs() {
+    let b = board_with(|c| {
+        c.reviewers.swap = true;
+        c.feed.on = true;
+    });
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post("/prs/heartbeat", json!({}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert!(!taskboardd::feed::poll_due(&b.app), "a healthy feed: no poll");
+    age_asks(&b, 100.0);
+    // Only the sweep's own timer runs: no poll of the PRs.
+    taskboardd::runner::reviews(&b.app).unwrap();
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open")]);
+    assert!(h.calls().contains(&"remove {ana}".to_string()), "{:?}", h.calls());
 }
 
 #[test]

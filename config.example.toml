@@ -32,6 +32,7 @@ claude_projects = "~/.claude/projects"
 runner = 5.0
 spool = 10.0
 prs = 60.0
+reviews = 60.0                       # the review sweep: swaps, stand-ins, the board's own asks and retries, bot runs
 midna_sync = 3.0
 midna_up = 20.0
 running_job_expiry = 360.0

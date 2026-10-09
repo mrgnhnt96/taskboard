@@ -907,9 +907,10 @@ Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (an
 the PR's author (nor `[reviewers] me`, nor the repo's `git config user.email`), anyone removed, anyone without a
 host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + open
 asks × `turn_gap_hours` / weight, earliest first; weight = automation × speed, where speed comes from the median
-work minutes they took to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`). After each poll the ledger
+work minutes they took to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`). Each review sweep the ledger
 marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: minutes inside the work hours, or every
-minute with the hours off), and closed when the PR merged or closed first.
+minute with the hours off), and closed when the PR merged or closed first. The sweep runs every `[intervals] reviews`
+seconds (60) on its own timer, whether or not the PRs are polled: with a healthy feed the poll rests, the sweep doesn't.
 
 **Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). During the board's work hours the
 picker checks candidates, in turn order and at most `pick_tries` per pick, with Taskboard's Slack account: tiers
@@ -919,13 +920,13 @@ weekend). A status matching `out_pattern` is out and never picked; someone Slack
 hours, or without a provider, nobody is checked. The client only calls `users.lookupByEmail`, `users.info`,
 `users.getPresence` and `search.messages`: the board never messages anyone.
 
-**Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. After each poll the
+**Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. Each review sweep the
 board looks for comments by them that carry `mark` (case-insensitive) on the PRs it watches, from the last
 `bot_window_hours`, and records each run in `reviewer_bot_runs` (comments within `bot_run_gap_mins` are one run).
 With a run seen within two intervals the bot is timed: its next run is the last + `every_h`, the picker asks that
 person only when it's at most `bot_due_mins` away, and their pace is the fastest in `speed_by_minutes`.
 
-**The sweep** (`asks.rs`, after each poll) applies the stand-in rules to asks swapped off an open PR (by a swap or
+**The sweep** (`asks.rs`, every `[intervals] reviews` seconds) applies the stand-in rules to asks swapped off an open PR (by a swap or
 `tb pr reviewers --replace`): someone swapped off who reviews anyway is `came_back` (their review counts again: they
 leave `pr_flow.swapped_off`), and a stand-in who hasn't reviewed yet is taken off the PR (`dropped`). Someone swapped
 off who asks for changes doesn't block the PR (`prflow::review_of` waives anyone in `swapped_off`), and one more

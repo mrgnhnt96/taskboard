@@ -67,6 +67,9 @@ pub struct Intervals {
     pub runner: f64,
     pub spool: f64,
     pub prs: f64,
+    /// The review sweep (`asks::sweep`: swaps, stand-ins, the board's own asks and their retries, bot
+    /// runs), whatever the PR feed's state.
+    pub reviews: f64,
     pub midna_sync: f64,
     pub midna_up: f64,
     pub running_job_expiry: f64,
@@ -81,6 +84,7 @@ impl Default for Intervals {
             runner: 5.0,
             spool: 10.0,
             prs: 60.0,
+            reviews: 60.0,
             midna_sync: 3.0,
             midna_up: 20.0,
             running_job_expiry: 360.0,
