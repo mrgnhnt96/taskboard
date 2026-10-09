@@ -138,6 +138,12 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// This terminal's task, its line and a PR it's visiting, as JSON. Only reads: safe to poll from a status bar
+    Peek {
+        /// Print Midna status-bar segments instead (`[]` when there's nothing to show)
+        #[arg(long)]
+        midna: bool,
+    },
     /// Wait for another task's work before carrying on (or `none`)
     WaitFor {
         tasks: Vec<String>,
@@ -301,6 +307,18 @@ enum Cmd {
         /// off: let the Mac sleep for the rest of today; clear: back to the work hours
         #[arg(long, value_parser = ["off", "clear"])]
         today: Option<String>,
+    },
+    /// Show or change what Midna's status bar shows of a terminal's task: its goal, and the titles
+    StatusBar {
+        /// The task's goal before it
+        #[arg(long, value_parser = ["on", "off"])]
+        goal: Option<String>,
+        /// Titles after the refs (off: refs only; hovering still shows them)
+        #[arg(long, value_parser = ["on", "off"])]
+        title: Option<String>,
+        /// Go back to the defaults (both on)
+        #[arg(long)]
+        reset: bool,
     },
     /// Show or change the context limits: the compact window, when a cold conversation is compacted,
     /// how big and how fresh a conversation must be to resume, and the generated-file globs
@@ -2906,6 +2924,27 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             });
             Ok(0)
         }
+        Cmd::Peek { midna } => {
+            // whoami, not a tb.status report: a report marks the terminal active and hands it deliveries.
+            if c.session.is_empty() {
+                if midna {
+                    out("[]");
+                    return Ok(0);
+                }
+                return Err("tb peek only works inside a Midna terminal.".into());
+            }
+            match c.call("GET", &format!("/whoami?session={}", c.session), None) {
+                Ok(v) if midna => {
+                    let o = taskboardd::statusbar::Options::from_whoami(&v);
+                    out(&taskboardd::statusbar::segments(&v, o).to_string())
+                }
+                Ok(v) => out(&v.to_string()),
+                // A status bar hides its item while the board is down rather than showing an error.
+                Err(_) if midna => out("[]"),
+                Err(e) => return Err(e),
+            }
+            Ok(0)
+        }
         Cmd::Status { t } => {
             if let Some(x) = t.task {
                 let v = c.call("GET", &format!("/tasks/{}", task_ref(&x)?), None)?;
@@ -3612,6 +3651,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 };
                 out(&format!("{} · {floor}", if st["mode"] == "always" { "Always during the hours" } else { "Only while agents have work" }));
             }
+            Ok(0)
+        }
+        Cmd::StatusBar { goal, title, reset } => {
+            let mut b = json!({});
+            for (k, v) in [("goal", goal), ("title", title)] {
+                if let Some(v) = v {
+                    b[k] = json!(v == "on");
+                }
+            }
+            if reset {
+                b["reset"] = json!(true);
+            }
+            let v = if b.as_object().is_some_and(|o| o.is_empty()) { c.call("GET", "/status-bar", None)? } else { c.call("POST", "/status-bar", Some(b))? };
+            out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
         Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, reset } => {

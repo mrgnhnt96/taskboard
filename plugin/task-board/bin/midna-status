@@ -1,0 +1,7 @@
+#!/bin/sh
+# Midna status-bar item: the terminal's task-board goal, task and line. Midna runs it with
+# MIDNA_SESSION set; `tb peek` only reads, so it's safe on every refresh. The board asks Midna to
+# add the app's copy to ui.status.items; `tb status-bar` turns the goal or the titles off.
+
+here=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)
+"$here/tb" peek --midna 2>/dev/null || echo '[]'

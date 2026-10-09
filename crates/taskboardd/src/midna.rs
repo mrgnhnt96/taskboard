@@ -488,6 +488,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     app.shared.lock().midna_usage = usage.and_then(|u| u.get("claude").cloned()).filter(|v| v.is_object());
     keep_awake::sync(app);
     read_settings(app);
+    crate::statusbar::offer(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         if let Err(e) = call(app, "session.close", json!({"id": sid})) {
             app.info(format!("midna: couldn't close {sid} after Claude exited: {e}"));

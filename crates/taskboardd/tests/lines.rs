@@ -326,3 +326,16 @@ fn a_parked_task_waits_at_the_back_of_its_terminals_line() {
     b.app.db.tx(|| lines::tick(&b.app)).unwrap();
     assert_eq!(b.on("s1").as_deref(), Some(t1.as_str()));
 }
+
+#[test]
+fn the_status_bar_shows_the_goal_and_titles_until_turned_off() {
+    let b = new_board();
+    b.on_task("s1", "Fix the header");
+    assert_eq!(b.get("whoami?session=s1")["status_bar"], json!({"goal": true, "title": true}));
+    let r = b.post("status-bar", json!({"goal": false, "title": false}));
+    assert_eq!(r["line"], "Goal: off\nTitles: off");
+    assert_eq!(b.get("whoami?session=s1")["status_bar"], json!({"goal": false, "title": false}));
+    b.post("status-bar", json!({"title": true}));
+    assert_eq!(b.get("status-bar")["goal"], false, "a change leaves the other option alone");
+    assert_eq!(b.post("status-bar", json!({"reset": true}))["line"], "Goal: on\nTitles: on");
+}
