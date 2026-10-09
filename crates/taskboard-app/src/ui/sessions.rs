@@ -843,6 +843,7 @@ fn timeline_label(kind: &str) -> &'static str {
         "start" => "Started",
         "end" => "Ended",
         "take" => "Task",
+        "added" => "Added",
         "done" => "Done",
         "fail" => "Failed",
         "rename" => "Renamed",

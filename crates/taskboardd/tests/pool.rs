@@ -319,7 +319,7 @@ fn a_task_started_by_hand_without_free_devices_says_so() {
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.started(), vec![a]);
     let c = b.task("C", json!({"devices": "android"}));
-    b.post(&format!("tasks/T{c}/start"), json!({"mode": "new"}));
+    api::dispatch(&b.app, "POST", &format!("tasks/T{c}/start"), &app_query(), &json!({"mode": "new"})).unwrap();
     assert_eq!(b.get(&format!("tasks/T{c}"))["devices"]["lent"], json!([]));
     let want = format!("Waits for a android device (T{a} has them); it started without");
     let said = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = ?", p![c, want]).unwrap();

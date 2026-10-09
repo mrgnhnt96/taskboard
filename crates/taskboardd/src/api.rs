@@ -198,7 +198,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["tasks", id]) => patch_task(app, tid(id)?, body),
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
-        ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, body),
+        ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, query, body),
         ("POST", ["tasks", id, "answer"]) => answer(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
@@ -997,14 +997,25 @@ fn gate(app: &App, id: i64, event: &str, stopped: &str) -> Result<bool> {
     }
 }
 
-fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
+fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     let mode = { let m = body_str(body, "mode"); if m.is_empty() { "new".to_string() } else { m } };
     if !["new", "queue", "attach"].contains(&mode.as_str()) {
         return err(400, "Start mode must be new, queue or attach.");
     }
-    // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's.
+    // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's,
+    // and only the app's own request is that; any other caller with no terminal is no one's word.
     let via = body_str(body, "via_session");
     let started = if via.is_empty() {
+        if !from_app(query) {
+            return err(
+                403,
+                format!(
+                    "Only a human can start {}: {} can press Start on the board, or tell an agent in a terminal to start it (tb start).",
+                    rf("task", id),
+                    app.cfg.owner
+                ),
+            );
+        }
         "Started in the UI".to_string()
     } else {
         if crate::startword::owners_word(app, &via, id)?.is_none() {

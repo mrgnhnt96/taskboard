@@ -153,7 +153,9 @@ fn a_hook_can_stop_a_task_from_starting() {
     assert_eq!(t.s("status"), Some("needs"));
     assert!(t.st("latest").contains("the build farm is down"));
     assert!(b.alerts().iter().any(|a| a.contains("the build farm is down")), "{:?}", b.alerts());
-    let (code, why) = b.post("/tasks/T1/start", json!({"mode": "new"})).unwrap_err();
+    let from_app: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+    let e = api::dispatch(&b.app, "POST", "/tasks/T1/start", &from_app, &json!({"mode": "new"})).unwrap_err();
+    let (code, why) = (e.status, e.message);
     assert_eq!(code, 409);
     assert!(why.contains("the build farm is down"));
 }

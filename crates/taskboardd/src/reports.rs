@@ -1606,6 +1606,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                            "devices": r.body.get("devices"), "bits": r.body.get("bits")}]);
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
+        note_made(r, &created)?;
         return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
@@ -1625,8 +1626,18 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
     )?;
+    note_made(r, &[c["ref"].as_str().unwrap_or("").to_string()])?;
     Ok(with(ok(None, None), json!({"created": [c["ref"]], "status": c["status"], "project": c["project"],
                                    "warnings": c.get("warnings").cloned().unwrap_or(json!([]))})))
+}
+
+/// Notes on this terminal that its conversation made these tasks, for `tb start` on an unnamed "queue it".
+fn note_made(r: &Report, refs: &[String]) -> Result<()> {
+    let Some(sid) = r.sid() else { return Ok(()) };
+    for id in refs.iter().filter_map(|t| t.trim_start_matches('T').parse::<i64>().ok()) {
+        crate::startword::note_made(r.app, sid, id)?;
+    }
+    Ok(())
 }
 
 /// `tb task new … --here`: a standalone task for the work this terminal is already doing, claimed at once.
