@@ -123,7 +123,7 @@ pub fn set_state(h: &FakeHost, user: &str, state: &str) {
     let mut r = h.rec.lock();
     match r.reviewers.iter_mut().find(|x| x.user == user) {
         Some(x) => x.state = state.into(),
-        None => r.reviewers.push(Reviewer { user: user.into(), name: user.into(), state: state.into(), requested: false }),
+        None => r.reviewers.push(Reviewer { user: user.into(), name: user.into(), state: state.into(), requested: false, changes_at: None }),
     }
 }
 
@@ -717,7 +717,7 @@ fn a_main_contributor_already_on_the_pr_means_no_second_one() {
     let h = fake(&b, rec_on(&base, &head));
     members(&h);
     let id = b.pr_task(BB);
-    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true }];
+    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true, changes_at: None }];
     poll(&b);
     let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
     // Bo is a main contributor too, but he's picked in turn (a tie broken by his commits), not as a second main.
@@ -867,7 +867,7 @@ fn tb_pr_addressed_records_an_ask_so_a_slow_rereview_is_swapped() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("t1".into());
-    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None }];
     rec.threads = vec![prhost::Thread {
         id: "1".into(),
         kind: "review".into(),
@@ -949,7 +949,7 @@ fn a_read_from_before_tb_pr_addressed_does_not_answer_the_rereview() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("2026-10-01T09:00:00Z".into());
-    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None }];
     rec.threads = vec![prhost::Thread {
         id: "1".into(),
         kind: "review".into(),
@@ -988,6 +988,44 @@ fn a_read_from_before_tb_pr_addressed_does_not_answer_the_rereview() {
     }
     poll(&b);
     assert_eq!(states(&b, id), vec![pair("Ana", "answered")]);
+}
+
+#[test]
+fn one_reviewer_s_new_request_for_changes_doesn_t_answer_another_s_rereview() {
+    let b = board_with(|_| {});
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("2026-10-01T10:00:00Z".into());
+    let changes = |user: &str, at: &str| Reviewer { user: user.into(), name: user.into(), state: "changes".into(), requested: false, changes_at: Some(at.into()) };
+    rec.reviewers = vec![changes("{ana}", "2026-10-01T09:00:00Z"), changes("{bo}", "2026-10-01T10:00:00Z")];
+    let thread = |id: &str, who: &str| prhost::Thread {
+        id: id.into(),
+        kind: "review".into(),
+        resolvable: true,
+        resolved: true,
+        author: who.into(),
+        last_author: who.into(),
+        last_id: id.into(),
+        text: "Rename this".into(),
+        ..Default::default()
+    };
+    rec.threads = vec![thread("1", "{ana}"), thread("2", "{bo}")];
+    let h = fake(&b, rec);
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    b.post(&format!("/tasks/{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(b.flow(id)["answered_changes_by"], json!({"{ana}": "2026-10-01T09:00:00Z", "{bo}": "2026-10-01T10:00:00Z"}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open"), pair("Bo", "open")]);
+
+    // Bo looks again and asks for more: that answers his ask, not Ana's (her request is the old one).
+    {
+        let mut r = h.rec.lock();
+        r.changes_at = Some("2026-10-02T09:00:00Z".into());
+        r.reviewers[1].changes_at = Some("2026-10-02T09:00:00Z".into());
+    }
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open"), pair("Bo", "answered")]);
 }
 
 #[test]

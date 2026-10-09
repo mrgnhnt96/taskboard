@@ -501,16 +501,36 @@ pub fn sweep(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// Each reviewer's standing request for changes on the PR record: `{host id: when}`, which
+/// `tb pr addressed` keeps as `answered_changes_by`.
+pub fn changes_by(rec: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for r in rec["reviewers"].as_array().cloned().unwrap_or_default() {
+        if let (Some(u), Some(at)) = (r["user"].as_str(), r["changes_at"].as_str().filter(|c| !c.is_empty())) {
+            out.insert(u.to_string(), json!(at));
+        }
+    }
+    Value::Object(out)
+}
+
 /// Whether the PR record `rec` (read at `read_at`) is older than the ask `a`, so its reviewer's
 /// answer there (`ans`) can't answer it: it was read before the ask (by the second), or, for a
-/// `rereview` ask, it still shows the request for changes `tb pr addressed` answered
-/// (`answered_changes` in `f`, the flow as it is now).
+/// `rereview` ask, it still shows the request for changes `tb pr addressed` answered. That's the
+/// reviewer's own request (`answered_changes_by` in `f`, the flow as it is now) when the host says
+/// when each was made, so one reviewer's earlier read isn't taken for an answer to another's; else
+/// the PR's latest (`answered_changes`).
 fn read_before(f: &Row, rec: &Value, read_at: &str, a: &Row, ans: &str) -> bool {
     if read_at < a.s("asked_at").unwrap_or("") {
         return true;
     }
     if a.s("why") != Some("rereview") || ans != "changes" {
         return false;
+    }
+    let user = a.st("host_user");
+    let mine = reviewer_of(rec, &user).and_then(|r| r["changes_at"].as_str()).filter(|c| !c.is_empty());
+    let answered_mine = f.get("answered_changes_by").and_then(|m| m.as_object()).and_then(|m| m.iter().find(|(u, _)| u.eq_ignore_ascii_case(&user))).and_then(|(_, v)| v.as_str());
+    if let (Some(mine), Some(answered)) = (mine, answered_mine) {
+        return mine == answered;
     }
     let changes_at = rec["changes_at"].as_str().filter(|c| !c.is_empty());
     changes_at.is_some() && f.get("answered_changes").and_then(|v| v.as_str()) == changes_at

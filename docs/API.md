@@ -993,8 +993,10 @@ by the picker's choice (`swap`): only inside work hours and never while `feed::h
 health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
 except a PR's first ask outside the feed's hours. Each change is logged on the task and the PR is read again. The
 sweep doesn't take a reviewer's state from a PR read made before their ask (`pr_flow.checked_at` earlier than
-`asked_at`), nor a `rereview` ask's request for changes while the PR still shows the one `tb pr addressed` answered
-(`pr_flow.answered_changes`): the old review isn't an answer to the new ask.
+`asked_at`), nor a `rereview` ask's request for changes while the PR still shows the one `tb pr addressed` answered: that
+reviewer's own (`reviewers[].changes_at` against `pr_flow.answered_changes_by`, `{host id: when}`), else the PR's
+latest (`pr_flow.answered_changes`). The old review isn't an answer to the new ask, and another reviewer's new
+request for changes doesn't make it one.
 
 **The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old

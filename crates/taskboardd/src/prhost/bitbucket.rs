@@ -435,7 +435,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
         if user.is_empty() || user == author {
             continue;
         }
-        reviewers.push(Reviewer { user, name: r["display_name"].as_str().unwrap_or("").to_string(), state: "pending".into(), requested: true });
+        reviewers.push(Reviewer { user, name: r["display_name"].as_str().unwrap_or("").to_string(), state: "pending".into(), requested: true, changes_at: None });
     }
     let mut changes_at: Option<String> = None;
     for part in p["participants"].as_array().cloned().unwrap_or_default() {
@@ -448,16 +448,17 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             (Some("changes_requested"), _) => "changes",
             _ => "commented",
         };
-        if state == "changes" {
-            let at = part["participated_on"].as_str().unwrap_or("").to_string();
+        let mine = (state == "changes").then(|| part["participated_on"].as_str().unwrap_or("").to_string());
+        if let Some(at) = &mine {
             if changes_at.as_deref().is_none_or(|c| at.as_str() > c) {
-                changes_at = Some(at);
+                changes_at = Some(at.clone());
             }
         }
         match reviewers.iter_mut().find(|x| x.user == user) {
             Some(x) => {
                 if state != "commented" {
                     x.state = state.into();
+                    x.changes_at = mine;
                 }
             }
             None if state != "commented" => reviewers.push(Reviewer {
@@ -465,6 +466,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
                 name: part["user"]["display_name"].as_str().unwrap_or("").to_string(),
                 state: state.into(),
                 requested: false,
+                changes_at: mine,
             }),
             None => {}
         }
@@ -720,6 +722,8 @@ pub(crate) mod tests {
         assert_eq!(r.approvals, 1);
         let rv: Vec<(&str, &str, bool)> = r.reviewers.iter().map(|x| (x.user.as_str(), x.state.as_str(), x.requested)).collect();
         assert_eq!(rv, vec![(REV, "changes", true), ("{new}", "pending", true), ("{ok}", "approved", false)]);
+        assert_eq!(r.reviewers[0].changes_at.as_deref(), Some("2026-10-02T09:00:00Z"), "each reviewer's own request for changes");
+        assert_eq!(r.reviewers[2].changes_at, None);
         let open: Vec<&str> = r.threads.iter().filter(|t| t.waiting_on(ME)).map(|t| t.id.as_str()).collect();
         assert_eq!(open, vec!["3", "9", "task-11"], "1 has my last word, 6 is resolved, 8 is a draft, a reply chain counts under its root");
         let t3 = r.threads.iter().find(|t| t.id == "3").unwrap();

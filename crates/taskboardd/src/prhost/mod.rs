@@ -36,7 +36,7 @@
 //! [`Record`] is one read of a PR. [`Record::to_value`] turns it into the JSON the PR flow keeps as
 //! `pr_flow.rec` and steps on (`prflow::phase_of`): `state`, `head`, `branch`, `base`, `base_head`,
 //! `checks` (`name`, `state` = passed / failed / running / stopped, `url`), `failed`, `running`,
-//! `comments` (comments from others), `approvals` (not the author's or the board's own account's), `review_decision`, `changes_at`, `reviewers`,
+//! `comments` (comments from others), `approvals` (not the author's or the board's own account's), `review_decision`, `changes_at`, `reviewers` (`user`, `name`, `state`, `requested`, `changes_at`),
 //! `threads`, `tasks_open`, `tasks_error`, `viewer`. A thread ([`Thread`]) is open while it's unresolved
 //! and someone other than the board's own account (`viewer`, the account it posts as; the PR's author
 //! when that isn't known) had the last word; a PR task (Bitbucket) is open until it's resolved. When the
@@ -114,6 +114,10 @@ pub struct Reviewer {
     pub state: String,
     /// On the PR's reviewer list right now (not only someone who left a review).
     pub requested: bool,
+    /// When their standing request for changes was made (`state` changes), as [`Record::changes_at`]
+    /// is for the PR's latest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes_at: Option<String>,
 }
 
 /// A conversation on the PR: a review thread, a plain comment, a review's summary, or a PR task.
@@ -453,7 +457,7 @@ impl PrHost for FakeHost {
         for u in users {
             match r.reviewers.iter_mut().find(|x| &x.user == u) {
                 Some(x) => x.requested = true,
-                None => r.reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true }),
+                None => r.reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true, changes_at: None }),
             }
         }
         Ok(())
