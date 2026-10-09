@@ -3507,7 +3507,29 @@ fn pr_builds_cmd(c: &Ctx, action: Option<PrBuildsCmd>) -> Result<i32, String> {
         Some(PrBuildsCmd::Resume { who }) => c.call("POST", "/pr-builds", Some(json!({"stopped": false, "who": who})))?,
     };
     out(&pr_builds_line(&v));
+    let recent = v["recent"].as_array().cloned().unwrap_or_default();
+    if !recent.is_empty() {
+        out("Recent cancels:");
+        for r in &recent {
+            out(&pr_builds_recent_line(r));
+        }
+    }
     Ok(0)
+}
+
+/// "  3:04pm  PR #9 (T12) at 1a2b3c4d: stopped 2 builds" for one of `tb pr-builds`' recent cancels.
+fn pr_builds_recent_line(r: &Value) -> String {
+    let when = taskboardd::util::local_clock(r["at"].as_str());
+    let what = match (r["num"].as_i64().filter(|n| *n > 0), r["task"].as_str()) {
+        (Some(n), Some(t)) => format!("PR #{n} ({t})"),
+        (Some(n), None) => format!("PR #{n}"),
+        _ => format!("{} {}", r["repo"].as_str().unwrap_or(""), r["branch"].as_str().unwrap_or("")).trim().to_string(),
+    };
+    let head: String = r["head"].as_str().unwrap_or("").chars().take(8).collect();
+    let at = if head.is_empty() { String::new() } else { format!(" at {head}") };
+    let again = if r["follow_up"] == true { " (follow-up)" } else { "" };
+    let how = if r["ok"] == true { r["what"].as_str().unwrap_or("").to_string() } else { format!("gave up: {}", r["what"].as_str().unwrap_or("")) };
+    format!("  {when}  {what}{at}{again}: {how}")
 }
 
 fn break_ref(v: &str) -> Option<String> {
@@ -3662,6 +3684,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "feed"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr-builds", "stop", "--reason", "CI is out of minutes", "--who", "Sam"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr-builds", "resume"]).is_ok());
+        let line = pr_builds_recent_line(&json!({"at": "2026-10-08T15:04:00Z", "ok": true, "what": "stopped 2 builds", "task": "T12", "num": 9,
+                                                 "head": "1a2b3c4d5e", "follow_up": true}));
+        assert!(line.ends_with("PR #9 (T12) at 1a2b3c4d (follow-up): stopped 2 builds"), "{line}");
+        let line = pr_builds_recent_line(&json!({"ok": false, "what": "no command", "repo": "acme/web", "branch": "wip", "num": 0}));
+        assert!(line.ends_with("acme/web wip: gave up: no command"), "{line}");
         assert!(Cli::try_parse_from(["tb", "master"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "show", "M3"]).is_ok());

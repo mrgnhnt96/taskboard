@@ -611,12 +611,14 @@ A board-wide switch for when CI time is scarce, set only on the owner's word (`p
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int}`; also `state.pr_builds` (the app's "PR builds stopped" pill). |
-| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. **Response:** as `GET`. |
+| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int, recent: [{at, ok, what, task, repo, num, branch, head, follow_up}]}` (`recent`: the last 10 cancels and give-ups, newest first); also `state.pr_builds` (the app's "PR builds stopped" pill). |
+| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. Both take down the `pr-builds:*` give-up alerts. **Response:** as `GET`. |
 
 While stopped: a build event (`POST /prs/event` with `kind: build`, a running `state` such as `started`) on one of the
-board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails`, queues a cancel
-(once per push). It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
+board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails` or whose `branch` is
+the branch of one of the board's open PRs in that `repo` (merges, rebases, others' commits; cancelled as that PR's),
+queues a cancel (once per push). After a cancel the push is swept again after each of `follow_up_secs` (10, 30, 60,
+120 s) for builds queued just after it. It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
 bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
 way to cancel alerts at once. A cancelled push is logged on its task. The PRs' checks count as passed: the build reads
@@ -624,7 +626,7 @@ way to cancel alerts at once. A cancelled push is logged on its task. The PRs' c
 
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
 started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
-`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?}` says what happened.
+`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?, task?}` says what happened.
 
 ### Master breaks (`tb master`)
 An optional watch on each project's default branch (`[master.projects.<name>]`); `breaks.rs` documents the flow and
