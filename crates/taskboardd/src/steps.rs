@@ -152,41 +152,113 @@ impl Step {
 #[derive(Debug, Default, Deserialize)]
 struct File {
     #[serde(default)]
-    steps: Vec<Step>,
+    steps: Vec<toml::Value>,
+}
+
+/// A `[[steps]]` entry that can't be done, and is left out: what to call it (its name, else "#3") and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bad {
+    pub step: String,
+    pub why: String,
+}
+
+/// Every step in a config file's text that can be done, and the ones left out with why. Err only when the
+/// file isn't TOML at all.
+pub fn parse_lenient(text: &str) -> std::result::Result<(Vec<Step>, Vec<Bad>), String> {
+    let f: File = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut seen = HashSet::new();
+    let (mut good, mut bad) = (vec![], vec![]);
+    for (i, raw) in f.steps.into_iter().enumerate() {
+        let label = raw.get("name").and_then(|n| n.as_str()).map(str::trim).filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("#{}", i + 1));
+        let why = match raw.try_into::<Step>() {
+            Err(e) => Some(e.to_string().trim().to_string()),
+            Ok(s) if s.name.trim().is_empty() => Some("every [[steps]] needs a name".into()),
+            Ok(s) if s.prompt.trim().is_empty() && s.run.trim().is_empty() && !s.owner => Some("it needs a prompt, a run script, or owner = true".into()),
+            Ok(s) if s.owner && !s.run.trim().is_empty() => Some("it's the owner's, so it can't have a run script".into()),
+            Ok(s) if !seen.insert(key(&s.name)) => Some(format!("another step is called “{}”", s.name)),
+            Ok(s) => {
+                good.push(s);
+                None
+            }
+        };
+        if let Some(why) = why {
+            bad.push(Bad { step: label, why });
+        }
+    }
+    Ok((good, bad))
 }
 
 /// Every step in a config file's text. A step that can't be done is an error, so a typo doesn't turn a
 /// gate off without a word.
 pub fn parse(text: &str) -> std::result::Result<Vec<Step>, String> {
-    let f: File = toml::from_str(text).map_err(|e| e.to_string())?;
-    let mut seen = HashSet::new();
-    for s in &f.steps {
-        if s.name.trim().is_empty() {
-            return Err("every [[steps]] needs a name".into());
-        }
-        if s.prompt.trim().is_empty() && s.run.trim().is_empty() && !s.owner {
-            return Err(format!("step “{}” needs a prompt, a run script, or owner = true", s.name));
-        }
-        if s.owner && !s.run.trim().is_empty() {
-            return Err(format!("step “{}” is the owner's, so it can't have a run script", s.name));
-        }
-        if !seen.insert(key(&s.name)) {
-            return Err(format!("two steps are called “{}”", s.name));
-        }
+    let (good, bad) = parse_lenient(text)?;
+    match bad.first() {
+        Some(b) => Err(format!("step “{}”: {}", b.step, b.why)),
+        None => Ok(good),
     }
-    Ok(f.steps)
 }
 
-/// The steps in config.toml. One that doesn't parse is logged and leaves no steps.
+/// The steps in config.toml. One that can't be done is left out, logged, and named in a board alert
+/// (key `steps:<name>`) until it's fixed; the others still apply.
 pub fn load(app: &App) -> Vec<Step> {
     let path = &app.cfg.config_path;
     let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
-    match parse(&text) {
-        Ok(s) => s,
-        Err(e) => {
-            app.info(format!("steps: {} ignored: {e}", path.display()));
-            vec![]
+    let (good, bad) = match parse_lenient(&text) {
+        Ok(x) => x,
+        Err(e) => (vec![], vec![Bad { step: "file".into(), why: e.trim().to_string() }]),
+    };
+    note_bad(app, &bad);
+    good
+}
+
+/// Keeps an alert up for each step left out, and clears the ones fixed (logging when that changes).
+fn note_bad(app: &App, bad: &[Bad]) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<HashMap<std::path::PathBuf, Vec<Bad>>>> = Mutex::new(None);
+    let path = app.cfg.config_path.clone();
+    let changed = {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let m = last.get_or_insert_with(HashMap::new);
+        m.insert(path.clone(), bad.to_vec()).as_deref() != Some(bad)
+    };
+    let wanted: Vec<(String, String)> = bad
+        .iter()
+        .map(|b| {
+            let text = if b.step == "file" {
+                format!("Steps are off: {} isn't valid TOML: {}", path.display(), one_line(&b.why, 300))
+            } else {
+                format!("Step “{}” in {} is ignored: {}", b.step, path.display(), one_line(&b.why, 300))
+            };
+            (format!("steps:{}", key(&b.step)), text)
+        })
+        .collect();
+    if changed {
+        for (_, text) in &wanted {
+            app.info(format!("steps: {text}"));
         }
+    }
+    let up: Vec<(String, String)> = crate::dispatch::alerts(app)
+        .iter()
+        .filter_map(|a| Some((a["key"].as_str().filter(|k| k.starts_with("steps:"))?.to_string(), a["text"].as_str().unwrap_or("").to_string())))
+        .collect();
+    if up.len() == wanted.len() && wanted.iter().all(|w| up.contains(w)) {
+        return;
+    }
+    let res = app.db.tx(|| {
+        for a in crate::dispatch::alerts(app) {
+            let Some(k) = a["key"].as_str().filter(|k| k.starts_with("steps:")) else { continue };
+            if !wanted.iter().any(|(w, t)| w == k && a["text"].as_str() == Some(t.as_str())) {
+                crate::dispatch::clear_alert_key(app, k)?;
+            }
+        }
+        for (k, text) in &wanted {
+            crate::dispatch::add_alert_keyed(app, text, None, None, k)?;
+        }
+        Ok(())
+    });
+    if let Err(e) = res {
+        app.info(format!("steps: couldn't raise the alert: {}", e.message));
     }
 }
 
@@ -309,11 +381,17 @@ pub fn passed_on(step: &Step, rounds: &[Round], head: Option<&str>) -> bool {
     })
 }
 
-/// When the step may run its next round, if it keeps rounds apart and the last was too recent.
+/// A round that couldn't review (`skip`) or didn't finish (stopped at its timeout): it holds nothing
+/// back, so the next round may start straight away, on the same commit or not.
+pub fn unreviewed(r: &Round) -> bool {
+    r.data["result"]["verdict"] == "skip" || r.data["output"].as_str().map(|o| o.contains("stopped after")).unwrap_or(false)
+}
+
+/// When the step may run its next round, if it keeps rounds apart and the last real round was too recent.
 pub fn next_round_at(step: &Step, rounds: &[Round]) -> Option<String> {
     let gap = step.gap_secs()?;
     let k = key(&step.name);
-    let last = rounds.iter().filter(|r| r.key == k).filter_map(|r| parse_iso(&r.at)).reduce(f64::max)?;
+    let last = rounds.iter().filter(|r| r.key == k && !unreviewed(r)).filter_map(|r| parse_iso(&r.at)).reduce(f64::max)?;
     let next = last + gap;
     if next > now_ts() {
         Some(iso(next))
@@ -547,10 +625,8 @@ pub fn headline(round: &Round, findings: &[Value]) -> String {
         return one_line(h, 200);
     }
     let open = findings.iter().filter(|f| finding_open(f)).count() as i64;
-    match round.data["result"]["verdict"].as_str() {
-        Some("skip") => return "Couldn't review this round".into(),
-        _ if round.data["output"].as_str().map(|o| o.contains("stopped after")).unwrap_or(false) => return "Didn't finish".into(),
-        _ => {}
+    if unreviewed(round) {
+        return if round.data["result"]["verdict"] == "skip" { "Couldn't review this round".into() } else { "Didn't finish".into() };
     }
     if open > 0 {
         return plural(open, "open finding");
@@ -602,6 +678,15 @@ pub fn results(app: &App, t: &Row) -> Result<Vec<Value>> {
         }));
     }
     Ok(out)
+}
+
+/// The latest round of the step the PR bar names (`bar = "WD"`), as in `results`; null when the task's
+/// project has no such step or it hasn't run.
+pub fn bar_result(app: &App, t: &Row) -> Result<Value> {
+    if !for_task(app, t).iter().any(|s| !s.bar.is_empty()) {
+        return Ok(Value::Null);
+    }
+    Ok(results(app, t)?.into_iter().find(|r| r["bar"].is_string()).unwrap_or(Value::Null))
 }
 
 #[cfg(test)]

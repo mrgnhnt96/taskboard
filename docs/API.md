@@ -821,8 +821,12 @@ it passes on the commit being pushed); `min_gap_mins` keeps rounds apart (`next_
 refuses an earlier round); `bar = "WD"` puts it in the PR bar. A check or script may write
 `{"verdict": "pass"|"fail"|"skip", "headline": str, "findings": [{"id", "title", "severity", "state", "file", "line",
 "detail", "url"}]}` to `$TASKBOARD_RESULT`; the verdict overrides the exit code, and `skip` (a round that couldn't
-review or didn't finish) never blocks. `tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …]
-[--commit <sha>]` answers a finding (report `tb.step_triage`); `tb step again "<step>"` runs another round.
+review or didn't finish) never blocks, and neither it nor a round stopped at its timeout counts for `min_gap_mins`.
+`tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …] [--commit <ref>]` answers a finding
+(report `tb.step_triage`; `tb` resolves the ref to its sha); `tb step again|run "<step>" [--branch B | --worktree DIR
+| --commit REF]` runs another round, on what it names (the report's `head` is the resolved sha). A `[[steps]]` entry
+that can't be done is left out alone, with an alert keyed `steps:<name>` until it's fixed. `pr.bar.wd` is the `bar`
+step's latest `step_result` on cards as well as in the task detail.
 
 `step_result`:
 ```

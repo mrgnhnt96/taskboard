@@ -212,3 +212,72 @@ fn a_task_others_stack_on_must_end_in_a_pr() {
     b.post(&format!("/tasks/T{parent}"), json!({"ships_pr": "no"}));
     assert_eq!(b.row(parent).i("ships_pr"), Some(0));
 }
+
+// ------------------------------------------------------------------ #55 the author review and steps
+
+const REVIEW: &str = r#"
+[[steps]]
+name = "Author review"
+prompt = "Run the review"
+check = "true"
+per_head = true
+min_gap_mins = 10
+bar = "WD"
+"#;
+
+fn round(b: &Board, head: &str, ok: bool, result: Value, output: &str) {
+    b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": ok, "head": head, "result": result, "output": output})).unwrap();
+}
+
+fn next_round_at(b: &Board) -> Value {
+    let mut q = Query::new();
+    q.insert("session".into(), "s1".into());
+    api::dispatch(&b.app, "GET", "/steps", &q, &Value::Null).unwrap()["steps"][0]["next_round_at"].clone()
+}
+
+#[test]
+fn an_unreviewable_or_unfinished_round_keeps_no_gap() {
+    let b = new_board_with(REVIEW, |_| {});
+    let id = b.task("Add login", json!({}));
+    b.take(id);
+    let head = "a".repeat(40);
+    round(&b, &head, true, json!({"verdict": "skip"}), "");
+    assert_eq!(next_round_at(&b), Value::Null, "a skipped round doesn't hold the next");
+    round(&b, &head, false, json!(null), "(Check stopped after 600s)");
+    assert_eq!(next_round_at(&b), Value::Null, "nor does one that didn't finish");
+    round(&b, &head, false, json!({"verdict": "fail"}), "");
+    assert!(next_round_at(&b).is_string(), "a real round does");
+}
+
+#[test]
+fn cards_show_the_review_step_in_the_pr_bar() {
+    let b = new_board_with(REVIEW, |_| {});
+    let id = b.task("Add login", json!({}));
+    b.take(id);
+    round(&b, &"b".repeat(40), true, json!({"verdict": "pass"}), "");
+    b.link(id, 21, "feat/login");
+    let card = board::task_card(&b.app, &b.row(id)).unwrap();
+    assert_eq!(card["pr"]["bar"]["wd"]["bar"], "WD", "{}", card["pr"]["bar"]);
+    assert_eq!(card["pr"]["bar"]["wd"]["headline"], "No findings");
+}
+
+#[test]
+fn one_bad_step_is_left_out_and_named_in_an_alert() {
+    let config = format!("{REVIEW}\n[[steps]]\nname = \"Lint\"\nrun = \"make lint\"\nchek = \"oops\"\n\n[[steps]]\nname = \"Sign-off\"\nowner = true\n");
+    let b = new_board_with(&config, |_| {});
+    let id = b.task("Add login", json!({}));
+    let names: Vec<String> = taskboardd::steps::for_task(&b.app, &b.row(id)).iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, vec!["Author review", "Sign-off"]);
+    let up: Vec<Value> = dispatch::alerts(&b.app).into_iter().filter(|a| a["key"] == "steps:lint").collect();
+    assert_eq!(up.len(), 1);
+    let text = up[0]["text"].as_str().unwrap();
+    assert!(text.contains("Step “Lint”") && text.contains("chek"), "{text}");
+    dispatch::prune_alerts(&b.app).unwrap();
+    taskboardd::steps::load(&b.app);
+    assert_eq!(dispatch::alerts(&b.app).iter().filter(|a| a["key"] == "steps:lint").count(), 1, "one alert, kept up");
+
+    // Fixed: the alert goes.
+    std::fs::write(&b.app.cfg.config_path, REVIEW).unwrap();
+    assert_eq!(taskboardd::steps::load(&b.app).len(), 1);
+    assert!(dispatch::alerts(&b.app).iter().all(|a| !a["key"].as_str().unwrap_or("").starts_with("steps:")));
+}

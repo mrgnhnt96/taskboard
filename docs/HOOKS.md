@@ -240,8 +240,9 @@ prompt = "Sign off the screens this task changes."
   each. `tb done` is refused while a `before = "done"` step hasn't passed, and also a `before = "pr"` step when the
   task has a PR. Done in the app isn't held: that's your call.
 - A step passes once per task, unless it has `per_head = true` (below). Steps are read fresh, like hooks.json. A step that can't be done (no name; none of
-  `prompt`, `run` or `owner`; an unknown key or `before`; two with one name) turns all steps off, and
-  `server.log` says why.
+  `prompt`, `run` or `owner`; an unknown key or `before`; a second one with the same name) is left out, and the
+  others still apply. The board raises an alert naming it and why (key `steps:<name>`, also in `server.log`),
+  which stays up until the step is fixed.
 
 ### An author-side review gate (rounds, findings)
 
@@ -271,7 +272,14 @@ bar = "WD"            # its name in the app's PR bar
 - **The agent's commands.** `tb steps` lists the steps and the latest findings; `tb step triage "Author-side review"
   F2 --state fixed --commit <sha> --note "…"` (or `answered`, `dismissed`, `open`) answers one; `tb step again
   "Author-side review"` runs another round. A round sooner than `min_gap_mins` after the last is refused with when
-  the next may start.
+  the next may start; a round that couldn't review (`skip`) or didn't finish (stopped at its timeout) doesn't
+  count, so the next may start straight away, on the same commit or not. `--commit` takes any ref (`HEAD`,
+  `HEAD~1`, a short sha) and stores its full sha.
+- **Aiming a round.** `tb step run|again "<step>"` looks at this checkout's head. `--worktree <dir>` runs it in that
+  checkout; `--branch <name>` runs it in the worktree that has the branch checked out (else here, on the branch's
+  commit); `--commit <ref>` looks at that commit. The round is recorded on the resolved sha, and scripts get
+  `{head}` / `TASKBOARD_HEAD` (and `{worktree}` / `TASKBOARD_WORKTREE` when it runs elsewhere), with `{branch}`
+  set to the aimed branch.
 
 ## Stacked PRs, the PR plan, and `tb done --pr-body`
 
