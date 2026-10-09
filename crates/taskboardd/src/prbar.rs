@@ -63,11 +63,15 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     }
     // "x of N": the host's reviewer list when it has one, else approvals plus the reviewers still asked.
     let reviewers = if rec["reviewers"].is_array() { rows.len() as i64 } else { approvals + rec["requested"].as_i64().unwrap_or(0) };
-    let new_comments = if rec["threads"].is_array() {
-        prflow::open_threads(&f, &rec).len() as i64
-    } else {
-        (rec["comments"].as_i64().unwrap_or(0) - f.i0("comments_seen")).max(0)
-    };
+    let open = if rec["threads"].is_array() { prflow::open_threads(&f, &rec) } else { vec![] };
+    let new_comments = if rec["threads"].is_array() { open.len() as i64 } else { (rec["comments"].as_i64().unwrap_or(0) - f.i0("comments_seen")).max(0) };
+    // "N new comments" links to the first unread thread (the one waiting longest), else the PR.
+    let comments_url = open
+        .iter()
+        .filter(|th| th["url"].as_str().is_some_and(|u| u.starts_with("http")))
+        .min_by(|a, b| a["last_at"].as_str().unwrap_or("").cmp(b["last_at"].as_str().unwrap_or("")))
+        .and_then(|th| th["url"].as_str().map(|u| u.to_string()))
+        .or_else(|| t.s("pr_url").filter(|u| u.starts_with("http") && new_comments > 0).map(|u| u.to_string()));
     Ok(json!({
         "build_url": build_url(&rec),
         "checks": if checks.is_empty() { Value::Null } else { json!(checks) },
@@ -75,10 +79,12 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "you": if you.is_empty() { Value::Null } else { json!(you) },
         "approvals": approvals, "reviewers": reviewers,
         "new_comments": new_comments,
+        "comments_url": comments_url,
         "waits_on_base": t.s("pr_phase") == Some("waits"),
         "stacks_on": stack::card(app, t)?,
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
-        "wd": Value::Null,
+        "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
+        "wd": crate::steps::bar_result(app, t)?,
         "reviewer_rows": rows,
     }))
 }

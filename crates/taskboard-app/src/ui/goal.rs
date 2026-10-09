@@ -613,7 +613,7 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
     let mut parts = parts;
     // A PR the task finished without (`tb done --no-pr`), or a task planned without one.
     if fmt::opt_s(t, "no_pr").is_some() {
-        parts.push(Some("PR canceled".into()));
+        parts.push(fmt::opt_s(t, "no_pr").map(|why| format!("PR canceled: {why}")));
     } else if t["ships_pr"] == false && t["ships_pr_set"] == false {
         parts.push(Some("no PR".into()));
     }
@@ -3423,6 +3423,9 @@ mod pr_plan_tests {
         assert_eq!(pr_count(&[json!({"pr": {"num": 3, "state": "MERGED"}})]), "1 of 1 PR merged");
         let row = task_row_view(&todo, 0, std::slice::from_ref(&todo), &json!({}));
         assert!(row.pr_planned);
-        assert!(task_meta(&canceled, 0, std::slice::from_ref(&canceled), &json!({})).contains("PR canceled"));
+        assert!(task_meta(&canceled, 0, std::slice::from_ref(&canceled), &json!({})).contains("PR canceled: not needed"));
+        // The wave rail has a chip for it.
+        assert!(waves::wtask(&canceled).facts.iter().any(|(c, x)| *c == "quiet" && x == "PR canceled"));
+        assert!(!waves::wtask(&open).facts.iter().any(|(_, x)| x == "PR canceled"));
     }
 }

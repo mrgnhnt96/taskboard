@@ -248,7 +248,14 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "position": position,
         "starting": t.i("start_job").is_some() && status == "queued",
         "waits_for": waits,
-        "waits_for_state": waitsfor::ids(t).into_iter().map(|n| Ok(json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref())}))).collect::<Result<Vec<_>>>()?,
+        // What it waits for, and the task it stacks on (`stack: true`).
+        "waits_for_state": waitsfor::deps(t).into_iter().map(|n| {
+            let mut w = json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref())});
+            if crate::stack::parent_id(t) == Some(n) {
+                w["stack"] = json!(true);
+            }
+            Ok(w)
+        }).collect::<Result<Vec<_>>>()?,
         "locks": crate::locks::names(t),
         "alone": t.v("alone"),
         "waiting": waiting,
@@ -269,6 +276,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("no_pr".into(), t.v("no_pr"));
         o.insert("no_evidence".into(), t.v("no_evidence"));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
+        // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
+        o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_result(app, t)? } else { Value::Null });
     }
     Ok(card)
 }

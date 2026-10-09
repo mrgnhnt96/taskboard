@@ -1075,6 +1075,39 @@ fn step(name: impl Into<String>, st: StepSt, sub: Option<&str>, link: Option<Str
     PrStep { name: name.into(), st, sub: sub.map(str::to_string), link }
 }
 
+/// The author-side review step (`wd`: its `bar` name, like WD, and its latest round's headline).
+pub fn wd_step(wd: &Value) -> PrStep {
+    let headline = opt_s(wd, "headline").unwrap_or("");
+    let open = wd["open"].as_i64().unwrap_or(0);
+    let (st, sub) = if s(wd, "verdict") == "skip" {
+        (StepSt::Done, headline.to_string())
+    } else if b(wd, "stale") {
+        (StepSt::Wait, "Moved since".to_string())
+    } else if open > 0 {
+        (StepSt::Ask, headline.to_string())
+    } else if b(wd, "passed") {
+        (StepSt::Done, headline.to_string())
+    } else {
+        (StepSt::Fail, headline.to_string())
+    };
+    step(s(wd, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None)
+}
+
+/// The steps row's nodes: each step's name, and its state's words (a link when it has one).
+fn step_nodes(list: Vec<PrStep>) -> Node {
+    let mut steps = Vec::new();
+    for step in list {
+        let mut kids = vec![txt(step.name, St::StepName)];
+        match (step.sub, step.link) {
+            (Some(x), Some(url)) => kids.push(Node::Link { s: x, go: Go::Url(url), tip: None, look: LinkLook::Small }),
+            (Some(x), None) => kids.push(txt(x, St::StepSub)),
+            _ => {}
+        }
+        steps.push(el(K::Step(step.st), kids));
+    }
+    el(K::Steps, steps)
+}
+
 /// The PR bar's steps when the board sends `pr.bar`: the author-side review step (its `bar` name, like
 /// WD), Checks, You, Review and Merge, with the states the old board showed.
 pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
@@ -1083,20 +1116,7 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let phase = if stage.is_object() { s(stage, "phase") } else { "" };
     let mut out = Vec::new();
     if let Some(wd) = obj(bar, "wd") {
-        let headline = opt_s(wd, "headline").unwrap_or("");
-        let open = wd["open"].as_i64().unwrap_or(0);
-        let (st, sub) = if s(wd, "verdict") == "skip" {
-            (StepSt::Done, headline.to_string())
-        } else if b(wd, "stale") {
-            (StepSt::Wait, "Moved since".to_string())
-        } else if open > 0 {
-            (StepSt::Ask, headline.to_string())
-        } else if b(wd, "passed") {
-            (StepSt::Done, headline.to_string())
-        } else {
-            (StepSt::Fail, headline.to_string())
-        };
-        out.push(step(s(wd, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None));
+        out.push(wd_step(wd));
     }
     let build = opt_s(bar, "build_url").filter(|u| is_web(u)).map(str::to_string);
     out.push(match s(bar, "checks") {
@@ -1117,7 +1137,10 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let new_comments = bar["new_comments"].as_i64().unwrap_or(0);
     let rv = js_lower(&p["review"]);
     out.push(if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
-        step("Review", StepSt::Ask, Some("New comments"), url)
+        // "2 new comments", linking to the first unread thread.
+        let words = if new_comments > 0 { fmt::plural(new_comments, "new comment", "new comments") } else { "New comments".to_string() };
+        let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
+        step("Review", StepSt::Ask, Some(&words), go)
     } else if reviewers > 0 && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
         let st = if approvals >= reviewers { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
         step("Review", st, Some(&format!("{approvals} of {reviewers}")), url)
@@ -1252,6 +1275,11 @@ fn no_pr_row(c: &Ctx, t: &Value) -> Node {
     } else {
         body.push(txt("No PR yet.", St::Small));
     }
+    // The review step (WD) runs before the PR opens: it shows from its first round.
+    let wd = obj(t, "wd").or_else(|| arr(t, "step_results").iter().find(|r| opt_s(r, "bar").is_some()));
+    if let Some(wd) = wd.filter(|_| opt_s(t, "no_pr").is_none()) {
+        body.push(step_nodes(vec![wd_step(wd)]));
+    }
     if let Some(so) = obj(t, "stack_on") {
         body.push(stacks_line(c, so));
     }
@@ -1347,22 +1375,12 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         }
     };
     let repo = if title.as_deref().is_some_and(|x| !x.is_empty()) { or_empty(&p["repo"]) } else { String::new() };
-    let mut steps = Vec::new();
     let bar = obj(p, "bar");
     let list: Vec<PrStep> = match bar {
         Some(bar) => pr_steps_full(p, bar),
         None => pr_steps(p).into_iter().map(|(name, st, sub)| PrStep { name: name.to_string(), st, sub, link: None }).collect(),
     };
-    for step in list {
-        let mut kids = vec![txt(step.name, St::StepName)];
-        match (step.sub, step.link) {
-            (Some(x), Some(url)) => kids.push(Node::Link { s: x, go: Go::Url(url), tip: None, look: LinkLook::Small }),
-            (Some(x), None) => kids.push(txt(x, St::StepSub)),
-            _ => {}
-        }
-        steps.push(el(K::Step(step.st), kids));
-    }
-    let mut body = vec![el(K::PrHead, vec![head, txt(repo, St::Small)]), el(K::Steps, steps)];
+    let mut body = vec![el(K::PrHead, vec![head, txt(repo, St::Small)]), step_nodes(list)];
     if let Some(n) = not_ours_box(p) {
         body.push(n);
     }

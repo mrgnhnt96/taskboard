@@ -975,6 +975,7 @@ pub fn refresh(app: &App) -> Result<i64> {
     }
     crate::stack::retarget(app)?;
     crate::asks::sweep(app)?;
+    crate::propen::add_evidence(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {
         app.db.tx(|| heal(app, &t))?;

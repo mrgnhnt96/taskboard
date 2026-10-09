@@ -607,6 +607,8 @@ enum StepCmd {
     Run {
         name: String,
         #[command(flatten)]
+        aim: Aim,
+        #[command(flatten)]
         t: TaskArg,
     },
     /// Ask the owner to do their step; the task waits for them, so end your turn after
@@ -627,6 +629,8 @@ enum StepCmd {
     Again {
         name: String,
         #[command(flatten)]
+        aim: Aim,
+        #[command(flatten)]
         t: TaskArg,
     },
     /// Answer one finding of a step's last round: tb step triage "Review" F2 --state fixed --commit abc123
@@ -645,6 +649,20 @@ enum StepCmd {
         #[command(flatten)]
         t: TaskArg,
     },
+}
+
+/// What a step's round looks at, when it isn't this checkout's head.
+#[derive(Args, Clone, Default)]
+struct Aim {
+    /// Look at this branch: in the worktree that has it checked out, else at its commit from here
+    #[arg(long, conflicts_with_all = ["worktree", "commit"])]
+    branch: Option<String>,
+    /// Look at the checkout in this folder
+    #[arg(long, conflicts_with = "commit")]
+    worktree: Option<String>,
+    /// Look at this commit (a sha or any ref, like HEAD~1); it's resolved to its sha
+    #[arg(long)]
+    commit: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1911,6 +1929,70 @@ pub fn local_head(cwd: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty())
 }
 
+/// A ref (`HEAD`, `HEAD~1`, a branch, a short sha) as the full sha of its commit in `dir`'s repo.
+pub fn resolve_commit(dir: &str, r: &str) -> Result<String, String> {
+    let r = r.trim();
+    if r.is_empty() {
+        return Err("Give the commit as a sha or a ref.".into());
+    }
+    let o = std::process::Command::new("git")
+        .args(["-C", if dir.is_empty() { "." } else { dir }, "rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+        .output()
+        .map_err(|e| format!("couldn't run git: {e}"))?;
+    let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    if !o.status.success() || sha.is_empty() {
+        return Err(format!("“{r}” isn't a commit in {}.", if dir.is_empty() { "this folder" } else { dir }));
+    }
+    Ok(sha)
+}
+
+/// The worktree that has `branch` checked out, from `git worktree list` in `dir`'s repo.
+fn worktree_with(dir: &str, branch: &str) -> Option<String> {
+    let o = std::process::Command::new("git").args(["-C", dir, "worktree", "list", "--porcelain"]).output().ok().filter(|o| o.status.success())?;
+    let want = format!("branch refs/heads/{}", branch.trim().trim_start_matches("refs/heads/"));
+    let mut path = None;
+    for line in String::from_utf8_lossy(&o.stdout).lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(p.to_string());
+        } else if line == want {
+            return path;
+        }
+    }
+    None
+}
+
+/// Where a step's round runs and what it looks at.
+struct Aimed {
+    /// The folder the script runs in, when it's a checkout other than the repo's.
+    dir: Option<String>,
+    head: Option<String>,
+    branch: Option<String>,
+}
+
+/// `--branch`, `--worktree` or `--commit`, resolved to a folder, a sha and a branch; none of them is
+/// this checkout's head.
+fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
+    let here = if local_head(&c.cwd).is_some() { c.cwd.clone() } else { v["vars"]["repo"].as_str().unwrap_or("").to_string() };
+    if let Some(w) = a.worktree.as_deref().filter(|w| !w.trim().is_empty()) {
+        let dir = std::fs::canonicalize(w.trim()).map_err(|_| format!("There's no folder {w}."))?.to_string_lossy().to_string();
+        let head = resolve_commit(&dir, "HEAD").map_err(|_| format!("{dir} isn't a git checkout."))?;
+        let branch = client::git_info(&dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string());
+        return Ok(Aimed { dir: Some(dir), head: Some(head), branch });
+    }
+    if let Some(b) = a.branch.as_deref().filter(|b| !b.trim().is_empty()) {
+        let b = b.trim().to_string();
+        let dir = worktree_with(&here, &b);
+        let head = resolve_commit(dir.as_deref().unwrap_or(&here), &b)
+            .or_else(|_| resolve_commit(&here, &format!("{}/{b}", c.cfg.pr_body.remote)))
+            .map_err(|_| format!("There's no branch {b} here."))?;
+        return Ok(Aimed { dir, head: Some(head), branch: Some(b) });
+    }
+    if let Some(r) = a.commit.as_deref() {
+        return Ok(Aimed { dir: None, head: Some(resolve_commit(&here, r)?), branch: None });
+    }
+    Ok(Aimed { dir: None, head: local_head(&c.cwd), branch: None })
+}
+
 /// A PR description from a file, or stdin for `-`.
 fn read_body(file: &str) -> Result<String, String> {
     if file == "-" {
@@ -1950,11 +2032,22 @@ fn run_with_result(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, S
     (passed, output, result)
 }
 
-/// The placeholders' values for a script: the board's, with this checkout's branch.
-fn step_vars(c: &Ctx, v: &Value, name: &str) -> BTreeMap<String, String> {
+/// The placeholders' values for a script: the board's, with this checkout's branch, or what the round
+/// aims at (`{branch}`, `{head}`, and `{worktree}`, the folder it runs in).
+fn step_vars(c: &Ctx, v: &Value, name: &str, at: &Aimed) -> BTreeMap<String, String> {
     let mut vars: BTreeMap<String, String> = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
-    if let Some(b) = client::git_info(&c.cwd, 0.5)["branch"].as_str().filter(|b| !b.is_empty()) {
-        vars.insert("branch".into(), b.to_string());
+    let branch = at.branch.clone().or_else(|| {
+        let dir = at.dir.as_deref().unwrap_or(&c.cwd);
+        client::git_info(dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string())
+    });
+    if let Some(b) = branch {
+        vars.insert("branch".into(), b);
+    }
+    if let Some(h) = &at.head {
+        vars.insert("head".into(), h.clone());
+    }
+    if let Some(d) = &at.dir {
+        vars.insert("worktree".into(), d.clone());
     }
     vars.insert("step".into(), name.to_string());
     vars
@@ -1966,7 +2059,10 @@ fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let dir = vars.get("repo").filter(|r| !r.is_empty() && std::path::Path::new(r).is_dir()).cloned().unwrap_or_else(|| c.cwd.clone());
+    let dir = ["worktree", "repo"]
+        .iter()
+        .find_map(|k| vars.get(*k).filter(|r| !r.is_empty() && std::path::Path::new(r).is_dir()).cloned())
+        .unwrap_or_else(|| c.cwd.clone());
     out(&format!("{label}: {script}"));
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(format!("exec 2>&1\n{script}")).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::piped());
@@ -2026,40 +2122,30 @@ fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String
 
 fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
     match action {
-        StepCmd::Done { name, note, skip, t } => {
-            let (v, step) = find_step(c, t.task.clone(), &name)?;
-            let mine = !c.session.is_empty() && v["session"].as_str() == Some(c.session.as_str());
-            if skip || (step.owner && !mine) {
-                let task = v["task"].as_str().unwrap_or("").to_string();
-                c.call("POST", &format!("/tasks/{task}/step"), Some(json!({"name": step.name, "note": note, "skip": skip, "session": c.session})))?;
-                out(&format!("{} {} on {task}.", step.name, if skip { "skipped" } else { "done" }));
-                return Ok(0);
-            }
-            let mut f = json!({"name": step.name, "note": note, "via": "done", "head": local_head(&c.cwd)});
-            if !step.check.is_empty() && !step.owner {
-                round_gap(&v, &step.name)?;
-                let vars = step_vars(c, &v, &step.name);
-                let (passed, output, result) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
-                f["ok"] = json!(passed);
-                f["output"] = json!(output);
-                f["result"] = json!(result);
-            }
-            step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
-        }
-        StepCmd::Run { name, t } => run_step(c, &name, t.task),
-        StepCmd::Again { name, t } => {
+        StepCmd::Done { name, note, skip, t } => done_step(c, &name, note, skip, t, &Aim::default()),
+        StepCmd::Run { name, aim, t } => run_step(c, &name, t.task, &aim),
+        StepCmd::Again { name, aim, t } => {
             let (_, step) = find_step(c, t.task.clone(), &name)?;
             if step.owner || (step.run.is_empty() && step.check.is_empty()) {
                 return Err(format!("“{}” has no check or script to run again: {}.", step.name, step.how("tb")));
             }
             if step.run.is_empty() {
-                return step_cmd(c, StepCmd::Done { name, note: Some("Another round".into()), skip: false, t });
+                return done_step(c, &name, Some("Another round".into()), false, t, &aim);
             }
-            run_step(c, &name, t.task)
+            run_step(c, &name, t.task, &aim)
         }
         StepCmd::Triage { name, finding, state, note, commit, t } => {
             let (v, step) = find_step(c, t.task.clone(), &name)?;
             let task = t.task.or_else(|| v["task"].as_str().map(|s| s.to_string()));
+            // A ref (HEAD, a branch, a short sha) is kept as its sha; one this checkout doesn't have, as given.
+            let commit = match commit.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                None => None,
+                Some(r) => match resolve_commit(&c.cwd, r) {
+                    Ok(sha) => Some(sha),
+                    Err(_) if r.len() >= 7 && r.chars().all(|ch| ch.is_ascii_hexdigit()) => Some(r.to_string()),
+                    Err(e) => return Err(e),
+                },
+            };
             c.run_report("tb.step_triage", json!({"name": step.name, "finding": finding, "state": state, "note": note, "commit": commit}), task, true, |v| {
                 let open = v["open"].as_i64().unwrap_or(0);
                 format!(
@@ -2087,14 +2173,38 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
     }
 }
 
-/// `tb step run`: a script step's script, then its check.
-fn run_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String> {
+/// `tb step done`: records the step, after its check (on what `aim` names) for agent work with one.
+fn done_step(c: &Ctx, name: &str, note: Option<String>, skip: bool, t: TaskArg, aim_at: &Aim) -> Result<i32, String> {
+    let (v, step) = find_step(c, t.task.clone(), name)?;
+    let mine = !c.session.is_empty() && v["session"].as_str() == Some(c.session.as_str());
+    if skip || (step.owner && !mine) {
+        let task = v["task"].as_str().unwrap_or("").to_string();
+        c.call("POST", &format!("/tasks/{task}/step"), Some(json!({"name": step.name, "note": note, "skip": skip, "session": c.session})))?;
+        out(&format!("{} {} on {task}.", step.name, if skip { "skipped" } else { "done" }));
+        return Ok(0);
+    }
+    let at = aim(c, &v, aim_at)?;
+    let mut f = json!({"name": step.name, "note": note, "via": "done", "head": at.head});
+    if !step.check.is_empty() && !step.owner {
+        round_gap(&v, &step.name)?;
+        let vars = step_vars(c, &v, &step.name, &at);
+        let (passed, output, result) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
+        f["ok"] = json!(passed);
+        f["output"] = json!(output);
+        f["result"] = json!(result);
+    }
+    step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
+}
+
+/// `tb step run`: a script step's script, then its check, on this checkout or what `aim` names.
+fn run_step(c: &Ctx, name: &str, task: Option<String>, aim_at: &Aim) -> Result<i32, String> {
     let (v, step) = find_step(c, task.clone(), name)?;
     if step.run.is_empty() {
         return Err(format!("“{}” has no script to run: {}.", step.name, step.how("tb")));
     }
     round_gap(&v, &step.name)?;
-    let vars = step_vars(c, &v, &step.name);
+    let at = aim(c, &v, aim_at)?;
+    let vars = step_vars(c, &v, &step.name, &at);
     let (mut passed, mut output, mut result) = run_with_result(c, "Script", &step.run, &vars, step.timeout_secs());
     if passed && !step.check.is_empty() {
         let (p, o, r) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
@@ -2102,7 +2212,7 @@ fn run_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String> {
         output = format!("{output}\n{o}");
         result = r.or(result);
     }
-    let f = json!({"name": step.name, "via": "run", "ok": passed, "output": output, "result": result, "head": local_head(&c.cwd)});
+    let f = json!({"name": step.name, "via": "run", "ok": passed, "output": output, "result": result, "head": at.head});
     step_report(c, f, task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
 }
 
@@ -2150,7 +2260,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if all.is_empty() {
                 out(&format!("{task} has no steps."));
             }
-            let vars = step_vars(c, &v, "");
+            let vars = step_vars(c, &v, "", &Aimed { dir: None, head: None, branch: None });
             for (st, done) in all {
                 let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
                 let st = st.filled(&vars);
@@ -3601,7 +3711,41 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "fixed", "--commit", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "gone"]).is_err());
         assert!(Cli::try_parse_from(["tb", "step", "again", "Review"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "again", "Review", "--commit", "HEAD~1"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--task", "T3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--worktree", "/tmp/wt"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--commit", "abc"]).is_err());
         assert!(Cli::try_parse_from(["tb", "pr", "body-check", "-"]).is_ok());
+    }
+
+    #[test]
+    fn a_rounds_aim_resolves_to_a_sha_and_a_worktree() {
+        let dir = std::env::temp_dir().join(format!("tb-aim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |d: &std::path::Path, args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "T"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let first = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let r = repo.to_string_lossy().to_string();
+        assert_eq!(resolve_commit(&r, "HEAD~1").unwrap(), first);
+        assert_eq!(resolve_commit(&r, &first[..8]).unwrap(), first);
+        assert_eq!(resolve_commit(&r, "HEAD").unwrap(), git(&repo, &["rev-parse", "HEAD"]));
+        assert!(resolve_commit(&r, "nope").is_err());
+        let wt = dir.join("wt");
+        git(&repo, &["worktree", "add", "-q", "-b", "feat/x", &wt.to_string_lossy()]);
+        let found = worktree_with(&r, "feat/x").unwrap();
+        assert_eq!(std::fs::canonicalize(found).unwrap(), std::fs::canonicalize(&wt).unwrap());
+        assert!(worktree_with(&r, "feat/y").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -125,7 +125,7 @@ fn is_live(t: &Value) -> bool {
 }
 
 /// `waveTaskLine` and `attentionFacts`.
-fn wtask(t: &Value) -> WTask {
+pub(super) fn wtask(t: &Value) -> WTask {
     let key = status_key(t);
     let mut facts = vec![];
     if key == "needs" {
@@ -139,6 +139,10 @@ fn wtask(t: &Value) -> WTask {
     }
     if let Some(c) = fmt::compacting(t) {
         facts.push(("compact", c));
+    }
+    // Finished without the PR it was meant to open (`tb done --no-pr`).
+    if fmt::opt_s(t, "no_pr").is_some() && !has_pr(t) {
+        facts.push(("quiet", "PR canceled".into()));
     }
     let term = (fmt::opt_s(t, "who").is_some() && fmt::opt_s(t, "session_id").is_some() && !matches!(s(t, "status"), "planned" | "queued"))
         .then(|| s(t, "session_id").to_string());

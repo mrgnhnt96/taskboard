@@ -443,7 +443,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
   "waits_for": ["T14"],           // tasks it starts after
-  "waits_for_state": [{"ref": "T14", "done": bool}],   // the same, each with whether it's done; the goal page's "Waits for" chip
+  "waits_for_state": [{"ref": "T14", "done": bool, "stack"?: true}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done; the goal page's "Waits for" chip
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
   "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
@@ -454,7 +454,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "ships_pr_set": bool|null,      // its own setting (`tb task set --pr yes|no`); null = the project's default
   "no_pr": str|null,              // why it finished without its PR (`tb done --no-pr`): "PR canceled: <why>"
   "no_evidence": str|null,        // why it finished without evidence (`tb done --no-evidence`)
-  "stack_on": stack_on|null       // the task whose PR this one's builds on (`--stack-on`)
+  "stack_on": stack_on|null,      // the task whose PR this one's builds on (`--stack-on`)
+  "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`)
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
@@ -493,10 +494,12 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
     "approvals": int, "reviewers": int,           // "1 of 2": approvals of (approvals + reviewers still asked)
     "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
+    "comments_url": str|null,   // where "N new comments" goes: the unread thread waiting longest, else the PR
     "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
     "stacks_on": stack_on|null,
-    "retargeted": str|null,      // the base the board pointed it at once its parent merged (or "failed: …")
-    "wd": step_result|null,      // the author-side review step (a step with `bar`), on GET /tasks/:id only
+    "retargeted": str|null,      // the base the board pointed it at once its parent merged
+    "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
+    "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
                                  // swaps: how many swaps led to this reviewer (the ask ledger); asked_at: when the board or tb asked them
                                  // one pill per reviewer still on the PR, from the host's reviewer states
@@ -948,16 +951,27 @@ The app's Settings ▸ Reviewers lists each project's roster; it changes nothing
 `origin/<parent branch>`, the handoff says to cut its branch from there and open the PR into it, `{base}` is the
 parent's branch, and once its PR is approved and green its phase is `waits` ("Waits on base") instead of `merge`.
 When the parent's PR merges (the watcher sees it, or `POST /tasks/:id/pr/merged`), the board points each open stacked
-PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucket) once, logs it, and alerts if it couldn't; the stacked task is told to
-rebase as for any `waits_for`.
+PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucket) once, and logs it. A failed move
+is kept in `pr_flow.retarget_error` and tried again on later refreshes after 1, 5, 15, then every 60 minutes
+(`retarget_at`); its alert (key `retarget:T<n>`) is raised once and clears when the move works. The stacked task is told to
+rebase as for any `waits_for`. A task others still stack on (open, or done with their PR open) can't be set to end
+without a PR (`--pr no`, `tb done --no-pr`): the 409 names them.
 
 **The PR plan** (`tasks.ships_pr`): `tb task new --pr|--no-pr`, `tb task set --pr yes|no|auto`. The handoff and steps
 use it instead of the project's default.
 
 **`tb done --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
 canceled: <why>", skips the before-the-PR steps, and with `[jira] canceled` set moves the ticket there with the reason
-as a comment. **`--no-evidence "<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons
-and ticket keys linked to Jira.
+as a comment. The why can't be blank (400) and is one line of at most 200 characters (400 past that). **`--no-evidence
+"<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons and ticket keys linked to Jira; the
+goal row says "PR canceled: <why>" and the wave rail has a "PR canceled" chip.
+
+**`tb done` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), whose project has a
+remote, with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; and a task with a `design` attachment and
+no `evidence`/`results` attachment, without `no_evidence`. **Evidence on the PR**: each PR refresh adds the task's
+evidence and results links (web links) that its open PR's description lacks, under `## Context`, through
+`PrHost::description` / `set_description`; `pr_flow.evidence_added` keeps the ones added, and a host error waits 30
+minutes (`evidence_retry_at`). A failed fetch in `--pr-body`'s branch check shows the whole of the error.
 
 **`tb done "<summary>" --pr-body FILE [--title …]`**: the report carries `pr_body` (and `pr_title`). Before finishing,
 the board checks the description against `[pr_body]` (sections in order, bullet lists, paragraph length, no board
@@ -973,8 +987,12 @@ it passes on the commit being pushed); `min_gap_mins` keeps rounds apart (`next_
 refuses an earlier round); `bar = "WD"` puts it in the PR bar. A check or script may write
 `{"verdict": "pass"|"fail"|"skip", "headline": str, "findings": [{"id", "title", "severity", "state", "file", "line",
 "detail", "url"}]}` to `$TASKBOARD_RESULT`; the verdict overrides the exit code, and `skip` (a round that couldn't
-review or didn't finish) never blocks. `tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …]
-[--commit <sha>]` answers a finding (report `tb.step_triage`); `tb step again "<step>"` runs another round.
+review or didn't finish) never blocks, and neither it nor a round stopped at its timeout counts for `min_gap_mins`.
+`tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …] [--commit <ref>]` answers a finding
+(report `tb.step_triage`; `tb` resolves the ref to its sha); `tb step again|run "<step>" [--branch B | --worktree DIR
+| --commit REF]` runs another round, on what it names (the report's `head` is the resolved sha). A `[[steps]]` entry
+that can't be done is left out alone, with an alert keyed `steps:<name>` until it's fixed. `pr.bar.wd` is the `bar`
+step's latest `step_result` on cards as well as in the task detail.
 
 `step_result`:
 ```

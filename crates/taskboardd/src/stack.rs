@@ -48,6 +48,34 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<i64>> {
     Ok(Some(n))
 }
 
+/// The tasks still stacking on this one: open, or done with their PR still open.
+pub fn children(app: &App, id: i64) -> Result<Vec<Row>> {
+    app.db.q(
+        "SELECT * FROM tasks WHERE pr_after = ? AND id != ? AND (status != 'done' \
+         OR (pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))))",
+        p![id, id],
+    )
+}
+
+/// Refuses ending a task without a PR (`--pr no`, `done --no-pr`) while other tasks stack on it.
+pub fn refuse_no_pr(app: &App, t: &Row) -> Result<()> {
+    let kids = children(app, t.id())?;
+    if kids.is_empty() {
+        return Ok(());
+    }
+    let refs: Vec<String> = kids.iter().map(|k| rf("task", k.id())).collect();
+    let me = rf("task", t.id());
+    let verb = if refs.len() == 1 { "stacks" } else { "stack" };
+    err(
+        409,
+        format!(
+            "{} {verb} on {me}, so {me} has to end in a PR for theirs to build on. Take them off it first (tb task set {} --stack-on none).",
+            refs.join(", "),
+            refs[0]
+        ),
+    )
+}
+
 /// Sets a task's parent from a body's `stack_on`, logging the change. False when it didn't change.
 pub fn set(app: &App, t: &Row, value: &Value, who: &str) -> Result<bool> {
     let n = clean(app, value, Some(t))?;
@@ -129,8 +157,23 @@ pub fn handoff_line(app: &App, t: &Row, remote: &str) -> Result<Option<String>> 
     )))
 }
 
+/// Waits before trying a failed retarget again: 1, 5, 15, then every 60 minutes.
+const RETARGET_RETRY_WAITS: [i64; 4] = [60, 300, 900, 3600];
+
+/// The alert key for a task's failed retarget: raised once, cleared when the retarget works.
+fn retarget_key(task_id: i64) -> String {
+    format!("retarget:{}", rf("task", task_id))
+}
+
+/// A failed-retarget alert is up until the move works, the PR closes, or the task goes away.
+pub fn retarget_resolved(app: &App, a: &Value) -> Result<bool> {
+    let Some(t) = board::find_task(app, a["task_id"].as_i64())? else { return Ok(true) };
+    Ok(!jloads_obj(t.s("pr_flow")).contains_key("retarget_error") || !board::pr_still_open(&t))
+}
+
 /// Open stacked PRs whose parent merged and that still point at the parent's branch: point each at the
-/// parent's base. Outside any transaction (it runs the host's tool). Returns how many moved.
+/// parent's base. A failed move is tried again on a later refresh, backing off (`retarget_at`), and its
+/// alert clears once it works. Outside any transaction (it runs the host's tool). Returns how many moved.
 pub fn retarget(app: &App) -> Result<i64> {
     let rows = app.db.q(
         "SELECT * FROM tasks WHERE pr_after IS NOT NULL AND pr_num IS NOT NULL \
@@ -144,24 +187,48 @@ pub fn retarget(app: &App) -> Result<i64> {
             continue;
         }
         let f = jloads_obj(t.s("pr_flow"));
-        if f.contains_key("retargeted") {
+        // Done already (boards from before retries stored a failure here as "failed: …").
+        if f.get("retargeted").and_then(|v| v.as_str()).map(|s| !s.starts_with("failed")).unwrap_or(false) {
+            continue;
+        }
+        if f.s("retarget_at").map(|r| r > now_iso().as_str()).unwrap_or(false) {
             continue;
         }
         let base = jloads_obj(p.s("pr_flow")).get("rec").and_then(|r| r["base"].as_str()).filter(|b| !b.is_empty()).map(|b| b.to_string());
         let Some(base) = base.or_else(|| crate::steps::default_base(&t.st("repo_path"))) else { continue };
         let pr = rf("task", p.id());
         let res = crate::propen::host::retarget(app, &t, &base);
+        let key = retarget_key(t.id());
         app.db.tx(|| {
             match &res {
                 Ok(()) => {
-                    prflow::merge_flow(app, t.id(), fields!["retargeted" => base.clone()])?;
+                    prflow::merge_flow(
+                        app,
+                        t.id(),
+                        fields!["retargeted" => base.clone(), "retarget_error" => null, "retarget_tries" => null, "retarget_at" => null],
+                    )?;
                     board::log_event(app, t.id(), board::BOARD, "status", &format!("{pr}'s PR merged, so PR #{} now goes into {base}", t.i0("pr_num")))?;
+                    crate::dispatch::clear_alert_key(app, &key)?;
                 }
                 Err(e) => {
-                    prflow::merge_flow(app, t.id(), fields!["retargeted" => format!("failed: {e}")])?;
-                    let line = format!("{pr}'s PR merged, but PR #{} for {} couldn't be pointed at {base}: {e}", t.i0("pr_num"), rf("task", t.id()));
-                    board::log_event(app, t.id(), board::BOARD, "status", &line)?;
-                    crate::dispatch::add_alert(app, &line, Some(t.id()), t.i("goal_id"), None, Some("pr"))?;
+                    let tries = f.i0("retarget_tries") + 1;
+                    let wait = RETARGET_RETRY_WAITS[(tries.min(RETARGET_RETRY_WAITS.len() as i64) - 1) as usize];
+                    prflow::merge_flow(
+                        app,
+                        t.id(),
+                        fields!["retargeted" => null, "retarget_error" => e.clone(), "retarget_tries" => tries,
+                                "retarget_at" => iso(now_ts() + wait as f64)],
+                    )?;
+                    if tries == 1 {
+                        let line = format!(
+                            "{pr}'s PR merged, but PR #{} for {} couldn't be pointed at {base}: {e}. The board tries again in {} min.",
+                            t.i0("pr_num"),
+                            rf("task", t.id()),
+                            wait / 60
+                        );
+                        board::log_event(app, t.id(), board::BOARD, "status", &line)?;
+                        crate::dispatch::add_alert_keyed(app, &line, Some(t.id()), t.i("goal_id"), &key)?;
+                    }
                 }
             }
             Ok(())

@@ -190,6 +190,15 @@ impl PrHost for GithubHost {
         self.gh(s(&["pr", "edit", &pr.num.to_string(), "-R", &pr.repo, "--base", base])).map(|_| ())
     }
 
+    fn description(&self, pr: &PrRef) -> HostResult<String> {
+        let v = self.api("GET", &format!("repos/{}/pulls/{}", pr.repo, pr.num), &[])?;
+        Ok(v["body"].as_str().unwrap_or("").to_string())
+    }
+
+    fn set_description(&self, pr: &PrRef, body: &str) -> HostResult<()> {
+        self.api("PATCH", &format!("repos/{}/pulls/{}", pr.repo, pr.num), &[("body", body)]).map(|_| ())
+    }
+
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
         let runs = parse(&self.gh(s(&["run", "list", "-R", &pr.repo, "--commit", head, "--json", "databaseId,status", "--limit", "50"]))?)?;
         let mut n = 0;
