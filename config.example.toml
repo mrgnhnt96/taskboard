@@ -266,6 +266,9 @@ turn_gap_hours = 4.0
 speed_by_minutes = [[30, 3.0], [60, 2.0], [120, 1.5], [240, 1.0], [480, 0.75]]   # [work minutes up to, speed]
 slow_speed = 0.5                      # slower than the last step
 no_speed_yet = 1.0                    # hasn't reviewed yet
+speed_days = 14.0                     # speed comes from the asks of the last this many days
+speed_asks = 8                        # and at most this many of them
+slow_cap_mins = 240.0                 # a swapped-off ask counts as this; an open one as its time so far, up to this
 me = []                               # your own names, emails and host ids (the PR's author is never asked anyway)
 sync_every_hours = 12.0               # how often commit authors and host accounts join the roster
 # Who's around (optional): with availability = "slack" the picker checks candidates on Slack with
@@ -278,7 +281,9 @@ out_pattern = '(?i)\b(out|ooo|off|vacation|holiday|pto|sick|leave)\b|🌴|🤒|�
 local_start = "08:00"
 local_end = "18:00"
 weekends_off = true
-drop_not_on_slack = true              # someone Slack doesn't know leaves the roster (tb reviewers back undoes it)
+drop_not_on_slack = true              # someone Slack doesn't know (by email, name or email prefix) leaves the roster (tb reviewers back undoes it)
+quiet_from = "10:00"                  # away with no post today is quiet only from this time where they are
+out_keeps_hours = 24.0                # after hours, an out status seen this recently still holds
 cache_mins = 10.0
 # Review bots (`tb reviewers bot <who> --every <hours> --mark <text>`): a run is spotted from the marker
 # in that person's comments on the board's PRs; once its schedule is known they're asked only when it

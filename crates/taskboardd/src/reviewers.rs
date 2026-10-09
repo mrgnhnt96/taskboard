@@ -4,7 +4,7 @@
 //! One row per person and project. Several commit emails, host accounts and spellings fold into
 //! one row: the extra ones are its aliases, and any of them names the reviewer in `tb reviewers …`
 //! and `tb pr reviewers --replace/--drop`. A removed reviewer is never asked again ("never assign
-//! this person") until `tb reviewers back`; a pinned one is asked on every PR of the project. The
+//! this person") until `tb reviewers back`; a pinned one comes first for the main-contributor pick. The
 //! picker (`picker.rs`) chooses who to ask, the availability check (`presence.rs`) and bot schedules
 //! feed it, and the sweep (`asks.rs`) times asks out and swaps reviewers.
 //!
@@ -24,7 +24,7 @@
 //! | `source` | how they joined: `tb`, `git` (commit history), `host` (the repo's members), `import` |
 //! | `commits` | their commits in the history window at the last sync |
 //! | `removed_at`, `removed_why` | removed: never asked until `tb reviewers back` |
-//! | `pinned` | 1: asked on every PR of the project |
+//! | `pinned` | 1: first in line for the main-contributor pick |
 //! | `automation` | how much of their reviewing is automated (`tb reviewers auto`), a weight: 1 is normal |
 //! | `bot_every_h`, `bot_mark` | their review bot runs about every this many hours and marks its comments with this text |
 //! | `created_at`, `updated_at` | |
@@ -126,6 +126,17 @@ pub struct ReviewersConfig {
     pub ask_stage: bool,
     /// Seconds between the board's tries when its own ask fails.
     pub ask_retry_waits: Vec<i64>,
+    /// A reviewer's speed comes from their last `speed_asks` asks of the last `speed_days` days.
+    pub speed_days: f64,
+    pub speed_asks: usize,
+    /// An ask swapped off for not reviewing counts as this many work minutes, and one still open as
+    /// its time so far, up to this.
+    pub slow_cap_mins: f64,
+    /// Away on Slack with no post today is quiet only from this time where they are; before it
+    /// they're starting their day.
+    pub quiet_from: String,
+    /// An out status seen within this many hours still holds outside the work hours, when nobody's checked.
+    pub out_keeps_hours: f64,
 }
 
 impl Default for ReviewersConfig {
@@ -156,6 +167,11 @@ impl Default for ReviewersConfig {
             swap_after_mins: 90.0,
             ask_stage: false,
             ask_retry_waits: vec![60, 300, 900],
+            speed_days: 14.0,
+            speed_asks: 8,
+            slow_cap_mins: 240.0,
+            quiet_from: "10:00".into(),
+            out_keeps_hours: 24.0,
         }
     }
 }
@@ -257,16 +273,41 @@ pub struct Person {
     pub commits: Option<i64>,
 }
 
+/// A login (`ana-gh`, `@ana-gh`) or a Bitbucket `{uuid}`: one word, not an email.
+pub fn looks_like_host_id(s: &str) -> bool {
+    let s = s.trim().trim_start_matches('@');
+    (s.starts_with('{') && s.ends_with('}') && s.len() > 2) || (!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+}
+
+/// Whether a reviewer who shares only a name with `p` is them: the owner adding them by name
+/// (`tb reviewers add`), or one side is just a name. Two people with the same name but their own
+/// host ids or emails stay apart.
+fn same_by_name(r: &Row, p: &Person) -> bool {
+    let (rh, ph) = (r.s("host_user").filter(|u| !u.is_empty()), p.host_user.as_deref().filter(|u| !u.is_empty()));
+    if let (Some(a), Some(b)) = (rh, ph) {
+        if low(a) != low(b) {
+            return false;
+        }
+    }
+    let bare_row = rh.is_none() && list_of(r, "emails").is_empty();
+    let bare_p = ph.is_none() && p.emails.is_empty();
+    p.source == "tb" || p.source.is_empty() || bare_row || bare_p
+}
+
 /// Adds a person to the project's roster, or folds what's new about them into the reviewer they
-/// already are (any shared name, host id or email). The reviewer's row.
+/// already are (a shared host id, email or alias; a shared name only as `same_by_name` allows).
+/// The reviewer's row.
 pub fn fold(app: &App, project: &str, p: &Person) -> Result<Row> {
-    let mut keys: Vec<&str> = vec![p.name.as_str()];
+    let mut keys: Vec<&str> = vec![];
     if let Some(u) = &p.host_user {
         keys.push(u);
     }
     keys.extend(p.emails.iter().map(|s| s.as_str()));
     keys.extend(p.aliases.iter().map(|s| s.as_str()));
-    let mut hits: Vec<Row> = roster(app, project)?.into_iter().filter(|r| keys.iter().any(|k| names(r, k))).collect();
+    let mut hits: Vec<Row> = roster(app, project)?
+        .into_iter()
+        .filter(|r| keys.iter().any(|k| names(r, k)) || (names(r, &p.name) && same_by_name(r, p)))
+        .collect();
     let now = now_iso();
     let Some(first) = hits.first().cloned() else {
         let id = app.db.insert(
@@ -355,20 +396,43 @@ pub fn display(r: &Row) -> String {
     r.st("name")
 }
 
-/// Median of the reviewer's answered asks, in work minutes (the last 20).
+/// The median of a reviewer's recent review times, in work minutes: their last `speed_asks` asks
+/// from the last `speed_days` that say how fast they are. An answered ask counts its time; one
+/// swapped off for not reviewing counts as `slow_cap_mins`; one still open counts its time so far
+/// (up to the cap) once that's slower than the rest would make them.
 pub fn median_work_mins(app: &App, id: i64) -> Result<Option<f64>> {
-    let mut xs: Vec<f64> = app
-        .db
-        .q("SELECT work_mins FROM review_asks WHERE reviewer_id = ? AND work_mins IS NOT NULL ORDER BY id DESC LIMIT 20", p![id])?
-        .iter()
-        .filter_map(|r| r.f("work_mins"))
-        .collect();
-    if xs.is_empty() {
-        return Ok(None);
+    let cfg = &app.cfg.reviewers;
+    let since = iso(now_ts() - cfg.speed_days * 86400.0);
+    let rows = app.db.q(
+        "SELECT * FROM review_asks WHERE reviewer_id = ? AND asked_at >= ? AND (work_mins IS NOT NULL OR state IN ('swapped', 'open')) ORDER BY id DESC",
+        p![id, since],
+    )?;
+    let mut done: Vec<f64> = vec![];
+    let mut open: Vec<f64> = vec![];
+    for r in rows.iter().take(cfg.speed_asks.max(1)) {
+        match (r.f("work_mins"), r.st("state").as_str()) {
+            (Some(m), _) => done.push(m),
+            (None, "swapped") => done.push(cfg.slow_cap_mins),
+            (None, _) => {
+                let at = r.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
+                open.push(crate::picker::work_minutes(app, at, now_ts()).min(cfg.slow_cap_mins));
+            }
+        }
     }
+    // An open ask only ever makes them slower: it counts once it's taken longer than the speed they'd get without it.
+    let pace = crate::picker::speed(cfg, median(&done));
+    done.extend(open.into_iter().filter(|m| crate::picker::speed(cfg, Some(*m)) < pace));
+    Ok(median(&done))
+}
+
+fn median(xs: &[f64]) -> Option<f64> {
+    if xs.is_empty() {
+        return None;
+    }
+    let mut xs = xs.to_vec();
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = xs.len();
-    Ok(Some(if n % 2 == 1 { xs[n / 2] } else { (xs[n / 2 - 1] + xs[n / 2]) / 2.0 }))
+    Some(if n % 2 == 1 { xs[n / 2] } else { (xs[n / 2 - 1] + xs[n / 2]) / 2.0 })
 }
 
 /// A reviewer as the API, `tb reviewers list` and the app show them.
@@ -497,17 +561,21 @@ fn act(app: &App, action: &str, body: &Value) -> Result<Value> {
             if add.is_empty() {
                 return err(400, "Give at least one alias: another name, email or host account of theirs.");
             }
+            let mut host_user = r.s("host_user").filter(|u| !u.is_empty()).map(|s| s.to_string());
             for a in &add {
                 if let Some(o) = find(app, &project, a)?.filter(|o| o.id() != r.id()) {
                     return err(409, format!("{a} already names {}. Fold them into one with tb reviewers merge \"{}\" \"{}\".", o.st("name"), r.st("name"), o.st("name")));
                 }
-                if a.contains('@') && !a.starts_with('@') {
+                // Without a host account yet, a host id becomes theirs.
+                if host_user.is_none() && looks_like_host_id(a) && low(a) != low(&r.st("name")) {
+                    host_user = Some(a.trim().trim_start_matches('@').to_string());
+                } else if a.contains('@') && !a.starts_with('@') {
                     push_unique(&mut aliases, a, &emails);
                 } else {
                     push_unique(&mut aliases, a, &[]);
                 }
             }
-            set(app, &r, fields!["aliases" => jdumps(&json!(aliases))])?
+            set(app, &r, fields!["aliases" => jdumps(&json!(aliases)), "host_user" => host_user])?
         }
         "merge" => {
             let other = need(app, &project, &body_str(body, "other"))?;
