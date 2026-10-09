@@ -250,7 +250,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "waits_for": waits,
         // What it waits for, and the task it stacks on (`stack: true`).
         "waits_for_state": waitsfor::deps(t).into_iter().map(|n| {
-            let mut w = json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref())});
+            let mut w = json!({"ref": rf("task", n), "done": waitsfor::ready_for(app, t, n, find_task(app, Some(n))?.as_ref())?});
             if crate::stack::parent_id(t) == Some(n) {
                 w["stack"] = json!(true);
             }

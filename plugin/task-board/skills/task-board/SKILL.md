@@ -23,7 +23,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   - `tb switch T<n>` moves to a task in this terminal's line; `tb line` lists the line; `tb line drop T<n>` sends one back to the board.
 - **Something outside the task**: don't fix it. Report it and carry on:
   `tb found "<short summary, 80 chars max>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
-- **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"`, then end your turn. Never ask the owner; see `questions.md`.
+- **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"` (add `--merged` when you need its PR merged first), then end your turn. Never ask the owner; see `questions.md`.
 - **Blocked on the owner**: read `questions.md` first; most calls are yours. Still the owner's? `tb question "<the question>"`, then stop.
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..."` (`--goal G<n>` for the goal). Don't attach writing as a loose file (.md, .txt, .rst, .html): publish it as a brief artifact and attach that link; the board refuses those files.
 - **Written results**: attach a link with `--kind results`. Lead with the answer.

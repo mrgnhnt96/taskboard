@@ -100,7 +100,8 @@ pub fn report_block(app: &App, tb: &str) -> String {
         format!("- A problem outside this task: {tb} found \"<problem>\" --kind bug|gap|follow|clean --output \"<excerpt>\""),
         format!(
             "- Needs another task's work that isn't there yet: {tb} wait-for T<n> --why \"<what you need>\". Don't ask \
-             {owner}. The board starts that task and carries this conversation on once it's done"
+             {owner}. The board starts that task and carries this conversation on once it's done (add --merged when \
+             you need its PR merged first)"
         ),
         format!(
             "- A question for {owner}: {tb} question \"<question>\", then wait for the answer (if it prints the board's \
