@@ -232,6 +232,11 @@ fn open_at(h: &Hours, until: Option<&str>, dt: &NaiveDateTime) -> bool {
     in_window(h, dt)
 }
 
+/// Whether a local time is inside these work hours (always, with the hours off).
+pub fn within(h: &Hours, dt: &NaiveDateTime) -> bool {
+    open_at(h, None, dt)
+}
+
 pub fn is_open(app: &App) -> bool {
     let now = now_local();
     open_at(&get(app), today_until(app, &now).as_deref(), &now)

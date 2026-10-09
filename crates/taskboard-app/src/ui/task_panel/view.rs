@@ -435,7 +435,7 @@ fn stage_tone(phase: &str) -> Tone {
     match phase {
         "checks" => Tone::Queued,
         "fix" => Tone::Failed,
-        "review" | "rereview" => Tone::Review,
+        "ask" | "review" | "rereview" => Tone::Review,
         "comments" => Tone::Needs,
         "merge" => Tone::Working,
         "merged" => Tone::Done,
@@ -1165,6 +1165,9 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
             if let Some(n) = r["swaps"].as_i64().filter(|n| *n > 0) {
                 kids.push(txt(format!("Swapped {}", if n == 1 { "once".to_string() } else { format!("{n} times") }), St::Small));
             }
+            if let Some(at) = opt_s(r, "asked_at").map(crate::fmt::hhmm).filter(|a| !a.is_empty()) {
+                kids.push(txt(format!("Asked {at}"), St::Small));
+            }
             if let Some(u) = opt_s(r, "url").filter(|u| is_web(u)) {
                 kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
             }
@@ -1367,7 +1370,7 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
     }
     body.extend(bar.map(reviewer_rows).unwrap_or_default());
     // `prBar`
-    if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge")) {
+    if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge" | "ask")) {
         let stopped = obj(stage, "stopped").is_some();
         let label = or_empty(&stage["label"]);
         let text = if stopped { format!("Needs you · {label}") } else { label };

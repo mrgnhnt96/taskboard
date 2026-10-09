@@ -281,6 +281,17 @@ impl PrHost for BitbucketHost {
         Ok(Cancelled::Stopped(n))
     }
 
+    fn members(&self, repo: &str) -> HostResult<Vec<Reviewer>> {
+        let ws = repo.split('/').next().unwrap_or("");
+        let list = self.get_all(&format!("{}/workspaces/{}/members?pagelen=100", self.api, seg(ws)), 5)?;
+        Ok(list
+            .iter()
+            .map(|m| &m["user"])
+            .filter(|u| !uid(u).is_empty())
+            .map(|u| Reviewer { user: uid(u), name: u["display_name"].as_str().unwrap_or("").to_string(), ..Default::default() })
+            .collect())
+    }
+
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         let list = self.get(&format!("{}/commits/{base}?pagelen={commits}", self.repo_url(&pr.repo)))?;
         let mut out: Vec<String> = vec![];

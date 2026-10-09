@@ -189,6 +189,16 @@ impl PrHost for GithubHost {
         Ok(Cancelled::Stopped(n))
     }
 
+    fn members(&self, repo: &str) -> HostResult<Vec<Reviewer>> {
+        let v = self.api("GET", &format!("repos/{repo}/collaborators?per_page=100"), &[])?;
+        Ok(v.as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|u| u["login"].as_str().map(|l| Reviewer { user: l.to_string(), name: l.to_string(), ..Default::default() }))
+            .collect())
+    }
+
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         let list = self.api("GET", &format!("repos/{}/commits?sha={base}&per_page={commits}", pr.repo), &[])?;
         let mut out: Vec<String> = vec![];

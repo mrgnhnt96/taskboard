@@ -47,7 +47,15 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     };
     let review = prflow::review_of(&f, &rec);
     let approvals = review.approvals;
-    let rows = reviewer_rows(&f, &rec);
+    let mut rows = reviewer_rows(&f, &rec);
+    // Swaps and when each was asked come from the ask ledger (`asks.rs`).
+    let info = crate::asks::pill_info(app, t.id())?;
+    for r in rows.iter_mut() {
+        if let Some((swaps, at)) = r["user"].as_str().and_then(|u| info.get(&u.to_lowercase())) {
+            r["swaps"] = json!(swaps);
+            r["asked_at"] = at.clone();
+        }
+    }
     // "x of N": the host's reviewer list when it has one, else approvals plus the reviewers still asked.
     let reviewers = if rec["reviewers"].is_array() { rows.len() as i64 } else { approvals + rec["requested"].as_i64().unwrap_or(0) };
     let new_comments = if rec["threads"].is_array() {
@@ -72,7 +80,8 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
 
 /// One pill per reviewer still on the PR (swapped-off ones aside), from the host's reviewer states:
 /// approved, changes (asked for changes), rereview (asked again after `tb pr addressed`), waiting
-/// (asked, hasn't reviewed) or commented. `swaps` counts reviewer swaps (0 until swapping lands).
+/// (asked, hasn't reviewed) or commented. `swaps` (how many swaps led to this reviewer) and
+/// `asked_at` are filled in by `bar` from the ask ledger.
 pub fn reviewer_rows(f: &Row, rec: &Value) -> Vec<Value> {
     let off = prflow::swapped_off(f);
     let asked_again = str_list(&f.get("addressed").map(|a| a["asked_ids"].clone()).unwrap_or(Value::Null));

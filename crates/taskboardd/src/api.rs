@@ -229,6 +229,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "pr", "addressed"]) => crate::prcmds::addressed(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merge"]) => crate::prcmds::merge(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "not-ours"]) => crate::prcmds::not_ours(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "reviewers"]) => crate::asks::pr_reviewers(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reviewed"]) => {
             let t = tid(id)?;
             app.db.tx(|| {
@@ -237,6 +238,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                 alerts::clear_alerts(app, Some(t), None)?;
                 alerts::prune_alerts(app)
             })?;
+            crate::asks::after_reviewed(app, t)?;
             task_detail(app, t)
         }
         ("POST", ["done", "close-terminals"]) => close_done_terminals(app, body, query),
@@ -304,6 +306,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
         (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),
+        (_, ["reviewers", rest @ ..]) => crate::reviewers::route(app, method, rest, query, body),
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
         ("POST", ["attachments", id, "remove"]) => remove_attachment(app, id),
         ("GET", ["backlog"]) => list_backlog(app, query),

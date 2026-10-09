@@ -250,6 +250,49 @@ focus_timeout_secs = 15.0
 tool = ""                            # its name, as the app says it ("Create in Flagsmith"); empty = "the flag tool"
 create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
 
+# Who reviews a PR (`tb pr reviewers` with no names, and the `ask` stage): `count` people from the
+# project's roster (`tb reviewers`), one a main contributor of the changed files, the rest in turn.
+# A reviewer is due at their last ask + open asks x turn_gap_hours / weight; weight = automation level
+# x speed, from their median review time in work minutes.
+[reviewers]
+count = 2
+main_contributors = 3                 # the main-contributor pick comes from this many top authors of the changed files
+history_months = 6                    # commit history that counts
+min_commits = 5                       # commits in that window to join the roster from the history
+turn_gap_hours = 4.0
+speed_by_minutes = [[30, 3.0], [60, 2.0], [120, 1.5], [240, 1.0], [480, 0.75]]   # [work minutes up to, speed]
+slow_speed = 0.5                      # slower than the last step
+no_speed_yet = 1.0                    # hasn't reviewed yet
+me = []                               # your own names, emails and host ids (the PR's author is never asked anyway)
+sync_every_hours = 12.0               # how often commit authors and host accounts join the roster
+# Who's around (optional): with availability = "slack" the picker checks candidates on Slack with
+# Taskboard's Slack account (read-only: it never messages anyone) during your work hours, and prefers
+# online (active or posted today) > quiet > off (outside local_start-local_end where they are, or a
+# weekend); a status matching out_pattern is never picked.
+availability = ""                     # "" or "slack"
+pick_tries = 6                        # candidates checked per pick
+out_pattern = '(?i)\b(out|ooo|off|vacation|holiday|pto|sick|leave)\b|🌴|🤒|🏖'
+local_start = "08:00"
+local_end = "18:00"
+weekends_off = true
+drop_not_on_slack = true              # someone Slack doesn't know leaves the roster (tb reviewers back undoes it)
+cache_mins = 10.0
+# Review bots (`tb reviewers bot <who> --every <hours> --mark <text>`): a run is spotted from the marker
+# in that person's comments on the board's PRs; once its schedule is known they're asked only when it
+# runs within bot_due_mins, at the fastest pace.
+bot_window_hours = 12.0               # marked comments this recent count
+bot_run_gap_mins = 30.0               # marked comments this close together are one run
+bot_due_mins = 45.0
+# Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the
+# PR host by the picker's choice (only inside work hours). Someone swapped off who reviews anyway counts
+# again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is asked.
+swap = false
+swap_after_mins = 90.0
+# The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The agent is
+# brought back to ask (tb pr reviewers); outside work hours (or with pr.wake off) the board asks itself.
+ask_stage = false
+ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when it can't ask
+
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in

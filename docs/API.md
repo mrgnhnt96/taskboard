@@ -472,10 +472,12 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
   "review": "approved"|"changes"|"pending"|"none"|null,   // approved = enough approvals; changes = changes requested;
                                  // pending = reviewers asked, nobody has decided; none = no review asked yet
   "stage": {
-    "phase": "checks"|"fix"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
+    "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
                                  // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")
+                                 // ask ([reviewers] ask_stage): the owner reviewed it; reviewers are being asked ("Asking for reviews")
     "label": str,                // plain words, e.g. "Watching checks", "Fixing checks", "Awaiting reviews", "Answering comments", "Merging", "Merged"
-    "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge (links to it)
+    "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge/ask (links to it)
+    "asked": {"at": iso, "names": [str], "by": str} | null,   // who was last asked to review, when, and by whom (the agent, tb, "Task board")
     "stopped": {"asked": bool, "message": str} | null
                                  // optional: that terminal stopped before finishing (asked = it asked you a question).
                                  // Shows "Needs you" and an answer box on the done task; the answer goes through POST /tasks/:id/answer.
@@ -495,7 +497,8 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged (or "failed: …")
     "wd": step_result|null,      // the author-side review step (a step with `bar`), on GET /tasks/:id only
-    "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int}]
+    "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
+                                 // swaps: how many swaps led to this reviewer (the ask ledger); asked_at: when the board or tb asked them
                                  // one pill per reviewer still on the PR, from the host's reviewer states
   }
 }
@@ -509,8 +512,8 @@ With `bar`, the task panel shows five steps: the review step (named by its `bar`
 
 The task panel shows three steps (Checks, Review, Merge) from `checks`, `review`, `state` and `stage.phase`. A done
 task whose PR is still OPEN shows "Awaiting merge" (or `stage.label`) instead of Done. The original's `build`,
-`review` free text, `review_log`, reviewer lists (now `bar.reviewer_rows`),
-`reviewed_at` and `asked` are gone.
+`review` free text, `review_log`, reviewer lists (now `bar.reviewer_rows`) and
+`reviewed_at` are gone; `asked` is `stage.asked`.
 
 ### `attachment` (from `board.attachment_dict`)
 ```
@@ -559,6 +562,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
 | `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
+| `POST /tasks/:id/pr/reviewers` | `{ask?: [who], replace?: who, with?: who, drop?: who, count?, dry_run?: bool, who?}` | `tb pr reviewers`: sets the PR's reviewers through its host. With none of `ask`, `replace` and `drop`, the picker chooses (`count` more, else enough to have `[reviewers] count` on the PR; `dry_run` answers `{picks: [{user, name, why: "pinned"\|"main"\|"turn"}]}` and asks nobody); 409 when nobody on the roster can review. `replace` without `with` takes the picker's choice. `ask` requests each (a roster name, alias, email or host id; someone on the PR's list by name; else a host id as given); `replace` takes one off and asks `with` in their place; `drop` takes one off. 409 for the PR's author or someone removed from the roster. Each ask is recorded (`review_asks`), the people taken off go into `pr_flow.swapped_off` (their requests for changes stop holding), and `pr_flow.asked` notes who was asked. **Response:** `{asked: [{user, name}], dropped, replaced: {old, new}?, asks: [ask], pr}`. |
 | `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open, and a stacked base PR has merged. Then merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
 | `POST /tasks/:id/pr/skip-checks` | `{reason?, all?: bool, who?}` | Counts this push's checks (or every push's) as passed: for builds a hook cancelled, not for failures (use `not-ours`). |
@@ -852,6 +856,77 @@ Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. T
 | `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`). Never from the app. |
 | `POST /bits/:name/remove` | `{who?}` | Remove it and its links. |
 | `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). |
+
+## Reviewers
+
+Each project has a roster of reviewers (`reviewers.rs` documents the tables). One row per person: commit emails,
+host accounts and spellings fold into one, and any of them names the reviewer. A removed reviewer is never asked
+(not by the board, nor by `tb pr reviewers --ask`) until they're back; a pinned one is asked on every PR. Every
+ask is a row in the ledger (`review_asks`).
+
+`reviewer`: `{id, project, name, user: str|null (host id), emails, aliases, slack, source: "tb"|"git"|"host"|"import",
+commits, removed, removed_at, removed_why, pinned, automation, bot: {every_h, mark, last_run}|null,
+median_work_mins, open_asks, asks, last_asked}`.
+
+`ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage", by, state:
+"open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces}`.
+
+Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (any name of theirs), plus `who`.
+
+| Request | Body | What |
+|---|---|---|
+| `GET /reviewers` | query `project` (`all` for every project) or `cwd` | `{project, projects: [{name, reviewers: [reviewer]}]}`. |
+| `POST /reviewers` | `{reviewer: name, user?, emails?: [], aliases?: [], slack?}` | `tb reviewers add`: adds them, or folds what's new into the reviewer they already are (a shared name, host id or email; two rows that both match become one). |
+| `POST /reviewers/remove` | `{reason?}` | Never ask them (`tb reviewers remove`). |
+| `POST /reviewers/back` | | Ask them again. |
+| `POST /reviewers/pin` | `{on?: bool}` | Ask them on every PR (`tb reviewers pin`/`unpin`). |
+| `POST /reviewers/auto` | `{level: "off"\|"low"\|"normal"\|"high"\|number}` | How automated their reviewing is (0.25, 0.5, 1, 2, or 0.1–10): a weight on their turn. |
+| `POST /reviewers/bot` | `{every_h, mark}` or `{off: true}` | Their review bot's schedule and the text its comments carry. |
+| `POST /reviewers/alias` | `{aliases: []}` | More names, emails or host ids of theirs (409 for one that names someone else). |
+| `POST /reviewers/merge` | `{other}` | Fold `other` into them: names, accounts, asks and bot runs. |
+| `POST /reviewers/sync` | | `tb reviewers sync`: commit authors of the last `history_months` with at least `min_commits` commits join the roster now (a GitHub noreply email gives their login), and the host's members (`PrHost::members`) give reviewers without an account theirs, matched by name. The picker does this itself at most every `sync_every_hours`. **Response:** `{project, joined, matched, reviewers: [reviewer]}`. |
+
+**The picker** (`picker.rs`, `[reviewers]` in config.toml) asks pinned reviewers first, then one of the
+`main_contributors` people with the most commits to the files the PR changes, then the rest in turn. It never picks
+the PR's author (nor `[reviewers] me`, nor the repo's `git config user.email`), anyone removed, anyone without a
+host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + open
+asks × `turn_gap_hours` / weight, earliest first; weight = automation × speed, where speed comes from the median
+work minutes they took to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`). After each poll the ledger
+marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: minutes inside the work hours, or every
+minute with the hours off), and closed when the PR merged or closed first.
+
+**Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). During the board's work hours the
+picker checks candidates, in turn order and at most `pick_tries` per pick, with Taskboard's Slack account: tiers
+online (active, or posted today) > quiet > off (outside `local_start`–`local_end` in their Slack time zone, or a
+weekend). A status matching `out_pattern` is out and never picked; someone Slack doesn't know leaves the roster
+("not on Slack") with `drop_not_on_slack`. It takes the first one online, else the best tier it saw. Outside work
+hours, or without a provider, nobody is checked. The client only calls `users.lookupByEmail`, `users.info`,
+`users.getPresence` and `search.messages`: the board never messages anyone.
+
+**Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. After each poll the
+board looks for comments by them that carry `mark` (case-insensitive) on the PRs it watches, from the last
+`bot_window_hours`, and records each run in `reviewer_bot_runs` (comments within `bot_run_gap_mins` are one run).
+With a run seen within two intervals the bot is timed: its next run is the last + `every_h`, the picker asks that
+person only when it's at most `bot_due_mins` away, and their pace is the fastest in `speed_by_minutes`.
+
+**The sweep** (`asks.rs`, after each poll) applies the stand-in rules to asks swapped off an open PR (by a swap or
+`tb pr reviewers --replace`): someone swapped off who reviews anyway is `came_back` (their review counts again: they
+leave `pr_flow.swapped_off`), and a stand-in who hasn't reviewed yet is taken off the PR (`dropped`). Someone swapped
+off who asks for changes doesn't block the PR (`prflow::review_of` waives anyone in `swapped_off`), and one more
+reviewer is asked (`fill_in`, once per ask). With `[reviewers] swap = true`, an ask still open after
+`swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
+by the picker's choice (`swap`): only inside work hours and never while `feed::holding` (the event feed's
+health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
+except a PR's first ask outside work hours. Each change is logged on the task and the PR is read again.
+
+**The `ask` stage** (`[reviewers] ask_stage`, off by default). Once the owner has marked a green PR reviewed
+(`POST /tasks/:id/pr/reviewed`, "I reviewed it"), its phase is `ask` until reviewers are asked (`pr_flow.asked`).
+In work hours, with `pr.wake` on, the agent is brought back to run `tb pr reviewers` (which finishes the visit);
+otherwise the board picks and asks them itself through the host (asks with `why: "stage"`, by "Task board"),
+retrying after each of `ask_retry_waits` seconds (`pr_flow.ask_tries`, `ask_retry_at`) and alerting once they're
+spent. Then the phase moves on to `review`.
+
+The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 
 ## The PR plan and flow
 

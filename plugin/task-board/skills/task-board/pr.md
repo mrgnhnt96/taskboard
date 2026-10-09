@@ -20,14 +20,23 @@ Or let the board open it (GitHub): write the description to a file with `## Summ
 The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Accounts; `tb accounts` shows which are. On GitHub use `gh` (it's signed in there). On Bitbucket and Slack call their REST API through `tb api`, which adds the token:
 
 - Comment: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n>/comments -d '{"content":{"raw":"…"}}'`
-- Reviewers: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n> -X PUT -d '{"title":"…","reviewers":[{"account_id":"…"}]}'` (send the title too)
 - Slack: `tb api slack chat.postMessage -d '{"channel":"#dev","text":"…"}'`
 
 `git push` over HTTPS uses Taskboard's account for that host while you're on a task (`tb git-credential`, set up when the session starts); elsewhere git uses the Mac's own sign-in. `tb token <github|bitbucket|slack>` prints a token for a script; never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
 
+## Reviewers
+
+Set a PR's reviewers with `tb pr reviewers T<n>` (GitHub and Bitbucket alike), never with the host's own tools: the board records every ask and never asks the PR's author or anyone removed from the project's roster.
+
+- `tb pr reviewers T<n>` alone: the board picks (a main contributor of the changed files, then whoever's turn it is) and asks them. `--dry-run` shows who it would pick; `--count N` asks N more.
+- `--ask <name>` (repeat for more): a reviewer's name, alias, email or host id.
+- `--replace <name>` (`--with <name>`, else the board's pick): take one off and ask another in their place. `--drop <name>`: take one off.
+
+The roster is the project's (`tb reviewers`, run in the project's folder or with `--project`): `list`, `sync` (commit authors join it), `add "<name>" --user <host id> --email <commit email> --alias <other name>`, `alias`, `merge <keep> <other>` (two rows that are one person), `remove <name> --reason "…"` (never ask them; only on the owner's word), `back`, `pin`/`unpin` (asked on every PR), `bot <name> --every <hours> --mark "<text its comments carry>"`, `auto <name> low|normal|high`.
+
 ## After the PR opens
 
-Read this when the board brings you back about a done task's PR (`[task-board:T<n>] PR … needs you`): failed checks, review comments, or ready to merge. The task is already done: don't `tb take` it or run `tb done`. Every command takes the task, `T<n>`.
+Read this when the board brings you back about a done task's PR (`[task-board:T<n>] PR … needs you`): failed checks, review comments, ready to merge, or asking for reviews. The task is already done: don't `tb take` it or run `tb done`. Every command takes the task, `T<n>`.
 
 The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` command works on both.
 
@@ -35,6 +44,7 @@ The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` comma
 2. Do the work:
    - **A check failed**: work from its failed steps and tests, or its log (on GitHub, `gh pr checks` and `gh run view --log-failed`), never a guess. If the PR's change causes it, fix exactly that. If it fails the same way without the change, it isn't ours: don't fix someone else's failure; clear it with `tb pr not-ours T<n> --check "<check>" --title "<what fails>" --reason "<why it isn't this PR, 20-300 characters>" --proof <link>` (repeat `--proof` and `--check`; a link to the same failure on the base branch, or an issue about it). It clears only checks that failed on this push.
    - **Open threads or changes requested**: fix each one, or put one that can fairly wait in the backlog (`tb backlog add "<title>" --kind follow`). A comment on base code the PR didn't change goes to the backlog too: reply that it's tracked and resolve it. Never reverse an earlier decision (a goal note, a checkpoint decision, the owner's answer) for a comment; reply with the decision instead. Push, then answer each thread that asked for something: `tb pr reply T<n> <thread> "<what you did>" --resolve`. A comment that asks for nothing (praise, an FYI, a question already answered) gets `tb pr ack T<n> <thread>`: it's resolved silently, never replied to. When a reviewer asked for changes and every thread is answered, `tb pr addressed T<n>` asks them to look again (it refuses while a thread is open).
+   - **Asking for reviews** (the owner has reviewed it): run `tb pr reviewers T<n>`. The board picks and asks the reviewers; `--ask <name>` asks someone in particular. It finishes the visit.
    - **Ready to merge**: merge only if the wake prompt says merging is allowed, with `tb pr merge T<n>`: it checks the PR once more (checks, approvals, threads, PR tasks, a stacked base) and merges it, deleting its branch. Don't merge with the host's own tools.
 3. Push the fixes. If the base branch has moved, rebase onto it first and push with `--force-with-lease`. Don't push only to rebase. A step that runs on every push (`per_head`) has to pass on the new commit first: the push is held until it does (`tb steps`).
 4. Finish every visit with `tb pr wait T<n>` (or `tb pr addressed` / `tb pr merge`, which finish it too): the board closes the terminal and keeps watching the PR. `tb pr merged T<n>` records a PR someone merged outside the board.
