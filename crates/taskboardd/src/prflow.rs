@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, dispatch, fields, handoff, hooks, hours, p, proc, runner};
+use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, proc, runner};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge"];
 pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge"];
@@ -290,7 +290,21 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
         .as_ref()
         .and_then(|l| l.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()))
         .or_else(|| t.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()));
+    let live = last.as_ref().is_some_and(|l| l.s("status") != Some("gone") && board::runs_claude(l));
+    let too_big = match (&cid, live) {
+        (Some(cid), false) => {
+            let cwd = args["cwd"].as_str().unwrap_or("").to_string();
+            limits::fresh_start_why(app, &limits::conversation(app, &cwd, cid, last.as_ref().and_then(|l| l.s("last_activity"))))
+        }
+        _ => None,
+    };
     match cid {
+        Some(_) if too_big.is_some() => {
+            let why = too_big.unwrap_or_default();
+            board::log_event(app, t.id(), board::BOARD, "handoff", &format!("Starting a fresh conversation for PR #{}: {why}", t.i0("pr_num")))?;
+            let p = format!("{}\n\n{}", args["prompt"].as_str().unwrap_or(""), handoff::pr_context(app, t));
+            args["prompt"] = json!(p);
+        }
         None => {
             board::log_event(app, t.id(), board::BOARD, "handoff", &format!("Starting a fresh conversation for PR #{}: it has no conversation to resume", t.i0("pr_num")))?;
             let p = format!("{}\n\n{}", args["prompt"].as_str().unwrap_or(""), handoff::pr_context(app, t));

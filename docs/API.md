@@ -120,6 +120,7 @@ window at 100 % makes goals show "Queued until agents can start".
                                // offline: its last turn ended on a lost connection (StopFailure); needs: on another API error
   "api_error": str|null,       // that error, until the next prompt, turn or session start
   "idle_secs": int|null,       // idle time from last_activity (else seen_at), not counting time the Mac slept
+  "compacting": iso|null,      // compacting its conversation since then: from PreCompact to its next hook (SessionStart "compact")
   "task_ref": "T12"|null,      // the task currently on this terminal (status != done)
   "task_title": str|null,
   "last_activity": iso|null,
@@ -311,6 +312,7 @@ For a live or a gone terminal:
 {
   "id": str, "name": str, "project": str|null, "project_path": str|null,
   "status": "idle"|"working"|"needs"|"offline"|"gone", "api_error": str|null, "idle_secs": int|null,   // as session_row
+  "compacting": iso|null,        // as session_row
   "status_at": iso|null,         // when it entered this status ("Working for 12 min")
   "last_activity": iso|null, "gone_at": iso|null,
   "branch": str|null,
@@ -424,7 +426,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "waits_for": ["T14"],           // tasks it starts after
   "waits_for_state": [{"ref": "T14", "done": bool}],   // the same, each with whether it's done; the goal page's "Waits for" chip
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
-  "alone": "goal"|"board"|null    // nothing else in its goal (or on the board) runs while it does
+  "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
+  "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
 }
 ```
 The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
@@ -534,6 +537,19 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
 | `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
+
+### Context limits (`tb limits`)
+`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, line: str}`.
+`POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
+comma-separated string, or `"none"`) with an optional `project` for that project's own globs, and `reset: true`.
+It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes).
+
+- `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
+- `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>`
+  before a new terminal resumes it, or `/compact` queued ahead of the prompt in its live terminal.
+- `warm_tokens`, `warm_idle_mins`: a task (after its wait-for) or a PR visit resumes its conversation only while it's under
+  both; otherwise it starts fresh from the handoff and the history says why. A live terminal is always typed into.
+  Size and idle time come from the conversation's transcript (its last reply's context, its last line's time).
 
 ### History
 | Path | Body | Notes |
