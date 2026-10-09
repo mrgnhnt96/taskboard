@@ -199,6 +199,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("sessions", "background_at", "TEXT"),
     // Who closed the terminal, from Midna's `session.closed` event (`human`, `agent`, ...).
     ("sessions", "closed_by", "TEXT"),
+    // The checkout's HEAD and changed-file stamps when the turn's prompt came in, so its Stop can tell
+    // whether the turn changed code.
+    ("sessions", "turn_tree", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

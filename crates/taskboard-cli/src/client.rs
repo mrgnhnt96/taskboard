@@ -175,6 +175,45 @@ pub fn git_info(cwd: &str, timeout: f64) -> Value {
     json!({"branch": branch, "commit": subject, "sha": sha, "uncommitted": uncommitted})
 }
 
+const TREE_FILES_MAX: usize = 2000;
+
+/// The checkout's root, full HEAD and a stamp (mtime and size) per changed or untracked file, so the
+/// board can tell whether a turn changed code however it did it (an edit tool, a Bash script, a
+/// subagent or a commit).
+pub fn tree_stamp(cwd: &str, timeout: f64) -> Value {
+    if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
+        return Value::Null;
+    }
+    let rev = spawn_git(cwd, &["rev-parse", "--show-toplevel", "HEAD"]);
+    let status = spawn_git(cwd, &["status", "--porcelain", "-z", "--untracked-files=all"]);
+    let deadline = Instant::now() + Duration::from_secs_f64(timeout);
+    let (Some(rev), Some(status)) = (finish(rev, deadline), finish(status, deadline)) else { return Value::Null };
+    let mut rev = rev.lines();
+    let (Some(root), head) = (rev.next().map(str::trim).filter(|r| !r.is_empty()), rev.next().unwrap_or("").trim()) else {
+        return Value::Null;
+    };
+    let mut files = serde_json::Map::new();
+    let mut entries = status.split('\0');
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || files.len() >= TREE_FILES_MAX {
+            continue;
+        }
+        let (code, path) = entry.split_at(3);
+        if code.contains('R') || code.contains('C') {
+            entries.next();
+        }
+        let full = format!("{root}/{path}");
+        files.insert(full.clone(), json!(file_stamp(&full)));
+    }
+    json!({"root": root, "head": head, "files": files})
+}
+
+fn file_stamp(path: &str) -> String {
+    let Ok(m) = std::fs::metadata(path) else { return "gone".into() };
+    let nanos = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{nanos}:{}", m.len())
+}
+
 pub fn base_body(event: &str, session: &str, claude_session: &str, cwd: &str, git: Value) -> Value {
     json!({"event": event, "session": session, "claude_session": claude_session, "cwd": cwd, "git": git, "at": now_iso()})
 }
@@ -190,4 +229,36 @@ pub fn midna_path() -> Option<PathBuf> {
         return Some(d);
     }
     taskboardd::proc::which("midna")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        assert!(Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn stamps_a_checkouts_head_and_changed_files() {
+        let dir = std::env::temp_dir().join(format!("tb-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("src/a.rs"), "a").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "a"]);
+        let root = std::fs::canonicalize(&dir).unwrap().to_string_lossy().to_string();
+        let clean = tree_stamp(&dir.to_string_lossy(), 5.0);
+        assert_eq!(clean["root"], json!(root));
+        assert_eq!(clean["head"].as_str().map(str::len), Some(40));
+        assert_eq!(clean["files"], json!({}));
+
+        std::fs::write(dir.join("src/a.rs"), "changed").unwrap();
+        std::fs::write(dir.join("src/new.rs"), "new").unwrap();
+        let dirty = tree_stamp(&dir.to_string_lossy(), 5.0);
+        let files: Vec<&String> = dirty["files"].as_object().unwrap().keys().collect();
+        assert_eq!(files, [&format!("{root}/src/a.rs"), &format!("{root}/src/new.rs")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
