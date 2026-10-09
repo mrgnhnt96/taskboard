@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{handoff, p, runner};
+use taskboardd::{board, fields, handoff, p, runner};
 
 struct Board {
     app: Arc<App>,
@@ -189,4 +189,21 @@ fn one_device_goes_back_and_the_others_in_use_are_named() {
     let s = solo.task("Solo", "android");
     runner::start_queued(&solo.app).unwrap();
     assert!(!handoff::build(&solo.app, s).unwrap().contains("Other devices in use"));
+}
+
+// --- #105 ---
+
+#[test]
+fn goal_setup_fills_jira_with_the_ticket_or_the_task_ref() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Branches", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("/goals/G{g}"), json!({"setup": "make-tree ../wt-{jira} -b feature/{jira}"}));
+    let keyed = b.post("/tasks", json!({"title": "Keyed", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    let bare = b.post("/tasks", json!({"title": "Bare", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    board::update_task(&b.app, keyed, fields!["jira_key" => "PROJ-42"]).unwrap();
+    let h = handoff::build(&b.app, keyed).unwrap();
+    assert!(h.contains("make-tree ../wt-PROJ-42 -b feature/PROJ-42"), "{h}");
+    let h = handoff::build(&b.app, bare).unwrap();
+    assert!(h.contains(&format!("make-tree ../wt-T{bare} -b feature/T{bare}")), "no ticket: the task's ref: {h}");
+    assert!(!h.contains("{jira}"), "{h}");
 }

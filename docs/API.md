@@ -161,7 +161,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
   "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
-  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled, and {device} {target} ({device2} {target2}…) for the devices lent to the task
+  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled, {jira} with the ticket key (else the task ref), and {device} {target} ({device2} {target2}…) for the devices lent to the task
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
