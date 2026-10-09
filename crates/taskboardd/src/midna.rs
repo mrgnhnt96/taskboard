@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, jobs, p, proc};
+use crate::{board, jobs, keep_awake, p, proc};
 
 const DOWN_EXIT: i32 = 3;
 const OPEN_EVERY: Duration = Duration::from_secs(30);
@@ -395,28 +395,6 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
     Ok((gone, to_close))
 }
 
-/// Midna keeps the Mac awake during its hours while agents have work (`keep_awake.*`); the board
-/// reads and changes it for `tb keep-awake`. Midna owns the schedule, the battery floor and today's
-/// override; this only passes them through.
-pub fn keep_awake(app: &App, set: Option<&Value>) -> Result<Value> {
-    let r = match set {
-        Some(b) => call_timeout(app, "keep_awake.set", b.clone(), 10.0),
-        None => call_timeout(app, "keep_awake.status", json!({}), 10.0),
-    };
-    match r {
-        Ok(v) if v.is_object() => {
-            app.shared.lock().midna_keep_awake = Some(v.clone());
-            Ok(v)
-        }
-        Ok(_) => err(502, "Midna gave back no keep-awake status."),
-        Err(MidnaError::Down(m)) => err(503, format!("{m}, so keep-awake can't be read or changed.")),
-        Err(MidnaError::Refused(m)) if m.starts_with("unknown method") => {
-            err(501, "This Midna has no keep-awake yet. Update Midna.")
-        }
-        Err(MidnaError::Refused(m)) => err(400, m),
-    }
-}
-
 const SETTINGS_EVERY: Duration = Duration::from_secs(60);
 /// What Midna does after a lost connection, and how long it keeps trying (from its setting's text).
 pub const RESUME_TRIES: i64 = 3;
@@ -445,7 +423,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     let (_, to_close) = sync(app, sessions.as_array().unwrap_or(&empty), projects.as_array().unwrap_or(&empty))?;
     let usage = call_timeout(app, "usage.get", json!({}), 10.0).ok();
     app.shared.lock().midna_usage = usage.and_then(|u| u.get("claude").cloned()).filter(|v| v.is_object());
-    app.shared.lock().midna_keep_awake = call_timeout(app, "keep_awake.status", json!({}), 5.0).ok().filter(|v| v.is_object());
+    keep_awake::sync(app);
     read_settings(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         if let Err(e) = call(app, "session.close", json!({"id": sid})) {

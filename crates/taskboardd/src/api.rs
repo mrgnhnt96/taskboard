@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, qa, reports, runner, shared, steps, triage, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, steps, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -309,8 +309,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("GET", ["hours"]) => Ok(hours::state(app)),
         ("POST", ["hours"]) => set_hours(app, body),
-        ("GET", ["keep-awake"]) => midna::keep_awake(app, None),
-        ("POST", ["keep-awake"]) => midna::keep_awake(app, Some(body)),
+        ("GET", ["keep-awake"]) => keep_awake::call(app, None),
+        ("POST", ["keep-awake"]) => keep_awake::call(app, Some(body)),
         ("GET", ["usage"]) => Ok(usage::state(app)),
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
@@ -2007,6 +2007,8 @@ fn set_hours(app: &App, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    let today = body.get("today_until").map(|_| hours::today_until(app, &hours::now_local()));
+    keep_awake::follow_hours(app, today);
     Ok(hours::state(app))
 }
 

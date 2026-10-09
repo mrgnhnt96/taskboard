@@ -15,6 +15,7 @@ pub mod hooks;
 pub mod hours;
 pub mod jira;
 pub mod jobs;
+pub mod keep_awake;
 pub mod locks;
 pub mod mdcopy;
 pub mod midna;
