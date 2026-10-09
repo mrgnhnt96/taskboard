@@ -5,7 +5,8 @@
 //! looked after (its project off Midna's list with no open work, its work done) has its block taken
 //! out. The Python board's block (`# task-board: generated files …` to `# task-board: end`) is taken
 //! out wherever the board writes, and once, after an upgrade, every repo the board has ever known is
-//! swept for old blocks, since blocks were only tracked from beta.7 on.
+//! swept for old blocks, since blocks were only tracked from beta.7 on. An import sweeps again, for the
+//! repos it brings.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,12 @@ const GIT_SECS: f64 = 5.0;
 const MANAGED_KEY: &str = "gitattrs_managed";
 /// Set once every repo the board has known was swept for blocks from before they were tracked.
 const SWEPT_KEY: &str = "gitattrs_swept";
+
+/// Sweeps every repo the board has known again on the next [`sync`]: after `taskboardd import`, whose
+/// repos the board didn't know when it last swept (a sweep on an empty board still marks it done).
+pub fn sweep_again(app: &App) -> Result<()> {
+    app.db.set_setting(SWEPT_KEY, None)
+}
 
 /// `text` with the board's block set to `globs` (or taken out, with none).
 pub fn apply(text: &str, globs: &[String]) -> String {

@@ -325,6 +325,8 @@ fn fill(app: &App, c: &Connection, old: &[String], opts: &Options) -> Result<Rep
     reviewers(app, c, old, &mut rep)?;
     review_switches(app, &mut rep)?;
     breaks(app, c, old, opts, &mut rep)?;
+    // The old board's repos may still have its attributes block: sweep every known repo again.
+    crate::gitattrs::sweep_again(app)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
         let mapped = MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m));

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// Runs `gh` with these arguments and answers its stdout.
 pub trait Gh: Send + Sync {
@@ -202,17 +202,34 @@ impl PrHost for GithubHost {
     }
 
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
-        let runs = parse(&self.gh(s(&["run", "list", "-R", &pr.repo, "--commit", head, "--json", "databaseId,status", "--limit", "50"]))?)?;
-        let mut n = 0;
+        if head.is_empty() {
+            return Ok(Cancelled::Stopped(vec![]));
+        }
+        let runs = parse(&self.gh(s(&["run", "list", "-R", &pr.repo, "--commit", head, "--json", "databaseId,status,workflowName,number", "--limit", "50"]))?)?;
+        let mut stopped = vec![];
         for r in runs.as_array().cloned().unwrap_or_default() {
             if !matches!(r["status"].as_str(), Some("queued" | "in_progress" | "waiting" | "requested" | "pending")) {
                 continue;
             }
             let Some(id) = r["databaseId"].as_i64() else { continue };
             self.gh(s(&["run", "cancel", &id.to_string(), "-R", &pr.repo]))?;
-            n += 1;
+            let name = r["workflowName"].as_str().filter(|n| !n.is_empty()).unwrap_or("run");
+            stopped.push(format!("{name} #{}", r["number"].as_i64().unwrap_or(id)));
         }
-        Ok(Cancelled::Stopped(n))
+        Ok(Cancelled::Stopped(stopped))
+    }
+
+    fn my_open_prs(&self, repo: &str) -> HostResult<Vec<OpenPr>> {
+        let list = parse(&self.gh(s(&["pr", "list", "-R", repo, "--author", "@me", "--state", "open", "--json", "number,headRefName,url", "--limit", "100"]))?)?;
+        Ok(list
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|p| {
+                Some(OpenPr { num: p["number"].as_i64()?, branch: p["headRefName"].as_str().unwrap_or("").to_string(), url: p["url"].as_str().unwrap_or("").to_string() })
+            })
+            .collect())
     }
 
     fn members(&self, repo: &str) -> HostResult<Vec<Reviewer>> {
@@ -602,7 +619,8 @@ pub(crate) mod tests {
                 ("pr merge", String::new()),
                 ("pr comment", String::new()),
                 ("requested_reviewers", "{}".into()),
-                ("run list", json!([{"databaseId": 5, "status": "in_progress"}, {"databaseId": 6, "status": "completed"}]).to_string()),
+                ("run list", json!([{"databaseId": 5, "status": "in_progress", "workflowName": "CI", "number": 12}, {"databaseId": 6, "status": "completed"}]).to_string()),
+                ("pr list", json!([{"number": 9, "headRefName": "feat", "url": "https://github.com/acme/webapp/pull/9"}]).to_string()),
                 ("run cancel", String::new()),
                 ("pr edit", String::new()),
                 ("repos/acme/webapp/pulls -f", json!({"number": 30, "html_url": "https://github.com/acme/webapp/pull/30"}).to_string()),
@@ -619,7 +637,11 @@ pub(crate) mod tests {
         h.reply(&pr(), c, "Because.").unwrap();
         h.merge(&pr(), &MergeOpts { strategy: None, close_source_branch: true }).unwrap();
         h.re_request_reviews(&pr(), &["rev".into()]).unwrap();
-        assert_eq!(h.cancel_builds(&pr(), "abc").unwrap(), Cancelled::Stopped(1));
+        assert_eq!(h.cancel_builds(&pr(), "abc").unwrap(), Cancelled::Stopped(vec!["CI #12".into()]));
+        assert_eq!(
+            h.my_open_prs("acme/webapp").unwrap(),
+            vec![OpenPr { num: 9, branch: "feat".into(), url: "https://github.com/acme/webapp/pull/9".into() }]
+        );
         h.retarget(&pr(), "develop").unwrap();
         let opened = h.open("acme/webapp", "main", "feat", "Add x", "## Summary").unwrap();
         assert_eq!((opened.num, opened.url.as_str()), (30, "https://github.com/acme/webapp/pull/30"));

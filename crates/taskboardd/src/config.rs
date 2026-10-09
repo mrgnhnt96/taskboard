@@ -660,6 +660,8 @@ impl Config {
         c.questions.screen = false;
         c.backlog.ai = false;
         c.pr.watch = false;
+        // No host is read for the owner's open PRs unless a test asks.
+        c.pr_builds.owner_prs_secs = 0.0;
         // The host's verdict (or any approval) is enough, unless a test asks for a count.
         c.pr.approvals = 0;
         c.accounts_sandbox = true;
