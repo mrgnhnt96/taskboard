@@ -703,13 +703,16 @@ fn goal_pools(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Re
             rep.skipped.push(format!("{} {} {name}: that goal or device didn't come over", g.table, rf("goal", goal)));
             continue;
         }
-        let purpose = g.text(r, &["purpose", "role", "for"]).as_deref().and_then(slug).map(|p| p.replace(':', "-"));
-        let mut reserved = g.truthy(r, &["reserved", "reserve"]);
-        // One goal reserves a device; a later claim keeps it in that goal's pool, unreserved.
-        if reserved && app.db.q1("SELECT 1 FROM goal_devices WHERE device = ? AND reserved = 1 AND goal_id != ?", vec![json!(name), json!(goal)])?.is_some() {
-            rep.skipped.push(format!("{} {} {name}: reserved for another goal first, so it's in the pool unreserved", g.table, rf("goal", goal)));
-            reserved = false;
+        // A purpose, or a comma list of them (the Python board's `a,b`): each a tag word.
+        let mut purposes: Vec<String> = vec![];
+        for p in g.text(r, &["purpose", "role", "for"]).unwrap_or_default().split(',').filter_map(slug).map(|p| p.replace(':', "-")) {
+            if !purposes.contains(&p) {
+                purposes.push(p);
+            }
         }
+        let purpose = (!purposes.is_empty()).then(|| purposes.join(","));
+        // Several goals may reserve one device, as on the Python board: they share it.
+        let reserved = g.truthy(r, &["reserved", "reserve"]);
         app.db.x(
             "INSERT OR IGNORE INTO goal_devices(goal_id, device, purpose, reserved, at) VALUES(?, ?, ?, ?, ?)",
             vec![json!(goal), json!(name), json!(purpose), json!(reserved as i64), g.get(r, &["created_at", "added_at", "at"]).clone()],
@@ -1032,10 +1035,16 @@ fn bot_hours(v: &Value, per_hour: f64) -> Option<f64> {
     (h > 0.0).then_some(h)
 }
 
-/// An old automation level: one of the board's names, or a weight.
+/// The Python board's automation levels (`automated`: yes 1.0, some 0.6, sometimes 0.35, no 0.15,
+/// unset meaning no) as the board's weights: scaled so its `no` is the board's normal 1, which keeps
+/// how often each reviewer comes up next to the others.
+const OLD_LEVELS: [(&str, f64); 4] = [("yes", 6.67), ("some", 4.0), ("sometimes", 2.33), ("no", 1.0)];
+
+/// An old automation level: one of the board's names, one of the Python board's, or a weight.
 fn level(v: &Value) -> Option<f64> {
+    let named = |s: &str| crate::reviewers::LEVELS.iter().chain(OLD_LEVELS.iter()).find(|(n, _)| n.eq_ignore_ascii_case(s.trim())).map(|(_, v)| *v);
     let l = match v {
-        Value::String(s) => crate::reviewers::LEVELS.iter().find(|(n, _)| n.eq_ignore_ascii_case(s.trim())).map(|(_, v)| *v).or_else(|| s.trim().parse().ok()),
+        Value::String(s) => named(s).or_else(|| s.trim().parse().ok()),
         other => num(other),
     }?;
     (0.1..=10.0).contains(&l).then_some(l)
@@ -1128,7 +1137,8 @@ struct Counts {
 
 /// The roster (`reviewers`), each ask of one of them (`review_asks`), and their bots' runs (a runs
 /// table, or the Python board's `reviewers.bot_ran_at`). People the old board kept twice on one
-/// project fold into one reviewer, as `tb reviewers` would: the most active row stays, with its own
+/// project fold into one reviewer, as `tb reviewers` would: an active row over a removed one, else the
+/// most active, stays, with its own
 /// removed mark, and the commits, asks and swaps add up.
 fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
     // Old reviewer id, name, email or alias → the board's reviewer row id.
@@ -1139,9 +1149,11 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
     if let Some(rv) = Old::read(c, old, "reviewers", &["reviewer_roster", "roster"])? {
         let before = app.db.count("SELECT COUNT(*) FROM reviewers", vec![])?;
         let mut folded = 0;
-        // The most active first, so a fold keeps them (and their removed mark).
+        // As the Python board (`ORDER BY removed, commits DESC, id`): active rows first, then the most
+        // active, so a fold keeps an active row (and its removed mark) over a removed one.
+        let gone = |r: &Vec<Value>| !rv.get(r, &["removed_at"]).is_null() || rv.truthy(r, &["removed", "never", "never_assign", "excluded", "blocked"]);
         let mut order: Vec<&Vec<Value>> = rv.rows.iter().collect();
-        order.sort_by_key(|r| -rv.id(r, &["commits"]).unwrap_or(0));
+        order.sort_by_key(|r| (gone(r), -rv.id(r, &["commits"]).unwrap_or(0), rv.id(r, &["id"]).unwrap_or(i64::MAX)));
         for r in order {
             let old_id = rv.text(r, &["id"]);
             let host_user = rv.text(r, HOST_USER);
@@ -1318,17 +1330,41 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
                 _ => None,
             };
             let answered_at = a.get(r, &["answered_at", "reviewed_at"]).clone();
-            let closed_at = a.get(r, &["closed_at", "swapped_at", "ended_at", "dropped_at"]).clone();
-            let answer = ask_answer(a.text(r, &["answer", "verdict", "review", "result"]).as_deref());
-            let state = ask_state(a.text(r, &["state", "status"]).as_deref()).unwrap_or(if !answered_at.is_null() || answer.is_some() {
-                "answered"
-            } else if a.truthy(r, &["swapped"]) {
-                "swapped"
+            let swapped_at = a.get(r, &["swapped_at"]).clone();
+            let closed_at = Some(a.get(r, &["closed_at", "ended_at", "dropped_at"]).clone()).filter(|v| !v.is_null()).unwrap_or_else(|| swapped_at.clone());
+            // The answer: a verdict word from any of its columns, else the old answer text as it was.
+            let said: Vec<String> = [a.text(r, &["answer", "verdict", "review", "result"]), a.text(r, &["reply"]), a.text(r, &["reply_said"])]
+                .into_iter()
+                .flatten()
+                .filter(|s| parse_iso(s).is_none())
+                .collect();
+            let answer: Option<String> = said.iter().find_map(|s| ask_answer(Some(s))).map(str::to_string).or_else(|| {
+                let mut text: Vec<&str> = vec![];
+                for s in &said {
+                    if !text.iter().any(|t| t.eq_ignore_ascii_case(s)) {
+                        text.push(s);
+                    }
+                }
+                (!text.is_empty()).then(|| one_line(&text.join(" · "), 500))
+            });
+            let verdict = said.iter().any(|s| ask_answer(Some(s)).is_some());
+            // From its times: swapped off (and back, when it answered after), closed, answered. A
+            // later swap or close ends an answered ask, so it isn't a current reviewer any more.
+            let after = |x: &Value, y: &Value| when(x).as_deref().and_then(parse_iso).unwrap_or(0.0) > when(y).as_deref().and_then(parse_iso).unwrap_or(0.0);
+            let timed = if !swapped_at.is_null() || a.truthy(r, &["swapped"]) {
+                if !answered_at.is_null() && after(&answered_at, &swapped_at) { "came_back" } else { "swapped" }
             } else if !closed_at.is_null() {
                 "closed"
+            } else if !answered_at.is_null() || verdict {
+                "answered"
             } else {
                 "open"
-            });
+            };
+            let state = match ask_state(a.text(r, &["state", "status"]).as_deref()) {
+                None | Some("open") => timed,
+                Some("answered") if matches!(timed, "swapped" | "came_back" | "closed") => timed,
+                Some(s) => s,
+            };
             // An ask still open on a PR that's merged or closed: nothing left to review.
             let over = task.as_ref().is_some_and(pr_over);
             let (state, closed_at) = match state {

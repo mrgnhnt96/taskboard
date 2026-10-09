@@ -5,9 +5,11 @@
 //! (done, or a failed start). A device can have a focus command that raises its window (the
 //! simulator, the device hub), run from `tb device focus` or the app.
 //!
-//! A goal can hold devices of its own (`tb goal devices`): its tasks are lent those first, a device
-//! it reserves is never lent to another goal's tasks (nor to tasks in no goal), and the purpose it
-//! gives a device ("measure") counts as one of that device's tags for its own tasks.
+//! A goal can hold devices of its own (`tb goal devices`): its tasks are lent only those (or those
+//! first, with `[devices] goal_pool_only = false`), a device it reserves is never lent to other
+//! goals' tasks (nor to tasks in no goal; several goals may reserve one and share it), and the
+//! purposes it gives a device ("measure", or "measure,demo") count as that device's tags for its own
+//! tasks. An archived goal holds nothing back.
 
 use std::collections::HashMap;
 
@@ -38,7 +40,7 @@ CREATE TABLE IF NOT EXISTS goal_devices(
 "#;
 
 /// `[devices]` in config.toml.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DevicesConfig {
     /// The focus command for a device that has none of its own: run with `sh -c`, `{name}` is the
@@ -46,6 +48,15 @@ pub struct DevicesConfig {
     pub focus: String,
     /// Seconds a focus command may take.
     pub focus_timeout_secs: Option<f64>,
+    /// A goal with devices of its own lends its tasks only those (the Python board's rule); false
+    /// lends from its own first, then the rest of the pool.
+    pub goal_pool_only: bool,
+}
+
+impl Default for DevicesConfig {
+    fn default() -> Self {
+        DevicesConfig { focus: String::new(), focus_timeout_secs: None, goal_pool_only: true }
+    }
 }
 
 static NAME: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9._:-]{0,63}$").unwrap());
@@ -221,37 +232,73 @@ fn pool(app: &App) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM devices ORDER BY name", p![])
 }
 
-/// Every goal's own devices (rows of goal_devices whose goal and device still exist).
+/// Every live goal's own devices (rows of goal_devices whose goal and device still exist, the goal
+/// not archived: an archived goal holds nothing back).
 fn goal_pools(app: &App) -> Result<Vec<Row>> {
     app.db.q(
-        "SELECT gd.* FROM goal_devices gd JOIN goals g ON g.id = gd.goal_id JOIN devices d ON d.name = gd.device ORDER BY gd.goal_id, gd.device",
+        "SELECT gd.* FROM goal_devices gd JOIN goals g ON g.id = gd.goal_id JOIN devices d ON d.name = gd.device \
+         WHERE COALESCE(g.archived, 0) = 0 ORDER BY gd.goal_id, gd.device",
         p![],
     )
 }
 
-/// The goal that reserves each device.
-fn reserved(pools: &[Row]) -> HashMap<String, i64> {
-    pools.iter().filter(|r| r.b("reserved")).filter_map(|r| Some((r.s("device")?.to_string(), r.i("goal_id")?))).collect()
+/// One goal's own devices, archived or not, for its page.
+fn own_pool(app: &App, goal_id: i64) -> Result<Vec<Row>> {
+    app.db.q("SELECT gd.* FROM goal_devices gd JOIN devices d ON d.name = gd.device WHERE gd.goal_id = ? ORDER BY gd.device", p![goal_id])
 }
 
-/// The pool as a task sees it: devices reserved for another goal left out, and in its own goal's
-/// pool, each device's purpose added to its tags. With the names in its goal's pool, lent first.
+/// The goals that reserve each device (more than one may: their tasks share it).
+fn reserved(pools: &[Row]) -> HashMap<String, Vec<i64>> {
+    let mut out: HashMap<String, Vec<i64>> = HashMap::new();
+    for r in pools.iter().filter(|r| r.b("reserved")) {
+        if let (Some(d), Some(g)) = (r.s("device"), r.i("goal_id")) {
+            out.entry(d.to_string()).or_default().push(g);
+        }
+    }
+    out
+}
+
+/// "G3", "G3 and G4": the goals that reserve a device.
+fn goals_text(goals: &[i64]) -> String {
+    let refs: Vec<String> = goals.iter().map(|g| rf("goal", *g)).collect();
+    match refs.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => refs.join(""),
+    }
+}
+
+/// A pool row's purposes: one tag, or a comma list of them (`measure,demo`).
+fn purposes(r: &Row) -> Vec<String> {
+    r.s("purpose").unwrap_or("").split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+/// The pool as a task sees it: devices reserved for other goals left out, and in its own goal's
+/// pool, each device's purposes added to its tags. With the names in its goal's pool, lent first.
+/// With `[devices] goal_pool_only` (the Python board's rule), a goal with devices of its own lends
+/// its tasks only those.
 fn view(app: &App, goal: Option<i64>) -> Result<(Vec<Row>, Vec<String>)> {
     let pools = goal_pools(app)?;
     let res = reserved(&pools);
     let ours: Vec<&Row> = pools.iter().filter(|r| goal.is_some() && r.i("goal_id") == goal).collect();
+    let only_ours = app.cfg.devices.goal_pool_only && !ours.is_empty();
     let mut out = vec![];
     for mut d in pool(app)? {
         let name = d.st("name");
-        if res.get(&name).is_some_and(|g| Some(*g) != goal) {
+        if res.get(&name).is_some_and(|gs| !gs.iter().any(|g| Some(*g) == goal)) {
             continue;
         }
-        if let Some(p) = ours.iter().find(|r| r.s("device") == Some(name.as_str())).and_then(|r| r.s("purpose")) {
+        let own = ours.iter().find(|r| r.s("device") == Some(name.as_str()));
+        if only_ours && own.is_none() {
+            continue;
+        }
+        if let Some(own) = own {
             let mut tags = tags_of(&d);
-            if !tags.iter().any(|t| t == p) {
-                tags.push(p.to_string());
-                d.insert("tags".into(), json!(jdumps(&json!(tags))));
+            for p in purposes(own) {
+                if !tags.contains(&p) {
+                    tags.push(p);
+                }
             }
+            d.insert("tags".into(), json!(jdumps(&json!(tags))));
         }
         out.push(d);
     }
@@ -327,13 +374,26 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(first) = short.first() else { return Ok(None) };
     let have = all.iter().filter(|d| !d.b("off") && answers(d, &first.tag)).count() as i64;
     let want = needs.iter().find(|x| x.tag == first.tag).map(|x| x.n).unwrap_or(first.n);
+    if have < want && app.cfg.devices.goal_pool_only && !ours.is_empty() {
+        // Lent only from its goal's own devices.
+        let g = rf("goal", t.i0("goal_id"));
+        return Ok(Some(if have == 0 {
+            format!("Needs a {} device, and {g}'s own devices have none (tb goal devices {g} --add)", first.tag)
+        } else {
+            format!("Needs {want} {} devices, and {g}'s own devices have {have}", first.tag)
+        }));
+    }
     if have < want {
-        // Devices that would answer it but are reserved for another goal.
+        // Devices that would answer it but are reserved for other goals.
         let res = reserved(&goal_pools(app)?);
         let mut kept: Vec<String> = pool(app)?
             .iter()
             .filter(|d| !d.b("off") && answers(d, &first.tag))
-            .filter_map(|d| res.get(&d.st("name")).filter(|g| Some(**g) != t.i("goal_id")).map(|g| format!("{} is reserved for {}", d.st("name"), rf("goal", *g))))
+            .filter_map(|d| {
+                res.get(&d.st("name"))
+                    .filter(|gs| !gs.iter().any(|g| Some(*g) == t.i("goal_id")))
+                    .map(|gs| format!("{} is reserved for {}", d.st("name"), goals_text(gs)))
+            })
             .collect();
         kept.sort();
         let kept = if kept.is_empty() { String::new() } else { format!(" ({})", kept.join("; ")) };
@@ -417,7 +477,8 @@ fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value>
     };
     let focus = d.s("focus").filter(|f| !f.trim().is_empty()).is_some() || !app.cfg.devices.focus.trim().is_empty();
     let pools: Vec<Row> = goal_pools(app)?.into_iter().filter(|r| r.s("device") == d.s("name")).collect();
-    let reserved_for = pools.iter().find(|r| r.b("reserved")).map(|r| rf("goal", r.i0("goal_id")));
+    let by: Vec<i64> = pools.iter().filter(|r| r.b("reserved")).map(|r| r.i0("goal_id")).collect();
+    let reserved_for = (!by.is_empty()).then(|| goals_text(&by));
     let goals: Vec<Value> = pools.iter().map(|r| json!({"goal": rf("goal", r.i0("goal_id")), "purpose": r.v("purpose"), "reserved": r.b("reserved")})).collect();
     Ok(json!({"id": d.id(), "name": d.v("name"), "tags": tags_of(d), "note": d.v("note"), "off": d.b("off"),
               "focus": d.v("focus"), "can_focus": focus, "held_by": holder, "goals": goals, "reserved_for": reserved_for}))
@@ -452,7 +513,7 @@ pub fn goal_card(app: &App, goal_id: i64) -> Result<Value> {
     }
     let held = held(app)?;
     // The goal's own devices first, each with its purpose and whether it's reserved here.
-    let mine: Vec<Row> = goal_pools(app)?.into_iter().filter(|r| r.i("goal_id") == Some(goal_id)).collect();
+    let mine: Vec<Row> = own_pool(app, goal_id)?;
     let mut devices = vec![];
     for d in &all {
         let mut v = device_dict(d, &held, app)?;
@@ -472,7 +533,7 @@ pub fn goal_card(app: &App, goal_id: i64) -> Result<Value> {
 fn goal_pool(app: &App, goal_id: i64) -> Result<Value> {
     let held = held(app)?;
     let mut out = vec![];
-    for r in goal_pools(app)?.into_iter().filter(|r| r.i("goal_id") == Some(goal_id)) {
+    for r in own_pool(app, goal_id)? {
         let d = get(app, &r.st("device"))?;
         let mut v = device_dict(&d, &held, app)?;
         v["purpose"] = r.v("purpose");
@@ -488,25 +549,24 @@ fn goal_pool_set(app: &App, goal_id: i64, body: &Value) -> Result<Value> {
     let d = get(app, &body_str(body, "device"))?;
     let name = d.st("name");
     let had = app.db.q1("SELECT * FROM goal_devices WHERE goal_id = ? AND device = ?", p![goal_id, name])?;
+    // One tag, or a comma list of them (`measure,demo`); each counts as a tag.
     let purpose = if body.get("purpose").is_some() {
         let v = body_str(body, "purpose").trim().to_lowercase();
-        if v.is_empty() || v == "none" {
-            None
-        } else if TAG.is_match(&v) {
-            Some(v)
-        } else {
-            return err(400, format!("“{v}” can't be a purpose: it counts as a tag, so use lowercase letters, numbers, dots, dashes or underscores, like measure."));
+        let mut list: Vec<String> = vec![];
+        for p in v.split(',').map(str::trim).filter(|p| !p.is_empty() && *p != "none") {
+            if !TAG.is_match(p) {
+                return err(400, format!("“{p}” can't be a purpose: it counts as a tag, so use lowercase letters, numbers, dots, dashes or underscores, like measure (or a comma list, like measure,demo)."));
+            }
+            if !list.iter().any(|x| x == p) {
+                list.push(p.to_string());
+            }
         }
+        (!list.is_empty()).then(|| list.join(","))
     } else {
         had.as_ref().and_then(|r| r.s("purpose").map(str::to_string))
     };
+    // More than one goal may reserve a device, as on the Python board: their tasks share it.
     let reserve = if body.get("reserved").is_some() { as_bool(body.get("reserved"), false) } else { had.as_ref().is_some_and(|r| r.b("reserved")) };
-    if reserve {
-        if let Some(g) = reserved(&goal_pools(app)?).get(&name).filter(|g| **g != goal_id) {
-            let g = rf("goal", *g);
-            return err(409, format!("{name} is reserved for {g}. Take it out there first (tb goal devices {g} --remove {name})."));
-        }
-    }
     app.db.x(
         "INSERT INTO goal_devices(goal_id, device, purpose, reserved, at) VALUES(?, ?, ?, ?, ?) \
          ON CONFLICT(goal_id, device) DO UPDATE SET purpose = excluded.purpose, reserved = excluded.reserved",

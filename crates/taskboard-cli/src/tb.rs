@@ -764,21 +764,21 @@ enum GoalCmd {
     },
     /// Let the goal go on past a wave it stopped at (a review stop or a failed task), when the owner says so; or let a held wave start
     Continue { goal: String, wave: i64 },
-    /// The goal's own devices: its tasks get them before the rest of the pool, a reserved one goes to no
-    /// other goal's tasks, and a device's purpose counts as one of its tags for this goal's tasks.
-    /// With no flags, lists them
+    /// The goal's own devices: its tasks get only those (`[devices] goal_pool_only`, else those first),
+    /// a reserved one goes to no other goal's tasks (goals that reserve one share it), and a device's
+    /// purposes count as its tags for this goal's tasks. With no flags, lists them
     Devices {
         goal: String,
         /// A device to put in the goal's pool (or change there)
         #[arg(long, value_name = "DEVICE", conflicts_with = "remove")]
         add: Option<String>,
-        /// What the goal uses it for, matched like a tag (measure); none drops it
+        /// What the goal uses it for, matched like a tag (measure, or a comma list: measure,demo); none drops it
         #[arg(long, requires = "add")]
         purpose: Option<String>,
         /// Keep it for this goal's tasks only
         #[arg(long, requires = "add", conflicts_with = "unreserve")]
         reserve: bool,
-        /// Let other goals' tasks have it again
+        /// Stop keeping it for this goal
         #[arg(long, requires = "add")]
         unreserve: bool,
         /// A device to take out of the goal's pool

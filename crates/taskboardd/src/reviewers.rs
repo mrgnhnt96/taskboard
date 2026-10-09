@@ -43,7 +43,7 @@
 //! | `replaces` | the ask this one stands in for |
 //! | `state` | `open` (no review yet), `answered`, `swapped` (timed out and replaced), `came_back` (swapped off, then reviewed anyway), `dropped` (taken off the PR, by the board or on the host), `closed` (the PR merged or closed first) |
 //! | `asked_at`, `answered_at`, `closed_at` | ISO times |
-//! | `answer` | approved, changes or commented |
+//! | `answer` | approved, changes or commented (an ask from the old board may keep its answer's own words) |
 //! | `work_mins` | work minutes from the ask to the review: the reviewer's speed |
 //! | `filled` | 1: a swapped-off reviewer's request for changes already got a fill-in |
 //!
@@ -337,8 +337,9 @@ fn same_by_name(r: &Row, p: &Person) -> bool {
 }
 
 /// Adds a person to the project's roster, or folds what's new about them into the reviewer they
-/// already are (a shared host id, email or alias; a shared name only as `same_by_name` allows).
-/// The reviewer's row.
+/// already are (a shared host id, email, alias or Slack id; a shared name only as `same_by_name`
+/// allows). When they match several rows, those fold into an active one before a removed one. The
+/// reviewer's row.
 pub fn fold(app: &App, project: &str, p: &Person) -> Result<Row> {
     let mut keys: Vec<&str> = vec![];
     if let Some(u) = &p.host_user {
@@ -346,10 +347,15 @@ pub fn fold(app: &App, project: &str, p: &Person) -> Result<Row> {
     }
     keys.extend(p.emails.iter().map(|s| s.as_str()));
     keys.extend(p.aliases.iter().map(|s| s.as_str()));
+    // A shared Slack id is the same person too, as the Python board folded them.
+    let slack = p.slack.as_deref().map(low).filter(|s| !s.is_empty());
+    let same_slack = |r: &Row| slack.as_deref().is_some_and(|s| r.s("slack").map(low).as_deref() == Some(s));
     let mut hits: Vec<Row> = roster(app, project)?
         .into_iter()
-        .filter(|r| keys.iter().any(|k| names(r, k)) || (names(r, &p.name) && same_by_name(r, p)))
+        .filter(|r| keys.iter().any(|k| names(r, k)) || (names(r, &p.name) && same_by_name(r, p)) || same_slack(r))
         .collect();
+    // The row that stays: an active one over a removed one, then the most commits, then the oldest.
+    hits.sort_by_key(|r| (r.s("removed_at").is_some_and(|s| !s.is_empty()), -r.i0("commits"), r.id()));
     let now = now_iso();
     let Some(first) = hits.first().cloned() else {
         let id = app.db.insert(
