@@ -95,6 +95,7 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 # ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
+# swap = true                         # swap slow reviewers on this project (unset: [reviewers] swap; tb project set --swap)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
 # relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
@@ -294,7 +295,8 @@ bot_run_gap_mins = 30.0               # marked comments this close together are 
 bot_due_mins = 45.0
 # Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the
 # PR host by the picker's choice (only inside work hours). Someone swapped off who reviews anyway counts
-# again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is asked.
+# again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is
+# asked while the PR has fewer than `count`. tb pr addressed's asks to look again are timed too.
 swap = false
 swap_after_mins = 90.0
 # The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The agent is

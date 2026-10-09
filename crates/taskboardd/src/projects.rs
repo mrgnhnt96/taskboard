@@ -13,7 +13,7 @@ const PR_FLOW_SETTING: &str = "project_pr_flow";
 /// `tb project set --approvals / --expected-check / --expected-wait / --ask-stage`: name → the rules set on the board.
 const PR_RULES_SETTING: &str = "project_pr_rules";
 /// The PR rules `tb project set` can change, over `[pr.projects.<name>]`.
-pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins", "ask_stage"];
+pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins", "ask_stage", "swap"];
 pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {
@@ -115,6 +115,9 @@ pub fn pr_rules(app: &App, name: Option<&str>) -> crate::config::PrProject {
     }
     if let Some(m) = set.get("expected_wait_mins").and_then(|v| v.as_f64()) {
         r.expected_wait_mins = Some(m);
+    }
+    if let Some(b) = set.get("swap").and_then(|v| v.as_bool()) {
+        r.swap = Some(b);
     }
     if let Some(b) = set.get("ask_stage").and_then(|v| v.as_bool()) {
         r.ask_stage = Some(b);
@@ -251,6 +254,7 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
         json!({"approvals": approvals, "expected": r.expected,
                "expected_wait_mins": r.expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS),
                "ask_stage": crate::reviewers::ask_stage_on(app, Some(name)),
+               "swap": crate::reviewers::swap_on(app, Some(name)),
                "set": pr_rules_set(app, name)?}),
     );
     Ok(d)

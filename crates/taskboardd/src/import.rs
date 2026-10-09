@@ -1113,16 +1113,21 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
     Ok(())
 }
 
-/// The review switches the old board used, per project (`tb project set --ask-stage`): turned on
-/// where what came over shows them at work, unless the project already says.
+/// The review switches the old board used, per project (`tb project set --ask-stage / --swap`): turned
+/// on where what came over shows them at work, unless the project already says.
 /// - the `ask` stage: a PR waiting at it, a PR whose reviewers it noted asking (`pr_flow.asked`), or
-///   the board's own ask at that stage.
+///   the board's own ask at that stage;
+/// - swaps: a stand-in it asked for a reviewer who timed out (`why: swap`).
 fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     let used: &[(&str, &str, &str)] = &[(
         "ask_stage",
         "ask stage",
         "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_phase = 'ask' OR CASE WHEN json_valid(pr_flow) THEN json_extract(pr_flow, '$.asked') END IS NOT NULL) \
          UNION SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL AND why = 'stage'",
+    ), (
+        "swap",
+        "swaps",
+        "SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL AND why = 'swap'",
     )];
     for (key, label, sql) in used {
         for r in app.db.q(sql, vec![])? {

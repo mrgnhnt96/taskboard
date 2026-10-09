@@ -328,11 +328,12 @@ fn the_review_switches_the_old_board_used_come_on() {
         .unwrap()
         .execute_batch(
             r#"CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, project TEXT, status TEXT, pr_repo TEXT, pr_num INT, pr_phase TEXT, pr_flow TEXT);
-             CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INT, reviewer TEXT, status TEXT, reason TEXT, at TEXT);
+             CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INT, user TEXT, status TEXT, reason TEXT, at TEXT);
              INSERT INTO tasks VALUES (1, 'Ask stage', 'web', 'done', 'acme/web', 4, 'ask', NULL);
              INSERT INTO tasks VALUES (2, 'Asked', 'api', 'done', 'acme/api', 5, 'review', '{"asked": {"at": "2026-09-01T10:00:00Z"}}');
              INSERT INTO tasks VALUES (3, 'Plain', 'docs', 'done', 'acme/docs', 6, 'review', 'not json');
-             INSERT INTO review_asks VALUES (1, 3, 'ana', 'pending', 'auto', '2026-09-01T10:00:00Z');"#,
+             INSERT INTO review_asks VALUES (1, 3, 'ana', 'pending', 'auto', '2026-09-01T10:00:00Z');
+             INSERT INTO review_asks VALUES (2, 3, 'bo', 'pending', 'timeout', '2026-09-01T11:00:00Z');"#,
         )
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -342,4 +343,7 @@ fn the_review_switches_the_old_board_used_come_on() {
     assert!(on("web") && on("api"));
     assert!(!on("docs"), "nothing shows the stage there");
     assert!(rep.lines().iter().any(|l| l.contains("turned on") && l.contains("web: ask stage")), "{:?}", rep.lines());
+    let swaps = |p: &str| taskboardd::reviewers::swap_on(&app, Some(p));
+    assert!(swaps("docs"), "it swapped a reviewer who timed out there");
+    assert!(!swaps("web"));
 }

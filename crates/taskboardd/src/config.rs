@@ -230,6 +230,8 @@ pub struct PrProject {
     /// How `tb pr merge` merges: merge, squash or rebase (Bitbucket: merge_commit, squash,
     /// fast_forward). Unset: the repository's default.
     pub merge_strategy: Option<String>,
+    /// Swap reviewers who take too long. Unset: `[reviewers] swap`.
+    pub swap: Option<bool>,
     /// The `ask` stage after the owner's review. Unset: `[reviewers] ask_stage`.
     pub ask_stage: Option<bool>,
 }

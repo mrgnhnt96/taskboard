@@ -37,10 +37,10 @@
 //! | `task_id`, `project`, `pr_host`, `pr_repo`, `pr_num` | the PR |
 //! | `reviewer_id` | the roster row (NULL for someone not on it) |
 //! | `host_user`, `name` | who was asked, as the host knows them |
-//! | `why` | `pick` (the picker), `ask` (named with `--ask`), `replace` (`--replace`), `swap` (timed out), `fill_in` (a swapped-off reviewer asked for changes), `stage` (the board's own ask at the `ask` stage) |
+//! | `why` | `pick` (the picker), `ask` (named with `--ask`), `replace` (`--replace`), `swap` (timed out), `fill_in` (a swapped-off reviewer asked for changes), `stage` (the board's own ask at the `ask` stage), `rereview` (`tb pr addressed` asked them to look again) |
 //! | `asked_by` | who asked: the agent, the owner, the board |
 //! | `replaces` | the ask this one stands in for |
-//! | `state` | `open` (no review yet), `answered`, `swapped` (timed out and replaced), `came_back` (swapped off, then reviewed anyway), `dropped` (taken off the PR), `closed` (the PR merged or closed first) |
+//! | `state` | `open` (no review yet), `answered`, `swapped` (timed out and replaced), `came_back` (swapped off, then reviewed anyway), `dropped` (taken off the PR, by the board or on the host), `closed` (the PR merged or closed first) |
 //! | `asked_at`, `answered_at`, `closed_at` | ISO times |
 //! | `answer` | approved, changes or commented |
 //! | `work_mins` | work minutes from the ask to the review: the reviewer's speed |
@@ -169,6 +169,12 @@ impl Default for ReviewersConfig {
 /// `[pr.projects.<name>] ask_stage`), else `[reviewers] ask_stage`.
 pub fn ask_stage_on(app: &App, project: Option<&str>) -> bool {
     crate::projects::pr_rules(app, project).ask_stage.unwrap_or(app.cfg.reviewers.ask_stage)
+}
+
+/// Whether reviewers who take too long are swapped on a project's PRs: its own switch (`tb project
+/// set --swap`, `[pr.projects.<name>] swap`), else `[reviewers] swap`.
+pub fn swap_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).swap.unwrap_or(app.cfg.reviewers.swap)
 }
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).

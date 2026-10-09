@@ -390,12 +390,25 @@ pub fn after_reviewed(app: &App, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// What a reviewer's host state says about an ask: their answer, if they've reviewed.
-fn answer_of(rec: &Value, user: &str) -> Option<String> {
-    rec["reviewers"].as_array()?.iter().find(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user))).and_then(|r| {
-        let st = r["state"].as_str().unwrap_or("");
-        matches!(st, "approved" | "changes" | "commented").then(|| st.to_string())
-    })
+fn reviewer_of<'a>(rec: &'a Value, user: &str) -> Option<&'a Value> {
+    rec["reviewers"].as_array()?.iter().find(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user)))
+}
+
+/// What a reviewer's host state says about an ask: their answer, if they've reviewed. GitHub keeps
+/// someone's last review while they're asked again (`requested`), so there an answer counts only once
+/// the request is gone; Bitbucket clears it when they're asked again.
+fn answer_of(t: &Row, rec: &Value, user: &str) -> Option<String> {
+    let r = reviewer_of(rec, user)?;
+    if r["requested"] == true && t.s("pr_host") == Some("github") {
+        return None;
+    }
+    let st = r["state"].as_str().unwrap_or("");
+    matches!(st, "approved" | "changes" | "commented").then(|| st.to_string())
+}
+
+/// Still on the PR: asked (on its reviewer list) or reviewed.
+fn still_on(rec: &Value, user: &str) -> bool {
+    reviewer_of(rec, user).is_some_and(|r| r["requested"] == true || r["state"] != "pending")
 }
 
 /// The review sweep (`runner::reviews`, every `[intervals] reviews` seconds whatever the feed's
@@ -407,8 +420,10 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
 /// - Came back: someone swapped off who reviews anyway counts again, and their stand-in, if they
 ///   haven't reviewed yet, is taken off.
 /// - Fill-in: someone swapped off who asks for changes doesn't block (they stay in `swapped_off`),
-///   and one more reviewer is asked, once.
-/// - Swap (`[reviewers] swap`): an ask still unanswered after `swap_after_mins` work minutes is
+///   and one more reviewer is asked, once, while the PR has fewer than `[reviewers] count`.
+/// - An ask whose reviewer was taken off the PR on the host is `dropped` (once a read after the ask
+///   shows it), so nobody swaps someone who isn't on it.
+/// - Swap (`[reviewers] swap`, per project `tb project set --swap`): an ask still unanswered after `swap_after_mins` work minutes is
 ///   replaced through the host by the picker's choice. Only inside work hours, and never while the
 ///   event feed is holding (`feed::holding`; the stand-in rules and the board's own later asks wait
 ///   for it too, while the first ask of a PR still goes out outside work hours).
@@ -420,12 +435,18 @@ pub fn sweep(app: &App) -> Result<()> {
         let f = flow(&t);
         let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { continue };
         let finished = matches!(t.s("pr_phase"), Some("merged") | Some("declined"));
+        let read_at = f.s("checked_at").unwrap_or("").to_string();
         app.db.tx(|| {
             for a in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'open'", crate::p![t.id()])? {
-                if let Some(ans) = answer_of(&rec, &a.st("host_user")) {
+                let user = a.st("host_user");
+                if let Some(ans) = answer_of(&t, &rec, &user) {
                     answered(app, &a, "answered", &ans)?;
                 } else if finished {
                     reviewers::close_ask(app, a.id(), "closed")?;
+                } else if !still_on(&rec, &user) && read_at.as_str() > a.s("asked_at").unwrap_or("") {
+                    // Taken off the PR on the host: the ask is over, and nobody swaps them.
+                    reviewers::close_ask(app, a.id(), "dropped")?;
+                    reviewers::note(app, &t, board::BOARD, &format!("{} isn't on PR #{}'s reviewers any more", a.st("name"), t.i0("pr_num")))?;
                 }
             }
             Ok(())
@@ -466,18 +487,20 @@ fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     let mut changed = false;
     for old in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'swapped'", crate::p![t.id()])? {
         let user = old.st("host_user");
-        let Some(ans) = answer_of(rec, &user) else { continue };
+        let Some(ans) = answer_of(t, rec, &user) else { continue };
         let stand: Vec<Row> = app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND replaces = ? AND state = 'open'", crate::p![t.id(), old.id()])?;
         if ans == "changes" {
             if old.b("filled") {
                 continue;
             }
             let t = board::get_task(app, t.id())?;
-            let pick = pick(app, &t, rec, 1, &[])?.into_iter().next();
+            // One more reviewer only while the PR has fewer than it needs.
+            let pick = if wanted(app, &t, rec, None) > 0 { pick(app, &t, rec, 1, &[])?.into_iter().next() } else { None };
+            let enough = pick.is_none() && wanted(app, &t, rec, None) == 0;
             if let Some((w, _)) = &pick {
                 host(app, &pr)?.request_reviews(&pr, std::slice::from_ref(&w.user)).map_err(|e| ApiError::new(502, e))?;
+                changed = true;
             }
-            changed = true;
             app.db.tx(|| {
                 app.db.update("review_asks", &json!(old.id()), fields!["filled" => 1])?;
                 let text = match &pick {
@@ -485,6 +508,7 @@ fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
                         reviewers::record_ask(app, &t, &w.user, &w.name, "fill_in", board::BOARD, Some(old.id()))?;
                         format!("{} asked for changes on PR #{num} after being swapped off, so it doesn't hold; asked {} to look too", old.st("name"), w.name)
                     }
+                    None if enough => format!("{} asked for changes on PR #{num} after being swapped off, so it doesn't hold; it has its reviewers", old.st("name")),
                     None => format!("{} asked for changes on PR #{num} after being swapped off, so it doesn't hold; nobody else could be asked", old.st("name")),
                 };
                 reviewers::note(app, &t, board::BOARD, &text)
@@ -492,7 +516,7 @@ fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             continue;
         }
         // They reviewed after all: their review counts, and a stand-in who hasn't looked yet goes.
-        let gone: Vec<String> = stand.iter().map(|s| s.st("host_user")).filter(|u| answer_of(rec, u).is_none()).collect();
+        let gone: Vec<String> = stand.iter().map(|s| s.st("host_user")).filter(|u| answer_of(t, rec, u).is_none()).collect();
         if !gone.is_empty() {
             host(app, &pr)?.remove_reviewers(&pr, &gone).map_err(|e| ApiError::new(502, e))?;
         }
@@ -515,7 +539,7 @@ fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
 /// Swaps each reviewer who hasn't answered within `swap_after_mins` work minutes.
 fn swap_slow(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     let cfg = &app.cfg.reviewers;
-    if !cfg.swap || crate::feed::holding(app, false).is_some() || !crate::hours::is_open(app) || !matches!(t.s("pr_phase"), Some("review") | Some("rereview")) {
+    if !reviewers::swap_on(app, t.s("project")) || crate::feed::holding(app, false).is_some() || !crate::hours::is_open(app) || !matches!(t.s("pr_phase"), Some("review") | Some("rereview")) {
         return Ok(false);
     }
     let pr = pr_of(t)?;
@@ -539,6 +563,17 @@ fn swap_slow(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         })?;
     }
     Ok(changed)
+}
+
+/// `tb pr addressed` asked these reviewers (host id, name) to look again: each gets an ask (`rereview`)
+/// unless they have one open, so the swap rules time them too.
+pub fn asked_again(app: &App, t: &Row, who: &[(String, String)], by: &str) -> Result<()> {
+    for (user, name) in who.iter().filter(|(u, _)| !u.is_empty()) {
+        if reviewers::open_ask(app, t.id(), user)?.is_none() {
+            reviewers::record_ask(app, t, user, name, "rereview", by, None)?;
+        }
+    }
+    Ok(())
 }
 
 /// How many swaps led to each reviewer's current ask on this task (by host id, lowercased), and when

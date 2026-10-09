@@ -698,3 +698,79 @@ fn the_agent_isn_t_woken_to_ask_while_the_feed_holds_and_is_once_it_s_back() {
     assert_eq!(jobs.len(), 1, "the sweep brings it back once the feed has settled");
     assert!(jobs[0].contains("pr reviewers T"), "{}", jobs[0]);
 }
+
+#[test]
+fn tb_pr_addressed_records_an_ask_so_a_slow_rereview_is_swapped() {
+    let b = board_with(|_| {});
+    let v = b.post("/projects/webapp", json!({"swap": true}));
+    assert_eq!(v["pr_rules"]["swap"], true, "the project's own switch, as tb project set --swap on sets it");
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("t1".into());
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.threads = vec![prhost::Thread {
+        id: "1".into(),
+        kind: "review".into(),
+        resolvable: true,
+        resolved: true,
+        author: "ana".into(),
+        last_author: "ana".into(),
+        last_id: "1".into(),
+        text: "Rename this".into(),
+        ..Default::default()
+    }];
+    let h = FakeHost::new("github", rec);
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task("https://github.com/acme/webapp/pull/9");
+    for (n, u) in [("Ana", "ana"), ("Bo", "bo"), ("Cy", "cy")] {
+        b.add(n, json!({"user": u}));
+    }
+    poll(&b);
+    assert_eq!(b.phase(id), "comments");
+    b.post(&format!("/tasks/{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(b.phase(id), "rereview");
+    assert_eq!(b.asks(id).iter().map(|a| (a.st("name"), a.st("why"), a.st("asked_by"))).collect::<Vec<_>>(),
+               vec![("Ana".to_string(), "rereview".to_string(), "The agent".to_string())]);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "her old request for changes isn't an answer to this one");
+
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open")]);
+    assert!(h.calls().contains(&"remove ana".to_string()), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "review", "a swapped-off request for changes no longer holds");
+}
+
+#[test]
+fn an_ask_of_someone_taken_off_the_pr_on_the_host_is_closed() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    h.rec.lock().reviewers.retain(|r| r.user != "{ana}");
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "dropped")], "nobody stands in for someone who isn't on it");
+    assert!(!h.calls().iter().any(|c| c.starts_with("remove")), "{:?}", h.calls());
+}
+
+#[test]
+fn a_fill_in_is_asked_only_while_the_pr_is_short_of_reviewers() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
+    // Bo has looked (a comment): the PR still waits for review.
+    set_state(&h, "{bo}", "commented");
+    poll(&b);
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "answered"), pair("Cy", "open")]);
+    set_state(&h, "{ana}", "changes");
+    poll(&b);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "answered"), pair("Cy", "open")], "Bo and Cy are its two");
+    assert!(b.asks(id)[0].b("filled"));
+}

@@ -164,6 +164,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         prflow::waited(app, &t)?;
+        crate::asks::asked_again(app, &t, &review.requesters, &who_of(body))?;
         prflow::merge_flow(
             app,
             id,
