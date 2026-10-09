@@ -7,8 +7,9 @@
 //!   `sync_every_hours`, or `tb reviewers sync`), and the host's members give them their account.
 //! - One pick is a main contributor: of the `main_contributors` people made of pinned reviewers
 //!   first, then those with the most commits to the changed files, then to the project, whoever's
-//!   turn comes first. Only candidates (at a weight of `not_a_main_below` or more) and people
-//!   already on the PR take a place. It's skipped when one of them is already on the PR.
+//!   turn comes first. Only people the board could ask (candidates, or people already on the PR
+//!   who aren't removed, the author, or a bot that isn't due), at a weight of `not_a_main_below` or
+//!   more and not out on Slack, take a place. It's skipped when one of them is already on the PR.
 //! - It's turn-based: a reviewer is due at their last ask + (1 + open asks) × `turn_gap_hours` /
 //!   weight, and the earliest due goes first (ties: the fewest asks, then pinned, then the most
 //!   commits to the changed files, then to the project). Weight is automation level × speed, where
@@ -286,6 +287,17 @@ fn selves(app: &App, repo: Option<&str>, rec: &Value) -> Vec<String> {
     out
 }
 
+/// A roster row the board could ask, as (host id, due, weight): one with a host account, not
+/// removed, not the PR's author (`me`), and not a bot that isn't due.
+fn usable(app: &App, r: &Row, me: &[String]) -> Result<Option<(String, f64, f64)>> {
+    let Some(user) = r.s("host_user").filter(|u| !u.is_empty()).map(|s| s.to_string()) else { return Ok(None) };
+    if r.s("removed_at").is_some() || reviewers::idents(r).iter().any(|i| me.contains(i)) || !crate::botrun::may_ask(app, r)? {
+        return Ok(None);
+    }
+    let (due, weight) = due(app, r)?;
+    Ok(Some((user, due, weight)))
+}
+
 /// Picks up to `n` reviewers for a task's PR (fewer when the roster runs out), skipping `skip`
 /// (host ids already on the PR or swapped off).
 pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Result<Vec<Pick>> {
@@ -297,14 +309,10 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     let skip: Vec<String> = skip.iter().map(|s| s.to_lowercase()).collect();
     let mut cands: Vec<Pick> = vec![];
     for r in reviewers::roster(app, &project)? {
-        let Some(user) = r.s("host_user").filter(|u| !u.is_empty()).map(|s| s.to_string()) else { continue };
-        if r.s("removed_at").is_some() || skip.contains(&user.to_lowercase()) || reviewers::idents(&r).iter().any(|i| me.contains(i)) {
+        let Some((user, due, weight)) = usable(app, &r, &me)? else { continue };
+        if skip.contains(&user.to_lowercase()) {
             continue;
         }
-        if !crate::botrun::may_ask(app, &r)? {
-            continue;
-        }
-        let (due, weight) = due(app, &r)?;
         let asked = reviewers::ask_count(app, &r)?;
         cands.push(Pick { name: r.st("name"), user, why: "turn".into(), due, weight, tier: "unknown".into(), asked, reviewer: r });
     }
@@ -314,29 +322,45 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     };
     let rank = |c: &Pick| (!c.reviewer.b("pinned"), contributors.iter().position(|m| *m == c.reviewer.id()).unwrap_or(usize::MAX), -c.reviewer.i0("commits"), c.reviewer.id());
     cands.sort_by(|a, b| a.due.partial_cmp(&b.due).unwrap_or(std::cmp::Ordering::Equal).then(a.asked.cmp(&b.asked)).then(rank(a).cmp(&rank(b))));
-    // Who's on the PR now: one of them a main contributor means no main pick.
-    let on_pr: Vec<Row> = crate::asks::on_pr(&prflow_of(t), rec)
-        .iter()
-        .filter_map(|w| reviewers::by_host_user(app, &project, &w.user).ok().flatten())
-        .collect();
+    // Who's on the PR now, with their weight, when they're someone the board could ask: one of them
+    // a main contributor means no main pick.
+    let mut on_pr: Vec<(Row, f64)> = vec![];
+    for w in crate::asks::on_pr(&prflow_of(t), rec) {
+        let Some(r) = reviewers::by_host_user(app, &project, &w.user)? else { continue };
+        if let Some((_, _, weight)) = usable(app, &r, &me)? {
+            on_pr.push((r, weight));
+        }
+    }
     // The main contributors: pinned reviewers first (in turn order), then the most commits to the
-    // changed files, then to the project, `main_contributors` in all. Only people who could be asked
-    // (at a weight of `not_a_main_below` or more) or are on the PR already take a place.
+    // changed files, then to the project, `main_contributors` in all. Only people the board could
+    // ask (a candidate, or someone on the PR already who isn't removed, the author, or a bot that
+    // isn't due), at a weight of `not_a_main_below` or more and not out on Slack, take a place.
     let roster = reviewers::roster(app, &project)?;
     let mut pins: Vec<&Row> = roster.iter().filter(|r| r.b("pinned") && r.s("removed_at").is_none()).collect();
     pins.sort_by_key(|r| cands.iter().position(|c| c.reviewer.id() == r.id()).unwrap_or(usize::MAX));
     let mut by_commits: Vec<&Row> = roster.iter().filter(|r| r.i0("commits") > 0).collect();
     by_commits.sort_by_key(|r| (-r.i0("commits"), r.id()));
-    let may_be_main = |id: i64| {
-        on_pr.iter().any(|r| r.id() == id) || cands.iter().any(|c| c.reviewer.id() == id && c.weight >= app.cfg.reviewers.not_a_main_below)
+    let below = app.cfg.reviewers.not_a_main_below;
+    let main_row = |id: i64| -> Option<&Row> {
+        let cand = cands.iter().find(|c| c.reviewer.id() == id).map(|c| (&c.reviewer, c.weight));
+        let (r, weight) = cand.or_else(|| on_pr.iter().find(|(r, _)| r.id() == id).map(|(r, w)| (r, *w)))?;
+        (weight >= below).then_some(r)
     };
     let mut mains: Vec<i64> = vec![];
+    let mut seen: Vec<i64> = vec![];
     for id in pins.iter().map(|r| r.id()).chain(contributors.iter().copied()).chain(by_commits.iter().map(|r| r.id())) {
         if mains.len() >= app.cfg.reviewers.main_contributors {
             break;
         }
-        if !mains.contains(&id) && may_be_main(id) {
-            mains.push(id);
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        // Someone out on Slack takes no place (checked only for those who'd take one).
+        if let Some(r) = main_row(id) {
+            if crate::presence::reachable(app, r)? {
+                mains.push(id);
+            }
         }
     }
     let mut out: Vec<Pick> = vec![];
@@ -347,7 +371,7 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     };
     // The main pick: whichever main contributor's turn comes first. None when one of them is
     // already on the PR.
-    let have_main = on_pr.iter().any(|r| mains.contains(&r.id()));
+    let have_main = on_pr.iter().any(|(r, _)| mains.contains(&r.id()));
     if out.len() < n && !have_main {
         let pool: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| mains.contains(&c.reviewer.id())).map(|(i, _)| i).collect();
         if let Some(i) = crate::presence::best(app, &mut cands, &pool)? {

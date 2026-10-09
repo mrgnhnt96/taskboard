@@ -184,7 +184,7 @@ impl Default for ReviewersConfig {
         ReviewersConfig {
             count: 2,
             main_contributors: 3,
-            not_a_main_below: 0.1,
+            not_a_main_below: 0.05,
             history_months: 6,
             min_commits: 5,
             turn_gap_hours: 4.0,
