@@ -270,7 +270,7 @@ create_url = ""                      # example: "https://flags.example.com/new?k
 [reviewers]
 count = 2
 main_contributors = 3                 # the main pick comes from this many: pinned reviewers, then top authors of the changed files, then of the project
-not_a_main_below = 0.1                # someone who could be asked at a weight under this isn't one of them
+not_a_main_below = 0.05               # someone who could be asked at a weight under this isn't one of them
 history_months = 6                    # commit history that counts
 min_commits = 5                       # commits in that window to join the roster from the history
 turn_gap_hours = 4.0

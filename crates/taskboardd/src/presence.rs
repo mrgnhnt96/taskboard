@@ -376,6 +376,19 @@ fn drop_missing(app: &App, r: &Row, why: &str) -> Result<()> {
     app.db.tx(|| app.db.update("reviewers", &json!(r.id()), fields!["removed_at" => now_iso(), "removed_why" => why, "updated_at" => now_iso()]))
 }
 
+/// Whether `r` could be reached now: not out, and known to the provider (someone it doesn't know is
+/// taken off the roster, as `best` does). Always, without a provider.
+pub fn reachable(app: &App, r: &Row) -> Result<bool> {
+    if provider(app).is_none() {
+        return Ok(true);
+    }
+    let pr = of(app, r);
+    if pr.tier == Tier::Missing {
+        drop_missing(app, r, &pr.why)?;
+    }
+    Ok(pr.tier.rank().is_some())
+}
+
 /// The candidate to take from `pool` (indexes into `cands`, in turn order): the first one online
 /// among the first `pick_tries` checked, else the best tier seen; never one who's out. Sets each
 /// checked candidate's `tier`.

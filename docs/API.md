@@ -944,8 +944,9 @@ Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (an
 
 **The picker** (`picker.rs`, `[reviewers]` in config.toml) asks one main contributor (whoever's turn comes first of
 `main_contributors` people: pinned reviewers first, then those with the most commits to the files the PR changes,
-then to the project; only people it could ask, at a weight of `not_a_main_below` or more, and people already on the
-PR take a place; skipped when one of them is already on the PR), then the rest in turn, `count` in all. It never picks
+then to the project; only people it could ask, on the PR already or not (not removed, not the author, not a bot
+that isn't due), at a weight of `not_a_main_below` (0.05) or more and not out on Slack, take a place; skipped when
+one of them is already on the PR), then the rest in turn, `count` in all. It never picks
 the PR's author (nor `[reviewers] me`, nor the repo's `git config user.email`), anyone removed, anyone without a
 host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + (1 + open
 asks) × `turn_gap_hours` / weight, earliest first (ties: fewest asks, then pinned, then most commits to the changed
