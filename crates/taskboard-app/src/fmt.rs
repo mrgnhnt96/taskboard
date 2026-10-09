@@ -154,6 +154,11 @@ pub fn day_clock(iso: &str) -> String {
     format!("{day}{}", clock12(&l.format("%H:%M").to_string()))
 }
 
+/// "Compacting since 3:05 PM" while a terminal (or a task's terminal) is compacting its conversation.
+pub fn compacting(v: &Value) -> Option<String> {
+    opt_s(v, "compacting").map(|at| format!("Compacting since {}", hhmm(at)))
+}
+
 pub fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }

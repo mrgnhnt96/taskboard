@@ -108,12 +108,14 @@ pub struct SessCardVm {
     pub sub: Option<String>,
     /// The task the sub line opens (when the terminal has one).
     pub task_ref: Option<String>,
+    /// "Compacting since 3:05 PM".
+    pub compacting: Option<String>,
 }
 
 #[cfg(test)]
 impl SessCardVm {
     pub fn text(&self) -> String {
-        join([self.name.text.as_str(), self.state_label, &self.project, self.sub.as_deref().unwrap_or("")])
+        join([self.name.text.as_str(), self.state_label, &self.project, self.compacting.as_deref().unwrap_or(""), self.sub.as_deref().unwrap_or("")])
     }
     pub fn acts(&self) -> Vec<&'static str> {
         let mut a = vec!["open-session"];
@@ -180,6 +182,7 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
                 // With a task the line is the (clickable) title even when the title is empty.
                 sub: if task_ref.is_some() { Some(sub.unwrap_or_default()) } else { sub },
                 task_ref,
+                compacting: fmt::compacting(x),
             }
         })
         .collect();
@@ -334,6 +337,9 @@ pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
     }
     if b(x, "lost") {
         chips.push(Chip { text: "Terminal lost".into(), cls: "bad".into() });
+    }
+    if let Some(c) = fmt::compacting(x) {
+        chips.push(Chip { text: c, cls: "compact".into() });
     }
     TaskCardVm {
         goal_ref: goal.map(|g| fmt::ref_of(g, "G")),
@@ -1052,6 +1058,9 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
                 .when(!c.project_title.is_empty(), |d| d.tooltip(kit::tip(c.project_title.clone())))
                 .child(c.project.clone()),
         );
+    if let Some(text) = &c.compacting {
+        card = card.child(div().flex().child(chip(t, "compact", text.clone())));
+    }
     match (&c.task_ref, &c.sub) {
         (Some(r), sub) => {
             let open = r.clone();
@@ -1326,6 +1335,7 @@ fn chip_colors(t: &Theme, cls: &str) -> (Hsla, Hsla) {
         "k-follow" | "st-ticket" => (t.accent_fg, t.accent_soft),
         "st-task" => (t.goal, t.goal_soft),
         "st-drop" => (t.muted, t.col),
+        "compact" => (t.accent_fg, t.accent_soft),
         _ => (t.text_2, t.col),
     }
 }
@@ -1679,6 +1689,18 @@ mod tests {
         .unwrap();
         settle(cx);
         assert_eq!(rec.last("sessions/fake-s3/rename"), Some(json!({"name": "api terminal"})));
+    }
+
+    #[test]
+    fn a_compacting_terminal_shows_a_chip() {
+        let at = fmt::now().to_rfc3339();
+        let card = task_card_vm(&json!({"id": 3, "ref": "T3", "title": "Fix", "project": "web", "status": "working", "compacting": at}), None);
+        let chip = card.chips.iter().find(|c| c.cls == "compact").expect("a compacting chip");
+        assert!(chip.text.starts_with("Compacting since ") && (chip.text.ends_with("AM") || chip.text.ends_with("PM")), "{}", chip.text);
+        let st = json!({"sessions": [{"id": "s1", "name": "T3 Fix", "status": "working", "project": "web", "compacting": at}, {"id": "s2", "name": "Other", "status": "idle", "project": "web"}]});
+        let strip = strip_vm(&st, "all", false, &HashMap::new());
+        assert!(strip.cards[0].compacting.as_deref().is_some_and(|c| c.starts_with("Compacting since ")));
+        assert!(strip.cards[1].compacting.is_none());
     }
 
     #[gpui_kit::test]
