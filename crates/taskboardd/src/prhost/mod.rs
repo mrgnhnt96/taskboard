@@ -140,7 +140,23 @@ pub struct Thread {
     /// The code it's on changed since (GitHub).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outdated: bool,
+    /// The comments after the first, oldest first (what `tb pr status` shows under it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<Reply>,
 }
+
+/// A reply on a thread.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reply {
+    pub author: String,
+    pub author_name: String,
+    /// The reply's text on one line, clipped.
+    pub text: String,
+    pub at: String,
+}
+
+/// How much of a reply's text a record keeps.
+pub(crate) const REPLY_MAX: usize = 400;
 
 impl Thread {
     /// Waiting on us (the board's account, see [`Record::us`]): unresolved, and someone else spoke last.
@@ -264,6 +280,11 @@ pub trait PrHost: Send + Sync {
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;
+    /// The checks that failed on the base branch's last `commits` commits, one per run (with its link,
+    /// so their failed steps and tests can be read and compared one by one).
+    fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
+        Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None }).collect())
+    }
 }
 
 /// The host a task's PR lives on: one [`install`]ed for this board, else the real one.
@@ -314,11 +335,13 @@ pub struct FakeHost {
     pub calls: Mutex<Vec<String>>,
     /// Base-branch failures to report.
     pub base_failing: Mutex<Vec<String>>,
+    /// Base-branch failed runs to report (with links); empty: `base_failing` without links.
+    pub base_checks: Mutex<Vec<Check>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), base_checks: Mutex::new(vec![]) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -400,6 +423,14 @@ impl PrHost for FakeHost {
     fn base_failures(&self, _pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         self.log(format!("base {base} {commits}"));
         Ok(self.base_failing.lock().clone())
+    }
+    fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
+        let checks = self.base_checks.lock().clone();
+        if checks.is_empty() {
+            return Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None }).collect());
+        }
+        self.log(format!("base {base} {commits}"));
+        Ok(checks)
     }
 }
 

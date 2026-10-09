@@ -475,6 +475,37 @@ fn an_expected_check_that_never_posts_stops_holding_the_merge_once_the_wait_is_o
 }
 
 #[test]
+fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied() {
+    // #52: the PR's run fails two tests, the base's runs of the same check only one.
+    let b = board_with(|c| {
+        c.pr.projects.insert(
+            "webapp".into(),
+            PrProject { failures_cmd: Some("echo 'Run e2e'; echo test: login_works; [ -n \"$TB_HEAD\" ] && echo test: logout_works; true".into()), ..Default::default() },
+        );
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks = vec![check("e2e", "failed")];
+    let mut th = thread("1", "rev");
+    th.replies = vec![
+        taskboardd::prhost::Reply { author: "me".into(), author_name: "Me".into(), text: "Why rename it?".into(), at: "t2".into() },
+        taskboardd::prhost::Reply { author: "rev".into(), author_name: "Rev".into(), text: "It clashes with the other one".into(), at: "t3".into() },
+    ];
+    rec.threads = vec![th];
+    let h = fake(&b, rec);
+    *h.base_checks.lock() = vec![Check { name: "e2e".into(), state: "failed".into(), url: Some("https://ci.example.com/base/1".into()) }];
+    poll(&b);
+    h.rec.lock().base_head = "b2".into();
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    let f = &live["failures"][0];
+    assert_eq!(f["tests"], json!(["login_works", "logout_works"]));
+    assert_eq!(f["base_tests"], json!(["login_works"]), "only the test the base fails too");
+    assert_eq!((f["base_fails"].clone(), f["base_compared"].clone()), (json!(false), json!("steps")), "logout_works is this PR's");
+    assert_eq!(live["rebase"][0], "git fetch origin main && git rebase origin/main");
+    assert_eq!(live["open_threads"][0]["replies"][1]["text"], "It clashes with the other one");
+}
+
+#[test]
 fn merging_moves_the_prs_stacked_on_it_onto_its_base_first() {
     // #50: the merge deletes the branch, so the PR into it is pointed at the base before.
     let b = board_with(|_| {});

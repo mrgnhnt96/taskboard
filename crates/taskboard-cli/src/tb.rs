@@ -310,6 +310,11 @@ enum Cmd {
     },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
+    /// The CI token the board reads failed steps and tests with (Azure DevOps): show, set or clear it
+    CiToken {
+        #[command(subcommand)]
+        action: Option<CiTokenCmd>,
+    },
     /// Print an account's token for a script: github, bitbucket or slack
     Token {
         #[arg(value_parser = ["github", "bitbucket", "slack"])]
@@ -775,6 +780,16 @@ enum AlertCmd {
 }
 
 #[derive(Subcommand)]
+enum CiTokenCmd {
+    /// Whether the board has one, and where it's from
+    Show,
+    /// Store an Azure DevOps personal access token (Build and Test management, read); read from stdin when left out
+    Set { token: Option<String> },
+    /// Forget the stored token (the env variable is used again, if set)
+    Clear,
+}
+
+#[derive(Subcommand)]
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
@@ -889,6 +904,9 @@ fn print_pr_status(t: &str, v: &Value) {
     if let (Some(b), Some(base)) = (rec["branch"].as_str(), rec["base"].as_str()) {
         let moved = if live["base_moved"] == true { format!(" · {base} has moved since this push: rebase onto it") } else { String::new() };
         out(&format!("Branch {b} into {base}{moved}"));
+        for cmd in live["rebase"].as_array().cloned().unwrap_or_default() {
+            out(&format!("  {}", cmd.as_str().unwrap_or("")));
+        }
     }
     if let Some(l) = pr["bar"]["stacks_on"]["line"].as_str() {
         out(l);
@@ -906,8 +924,10 @@ fn print_pr_status(t: &str, v: &Value) {
             let f = failures.iter().find(|f| f["check"].as_str() == Some(name));
             let mut line = format!("  {} {name}", mark(ch["state"].as_str().unwrap_or("")));
             if let Some(f) = f {
-                if f["base_fails"] == true {
-                    line += " [base fails this too]";
+                match (f["base_fails"] == true, f["base_compared"].as_str()) {
+                    (true, Some("check")) => line += " [base fails this check too]",
+                    (true, _) => line += " [base fails this too]",
+                    _ => {}
                 }
                 if f["cleared"] == true {
                     line += " [not this PR's]";
@@ -918,11 +938,14 @@ fn print_pr_status(t: &str, v: &Value) {
             }
             out(&line);
             if let Some(f) = f {
+                let on_base = |key: &str, s: &str| f[key].as_array().is_some_and(|a| a.iter().any(|x| x.as_str() == Some(s)));
                 for s in f["steps"].as_array().cloned().unwrap_or_default() {
-                    out(&format!("      step: {}", s.as_str().unwrap_or("")));
+                    let s = s.as_str().unwrap_or("");
+                    out(&format!("      step: {s}{}", if on_base("base_steps", s) { " [base fails this too]" } else { "" }));
                 }
                 for s in f["tests"].as_array().cloned().unwrap_or_default() {
-                    out(&format!("      test: {}", s.as_str().unwrap_or("")));
+                    let s = s.as_str().unwrap_or("");
+                    out(&format!("      test: {s}{}", if on_base("base_tests", s) { " [base fails this too]" } else { "" }));
                 }
                 if let Some(e) = f["error"].as_str() {
                     out(&format!("      couldn't read its steps: {e}"));
@@ -969,6 +992,10 @@ fn print_pr_status(t: &str, v: &Value) {
             let at = th["path"].as_str().map(|p| format!(" · {p}{}", th["line"].as_i64().map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_default();
             let kind = if th["kind"] == "task" { " · task" } else { "" };
             out(&format!("  {} · {who}{kind}{at} · {}", th["id"].as_str().unwrap_or(""), th["text"].as_str().unwrap_or("")));
+            for r in th["replies"].as_array().cloned().unwrap_or_default() {
+                let who = r["author_name"].as_str().filter(|n| !n.is_empty()).or(r["author"].as_str()).unwrap_or("");
+                out(&format!("      ↳ {who}: {}", r["text"].as_str().unwrap_or("")));
+            }
         }
     } else if rec["comments"].as_i64().unwrap_or(0) > 0 && !rec["threads"].is_array() {
         out(&format!("Review comments from others: {}", rec["comments"]));
@@ -2672,6 +2699,29 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 None => out(SAVED),
                 Some(_) => out(&format!("The board knows tb is at {exe}.")),
             }
+            Ok(0)
+        }
+        Cmd::CiToken { action } => {
+            let v = match action {
+                None | Some(CiTokenCmd::Show) => c.call("GET", "/ci-token", None)?,
+                Some(CiTokenCmd::Set { token }) => {
+                    let token = match token {
+                        Some(t) => t,
+                        None => {
+                            let mut s = String::new();
+                            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("couldn't read the token from stdin: {e}"))?;
+                            s.trim().to_string()
+                        }
+                    };
+                    c.call("POST", "/ci-token", Some(json!({"token": token})))?
+                }
+                Some(CiTokenCmd::Clear) => c.call("POST", "/ci-token/clear", None)?,
+            };
+            out(&match v["source"].as_str() {
+                Some("board") => "CI token: stored on the board (Keychain).".to_string(),
+                Some(_) => format!("CI token: from ${} in the daemon's environment.", v["env"].as_str().unwrap_or("")),
+                None => format!("No CI token: store one with tb ci-token set (or set ${} for the daemon).", v["env"].as_str().unwrap_or("")),
+            });
             Ok(0)
         }
         Cmd::Accounts => {

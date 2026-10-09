@@ -109,6 +109,9 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
     let r = match (method, segs.as_slice()) {
         ("GET", ["state"]) => get_state(app, query),
         ("GET", ["accounts"]) => accounts::status(app, q(query, "fresh", "") == "1"),
+        ("GET", ["ci-token"]) => Ok(accounts::ci_token_status(app)),
+        ("POST", ["ci-token", "clear"]) => accounts::clear_ci_token(app),
+        ("POST", ["ci-token"]) => accounts::set_ci_token(app, body),
         ("POST", ["accounts", "github", "login"]) => accounts::github_login(app),
         ("POST", ["accounts", "github", "cancel"]) => accounts::github_cancel(app),
         ("POST", ["accounts", "github", "import"]) => accounts::github_import(app),

@@ -405,16 +405,17 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     }
     let cleared = names_of(&prflow::not_ours(&f, &rec)["checks"]);
     let failed = names_of(&rec["failed"]);
-    let base_failing: std::result::Result<Vec<String>, String> = match (read.is_ok(), failed.is_empty(), rec["base"].as_str()) {
-        (true, false, Some(base)) if !base.is_empty() => host(app, &pr).map_err(|e| e.message).and_then(|h| h.base_failures(&pr, base, BASE_COMMITS)),
+    let base_failing: std::result::Result<Vec<prhost::Check>, String> = match (read.is_ok(), failed.is_empty(), rec["base"].as_str()) {
+        (true, false, Some(base)) if !base.is_empty() => host(app, &pr).map_err(|e| e.message).and_then(|h| h.base_failed_checks(&pr, base, BASE_COMMITS)),
         _ => Ok(vec![]),
     };
     let rules = crate::projects::pr_rules(app, t.s("project"));
     let mut failures = vec![];
     for c in rec["checks"].as_array().cloned().unwrap_or_default().into_iter().filter(|c| c["state"] == "failed") {
         let Ok(check) = serde_json::from_value::<prhost::Check>(c.clone()) else { continue };
-        let mut row = json!({"check": check.name, "url": check.url, "cleared": cleared.iter().any(|x| x.eq_ignore_ascii_case(&check.name)),
-                             "base_fails": base_failing.as_ref().map(|b| b.iter().any(|x| x.eq_ignore_ascii_case(&check.name))).unwrap_or(false)});
+        let on_base: Vec<prhost::Check> = base_failing.as_ref().map(|b| b.iter().filter(|x| x.name.eq_ignore_ascii_case(&check.name)).cloned().collect()).unwrap_or_default();
+        let mut row = json!({"check": check.name, "url": check.url, "cleared": cleared.iter().any(|x| x.eq_ignore_ascii_case(&check.name))});
+        let mut mine: Option<prhost::ci::Failures> = None;
         if read.is_ok() {
             match prhost::ci::provider_for(app, &rules, &check) {
                 Ok(Some(ci)) => {
@@ -423,6 +424,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
                         Ok(fl) => {
                             row["steps"] = json!(fl.steps);
                             row["tests"] = json!(fl.tests);
+                            mine = Some(fl);
                         }
                         Err(e) => row["error"] = json!(e),
                     }
@@ -431,6 +433,17 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
                 Err(e) => row["error"] = json!(e),
             }
         }
+        // The same check failing on the base says little by itself: compare its failed steps and tests one
+        // by one with the base's runs of it, when both can be read.
+        let theirs = match &mine {
+            Some(m) if !on_base.is_empty() && !(m.steps.is_empty() && m.tests.is_empty()) => base_runs_failures(app, &rules, &pr, &on_base),
+            _ => None,
+        };
+        let b = blame(mine.as_ref(), theirs.as_ref(), !on_base.is_empty());
+        row["base_fails"] = json!(b.all);
+        row["base_steps"] = json!(b.steps);
+        row["base_tests"] = json!(b.tests);
+        row["base_compared"] = json!(b.compared);
         failures.push(row);
     }
     let review = prflow::review_of(&f, &rec);
@@ -454,6 +467,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         }
     };
     live["base_moved"] = json!(prflow::base_moved(&f, &rec));
+    live["rebase"] = json!(if prflow::base_moved(&f, &rec) { rebase_commands(&app.cfg.pr_body.remote, rec["base"].as_str().unwrap_or("")) } else { vec![] });
     live["builds_note"] = json!(builds_note);
     live["failures"] = json!(failures);
     live["base_error"] = json!(base_failing.err());
@@ -470,9 +484,100 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     Ok(live)
 }
 
+/// What failed on the base too, for one failed check.
+#[derive(Debug, Default, PartialEq)]
+pub struct Blame {
+    /// This PR's failed steps and tests that fail on the base too.
+    pub steps: Vec<String>,
+    pub tests: Vec<String>,
+    /// Everything that failed here fails on the base too (or, compared by check, the check does).
+    pub all: bool,
+    /// How it was compared: "steps" (its steps and tests, one by one), "check" (only the check's name:
+    /// the steps couldn't be read on one side), or null (the base doesn't fail the check).
+    pub compared: Option<&'static str>,
+}
+
+/// A step's name without the error the CI added to it (Azure: "Run tests: exit 1").
+fn step_key(s: &str) -> String {
+    s.split(": ").next().unwrap_or(s).trim().to_lowercase()
+}
+
+/// Compares a failed check's steps and tests (`mine`) with the base's runs of the same check (`theirs`).
+pub fn blame(mine: Option<&prhost::ci::Failures>, theirs: Option<&prhost::ci::Failures>, check_fails_on_base: bool) -> Blame {
+    if !check_fails_on_base {
+        return Blame::default();
+    }
+    let (Some(m), Some(b)) = (mine, theirs) else { return Blame { all: true, compared: Some("check"), ..Default::default() } };
+    if m.steps.is_empty() && m.tests.is_empty() {
+        return Blame { all: true, compared: Some("check"), ..Default::default() };
+    }
+    let base_steps: Vec<String> = b.steps.iter().map(|s| step_key(s)).collect();
+    let steps: Vec<String> = m.steps.iter().filter(|s| base_steps.contains(&step_key(s))).cloned().collect();
+    let tests: Vec<String> = m.tests.iter().filter(|t| b.tests.iter().any(|x| x.trim().eq_ignore_ascii_case(t.trim()))).cloned().collect();
+    // With failing tests on both sides, the tests decide: the step that runs them fails either way.
+    let all = if !m.tests.is_empty() { tests.len() == m.tests.len() } else { steps.len() == m.steps.len() };
+    Blame { steps, tests, all, compared: Some("steps") }
+}
+
+/// The failed steps and tests of the base's runs of a check (each read once by its link), merged. None
+/// when none of them could be read.
+fn base_runs_failures(app: &App, rules: &crate::config::PrProject, pr: &PrRef, runs: &[prhost::Check]) -> Option<prhost::ci::Failures> {
+    let mut out: Option<prhost::ci::Failures> = None;
+    let mut seen: Vec<Option<String>> = vec![];
+    for run in runs.iter().take(BASE_COMMITS) {
+        if run.url.is_none() || seen.contains(&run.url) {
+            continue;
+        }
+        seen.push(run.url.clone());
+        let Ok(Some(ci)) = prhost::ci::provider_for(app, rules, run) else { continue };
+        let Ok(fl) = ci.failures(pr, "", run) else { continue };
+        let o = out.get_or_insert_with(Default::default);
+        o.steps.extend(fl.steps);
+        o.tests.extend(fl.tests);
+    }
+    out
+}
+
+/// What to run when the base moved under this push: rebase onto it, test, push.
+pub fn rebase_commands(remote: &str, base: &str) -> Vec<String> {
+    if base.is_empty() {
+        return vec![];
+    }
+    vec![
+        format!("git fetch {remote} {base} && git rebase {remote}/{base}"),
+        "run the tests again".into(),
+        "git push --force-with-lease".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prhost::ci::Failures;
+
+    fn fl(steps: &[&str], tests: &[&str]) -> Failures {
+        Failures { steps: steps.iter().map(|s| s.to_string()).collect(), tests: tests.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[test]
+    fn the_base_is_blamed_only_for_the_steps_and_tests_it_fails_too() {
+        let mine = fl(&["test › cargo test"], &["login_works", "logout_works"]);
+        let b = blame(Some(&mine), Some(&fl(&["test › cargo test"], &["login_works"])), true);
+        assert_eq!((b.tests.clone(), b.all, b.compared), (vec!["login_works".to_string()], false, Some("steps")), "logout_works is this PR's");
+        assert_eq!(b.steps, vec!["test › cargo test".to_string()]);
+        let b = blame(Some(&mine), Some(&fl(&[], &["LOGIN_WORKS", "logout_works"])), true);
+        assert!(b.all);
+        let b = blame(Some(&fl(&["Run tests: exit 1"], &[])), Some(&fl(&["Run tests: exit 2"], &[])), true);
+        assert!(b.all, "a step is its name, not the error the CI added");
+        assert_eq!(blame(Some(&mine), None, true), Blame { all: true, compared: Some("check"), ..Default::default() }, "the base's steps couldn't be read");
+        assert_eq!(blame(Some(&mine), Some(&mine), false), Blame::default(), "the base doesn't fail the check");
+    }
+
+    #[test]
+    fn rebase_commands_name_the_remote_and_base() {
+        assert_eq!(rebase_commands("origin", "main")[0], "git fetch origin main && git rebase origin/main");
+        assert!(rebase_commands("origin", "").is_empty());
+    }
 
     #[test]
     fn proof_must_be_links() {

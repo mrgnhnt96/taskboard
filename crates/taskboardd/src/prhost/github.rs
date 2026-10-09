@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{gist, Cancelled, Check, HostResult, MergeOpts, PrHost, PrRef, Record, Reviewer, Thread};
+use super::{gist, Cancelled, Check, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// Runs `gh` with these arguments and answers its stdout.
 pub trait Gh: Send + Sync {
@@ -36,7 +36,7 @@ pub struct GithubHost {
 
 const VIEW_FIELDS: &str = "number,state,title,author,headRefOid,headRefName,baseRefName,baseRefOid,reviewDecision,statusCheckRollup,comments,reviews,latestReviews,reviewRequests,mergeable";
 
-const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){pullRequest(number:$num){reviewThreads(first:100){nodes{id isResolved isOutdated path line first:comments(first:1){nodes{id author{login} body createdAt url}} last:comments(last:1){nodes{id author{login} body createdAt url}}}}}}}";
+const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){pullRequest(number:$num){reviewThreads(first:100){nodes{id isResolved isOutdated path line first:comments(first:1){nodes{id author{login} body createdAt url}} last:comments(last:1){nodes{id author{login} body createdAt url}} replies:comments(first:30){nodes{id author{login} body createdAt}}}}}}}";
 const REPLY_MUTATION: &str = "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}";
 const RESOLVE_MUTATION: &str = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
 
@@ -227,6 +227,33 @@ impl PrHost for GithubHost {
         out.dedup();
         Ok(out)
     }
+
+    fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
+        let list = self.api("GET", &format!("repos/{}/commits?sha={base}&per_page={commits}", pr.repo), &[])?;
+        let mut out: Vec<Check> = vec![];
+        let mut add = |name: &str, url: Option<&str>| {
+            let url = url.filter(|u| !u.is_empty()).map(|u| u.to_string());
+            if !name.is_empty() && !out.iter().any(|o| o.name == name && o.url == url) {
+                out.push(Check { name: name.to_string(), state: "failed".into(), url });
+            }
+        };
+        for c in list.as_array().cloned().unwrap_or_default().into_iter().take(commits) {
+            let Some(sha) = c["sha"].as_str() else { continue };
+            let runs = self.api("GET", &format!("repos/{}/commits/{sha}/check-runs?per_page=100", pr.repo), &[])?;
+            for r in runs["check_runs"].as_array().cloned().unwrap_or_default() {
+                if matches!(r["conclusion"].as_str(), Some("failure" | "timed_out")) {
+                    add(r["name"].as_str().unwrap_or(""), r["details_url"].as_str().or(r["html_url"].as_str()));
+                }
+            }
+            let st = self.api("GET", &format!("repos/{}/commits/{sha}/status", pr.repo), &[])?;
+            for r in st["statuses"].as_array().cloned().unwrap_or_default() {
+                if matches!(r["state"].as_str(), Some("failure" | "error")) {
+                    add(r["context"].as_str().unwrap_or(""), r["target_url"].as_str());
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn check_state(c: &Value) -> &'static str {
@@ -315,6 +342,19 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
         let first = &n["first"]["nodes"][0];
         let last = &n["last"]["nodes"][0];
         let last = if last.is_null() { first } else { last };
+        let replies = n["replies"]["nodes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .skip(1)
+            .map(|c| Reply {
+                author: login(c),
+                author_name: login(c),
+                text: crate::util::one_line(c["body"].as_str().unwrap_or(""), REPLY_MAX),
+                at: c["createdAt"].as_str().unwrap_or("").to_string(),
+            })
+            .collect();
         list.push(Thread {
             id: n["id"].as_str().unwrap_or("").to_string(),
             kind: "review".into(),
@@ -330,6 +370,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
             text: gist(first["body"].as_str().unwrap_or("")),
             url: first["url"].as_str().map(|s| s.to_string()),
             outdated: n["isOutdated"].as_bool().unwrap_or(false),
+            replies,
         });
     }
     let plain = |id: &Value, who: String, body: &str, at: &Value, url: &Value, kind: &str| Thread {
@@ -347,6 +388,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
         text: gist(body),
         url: url.as_str().map(|s| s.to_string()),
         outdated: false,
+        replies: vec![],
     };
     for c in comments_v.iter().filter(|c| others(c)) {
         list.push(plain(&c["id"], login(c), c["body"].as_str().unwrap_or(""), &c["createdAt"], &c["url"], "comment"));
@@ -461,7 +503,9 @@ pub(crate) mod tests {
         json!({"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
             {"id": "PRRT_1", "isResolved": false, "isOutdated": false, "path": "src/a.rs", "line": 3,
              "first": {"nodes": [{"id": "c1", "author": {"login": "rev"}, "body": "Rename this", "createdAt": "t1"}]},
-             "last": {"nodes": [{"id": "c2", "author": {"login": "me"}, "body": "Done", "createdAt": "t2"}]}},
+             "last": {"nodes": [{"id": "c2", "author": {"login": "me"}, "body": "Done", "createdAt": "t2"}]},
+             "replies": {"nodes": [{"id": "c1", "author": {"login": "rev"}, "body": "Rename this", "createdAt": "t1"},
+                                   {"id": "c2", "author": {"login": "me"}, "body": "Done\nin a.rs", "createdAt": "t2"}]}},
             {"id": "PRRT_2", "isResolved": false, "path": "src/b.rs",
              "first": {"nodes": [{"id": "c3", "author": {"login": "rev"}, "body": "And this", "createdAt": "t3"}]},
              "last": {"nodes": [{"id": "c3", "author": {"login": "rev"}, "body": "And this", "createdAt": "t3"}]}}
@@ -486,6 +530,8 @@ pub(crate) mod tests {
         let open: Vec<&str> = r.threads.iter().filter(|t| t.waiting_on("me")).map(|t| t.id.as_str()).collect();
         assert_eq!(open, vec!["PRRT_2", "IC_2"], "the first thread had my last word; my own comment isn't a thread");
         assert_eq!(r.threads.iter().find(|t| t.id == "IC_2").unwrap().text, "Why?");
+        let t1 = r.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
+        assert_eq!(t1.replies, vec![Reply { author: "me".into(), author_name: "me".into(), text: "Done in a.rs".into(), at: "t2".into() }]);
     }
 
     #[test]

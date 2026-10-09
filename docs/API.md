@@ -552,7 +552,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `failures: [{check, url, steps, tests, source, error?, base_fails, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines or the project's `failures_cmd`; `base_fails` when the base branch's last 5 commits fail that check too), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
+| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `rebase: [str]` (when the base moved: the commands to rebase onto it, test and push), `failures: [{check, url, steps, tests, source, error?, base_fails, base_steps, base_tests, base_compared, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines (with the token from `tb ci-token set`, else `$pr.azure_token_env`) or the project's `failures_cmd`; the base branch's last 5 commits' runs of the same check are read too, and `base_steps` / `base_tests` are this PR's failed steps and tests that fail there too; `base_fails` when all of them do; `base_compared`: `steps` (compared one by one), `check` (only the check's name could be compared) or null (the base doesn't fail it)), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
 | `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
 | `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
@@ -563,7 +563,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `POST /tasks/:id/pr/merged` | `{who?}` | `tb pr merged`: the PR was merged outside the board. |
 
 `thread = {id, kind: "review"|"comment"|"summary"|"task", resolvable, resolved, author, author_name, last_author, last_id,
-last_at, path?, line?, text, url?, outdated?}`. A thread is open while it's unresolved and someone other than the
+last_at, path?, line?, text, url?, outdated?, replies?: [{author, author_name, text, at}]}` (`replies`: the comments after the first, oldest first). A thread is open while it's unresolved and someone other than the
 board's own account on the host (the account it reads and posts as; the PR's author when that isn't known) spoke last
 (a PR task: until it's resolved), unless it was acknowledged at its last comment.
 
@@ -576,6 +576,10 @@ unset = the `no_checks_after_mins` grace), `failures_cmd` and `merge_strategy`. 
 **`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
 `TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
 line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
+**CI token** (`tb ci-token`): `GET /ci-token` → `{set, source: "board"|"env"|null, env}` (never the token); `POST /ci-token {token}`
+keeps an Azure DevOps personal access token in the Keychain (`taskboard-azure-devops`), which the board reads Azure
+Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, the daemon's `$pr.azure_token_env` is used.
+
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
