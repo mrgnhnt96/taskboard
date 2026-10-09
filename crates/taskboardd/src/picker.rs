@@ -165,7 +165,7 @@ fn main_contributors(app: &App, project: &str, repo: &str, files: &[String]) -> 
             None => counts.push((r.id(), 1)),
         }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.sort_by_key(|c| std::cmp::Reverse(c.1));
     Ok(counts.into_iter().take(cfg.main_contributors).map(|(id, _)| id).collect())
 }
 

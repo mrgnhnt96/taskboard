@@ -250,8 +250,7 @@ pub fn best(app: &App, cands: &mut [Pick], pool: &[usize]) -> Result<Option<usiz
         return Ok(pool.first().copied());
     }
     let mut seen: Option<(u8, usize)> = None;
-    let mut checked = 0;
-    for &i in pool {
+    for (checked, &i) in pool.iter().enumerate() {
         if checked >= app.cfg.reviewers.pick_tries.max(1) {
             // Past the tries: someone unchecked beats the off and the quiet.
             return Ok(match seen {
@@ -259,7 +258,6 @@ pub fn best(app: &App, cands: &mut [Pick], pool: &[usize]) -> Result<Option<usiz
                 _ => Some(i),
             });
         }
-        checked += 1;
         let pr = of(app, &cands[i].reviewer);
         cands[i].tier = pr.tier.name().to_string();
         if pr.tier == Tier::Missing {
