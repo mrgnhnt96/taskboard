@@ -635,7 +635,7 @@ tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an al
 way to cancel alerts at once. A cancel command may write the builds it stopped, one name per line, to the file named by
 `$TB_CANCELLED`. A cancelled push is logged on its task and kept in `recent`; a follow-up only when it stopped a build (a
 cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both, and so is any round, the first
-too, that writes it empty: it stopped nothing). An entry with no builds of its
+too, that writes it empty, or a host cancel that stops none: it stopped nothing; the push is still marked cancelled). An entry with no builds of its
 own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build or PR event matches a
 board task's PR, or one the owner opened by hand, by its repo in any case, or by the repo's short name (after the last
 `/`) when one side gives no org, so `ACME/repo`, `repo` and `acme/repo` are one; only among the board's PRs with that
@@ -868,7 +868,7 @@ are free, lends them when it starts or an agent takes it with `tb take` (before 
 them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
 device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"); a device asked for by
-name says so first, whatever the goal's pool ("Waiting for a free dev-c (dev-c is reserved for G2)", "Waiting for dev-c
+name says so first, whatever the goal's pool ("Waiting for a free dev-c (dev-c is reserved for G2)", "Waiting for a free dev-c (dev-c is with T4)", "Waiting for dev-c
 (it's off)"), and a need no device has as its name or tag says "No dev-zz yet (tb device add)". A task started
 without all it asks for (by hand, or with nothing free) logs "<why>; it started without".
 
