@@ -167,9 +167,9 @@ pub fn with_script(items: &[String], script: &str) -> Option<Vec<String>> {
 }
 
 /// Puts the bundled script on Midna's status bar: asks once per copy of it. Midna turns the ask
-/// into a confirmation for the owner, so a no stays a no.
+/// into a confirmation for the owner, so a no stays a no. Not from a board without its runner (a dev board).
 pub fn offer(app: &App) {
-    if std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {
+    if !app.cfg.runner || std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {
         return;
     }
     let Some(script) = bundled_script() else { return };

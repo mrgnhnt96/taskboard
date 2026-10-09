@@ -26,6 +26,7 @@ fn board(body: &str) -> (std::sync::Arc<App>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     cfg.midna = fake_midna(dir.path(), body);
+    cfg.runner = true;
     (App::for_tests(cfg), dir)
 }
 
@@ -122,4 +123,18 @@ fn hours_that_match_are_left_alone() {
     api::dispatch(&app, "POST", "/hours", &Query::new(), &json!({"on": true, "start": "09:00", "end": "18:00", "days": "mon-fri"})).unwrap();
     keep_awake::sync(&app);
     assert!(sets(dir.path()).is_empty());
+}
+
+#[test]
+fn a_board_without_its_runner_only_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.midna = fake_midna(dir.path(), &format!("echo '{STATUS}'"));
+    let app = App::for_tests(cfg);
+    api::dispatch(&app, "POST", "/hours", &Query::new(), &json!({"on": true, "start": "08:00", "end": "17:00", "days": "mon-fri"})).unwrap();
+    keep_awake::sync(&app);
+    assert_eq!(call(&app, "GET", json!({})).unwrap()["held"], json!(true), "it still reads");
+    let (code, _) = call(&app, "POST", json!({"mode": "always"})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(sets(dir.path()).is_empty(), "never sets Midna's keep-awake");
 }

@@ -4,7 +4,8 @@
 # id (com.mrgnhnt.taskboard.dev), its own daemon (label com.mrgnhnt.taskboard.dev.daemon) on its
 # own port (18792), its own data folder, a purple icon with a yellow "DEV" band, and it leaves ~/.local/bin/tb
 # alone. Its data folder isn't the default one, so its runner is off: it never opens, messages
-# or closes Midna terminals (set TASKBOARD_RUNNER=1 in its environment to change that).
+# or closes Midna terminals and never changes Midna's keep-awake or status bar; it only reads them
+# (set TASKBOARD_RUNNER=1 in its environment to change that).
 #
 #   scripts/dev-app.sh [--test] [--no-build] [--seed]
 #     --test       run `cargo test --workspace` first and stop if it fails
