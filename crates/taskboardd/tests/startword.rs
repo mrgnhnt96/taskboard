@@ -641,9 +641,59 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["say:make a goal for dark mode", "goal new", "agent:The docker container stopped. Should I start it?", "say:yes"],
         vec!["plan", "say:write a script that seeds the db", "agent:Done. Want me to run it?", "say:yes"],
     ];
+    let wrong = goal_cases_wrong(&runs, &refused);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every phrase in #152, both ways, as #126's are read: "it" is the goal only when what was spoken of
+/// last is the goal or its plan, or nothing but the owner's ask for the goal.
+#[test]
+fn it_is_the_goal_only_when_the_goal_was_spoken_of_last() {
+    let mut runs: Vec<Vec<&str>> = vec![];
+    let mut refused: Vec<Vec<&str>> = vec![];
+    // A plan summary with other nouns in it is still about the goal.
+    for (reply, yes) in [
+        ("agent:Done — two tasks, each with tests. Want me to run it?", "say:yes"),
+        ("agent:The goal has two tasks: add the migration and update the API. Want me to run it?", "say:yes"),
+        ("agent:Each task opens its own PR. Want me to run it?", "say:sure"),
+        ("agent:Two tasks: Colors (touches the theme files) and Toggle. Should I start it?", "say:yes"),
+        ("agent:The plan has a build step and a deploy step. Want me to run it?", "say:yes"),
+        ("agent:Made two tasks:\n- Colors: update the theme files\n- Toggle: add the switch\n\nWant me to run it?", "say:yes"),
+    ] {
+        runs.push(vec!["plan", reply, yes]);
+        runs.push(vec!["say:make a goal for dark mode", "goal new", reply, yes]);
+    }
+    // The owner's prompt asked for the goal, though it names tests.
+    runs.push(vec!["say:make a goal for adding tests to login", "goal new", "agent:Done. Want me to run it?", "say:yes"]);
+    // Something else the agent spoke of last.
+    for (reply, yes) in [
+        ("agent:I set up the dev database. Should I start it?", "say:yes"),
+        ("agent:I wrote a rake task to backfill the colors. Want me to run it?", "say:yes"),
+        ("agent:The emulator is ready. Want me to run it?", "say:yes"),
+        ("agent:I built the app. Want me to run it?", "say:yes"),
+        ("agent:I wrote a small CLI to check the colors. Should I run it?", "say:yes"),
+        ("agent:The codemod is ready. Want me to run it?", "say:yes"),
+    ] {
+        refused.push(vec!["plan", reply, yes]);
+        refused.push(vec!["say:make a goal for dark mode", "goal new", reply, yes]);
+    }
+    // Something else the owner asked the agent to make, when the agent's message speaks of nothing.
+    for (ask, reply) in [("say:set up the emulator", "agent:Done."), ("say:write a backfill", "agent:Done, it's ready."), ("say:add a storybook story for the toggle", "agent:Added.")] {
+        refused.push(vec!["plan", ask, reply, "say:run it"]);
+        refused.push(vec!["say:make a goal for dark mode", "goal new", ask, reply, "say:run it"]);
+    }
+    let wrong = goal_cases_wrong(&runs, &refused);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Each case is a fresh conversation with a planned goal G, the steps in order ("say:" a prompt the
+/// owner types, "agent:" the message the agent ends its turn on, "goal new" / "propose" / "task new" what
+/// the agent's `tb` reports, "plan" the board opening this terminal to edit the goal's plan), then `tb
+/// start G<n>` on the goal: the cases the board gets wrong.
+fn goal_cases_wrong(runs: &[Vec<&str>], refused: &[Vec<&str>]) -> Vec<String> {
     let b = board();
     let mut wrong = vec![];
-    for (want, cases) in [(true, &runs), (false, &refused)] {
+    for (want, cases) in [(true, runs), (false, refused)] {
         for steps in cases {
             b.report("hook.session_start", json!({"source": "clear"}));
             let mut g = b.goal();
@@ -678,7 +728,7 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
             b.app.db.x("DELETE FROM jobs WHERE purpose = 'plan'", p![]).unwrap();
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    wrong
 }
 
 /// `t` with each "G" that stands alone (a goal's ref) made `G<g>`.
@@ -979,7 +1029,8 @@ fn the_start_word_reads_the_asks_143_found_refused() {
         "I don't want you to, start T8",
         "don't, start T8",
         "should I start T8?",
-        "will you start T8?",
+        // "Will you start T8?" asks for it (#151); "when will you" asks about it.
+        "when will you start T8?",
         "can you start T8 tomorrow?",
         "could you start T8 once T9 lands?",
         "does T8 go first?",
@@ -1049,24 +1100,26 @@ fn a_run_check_runs_nothing_and_says_whether_it_would() {
     assert_eq!(b.status(id), "queued");
 }
 
-/// Each case is a fresh conversation with T8 and T9 on the board, the steps in order ("agent:" the
-/// message the agent ends its turn on, anything else a prompt the owner types), then `tb start` on the
-/// task named: the cases the board gets wrong.
+/// Each case is a fresh conversation with T8, T9, T10 and T11 on the board, the steps in order ("agent:"
+/// the message the agent ends its turn on, anything else a prompt the owner types), then `tb start` on
+/// the task named: the cases the board gets wrong.
 fn start_cases_wrong(starts: &[(Vec<String>, &str)], holds: &[(Vec<String>, &str)]) -> Vec<String> {
     let b = board();
     let mut wrong = vec![];
+    let named = regex::Regex::new(r"\bT(8|9|10|11)\b").unwrap();
     for (want, cases) in [(true, starts), (false, holds)] {
         for (said, target) in cases {
             b.report("hook.session_start", json!({"source": "clear"}));
-            let (t8, t9) = (b.new_task(), b.new_task());
-            let refs = |p: &str| p.replace("T8", "\u{1}").replace("T9", "\u{2}").replace('\u{1}', &format!("T{t8}")).replace('\u{2}', &format!("T{t9}"));
+            let ids: Vec<i64> = (0..4).map(|_| b.new_task()).collect();
+            let id = |n: &str| ids[n.parse::<usize>().unwrap() - 8];
+            let refs = |p: &str| named.replace_all(p, |c: &regex::Captures| format!("T{}", id(&c[1]))).to_string();
             for p in said {
                 match p.strip_prefix("agent:") {
                     Some(m) => b.replied(&refs(m)),
                     None => b.typed(&refs(p)),
                 }
             }
-            let got = b.tb_start(if *target == "T8" { t8 } else { t9 });
+            let got = b.tb_start(id(&target[1..]));
             if got.is_ok() != want {
                 let shown: Vec<String> = said.iter().map(|p| p.chars().take(80).collect()).collect();
                 wrong.push(format!("{} {target}: {shown:?} {:?}", if want { "refused" } else { "started" }, got.err()));
@@ -1177,6 +1230,60 @@ fn the_start_word_reads_the_asks_147_found() {
         vec!["agent:Should I start T8?", "thanks"],
     ] {
         holds.push((convo(&said), "T8"));
+    }
+    let wrong = start_cases_wrong(&starts, &holds);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every phrase in #151, both ways, through the hook's path.
+#[test]
+fn the_start_word_reads_the_asks_151_found() {
+    let log = log_paste(2000);
+    let pasted = |last: &str| format!("start T8. here's the log:\n{}\n{last}", log.trim_end());
+    let convo = |steps: &[&str]| steps.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    let mut starts: Vec<(Vec<String>, &str)> = vec![];
+    let mut holds: Vec<(Vec<String>, &str)> = vec![];
+    // 1. A log line that only starts like a take-back.
+    starts.push((vec![pasted("Wait - no response from the upstream host")], "T8"));
+    // 2. A blocker after the question.
+    holds.push((convo(&["agent:Should I start T8? T9 needs to merge first though.", "yes"]), "T8"));
+    // 3. A quote after "was".
+    for said in ["the comment was - start T8", "the ticket's comment was - start T8"] {
+        holds.push((convo(&[said]), "T8"));
+    }
+    // 4. "Them" is the tasks of the sentence the question follows.
+    for question in ["T9 merged this morning. I made T10 and T11. Want me to start them?", "I made T10 and T11 (T9 covers the rest). Want me to start them?"] {
+        holds.push((convo(&[&format!("agent:{question}"), "yes"]), "T9"));
+        for target in ["T10", "T11"] {
+            starts.push((convo(&[&format!("agent:{question}"), "yes"]), target));
+        }
+    }
+    // 5. A yes with an aside on something else.
+    for yes in ["yes, no rush", "sure, no need to hurry", "yes. Don't touch the footer though.", "yes, and don't forget the migration", "yes, and ping me when the PR is up"] {
+        starts.push((convo(&["agent:Should I start T8?", yes]), "T8"));
+    }
+    // ...but a no on the start itself still holds it.
+    for no in ["yes, but don't start yet", "yes, don't start it yet", "yes, not now"] {
+        holds.push((convo(&["agent:Should I start T8?", no]), "T8"));
+    }
+    // 6. "k", "Will you", "just T8", and "it" after several tasks: the nearest.
+    starts.push((convo(&["agent:Should I start T8?", "k"]), "T8"));
+    starts.push((convo(&["Will you start T8?"]), "T8"));
+    starts.push((convo(&["agent:Should I start T8 and T9?", "just T8"]), "T8"));
+    holds.push((convo(&["agent:Should I start T8 and T9?", "just T8"]), "T9"));
+    let follow_up = "agent:T8 is done. I made T10 for the follow-up. Want me to start it?";
+    starts.push((convo(&[follow_up, "yes"]), "T10"));
+    holds.push((convo(&[follow_up, "yes"]), "T8"));
+    // 7. A "when" after the question on what the agent does after the start.
+    starts.push((convo(&["agent:Want me to start T8? I'll open a draft PR when it's done.", "yes"]), "T8"));
+    holds.push((convo(&["agent:Want me to start T8? I could also do it when T9 lands.", "yes"]), "T8"));
+    // 8. A yes to a question about something of a task's, for every start word.
+    for question in ["Should I start T8's review?", "Want me to start T8's preview env?", "Should I kick off T8's build?", "Should I queue T8's tests?"] {
+        holds.push((convo(&[&format!("agent:{question}"), "yes"]), "T8"));
+    }
+    // 9. A take-back after a paste.
+    for back in ["oops, not that one", "lmao no"] {
+        holds.push((vec![pasted(back)], "T8"));
     }
     let wrong = start_cases_wrong(&starts, &holds);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
