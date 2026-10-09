@@ -586,6 +586,16 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         // Still working.
         vec!["say:run G"],
         vec!["say:add a task to the goal", "task new", "say:start the goal"],
+        // #144: "it" is the conversation's one goal.
+        vec!["plan", "say:run it"],
+        vec!["plan", "say:ok start it"],
+        vec!["plan", "say:looks good, kick it off"],
+        vec!["plan", "agent:The plan is ready. Want me to run it?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Done, two tasks. Want me to run it?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:The plan is ready. Want me to run it?", "say:yes"],
+        vec!["plan", "say:rename the second task", "say:ok run it"],
+        vec!["say:make a goal for dark mode", "goal new", "say:rename the second task", "say:ok run it"],
+        vec!["say:make a goal for dark mode", "goal new", "say:also fix the header", "say:run it"],
     ];
     let refused: Vec<Vec<&str>> = vec![
         vec!["say:run the goal"],
@@ -593,8 +603,12 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["say:yes"],
         vec!["say:make a goal for dark mode", "goal new", "say:run it tomorrow"],
         vec!["say:make a goal for dark mode", "goal new", "say:run the tests"],
-        vec!["say:make a goal for dark mode", "goal new", "say:also fix the header", "say:run it"],
         vec!["say:make a goal for dark mode and run it", "goal new", "say:wait"],
+        // "It" when the conversation has two goals of its own, or "run it" with more said around it.
+        vec!["plan other", "say:make a goal for dark mode", "goal new", "say:rename the second task", "say:ok run it"],
+        vec!["say:make a goal for dark mode", "goal new", "plan other", "agent:The plan is ready. Want me to run it?", "say:yes"],
+        vec!["plan", "say:the tests fail, run it"],
+        vec!["plan", "say:run it tomorrow"],
         vec!["say:make a goal for dark mode", "goal new", "say:looks good, run the goal", "say:actually, don't"],
         // "Yes" to no question, to another question, or to a question that's no longer the latest.
         vec!["say:make a goal for dark mode", "goal new", "agent:Made G with two tasks.", "say:yes"],
@@ -882,4 +896,136 @@ fn the_start_word_holds_only_the_start_its_no_time_or_condition_is_about() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every phrase in #143, both ways, through the hook's path: each case is a fresh conversation with T8
+/// and T9 on the board, the steps in order ("agent:" the message the agent ends its turn on, anything
+/// else a prompt the owner types), then `tb start` on one task.
+#[test]
+fn the_start_word_reads_the_asks_143_found_refused() {
+    let log = log_paste(2000);
+    let pasted = |last: &str| format!("start T8. here's the log:\n{}\n{last}", log.trim_end());
+    let mut starts: Vec<(Vec<String>, &str)> = vec![];
+    for ask in [
+        // A dash after the owner's own lead-in.
+        "tests pass - start T8",
+        "hey - start T8",
+        "T9 is merged — start T8",
+        "T9 merged - start T8",
+        "T9's done - kick off T8",
+        "quick one — kick off T8",
+        "Good morning — start T8",
+        "no — start T8 now",
+        "morning - start T8",
+        "not T9 — start T8",
+        "ok - start T8 - it's ready",
+        // A no on what came before, and "during" with no time after it.
+        "don't do that, start T8 instead",
+        "start T8, during the run keep an eye on CI",
+        // Polite asks.
+        "Can you start T8?",
+        "could you kick off T8 when you get a chance",
+        "Morning! start T8 when you're ready",
+        // Phrasing.
+        "fire up T8",
+        "spin up T8",
+        "T8 go",
+        "T8: go",
+        "go T8",
+        "queue T8 + T9",
+        "start T8 thx",
+        "strat T8",
+        "satrt T8",
+    ] {
+        starts.push((vec![ask.into()], "T8"));
+    }
+    starts.push((vec!["queue T8 + T9".into()], "T9"));
+    // A line after a paste that goes on into other words is the paste's.
+    for last in ["Wait timeout exceeded", "Hold on, retrying in 5s", "never mind the warnings above"] {
+        starts.push((vec![pasted(last)], "T8"));
+    }
+    // A yes to the agent's own question.
+    for (question, yes) in [("Should I start T8?", "yes"), ("Should I start T8?", "yep go ahead"), ("Want me to kick off T8 now?", "sure"), ("T8 is ready. Want me to start it?", "yes please")] {
+        starts.push((vec![format!("agent:{question}"), yes.into()], "T8"));
+    }
+    let mut holds: Vec<(Vec<String>, &str)> = vec![];
+    for said in [
+        "copied from CI - start T8",
+        "CI output - start T8",
+        "the ticket reads — start T8 — weird",
+        "the log says - start T8",
+        "start T8, during work hours",
+        "start T8 during the standup",
+        "start T8 during lunch",
+        "I don't want you to, start T8",
+        "don't, start T8",
+        "should I start T8?",
+        "will you start T8?",
+        "can you start T8 tomorrow?",
+        "could you start T8 once T9 lands?",
+        "does T8 go first?",
+        "start T8 when T9 lands",
+        "not T8 — start T9",
+    ] {
+        holds.push((vec![said.into()], "T8"));
+    }
+    for back in ["jk", "never mind", "nvm", "wait", "hold on", "actually no"] {
+        holds.push((vec![pasted(back)], "T8"));
+    }
+    for said in [
+        vec!["yes"],
+        vec!["agent:Should I start T8?", "yes, but not now"],
+        vec!["agent:Should I start T8?", "no"],
+        vec!["agent:Should I start T8 tomorrow?", "yes"],
+        vec!["agent:Should I start T9?", "yes"],
+        vec!["agent:Should I start T8 or T9?", "yes"],
+        vec!["agent:Should I start T8?", "thanks", "yes"],
+        vec!["agent:I made T8 and T9. Want me to start it?", "yes"],
+        vec!["agent:Should I open a PR for T8?", "yes"],
+    ] {
+        holds.push((said.into_iter().map(String::from).collect(), "T8"));
+    }
+    let b = board();
+    let mut wrong = vec![];
+    for (want, cases) in [(true, &starts), (false, &holds)] {
+        for (said, target) in cases {
+            b.report("hook.session_start", json!({"source": "clear"}));
+            let (t8, t9) = (b.new_task(), b.new_task());
+            let refs = |p: &str| p.replace("T8", "\u{1}").replace("T9", "\u{2}").replace('\u{1}', &format!("T{t8}")).replace('\u{2}', &format!("T{t9}"));
+            for p in said {
+                match p.strip_prefix("agent:") {
+                    Some(m) => b.replied(&refs(m)),
+                    None => b.typed(&refs(p)),
+                }
+            }
+            let got = b.tb_start(if *target == "T8" { t8 } else { t9 });
+            if got.is_ok() != want {
+                let shown: Vec<String> = said.iter().map(|p| p.chars().take(80).collect()).collect();
+                wrong.push(format!("{} {target}: {shown:?} {:?}", if want { "refused" } else { "started" }, got.err()));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// `tb goal set G1 … --run` asks the board first (`"check": true`): a refused run is refused before the
+/// changes, and a check runs nothing.
+#[test]
+fn a_run_check_runs_nothing_and_says_whether_it_would() {
+    let b = board();
+    let g = b.goal();
+    let id = b.planned(g);
+    let check = |body: Value| api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &body).map_err(|e| (e.status, e.message));
+    let (code, why) = check(json!({"via_session": "s1", "check": true})).unwrap_err();
+    assert_eq!(code, 403);
+    assert!(why.contains(&format!("Only a human can run G{g}")), "{why}");
+    let (code, why) = check(json!({"check": true})).unwrap_err();
+    assert_eq!(code, 403);
+    assert!(why.contains("the only way to run it from outside a Midna terminal"), "{why}");
+    b.typed(&format!("run G{g}"));
+    let v = check(json!({"via_session": "s1", "check": true})).unwrap();
+    assert_eq!(v["would_run"], true);
+    assert_eq!(b.status(id), "planned", "a check runs nothing");
+    assert!(b.tb_run(g).is_ok());
+    assert_eq!(b.status(id), "queued");
 }

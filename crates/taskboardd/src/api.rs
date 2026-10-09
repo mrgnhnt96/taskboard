@@ -1853,7 +1853,7 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             return err(
                 403,
                 format!(
-                    "Only a human can run {}: {} can press Run on the board, or tell an agent in a terminal to run it (tb start {}).",
+                    "Only a human can run {}: {} can press Run on the board, the only way to run it from outside a Midna terminal, or ask an agent in a Midna terminal to run it there (tb start {}).",
                     rf("goal", id),
                     app.cfg.owner,
                     rf("goal", id)
@@ -1872,6 +1872,10 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
                 ),
             );
         }
+    }
+    // `tb goal set G2 … --run` asks first, so a refused run changes nothing.
+    if as_bool(body.get("check"), false) {
+        return Ok(json!({"ok": true, "goal": rf("goal", id), "would_run": true}));
     }
     let n = app.db.tx(|| {
         let g = board::get_goal(app, id)?;

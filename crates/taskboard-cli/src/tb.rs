@@ -1661,6 +1661,12 @@ fn device_arg(values: &[String]) -> Value {
     }
 }
 
+/// Why `tb start G<n>` or `tb goal set G<n> --run` can't run a goal outside a Midna terminal: only a
+/// human's word there runs it, and outside one only Run on the board does.
+fn goal_run_needs_terminal(cmd: &str, g: &str) -> String {
+    format!("{cmd} only works in a Midna terminal, on a human's word there. Outside one, a human can press Run on {g} on the board.")
+}
+
 /// After `tb done` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
 /// What `tb start T<n>` did, from the task the board sends back: a `task.starting` hook may have
 /// skipped it, so it's only "opening" when the board says it's starting.
@@ -2936,6 +2942,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if queue {
                     return Err(format!("--queue doesn't apply to a goal: tb start {g} runs it, and the board starts its tasks in their waves."));
                 }
+                if c.session.is_empty() {
+                    return Err(goal_run_needs_terminal("tb start", &g));
+                }
                 let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
                 let n = v["queued_now"].as_i64().unwrap_or(0);
                 out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
@@ -3171,6 +3180,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let empty = b.as_object().map(|o| o.is_empty()).unwrap_or(true);
                 if empty && !run {
                     return Err("say what to change, for example: tb goal set G3 --paused on".into());
+                }
+                if run {
+                    // Ask first: a run the board refuses leaves the goal as it was.
+                    if c.session.is_empty() {
+                        return Err(goal_run_needs_terminal("tb goal set --run", &g));
+                    }
+                    c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session, "check": true})))?;
                 }
                 if !empty {
                     let v = c.call("POST", &format!("/goals/{g}"), Some(b))?;
@@ -4356,6 +4372,13 @@ mod tests {
         assert_eq!(start_said("T4", false, &json!({"status": "queued", "starting": true})), "Opening T4 in a new terminal now.");
         assert_eq!(start_said("T4", true, &json!({"status": "queued", "starting": false})), "T4 starts in a new terminal once its project has a free terminal.");
         assert_eq!(start_said("T4", false, &json!({"status": "working", "who": "Term", "starting": false})), "T4 is on Term.");
+    }
+
+    #[test]
+    fn a_goal_run_outside_a_midna_terminal_says_why() {
+        let why = goal_run_needs_terminal("tb goal set --run", "G2");
+        assert!(why.starts_with("tb goal set --run only works in a Midna terminal"), "{why}");
+        assert!(why.contains("press Run on G2 on the board"), "{why}");
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) -> String {
