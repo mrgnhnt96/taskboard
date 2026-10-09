@@ -29,6 +29,9 @@ pub fn call(app: &App, set: Option<&Value>) -> Result<Value> {
             return err(400, "Today's keep-awake ends with today's work hours: use `tb hours --today-until`. Here, only off or clear.");
         }
     }
+    if set.is_some() && !app.cfg.runner {
+        return err(409, "This board has no runner (a dev board), so it leaves Midna's keep-awake alone.");
+    }
     let r = match set {
         Some(b) => call_timeout(app, "keep_awake.set", b.clone(), 10.0),
         None => call_timeout(app, "keep_awake.status", json!({}), 10.0),
@@ -59,7 +62,11 @@ fn differs(status: &Value, want: &Value) -> bool {
     FROM_HOURS.iter().any(|k| status["settings"][*k] != want[*k])
 }
 
+/// Only a board with its runner gives Midna a schedule: a dev board's hours aren't the owner's.
 fn push(app: &App, body: Value, want: Value) {
+    if !app.cfg.runner {
+        return;
+    }
     app.shared.lock().keep_awake_pushed = Some((Instant::now(), want));
     match call_timeout(app, "keep_awake.set", body, 10.0) {
         Ok(v) if v.is_object() => app.shared.lock().midna_keep_awake = Some(v),
