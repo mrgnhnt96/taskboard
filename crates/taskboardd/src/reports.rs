@@ -1413,7 +1413,26 @@ fn on_step_ask(r: &mut Report) -> Result<Value> {
     if steps::recorded(app, t.id())?.contains(&steps::key(&step.name)) {
         return Ok(with(ok(Some(&t), None), json!({"step": step.name, "already": true})));
     }
-    let s = step.filled(&steps::vars_at(app, &t, None));
+    // The head, branch and worktree tb resolved (as for tb step done): kept for the take handoff too.
+    let given: serde_json::Map<String, Value> = ["head", "branch", "worktree"]
+        .iter()
+        .map(|k| (k.to_string(), r.b(k).trim().to_string()))
+        .filter(|(_, x)| !x.is_empty())
+        .map(|(k, x)| (k, json!(x)))
+        .collect();
+    let t = if given.is_empty() {
+        t
+    } else {
+        let mut ctx = board::task_context(&t);
+        ctx.insert("step_asked".into(), Value::Object(given.clone()));
+        board::save_context(app, t.id(), &ctx, false)?;
+        board::get_task(app, t.id())?
+    };
+    let mut vars = steps::vars_at(app, &t, given.get("head").and_then(|h| h.as_str()));
+    for (k, x) in &given {
+        vars.insert(k.clone(), x.as_str().unwrap_or_default().to_string());
+    }
+    let s = step.filled(&vars);
     let mut q = format!("Step “{}”", s.name);
     if !s.prompt.trim().is_empty() {
         q += &format!(": {}", s.prompt.trim().trim_end_matches('.'));

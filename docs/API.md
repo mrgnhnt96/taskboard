@@ -1099,12 +1099,14 @@ as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so 
 pinned `sha` keeps its branch's `tip` at the time (`tb` sends it; the board reads it when left out): once the branch's tip
 moves, the pin no longer counts (`aim` has no `sha`, and `dropped: <sha>`; the aim follows the branch), and the next
 `tb.step` report drops it from the task with a "Rounds no longer pinned at …" line. `tb` refuses a detached
-`--worktree` (and a `--commit` from a detached checkout) unless `--branch` names its branch (`--worktree` and `--branch` go together), and the commit must be
+`--worktree` (and a `--commit` from a detached checkout, and, with no aim, any round from a detached checkout) unless `--branch` names its branch (`--worktree` and `--branch` go together), and the commit must be
 on it. A detached checkout aimed with `--branch` is judged on that branch's tip (refused when the branch is missing
 or doesn't contain the checkout's head). A pin with no `tip` (saved before the board kept it) is dropped once the branch's tip isn't its sha. Prompts'
 `{branch}` is the aimed branch; a placeholder with no value yet is empty (in a script, each value is one shell word,
 `''` when empty, and `tb steps`, refusals and the handoff show `run`, `check` and `publish` quoted that way), and refusals, the handoff and `tb step ask`'s question show the steps filled, `{head}` and `{worktree}` included (`GET /steps`'s
-`vars` carries them too). A step's
+`vars` carries them too). `tb.step_ask` takes `head`, `branch` and `worktree` (what `tb` resolved, as for `tb.step`): the
+question is filled from them, and they're kept on the task (`context.step_asked`) as the placeholders' fallback when the
+board has no aim, recorded branch or head, so a later take's handoff isn't blank. A step's
 `publish` script (`tb step publish "<step>"`, which needs the step passed on the head and the task's PR; report
 `tb.step_publish` with `name`, `head`, `ok`, `output`, logged as "Published <step> for <sha>" or "Couldn't publish …")
 republishes its passing round for the PR, with that round (the one that passed on the head, from `passed_rounds` in

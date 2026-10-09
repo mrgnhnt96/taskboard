@@ -390,7 +390,7 @@ pub fn vars(t: &Row) -> BTreeMap<String, String> {
     v.insert("task".into(), rf("task", t.id()));
     v.insert("title".into(), t.st("title"));
     v.insert("project".into(), t.st("project"));
-    v.insert("branch".into(), aim_branch(t).or_else(|| waitsfor::branch_of(t)).unwrap_or_default());
+    v.insert("branch".into(), aim_branch(t).or_else(|| waitsfor::branch_of(t)).or_else(|| asked_at(t, "branch")).unwrap_or_default());
     v.insert("base".into(), base_branch(&repo));
     v.insert("repo".into(), repo);
     v.insert("pr_url".into(), t.st("pr_url"));
@@ -411,9 +411,15 @@ pub fn vars_at(app: &App, t: &Row, head: Option<&str>) -> BTreeMap<String, Strin
     let base = real_base(app, t).unwrap_or_else(|_| v.get("base").cloned().unwrap_or_default());
     v.insert("base_ref".into(), format!("{}/{base}", app.cfg.pr_body.remote));
     v.insert("base".into(), base);
-    v.insert("head".into(), judged_head(t, head).unwrap_or_default());
+    v.insert("head".into(), judged_head(t, head).or_else(|| asked_at(t, "head")).unwrap_or_default());
     v.insert("worktree".into(), worktree_of(t));
     v
+}
+
+/// What `tb step ask` last resolved for the task (`head`, `branch`, `worktree`): what its placeholders
+/// fall back to when the board knows nothing better, so the question and the take handoff aren't blank.
+fn asked_at(t: &Row, k: &str) -> Option<String> {
+    board::task_context(t).get("step_asked").and_then(|a| a.get(k)).and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string())
 }
 
 /// The checkout a task's rounds look at: the aim's worktree, else where the task works, else its repo.
@@ -422,6 +428,7 @@ fn worktree_of(t: &Row) -> String {
     let ctx = board::task_context(t);
     some(saved_aim(t)["worktree"].as_str())
         .or_else(|| some(ctx.get("where").and_then(|w| w.get("worktree")).and_then(|w| w.as_str())))
+        .or_else(|| asked_at(t, "worktree"))
         .unwrap_or_else(|| t.st("repo_path"))
 }
 

@@ -311,6 +311,10 @@ bar = "WD"            # its name in the app's PR bar
   dropped: <branch> has moved on since."), and the next round drops it from the task, so `tb done` can't pass on
   a commit that's no longer the branch's tip. `--worktree` at a detached checkout without `--branch` is refused, and so is
   `--commit` from one ("<dir> isn't on a branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
+  With no aim, a round (`tb step done|run|again`, `tb steps`' placeholders, `tb step publish`) from a detached checkout,
+  the default worktree included, is refused the same way rather than run on branch "HEAD". `tb step ask` sends the head,
+  branch and worktree it resolved (as `tb step done` does); the question is filled from them, and the board keeps them
+  for the take handoff's placeholders when it knows nothing better.
 - **Republishing.** A step with `publish` (a script, with the placeholders, `{head}`, and the round's
   `step_result` as `$TASKBOARD_RESULT`) is republished with `tb step publish "<step>"` once it has passed on the
   head (the aim's, else this checkout's) and the task has a PR (it's refused before one opens), with the round that passed on that head (not a later one on another
