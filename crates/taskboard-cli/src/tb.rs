@@ -1624,6 +1624,33 @@ fn midna_attention(text: &str) {
     }
 }
 
+/// Pins a task or goal tb just made under this Midna terminal's links button (⌘L), so a click opens it in
+/// Taskboard. Runs in the background and never fails the command: outside Midna, without midna, or when
+/// its daemon is down, nothing happens.
+fn midna_pin(r: &str, title: &str) {
+    let Some(args) = midna_pin_args(std::env::var("MIDNA_SESSION").ok().as_deref(), r, title) else { return };
+    if let Some(m) = client::midna_path() {
+        let _ = std::process::Command::new(m)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
+/// `midna` arguments that pin `r` (T42 or G3), or None outside a Midna terminal or for another ref.
+fn midna_pin_args(session: Option<&str>, r: &str, title: &str) -> Option<Vec<String>> {
+    session.filter(|s| !s.is_empty())?;
+    let kind = match r.chars().next()? {
+        'T' => "task",
+        'G' => "goal",
+        _ => return None,
+    };
+    let title = if title.trim().is_empty() { r.to_string() } else { format!("{r} · {}", title.trim()) };
+    Some(vec!["links".into(), "add".into(), format!("taskboard://{kind}/{r}"), "--title".into(), title])
+}
+
 /// "holds local-core" and "runs alone in its goal".
 fn lock_bits(t: &Value) -> Vec<String> {
     let mut bits = vec![];
@@ -3018,6 +3045,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Some(v) => {
                     out(&format!("Added {} to {g} as planned.", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()));
                     print_warnings(&v);
+                    for (r, t) in v["created"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).zip(&tasks) {
+                        midna_pin(r, t.split_once("::").map_or(t.as_str(), |(t, _)| t));
+                    }
                 }
             }
             Ok(0)
@@ -3121,6 +3151,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                             format!("#/goals/{}", v["goal"].as_str().unwrap_or(""))
                         ));
                         print_warnings(&v);
+                        midna_pin(v["goal"].as_str().unwrap_or(""), v["name"].as_str().unwrap_or(""));
                     }
                 }
                 Ok(0)
@@ -3354,7 +3385,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
                 let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
-                let mut body = json!({"title": short_title(&title)?, "detail": detail, "goal": goal, "project": project, "planned": planned});
+                let title = short_title(&title)?;
+                let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned});
                 if !also.is_empty() {
                     body["also"] = json!(also);
                 }
@@ -3400,12 +3432,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
+                        midna_pin(&r, &title);
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"));
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
+                        midna_pin(&r, &title);
                     }
                 }
                 Ok(0)
@@ -3549,6 +3583,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     _ => "a queued task".to_string(),
                 };
                 out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+                midna_pin(t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""));
             }
             Ok(0)
         }
@@ -4657,6 +4692,19 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--worktree", "/tmp/wt"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--commit", "abc"]).is_ok(), "a commit on a branch");
         assert!(Cli::try_parse_from(["tb", "pr", "body-check", "-"]).is_ok());
+    }
+
+    #[test]
+    fn midna_pin_only_inside_midna() {
+        let args = midna_pin_args(Some("s1"), "T42", "  Fix the footer ").unwrap();
+        assert_eq!(args, ["links", "add", "taskboard://task/T42", "--title", "T42 · Fix the footer"]);
+        let args = midna_pin_args(Some("s1"), "G3", "Click refs").unwrap();
+        assert_eq!(args, ["links", "add", "taskboard://goal/G3", "--title", "G3 · Click refs"]);
+        assert_eq!(midna_pin_args(Some("s1"), "T7", "").unwrap()[4], "T7");
+        assert!(midna_pin_args(None, "T42", "x").is_none(), "outside Midna");
+        assert!(midna_pin_args(Some(""), "T42", "x").is_none(), "MIDNA_SESSION set but empty");
+        assert!(midna_pin_args(Some("s1"), "", "x").is_none(), "no ref came back");
+        assert!(midna_pin_args(Some("s1"), "B3", "x").is_none(), "only tasks and goals");
     }
 
     #[test]
