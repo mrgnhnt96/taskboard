@@ -138,6 +138,10 @@ fn serve(cfg: Config) -> i32 {
             app.cfg.data.display(),
             if app.cfg.runner { "on" } else { "off" }
         ));
+        // A fresh app token for this launch, for Taskboard.app's own requests (`apptoken`).
+        if let Err(e) = taskboardd::apptoken::write(&taskboardd::apptoken::path(&app.cfg), &app.app_token) {
+            app.info(format!("can't write the app token: {e}; the app's Start and review stops won't work"));
+        }
         taskboardd::start_threads(&app);
         let router = taskboardd::server::router(app.clone());
         let stop = app.clone();

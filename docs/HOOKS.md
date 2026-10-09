@@ -247,6 +247,10 @@ prompt = "Sign off the screens this task changes."
   file's current text, a comment already in the file or in its HEAD version may move or re-indent, and the refusal
   names the file's line. Opening a PR, `tb pr wait` and `tb done` are refused while
   the branch (committed or not, against origin's default branch) adds one, and the handoff tells the agent the rule.
+- **The app token guard.** The plugin's `PreToolUse` hook (also on Read, Grep and Glob, and in every terminal,
+  Midna's or not) refuses a tool call that reads the daemon's `app-token` file (see API.md, "The app token"): one
+  that names it, or reaches into the board's data folder with a glob, a search, a listing or a program that could
+  print it. It errs on the side of refusing; an agent has no reason to look in that folder.
 - **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
   create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do

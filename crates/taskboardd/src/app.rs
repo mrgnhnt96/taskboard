@@ -93,6 +93,8 @@ pub struct App {
     ai_jobs: Mutex<VecDeque<Deferred>>,
     ai_signal: Signal,
     pub inline_deferred: bool,
+    /// This launch's app token (`apptoken`): what makes a request the app's own.
+    pub app_token: String,
 }
 
 impl App {
@@ -132,6 +134,7 @@ impl App {
             ai_jobs: Mutex::new(VecDeque::new()),
             ai_signal: Signal::new(),
             inline_deferred: inline,
+            app_token: crate::apptoken::fresh(),
         }
     }
 
