@@ -277,7 +277,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("no_evidence".into(), t.v("no_evidence"));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
         // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
-        o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_result(app, t)? } else { Value::Null });
+        o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
     }
     Ok(card)
 }

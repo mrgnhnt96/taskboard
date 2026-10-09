@@ -118,6 +118,7 @@ fn done_waits_for_the_steps() {
 fn without_a_pr_only_the_done_steps_count() {
     let b = board(STEPS);
     let id = b.new_task();
+    board::update_task(&b.app, id, vec![("ships_pr", json!(0))]).unwrap();
     b.report("tb.step", json!({"name": "Changelog"})).unwrap();
     b.report("tb.done", json!({"summary": "Nothing to change"})).unwrap();
     assert_eq!(b.status(id), "done");

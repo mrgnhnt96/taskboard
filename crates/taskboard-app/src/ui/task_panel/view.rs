@@ -93,6 +93,8 @@ pub enum Go {
     Issue(String),
     /// A web URL, or a file path opened with `open` (an attachment).
     Url(String),
+    /// The task's step findings (the Steps row's fold), opened: the PR bar's review step links here.
+    Findings,
 }
 
 /// A control: the web's `data-act` / `data-arg` / `data-id` / `data-grp`.
@@ -1068,15 +1070,27 @@ pub struct PrStep {
     pub name: String,
     pub st: StepSt,
     pub sub: Option<String>,
-    pub link: Option<String>,
+    pub link: Option<Go>,
 }
 
 fn step(name: impl Into<String>, st: StepSt, sub: Option<&str>, link: Option<String>) -> PrStep {
-    PrStep { name: name.into(), st, sub: sub.map(str::to_string), link }
+    PrStep { name: name.into(), st, sub: sub.map(str::to_string), link: link.map(Go::Url) }
 }
 
-/// The author-side review step (`wd`: its `bar` name, like WD, and its latest round's headline).
+/// The author-side review step (`wd`: its `bar` name, like WD, and its latest round's headline, which
+/// opens its findings); "Not reviewed by WD yet" before its first round (`pending`).
 pub fn wd_step(wd: &Value) -> PrStep {
+    if b(wd, "pending") {
+        return step(s(wd, "bar"), StepSt::Todo, Some(&format!("Not reviewed by {} yet", s(wd, "bar"))), None);
+    }
+    let mut out = wd_round(wd);
+    if out.sub.is_some() {
+        out.link = Some(Go::Findings);
+    }
+    out
+}
+
+fn wd_round(wd: &Value) -> PrStep {
     let headline = opt_s(wd, "headline").unwrap_or("");
     let open = wd["open"].as_i64().unwrap_or(0);
     let (st, sub) = if s(wd, "verdict") == "skip" {
@@ -1099,7 +1113,7 @@ fn step_nodes(list: Vec<PrStep>) -> Node {
     for step in list {
         let mut kids = vec![txt(step.name, St::StepName)];
         match (step.sub, step.link) {
-            (Some(x), Some(url)) => kids.push(Node::Link { s: x, go: Go::Url(url), tip: None, look: LinkLook::Small }),
+            (Some(x), Some(go)) => kids.push(Node::Link { s: x, go, tip: None, look: LinkLook::Small }),
             (Some(x), None) => kids.push(txt(x, St::StepSub)),
             _ => {}
         }
@@ -1166,6 +1180,22 @@ fn stacks_line(c: &Ctx, so: &Value) -> Node {
         kids.push(txt(format!("branch {br}"), St::Small));
     }
     el(K::Line, kids)
+}
+
+/// "2 new comments ›" by the reviewer rows while the Review step shows the review instead (changes asked,
+/// or a re-review): new comments show in every state, and matter most then.
+fn comments_line(p: &Value, bar: &Value) -> Option<Node> {
+    let n = bar["new_comments"].as_i64().filter(|n| *n > 0)?;
+    let phase = obj(p, "stage").map(|st| s(st, "phase")).unwrap_or("");
+    if phase == "comments" || (js_lower(&p["review"]) != "changes" && phase != "rereview") {
+        return None;
+    }
+    let words = format!("{} ›", fmt::plural(n, "new comment", "new comments"));
+    let go = opt_s(bar, "comments_url").or_else(|| opt_s(p, "url")).filter(|u| is_web(u)).map(|u| Go::Url(u.to_string()));
+    Some(el(K::Line, vec![match go {
+        Some(go) => Node::Link { s: words, go, tip: None, look: LinkLook::Small },
+        None => txt(words, St::Small),
+    }]))
 }
 
 /// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them.
@@ -1275,9 +1305,10 @@ fn no_pr_row(c: &Ctx, t: &Value) -> Node {
     } else {
         body.push(txt("No PR yet.", St::Small));
     }
-    // The review step (WD) runs before the PR opens: it shows from its first round.
+    // The review step (WD) runs before the PR opens, on a task that ends in one ("Not reviewed by WD yet"
+    // before its first round).
     let wd = obj(t, "wd").or_else(|| arr(t, "step_results").iter().find(|r| opt_s(r, "bar").is_some()));
-    if let Some(wd) = wd.filter(|_| opt_s(t, "no_pr").is_none()) {
+    if let Some(wd) = wd.filter(|_| opt_s(t, "no_pr").is_none() && t["ships_pr"] != false) {
         body.push(step_nodes(vec![wd_step(wd)]));
     }
     if let Some(so) = obj(t, "stack_on") {
@@ -1388,6 +1419,7 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         body.push(line);
     }
     body.extend(bar.map(reviewer_rows).unwrap_or_default());
+    body.extend(bar.and_then(|bar| comments_line(p, bar)));
     // `prBar`
     if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge" | "ask")) {
         let stopped = obj(stage, "stopped").is_some();

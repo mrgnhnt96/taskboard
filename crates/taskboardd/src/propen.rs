@@ -133,7 +133,8 @@ pub fn title(cfg: &PrBodyConfig, t: &Row, given: &str) -> String {
     }
 }
 
-/// The `## Context` section: the ticket, the PR it stacks on, the task's evidence.
+/// The `## Context` section: the ticket, the PR it stacks on, the task's evidence (web links, and local
+/// files by name), and its design links under **Design**.
 pub fn context_block(app: &App, t: &Row) -> Result<String> {
     let mut lines = vec![];
     if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
@@ -148,10 +149,41 @@ pub fn context_block(app: &App, t: &Row) -> Result<String> {
             _ => {}
         }
     }
-    for (title, url) in evidence_links(app, t)? {
-        lines.push(evidence_line(&title, &url));
+    let atts = board::attachments(app, Some(t.id()), None)?;
+    let of = |kinds: &[&str]| -> Vec<(String, String)> {
+        atts.iter()
+            .filter(|a| a["kind"].as_str().is_some_and(|k| kinds.contains(&k)))
+            .filter_map(|a| {
+                let url = a["url"].as_str().filter(|u| !u.trim().is_empty())?;
+                Some((a["title"].as_str().unwrap_or("").to_string(), url.trim().to_string()))
+            })
+            .collect()
+    };
+    // Evidence and results: a web link by its title, a local file by its name (a reviewer can't open it).
+    for (title, url) in of(&["evidence", "results"]) {
+        lines.push(if is_web(&url) { evidence_line(if title.is_empty() { "evidence" } else { &title }, &url) } else { format!("- Evidence: {}", file_name(&url)) });
+    }
+    let designs: Vec<String> = of(&["design"])
+        .into_iter()
+        .map(|(title, url)| if is_web(&url) { format!("- [{}]({url})", if title.is_empty() { "Design" } else { &title }) } else { format!("- {}", file_name(&url)) })
+        .collect();
+    if !designs.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("**Design**".into());
+        lines.extend(designs);
     }
     Ok(if lines.is_empty() { String::new() } else { format!("## Context\n{}", lines.join("\n")) })
+}
+
+fn is_web(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// A local attachment's file name (`~/shots/login.png` → `login.png`).
+fn file_name(path: &str) -> String {
+    Path::new(path.trim_start_matches("file://")).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string())
 }
 
 /// The task's evidence and results that a reviewer can open (web links): (title, url).
@@ -161,7 +193,7 @@ pub fn evidence_links(app: &App, t: &Row) -> Result<Vec<(String, String)>> {
         .filter(|a| a["kind"] == "evidence" || a["kind"] == "results")
         .filter_map(|a| {
             let url = a["url"].as_str().unwrap_or("");
-            (url.starts_with("http://") || url.starts_with("https://")).then(|| (a["title"].as_str().unwrap_or("evidence").to_string(), url.to_string()))
+            is_web(url).then(|| (a["title"].as_str().unwrap_or("evidence").to_string(), url.to_string()))
         })
         .collect())
 }

@@ -303,7 +303,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
 /// The latest round of each of the task's steps (headline, findings), and the PR bar's step (`bar`).
 fn with_step_results(app: &App, t: &Row, mut d: Value) -> Result<Value> {
     let results = crate::steps::results(app, t)?;
-    if d["pr"].is_object() && d["pr"]["bar"].is_object() {
+    if d["pr"]["bar"]["wd"].is_object() {
         if let Some(wd) = results.iter().find(|r| r["bar"].is_string()) {
             d["pr"]["bar"]["wd"] = wd.clone();
         }

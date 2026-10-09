@@ -1070,11 +1070,12 @@ fn on_done(r: &mut Report) -> Result<Value> {
 }
 
 /// How long `tb done --no-pr`'s reason may be: one short line.
-pub const NO_PR_MAX: usize = 200;
+pub const NO_PR_MAX: usize = 100;
 
 /// What `tb done` refuses before anything opens or finishes: a blank or long `--no-pr`; a task that ends
-/// in a PR, has a remote and has none, finishing without `--pr-body` or `--no-pr`; and a task with a
-/// design attached finishing with no evidence and no `--no-evidence`.
+/// in a PR and has none, finishing without `--pr-body` or `--no-pr` (unless its repo has no remote at all; a
+/// remote the board can't read still counts); and a task with a design attached finishing with no evidence
+/// and no `--no-evidence`.
 fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     let app = r.app;
     let Some(t) = t.filter(|t| t.s("status") != Some("done")) else { return Ok(()) };
@@ -1092,7 +1093,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     let no_pr = !r.b("no_pr").is_empty();
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
     let has_pr = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || has(t.s("pr_url")) || !r.b("pr_body").is_empty();
-    if !no_pr && !has_pr && projects::task_ships_pr(app, t)? && projects::has_remote(app, &t.st("project"))? == Some(true) {
+    if !no_pr && !has_pr && projects::task_ships_pr(app, t)? && projects::has_remote(app, &t.st("project"))? != Some(false) {
         return err(
             409,
             format!(
@@ -1237,6 +1238,43 @@ fn on_step_triage(r: &mut Report) -> Result<Value> {
     let t = board::get_task(app, t.id())?;
     let open = steps::results(app, &t)?.into_iter().find(|x| x["name"] == json!(step.name)).map(|x| x["open"].clone()).unwrap_or(json!(0));
     Ok(with(ok(Some(&t), None), json!({"step": step.name, "finding": finding, "state": state, "open": open})))
+}
+
+/// `tb step aim`: saves where the task's rounds look (a worktree, a branch, a pinned commit), so later
+/// rounds and the gates follow it; `clear` drops it.
+fn on_step_aim(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let mut ctx = board::task_context(&t);
+    let aim: serde_json::Map<String, Value> = ["worktree", "branch", "sha"]
+        .iter()
+        .filter_map(|k| Some((k.to_string(), json!(one_line(r.body.get(*k)?.as_str()?, 400)))))
+        .filter(|(_, v)| v.as_str().is_some_and(|s| !s.is_empty()))
+        .collect();
+    let text = if as_bool(r.body.get("clear"), false) || aim.is_empty() {
+        if ctx.remove("step_aim").is_none() {
+            return Ok(with(ok(Some(&t), None), json!({"aim": null})));
+        }
+        "Rounds look at the agent's checkout again".to_string()
+    } else {
+        let mut bits = vec![];
+        if let Some(b) = aim.get("branch").and_then(|v| v.as_str()) {
+            bits.push(b.to_string());
+        }
+        if let Some(s) = aim.get("sha").and_then(|v| v.as_str()) {
+            bits.push(format!("at {}", s.chars().take(12).collect::<String>()));
+        }
+        if let Some(w) = aim.get("worktree").and_then(|v| v.as_str()) {
+            bits.push(format!("in {w}"));
+        }
+        ctx.insert("step_aim".into(), Value::Object(aim.clone()));
+        format!("Rounds aimed at {}", bits.join(" "))
+    };
+    board::save_context(app, t.id(), &ctx, false)?;
+    r.log(t.id(), "status", &text, None)?;
+    let t = board::get_task(app, t.id())?;
+    Ok(with(ok(Some(&t), None), json!({"aim": steps::saved_aim(&t), "head": steps::aim_head(&t)})))
 }
 
 /// Puts the task in Needs you for a step, as a question the owner answers or acknowledges.
@@ -1749,6 +1787,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.step_ask" => on_step_ask,
         "tb.step_fail" => on_step_fail,
         "tb.step_triage" => on_step_triage,
+        "tb.step_aim" => on_step_aim,
         "tb.take" => on_take,
         "tb.propose" => on_propose,
         "tb.goal" => on_goal,

@@ -604,6 +604,19 @@ enum StepCmd {
         #[arg(long)]
         skip: bool,
         #[command(flatten)]
+        aim: Aim,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// Save where the task's rounds look, so every later round and the gates follow it: tb step aim --branch feat/x
+    #[command(name = "aim")]
+    SetAim {
+        #[command(flatten)]
+        aim: Aim,
+        /// Drop the saved aim; rounds look at the checkout they run from again
+        #[arg(long, conflicts_with_all = ["branch", "worktree", "commit"])]
+        clear: bool,
+        #[command(flatten)]
         t: TaskArg,
     },
     /// Run a script step (and its check); it counts once it exits 0
@@ -654,18 +667,31 @@ enum StepCmd {
     },
 }
 
-/// What a step's round looks at, when it isn't this checkout's head.
+/// What a step's round looks at, when it isn't this checkout's head (else the aim `tb step aim` saved).
 #[derive(Args, Clone, Default)]
 struct Aim {
-    /// Look at this branch: in the worktree that has it checked out, else at its commit from here
-    #[arg(long, conflicts_with_all = ["worktree", "commit"])]
+    /// Look at this branch, in the worktree that has it checked out
+    #[arg(long, conflicts_with = "worktree")]
     branch: Option<String>,
     /// Look at the checkout in this folder
-    #[arg(long, conflicts_with = "commit")]
+    #[arg(long)]
     worktree: Option<String>,
-    /// Look at this commit (a sha or any ref, like HEAD~1); it's resolved to its sha
+    /// Look at this commit (a sha or any ref, like HEAD~1) on that checkout's branch; it's resolved to its
+    /// sha, and the round runs on a checkout of it
     #[arg(long)]
     commit: Option<String>,
+}
+
+impl Aim {
+    fn is_empty(&self) -> bool {
+        [&self.branch, &self.worktree, &self.commit].iter().all(|x| x.as_deref().is_none_or(|s| s.trim().is_empty()))
+    }
+
+    /// The aim `tb step aim` saved on the task (`aim` in `GET /steps`).
+    fn saved(v: &Value) -> Aim {
+        let s = |k: &str| v["aim"][k].as_str().filter(|x| !x.trim().is_empty()).map(|x| x.to_string());
+        Aim { branch: s("branch"), worktree: s("worktree"), commit: s("sha") }
+    }
 }
 
 #[derive(Subcommand)]
@@ -2035,34 +2061,112 @@ fn worktree_with(dir: &str, branch: &str) -> Option<String> {
 
 /// Where a step's round runs and what it looks at.
 struct Aimed {
-    /// The folder the script runs in, when it's a checkout other than the repo's.
+    /// The checkout the round looks at (and runs in, unless it's pinned to another commit).
     dir: Option<String>,
     head: Option<String>,
     branch: Option<String>,
+    /// The head isn't the checkout's: the round runs on a throwaway checkout of it (`PinnedCheckout`).
+    pinned: bool,
 }
 
-/// `--branch`, `--worktree` or `--commit`, resolved to a folder, a sha and a branch; none of them is
-/// this checkout's head.
+/// `git -C dir <args>`'s trimmed output, when it succeeds.
+fn git_out(dir: &str, args: &[&str]) -> Option<String> {
+    let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// The branch checked out in `dir` (none when its head is detached).
+fn branch_in(dir: &str) -> Option<String> {
+    git_out(dir, &["symbolic-ref", "--short", "-q", "HEAD"]).filter(|b| !b.is_empty())
+}
+
+/// The checkout a round starts from: this folder's, when it's a checkout of the task's repo, else the repo.
+fn home_checkout(c: &Ctx, v: &Value) -> String {
+    let repo = v["vars"]["repo"].as_str().unwrap_or("");
+    let common = |d: &str| {
+        git_out(d, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).and_then(|p| std::fs::canonicalize(p).ok())
+    };
+    match git_out(&c.cwd, &["rev-parse", "--show-toplevel"]).filter(|t| !t.is_empty()) {
+        Some(top) if repo.is_empty() || common(&top) == common(repo) || common(repo).is_none() => top,
+        _ => repo.to_string(),
+    }
+}
+
+/// What a round looks at: `--worktree` (that checkout), `--branch` (the worktree that has it checked
+/// out), `--commit` (that commit, which must be on the checkout's branch); with none of them, the aim
+/// `tb step aim` saved, else this checkout's head.
 fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
-    let here = if local_head(&c.cwd).is_some() { c.cwd.clone() } else { v["vars"]["repo"].as_str().unwrap_or("").to_string() };
-    if let Some(w) = a.worktree.as_deref().filter(|w| !w.trim().is_empty()) {
-        let dir = std::fs::canonicalize(w.trim()).map_err(|_| format!("There's no folder {w}."))?.to_string_lossy().to_string();
-        let head = resolve_commit(&dir, "HEAD").map_err(|_| format!("{dir} isn't a git checkout."))?;
-        let branch = client::git_info(&dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string());
-        return Ok(Aimed { dir: Some(dir), head: Some(head), branch });
+    let a = if a.is_empty() { Aim::saved(v) } else { a.clone() };
+    let given = |x: &Option<String>| x.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string());
+    let here = home_checkout(c, v);
+    let (dir, branch) = if let Some(w) = given(&a.worktree) {
+        let dir = std::fs::canonicalize(&w).map_err(|_| format!("There's no folder {w}."))?.to_string_lossy().to_string();
+        resolve_commit(&dir, "HEAD").map_err(|_| format!("{dir} isn't a git checkout."))?;
+        let has = branch_in(&dir);
+        if let (Some(want), Some(has)) = (given(&a.branch), has.as_deref()) {
+            if want.trim_start_matches("refs/heads/") != has {
+                return Err(format!("{dir} has {has} checked out, not {want}. Aim again with tb step aim."));
+            }
+        }
+        (dir, has)
+    } else if let Some(b) = given(&a.branch) {
+        let b = b.trim_start_matches("refs/heads/").to_string();
+        let dir = worktree_with(if here.is_empty() { "." } else { &here }, &b)
+            .ok_or_else(|| format!("No worktree has {b} checked out. Say which one with --worktree."))?;
+        (dir, Some(b))
+    } else if here.is_empty() {
+        return Ok(Aimed { dir: None, head: None, branch: None, pinned: false });
+    } else {
+        let b = branch_in(&here);
+        (here, b)
+    };
+    let tip = resolve_commit(&dir, "HEAD").ok();
+    let head = match given(&a.commit) {
+        None => tip.clone(),
+        Some(r) => {
+            let sha = resolve_commit(&dir, &r)?;
+            if let Some(b) = &branch {
+                if git_out(&dir, &["merge-base", "--is-ancestor", &sha, "HEAD"]).is_none() {
+                    return Err(format!("{} isn't on {b}.", &sha[..sha.len().min(12)]));
+                }
+            }
+            Some(sha)
+        }
+    };
+    let pinned = matches!((&head, &tip), (Some(h), Some(t)) if h != t);
+    Ok(Aimed { dir: Some(dir), head, branch, pinned })
+}
+
+/// A throwaway detached checkout of the commit a round is pinned to, so its check and script run on the
+/// commit the round records; removed when the round ends.
+struct PinnedCheckout {
+    repo: String,
+    path: String,
+}
+
+impl PinnedCheckout {
+    fn for_round(at: &Aimed) -> Result<Option<PinnedCheckout>, String> {
+        let (true, Some(repo), Some(sha)) = (at.pinned, at.dir.as_deref(), at.head.as_deref()) else { return Ok(None) };
+        let short = &sha[..sha.len().min(12)];
+        let path = std::env::temp_dir().join(format!("tb-round-{short}-{}", std::process::id())).to_string_lossy().to_string();
+        let o = std::process::Command::new("git")
+            .args(["-C", repo, "worktree", "add", "--detach", "--quiet", &path, sha])
+            .output()
+            .map_err(|e| format!("couldn't run git: {e}"))?;
+        if !o.status.success() {
+            return Err(format!("Couldn't check out {short} for the round: {}", String::from_utf8_lossy(&o.stderr).trim()));
+        }
+        out(&format!("Checked out {short} in {path} for this round."));
+        Ok(Some(PinnedCheckout { repo: repo.to_string(), path }))
     }
-    if let Some(b) = a.branch.as_deref().filter(|b| !b.trim().is_empty()) {
-        let b = b.trim().to_string();
-        let dir = worktree_with(&here, &b);
-        let head = resolve_commit(dir.as_deref().unwrap_or(&here), &b)
-            .or_else(|_| resolve_commit(&here, &format!("{}/{b}", c.cfg.pr_body.remote)))
-            .map_err(|_| format!("There's no branch {b} here."))?;
-        return Ok(Aimed { dir, head: Some(head), branch: Some(b) });
+}
+
+impl Drop for PinnedCheckout {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("git").args(["-C", &self.repo, "worktree", "remove", "--force", &self.path]).output();
+        let _ = std::fs::remove_dir_all(&self.path);
+        let _ = std::process::Command::new("git").args(["-C", &self.repo, "worktree", "prune"]).output();
     }
-    if let Some(r) = a.commit.as_deref() {
-        return Ok(Aimed { dir: None, head: Some(resolve_commit(&here, r)?), branch: None });
-    }
-    Ok(Aimed { dir: None, head: local_head(&c.cwd), branch: None })
 }
 
 /// A PR description from a file, or stdin for `-`.
@@ -2123,6 +2227,54 @@ fn step_vars(c: &Ctx, v: &Value, name: &str, at: &Aimed) -> BTreeMap<String, Str
     }
     vars.insert("step".into(), name.to_string());
     vars
+}
+
+/// `step_vars` for a round, run in its pinned checkout when it has one.
+fn round_vars(c: &Ctx, v: &Value, name: &str, at: &Aimed, pin: Option<&PinnedCheckout>) -> BTreeMap<String, String> {
+    let mut vars = step_vars(c, v, name, at);
+    if let Some(p) = pin {
+        vars.insert("worktree".into(), p.path.clone());
+    }
+    vars
+}
+
+/// `tb step aim`: saves what the task's rounds look at (resolved here), or drops it with `--clear`.
+fn aim_cmd(c: &Ctx, a: Aim, clear: bool, t: TaskArg) -> Result<i32, String> {
+    let v = c.call("GET", &steps_path(c, t.task.clone())?, None)?;
+    if !v["task"].is_string() {
+        return Err(NO_TASK.into());
+    }
+    let task = t.task.or_else(|| v["task"].as_str().map(|s| s.to_string()));
+    if clear {
+        return c.run_report("tb.step_aim", json!({"clear": true}), task, true, |v| {
+            format!("{}'s rounds look at the checkout they run from again.", v["task"].as_str().unwrap_or("The task"))
+        });
+    }
+    if a.is_empty() {
+        return Err("Say what the rounds look at: --branch <b>, --worktree <folder>, --commit <ref>, or --clear.".into());
+    }
+    let at = aim(c, &v, &a)?;
+    let given = |x: &Option<String>| x.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let f = json!({
+        "worktree": if given(&a.worktree) { json!(at.dir) } else { Value::Null },
+        "branch": if given(&a.branch) || given(&a.commit) { json!(at.branch) } else { Value::Null },
+        "sha": if given(&a.commit) { json!(at.head) } else { Value::Null },
+    });
+    c.run_report("tb.step_aim", f, task, true, |v| {
+        let a = &v["aim"];
+        let mut s = format!("{}'s rounds and gates now look at", v["task"].as_str().unwrap_or("The task"));
+        if let Some(b) = a["branch"].as_str() {
+            s += &format!(" {b}");
+        }
+        match a["sha"].as_str() {
+            Some(sha) => s += &format!(" at {}", &sha[..sha.len().min(12)]),
+            None => s += " (its latest commit)",
+        }
+        if let Some(w) = a["worktree"].as_str() {
+            s += &format!(" in {w}");
+        }
+        s + "."
+    })
 }
 
 /// Runs a step's script in the repo (else here), its output shown as it comes; the exit and the
@@ -2194,7 +2346,8 @@ fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String
 
 fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
     match action {
-        StepCmd::Done { name, note, skip, t } => done_step(c, &name, note, skip, t, &Aim::default()),
+        StepCmd::Done { name, note, skip, aim, t } => done_step(c, &name, note, skip, t, &aim),
+        StepCmd::SetAim { aim, clear, t } => aim_cmd(c, aim, clear, t),
         StepCmd::Run { name, aim, t } => run_step(c, &name, t.task, &aim),
         StepCmd::Again { name, aim, t } => {
             let (_, step) = find_step(c, t.task.clone(), &name)?;
@@ -2255,11 +2408,18 @@ fn done_step(c: &Ctx, name: &str, note: Option<String>, skip: bool, t: TaskArg, 
         out(&format!("{} {} on {task}.", step.name, if skip { "skipped" } else { "done" }));
         return Ok(0);
     }
-    let at = aim(c, &v, aim_at)?;
+    let checked = !step.check.is_empty() && !step.owner;
+    let at = match aim(c, &v, aim_at) {
+        Ok(at) => at,
+        // A step with no check records where it's done from, whatever the saved aim says.
+        Err(_) if !checked && aim_at.is_empty() => Aimed { dir: None, head: local_head(&c.cwd), branch: None, pinned: false },
+        Err(e) => return Err(e),
+    };
     let mut f = json!({"name": step.name, "note": note, "via": "done", "head": at.head});
-    if !step.check.is_empty() && !step.owner {
+    if checked {
         round_gap(&v, &step.name)?;
-        let vars = step_vars(c, &v, &step.name, &at);
+        let pin = PinnedCheckout::for_round(&at)?;
+        let vars = round_vars(c, &v, &step.name, &at, pin.as_ref());
         let (passed, output, result) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
         f["ok"] = json!(passed);
         f["output"] = json!(output);
@@ -2276,7 +2436,8 @@ fn run_step(c: &Ctx, name: &str, task: Option<String>, aim_at: &Aim) -> Result<i
     }
     round_gap(&v, &step.name)?;
     let at = aim(c, &v, aim_at)?;
-    let vars = step_vars(c, &v, &step.name, &at);
+    let pin = PinnedCheckout::for_round(&at)?;
+    let vars = round_vars(c, &v, &step.name, &at, pin.as_ref());
     let (mut passed, mut output, mut result) = run_with_result(c, "Script", &step.run, &vars, step.timeout_secs());
     if passed && !step.check.is_empty() {
         let (p, o, r) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
@@ -2332,11 +2493,19 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if all.is_empty() {
                 out(&format!("{task} has no steps."));
             }
-            let vars = step_vars(c, &v, "", &Aimed { dir: None, head: None, branch: None });
+            let vars = step_vars(c, &v, "", &Aimed { dir: None, head: None, branch: None, pinned: false });
             for (st, done) in all {
                 let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
                 let st = st.filled(&vars);
                 out(&format!("[{}] {} ({when}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
+            }
+            if v["aim"].is_object() {
+                let a = &v["aim"];
+                let bits: Vec<String> = [("branch", ""), ("sha", "at "), ("worktree", "in ")]
+                    .iter()
+                    .filter_map(|(k, pre)| a[*k].as_str().map(|x| format!("{pre}{}", if *k == "sha" { &x[..x.len().min(12)] } else { x })))
+                    .collect();
+                out(&format!("Rounds look at {} (tb step aim --clear drops it).", bits.join(" ")));
             }
             // The latest round of each step that ran: its headline and findings, to triage.
             if let Ok(d) = c.call("GET", &format!("/tasks/{task}"), None) {
@@ -3764,6 +3933,93 @@ pub fn main_with(args: Vec<String>) -> i32 {
 mod tests {
     use super::*;
 
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// A repo on `main` with two commits, a branch `feat` one commit further in a second worktree, and a
+    /// `Ctx` in the repo.
+    fn repo(name: &str) -> (std::path::PathBuf, Ctx, [String; 3]) {
+        let root = std::env::temp_dir().join(format!("tb-aim-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = std::fs::canonicalize(repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "T"]);
+        let mut shas = vec![];
+        for (i, f) in ["a", "b"].iter().enumerate() {
+            std::fs::write(repo.join(f), "x").unwrap();
+            git(&repo, &["add", f]);
+            git(&repo, &["commit", "-q", "-m", &format!("c{i}")]);
+            shas.push(git(&repo, &["rev-parse", "HEAD"]));
+        }
+        let wt = root.join("feat");
+        git(&repo, &["worktree", "add", "-q", "-b", "feat", &wt.to_string_lossy()]);
+        std::fs::write(wt.join("c"), "x").unwrap();
+        git(&wt, &["add", "c"]);
+        git(&wt, &["commit", "-q", "-m", "c2"]);
+        shas.push(git(&wt, &["rev-parse", "HEAD"]));
+        let c = Ctx { cfg: Config::for_tests(&root), session: String::new(), claude: String::new(), cwd: repo.to_string_lossy().to_string() };
+        (root, c, [shas[0].clone(), shas[1].clone(), shas[2].clone()])
+    }
+
+    #[test]
+    fn an_aimed_round_runs_where_it_looks() {
+        let (root, c, [first, second, feat]) = repo("runs");
+        let v = json!({"vars": {"repo": c.cwd}});
+        let a = |branch: Option<&str>, worktree: Option<&str>, commit: Option<&str>| Aim {
+            branch: branch.map(Into::into),
+            worktree: worktree.map(Into::into),
+            commit: commit.map(Into::into),
+        };
+        // Unaimed: this checkout's head, run here.
+        let at = aim(&c, &v, &Aim::default()).unwrap();
+        assert_eq!((at.head.as_deref(), at.branch.as_deref(), at.pinned), (Some(second.as_str()), Some("main"), false));
+        // A branch: the worktree that has it.
+        let at = aim(&c, &v, &a(Some("feat"), None, None)).unwrap();
+        assert!(at.dir.as_deref().unwrap().ends_with("/feat"));
+        assert_eq!((at.head.as_deref(), at.pinned), (Some(feat.as_str()), false));
+        // A branch no worktree has is refused, as the Python board did.
+        git(std::path::Path::new(&c.cwd), &["branch", "loose", &first]);
+        let e = aim(&c, &v, &a(Some("loose"), None, None)).err().unwrap();
+        assert!(e.contains("No worktree has loose checked out"), "{e}");
+        // A commit must be on the branch; an older one is pinned and runs on a checkout of it.
+        let e = aim(&c, &v, &a(None, None, Some(&feat))).err().unwrap();
+        assert!(e.contains("isn't on main"), "{e}");
+        let at = aim(&c, &v, &a(Some("feat"), None, Some("HEAD~1"))).unwrap();
+        assert_eq!((at.head.as_deref(), at.pinned), (Some(second.as_str()), true));
+        let at = aim(&c, &v, &a(None, None, Some("HEAD~1"))).unwrap();
+        assert_eq!((at.head.as_deref(), at.pinned), (Some(first.as_str()), true));
+        let pin = PinnedCheckout::for_round(&at).unwrap().expect("a pinned round gets a checkout");
+        assert_eq!(git(std::path::Path::new(&pin.path), &["rev-parse", "HEAD"]), first);
+        let vars = round_vars(&c, &v, "Review", &at, Some(&pin));
+        let (passed, output) = run_script(&c, "Check", "git rev-parse HEAD", &vars, 30);
+        assert!(passed && output.contains(&first), "the script ran on the pinned commit: {output}");
+        let path = pin.path.clone();
+        drop(pin);
+        assert!(!std::path::Path::new(&path).exists(), "the throwaway checkout is removed");
+        // The saved aim is followed when no flags are given.
+        let saved = json!({"vars": {"repo": c.cwd}, "aim": {"branch": "feat"}});
+        assert_eq!(aim(&c, &saved, &Aim::default()).unwrap().head.as_deref(), Some(feat.as_str()));
+        let saved = json!({"vars": {"repo": c.cwd}, "aim": {"branch": "main", "sha": first}});
+        let at = aim(&c, &saved, &Aim::default()).unwrap();
+        assert_eq!((at.head.as_deref(), at.pinned), (Some(first.as_str()), true));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn step_commands_take_an_aim() {
+        assert!(Cli::try_parse_from(["tb", "step", "done", "Review", "--branch", "feat", "--commit", "HEAD~1"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "aim", "--worktree", "/tmp", "--commit", "abc1234"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear", "--branch", "x"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "step", "run", "Review", "--branch", "x", "--worktree", "/tmp"]).is_err());
+    }
+
     #[test]
     fn refs() {
         assert_eq!(task_ref("t12").unwrap(), "T12");
@@ -3868,7 +4124,7 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "step", "again", "Review", "--commit", "HEAD~1"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--task", "T3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--worktree", "/tmp/wt"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--commit", "abc"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "step", "run", "Tests", "--branch", "feat/x", "--commit", "abc"]).is_ok(), "a commit on a branch");
         assert!(Cli::try_parse_from(["tb", "pr", "body-check", "-"]).is_ok());
     }
 

@@ -195,7 +195,7 @@ forbid = []                          # more regexes it mustn't match (case-insen
 rebased = true                       # the branch must sit on <remote>/<base> with no merge commits
 require_ticket = false               # refuse a task with no Jira ticket
 title_prefix = true                  # "ABC-12 Add login"
-context = true                       # add a "## Context" section: ticket, the PR it stacks on, evidence links
+context = true                       # add a "## Context" section: ticket, the PR it stacks on, evidence, design links
 remote = "origin"
 
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,

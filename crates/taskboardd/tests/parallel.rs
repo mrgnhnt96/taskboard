@@ -66,7 +66,7 @@ impl Board {
         self.post("/goals", json!({"name": "Parallel", "project": "webapp", "run_in_order": false, "max_terminals": 4}))["id"].as_i64().unwrap()
     }
     fn task(&self, title: &str, extra: Value) -> i64 {
-        let mut body = json!({"title": title, "detail": "Do it.", "project": "webapp"});
+        let mut body = json!({"title": title, "detail": "Do it.", "project": "webapp", "ships_pr": false});
         for (k, v) in extra.as_object().unwrap() {
             body[k] = v.clone();
         }
@@ -358,7 +358,7 @@ fn more_changes_after_done_reopen_the_task() {
     let b = new_board();
     b.add_session("s1");
     b.report("hook.prompt", "s1", json!({"prompt": "zip the project"}));
-    let tr = b.report("tb.new_task", "s1", json!({"title": "Zip the project", "here": true}))["created"][0].as_str().unwrap().to_string();
+    let tr = b.report("tb.new_task", "s1", json!({"title": "Zip the project", "here": true, "ships_pr": false}))["created"][0].as_str().unwrap().to_string();
     write_turn(&b, "s1", "zip the project", &["notes.md"], "2026-01-01T10:00:00Z");
     b.report("tb.done", "s1", json!({"summary": "Zipped it."}));
     assert!(b.report("hook.stop", "s1", json!({"last_message": "Zipped."})).get("block").is_none());

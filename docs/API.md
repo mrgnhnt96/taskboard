@@ -455,7 +455,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "no_pr": str|null,              // why it finished without its PR (`tb done --no-pr`): "PR canceled: <why>"
   "no_evidence": str|null,        // why it finished without evidence (`tb done --no-evidence`)
   "stack_on": stack_on|null,      // the task whose PR this one's builds on (`--stack-on`)
-  "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`)
+  "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`);
+                                  // {"name", "bar", "pending": true} before its first round; null on a task that doesn't end in a PR
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
@@ -499,7 +500,8 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
-    "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round
+    "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round, or {"name", "bar", "pending": true}
+                                 // before the first ("Not reviewed by WD yet"); null when the task doesn't end in a PR or the PR is merged or closed
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
                                  // swaps: how many swaps led to this reviewer (the ask ledger); asked_at: when the board or tb asked them
                                  // one pill per reviewer still on the PR, from the host's reviewer states
@@ -1006,12 +1008,13 @@ use it instead of the project's default.
 
 **`tb done --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
 canceled: <why>", skips the before-the-PR steps, and with `[jira] canceled` set moves the ticket there with the reason
-as a comment. The why can't be blank (400) and is one line of at most 200 characters (400 past that). **`--no-evidence
+as a comment. The why can't be blank (400) and is one line of at most 100 characters (400 past that). **`--no-evidence
 "<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons and ticket keys linked to Jira; the
-goal row says "PR canceled: <why>" and the wave rail has a "PR canceled" chip.
+goal row says "PR canceled: <why>" (its task and ticket refs linked) and the wave rail's "PR canceled" chip carries
+the why.
 
-**`tb done` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), whose project has a
-remote, with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; and a task with a `design` attachment and
+**`tb done` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), unless its repo has
+no remote at all (one the board can't read counts), with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; and a task with a `design` attachment and
 no `evidence`/`results` attachment, without `no_evidence`. **Evidence on the PR**: each PR refresh adds the task's
 evidence and results links (web links) that its open PR's description lacks, under `## Context`, through
 `PrHost::description` / `set_description`; `pr_flow.evidence_added` keeps the ones added, and a host error waits 30
@@ -1021,7 +1024,8 @@ minutes (`evidence_retry_at`). A failed fetch in `--pr-body`'s branch check show
 the board checks the description against `[pr_body]` (sections in order, bullet lists, paragraph length, no board
 refs, `forbid` patterns), the before-the-PR and before-done steps, and the branch (pushed as it is, rebased on
 `<remote>/<base>`, no merge commits, a ticket if `require_ticket`), then opens the PR into the real base with the
-title after the ticket key and a `## Context` section, links it and finishes. Errors come back as 400/409 with what
+title after the ticket key and a `## Context` section (the ticket, the PR it stacks on, the evidence and results: web
+links, and local files by name; then the design links under **Design**), links it and finishes. Errors come back as 400/409 with what
 to fix; nothing is spooled. It opens on GitHub or Bitbucket Cloud by the checkout's remote, through the `prhost` interface (`propen::host`; a remote naming neither falls back to `gh pr create`); `propen::host` is the one place that talks to the
 host. `tb pr body-check FILE` runs the description check alone.
 
@@ -1033,8 +1037,11 @@ refuses an earlier round); `bar = "WD"` puts it in the PR bar. A check or script
 "detail", "url"}]}` to `$TASKBOARD_RESULT`; the verdict overrides the exit code, and `skip` (a round that couldn't
 review or didn't finish) never blocks, and neither it nor a round stopped at its timeout counts for `min_gap_mins`.
 `tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …] [--commit <ref>]` answers a finding
-(report `tb.step_triage`; `tb` resolves the ref to its sha); `tb step again|run "<step>" [--branch B | --worktree DIR
-| --commit REF]` runs another round, on what it names (the report's `head` is the resolved sha). A `[[steps]]` entry
+(report `tb.step_triage`; `tb` resolves the ref to its sha); `tb step done|again|run "<step>" [--branch B | --worktree DIR]
+[--commit REF]` runs another round, on what it names (the report's `head` is the resolved sha; a commit other than the
+checkout's head runs on a throwaway checkout of it). `tb step aim --branch B | --worktree DIR [--commit REF]` (report
+`tb.step_aim` with `worktree`, `branch`, `sha`; `clear: true` drops it) saves the aim on the task: `GET /steps` returns it
+as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so do the `tb done` and PR-opening gates. A `[[steps]]` entry
 that can't be done is left out alone, with an alert keyed `steps:<name>` until it's fixed. `pr.bar.wd` is the `bar`
 step's latest `step_result` on cards as well as in the task detail.
 
