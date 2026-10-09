@@ -160,7 +160,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
   "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
-  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled
+  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled, and {device} {target} ({device2} {target2}…) for the devices lent to the task
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
@@ -881,15 +881,19 @@ tasks share it. An archived goal reserves nothing and its pool lends nothing; it
 The goal detail's `devices` aside lists the goal's own devices first, each with `in_pool`, `purpose` and
 `reserved`, and `pool` (how many it has).
 
-A device can say what it is: `kind` (phone, tablet, simulator, android…; a label, never matched against needs) and
-`target` (Android 14, an iOS 17 runtime…), shown with its name as `label` ("dev-a (Android phone, Android 14)";
-known kinds are named in words, others show as given). Its `start_cmd` and `stop_cmd` go in the handoff of the task
-that's lent it, as "Start it: …" and "Stop it when you're done: …" (under the device's name when it has more than
-one), filled like step commands: the task's `{task}`, `{title}`, `{branch}`, `{base}`, `{repo}`, `{pr}`… and the
-device's `{device}` (also `{name}`), `{kind}` and `{target}`. A task card's `devices` has `lent` (names) and
-`lent_labels` (each `label`).
+A device can say what it is: `kind` (a label, never matched against needs) and `target` (the emulator's serial or
+the simulator's UDID, which its commands use as `{target}`), shown with its name as `label` ("dev-a (Android
+emulator, emulator-5554)"). Known kinds are named in words, as the Python board named them: `android` → "Android
+emulator", `ios` → "iOS simulator", `device` → "Phone or tablet", `other` → "Device" (others show as given; a
+device with no kind has `kind_label` "Device" and no kind in its `label`). Its `start_cmd` and `stop_cmd` go in
+the handoff of the task that's lent it, as "Start it: …" and "Stop it when you're done: …" (under the device's name
+when it has more than one), filled like step commands: the task's `{task}`, `{n}`, `{title}`, `{branch}`, `{base}`,
+`{repo}`, `{pr}`, `{wave}`, `{goal}`, `{jira}` (the task's ref when it has no ticket)… and the device's `{device}`
+(also `{name}`), `{kind}` and `{target}`. That device paragraph comes early in the handoff and is never cut to fit
+its length, and it ends with "Other devices in use, don't touch them: …" naming the devices other tasks have. A task
+card's `devices` has `lent` (names) and `lent_labels` (each `label`).
 
-`device`: `{id, name, label, kind: str|null, kind_label: str|null, target: str|null, tags: [str], note, off: bool,
+`device`: `{id, name, label, kind: str|null, kind_label: str, target: str|null, tags: [str], note, off: bool,
 focus: str|null, can_focus: bool, start_cmd: str|null, stop_cmd: str|null, held_by: {ref, title, goal}|null,
 goals: [{goal, purpose, reserved}], reserved_for: "G3"|"G3 and G4"|null}` (`goals` and `reserved_for`: goals not archived).
 

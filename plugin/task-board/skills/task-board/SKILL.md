@@ -37,7 +37,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 
 `tb status` shows this terminal's task. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
 
-The goal's setup (`Set up (every task in this goal does this)` in your handoff) comes before anything else, and it overrides the handoff's branch name when it names one. Set it only when the owner asks: `tb goal setup G<n> "<what every task does first>"` ({task}, {n}, {wave} and {goal} are filled in per task; `none` clears it).
+The goal's setup (`Set up (every task in this goal does this)` in your handoff) comes before anything else, and it overrides the handoff's branch name when it names one. Set it only when the owner asks: `tb goal setup G<n> "<what every task does first>"` ({task}, {n}, {wave} and {goal} are filled in per task, {device} and {target} ({device2}, {target2}…) with the devices lent to it; `none` clears it).
 
 ## When you're the Jira desk
 

@@ -10,7 +10,7 @@ use super::*;
 #[derive(Debug, PartialEq)]
 pub struct DeviceRow {
     pub name: String,
-    /// The name with its kind and target: "dev-a (Android phone, Android 14)".
+    /// The name with its kind and target: "dev-a (Android emulator, emulator-5554)".
     pub label: String,
     pub tags: String,
     /// The task that has it (T4), or None when it's free.
