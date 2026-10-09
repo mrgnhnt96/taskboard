@@ -560,9 +560,10 @@ pub fn review_of(f: &Row, rec: &Value) -> Review {
 }
 
 /// Whether agents may merge a project's PRs once they're approved and green: its own switch (`tb project
-/// set --agents-merge`, `[pr.projects.<name>] agents_merge`), else `pr.agents_merge`.
+/// set --agents-merge`, `[pr.projects.<name>] agents_merge`), else the board's (`tb project
+/// agents-merge`), else `pr.agents_merge`.
 pub fn agents_merge_on(app: &App, project: Option<&str>) -> bool {
-    crate::projects::pr_rules(app, project).agents_merge.unwrap_or(app.cfg.pr.agents_merge)
+    crate::projects::pr_rules(app, project).agents_merge.unwrap_or_else(|| crate::projects::agents_merge_default(app))
 }
 
 /// Approvals this task's PR needs: its project's count, else `pr.approvals` (2). None (a count of 0):

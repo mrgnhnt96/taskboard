@@ -79,7 +79,7 @@ max_terminals = 2                    # how many terminals a goal made from the b
 [pr]
 watch = true
 wake = true                          # bring a done task back when its PR has failed checks or comments
-agents_merge = false                 # let agents merge an approved, green PR (a project can say otherwise)
+agents_merge = false                 # let agents merge an approved, green PR (a project can say otherwise; tb project agents-merge sets it on the board, and taskboardd import turns it on)
 gh = "gh"
 no_checks_after_mins = 15.0
 bitbucket_api = "https://api.bitbucket.org/2.0"

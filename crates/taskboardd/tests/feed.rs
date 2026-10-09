@@ -75,7 +75,7 @@ fn green() -> Record {
         author: "me".into(),
         head: "h1".into(),
         base: "main".into(),
-        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None }],
+        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None, at: None }],
         threads: vec![],
         ..Default::default()
     }

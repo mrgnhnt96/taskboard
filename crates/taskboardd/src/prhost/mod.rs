@@ -101,6 +101,10 @@ pub struct Check {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// When it was last updated (else created, or started), as the host gives it: what the newest
+    /// build goes by (`prbar::build_url`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
 }
 
 /// Someone asked to review the PR, or who reviewed it.
@@ -336,7 +340,7 @@ pub trait PrHost: Send + Sync {
     /// The checks that failed on the base branch's last `commits` commits, one per run (with its link,
     /// so their failed steps and tests can be read and compared one by one).
     fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
-        Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None }).collect())
+        Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None, at: None }).collect())
     }
 
     /// Every comment (review summaries and code comments too) on `repo`'s `prs` most recently updated
@@ -515,7 +519,7 @@ impl PrHost for FakeHost {
     fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
         let checks = self.base_checks.lock().clone();
         if checks.is_empty() {
-            return Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None }).collect());
+            return Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None, at: None }).collect());
         }
         self.log(format!("base {base} {commits}"));
         Ok(checks)
@@ -619,9 +623,9 @@ mod tests {
     fn the_record_counts_failed_and_running_checks() {
         let r = Record {
             checks: vec![
-                Check { name: "a".into(), state: "failed".into(), url: None },
-                Check { name: "b".into(), state: "running".into(), url: None },
-                Check { name: "c".into(), state: "stopped".into(), url: None },
+                Check { name: "a".into(), state: "failed".into(), url: None, at: None },
+                Check { name: "b".into(), state: "running".into(), url: None, at: None },
+                Check { name: "c".into(), state: "stopped".into(), url: None, at: None },
             ],
             ..Default::default()
         };

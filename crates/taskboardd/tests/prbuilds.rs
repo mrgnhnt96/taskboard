@@ -78,7 +78,7 @@ fn running() -> Record {
         author: "me".into(),
         head: "h1".into(),
         base: "main".into(),
-        checks: vec![Check { name: "build".into(), state: "running".into(), url: Some("https://github.com/acme/webapp/actions/runs/55/job/1".into()) }],
+        checks: vec![Check { name: "build".into(), state: "running".into(), url: Some("https://github.com/acme/webapp/actions/runs/55/job/1".into()), at: None }],
         threads: vec![],
         ..Default::default()
     }

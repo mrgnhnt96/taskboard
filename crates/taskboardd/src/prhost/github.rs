@@ -275,10 +275,10 @@ impl PrHost for GithubHost {
     fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
         let list = self.api("GET", &format!("repos/{}/commits?sha={base}&per_page={commits}", pr.repo), &[])?;
         let mut out: Vec<Check> = vec![];
-        let mut add = |name: &str, url: Option<&str>| {
+        let mut add = |name: &str, url: Option<&str>, at: Option<&str>| {
             let url = url.filter(|u| !u.is_empty()).map(|u| u.to_string());
             if !name.is_empty() && !out.iter().any(|o| o.name == name && o.url == url) {
-                out.push(Check { name: name.to_string(), state: "failed".into(), url });
+                out.push(Check { name: name.to_string(), state: "failed".into(), url, at: at.map(|t| t.to_string()) });
             }
         };
         for c in list.as_array().cloned().unwrap_or_default().into_iter().take(commits) {
@@ -286,13 +286,13 @@ impl PrHost for GithubHost {
             let runs = self.api("GET", &format!("repos/{}/commits/{sha}/check-runs?per_page=100", pr.repo), &[])?;
             for r in runs["check_runs"].as_array().cloned().unwrap_or_default() {
                 if matches!(r["conclusion"].as_str(), Some("failure" | "timed_out")) {
-                    add(r["name"].as_str().unwrap_or(""), r["details_url"].as_str().or(r["html_url"].as_str()));
+                    add(r["name"].as_str().unwrap_or(""), r["details_url"].as_str().or(r["html_url"].as_str()), r["completed_at"].as_str().or(r["started_at"].as_str()));
                 }
             }
             let st = self.api("GET", &format!("repos/{}/commits/{sha}/status", pr.repo), &[])?;
             for r in st["statuses"].as_array().cloned().unwrap_or_default() {
                 if matches!(r["state"].as_str(), Some("failure" | "error")) {
-                    add(r["context"].as_str().unwrap_or(""), r["target_url"].as_str());
+                    add(r["context"].as_str().unwrap_or(""), r["target_url"].as_str(), r["updated_at"].as_str().or(r["created_at"].as_str()));
                 }
             }
         }
@@ -349,6 +349,16 @@ pub fn recent_comments(v: &Value) -> Vec<Comment> {
     out
 }
 
+/// A rollup check's newest time: finished, else started (a check run), else created (a status).
+/// `gh` gives a running check's `completedAt` as year 1.
+fn check_at(c: &Value) -> Option<String> {
+    ["completedAt", "startedAt", "createdAt"]
+        .iter()
+        .filter_map(|k| c[*k].as_str())
+        .find(|t| !t.is_empty() && !t.starts_with("0001-"))
+        .map(|t| t.to_string())
+}
+
 pub fn summarize(d: &Value, threads: &Value) -> Record {
     let author = d["author"]["login"].as_str().unwrap_or("").to_string();
     let checks: Vec<Check> = d["statusCheckRollup"]
@@ -360,6 +370,7 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
             name: c["name"].as_str().or(c["context"].as_str()).unwrap_or("check").to_string(),
             state: check_state(c).to_string(),
             url: c["detailsUrl"].as_str().or(c["targetUrl"].as_str()).filter(|u| !u.is_empty()).map(|u| u.to_string()),
+            at: check_at(c),
         })
         .collect();
     let reviews = d["reviews"].as_array().cloned().unwrap_or_default();
@@ -571,8 +582,8 @@ pub(crate) mod tests {
             "baseRefName": "main", "baseRefOid": "b1", "reviewDecision": "CHANGES_REQUESTED",
             "statusCheckRollup": [
                 {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
-                {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://github.com/acme/webapp/actions/runs/77/job/1"},
-                {"context": "ci/legacy", "state": "PENDING"}
+                {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://github.com/acme/webapp/actions/runs/77/job/1", "startedAt": "2026-10-01T09:00:00Z", "completedAt": "2026-10-01T09:05:00Z"},
+                {"context": "ci/legacy", "state": "PENDING", "startedAt": "2026-10-01T09:01:00Z", "completedAt": "0001-01-01T00:00:00Z"}
             ],
             "comments": [{"id": "IC_1", "author": {"login": "me"}, "body": "mine"}, {"id": "IC_2", "author": {"login": "rev"}, "body": "Why?\nmore"}],
             "reviews": [{"id": "PRR_1", "author": {"login": "rev"}, "state": "CHANGES_REQUESTED", "body": "", "submittedAt": "2026-10-01T10:00:00Z"}],
@@ -604,6 +615,8 @@ pub(crate) mod tests {
         assert_eq!(r.approvals, 1);
         assert_eq!(r.base_head, "b1");
         assert_eq!(r.checks[1].url.as_deref(), Some("https://github.com/acme/webapp/actions/runs/77/job/1"));
+        let at: Vec<Option<&str>> = r.checks.iter().map(|c| c.at.as_deref()).collect();
+        assert_eq!(at, vec![None, Some("2026-10-01T09:05:00Z"), Some("2026-10-01T09:01:00Z")], "finished, else started; gh's year-1 completedAt is no time");
         let states: Vec<(String, String, bool)> = r.reviewers.iter().map(|x| (x.user.clone(), x.state.clone(), x.requested)).collect();
         let at: Vec<Option<&str>> = r.reviewers.iter().map(|x| x.changes_at.as_deref()).collect();
         assert_eq!(at, vec![Some("2026-10-01T10:00:00Z"), None, None], "each reviewer's own request for changes");

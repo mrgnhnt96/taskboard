@@ -240,7 +240,7 @@ impl BranchCi for GithubBranch {
             if state == "failed" {
                 queued.extend(r["started_at"].as_str().map(|s| s.to_string()));
             }
-            checks.push(Check { name: r["name"].as_str().unwrap_or("").to_string(), state: state.into(), url: r["html_url"].as_str().map(|s| s.to_string()) });
+            checks.push(Check { name: r["name"].as_str().unwrap_or("").to_string(), state: state.into(), url: r["html_url"].as_str().map(|s| s.to_string()), at: r["completed_at"].as_str().or(r["started_at"].as_str()).map(|s| s.to_string()) });
         }
         for s in self.api(&format!("repos/{repo}/commits/{head}/status"))?["statuses"].as_array().cloned().unwrap_or_default() {
             let state = match s["state"].as_str() {
@@ -251,7 +251,7 @@ impl BranchCi for GithubBranch {
             if state == "failed" {
                 queued.extend(s["created_at"].as_str().map(|s| s.to_string()));
             }
-            checks.push(Check { name: s["context"].as_str().unwrap_or("").to_string(), state: state.into(), url: s["target_url"].as_str().map(|s| s.to_string()) });
+            checks.push(Check { name: s["context"].as_str().unwrap_or("").to_string(), state: state.into(), url: s["target_url"].as_str().map(|s| s.to_string()), at: s["updated_at"].as_str().or(s["created_at"].as_str()).map(|s| s.to_string()) });
         }
         checks.retain(|c| !c.name.is_empty());
         Ok(BranchRead { head, checks, commits, queued_at: earliest(&queued) })
@@ -330,6 +330,7 @@ impl BranchCi for BitbucketBranch {
                 }
                 .into(),
                 url: s["url"].as_str().map(|u| u.to_string()),
+                at: s["updated_on"].as_str().or(s["created_on"].as_str()).map(|t| t.to_string()),
             })
             .filter(|c| !c.name.is_empty())
             .collect();
