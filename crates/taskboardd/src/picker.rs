@@ -6,15 +6,16 @@
 //!   `history_months` with at least `min_commits` commits join the roster on a sync (at most every
 //!   `sync_every_hours`, or `tb reviewers sync`), and the host's members give them their account.
 //! - One pick is a main contributor: of the `main_contributors` people made of pinned reviewers
-//!   first, then those with the most commits to the changed files, whoever's turn comes first. It's
-//!   skipped when one of them is already on the PR.
+//!   first, then those with the most commits to the changed files, then to the project, whoever's
+//!   turn comes first. Only candidates (at a weight of `not_a_main_below` or more) and people
+//!   already on the PR take a place. It's skipped when one of them is already on the PR.
 //! - It's turn-based: a reviewer is due at their last ask + (1 + open asks) × `turn_gap_hours` /
 //!   weight, and the earliest due goes first (ties: the fewest asks, then pinned, then the most
 //!   commits to the changed files, then to the project). Weight is automation level × speed, where
 //!   speed comes from the median time they took to review, in work minutes (`speed_by_minutes`,
 //!   `slow_speed` past the last step, `too_slow` at `slow_cap_mins`, where non-answers count,
-//!   `no_speed_yet` before their first review; see
-//!   `reviewers::median_work_mins`). A reviewer whose bot runs on a known schedule (`botrun.rs`) is
+//!   `no_speed_yet` before their first review, `slow_speed` at most while an ask has been open past
+//!   `swap_after_mins`; see `reviewers::speed_of`). A reviewer whose bot runs on a known schedule (`botrun.rs`) is
 //!   asked only shortly before its next run, at the fastest pace.
 
 use std::path::Path;
@@ -263,7 +264,7 @@ pub fn due(app: &App, r: &Row) -> Result<(f64, f64)> {
     let cfg = &app.cfg.reviewers;
     let last = reviewers::last_asked(app, r)?.as_str().and_then(parse_iso).unwrap_or(0.0);
     let open = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ? AND state = 'open'", p![r.id()])? as f64;
-    let pace = if crate::botrun::timed(app, r)? { fastest(cfg) } else { speed(cfg, reviewers::median_work_mins(app, r.id())?) };
+    let pace = if crate::botrun::timed(app, r)? { fastest(cfg) } else { reviewers::speed_of(app, r.id())? };
     let weight = (r.f("automation").unwrap_or(1.0) * pace).max(0.01);
     Ok((last + (1.0 + open) * cfg.turn_gap_hours * 3600.0 / weight, weight))
 }
@@ -313,17 +314,31 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     };
     let rank = |c: &Pick| (!c.reviewer.b("pinned"), contributors.iter().position(|m| *m == c.reviewer.id()).unwrap_or(usize::MAX), -c.reviewer.i0("commits"), c.reviewer.id());
     cands.sort_by(|a, b| a.due.partial_cmp(&b.due).unwrap_or(std::cmp::Ordering::Equal).then(a.asked.cmp(&b.asked)).then(rank(a).cmp(&rank(b))));
+    // Who's on the PR now: one of them a main contributor means no main pick.
+    let on_pr: Vec<Row> = crate::asks::on_pr(&prflow_of(t), rec)
+        .iter()
+        .filter_map(|w| reviewers::by_host_user(app, &project, &w.user).ok().flatten())
+        .collect();
     // The main contributors: pinned reviewers first (in turn order), then the most commits to the
-    // changed files, `main_contributors` in all.
-    let mut pins: Vec<Row> = reviewers::roster(app, &project)?.into_iter().filter(|r| r.b("pinned") && r.s("removed_at").is_none()).collect();
+    // changed files, then to the project, `main_contributors` in all. Only people who could be asked
+    // (at a weight of `not_a_main_below` or more) or are on the PR already take a place.
+    let roster = reviewers::roster(app, &project)?;
+    let mut pins: Vec<&Row> = roster.iter().filter(|r| r.b("pinned") && r.s("removed_at").is_none()).collect();
     pins.sort_by_key(|r| cands.iter().position(|c| c.reviewer.id() == r.id()).unwrap_or(usize::MAX));
+    let mut by_commits: Vec<&Row> = roster.iter().filter(|r| r.i0("commits") > 0).collect();
+    by_commits.sort_by_key(|r| (-r.i0("commits"), r.id()));
+    let may_be_main = |id: i64| {
+        on_pr.iter().any(|r| r.id() == id) || cands.iter().any(|c| c.reviewer.id() == id && c.weight >= app.cfg.reviewers.not_a_main_below)
+    };
     let mut mains: Vec<i64> = vec![];
-    for id in pins.iter().map(|r| r.id()).chain(contributors.iter().copied()) {
-        if !mains.contains(&id) {
+    for id in pins.iter().map(|r| r.id()).chain(contributors.iter().copied()).chain(by_commits.iter().map(|r| r.id())) {
+        if mains.len() >= app.cfg.reviewers.main_contributors {
+            break;
+        }
+        if !mains.contains(&id) && may_be_main(id) {
             mains.push(id);
         }
     }
-    mains.truncate(app.cfg.reviewers.main_contributors);
     let mut out: Vec<Pick> = vec![];
     let take = |out: &mut Vec<Pick>, cands: &mut Vec<Pick>, i: usize, why: &str| {
         let mut c = cands.remove(i);
@@ -332,10 +347,6 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     };
     // The main pick: whichever main contributor's turn comes first. None when one of them is
     // already on the PR.
-    let on_pr: Vec<Row> = crate::asks::on_pr(&prflow_of(t), rec)
-        .iter()
-        .filter_map(|w| reviewers::by_host_user(app, &project, &w.user).ok().flatten())
-        .collect();
     let have_main = on_pr.iter().any(|r| mains.contains(&r.id()));
     if out.len() < n && !have_main {
         let pool: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| mains.contains(&c.reviewer.id())).map(|(i, _)| i).collect();

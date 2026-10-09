@@ -268,7 +268,8 @@ create_url = ""                      # example: "https://flags.example.com/new?k
 # x speed, from their median review time in work minutes.
 [reviewers]
 count = 2
-main_contributors = 3                 # the main pick comes from this many: pinned reviewers, then top authors of the changed files
+main_contributors = 3                 # the main pick comes from this many: pinned reviewers, then top authors of the changed files, then of the project
+not_a_main_below = 0.1                # someone who could be asked at a weight under this isn't one of them
 history_months = 6                    # commit history that counts
 min_commits = 5                       # commits in that window to join the roster from the history
 turn_gap_hours = 4.0
@@ -279,6 +280,7 @@ no_speed_yet = 1.0                    # hasn't reviewed yet
 speed_days = 14.0                     # speed comes from the asks of the last this many days
 speed_asks = 8                        # and at most this many of them
 slow_cap_mins = 240.0                 # a swapped-off ask counts as this; an open one as its time so far, up to this
+                                      # (an ask open past swap_after_mins makes them slow_speed at most)
 me = []                               # your own names, emails and host ids (the PR's author is never asked anyway)
 sync_every_hours = 12.0               # how often commit authors and host accounts join the roster
 # Who's around (optional): with availability = "slack" the picker checks candidates on Slack with

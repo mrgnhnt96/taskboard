@@ -191,9 +191,10 @@ fn tb_pr_reviewers_sets_reviewers_through_the_host_and_records_each_ask() {
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"replace": "Bo", "with": "Cy"}));
     assert!(h.calls().contains(&"remove {bo}".to_string()));
     let asks = b.asks(id);
-    assert_eq!(asks[1].st("state"), "swapped");
+    assert_eq!(asks[1].st("state"), "dropped", "a replace by hand isn't a swap for not reviewing");
     assert_eq!((asks[2].st("name"), asks[2].st("why"), asks[2].i("replaces")), ("Cy".into(), "replace".into(), Some(asks[1].id())));
     assert_eq!(b.flow(id)["swapped_off"], json!(["{bo}"]));
+    assert_eq!(median_of(&b, "Bo"), None, "being replaced says nothing about his speed");
 
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Ana"}));
     assert_eq!(b.asks(id)[0].st("state"), "dropped");
@@ -287,11 +288,12 @@ fn the_picker_asks_a_main_contributor_and_rotates_the_rest() {
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({}));
     assert_eq!(b.asks(id).len(), 2);
 
-    // The next PR: Ana is still the main contributor; Cy's turn comes before Bo's, who has an open ask.
+    // The next PR: Cy (third, from his commits to the project) is a main contributor too, and his
+    // turn comes before Ana's and Bo's, who have open asks.
     *h.rec.lock() = rec_on(&base, &head);
     let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
     let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true}));
-    assert_eq!(picks(&v), vec![pair("Ana Lima", "main"), pair("Cy Ng", "turn")]);
+    assert_eq!(picks(&v), vec![pair("Cy Ng", "main"), pair("Ana Lima", "turn")]);
 
     // A removed reviewer is never picked; a pinned one always is.
     b.act("remove", "cy@acme.com", json!({})).unwrap();
@@ -336,8 +338,9 @@ fn availability_tiers_steer_the_picker_and_the_out_are_never_picked() {
     taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Ana", Tier::Out), ("Bo", Tier::Quiet), ("Cy", Tier::Online), ("Me", Tier::Online)])));
     let id = b.pr_task(BB);
     let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
-    // Ana is out, so the main pick is Bo (quiet, the only other main contributor); Cy is online.
-    assert_eq!(picks(&v), vec![pair("Bo Park", "main"), pair("Cy Ng", "turn")]);
+    // Ana is out, so the main pick is Cy (online, a main contributor from his commits to the project)
+    // over Bo (quiet).
+    assert_eq!(picks(&v), vec![pair("Cy Ng", "main"), pair("Bo Park", "turn")]);
 
     taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Ana", Tier::Online), ("Bo", Tier::Missing), ("Cy", Tier::Off)])));
     let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
@@ -1047,7 +1050,7 @@ fn the_owner_s_review_gates_a_first_ask_whatever_the_status_and_not_a_later_swap
     b.post("/projects/webapp", json!({"ask_stage": true}));
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"replace": "Ana", "with": "Cy"}));
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Bo"}));
-    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "dropped"), pair("Cy", "open")]);
+    assert_eq!(states(&b, id), vec![pair("Ana", "dropped"), pair("Bo", "dropped"), pair("Cy", "open")]);
 }
 
 #[test]
@@ -1135,4 +1138,51 @@ fn a_slow_bot_run_chains_comment_to_comment_and_a_bridge_joins_two_runs() {
     assert_eq!(runs(), 1);
     let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
     assert!((at - t0).abs() < 1.0);
+}
+
+#[test]
+fn only_people_who_could_be_asked_take_a_main_contributor_place() {
+    let b = board_with(|c| c.reviewers.main_contributors = 2);
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    let id = b.pr_task(BB);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    // The author (pinned, even) and a removed top contributor take no place: Bo and Cy (from his
+    // commits to the project) are the two.
+    b.act("pin", "Me", json!({})).unwrap();
+    b.act("remove", "Ana Lima", json!({})).unwrap();
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"count": 1}));
+    assert!(h.calls().contains(&"request {bo}".to_string()), "{:?}", h.calls());
+    // Bo was just asked, so the next PR's main pick is Cy's.
+    *h.rec.lock() = rec_on(&base, &head);
+    let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Cy Ng", "main")]);
+    // Someone who doesn't answer (a weight under not_a_main_below) isn't one either.
+    ask_row(&b, id, "Cy Ng", 60.0, "swapped", None);
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Bo Park", "main")]);
+}
+
+#[test]
+fn an_open_ask_counts_from_the_swap_window() {
+    let b = board_with(|_| {});
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    let weights = |b: &Board| -> Vec<(String, f64)> {
+        let rows = b.app.db.q("SELECT * FROM reviewers WHERE project = 'webapp' ORDER BY name", vec![]).unwrap();
+        rows.iter().map(|r| (r.st("name"), taskboardd::picker::due(&b.app, r).unwrap().1)).collect()
+    };
+    let cfg = b.app.cfg.reviewers.clone();
+    // Under the swap window an open ask changes nothing; past it, they're slower than someone new.
+    ask_row(&b, id, "Ana", 60.0, "open", None);
+    assert_eq!(weights(&b)[0], ("Ana".to_string(), cfg.no_speed_yet));
+    b.app.db.x("UPDATE review_asks SET asked_at = ? WHERE name = 'Ana'", vec![json!(taskboardd::util::iso(taskboardd::util::now_ts() - 180.0 * 60.0))]).unwrap();
+    let w = weights(&b);
+    assert_eq!(w[0], ("Ana".to_string(), cfg.slow_speed));
+    assert_eq!(w[1], ("Bo".to_string(), cfg.no_speed_yet));
+    assert!(cfg.slow_speed < cfg.no_speed_yet);
+    assert_eq!(median_of(&b, "Ana").map(f64::round), Some(180.0));
 }

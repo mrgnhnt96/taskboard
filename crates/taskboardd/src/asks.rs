@@ -263,8 +263,9 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if let Some((old, new)) = &replaced {
             let prior = reviewers::open_ask(app, id, &old.user)?;
+            // A replace by hand isn't a swap for not reviewing: it says nothing about their speed.
             if let Some(a) = &prior {
-                reviewers::close_ask(app, a.id(), "swapped")?;
+                reviewers::close_ask(app, a.id(), "dropped")?;
             }
             swap_off(app, id, &old.user)?;
             reviewers::record_ask(app, &t, &new.user, &new.name, "replace", &by, prior.map(|a| a.id()))?;

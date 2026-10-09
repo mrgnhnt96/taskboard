@@ -110,6 +110,8 @@ pub struct ReviewersConfig {
     pub count: usize,
     /// How many of the changed files' top contributors the main-contributor pick comes from.
     pub main_contributors: usize,
+    /// Someone whose weight is below this isn't one of them (a reviewer who doesn't answer).
+    pub not_a_main_below: f64,
     /// How far back commit history counts, in months.
     pub history_months: i64,
     /// Commits in that window to join the roster from the history.
@@ -163,7 +165,8 @@ pub struct ReviewersConfig {
     pub speed_days: f64,
     pub speed_asks: usize,
     /// An ask swapped off for not reviewing counts as this many work minutes, and one still open as
-    /// its time so far, up to this. A median this slow is `too_slow`.
+    /// its time so far, up to this. A median this slow is `too_slow`. An ask open past
+    /// `swap_after_mins` makes them `slow_speed` at most until they answer.
     pub slow_cap_mins: f64,
     /// Away on Slack with no post today is quiet only from this time where they are; before it
     /// they're starting their day.
@@ -177,6 +180,7 @@ impl Default for ReviewersConfig {
         ReviewersConfig {
             count: 2,
             main_contributors: 3,
+            not_a_main_below: 0.1,
             history_months: 6,
             min_commits: 5,
             turn_gap_hours: 4.0,
@@ -462,8 +466,24 @@ pub fn display(r: &Row) -> String {
 /// The median of a reviewer's recent review times, in work minutes: their last `speed_asks` asks
 /// from the last `speed_days` that say how fast they are. An answered ask counts its time; one
 /// swapped off for not reviewing counts as `slow_cap_mins`; one still open counts its time so far
-/// (up to the cap) once that's slower than the rest would make them, and takes no place until then.
+/// (up to the cap) once it's past `swap_after_mins` or slower than the rest would make them, and
+/// takes no place until then.
 pub fn median_work_mins(app: &App, id: i64) -> Result<Option<f64>> {
+    Ok(review_times(app, id)?.0)
+}
+
+/// Their speed (`picker::speed` of `median_work_mins`), and at most `slow_speed` while an ask of
+/// theirs has been open past `swap_after_mins`: an unanswered ask counts from there, even when the
+/// table would call its time so far quick.
+pub fn speed_of(app: &App, id: i64) -> Result<f64> {
+    let cfg = &app.cfg.reviewers;
+    let (m, overdue) = review_times(app, id)?;
+    let s = crate::picker::speed(cfg, m);
+    Ok(if overdue { s.min(cfg.slow_speed) } else { s })
+}
+
+/// The median of `median_work_mins`, and whether an open ask is past `swap_after_mins`.
+fn review_times(app: &App, id: i64) -> Result<(Option<f64>, bool)> {
     let cfg = &app.cfg.reviewers;
     let since = iso(now_ts() - cfg.speed_days * 86400.0);
     let rows = app.db.q(
@@ -476,20 +496,24 @@ pub fn median_work_mins(app: &App, id: i64) -> Result<Option<f64>> {
         (None, "swapped") => Some(cfg.slow_cap_mins),
         _ => None,
     };
-    // An open ask only ever makes them slower: it counts once it's taken longer than the speed they'd get without it.
+    // An open ask only ever makes them slower: it counts once it's past the swap window, or once
+    // it's taken longer than the speed they'd get without it.
     let pace = crate::picker::speed(cfg, median(&rows.iter().filter_map(settled).take(n).collect::<Vec<_>>()));
+    let mut overdue = false;
     let counted: Vec<f64> = rows
         .iter()
         .filter_map(|r| {
             settled(r).or_else(|| {
                 let at = r.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
                 let m = crate::picker::work_minutes(app, at, now_ts()).min(cfg.slow_cap_mins);
-                (crate::picker::speed(cfg, Some(m)) < pace).then_some(m)
+                let late = cfg.swap_after_mins > 0.0 && m >= cfg.swap_after_mins;
+                overdue |= late;
+                (late || crate::picker::speed(cfg, Some(m)) < pace).then_some(m)
             })
         })
         .take(n)
         .collect();
-    Ok(median(&counted))
+    Ok((median(&counted), overdue))
 }
 
 fn median(xs: &[f64]) -> Option<f64> {
