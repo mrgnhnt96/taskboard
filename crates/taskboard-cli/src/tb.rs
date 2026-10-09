@@ -1305,6 +1305,12 @@ fn review_words(pr: &Value) -> String {
     }
 }
 
+/// The Reviewers header's count: " · 1 of 2 approvals", capped at what's needed (never "3 of 2").
+fn approvals_words(a: &Value) -> String {
+    let have = a["have"].as_i64().unwrap_or(0);
+    a["need"].as_i64().map(|n| format!(" · {} of {n} approval{}", have.min(n), if n == 1 { "" } else { "s" })).unwrap_or_default()
+}
+
 fn print_pr_status(t: &str, v: &Value) {
     let pr = &v["pr"];
     let live = &v["live"];
@@ -1386,8 +1392,7 @@ fn print_pr_status(t: &str, v: &Value) {
     }
     let reviewers = live["reviewers"].as_array().cloned().unwrap_or_default();
     if !reviewers.is_empty() {
-        let need = live["approvals"]["need"].as_i64().map(|n| format!(" · {} of {n} approval{}", live["approvals"]["have"], if n == 1 { "" } else { "s" })).unwrap_or_default();
-        out(&format!("Reviewers{need}:"));
+        out(&format!("Reviewers{}:", approvals_words(&live["approvals"])));
         for r in reviewers {
             let name = r["name"].as_str().filter(|n| !n.is_empty()).or(r["user"].as_str()).unwrap_or("");
             let state = match r["state"].as_str().unwrap_or("") {
@@ -4394,6 +4399,14 @@ mod tests {
         assert_eq!(review_words(&pr("changes", 1, json!(2))), "changes");
         assert_eq!(review_words(&pr("pending", 1, Value::Null)), "pending", "no count: the host decides");
         assert_eq!(review_words(&json!({"review": null})), "unknown");
+    }
+
+    #[test]
+    fn the_reviewers_line_never_counts_more_approvals_than_needed() {
+        assert_eq!(approvals_words(&json!({"have": 3, "need": 2})), " · 2 of 2 approvals", "#150: never 3 of 2");
+        assert_eq!(approvals_words(&json!({"have": 1, "need": 2})), " · 1 of 2 approvals");
+        assert_eq!(approvals_words(&json!({"have": 2, "need": 1})), " · 1 of 1 approval");
+        assert_eq!(approvals_words(&json!({"have": 1, "need": null})), "", "no count: the host decides");
     }
 
     #[test]
