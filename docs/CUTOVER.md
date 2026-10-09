@@ -65,8 +65,9 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
   reviewers' emails and aliases), its state, answer and stand-in (`replaces`), and whether its
   fill-in was asked (`filled_at`). Its times say its state: `swapped_at` is swapped (came back,
   when it answered after), a close is closed, and only then `answered_at` is answered, so someone
-  who answered and was later swapped off isn't a current reviewer. The answer is the verdict word
-  in `reply` / `reply_said` (approved, changes, commented), else their text. An ask still open on
+  who answered and was later swapped off isn't a current reviewer. `reply` / `reply_said` is the
+  reviewer's reply to a nudge, not a review: it comes over as the ask's `reply` (with `nudged_at`
+  and `replied_at`), and the ask keeps no verdict. An ask still open on
   a PR that has merged or closed (`pr_state`) comes over closed; one on a done task whose PR is
   still open stays open;
 - takes each reviewer's last bot run from `reviewers.bot_ran_at` (or an old runs table);

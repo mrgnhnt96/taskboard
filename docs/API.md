@@ -632,9 +632,12 @@ noted from the feed's PR events. After a cancel the push is swept again after ea
 120 s) for builds queued just after it. It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
 bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
-way to cancel alerts at once. A cancelled push is logged on its task; a follow-up only when it stopped a build (a cancel
-command's follow-ups, whose count isn't known, only go in `recent`). The PRs' checks count as passed: the build reads
-"Builds stopped" and the PR moves on to review.
+way to cancel alerts at once. A cancel command may write the builds it stopped, one name per line, to the file named by
+`$TB_CANCELLED`. A cancelled push is logged on its task and kept in `recent`; a follow-up only when it stopped a build (a
+cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both). An entry with no builds of its
+own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build matches a PR by the
+repo's short name (after the last `/`), so `org/repo` and `repo` are one. The PRs' checks count as passed: the build
+reads "Builds stopped" and the PR moves on to review.
 
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
 started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
@@ -921,7 +924,8 @@ median_work_mins, open_asks, asks, swaps, last_asked}`. `asks`, `swaps` and `las
 when the reviewer came over with `taskboardd import`.
 
 `ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage"|"rereview", by, state:
-"open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces}`.
+"open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces, nudged_at,
+replied_at, reply}` (the last three from an imported ask: when it was nudged and the reviewer's reply to the nudge).
 
 Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (any name of theirs), plus `who`.
 

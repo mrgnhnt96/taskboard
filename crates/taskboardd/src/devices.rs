@@ -77,9 +77,10 @@ fn tags_of(d: &Row) -> Vec<String> {
     jloads_arr(d.s("tags")).into_iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
 }
 
-/// A device answers a need when its name or one of its tags is the need's tag.
+/// A device answers a need when its name or one of its tags is the need's tag. One outside its goal's
+/// own pool (`name_only`, see `view`) answers only by its name.
 fn answers(d: &Row, tag: &str) -> bool {
-    d.s("name") == Some(tag) || tags_of(d).iter().any(|t| t == tag)
+    d.s("name") == Some(tag) || (!d.b("name_only") && tags_of(d).iter().any(|t| t == tag))
 }
 
 fn clean_name(s: &str) -> Result<String> {
@@ -275,7 +276,8 @@ fn purposes(r: &Row) -> Vec<String> {
 /// The pool as a task sees it: devices reserved for other goals left out, and in its own goal's
 /// pool, each device's purposes added to its tags. With the names in its goal's pool, lent first.
 /// With `[devices] goal_pool_only` (the Python board's rule), a goal with devices of its own lends
-/// its tasks only those.
+/// its tasks only those for a tag; a device asked for by name is lent whatever the pool (as Python
+/// did), so the rest stay in the view marked `name_only`.
 fn view(app: &App, goal: Option<i64>) -> Result<(Vec<Row>, Vec<String>)> {
     let pools = goal_pools(app)?;
     let res = reserved(&pools);
@@ -289,7 +291,7 @@ fn view(app: &App, goal: Option<i64>) -> Result<(Vec<Row>, Vec<String>)> {
         }
         let own = ours.iter().find(|r| r.s("device") == Some(name.as_str()));
         if only_ours && own.is_none() {
-            continue;
+            d.insert("name_only".into(), json!(1));
         }
         if let Some(own) = own {
             let mut tags = tags_of(&d);

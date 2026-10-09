@@ -47,8 +47,8 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         CREATE TABLE reviewers(id INTEGER PRIMARY KEY, project TEXT, email TEXT, name TEXT, aliases TEXT,
           commits INTEGER DEFAULT 0, removed INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0,
           last_asked TEXT, asks INTEGER DEFAULT 0, swaps INTEGER DEFAULT 0);
-        CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INTEGER, email TEXT, asked_at TEXT,
-          state TEXT DEFAULT 'open', answered_at TEXT);
+        CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INTEGER, project TEXT, email TEXT, asked_at TEXT,
+          answered_at TEXT, nudged_at TEXT, replied_at TEXT, closed_at TEXT);
         CREATE TABLE master_breaks(id INTEGER PRIMARY KEY, sha TEXT, url TEXT, build_id INT, pipeline TEXT, title TEXT,
           state TEXT DEFAULT 'open', verdict TEXT, reason TEXT, opened_at TEXT, closed_at TEXT);
         -- The Python board's migrations.
@@ -69,9 +69,10 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         ALTER TABLE master_breaks ADD COLUMN error TEXT;
         ALTER TABLE master_breaks ADD COLUMN base TEXT;
         CREATE TABLE photos(id INTEGER PRIMARY KEY, url TEXT);
-        CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, tags TEXT, blocked TEXT, removed_at TEXT);
-        CREATE TABLE device_loans(id INTEGER PRIMARY KEY, device_id TEXT, task_id INT, lent_at TEXT, returned_at TEXT);
-        CREATE TABLE goal_devices(goal_id INT, device_id TEXT, purpose TEXT, reserved INT);
+        CREATE TABLE devices(id INTEGER PRIMARY KEY, project TEXT, name TEXT, kind TEXT, target TEXT, tags TEXT, start_cmd TEXT,
+          stop_cmd TEXT, note TEXT, blocked TEXT, created_at TEXT, updated_at TEXT, removed_at TEXT);
+        CREATE TABLE device_loans(task_id INT, device_id INT, slot INT, at TEXT, PRIMARY KEY(task_id, slot));
+        CREATE TABLE goal_devices(goal_id INT, device_id INT, purpose TEXT, reserved INT);
         CREATE TABLE bits(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, project TEXT, made_at TEXT, goal_id INT);
 
         INSERT INTO goals VALUES (3, 'Checkout v2', 'Pay with one click', 'web', '2026-09-01T10:00:00Z', 0, 'Run make seed first');
@@ -86,7 +87,7 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
           NULL, 'acme/web', 51, NULL, '2026-09-02T09:00:00Z', '2026-09-05T09:00:00Z', '2026-09-03T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL,
           NULL, NULL, NULL, NULL, NULL);
         INSERT INTO tasks VALUES (14, 'Receipt API', 'Serve them', 'api', '{api}', 'needs', NULL, 3, NULL, NULL,
-          NULL, 'api', 9, 'checks', '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, 'device:pixel tag:usb', NULL, NULL, NULL, NULL);
+          NULL, 'api', 9, 'checks', '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, 'device:1 tag:usb', NULL, NULL, NULL, NULL);
         INSERT INTO tasks VALUES (15, 'Mirror', 'Elsewhere', 'mirror', '/nowhere', 'needs', 3, 4, NULL, NULL,
           NULL, 'mirror', 3, NULL, '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, 'none', NULL, NULL, NULL, NULL);
         ALTER TABLE tasks ADD COLUMN pr_state TEXT;
@@ -124,17 +125,17 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         -- Eve: two rows that share only a Slack id.
         INSERT INTO reviewers VALUES (9, 'web', 'eve@acme.dev', 'Eve', NULL, 20, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, 'U0EVE');
         INSERT INTO reviewers VALUES (10, 'web', 'eve@home.dev', 'Eve H', NULL, 2, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, 'U0EVE');
-        INSERT INTO review_asks VALUES (1, 7, 'ana@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO review_asks VALUES (2, 7, 'bo@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, '2026-09-03T13:00:00Z', 2, 'in a meeting', '2026-09-03T11:00:00Z', NULL, NULL);
-        INSERT INTO review_asks VALUES (3, 7, 'bot@acme.dev', '2026-09-03T11:00:00Z', 'answered', '2026-09-03T12:00:00Z', 2, NULL, 1, NULL, NULL, 'approved', NULL);
-        INSERT INTO review_asks VALUES (4, 12, 'ana.old@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO review_asks VALUES (5, 14, 'cy@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO review_asks VALUES (6, 99, 'zed@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO review_asks VALUES (7, 13, 'anab', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
-        -- Answered, then swapped off: not a reviewer on the PR any more.
-        INSERT INTO review_asks VALUES (8, 12, 'bo@acme.dev', '2026-09-03T09:00:00Z', 'answered', '2026-09-03T10:00:00Z', NULL, NULL, 0, NULL, '2026-09-03T11:00:00Z', NULL, 'Needs changes to the totals');
-        -- Swapped off, then answered anyway, in words of its own.
-        INSERT INTO review_asks VALUES (9, 12, 'bot@acme.dev', '2026-09-03T09:00:00Z', 'open', '2026-09-03T12:00:00Z', NULL, NULL, 0, NULL, '2026-09-03T11:00:00Z', 'Left two notes', NULL);
+        INSERT INTO review_asks VALUES (1, 7, NULL, 'ana@acme.dev', '2026-09-03T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (2, 7, NULL, 'bo@acme.dev', '2026-09-03T09:00:00Z', NULL, '2026-09-03T10:00:00Z', NULL, NULL, NULL, '2026-09-03T13:00:00Z', 2, 'in a meeting', '2026-09-03T11:00:00Z', NULL, NULL);
+        INSERT INTO review_asks VALUES (3, 7, NULL, 'bot@acme.dev', '2026-09-03T11:00:00Z', '2026-09-03T12:00:00Z', NULL, NULL, NULL, 2, NULL, 1, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (4, 12, NULL, 'ana.old@acme.dev', '2026-09-03T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (5, 14, NULL, 'cy@acme.dev', '2026-09-03T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (6, 99, NULL, 'zed@acme.dev', '2026-09-03T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (7, 13, NULL, 'anab', '2026-09-03T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        -- Answered, then swapped off: not a reviewer on the PR any more. Nudged first, and replied.
+        INSERT INTO review_asks VALUES (8, 12, NULL, 'bo@acme.dev', '2026-09-03T09:00:00Z', '2026-09-03T10:00:00Z', '2026-09-03T09:30:00Z', '2026-09-03T09:40:00Z', NULL, NULL, NULL, 0, NULL, '2026-09-03T11:00:00Z', 'yes', 'On it after lunch');
+        -- Swapped off, then answered anyway.
+        INSERT INTO review_asks VALUES (9, 12, NULL, 'bot@acme.dev', '2026-09-03T09:00:00Z', '2026-09-03T12:00:00Z', NULL, NULL, NULL, NULL, NULL, 0, NULL, '2026-09-03T11:00:00Z', NULL, NULL);
         INSERT INTO master_breaks VALUES (1, 'abc1', 'https://bitbucket.org/acme/api/pipelines/results/41', '41', 'Pipeline', 'Build fails on master',
           'fixed', 'yours', 'My commit broke the build', '2026-09-03T09:00:00Z', '2026-09-03T10:00:00Z', NULL, 'T12', 'error: x
           at y', 'master');
@@ -143,17 +144,17 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         INSERT INTO master_breaks VALUES (4, 'fed4', NULL, NULL, NULL, 'Flaky?', 'open', 'unsure', 'Flaky?', '2026-09-04T10:00:00Z', NULL, NULL, NULL, NULL, 'release');
         INSERT INTO photos VALUES (1, 'x.png');
         INSERT INTO goals VALUES (4, 'Wallet', 'Pay later', 'web', '2026-09-01T10:00:00Z', 0, NULL);
-        INSERT INTO devices VALUES ('pixel', 'Pixel 9', 'android,phone', NULL, NULL);
-        INSERT INTO devices VALUES ('emu', 'emu-1', 'android', NULL, NULL);
-        INSERT INTO devices VALUES ('iphone', 'iPhone 15', '["ios","phone","usb"]', 'the demo', NULL);
-        INSERT INTO devices VALUES ('dup', 'pixel 9', 'android', NULL, NULL);
-        INSERT INTO device_loans VALUES (1, 'pixel', 7, '2026-09-03T09:00:00Z', NULL);
-        INSERT INTO device_loans VALUES (2, 'gone-device', 7, '2026-09-03T09:00:00Z', NULL);
-        INSERT INTO device_loans VALUES (3, 'emu', 12, '2026-09-03T09:00:00Z', NULL);
+        INSERT INTO devices VALUES (1, 'web', 'Pixel 9', 'android', 'R5CT1', 'android,phone', NULL, NULL, NULL, NULL, '2026-08-01T09:00:00Z', NULL, NULL);
+        INSERT INTO devices VALUES (2, 'web', 'emu-1', 'android', 'emulator-5554', NULL, 'emulator -avd emu1', 'adb emu kill', NULL, NULL, NULL, NULL, NULL);
+        INSERT INTO devices VALUES (3, 'web', 'iPhone 15', 'ios', NULL, '["ios","phone","usb"]', NULL, NULL, NULL, 'the demo', NULL, NULL, NULL);
+        INSERT INTO devices VALUES (4, 'web', 'pixel 9', 'android', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+        INSERT INTO device_loans VALUES (7, 1, 0, '2026-09-03T09:00:00Z');
+        INSERT INTO device_loans VALUES (7, 99, 1, '2026-09-03T09:00:00Z');
+        INSERT INTO device_loans VALUES (12, 2, 0, '2026-09-03T09:00:00Z');
         -- Purposes as a comma list; two goals reserve the pixel.
-        INSERT INTO goal_devices VALUES (3, 'pixel', 'measure,Demo day', 1);
-        INSERT INTO goal_devices VALUES (4, 'pixel', NULL, 1);
-        INSERT INTO goal_devices VALUES (3, 'iphone', NULL, 0);
+        INSERT INTO goal_devices VALUES (3, 1, 'measure,Demo day', 1);
+        INSERT INTO goal_devices VALUES (4, 1, NULL, 1);
+        INSERT INTO goal_devices VALUES (3, 3, NULL, 0);
         INSERT INTO bits VALUES (2, 'checkout.v2', 'backend', 'web', NULL, 3);
         INSERT INTO bits VALUES (4, 'receipts.email', 'local', 'web', NULL, NULL);
         "#
@@ -224,7 +225,7 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!((devs[1].i("off"), devs[1].s("note")), (Some(1), Some("Kept for the demo")), "a blocked device comes over off");
     assert!(rep.skipped.iter().any(|s| s.contains("devices pixel-9")), "two devices with one name: the second is listed");
     assert_eq!(taskboardd::devices::lent(&app, 7).unwrap(), vec!["pixel-9"]);
-    assert!(rep.skipped.iter().any(|s| s.starts_with("device_loans 2")));
+    assert!(rep.skipped.iter().any(|s| s.starts_with("device_loans T7 slot 1:")));
     assert!(taskboardd::devices::lent(&app, 12).unwrap().is_empty(), "a finished task's loan comes back");
     assert_eq!(app.db.val("SELECT released_at FROM device_loans WHERE task_id = 12", vec![]).unwrap(), json!("2026-09-04T09:00:00Z"));
     let needs = |owner: &str| app.db.val("SELECT needs FROM device_needs WHERE owner = ?", vec![json!(owner)]).unwrap();
@@ -318,11 +319,16 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!(a2.s("closed_at"), Some("2026-09-03T11:00:00Z"));
     let a3 = ask(3);
     assert_eq!((a3.st("state"), a3.i("reviewer_id"), a3.i("replaces"), a3.st("why")), ("answered".into(), Some(bot.id()), Some(2), "swap".into()), "replaces is Bo's ask");
-    assert_eq!(a3.s("answer"), Some("approved"), "reply is the answer");
+    assert!(a3.s("answer").is_none(), "the Python board kept no verdict");
     let a8 = ask(8);
-    assert_eq!((a8.st("state"), a8.s("answer"), a8.s("answered_at")), ("swapped".into(), Some("changes"), Some("2026-09-03T10:00:00Z")), "answered, then swapped off");
+    assert_eq!((a8.st("state"), a8.s("answer"), a8.s("answered_at")), ("swapped".into(), None, Some("2026-09-03T10:00:00Z")), "answered, then swapped off");
+    assert_eq!(
+        (a8.s("reply"), a8.s("nudged_at"), a8.s("replied_at")),
+        (Some("yes · On it after lunch"), Some("2026-09-03T09:30:00Z"), Some("2026-09-03T09:40:00Z")),
+        "the reply to a nudge is its reply, not a review (#86)"
+    );
     let a9 = ask(9);
-    assert_eq!((a9.st("state"), a9.s("answer")), ("came_back".into(), Some("Left two notes")), "swapped off, then answered: the old words kept");
+    assert_eq!(a9.st("state"), "came_back", "swapped off, then answered");
     let live: Vec<String> = taskboardd::asks::pill_info(&app, 12).unwrap().into_keys().collect();
     assert!(!live.iter().any(|u| u.contains("bo")), "Bo was swapped off T12's PR: {live:?}");
     assert_eq!((ask(4).st("state"), ask(4).i("reviewer_id")), ("open".into(), Some(ana.id())), "T12 is done but its PR is still open; Ana B's email is Ana's");
@@ -380,16 +386,17 @@ fn a_goals_device_pool_comes_over_as_its_own_with_blocked_and_removed_devices() 
         .unwrap()
         .execute_batch(
             "CREATE TABLE goals(id INTEGER PRIMARY KEY, name TEXT, project TEXT);
-             CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, tags TEXT, blocked TEXT, removed_at TEXT);
-             CREATE TABLE goal_devices(goal_id INT, device_id TEXT, purpose TEXT, reserved INT);
+             CREATE TABLE devices(id INTEGER PRIMARY KEY, project TEXT, name TEXT, kind TEXT, target TEXT, tags TEXT, start_cmd TEXT,
+               stop_cmd TEXT, note TEXT, blocked TEXT, created_at TEXT, updated_at TEXT, removed_at TEXT);
+             CREATE TABLE goal_devices(goal_id INT, device_id INT, purpose TEXT, reserved INT);
              INSERT INTO goals VALUES (3, 'Checkout v2', 'web');
-             INSERT INTO devices VALUES ('d1', 'Pixel', 'android', NULL, NULL);
-             INSERT INTO devices VALUES ('d2', 'iPhone', 'ios', NULL, NULL);
-             INSERT INTO devices VALUES ('d3', 'Bench rig', 'bench', 'the demo', NULL);
-             INSERT INTO devices VALUES ('d4', 'Old tab', 'android', NULL, '2026-01-02T00:00:00');
-             INSERT INTO goal_devices VALUES (3, 'd1', 'Payments on Android', 1);
-             INSERT INTO goal_devices VALUES (3, 'd2', 'measure', 0);
-             INSERT INTO goal_devices VALUES (3, 'd4', NULL, 0);",
+             INSERT INTO devices VALUES (1, 'web', 'Pixel', 'android', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+             INSERT INTO devices VALUES (2, 'web', 'iPhone', 'ios', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+             INSERT INTO devices VALUES (3, 'web', 'Bench rig', 'bench', NULL, NULL, NULL, NULL, NULL, 'the demo', NULL, NULL, NULL);
+             INSERT INTO devices VALUES (4, 'web', 'Old tab', 'android', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-02T00:00:00');
+             INSERT INTO goal_devices VALUES (3, 1, 'Payments on Android', 1);
+             INSERT INTO goal_devices VALUES (3, 2, 'measure', 0);
+             INSERT INTO goal_devices VALUES (3, 4, NULL, 0);",
         )
         .unwrap();
     let dir = tempfile::tempdir().unwrap();

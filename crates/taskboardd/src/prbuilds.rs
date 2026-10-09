@@ -28,7 +28,7 @@
 //!
 //! The setting `pr_builds` is `{stopped, by, at, reason}` (and `resumed_by`, `resumed_at`); the
 //! setting `pr_build_cancels` is the queue: `[{key, task_id, repo, host, num, url, head, branch,
-//! provider, build_url, build_id, tries, next_at, error, round, first_at}]` (`round`: 0 for the
+//! provider, build_url, build_id, pipeline, tries, next_at, error, round, first_at}]` (`round`: 0 for the
 //! first cancel, then each follow-up); `pr_build_recent` the last cancels, one per build stopped (with
 //! its pipeline's name, `build`), newest first; `pr_builds_owner_prs` the owner's open PRs off the
 //! board, `{read_at, prs: [{host, repo, num, branch, url, from: "host"|"feed"}]}`. A task's
@@ -54,7 +54,8 @@ pub struct PrBuildsConfig {
     pub retry_secs: Vec<f64>,
     /// The command that cancels builds, by CI provider. Run with `/bin/sh -c`, with TB_PROVIDER,
     /// TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD, TB_BRANCH, TB_BUILD_URL and TB_BUILD_ID set; exit 0
-    /// when it cancelled them. Unset for github or bitbucket: the PR host's own.
+    /// when it cancelled them. It may write the builds it stopped, a name per line, to $TB_CANCELLED.
+    /// Unset for github or bitbucket: the PR host's own.
     pub cancel: BTreeMap<String, String>,
     /// How long a cancel command may run.
     pub timeout_secs: f64,
@@ -179,7 +180,14 @@ fn pr_item(app: &App, t: &Row, head: &str, provider: &str, body: &Value) -> Valu
     json!({"key": format!("T{}:{head}", t.id()), "task_id": t.id(), "repo": t.v("pr_repo"), "host": t.v("pr_host"), "num": t.v("pr_num"),
            "url": t.v("pr_url"), "head": head, "branch": body.get("branch").cloned().unwrap_or(Value::Null), "provider": provider,
            "build_url": body.get("build_url").cloned().unwrap_or(Value::Null), "build_id": body.get("build_id").cloned().unwrap_or(Value::Null),
-           "tries": 0, "round": 0, "next_at": iso(now_ts() + app.cfg.pr_builds.retry_secs.first().copied().unwrap_or(0.0))})
+           "pipeline": pipeline_of(body), "tries": 0, "round": 0, "next_at": iso(now_ts() + app.cfg.pr_builds.retry_secs.first().copied().unwrap_or(0.0))})
+}
+
+/// The pipeline a build event names: `pipeline`, else Azure's `definition` (its `name`, or itself).
+fn pipeline_of(body: &Value) -> Value {
+    let p = body_str(body, "pipeline");
+    let p = if p.is_empty() { body["definition"]["name"].as_str().or(body["definition"].as_str()).unwrap_or("").trim().to_string() } else { p };
+    if p.is_empty() { Value::Null } else { json!(p) }
 }
 
 /// A build event on the feed for one of the board's PRs: cancels it while PR builds are stopped, and
@@ -221,7 +229,7 @@ fn owner_pr_on(app: &App, repo: &str, branch: &str) -> Result<Option<Row>> {
         p![],
     )?;
     Ok(tasks.into_iter().find(|t| {
-        (repo.is_empty() || t.s("pr_repo").is_some_and(|r| r.eq_ignore_ascii_case(repo)))
+        (repo.is_empty() || t.s("pr_repo").is_some_and(|r| repo_is(r, repo)))
             && flow(t).get("rec").and_then(|r| r["branch"].as_str()) == Some(branch)
     }))
 }
@@ -235,8 +243,15 @@ fn save_owner_prs(app: &App, read_at: Value, prs: Vec<Value>) -> Result<()> {
     app.db.set_setting(OWNER_PRS, Some(&jdumps(&json!({"read_at": read_at, "prs": prs}))))
 }
 
+/// Two names for one repo: alike by their short names (after the last `/`), as the Python board
+/// matched them, since a build event may name `org/repo` where a PR event names `repo`.
+fn repo_is(a: &str, b: &str) -> bool {
+    let short = |s: &str| s.trim().trim_end_matches('/').rsplit('/').next().unwrap_or("").to_lowercase();
+    a.eq_ignore_ascii_case(b) || (!short(a).is_empty() && short(a) == short(b))
+}
+
 fn same_repo(p: &Value, repo: &str) -> bool {
-    p["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo))
+    p["repo"].as_str().is_some_and(|r| repo_is(r, repo))
 }
 
 /// One of the owner's open PRs off the board: by its number in `repo`, else by its branch (in `repo`,
@@ -346,13 +361,13 @@ pub fn on_push_build(app: &App, body: &Value) -> Result<Value> {
             let provider = { let x = provider_for(&Row::new(), body); if x.is_empty() { h.clone() } else { x } };
             json!({"key": format!("{r}#{n}:{head}"), "task_id": null, "repo": r, "host": h, "num": n, "url": p["url"],
                    "head": head, "branch": if branch.is_empty() { p["branch"].clone() } else { json!(branch) }, "provider": provider,
-                   "build_url": body.get("build_url"), "build_id": body.get("build_id"), "tries": 0, "round": 0, "next_at": now_iso()})
+                   "build_url": body.get("build_url"), "build_id": body.get("build_id"), "pipeline": pipeline_of(body), "tries": 0, "round": 0, "next_at": now_iso()})
         }
         None => {
             let provider = { let x = provider_for(&Row::new(), body); if x.is_empty() { host.clone() } else { x } };
             json!({"key": format!("{repo}:{branch}:{head}"), "task_id": null, "repo": repo, "host": host, "num": 0,
                    "url": url, "head": head, "branch": body.get("branch"), "provider": provider, "build_url": body.get("build_url"),
-                   "build_id": body.get("build_id"), "tries": 0, "round": 0, "next_at": now_iso()})
+                   "build_id": body.get("build_id"), "pipeline": pipeline_of(body), "tries": 0, "round": 0, "next_at": now_iso()})
         }
     };
     let queued = enqueue(app, item)?;
@@ -380,9 +395,11 @@ pub fn sweep(app: &App) -> Result<()> {
         if head.is_empty() || rec["running"].as_i64().unwrap_or(0) == 0 || f.get("builds_cancelled").and_then(|m| m.get(head)).is_some() {
             continue;
         }
-        let running_url = rec["checks"].as_array().and_then(|a| a.iter().find(|c| c["state"] == "running")).and_then(|c| c["url"].as_str()).unwrap_or("");
+        let running = rec["checks"].as_array().and_then(|a| a.iter().find(|c| c["state"] == "running"));
+        let running_url = running.and_then(|c| c["url"].as_str()).unwrap_or("");
         let provider = provider_of(running_url).map(|p| p.to_string()).unwrap_or_else(|| t.st("pr_host"));
-        enqueue(app, pr_item(app, &t, head, &provider, &json!({"build_url": running_url})))?;
+        let check = running.map(|c| c["name"].clone()).unwrap_or(Value::Null);
+        enqueue(app, pr_item(app, &t, head, &provider, &json!({"build_url": running_url, "pipeline": check})))?;
     }
     Ok(())
 }
@@ -414,13 +431,11 @@ pub fn tick(app: &App) -> Result<()> {
                     q.push(next);
                 }
                 save_queue(app, &q)?;
-                // A follow-up is told only when it stopped something (a cancel command's count isn't
-                // known: it's kept in the recent list, not logged).
-                let n = builds.as_ref().map(|b| b.len());
-                if round == 0 || n.is_some_and(|n| n > 0) {
+                // A follow-up is told, and kept in the recent list, only when it stopped something (a
+                // cancel command that doesn't report what it stopped, in $TB_CANCELLED, stopped nothing
+                // anyone knows of).
+                if round == 0 || builds.as_ref().is_some_and(|b| !b.is_empty()) {
                     cancelled(app, &item, &what, round, builds.as_deref().unwrap_or(&[]))?;
-                } else if n.is_none() {
-                    remember(app, &item, &what, true, &[])?;
                 }
             }
             Err((why, retry)) => {
@@ -463,14 +478,23 @@ fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)>
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+        // Where the command may write the builds it stopped, one name per line.
+        let report = std::env::temp_dir().join(format!("tb-cancelled-{}-{}", std::process::id(), rand::random::<u32>()));
+        let mut env = env;
+        env.push(("TB_CANCELLED".into(), report.to_string_lossy().to_string()));
         let timeout = app.cfg.pr_builds.timeout_secs;
-        let o = crate::proc::run_with(Path::new("/bin/sh"), &["-c".into(), cmd.to_string()], None, timeout, &env, None)
-            .map_err(|_| (format!("the {provider} cancel command didn't finish in {timeout} seconds"), true))?;
+        let o = crate::proc::run_with(Path::new("/bin/sh"), &["-c".into(), cmd.to_string()], None, timeout, &env, None);
+        let stopped = std::fs::read_to_string(&report).ok().map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>());
+        let _ = std::fs::remove_file(&report);
+        let o = o.map_err(|_| (format!("the {provider} cancel command didn't finish in {timeout} seconds"), true))?;
         if o.code != Some(0) {
             let why = o.stderr.lines().chain(o.stdout.lines()).find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
             return Err((format!("the {provider} cancel command exited {}{}", o.code.unwrap_or(-1), if why.is_empty() { String::new() } else { format!(": {why}") }), true));
         }
-        return Ok((format!("the {provider} cancel command ran"), None));
+        return Ok(match stopped {
+            Some(b) => (format!("the {provider} cancel command stopped {}", plural(b.len() as i64, "build")), Some(b)),
+            None => (format!("the {provider} cancel command ran"), None),
+        });
     }
     let host = s("host");
     if !prhost::watched(Some(&host)) || !(provider == host || provider.is_empty()) {
@@ -491,7 +515,8 @@ fn short_head(item: &Value) -> String {
 }
 
 /// Keeps a cancel (or a give-up, `ok: false`) in the recent list `tb pr-builds` shows: one entry per
-/// build it stopped (`build`: its pipeline's name), else one for the cancel.
+/// build it stopped (`build`: its pipeline's name), else one for the cancel (`build`: the pipeline its
+/// build event named, if any).
 fn remember(app: &App, item: &Value, what: &str, ok: bool, builds: &[String]) -> Result<()> {
     let mut recent = setting(app, RECENT).as_array().cloned().unwrap_or_default();
     let entry = |build: Value| {
@@ -500,7 +525,7 @@ fn remember(app: &App, item: &Value, what: &str, ok: bool, builds: &[String]) ->
                "follow_up": item["round"].as_i64().unwrap_or(0) > 0})
     };
     if builds.is_empty() {
-        recent.insert(0, entry(Value::Null));
+        recent.insert(0, entry(item.get("pipeline").cloned().unwrap_or(Value::Null)));
     } else {
         for b in builds.iter().rev() {
             recent.insert(0, entry(json!(b)));
