@@ -236,8 +236,11 @@ in_review = "In Review"
 done = ""                            # status for a finished task without a PR; empty = leave it
 merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
 via = "rest"                         # "rest" (the API token) or "claude" (the Atlassian connector through claude -p)
-claude_tools = ["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian"]   # the connector's tools, for via = "claude" and the desk:
-                                     # the claude.ai Atlassian connector, and a local Atlassian MCP server
+claude_tools = []                    # the tools for via = "claude" and the desk. Empty: each op gets only the claude.ai
+                                     # Atlassian connector's tools it needs, by exact name (getJiraIssue and executeRead,
+                                     # plus transitionJiraIssue, addOrEditJiraIssueComment, searchJiraIssuesUsingJql or
+                                     # createJiraIssue for the ops that use them). Set, every op gets this list as it is;
+                                     # example: ["mcp__atlassian"] for a local Atlassian MCP server (a server's name allows all its tools)
 claude_model = "haiku"               # Jira ops are mechanical: a small model
 qa_poll_mins = 0                     # minutes between QA's checks for new comments; 0 = 5 over REST, 30 through Claude
 claude_budget_usd = "0.50"

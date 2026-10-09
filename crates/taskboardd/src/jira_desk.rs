@@ -89,10 +89,10 @@ pub fn job_text(app: &App, j: &Row) -> Result<String> {
     ))
 }
 
-/// What the desk may use without asking: the connector's tools, and `tb jira` both as plain `tb` and
+/// What the desk may use without asking: the connector's tools (`create`'s, or the owner's `claude_tools`), and `tb jira` both as plain `tb` and
 /// by the path it's told to run it by (`board::tb_cmd`), so its reports never wait on a prompt.
 pub fn allowed_tools(app: &App) -> Vec<String> {
-    let mut tools = app.cfg.jira.claude_tools.clone();
+    let mut tools = crate::jira_claude::tools(app, "create", &json!({}));
     tools.push("Bash(tb jira:*)".into());
     let tb = board::tb_cmd(app);
     if tb != "tb" && !tb.contains(['\'', ',', '(', ')']) {

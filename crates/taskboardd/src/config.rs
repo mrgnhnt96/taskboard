@@ -345,8 +345,9 @@ pub struct JiraConfig {
     /// How the board talks to Jira: "rest" (the API token) or "claude" (a headless `claude -p` with
     /// the Atlassian connector's tools, for a board with no token).
     pub via: String,
-    /// The tools `claude -p` may use for Jira ("claude" via and the desk): the Atlassian connector's.
-    /// A server's name (`mcp__claude_ai_Atlassian_MCP`) allows all its tools.
+    /// The tools `claude -p` may use for Jira ("claude" via and the desk). Empty: each op gets only the
+    /// claude.ai Atlassian connector's tools it needs, by exact name (`jira_claude::default_tools`).
+    /// Set, every op gets it as it is; a server's name (`mcp__claude_ai_Atlassian_MCP`) allows all its tools.
     pub claude_tools: Vec<String>,
     /// The model for Jira through Claude: the ops are mechanical, so a small one.
     pub claude_model: String,
@@ -387,7 +388,7 @@ impl Default for JiraConfig {
             canceled: String::new(),
             products: BTreeMap::new(),
             via: "rest".into(),
-            claude_tools: vec!["mcp__claude_ai_Atlassian_MCP".into(), "mcp__atlassian".into()],
+            claude_tools: vec![],
             claude_model: "haiku".into(),
             qa_poll_mins: 0,
             claude_budget_usd: "0.50".into(),

@@ -21,8 +21,8 @@ fn intro(app: &App) -> String {
     let j = &app.cfg.jira;
     format!(
         "You work Jira for a task board through the Atlassian connector's tools (site {}, project {}). Do exactly the one \
-         thing below, then answer in the JSON asked for. Never ask anyone anything. If it can't be done, answer ok false \
-         with the reason in error, in one plain sentence.",
+         thing below, then answer in the JSON asked for. Never create, edit or delete anything else. Never ask anyone \
+         anything. If it can't be done, answer ok false with the reason in error, in one plain sentence.",
         j.site.trim(),
         j.project.trim()
     )
@@ -36,9 +36,13 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
         "status" => format!("Read the status of {key}. Answer status: its status's name."),
         "transition" => {
             let mut t = format!(
-                "Move {key} to the status “{}”: pick the transition that ends there. If it's already there, leave it. If no \
-                 transition gets there, answer ok false and say which statuses it can go to.",
-                s("status")
+                "Move {key} to the status “{status}”. List its transitions with executeRead: operation listJiraIssueTransitions, \
+                 cloudId the cloud id of {site} (the site's host name works as one), inputs {{\"issueIdOrKey\": \"{key}\"}}. Pick \
+                 the transition whose target status (its `to`) is “{status}”, not one that's only named like it, and pass that \
+                 transition's id to transitionJiraIssue. If it's already there, leave it. If no transition gets there, answer ok \
+                 false and say which statuses it can go to.",
+                status = s("status"),
+                site = app.cfg.jira.site.trim()
             );
             if !s("comment").is_empty() {
                 t += &format!(" Then add this comment to it:\n{}\n", s("comment"));
@@ -82,9 +86,40 @@ pub fn parse(stdout: &str) -> std::result::Result<Value, String> {
     Ok(v)
 }
 
+const SERVER: &str = "mcp__claude_ai_Atlassian_MCP";
+
+/// The connector's tools one op needs, by exact name: reads, plus only the writes the op makes, so a
+/// status read or a comment job can't create, edit or delete. The Jira desk gets `create`'s.
+pub fn default_tools(op: &str, input: &Value) -> Vec<String> {
+    let mut t = vec!["getJiraIssue", "executeRead"];
+    match op {
+        "transition" => {
+            t.push("transitionJiraIssue");
+            if input["comment"].as_str().is_some_and(|c| !c.trim().is_empty()) {
+                t.push("addOrEditJiraIssueComment");
+            }
+        }
+        "comment" => t.push("addOrEditJiraIssueComment"),
+        "comments" => t.push("searchJiraIssuesUsingJql"),
+        "create" => t.extend(["searchJiraIssuesUsingJql", "createJiraIssue"]),
+        _ => {}
+    }
+    t.into_iter().map(|n| format!("{SERVER}__{n}")).collect()
+}
+
+/// The tools one op may use: the owner's `[jira] claude_tools` when set, else `default_tools`.
+pub fn tools(app: &App, op: &str, input: &Value) -> Vec<String> {
+    let own: Vec<String> = app.cfg.jira.claude_tools.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+    if own.is_empty() {
+        default_tools(op, input)
+    } else {
+        own
+    }
+}
+
 /// The flags that keep a Jira call to the connector's tools.
-pub fn tool_flags(app: &App) -> Vec<String> {
-    vec!["--tools".into(), "".into(), "--allowedTools".into(), app.cfg.jira.claude_tools.join(",")]
+pub fn tool_flags(app: &App, op: &str, input: &Value) -> Vec<String> {
+    vec!["--tools".into(), "".into(), "--allowedTools".into(), tools(app, op, input).join(",")]
 }
 
 /// Runs one op through headless Claude.
@@ -92,7 +127,7 @@ pub fn run(app: &App, op: &str, input: &Value) -> std::result::Result<Value, Str
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let j = &app.cfg.jira;
     let mut args: Vec<String> = vec!["-p".into(), prompt(app, op, input), "--model".into(), j.claude_model.clone(), "--no-session-persistence".into()];
-    args.extend(tool_flags(app));
+    args.extend(tool_flags(app, op, input));
     args.extend([
         "--max-budget-usd".into(),
         j.claude_budget_usd.clone(),
@@ -118,5 +153,43 @@ mod tests {
         let e = parse(r#"{"structured_output": {"ok": false, "error": "PROJ-4 can't go to Done"}}"#).unwrap_err();
         assert!(e.contains("can't go to Done"), "{e}");
         assert!(parse("not json").is_err());
+    }
+
+    fn names(op: &str, input: Value) -> Vec<String> {
+        default_tools(op, &input).iter().map(|t| t.strip_prefix("mcp__claude_ai_Atlassian_MCP__").unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn each_op_gets_only_the_tools_it_needs() {
+        assert_eq!(names("status", json!({})), ["getJiraIssue", "executeRead"]);
+        assert_eq!(names("comment_get", json!({})), ["getJiraIssue", "executeRead"]);
+        assert_eq!(names("transition", json!({"status": "Done"})), ["getJiraIssue", "executeRead", "transitionJiraIssue"]);
+        assert_eq!(
+            names("transition", json!({"status": "Done", "comment": "shipped"})),
+            ["getJiraIssue", "executeRead", "transitionJiraIssue", "addOrEditJiraIssueComment"]
+        );
+        assert_eq!(names("comment", json!({})), ["getJiraIssue", "executeRead", "addOrEditJiraIssueComment"]);
+        assert_eq!(names("comments", json!({})), ["getJiraIssue", "executeRead", "searchJiraIssuesUsingJql"]);
+        assert_eq!(names("create", json!({})), ["getJiraIssue", "executeRead", "searchJiraIssuesUsingJql", "createJiraIssue"]);
+        for op in ["status", "transition", "comment", "comments", "comment_get", "create"] {
+            let t = names(op, json!({"comment": "x"}));
+            assert!(!t.iter().any(|n| ["executeWrite", "executeDestructive", "editJiraIssue"].contains(&n.as_str())), "{op}: {t:?}");
+        }
+    }
+
+    #[test]
+    fn the_transition_prompt_names_the_v2_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.jira.site = "acme.atlassian.net".into();
+        cfg.jira.project = "PROJ".into();
+        let app = App::for_tests(cfg);
+        let p = prompt(&app, "transition", &json!({"key": "PROJ-4", "status": "In Review"}));
+        assert!(p.contains("executeRead: operation listJiraIssueTransitions"), "{p}");
+        assert!(p.contains("cloudId the cloud id of acme.atlassian.net"), "{p}");
+        assert!(p.contains(r#"inputs {"issueIdOrKey": "PROJ-4"}"#), "{p}");
+        assert!(p.contains("target status (its `to`) is “In Review”"), "{p}");
+        assert!(p.contains("id to transitionJiraIssue"), "{p}");
+        assert!(p.contains("Never create, edit or delete anything else."), "{p}");
     }
 }
