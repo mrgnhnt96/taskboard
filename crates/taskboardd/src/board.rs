@@ -207,15 +207,7 @@ pub fn jira_url(app: &App, key: &str) -> Value {
 }
 
 pub fn jira_card(app: &App, t: &Row) -> Result<Value> {
-    if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
-        return Ok(json!({"key": k, "status": t.v("jira_status"), "url": jira_url(app, k)}));
-    }
-    let asked = app.db.q1(
-        "SELECT id FROM jobs WHERE kind = 'jira' AND task_id = ? AND state IN ('pending', 'running') \
-         AND json_extract(args, '$.op') = 'create' LIMIT 1",
-        p![t.id()],
-    )?;
-    Ok(if asked.is_some() { json!({"key": null, "status": "Ticket asked for", "url": null}) } else { Value::Null })
+    crate::jira::card(app, t)
 }
 
 pub fn goal_ref(g: Option<&Row>) -> Value {
@@ -258,6 +250,13 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "waiting": waiting,
         "blocked": is_blocked(app, t)?,
         "step": crate::steps::waiting_card(app, t),
+        "compacting": if matches!(status.as_str(), "working" | "needs") {
+            get_session(app, t.s("session_id"))?.map(|s| compacting_since(&s)).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
+        "devices": crate::devices::card(app, t)?,
+        "bits": crate::bits::task_card(app, t.id())?,
     }))
 }
 
@@ -344,6 +343,18 @@ pub fn shown_status(s: &Row) -> &str {
         "offline"
     } else {
         "needs"
+    }
+}
+
+/// How long a compaction may go without word from its terminal before the board stops showing it.
+const COMPACTING_SHOWN_SECS: f64 = 30.0 * 60.0;
+
+/// When the terminal started compacting its conversation, while it still is: from PreCompact until
+/// the next word from it (SessionStart "compact" at the end).
+pub fn compacting_since(s: &Row) -> Value {
+    match s.s("compacting_at").filter(|_| s.s("status") != Some("gone")) {
+        Some(at) if wall_age_secs(Some(at)).is_some_and(|a| a < COMPACTING_SHOWN_SECS) => json!(at),
+        _ => Value::Null,
     }
 }
 
@@ -435,23 +446,41 @@ pub fn is_blocked(app: &App, t: &Row) -> Result<bool> {
     Ok(t.s("status") == Some("queued") && t.i("start_job").is_none() && waitsfor::blocker(app, t)?.is_some())
 }
 
+/// A queued task that isn't blocked by another task's work but that something else holds back:
+/// its goal's waves or order, a lock, a bit or the device pool.
+pub fn is_held(app: &App, t: &Row) -> Result<bool> {
+    if t.s("status") != Some("queued") || t.i("start_job").is_some() {
+        return Ok(false);
+    }
+    if let Some(g) = find_goal(app, t.i("goal_id"))? {
+        if crate::runner::goal_order_blocker(app, t, &g)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(crate::locks::blocker(app, t)?.is_some() || crate::bits::blocker(app, t)?.is_some() || crate::devices::blocker(app, t)?.is_some())
+}
+
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
     let done = n(&|r| r.s("status") == Some("done"));
     let mut blocked = 0;
+    let mut held = 0;
     for r in &rows {
         if is_blocked(app, r)? {
             blocked += 1;
+        } else if is_held(app, r)? {
+            held += 1;
         }
     }
+    let bits_waiting = crate::bits::goal_waiting(app, goal_id)?;
     let prs_open: Vec<i64> = rows
         .iter()
         .filter(|r| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r))
         .filter_map(|r| r.i("pr_num"))
         .collect();
     let total = rows.len() as i64;
-    let finished_at = if total > 0 && done == total && prs_open.is_empty() {
+    let finished_at = if total > 0 && done == total && prs_open.is_empty() && bits_waiting == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
         Value::Null
@@ -463,6 +492,8 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         "queued": n(&|r| r.s("status") == Some("queued")),
         "starting": n(&|r| r.s("status") == Some("queued") && r.i("start_job").is_some()),
         "blocked": blocked,
+        "held": held,
+        "bits_waiting": bits_waiting,
         "planned": n(&|r| r.s("status") == Some("planned")),
         "failed": n(&|r| r.s("status") == Some("done") && r.b("failed")),
         "prs_open": prs_open,
@@ -478,7 +509,9 @@ pub fn goal_state_line(c: &Value) -> String {
     let done = c["done"].as_i64().unwrap_or(0);
     if total > 0 && done == total {
         let open = c["prs_open"].as_array().cloned().unwrap_or_default();
+        let bits = c["bits_waiting"].as_i64().unwrap_or(0);
         return match open.len() {
+            0 if bits > 0 => format!("Waiting on {}", plural(bits, "bit")),
             0 => "Done".into(),
             1 => format!("Waits for PR #{} to merge", open[0]),
             n => format!("Waits for {n} PRs to merge"),
@@ -503,7 +536,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"),
+        "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),
         "state": goal_state_line(&c),
         "peek": goal_peek(app, g)?,
@@ -593,6 +626,20 @@ pub fn attachment_dict(a: &Row) -> Value {
 
 static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^https?://\S+$").unwrap());
 
+/// The refused extension (as configured) a file path ends with. Links aren't files, so they pass.
+pub fn refused_extension(refuse: &[String], url: &str) -> Option<String> {
+    if URL_RE.is_match(url) {
+        return None;
+    }
+    let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or(url).to_lowercase();
+    refuse
+        .iter()
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty())
+        .map(|e| if e.starts_with('.') { e } else { format!(".{e}") })
+        .find(|e| name.ends_with(e.as_str()) && name.len() > e.len())
+}
+
 pub fn add_attachment(
     app: &App,
     who: &str,
@@ -605,6 +652,9 @@ pub fn add_attachment(
     let url = url.trim();
     if !(URL_RE.is_match(url) || url.starts_with('/') || url.starts_with("~/")) {
         return err(400, "Attach a link that starts with https:// or a full file path.");
+    }
+    if let Some(ext) = refused_extension(&app.cfg.attachments.refuse, url) {
+        return err(400, app.cfg.attachments.refuse_message.replace("{ext}", &ext));
     }
     let kind = if ATTACH_KINDS.contains(&kind) { kind } else { "other" };
     let title = attachment_title(title, url);
@@ -701,7 +751,7 @@ pub fn issue_from_line(b: &Row) -> String {
             format!("Found by {by} · {who} · {t}")
         }
         Some("answer") => format!("From an answer · {t}"),
-        Some("review") => format!("From a review · {t}"),
+        Some("review" | "review_log") => format!("From the Review log · {t}"),
         _ => format!("Added by you · {t}"),
     }
 }

@@ -104,6 +104,10 @@ fn a_day_is_worked_out_kept_and_survives_the_cleanup() {
     assert_eq!(page["week"][k]["agent_min"], 240.0);
     assert_eq!(page["last_week"][k]["agent_min"], 0.0);
     assert_eq!(page["week_tasks"][0]["ref"], "T2", "the longest task first");
+    // Weeks run Sunday to Saturday unless config.toml's first_weekday says otherwise.
+    let first = chrono::NaiveDate::parse_from_str(page["week"][0]["date"].as_str().unwrap(), "%Y-%m-%d").unwrap();
+    assert_eq!(chrono::Datelike::weekday(&first), chrono::Weekday::Sun);
+    assert_eq!(page["first_weekday"], "sun");
     let hidden = get(&app, "days", &[("date", &ds), ("hide", "api")]);
     assert_eq!(hidden["day"]["agent_min"], 100.0);
     assert_eq!(hidden["week"][k]["done"], 1.0);

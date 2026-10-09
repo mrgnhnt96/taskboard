@@ -125,6 +125,25 @@ enum Cmd {
     },
     /// Named locks, who holds each, and tasks that run alone
     Locks,
+    /// The device pool: each device, its tags, who has it, and the tasks waiting for one
+    Devices,
+    /// Add, change, remove or focus a device in the pool
+    Device {
+        #[command(subcommand)]
+        action: DeviceCmd,
+    },
+    /// Bits (feature flags): each one, local or backend, whether it's made, and what uses it
+    Bits {
+        #[arg(long)]
+        goal: Option<String>,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// Add, change or remove a bit, or record it made in the flag tool
+    Bit {
+        #[command(subcommand)]
+        action: BitCmd,
+    },
     /// List goals
     Goals {
         #[arg(long)]
@@ -153,15 +172,36 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         limit: i64,
     },
+    /// Jira: how it's set up and its jobs, one job (J12), or the Jira desk's report on one:
+    /// tb jira J12 ok key=PROJ-1 status="To Do" [found=yes] [product=web] / tb jira J12 fail "<why>"
+    Jira {
+        /// J12
+        job: Option<String>,
+        /// ok or fail
+        #[arg(value_parser = ["ok", "fail"])]
+        result: Option<String>,
+        /// key=… status=… found=yes product=…, or (with fail) why
+        rest: Vec<String>,
+    },
     /// Add, change or delete a task
     Task {
         #[command(subcommand)]
         action: TaskCmd,
     },
-    /// Add a backlog issue
+    /// Add, change, promote or close backlog issues
     Backlog {
         #[command(subcommand)]
         action: BacklogCmd,
+    },
+    /// Raise an alert for the owner (the banner and a notification), or clear one you raised
+    Alert {
+        #[command(subcommand)]
+        action: AlertCmd,
+    },
+    /// Show a project or change its PR flow
+    Project {
+        #[command(subcommand)]
+        action: ProjectCmd,
     },
     /// Attach a link or file path (design, proposal, doc, evidence, results) to a task or goal
     Attach {
@@ -197,6 +237,9 @@ enum Cmd {
         days: Option<String>,
         #[arg(long = "today-until")]
         today_until: Option<String>,
+        /// How often unanswered alerts repeat, in minutes (0 for never)
+        #[arg(long = "alert-every", value_name = "MIN")]
+        alert_every: Option<i64>,
     },
     /// Show or change how Midna keeps the Mac awake for agents in the work hours (`tb hours` sets when)
     KeepAwake {
@@ -219,6 +262,31 @@ enum Cmd {
         /// off: let the Mac sleep for the rest of today; clear: back to the work hours
         #[arg(long, value_parser = ["off", "clear"])]
         today: Option<String>,
+    },
+    /// Show or change the context limits: the compact window, when a cold conversation is compacted,
+    /// how big and how fresh a conversation must be to resume, and the generated-file globs
+    Limits {
+        /// Tokens at which Claude compacts a board terminal's conversation (0 = off)
+        #[arg(long = "compact-window")]
+        compact_window: Option<i64>,
+        /// Minutes idle after which a conversation is compacted before it resumes (0 = off)
+        #[arg(long = "cold-idle-mins")]
+        cold_idle_mins: Option<i64>,
+        /// A task or PR conversation resumes only under this many tokens, else starts fresh (0 = off)
+        #[arg(long = "warm-tokens")]
+        warm_tokens: Option<i64>,
+        /// …and only when idle under this many minutes (0 = off)
+        #[arg(long = "warm-idle-mins")]
+        warm_idle_mins: Option<i64>,
+        /// Generated-file globs kept as `-diff` in .git/info/attributes, comma-separated (none clears them)
+        #[arg(long)]
+        generated: Option<String>,
+        /// With --generated: that project's own globs, on top of everyone's
+        #[arg(long)]
+        project: Option<String>,
+        /// Forget every change and go back to config.toml's [limits]
+        #[arg(long)]
+        reset: bool,
     },
     /// A done task's pull request
     Pr {
@@ -269,6 +337,93 @@ enum Cmd {
         #[arg(long)]
         pass: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum DeviceCmd {
+    /// Add a device to the pool
+    Add {
+        name: String,
+        /// What it is, for tasks to ask by: android, ios, tablet… Repeat for more
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// A shell command that raises its window ({name} is the device's name)
+        #[arg(long)]
+        focus: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Change a device
+    Set {
+        name: String,
+        #[arg(long = "name")]
+        rename: Option<String>,
+        /// Its tags (replaces them); none for none
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Its focus command, or none
+        #[arg(long)]
+        focus: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+        /// Off: no task is lent it
+        #[arg(long, value_parser = ["on", "off"])]
+        off: Option<String>,
+    },
+    /// Take a device out of the pool
+    Remove { name: String },
+    /// Raise the device's window (runs its focus command)
+    Focus { name: String },
+}
+
+#[derive(Subcommand)]
+enum BitCmd {
+    /// Add a bit: --backend (it has to be made in the flag tool) or --local (in the code only)
+    Add {
+        name: String,
+        #[arg(long, conflicts_with = "local")]
+        backend: bool,
+        #[arg(long)]
+        local: bool,
+        /// A task whose work sits behind it; repeat for more
+        #[arg(long = "task")]
+        tasks: Vec<String>,
+        /// A goal it's for; repeat for more
+        #[arg(long = "goal")]
+        goals: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// The owner made the bit in the flag tool (--undo: it isn't after all). Only on the owner's word
+    Made {
+        name: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Change a bit
+    Set {
+        name: String,
+        #[arg(long = "name")]
+        rename: Option<String>,
+        #[arg(long, conflicts_with = "local")]
+        backend: bool,
+        #[arg(long)]
+        local: bool,
+        #[arg(long = "task")]
+        tasks: Vec<String>,
+        #[arg(long = "not-task")]
+        not_tasks: Vec<String>,
+        #[arg(long = "goal")]
+        goals: Vec<String>,
+        #[arg(long = "not-goal")]
+        not_goals: Vec<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Remove a bit
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -366,18 +521,33 @@ enum GoalCmd {
         /// Start each task in its own git worktree, detached at this branch (like origin/main); off for the shared folder
         #[arg(long, value_name = "BASE|off")]
         worktrees: Option<String>,
+        /// Queue its planned tasks to run (and unpause it), when the owner says so
+        #[arg(long)]
+        run: bool,
+        /// Hold its queued tasks back until it's prioritized or run again
+        #[arg(long, conflicts_with = "prioritize")]
+        deprioritize: bool,
+        /// Back to normal priority
+        #[arg(long)]
+        prioritize: bool,
+        /// Devices each of its tasks asks for (unless the task asks for its own): android, android:2. Repeat for more, none for none
+        #[arg(long = "device", value_name = "TAG[:N]|none")]
+        devices: Vec<String>,
     },
-    /// Name a wave, or stop the goal after it for the owner's review
+    /// What every task in the goal does first (its handoff shows it): {task} {n} {wave} {goal} are filled in; none clears it
+    Setup { goal: String, text: String },
+    /// Name a wave, or hold it: none of its tasks start, nor any later wave, until it's continued.
+    /// (A review stop after a wave is the owner's own checkbox in the app.)
     Wave {
         goal: String,
         wave: i64,
         #[arg(long)]
         name: Option<String>,
-        /// Stop the goal after this wave for the owner's review
-        #[arg(long, value_parser = ["on", "off"])]
-        stop: Option<String>,
+        /// Hold the wave (off: let it start)
+        #[arg(long, num_args = 0..=1, default_missing_value = "on", value_parser = ["on", "off"])]
+        hold: Option<String>,
     },
-    /// Let the goal go on past a wave it stopped at (a review stop or a failed task), when the owner says so
+    /// Let the goal go on past a wave it stopped at (a review stop or a failed task), when the owner says so; or let a held wave start
     Continue { goal: String, wave: i64 },
     /// Delete a goal (only when the owner asks)
     Delete {
@@ -422,6 +592,15 @@ enum TaskCmd {
         /// Nothing else in its goal runs while it does (board: nothing else on the board)
         #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
         alone: Option<String>,
+        /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
+        #[arg(long)]
+        jira: Option<String>,
+        /// Devices from the pool it needs while it runs, by tag or name: android, android:2. Repeat for more
+        #[arg(long = "device", value_name = "TAG[:N]")]
+        devices: Vec<String>,
+        /// A bit (feature flag) its work sits behind; it waits until a backend bit is made. Repeat for more
+        #[arg(long = "bit", value_name = "NAME")]
+        bits: Vec<String>,
     },
     /// Change a task
     Set {
@@ -454,6 +633,15 @@ enum TaskCmd {
         /// A Jira key to link, `new` for a new ticket, or `none`
         #[arg(long)]
         jira: Option<String>,
+        /// Devices from the pool it needs while it runs: android, android:2. Repeat for more, none for its goal's
+        #[arg(long = "device", value_name = "TAG[:N]|none")]
+        devices: Vec<String>,
+        /// A bit (feature flag) its work sits behind. Repeat for more, none for none
+        #[arg(long = "bit", value_name = "NAME|none")]
+        bits: Vec<String>,
+        /// A bit it no longer uses
+        #[arg(long = "not-bit")]
+        not_bits: Vec<String>,
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
@@ -480,8 +668,58 @@ enum BacklogCmd {
         title: Option<String>,
         #[arg(long)]
         detail: Option<String>,
-    },    /// Move a backlog issue to another goal (G2), or out of its goal (none)
+    },
+    /// Move a backlog issue to another goal (G2), or out of its goal (none)
     Move { issue: String, goal: String },
+    /// Make a backlog issue into a task: planned in its goal, or with --board queued on the board
+    Task {
+        issue: String,
+        #[arg(long)]
+        board: bool,
+    },
+    /// Ask Jira for a ticket for a backlog issue
+    Ticket { issue: String },
+    /// Close a backlog issue as won't do (only when the owner says so)
+    Drop {
+        issue: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Open a closed backlog issue again
+    Reopen { issue: String },
+}
+
+#[derive(Subcommand)]
+enum AlertCmd {
+    /// Raise an alert: tb alert raise "main is red on web" --urgent --key main:web
+    Raise {
+        text: String,
+        /// It repeats outside the work hours too, shows first and can't be dismissed until it's cleared
+        #[arg(long)]
+        urgent: bool,
+        /// Name it so raising it again changes nothing and `tb alert clear <key>` takes it away
+        #[arg(long)]
+        key: Option<String>,
+        /// The task it's about (its banner gets an Open button; it clears once the task moves on)
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        goal: Option<String>,
+    },
+    /// Clear an alert by its id or key
+    Clear { id: String },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// A project's PR flow and git remote (every project with no name)
+    Show { name: Option<String> },
+    /// Change a project: --pr-flow auto (by its git remote), on or off
+    Set {
+        name: String,
+        #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
+        pr_flow: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -854,6 +1092,214 @@ fn print_warnings(v: &Value) {
     }
 }
 
+/// `--jira` on `tb task new`: a key links it, `new` asks for one, `none` means no ticket.
+fn jira_arg(v: &str) -> Value {
+    match v.trim().to_lowercase().as_str() {
+        "new" => json!({"mode": "create"}),
+        "none" => json!({"mode": "none"}),
+        _ => json!({"mode": "link", "key": v.trim()}),
+    }
+}
+
+fn jira_job_line(j: &Value) -> String {
+    let a = &j["args"];
+    let r = &j["result"];
+    let what = match a["op"].as_str().unwrap_or("") {
+        "create" => format!("find or make “{}”", a["summary"].as_str().unwrap_or("")),
+        "transition" => format!("move {} to {}", a["key"].as_str().unwrap_or(""), a["status"].as_str().unwrap_or("")),
+        "status" => format!("read {}'s status", a["key"].as_str().unwrap_or("")),
+        "comment" => format!("comment on {}", a["key"].as_str().unwrap_or("")),
+        op => op.to_string(),
+    };
+    let how = match (j["state"].as_str().unwrap_or(""), r["key"].as_str(), r["message"].as_str()) {
+        ("done", Some(k), _) => format!("done: {k}{}", r["status"].as_str().map(|s| format!(" ({s})")).unwrap_or_default()),
+        ("failed" | "expired", _, Some(m)) => format!("failed: {m}"),
+        (st, _, _) => st.to_string(),
+    };
+    format!("{}  {what} · {how}{}", j["ref"].as_str().unwrap_or(""), j["task_id"].as_i64().map(|t| format!(" · T{t}")).unwrap_or_default())
+}
+
+fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<String>) -> Result<i32, String> {
+    let Some(job) = job else {
+        let v = c.call("GET", "/jira", None)?;
+        if v["on"] != true {
+            out("Jira is off: the board's config.toml has no [jira] site and project.");
+            return Ok(0);
+        }
+        out(&format!(
+            "Jira {} {} through {}{}{}.",
+            v["site"].as_str().unwrap_or(""),
+            v["project"].as_str().unwrap_or(""),
+            if v["via"] == "claude" { "headless Claude and the Atlassian connector" } else { "the REST API" },
+            if v["auto_ticket"] == true { "; every PR task gets a ticket" } else { "" },
+            if v["desk"] == true { "; the Jira desk finds or makes tickets" } else { "" }
+        ));
+        for p in v["products"].as_array().cloned().unwrap_or_default() {
+            out(&format!("Product {}: {}", p["name"].as_str().unwrap_or(""), p["what"].as_str().unwrap_or("")));
+        }
+        for j in v["jobs"].as_array().cloned().unwrap_or_default() {
+            out(&jira_job_line(&j));
+        }
+        return Ok(0);
+    };
+    let n = job.trim().trim_start_matches(['J', 'j']).to_string();
+    if n.is_empty() || !n.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("“{job}” isn't a Jira job; they look like J12"));
+    }
+    let Some(result) = result else {
+        let v = c.call("GET", &format!("/jira/jobs/J{n}"), None)?;
+        out(&jira_job_line(&v));
+        return Ok(0);
+    };
+    let mut b = json!({"ok": result == "ok"});
+    let mut why = vec![];
+    for r in rest {
+        match r.split_once('=') {
+            Some((k, v)) if ["key", "status", "found", "product"].contains(&k.to_lowercase().as_str()) => {
+                let k = k.to_lowercase();
+                b[&k] = if k == "found" { json!(matches!(v.to_lowercase().as_str(), "yes" | "true" | "1")) } else { json!(v) };
+            }
+            _ => why.push(r),
+        }
+    }
+    if !why.is_empty() {
+        b["message"] = json!(why.join(" "));
+    }
+    let v = c.call("POST", &format!("/jira/jobs/J{n}"), Some(b))?;
+    out(&jira_job_line(&v));
+    Ok(0)
+}
+
+/// "pixel-7 · android, phone · lent to T4" for `tb devices`.
+fn device_line(d: &Value) -> String {
+    let tags: Vec<&str> = d["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let mut line = d["name"].as_str().unwrap_or("").to_string();
+    if !tags.is_empty() {
+        line += &format!(" · {}", tags.join(", "));
+    }
+    line += &match d["held_by"]["ref"].as_str() {
+        Some(r) => format!(" · lent to {r} {}", d["held_by"]["title"].as_str().unwrap_or("")),
+        None if d["off"] == true => " · off".to_string(),
+        None => " · free".to_string(),
+    };
+    if let Some(n) = d["note"].as_str().filter(|n| !n.is_empty()) {
+        line += &format!(" · {n}");
+    }
+    if d["can_focus"] == true {
+        line += " · can focus";
+    }
+    line
+}
+
+/// "newCheckout · backend · not made in Flagsmith · T4, G2" for `tb bits`.
+fn bit_line(b: &Value, tool: &str) -> String {
+    let kind = b["kind"].as_str().unwrap_or("");
+    let state = match (kind, b["made"] == true) {
+        ("local", _) => format!("in the code only, not in {tool}"),
+        (_, true) => format!("made in {tool}"),
+        _ => format!("not made in {tool} yet"),
+    };
+    let uses: Vec<&str> = ["tasks", "goals"].iter().flat_map(|k| b[*k].as_array().into_iter().flatten().filter_map(|x| x.as_str())).collect();
+    let mut line = format!("{} · {kind} · {state}", b["name"].as_str().unwrap_or(""));
+    if !uses.is_empty() {
+        line += &format!(" · {}", uses.join(", "));
+    }
+    if let Some(n) = b["note"].as_str().filter(|n| !n.is_empty()) {
+        line += &format!(" · {n}");
+    }
+    line
+}
+
+fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
+    match action {
+        DeviceCmd::Add { name, tags, focus, note } => {
+            let v = c.call("POST", "/devices", Some(json!({"name": name, "tags": lock_arg(&tags), "focus": focus, "note": note})))?;
+            out(&format!("Added {}.", device_line(&v)));
+        }
+        DeviceCmd::Set { name, rename, tags, focus, note, off } => {
+            let mut b = json!({});
+            if let Some(x) = rename {
+                b["name"] = json!(x);
+            }
+            if !tags.is_empty() {
+                b["tags"] = json!(lock_arg(&tags));
+            }
+            if let Some(x) = focus {
+                b["focus"] = json!(x);
+            }
+            if let Some(x) = note {
+                b["note"] = json!(x);
+            }
+            if let Some(x) = off {
+                b["off"] = json!(x == "off");
+            }
+            if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                return Err("say what to change, for example: tb device set pixel-7 --tag android --tag phone".into());
+            }
+            let v = c.call("POST", &format!("/devices/{name}"), Some(b))?;
+            out(&format!("Changed {}.", device_line(&v)));
+        }
+        DeviceCmd::Remove { name } => {
+            c.call("POST", &format!("/devices/{name}/remove"), Some(json!({})))?;
+            out(&format!("Took {name} out of the pool."));
+        }
+        DeviceCmd::Focus { name } => {
+            c.call("POST", &format!("/devices/{name}/focus"), Some(json!({})))?;
+            out(&format!("Raising {name}'s window."));
+        }
+    }
+    Ok(0)
+}
+
+fn bit_cmd(c: &Ctx, action: BitCmd) -> Result<i32, String> {
+    let refs = |xs: &[String], f: fn(&str) -> Result<String, String>| xs.iter().map(|x| f(x)).collect::<Result<Vec<_>, _>>();
+    let v = match action {
+        BitCmd::Add { name, backend, local, tasks, goals, project, note } => {
+            if !backend && !local {
+                return Err("say which kind: --backend (it has to be made in the flag tool) or --local (in the code only)".into());
+            }
+            let v = c.call(
+                "POST",
+                "/bits",
+                Some(json!({"name": name, "kind": if local { "local" } else { "backend" }, "tasks": refs(&tasks, task_ref)?,
+                            "goals": refs(&goals, goal_ref)?, "project": project, "note": note, "who": c.who()})),
+            )?;
+            out(&format!("Added the bit {}.", v["name"].as_str().unwrap_or("")));
+            v
+        }
+        BitCmd::Made { name, undo } => c.call("POST", &format!("/bits/{name}/made"), Some(json!({"undo": undo, "who": c.who()})))?,
+        BitCmd::Set { name, rename, backend, local, tasks, not_tasks, goals, not_goals, note } => {
+            let mut b = json!({"who": c.who()});
+            if let Some(x) = rename {
+                b["name"] = json!(x);
+            }
+            if backend || local {
+                b["kind"] = json!(if local { "local" } else { "backend" });
+            }
+            for (k, xs, f) in [("tasks", &tasks, task_ref as fn(&str) -> Result<String, String>), ("not_tasks", &not_tasks, task_ref), ("goals", &goals, goal_ref), ("not_goals", &not_goals, goal_ref)] {
+                if !xs.is_empty() {
+                    b[k] = json!(refs(xs, f)?);
+                }
+            }
+            if let Some(x) = note {
+                b["note"] = json!(x);
+            }
+            if b.as_object().map(|o| o.len() <= 1).unwrap_or(true) {
+                return Err("say what to change, for example: tb bit set newCheckout --task T12".into());
+            }
+            c.call("POST", &format!("/bits/{name}"), Some(b))?
+        }
+        BitCmd::Remove { name } => {
+            c.call("POST", &format!("/bits/{name}/remove"), Some(json!({"who": c.who()})))?;
+            out(&format!("Removed the bit {name}."));
+            return Ok(0);
+        }
+    };
+    let tool = c.call("GET", "/bits", None).ok().and_then(|l| l["tool"].as_str().map(|s| s.to_string())).unwrap_or_else(|| "the flag tool".into());
+    out(&bit_line(&v, &tool));
+    Ok(0)
+}
+
 fn goal_lines(g: &Value) -> Vec<String> {
     let mut lines = vec![format!(
         "{} · {} · {} · {}/{} done",
@@ -868,6 +1314,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
     }
     if g["paused"] == true {
         lines.push("Paused: nothing new starts.".into());
+    }
+    if let Some(s) = g["setup"].as_str().filter(|s| !s.is_empty()) {
+        lines.push(format!("Set up: {s}"));
     }
     lines.push(format!(
         "Runs {}, at most {} at a time.",
@@ -890,6 +1339,14 @@ fn goal_lines(g: &Value) -> Vec<String> {
             for b in lock_bits(t) {
                 line += &format!(" · {b}");
             }
+            if let Some(d) = t["devices"]["lent"].as_array().filter(|a| !a.is_empty()) {
+                line += &format!(" · has {}", d.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "));
+            } else if let Some(n) = t["devices"]["needs_text"].as_str().filter(|n| !n.is_empty()) {
+                line += &format!(" · needs {n}");
+            }
+            if let Some(bs) = t["bits"].as_array().filter(|a| !a.is_empty()) {
+                line += &format!(" · bits {}", bs.iter().filter_map(|x| x["name"].as_str()).collect::<Vec<_>>().join(", "));
+            }
             if let Some(w) = t["waiting"].as_str() {
                 line += &format!(" — {w}");
             }
@@ -906,6 +1363,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
             let mut line = format!("  Wave {}{name} · {} · {}/{} done", w["wave"], w["state"].as_str().unwrap_or(""), w["done"], w["total"]);
             if w["stop_after"] == true {
                 line += if w["released_at"].is_string() { " · stop point, let go on" } else { " · stop point" };
+            }
+            if w["held"] == true {
+                line += " · held";
             }
             if let Some(h) = w["hold"].as_str() {
                 line += &format!(" · {h}");
@@ -1245,6 +1705,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
         Cmd::Locks => {
             let v = c.call("GET", "/locks", None)?;
             let locks = v["locks"].as_array().cloned().unwrap_or_default();
@@ -1270,6 +1731,39 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Devices => {
+            let v = c.call("GET", "/devices", None)?;
+            let devices = v["devices"].as_array().cloned().unwrap_or_default();
+            if devices.is_empty() {
+                out("The device pool is empty. Add one with tb device add NAME --tag android.");
+            }
+            for d in devices {
+                out(&device_line(&d));
+            }
+            for w in v["waiting"].as_array().cloned().unwrap_or_default() {
+                out(&format!("{} {} · needs {} — {}", w["ref"].as_str().unwrap_or(""), w["title"].as_str().unwrap_or(""), w["needs"].as_str().unwrap_or(""), w["why"].as_str().unwrap_or("")));
+            }
+            Ok(0)
+        }
+        Cmd::Device { action } => device_cmd(c, action),
+        Cmd::Bits { goal, t } => {
+            let mut path = "/bits".to_string();
+            if let Some(g) = goal {
+                path += &format!("?goal={}", goal_ref(&g)?);
+            } else if let Some(x) = t.task {
+                path += &format!("?task={}", task_ref(&x)?);
+            }
+            let v = c.call("GET", &path, None)?;
+            let bits = v["bits"].as_array().cloned().unwrap_or_default();
+            if bits.is_empty() {
+                out("No bits yet. Add one with tb bit add NAME --backend (or --local) --task T12.");
+            }
+            for b in bits {
+                out(&bit_line(&b, v["tool"].as_str().unwrap_or("the flag tool")));
+            }
+            Ok(0)
+        }
+        Cmd::Bit { action } => bit_cmd(c, action),
         Cmd::Goals { project } => {
             let v = c.call("GET", &format!("/goals?project={}", project.unwrap_or_else(|| "all".into())), None)?;
             let goals = v["goals"].as_array().cloned().unwrap_or_default();
@@ -1317,7 +1811,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize, devices } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -1347,27 +1841,54 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = worktrees {
                     b["worktree_base"] = json!(x);
                 }
-                if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                if !devices.is_empty() {
+                    b["devices"] = json!(lock_arg(&devices));
+                }
+                if deprioritize || prioritize {
+                    b["deprioritized"] = json!(deprioritize);
+                }
+                let empty = b.as_object().map(|o| o.is_empty()).unwrap_or(true);
+                if empty && !run {
                     return Err("say what to change, for example: tb goal set G3 --paused on".into());
                 }
-                let v = c.call("POST", &format!("/goals/{g}"), Some(b))?;
-                out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
+                if !empty {
+                    let v = c.call("POST", &format!("/goals/{g}"), Some(b))?;
+                    out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
+                }
+                if run {
+                    let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
+                    let n = v["queued_now"].as_i64().unwrap_or(0);
+                    out(&format!("{g} runs: queued {n} planned task{}.", if n == 1 { "" } else { "s" }));
+                }
                 Ok(0)
             }
-            GoalCmd::Wave { goal, wave, name, stop } => {
+            GoalCmd::Setup { goal, text } => {
                 let g = goal_ref(&goal)?;
-                let mut b = json!({});
+                let v = c.call("POST", &format!("/goals/{g}"), Some(json!({"setup": text})))?;
+                if v["setup"].is_string() {
+                    out(&format!("Set up for {g}: every task's handoff now starts with it."));
+                } else {
+                    out(&format!("{g} has no setup now."));
+                }
+                Ok(0)
+            }
+            GoalCmd::Wave { goal, wave, name, hold } => {
+                let g = goal_ref(&goal)?;
+                if name.is_none() && hold.is_none() {
+                    return Err("say what to change: tb goal wave G3 2 --name \"API\" or --hold".into());
+                }
                 if let Some(n) = name {
-                    b["name"] = json!(n);
+                    c.call("POST", &format!("/goals/{g}/waves/{wave}"), Some(json!({"name": n})))?;
+                    out(&format!("Named wave {wave} of {g}."));
                 }
-                if let Some(s) = stop {
-                    b["stop_after"] = json!(s == "on");
+                if let Some(h) = hold {
+                    c.call("POST", &format!("/goals/{g}/waves/{wave}/hold"), Some(json!({"on": h == "on", "who": c.who()})))?;
+                    out(&if h == "on" {
+                        format!("Holding wave {wave} of {g}: none of its tasks start until tb goal continue {g} {wave}.")
+                    } else {
+                        format!("Wave {wave} of {g} may start.")
+                    });
                 }
-                if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                    return Err("say what to change: tb goal wave G3 2 --name \"API\" or --stop on".into());
-                }
-                c.call("POST", &format!("/goals/{g}/waves/{wave}"), Some(b))?;
-                out(&format!("Changed wave {wave} of {g}."));
                 Ok(0)
             }
             GoalCmd::Continue { goal, wave } => {
@@ -1472,7 +1993,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone } => {
+            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone, jira, devices, bits } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -1503,6 +2024,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(a) = alone {
                     body["alone"] = json!(a);
                 }
+                if let Some(j) = jira {
+                    body["jira"] = jira_arg(&j);
+                }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) if here => {
@@ -1511,6 +2035,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
+                        // Devices and bits go on with a change, once the task is there.
+                        if !devices.is_empty() || !bits.is_empty() {
+                            let mut more = json!({"who": c.who()});
+                            if !devices.is_empty() {
+                                more["devices"] = json!(lock_arg(&devices));
+                            }
+                            if !bits.is_empty() {
+                                more["bits"] = json!(lock_arg(&bits));
+                            }
+                            c.call("POST", &format!("/tasks/{r}"), Some(more))?;
+                        }
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
@@ -1518,7 +2053,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, devices, bits, not_bits } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -1557,8 +2092,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = jira {
                     b["jira_key"] = json!(x);
                 }
+                if !devices.is_empty() {
+                    b["devices"] = json!(lock_arg(&devices));
+                }
+                if !bits.is_empty() {
+                    b["bits"] = if bits.len() == 1 && bits[0].eq_ignore_ascii_case("none") { json!("none") } else { json!(lock_arg(&bits)) };
+                }
+                if !not_bits.is_empty() {
+                    b["not_bits"] = json!(lock_arg(&not_bits));
+                }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
+                }
+                if !devices.is_empty() || !bits.is_empty() || !not_bits.is_empty() {
+                    b["who"] = json!(c.who());
                 }
                 let v = c.call("POST", &format!("/tasks/{t}"), Some(b))?;
                 let mut bits = String::new();
@@ -1614,6 +2161,54 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Backlog { action: BacklogCmd::Task { issue, board } } => {
+            let r = issue_ref(&issue)?;
+            let v = c.call("POST", &format!("/backlog/{r}/promote"), Some(json!({"where": if board { "board" } else { "goal" }})))?;
+            let t = &v["task"];
+            let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
+                (Some("planned"), Some(g)) => format!("a planned task in {g}"),
+                _ => "a queued task".to_string(),
+            };
+            out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Ticket { issue } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/ticket"), Some(json!({})))?;
+            out(&format!("Asked Jira for a ticket for {r}."));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Drop { issue, reason } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/drop"), Some(json!({"reason": reason.unwrap_or_default()})))?;
+            out(&format!("Closed {r} as won't do."));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Reopen { issue } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/reopen"), Some(json!({})))?;
+            out(&format!("Opened {r} again."));
+            Ok(0)
+        }
+        Cmd::Project { action } => project_cmd(c, action),
+        Cmd::Alert { action: AlertCmd::Raise { text, urgent, key, task, goal } } => {
+            let task = task.map(|t| task_ref(&t)).transpose()?;
+            let goal = goal.map(|g| goal_ref(&g)).transpose()?;
+            let v = c.call("POST", "/alerts", Some(json!({"text": text, "urgent": urgent, "key": key, "task": task, "goal": goal})))?;
+            let a = &v["alert"];
+            out(&format!(
+                "Raised {}alert {}{}.",
+                if a["urgent"] == true { "an urgent " } else { "an " },
+                a["id"].as_str().unwrap_or(""),
+                a["key"].as_str().map(|k| format!(" ({k})")).unwrap_or_default()
+            ));
+            Ok(0)
+        }
+        Cmd::Alert { action: AlertCmd::Clear { id } } => {
+            c.call("POST", &format!("/alerts/{id}/clear"), Some(json!({})))?;
+            out(&format!("Cleared {id}."));
+            Ok(0)
+        }
         Cmd::Unattach { url, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let needs = goal.is_none();
@@ -1633,7 +2228,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
-        Cmd::Hours { on, off, start, end, days, today_until } => {
+        Cmd::Hours { on, off, start, end, days, today_until, alert_every } => {
             let mut b = json!({});
             if on {
                 b["on"] = json!(true);
@@ -1653,8 +2248,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = today_until {
                 b["today_until"] = json!(x);
             }
+            if let Some(x) = alert_every {
+                b["alert_every_mins"] = json!(x);
+            }
             let v = if b.as_object().map(|o| o.is_empty()).unwrap_or(true) { c.call("GET", "/hours", None)? } else { c.call("POST", "/hours", Some(b))? };
             out(v["line"].as_str().unwrap_or(""));
+            if alert_every.is_some() {
+                out(v["alerts_line"].as_str().unwrap_or(""));
+            }
             Ok(0)
         }
         Cmd::KeepAwake { on, off, mode, day, min_battery, linger, today } => {
@@ -1699,6 +2300,28 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 };
                 out(&format!("{} · {floor}", if st["mode"] == "always" { "Always during the hours" } else { "Only while agents have work" }));
             }
+            Ok(0)
+        }
+        Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, reset } => {
+            let mut b = json!({});
+            for (k, v) in [("compact_window", compact_window), ("cold_idle_mins", cold_idle_mins), ("warm_tokens", warm_tokens), ("warm_idle_mins", warm_idle_mins)] {
+                if let Some(n) = v {
+                    b[k] = json!(n);
+                }
+            }
+            if let Some(g) = generated {
+                b["generated"] = json!(if g.trim().eq_ignore_ascii_case("none") { String::new() } else { g });
+                if let Some(p) = project {
+                    b["project"] = json!(p);
+                }
+            } else if project.is_some() {
+                return Err("--project goes with --generated".to_string());
+            }
+            if reset {
+                b["reset"] = json!(true);
+            }
+            let v = if b.as_object().map(|o| o.is_empty()).unwrap_or(true) { c.call("GET", "/limits", None)? } else { c.call("POST", "/limits", Some(b))? };
+            out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
         Cmd::Pr { action } => match action {
@@ -1802,6 +2425,48 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
         Cmd::GitCredential { op } => Ok(crate::gitcred::run(&op)),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
+    }
+}
+
+fn project_line(p: &Value) -> String {
+    let remote = match p["remote"].as_bool() {
+        Some(true) => "git remote",
+        Some(false) => "no git remote",
+        None => "no folder",
+    };
+    format!(
+        "{} · PR flow {} · {} · {remote}",
+        p["name"].as_str().unwrap_or(""),
+        p["pr_flow"].as_str().unwrap_or("auto"),
+        if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
+    )
+}
+
+fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
+    match action {
+        ProjectCmd::Show { name } => {
+            let v = c.call("GET", "/projects", None)?;
+            let list = v["projects"].as_array().cloned().unwrap_or_default();
+            let shown: Vec<&Value> = list.iter().filter(|p| name.as_deref().is_none_or(|n| p["name"].as_str() == Some(n))).collect();
+            if shown.is_empty() {
+                return Err(match name {
+                    Some(n) => format!("There's no project called {n}."),
+                    None => "There are no projects yet.".into(),
+                });
+            }
+            for p in shown {
+                out(&project_line(p));
+            }
+            Ok(0)
+        }
+        ProjectCmd::Set { name, pr_flow } => {
+            let Some(flow) = pr_flow else {
+                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off"));
+            };
+            let v = c.call("POST", &format!("/projects/{name}"), Some(json!({"pr_flow": flow})))?;
+            out(&format!("Changed {}.", project_line(&v)));
+            Ok(0)
+        }
     }
 }
 
@@ -1973,13 +2638,45 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "locks"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "qa", "task", "Q3", "--note", "do it", "--no-pr"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "qa", "waiting"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--stop", "on"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--stop", "on"]).is_err(), "the review stop is the owner's, in the app");
+        assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--hold"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--hold", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "devices"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "focus", "pixel-7"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--device", "android:2", "--bit", "newCheckout"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--device", "none", "--not-bit", "a"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--device", "ios"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "bits", "--goal", "G1"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "bit", "add", "newCheckout", "--backend", "--task", "T1"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "bit", "add", "x", "--backend", "--local"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "bit", "made", "newCheckout", "--undo"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--wave", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "setup", "G1", "Run make bootstrap in {task}'s worktree"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--run"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize", "--prioritize"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "project", "show"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--board"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "ticket", "B3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B3", "--reason", "dupe"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "alert", "clear", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "jira"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "jira", "J12", "ok", "key=PROJ-1", "status=To Do", "found=yes"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "jira", "J12", "fail", "no", "such", "project"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "jira", "J12", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "Fix it", "--jira", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
     }
 

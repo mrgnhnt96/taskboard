@@ -247,7 +247,7 @@ impl View {
             Kpi { label: "Waiting on you", value: dur(f(day, "wait_min")), delta: vs(f(day, "wait_min"), "wait_min", dur) },
         ];
 
-        // The week, Monday to Sunday.
+        // The week, from the first weekday the daemon starts it on (config.toml's first_weekday).
         let week = arr(v, "week");
         let last_week = arr(v, "last_week");
         let cols: Vec<Col> = week

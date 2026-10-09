@@ -189,6 +189,17 @@ pub fn set_today_until(app: &App, v: &str) -> Result<Option<String>> {
     Ok(Some(until))
 }
 
+/// A weekday as the board's day key (`sun`, `mon` …).
+pub fn weekday_key(w: chrono::Weekday) -> &'static str {
+    DAYS[w.num_days_from_monday() as usize]
+}
+
+/// The day keys in week order, starting on `first` (config.toml's `first_weekday`).
+pub fn week_days(first: chrono::Weekday) -> Vec<&'static str> {
+    let k = first.num_days_from_monday() as usize;
+    (0..7).map(|i| DAYS[(k + i) % 7]).collect()
+}
+
 fn minute_of(dt: &NaiveDateTime) -> i64 {
     (dt.hour() * 60 + dt.minute()) as i64
 }
@@ -298,7 +309,7 @@ pub fn say_when(at: &str) -> String {
     }
 }
 
-fn span(h: &Hours) -> String {
+fn span(h: &Hours, first: chrono::Weekday) -> String {
     let all: Vec<String> = DAYS.iter().map(|d| d.to_string()).collect();
     let d = if h.days == all {
         String::new()
@@ -308,7 +319,7 @@ fn span(h: &Hours) -> String {
         " weekends".into()
     } else {
         let mut ds = h.days.clone();
-        ds.sort_by_key(|d| (d != "sun", DAYS.iter().position(|x| x == d)));
+        ds.sort_by_key(|d| week_days(first).iter().position(|x| x == d));
         format!(" {}", ds.iter().map(|d| capitalize(d)).collect::<Vec<_>>().join(", "))
     };
     format!("{}–{}{d}", clock(&h.start), clock(&h.end))
@@ -333,7 +344,7 @@ pub fn state(app: &App) -> Value {
     } else if open {
         format!(
             "Work hours {}: agents start until {}{}",
-            span(&h),
+            span(&h, app.cfg.first_weekday),
             clock(until.as_deref().unwrap_or(&h.end)),
             if until.is_some() { " today" } else { "" }
         )
@@ -356,9 +367,10 @@ pub fn state(app: &App) -> Value {
     o.insert("open".into(), json!(open));
     o.insert("line".into(), json!(line));
     o.insert("alerts_line".into(), json!(alerts_line));
-    o.insert("span".into(), json!(span(&h)));
+    o.insert("span".into(), json!(span(&h, app.cfg.first_weekday)));
     o.insert("today_until".into(), json!(until));
     o.insert("next_open".into(), json!(nxt.map(|n| minutes_iso(&n))));
+    o.insert("week_days".into(), json!(week_days(app.cfg.first_weekday)));
     v
 }
 
@@ -414,5 +426,16 @@ mod tests {
         assert!(!open_at(&night, None, &at(2026, 10, 7, 1, 0)));
         assert!(open_at(&day, Some("19:00"), &at(2026, 10, 5, 18, 0)));
         assert_eq!(next_open(&day, &at(2026, 10, 9, 18, 0), None), Some(at(2026, 10, 12, 9, 0)));
+    }
+
+    #[test]
+    fn weeks_start_on_the_configured_day() {
+        use chrono::Weekday;
+        assert_eq!(week_days(Weekday::Sun), vec!["sun", "mon", "tue", "wed", "thu", "fri", "sat"]);
+        assert_eq!(week_days(Weekday::Mon)[6], "sun");
+        assert_eq!(weekday_key(Weekday::Sat), "sat");
+        let odd = h("09:00", "17:00", &["mon", "sat", "sun"]);
+        assert_eq!(span(&odd, Weekday::Sun), "9am–5pm Sun, Mon, Sat");
+        assert_eq!(span(&odd, Weekday::Mon), "9am–5pm Mon, Sat, Sun");
     }
 }

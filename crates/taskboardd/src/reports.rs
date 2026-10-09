@@ -250,6 +250,9 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     store_plugin(r)?;
     let Some(t) = r.task()? else {
+        if crate::jira_desk::is_desk(app, r.sid())? {
+            return Ok(ok(None, Some(crate::jira_desk::intro(app))));
+        }
         let s = board::get_session(app, r.sid())?;
         return Ok(ok(None, Some(handoff::no_task_line(app, s.as_ref().and_then(|s| s.s("project")))?)));
     };
@@ -524,6 +527,9 @@ fn stalled(r: &Report, t: &Row) -> Result<bool> {
 
 fn on_pre_compact(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
+    if let Some(sid) = r.sid() {
+        r.app.db.x("UPDATE sessions SET compacting_at = ? WHERE id = ?", p![r.at, sid])?;
+    }
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
     let ctx = r.update_where(&t, false)?;
     r.log(t.id(), "checkpoint", "Saved before compacting", Some(json!({"context": ctx})))?;
@@ -1057,6 +1063,10 @@ fn finishing(r: &Report) -> Result<()> {
         }
         return err(409, steps::refusal(&board::tb_cmd(app), "finishing", &left));
     }
+    let here = if r.away(&t)? { None } else { r.cwd.as_deref() };
+    if let Some(why) = crate::comments::task_refusal(app, &t, here, "finishing")? {
+        return err(409, why);
+    }
     let done = json!({"summary": summary, "pr": r.b("pr")});
     let d = hooks::gate(app, "task.finishing", &t, json!({"by": r.name(), "done": done}));
     if d == hooks::Decision::Go {
@@ -1265,6 +1275,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
             &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
                     "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
+                    "jira": item.get("jira"),
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
@@ -1316,7 +1327,8 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
         let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
-                           "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone")}]);
+                           "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
+                           "jira": r.body.get("jira")}]);
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
         return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
@@ -1331,6 +1343,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         &json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
                 "status": if planned_flag { "planned" } else { "queued" },
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
+                "jira": r.body.get("jira"),
                 "origin": {"from": "Added by an agent", "by": r.name()}}),
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
@@ -1355,6 +1368,7 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
     let c = ops::new_task(
         app,
         &json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
+                "jira": r.body.get("jira"),
                 "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}}),
         &name,
         Some(&format!("Added by {name} for the code it changed with {owner}")),
@@ -1635,6 +1649,10 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         }
         if API_BACK_EVENTS.contains(&r.event.as_str()) {
             app.db.x("UPDATE sessions SET api_error_at = NULL, api_error_tries = 0 WHERE id = ?", p![r.sid()])?;
+        }
+        if r.event.starts_with("hook.") && r.event != "hook.pre_compact" && r.event != "hook.delivered" {
+            // Any other word from the terminal means its compaction is over; SessionStart "compact" ends it.
+            app.db.x("UPDATE sessions SET compacting_at = NULL WHERE id = ? AND compacting_at IS NOT NULL", p![r.sid()])?;
         }
         let mut out = f(&mut r)?;
         if let Some(sid) = r.sid.clone() {

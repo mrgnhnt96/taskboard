@@ -43,6 +43,8 @@ pub struct Shared {
     pub qa_reading: HashSet<i64>,
     /// PR hosts used in place of the real ones (`prhost::install`, tests).
     pub pr_hosts: std::collections::HashMap<String, Arc<dyn crate::prhost::PrHost>>,
+    /// Alerts' notification responses Midna reported (alert id, `notify.response`), for the next tick.
+    pub notify_inbox: Arc<Mutex<Vec<(String, Value)>>>,
 }
 
 struct Signal {

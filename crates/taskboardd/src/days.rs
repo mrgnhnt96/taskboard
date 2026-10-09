@@ -13,7 +13,8 @@ use serde_json::{json, Map, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{hours, p};
+use crate::hours::{self, weekday_key};
+use crate::p;
 
 /// Ten-minute slots in a day, for "how many terminals were working".
 pub const SLOTS: usize = 144;
@@ -54,8 +55,10 @@ pub fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
 }
 
-fn monday_of(d: NaiveDate) -> NaiveDate {
-    d - Duration::days(d.weekday().num_days_from_monday() as i64)
+/// The first day of `d`'s week, for weeks that start on `first` (config.toml's `first_weekday`).
+pub fn week_start(d: NaiveDate, first: chrono::Weekday) -> NaiveDate {
+    let back = (d.weekday().num_days_from_monday() + 7 - first.num_days_from_monday()) % 7;
+    d - Duration::days(back as i64)
 }
 
 fn mins(secs: f64) -> f64 {
@@ -454,7 +457,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     };
     let mut projects: BTreeSet<String> = rows.keys().cloned().collect();
 
-    let mon = monday_of(date);
+    let mon = week_start(date, app.cfg.first_weekday);
     let mut week = Vec::new();
     let mut last_week = Vec::new();
     let mut week_tasks: BTreeMap<i64, Value> = BTreeMap::new();
@@ -594,6 +597,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         "last_week": last_week,
         "week_tasks": week_tasks,
         "week_task_median": median(finished),
+        "first_weekday": weekday_key(app.cfg.first_weekday),
         "usual": usual,
         "oldest": oldest(app)?.map(date_str),
     }))
@@ -704,5 +708,21 @@ pub fn cleanup_loop(app: std::sync::Arc<App>) {
             }
         }
         app.sleep(30.0 * 60.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Weekday;
+
+    #[test]
+    fn weeks_start_on_the_first_weekday() {
+        // 2026-10-08 is a Thursday.
+        let d = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        assert_eq!(week_start(d, Weekday::Sun), NaiveDate::from_ymd_opt(2026, 10, 4).unwrap());
+        assert_eq!(week_start(d, Weekday::Mon), NaiveDate::from_ymd_opt(2026, 10, 5).unwrap());
+        assert_eq!(week_start(d, Weekday::Thu), d);
+        assert_eq!(week_start(d, Weekday::Fri), NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
     }
 }

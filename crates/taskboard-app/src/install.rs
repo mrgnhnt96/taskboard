@@ -30,6 +30,35 @@ pub enum LoginItem {
 }
 
 static STATUS: Mutex<LoginItem> = Mutex::new(LoginItem::Checking);
+static IN_THE_WAY: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// What this launch found in the way of the board (another board on its port, another `tb` first
+/// on the PATH, another task-board plugin), one sentence each, for the banner.
+pub fn in_the_way() -> Vec<String> {
+    IN_THE_WAY.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// The PATH agents' shells are likely to have: the app's own (bare when opened from the Finder)
+/// behind the usual tool folders, as `taskboardd serve` widens it.
+fn agent_path() -> String {
+    let home = taskboardd::util::expand_home("~");
+    let mut parts: Vec<String> = [".local/bin", ".cargo/bin"].iter().map(|d| home.join(d).to_string_lossy().to_string()).collect();
+    parts.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(String::from));
+    parts.push(std::env::var("PATH").unwrap_or_default());
+    parts.join(":")
+}
+
+/// Looks for another board in the way (`taskboardd::cutover`).
+fn check_in_the_way() {
+    let Ok(cfg) = taskboardd::config::Config::load() else { return };
+    let found = taskboardd::cutover::problems(&cfg.host, cfg.port, &agent_path(), &crate::hooks::claude_dir());
+    for p in &found {
+        eprintln!("taskboard-app: {p}");
+    }
+    if let Ok(mut g) = IN_THE_WAY.lock() {
+        *g = found;
+    }
+}
 
 /// The daemon's login item, as last checked.
 pub fn status() -> LoginItem {
@@ -222,6 +251,7 @@ pub fn start(backend: &str) {
     std::thread::Builder::new()
         .name("install".into())
         .spawn(move || {
+            check_in_the_way();
             set_status(register(&bundle));
             // Taskboard Dev leaves the link to the real app (TASKBOARD_NO_TB_LINK in its LSEnvironment).
             if std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {

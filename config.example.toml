@@ -15,8 +15,9 @@ midna = "~/.local/bin/midna"         # env TASKBOARD_MIDNA
 midna_bundle = "com.mrgnhnt.midna"   # opened with `open -g -b` when Midna isn't running
 open_midna = true
 notify = true                        # desktop notifications through Midna
+first_weekday = "sun"                # the day weeks start on: the Days page's week and the hours menu's days
 
-claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening
+claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening (and Jira with via = "claude")
 claude_projects = "~/.claude/projects"
 
 # The runner starts terminals, sends messages and moves Jira tickets. It's on for the default data
@@ -42,6 +43,11 @@ end = "17:00"
 days = ["mon", "tue", "wed", "thu", "fri"]
 alert_every_mins = 10
 
+# Alerts' desktop notifications (through Midna). Each carries these snooze buttons, in minutes (at most
+# four; [] for none). Urgent alerts (`tb alert raise --urgent`) repeat outside the work hours too.
+[alerts]
+snooze_mins = [15, 30, 60]
+
 # Screen agents' questions with a headless `claude -p` first: when the rules already answer a
 # question, the agent gets the answer and the owner isn't asked.
 [questions]
@@ -49,7 +55,9 @@ screen = false
 model = "claude-haiku-5-5"
 budget_usd = "0.30"
 timeout_secs = 75
-rules = []                           # example: ["~/.claude/CLAUDE.md"]
+# Rule files the screener reads: a file, a folder (its MEMORY.md, then every other .md in it, so a
+# new memory note counts at once) or a glob (`*`, `?`, `[…]`, `**` for any depth of folders).
+rules = []                           # example: ["~/.claude/CLAUDE.md", "~/.claude/projects/-Users-alex-code-web/memory", "~/.claude/projects/*/memory/*.md"]
 
 # Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
 # impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
@@ -80,8 +88,42 @@ azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, 
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 
+# Context limits for the board's agents. `tb limits` changes them on the board; these are where it
+# starts. 0 turns one off.
+[limits]
+compact_window = 150000              # tokens: Claude compacts a board terminal's conversation here (--settings autoCompactWindow)
+cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed
+warm_tokens = 60000                  # a task or PR conversation resumes only under this many tokens…
+warm_idle_mins = 60                  # …and idle under this long; otherwise it starts fresh from the handoff
+# Generated files, marked `-diff` in a block the board keeps in each active project's (and
+# worktree's) .git/info/attributes, so agents' diffs skip them. `tb limits --generated` changes them.
+generated = []                       # example: ["*.g.dart", "*.freezed.dart", "Cargo.lock"]
+# [limits.project_generated]
+# webapp = ["dist/**", "*.min.js"]   # example: one project's own, on top of `generated`
+
+# Files `tb attach` refuses (writing goes up as a brief artifact, not a loose file). `{ext}` in the
+# message is the refused extension. Links (https://…) are never refused.
+[attachments]
+refuse = [".md", ".txt", ".rst", ".html"]
+refuse_message = "The board doesn't take {ext} files as attachments: publish it as a brief artifact and attach that link."
+
+# Terminals the board opens in Midna. `background`: the job purposes whose terminals open in Midna's
+# Background group instead of their project's tabs: start (a task), pr (a PR visit), plan (planning a
+# goal), reopen (a closed terminal reopened).
+[terminals]
+background = []                      # example: ["plan"]
+
+# The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
+# MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`
+# while the branch adds any. A comment whose text starts with a pragma is fine.
+[comments]
+guard = false
+languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kotlin", "go", "java", "c", "cpp", "csharp", "ruby", "shell"]
+# pragmas = ["!/", "noqa", "type:", "pragma", "pylint:", "eslint-", "@ts-", "prettier-ignore", "ignore:", "ignore_for_file:", "nolint", "go:", "swiftlint:", …]
+
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
-# env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email).
+# env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email). No token? Set via = "claude":
+# each Jira op then runs through a headless `claude -p` that may use only the Atlassian connector's tools.
 [jira]
 site = ""                            # example: "acme.atlassian.net"
 project = ""                         # example: "PROJ"
@@ -97,13 +139,44 @@ in_progress = "In Progress"
 in_review = "In Review"
 done = ""                            # status for a finished task without a PR; empty = leave it
 merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
+via = "rest"                         # "rest" (the API token) or "claude" (the Atlassian connector through claude -p)
+claude_tools = ["mcp__claude_ai_Atlassian", "mcp__atlassian"]   # the connector's tools, for via = "claude" and the desk
+claude_model = "sonnet"
+claude_budget_usd = "0.50"
+claude_timeout_secs = 180
+auto_ticket = false                  # every queued or working task in a project with PRs gets a ticket, and waits for it
+desk = false                         # new tickets go to the Jira desk: a Claude terminal in Midna's Background group
+                                     # that searches for an open ticket covering the work before it makes one
+desk_dir = ""                        # the desk's folder; empty = the board's data folder
+default_product = ""                 # a ticket's product when its goal has none and the work's words pick none
 
 # Products decide the labels, components and extra fields on a goal's tickets (`tb goal set G1 --product web`).
+# A goal with none gets the product its work best matches by `what` (Claude or the desk picks it), or default_product.
 # [jira.products.web]
 # what = "the customer-facing web app"
 # labels = ["web"]
 # components = ["Frontend"]
 # fields = { customfield_10001 = { id = "team-uuid" } }
+
+# What every handoff adds. `branch` names the branch a task's PR goes on: {type} (feat, or fix for a backlog
+# bug), {key} (its Jira key; dropped with the separator after it when there's none), {slug} (from the title),
+# {task} (T12) and {n} (12). Empty: the repo's own convention. A goal's own setup (`tb goal setup`) can override it.
+[handoff]
+footer = ""                          # example: "Code style: follow ~/code-style.md."
+footer_file = ""                     # example: "~/.config/taskboard/handoff-footer.md" (read for every handoff)
+branch = ""                          # example: "{type}/{key}-{slug}"
+# The device pool (`tb devices`, `tb device add pixel-7 --tag android`). A device's own focus command
+# (`tb device add … --focus "…"`) raises its window; this one is for devices without their own.
+# Run with `sh -c`; {name} (and $TASKBOARD_DEVICE) is the device's name. Empty: no focus for those.
+[devices]
+focus = ""                           # example: "open -a Simulator"
+focus_timeout_secs = 15.0
+
+# Bits (feature flags, `tb bit add newCheckout --backend --task T4`). A task waits until its backend
+# bits are made in the flag tool (`tb bit made`); the goal page links each one to the tool's new-flag page.
+[bits]
+tool = ""                            # its name, as the app says it ("Create in Flagsmith"); empty = "the flag tool"
+create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a

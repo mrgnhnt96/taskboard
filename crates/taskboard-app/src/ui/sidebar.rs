@@ -70,7 +70,8 @@ pub fn goal_counts(g: &Value) -> Counts {
         },
         None => Counts { n: i(g, "total"), done: i(g, "done"), active: i(g, "active"), queued: 0, prs: arr(g, "prs_open").len() as i64, finished: false },
     };
-    Counts { finished: c.n > 0 && c.done == c.n && c.prs == 0, ..c }
+    // A backend bit not made yet holds back a finished goal ("Waiting on N bits").
+    Counts { finished: c.n > 0 && c.done == c.n && c.prs == 0 && i(g, "bits_waiting") == 0, ..c }
 }
 
 /// `goalDone`.
@@ -106,10 +107,17 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     if c.n > 0 && c.done == c.n && c.prs > 0 {
         return st("queued", if c.prs > 1 { format!("{} PRs awaiting merge", c.prs) } else { "Awaiting merge".into() });
     }
+    if c.n > 0 && c.done == c.n && i(g, "bits_waiting") > 0 {
+        return st("blocked", bits_waiting(g));
+    }
     let queued = g.get("queued").and_then(Value::as_i64).unwrap_or(c.queued);
     let needs = i(g, "needs");
     if needs > 0 {
         return st("needs", format!("{} need{} you", fmt::plural(needs, "task", "tasks"), if needs == 1 { "s" } else { "" }));
+    }
+    // Stopped at a wave for the owner (the Python board's stopped state): its line is the summary.
+    if let Some(line) = fmt::opt_s(g, "stopped") {
+        return st("stopped", line.to_string());
     }
     if c.active > 0 {
         return st("working", "Running".into());
@@ -123,7 +131,7 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     if queued == 0 {
         return None;
     }
-    if i(g, "blocked") > 0 && i(g, "blocked") >= queued {
+    if blocked_all(g, queued) {
         return st("blocked", "Blocked".into());
     }
     if held {
@@ -132,18 +140,34 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     st("queued", "Queued".into())
 }
 
+/// Every queued task is held back: blocked by another task's work, or held (waves, locks, bits,
+/// devices). The Python board's `blocked + held >= queued`.
+fn bits_waiting(g: &Value) -> String {
+    format!("Waiting on {}", fmt::plural(i(g, "bits_waiting"), "bit", "bits"))
+}
+
+fn blocked_all(g: &Value, queued: i64) -> bool {
+    let n = i(g, "blocked") + i(g, "held");
+    n > 0 && n >= queued
+}
+
 /// `goalNavStatus`: the goal list's line for a goal: (kind, label); kinds run, warn, done, queued, idle.
 pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     let needs = i(g, "needs");
     if c.n > 0 && c.done == c.n {
         return if c.prs > 0 {
             ("run", if c.prs > 1 { format!("{} PRs awaiting merge", c.prs) } else { "Awaiting merge".into() })
+        } else if i(g, "bits_waiting") > 0 {
+            ("warn", bits_waiting(g))
         } else {
             ("done", "Finished".into())
         };
     }
     if needs > 0 {
         return ("warn", if needs > 1 { format!("{needs} need you") } else { "Needs you".into() });
+    }
+    if fmt::opt_s(g, "stopped").is_some() {
+        return ("warn", "Stopped".into());
     }
     if b(g, "paused") {
         return ("warn", "Paused".into());
@@ -153,7 +177,7 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
         return ("run", if running > 1 { format!("{running} running") } else { "Running".into() });
     }
     if i(g, "queued") > 0 {
-        return if i(g, "blocked") > 0 { ("warn", "Blocked".into()) } else { ("queued", "Queued".into()) };
+        return if blocked_all(g, i(g, "queued")) { ("warn", "Blocked".into()) } else { ("queued", "Queued".into()) };
     }
     if c.n == 0 {
         return ("idle", "No tasks yet".into());
@@ -188,7 +212,7 @@ pub fn ring(c: &Counts, st: Option<&Status>) -> Ring {
     let glyph = if c.finished {
         Some("tick")
     } else {
-        st.map(|s| s.key).filter(|k| matches!(*k, "working" | "starting" | "needs" | "paused" | "held" | "blocked" | "queued"))
+        st.map(|s| s.key).filter(|k| matches!(*k, "working" | "starting" | "needs" | "stopped" | "paused" | "held" | "blocked" | "queued"))
     };
     Ring { done: d, active: a, glyph }
 }
@@ -569,7 +593,7 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
     let (track, act, done, tick_c) = (t.border_2, t.accent, t.up, t.card);
     let glyph_c = match r.glyph {
         Some("working" | "starting") => t.accent,
-        Some("needs" | "blocked") => t.warn,
+        Some("needs" | "blocked" | "stopped") => t.warn,
         Some("paused") => t.muted,
         _ => t.faint,
     };
@@ -627,7 +651,7 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
                     line(&[(9., 5.8), (9., 9.5)], 1.8, glyph_c, window);
                     line(&[(9., 12.), (9., 12.4)], 1.8, glyph_c, window);
                 }
-                Some("paused") => {
+                Some("paused" | "stopped") => {
                     line(&[(7.6, 6.6), (7.6, 11.4)], 1.8, glyph_c, window);
                     line(&[(10.4, 6.6), (10.4, 11.4)], 1.8, glyph_c, window);
                 }
@@ -1037,7 +1061,7 @@ fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindo
 /// `.chip.st-*`: 11.5px semibold, radius 5, padding 1px 6px.
 fn status_chip(t: &Theme, kind: &str, label: &str) -> Div {
     let (fg, bg) = match kind {
-        "needs" | "blocked" => (t.warn_fg, t.warn_soft),
+        "needs" | "blocked" | "stopped" => (t.warn_fg, t.warn_soft),
         "working" => (t.accent_fg, t.accent_soft),
         "failed" => (t.down, t.down_soft),
         "done" => (t.up_fg, t.up_soft),
@@ -1215,7 +1239,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .cursor_pointer()
                 .child(kit::icon(kit::Icon::Board, 22., t.accent))
                 .tooltip(kit::tip("Task board"))
-                .on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))),
+                .on_click(cx.listener(|m, _, _, cx| m.go_home(cx))),
         )
         .child(div().flex_1().whitespace_nowrap().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"));
     let nav = div()
@@ -1503,5 +1527,24 @@ mod tests {
             assert_eq!(m.filters.project, "webapp");
         })
         .unwrap();
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_stopped_goal_waits_on_you_and_held_tasks_count_as_blocked() {
+        let stopped = json!({"tasks": [{"status": "done"}, {"status": "queued"}], "queued": 1, "stopped": "Wave 1 is done. Review it, then continue"});
+        let st = status_of(&stopped, &goal_counts(&stopped), false).unwrap();
+        assert_eq!((st.key, st.label.as_str()), ("stopped", "Wave 1 is done. Review it, then continue"));
+        assert_eq!(ring(&goal_counts(&stopped), Some(&st)).glyph, Some("stopped"));
+        assert_eq!(nav_status(&stopped, &goal_counts(&stopped)), ("warn", "Stopped".to_string()));
+        let held = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "blocked": 1, "held": 1});
+        assert_eq!(status_of(&held, &goal_counts(&held), false).unwrap().key, "blocked");
+        assert_eq!(nav_status(&held, &goal_counts(&held)).1, "Blocked");
+        let one = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "blocked": 1});
+        assert_eq!(status_of(&one, &goal_counts(&one), false).unwrap().key, "queued");
+        assert_eq!(nav_status(&one, &goal_counts(&one)).1, "Queued");
+        let bits = json!({"tasks": [{"status": "done"}], "bits_waiting": 2});
+        assert!(!goal_counts(&bits).finished);
+        assert_eq!(nav_status(&bits, &goal_counts(&bits)), ("warn", "Waiting on 2 bits".to_string()));
+        assert_eq!(status_of(&bits, &goal_counts(&bits), false).unwrap().label, "Waiting on 2 bits");
     }
 }

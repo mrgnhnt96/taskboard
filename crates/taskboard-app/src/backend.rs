@@ -98,7 +98,9 @@ impl Backend for Daemon {
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
-        let req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1");
+        // `X-Task-Board-From: app`: the owner's own click, which the board takes for what only
+        // the owner may set (a wave's review stop).
+        let req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
         self.answer(req.send_json(body))
     }
 }
@@ -149,7 +151,8 @@ impl Backend for Fake {
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
-        api::dispatch(&self.board, "POST", path, &Query::new(), &body).map_err(|e| CallError { status: e.status, message: e.message })
+        let q: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+        api::dispatch(&self.board, "POST", path, &q, &body).map_err(|e| CallError { status: e.status, message: e.message })
     }
 }
 

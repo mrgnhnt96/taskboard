@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, handoff, hooks, hours, jira, jobs, locks, midna, p, prflow, projects, reports, usage, waitsfor, worktrees};
+use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, jira, jobs, limits, locks, midna, p, prflow, projects, reports, usage, waitsfor, worktrees};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
@@ -41,6 +41,8 @@ pub fn start_task(
         None => task_cwd(app, t)?,
     };
     let title = short(&t.st("title"), 40);
+    // Lent before the handoff is built, so it names them.
+    crate::devices::lend(app, t)?;
     let prompt = match prompt {
         Some(p) => p,
         None => handoff::build(app, t.id())?,
@@ -96,9 +98,25 @@ pub fn start_task(
 fn start_parked(app: &App, t: &Row) -> Result<()> {
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
-    if let Some(cid) = t.s("claude_session_id").filter(|c| !c.is_empty()) {
+    let cid = t.s("claude_session_id").filter(|c| !c.is_empty());
+    let too_big = match cid {
+        Some(cid) => {
+            let cwd = match &wt {
+                Some(w) => Some(w.clone()),
+                None => task_cwd(app, t)?,
+            };
+            let last = board::get_session(app, t.s("session_id"))?;
+            let c = limits::conversation(app, cwd.as_deref().unwrap_or(""), cid, last.as_ref().and_then(|s| s.s("last_activity")));
+            limits::fresh_start_why(app, &c)
+        }
+        None => None,
+    };
+    if let (Some(cid), None) = (cid, &too_big) {
         start_task(app, t, "new", None, Some(waitsfor::resume_prompt(app, t)?), Some(format!("--resume {cid}")), wt)?;
         board::log_event(app, t.id(), board::BOARD, "handoff", "What it waited for is done, so its conversation carries on in a new terminal")?;
+    } else if let Some(why) = too_big {
+        start_task(app, t, "new", None, None, None, wt)?;
+        board::log_event(app, t.id(), board::BOARD, "handoff", &format!("What it waited for is done. It starts again with the handoff: {why}"))?;
     } else {
         start_task(app, t, "new", None, None, None, wt)?;
         board::log_event(app, t.id(), board::BOARD, "handoff", "What it waited for is done, so it starts again with the handoff")?;
@@ -198,6 +216,9 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             }
         }
         if jira::ticket_blocker(app, &t)? || waitsfor::blocker(app, &t)?.is_some() || locks::blocker(app, &t)?.is_some() {
+            continue;
+        }
+        if crate::bits::blocker(app, &t)?.is_some() || crate::devices::blocker(app, &t)?.is_some() {
             continue;
         }
         let tid = t.id();
@@ -443,10 +464,12 @@ pub fn close_pr_tabs(app: &App) -> Result<()> {
 pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| jobs::expire(app))?;
     app.db.tx(|| jira::expire(app))?;
+    app.db.tx(|| jira::ensure_tickets(app))?;
     jira::run_pending(app)?;
     crate::qa::tick(app)?;
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
+    app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
     close_pr_tabs(app)?;
@@ -473,6 +496,7 @@ pub fn run(app: Arc<App>) {
     };
     safe("spool", reports::ingest_spool(&app).map(|_| ()));
     let (mut last_tick, mut last_spool, mut last_prs) = (None::<Instant>, Instant::now(), None::<Instant>);
+    let mut last_attrs = None::<Instant>;
     while !app.stopping() {
         let due = |last: Option<Instant>, every: f64| every > 0.0 && last.map(|l| l.elapsed().as_secs_f64() >= every).unwrap_or(true);
         if due(last_tick, iv.runner) {
@@ -486,6 +510,10 @@ pub fn run(app: Arc<App>) {
         if due(last_prs, iv.prs) {
             last_prs = Some(Instant::now());
             safe("prs", prs(&app));
+        }
+        if due(last_attrs, gitattrs::EVERY_SECS) {
+            last_attrs = Some(Instant::now());
+            safe("attributes", gitattrs::sync(&app).map(|_| ()));
         }
         if app.wait_runner(Duration::from_secs(1)) {
             last_tick = None;
