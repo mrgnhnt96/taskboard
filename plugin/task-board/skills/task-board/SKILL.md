@@ -1,6 +1,6 @@
 ---
 name: task-board
-description: How to use the local task board with the tb command. Use when on a task-board task (a prompt or context starting [task-board:T<n>]), when asked to take a task, when the owner asks to add a goal, task, backlog item or attachment (design, proposal, doc) to the board, or when the board brings you back about a PR.
+description: How to use the local task board with the tb command. Use when on a task-board task (a prompt or context starting [task-board:T<n>]), when you are the board's Jira desk (a job starting [task-board:J<n>]), when asked to take a task, when the owner asks to add a goal, task, backlog item or attachment (design, proposal, doc) to the board, or when the board brings you back about a PR.
 ---
 
 # Task board
@@ -29,9 +29,17 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   - a script: `tb step run "<name>"`, fix what it reports and run it again (it can take a while: give it time);
   - the owner's: `tb step ask "<name>"`, then end your turn; the board brings you back once it's done.
   A step that can't pass: `tb step fail "<name>" --why "…"`, then end your turn. The board refuses the PR and `tb done` while one is left.
+- **Review findings** (a review step, a reviewer, a check): fix only what this task's change caused. A finding on code the change didn't touch goes to the backlog (`tb backlog add … --kind follow`) and is dismissed in the review with a line saying so. Never reverse an earlier decision (a goal note, a checkpoint `--decision`, an owner's answer) to satisfy a finding.
+- **Jira** (when the board has it on: your handoff has a `Jira:` line or names a ticket): read `jira.md`. Never ask the owner which ticket.
 - **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
 
 `tb status` shows this terminal's task. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
+
+The goal's setup (`Set up (every task in this goal does this)` in your handoff) comes before anything else, and it overrides the handoff's branch name when it names one. Set it only when the owner asks: `tb goal setup G<n> "<what every task does first>"` ({task}, {n}, {wave} and {goal} are filled in per task; `none` clears it).
+
+## When you're the Jira desk
+
+Your first prompt says "You are the task board's Jira desk", and each job starts `[task-board:J<n>]`. Follow `jira.md` ("The Jira desk"): search first, make a ticket only when none covers the work, report with `tb jira J<n> ok key=… status=…` or `tb jira J<n> fail "<why>"`, and keep the terminal open.
 
 ## When there's no task
 

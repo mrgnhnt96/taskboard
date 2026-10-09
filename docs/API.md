@@ -120,7 +120,9 @@ window at 100 % makes goals show "Queued until agents can start".
   "closing": bool,             // a close job is pending/running for it
   "close": "close"|"force"|null, // how it can be closed: idle → "close", busy → "force" (press-and-hold), gone → null
   "renaming": str|null,        // a rename job to this name is pending/running (UI shows the new name greyed)
-  "rename_error": str|null     // the last rename failed within ~10 min: first line of Midna's error
+  "rename_error": str|null,    // the last rename failed within ~10 min: first line of Midna's error
+  "role": str                  // only on the Jira desk's terminal: "Handles Jira for the board" (shown instead of "No task");
+                               // its close is null, so it's never closed from the app
 }
 ```
 The UI also accepts a missing `renaming`/`rename_error`.
@@ -140,6 +142,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
   "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
+  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
@@ -397,9 +400,11 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "session_id": str|null,
   "goal": {"id": int, "ref": "G3", "name": str} | null,
   "also": [{"id": int, "ref": "G4", "name": str}],   // other goals this task also finishes (shared task; its home goal runs it)
-  "jira": {"key": str|null, "status": str|null, "url": str|null} | null,
-          // null = no ticket. key null + status "Ticket asked for" = being created. url = the ticket's browse URL, built
-          // by the server from the configured Jira site (the UI never builds Jira URLs).
+  "jira": {"key": str|null, "status": str|null, "url": str|null, "desk"?: bool, "failed"?: bool} | null,
+          // null = no ticket. key null: status says where it is: "Ticket asked for" (or "Ticket asked for · Jira desk")
+          // while it's found or made; "No ticket yet" (desk: "No ticket yet. The Jira desk finds or makes one…") while a
+          // PR task waits for one ([jira] auto_ticket); "Couldn't make the ticket: <why>" with failed true.
+          // url = the ticket's browse URL, built by the server from the configured Jira site (the UI never builds Jira URLs).
   "pr": pr | null,
   "position": number|null,        // order in the goal (unused by the UI apart from sorting done server-side)
   "starting": bool,               // queued and a start job is pending/running ("Starting")
@@ -462,6 +467,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 |---|---|---|
 | `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | `tb task new`. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the caller shows it. |
 | `POST /tasks/:id` | `{status: "queued"}` | "Queue it now" on a planned task (planned → queued only). |
+| `POST /tasks/:id` | `{jira_key: "PROJ-1"\|"new"\|"none"}` | `tb task set --jira`: link a ticket, ask for one (again, after a failure), or no ticket (a PR task then stops waiting for one). |
 | `POST /tasks/:id/start` | `{mode: "new"\|"queue"}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
@@ -479,7 +485,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | Path | Body | Notes |
 |---|---|---|
 | `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | `tb goal new`. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the caller shows it. |
-| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool}` | `tb goal set` (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
+| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool, setup: str\|"none"}` | `tb goal set` (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
 | `POST /goals/:id/run` | `{}` or `{now: true}` | Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
 | `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
@@ -532,7 +538,7 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 |---|---|---|
 | `POST /sessions/:id/rename` | `{name}` | ≤ 80 chars. The UI then expects `renaming` on the session until Midna confirms. |
 | `POST /sessions/:id/focus` | `{}` | |
-| `POST /sessions/:id/close` | `{force: bool}` | `force` from the press-and-hold Force close. |
+| `POST /sessions/:id/close` | `{force: bool}` | `force` from the press-and-hold Force close. 409 for the Jira desk's terminal. |
 | `POST /sessions/close` | `{ids: [str]}` | Close several idle terminals with no task. **Response read:** `{closing: [id], skipped: [id]}`. |
 | `POST /sessions/:id/reopen` | `{}` | Reopen a closed terminal's conversation in a new Midna terminal. |
 
@@ -558,6 +564,23 @@ Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
 | `GET /qa-comments` | `?limit&waiting=1` | `{on, comments: [qa_comment]}`, newest first. |
 | `GET /qa-comments/:id` | | One `qa_comment`. |
 | `POST /qa-comments/:id` | `{action: "task"\|"ignore", note?, pr?, who?}` | The owner's word on a flag (`tb qa task Q3`). Answers the comment plus `started: "T9"\|null`. |
+
+## Jira
+
+Optional: off while `[jira] site` or `project` is empty. Jobs (`J<n>`) run through the REST API with a token, or with
+`via = "claude"` through a headless `claude -p` limited to the Atlassian connector's tools (`claude_tools`), one at a
+time. A new ticket is always searched for first: an open ticket of the type that already covers the work is linked
+instead of making another. With `auto_ticket`, every queued or working task in a project that ships PRs asks for a
+ticket and waits (`waiting`: "Waits for its Jira ticket…") until it has one, it says `--jira none`, or the ticket is
+linked by hand; a failed ask waits for `tb task set T<n> --jira new`. With `desk`, new tickets go to the Jira desk:
+one Claude terminal the board opens in Midna's Background group (an `agent` job, purpose `jira_desk`) and never
+closes. It gets one job at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
+
+| Request | Body | What |
+|---|---|---|
+| `GET /jira` | | `{on, site, project, via: "rest"\|"claude", auto_ticket, desk, desk_session, products: [{name, what}], jobs: [job]}` (`tb jira`). |
+| `GET /jira/jobs/:id` | | One Jira job (`tb jira J12`). |
+| `POST /jira/jobs/:id` | `{ok: bool, key?, status?, found?: bool, product?, message?}` | The desk's report (`tb jira J12 ok key=PROJ-1 status="To Do"`, `tb jira J12 fail "<why>"`). A new ticket's `ok` needs `key` (400); a `fail` needs `message`. `product` (picked from the products' `what`) goes on a goal that has none. |
 
 ## Waves
 
