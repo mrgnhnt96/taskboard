@@ -231,9 +231,10 @@ prompt = "Sign off the screens this task changes."
 - **Your steps send you somewhere.** `tb step ask` puts the task in Needs you with an alert. The task shows the
   step with **Open** (the `open` link: a URL, an app's URL scheme or a file path) and **Done**, which brings the
   agent back to carry on.
-- **Placeholders** in `prompt`, `run`, `check` and `open`: `{task}`, `{title}`, `{project}`, `{repo}`, `{branch}`,
+- **Placeholders** in `prompt`, `run`, `check`, `open` and `publish`: `{task}`, `{title}`, `{project}`, `{repo}`,
+  `{branch}` (the aimed branch while `tb step aim` has one),
   `{base}` (the branch the PR goes into: a stacked task's parent branch while that's unmerged, else origin's
-  default branch), `{base_ref}` (`{base}` with the remote, like `origin/main`), `{pr_url}`, `{jira}`. Scripts also
+  default branch), `{base_ref}` (`{base}` with the remote, like `origin/main`), `{pr_url}`, `{pr}` (its number), `{jira}`. Scripts also
   get them as `TASKBOARD_TASK`, `TASKBOARD_BRANCH`, … and `TASKBOARD_STEP`, and `TASKBOARD_RESULT` (below). One with
   no value is left as written.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
@@ -261,6 +262,7 @@ A review tool that runs on every push is a step with a check, plus three keys:
 name = "Author-side review"
 prompt = "Run the review on {branch} against {base_ref} and deal with each finding."
 check = "author-review --since {base_ref} --json > $TASKBOARD_RESULT"
+publish = "wd review publish {repo} {pr}"   # optional: republishes a passing round for the PR (tb step publish)
 per_head = true       # it passes for the head commit it ran on; every new push needs another round
 min_gap_mins = 10     # at least this long between two rounds (on the same commit or not)
 bar = "WD"            # its name in the app's PR bar
@@ -297,7 +299,16 @@ bar = "WD"            # its name in the app's PR bar
   on the task (report `tb.step_aim`, shown by `tb steps`): every later `tb step done|run|again` without flags
   follows it, and the gates (`tb done`, the board opening the PR, `GET /steps`) judge per-head steps on its commit
   (the pinned sha, else the worktree's or branch's latest commit) rather than the checkout the command runs in.
-  `tb step aim --clear` drops it.
+  `tb step aim --clear` drops it. A pinned `--commit` keeps the branch's tip at the time; once the branch gets a
+  new commit the pin no longer counts (the aim follows the branch, and `tb steps` says "The pin at <sha> was
+  dropped: <branch> has moved on since."), and the next round drops it from the task, so `tb done` can't pass on
+  a commit that's no longer the branch's tip. `--commit` from a detached checkout is refused ("<dir> isn't on a
+  branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
+- **Republishing.** A step with `publish` (a script, with the placeholders, `{head}`, and the round's
+  `step_result` as `$TASKBOARD_RESULT`) is republished with `tb step publish "<step>"` once it has passed on the
+  head (the aim's, else this checkout's); report `tb.step_publish`. When the base moved, `tb pr status`'s rebase
+  commands end with it for each `per_head` step that has one: rebase, test, pass the step, push, then
+  `tb step publish "<step>"`.
 
 ## Stacked PRs, the PR plan, and `tb done --pr-body`
 

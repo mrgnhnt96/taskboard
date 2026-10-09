@@ -86,6 +86,11 @@ pub struct Step {
     /// A short name for the step in the app's PR bar ("WD"); empty keeps it out of the bar.
     #[serde(default)]
     pub bar: String,
+    /// A script that publishes the step's passing round for the PR (`tb step publish`), as after a rebase
+    /// pushes a new head; it gets the round's result as `$TASKBOARD_RESULT`. Left out of listings when
+    /// empty, so an older `tb` still reads them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publish: String,
 }
 
 impl Step {
@@ -115,6 +120,7 @@ impl Step {
             run: fill(&self.run, vars),
             check: fill(&self.check, vars),
             open: fill(&self.open, vars),
+            publish: fill(&self.publish, vars),
             ..self.clone()
         }
     }
@@ -135,6 +141,11 @@ impl Step {
             parts.push(format!("passes when `{}` exits 0", self.check.trim()));
         }
         parts.join("; ")
+    }
+
+    /// How the agent republishes the step's passing round for the PR's new head (its `publish` script).
+    pub fn republish(&self, tb: &str) -> String {
+        format!("{tb} step publish \"{}\"", self.name)
     }
 
     /// How the agent gets past the step.
@@ -316,10 +327,11 @@ pub fn vars(t: &Row) -> BTreeMap<String, String> {
     v.insert("task".into(), rf("task", t.id()));
     v.insert("title".into(), t.st("title"));
     v.insert("project".into(), t.st("project"));
-    v.insert("branch".into(), waitsfor::branch_of(t).unwrap_or_default());
+    v.insert("branch".into(), aim_branch(t).or_else(|| waitsfor::branch_of(t)).unwrap_or_default());
     v.insert("base".into(), base_branch(&repo));
     v.insert("repo".into(), repo);
     v.insert("pr_url".into(), t.st("pr_url"));
+    v.insert("pr".into(), t.i("pr_num").map(|n| n.to_string()).unwrap_or_default());
     v.insert("jira".into(), t.st("jira_key"));
     v
 }
@@ -395,26 +407,73 @@ pub fn saved_aim(t: &Row) -> Value {
     }
 }
 
-/// The commit the saved aim points at now: its pinned sha, else its worktree's head, else its branch's
-/// tip in the task's repo.
-pub fn aim_head(t: &Row) -> Option<String> {
+/// `git -C dir <args>`'s trimmed output, when it succeeds.
+fn git_in(dir: &str, args: &[&str]) -> Option<String> {
+    if dir.is_empty() || !std::path::Path::new(dir).is_dir() {
+        return None;
+    }
+    let git = crate::proc::which("git")?;
+    let mut all: Vec<String> = vec!["-C".into(), dir.into()];
+    all.extend(args.iter().map(|a| a.to_string()));
+    let out = crate::proc::run(&git, &all, None, 5.0).ok().filter(|o| o.code == Some(0))?;
+    Some(out.stdout.trim().to_string()).filter(|h| !h.is_empty())
+}
+
+fn rev_in(dir: &str, rev: &str) -> Option<String> {
+    git_in(dir, &["rev-parse", "--verify", "-q", &format!("{rev}^{{commit}}")])
+}
+
+/// The tip of `branch` as the aim's checkout (its worktree, else the task's repo) sees it now.
+pub fn branch_tip(t: &Row, aim: &Value, branch: &str) -> Option<String> {
+    let dir = aim["worktree"].as_str().map(str::trim).filter(|w| !w.is_empty()).map(|w| w.to_string()).unwrap_or_else(|| t.st("repo_path"));
+    rev_in(&dir, &format!("refs/heads/{}", branch.trim().trim_start_matches("refs/heads/")))
+}
+
+/// A saved aim's pin: its sha, its branch, and the branch's tip when it was pinned.
+fn pin_of(a: &Value) -> Option<(String, String, String)> {
+    let s = |k: &str| a[k].as_str().map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string());
+    Some((s("sha")?, s("branch")?, s("tip")?))
+}
+
+/// The aim as it stands now: the saved one, except that a pinned sha whose branch has moved on since it
+/// was pinned is dropped (the aim then follows the branch), with `dropped` naming it. A pin can't outlive
+/// new work on its branch, as the Python board refreshed the task's place on every report.
+pub fn aim_now(t: &Row) -> Value {
+    let mut a = saved_aim(t);
+    if let Some((sha, branch, tip)) = pin_of(&a) {
+        if branch_tip(t, &a, &branch).is_some_and(|now| !same_head(&now, &tip)) {
+            if let Some(o) = a.as_object_mut() {
+                o.remove("sha");
+                o.remove("tip");
+                o.insert("dropped".into(), json!(sha));
+            }
+        }
+    }
+    a
+}
+
+/// The branch the aim looks at: its branch, else the one its worktree has checked out.
+pub fn aim_branch(t: &Row) -> Option<String> {
     let a = saved_aim(t);
+    if let Some(b) = a["branch"].as_str().map(str::trim).filter(|b| !b.is_empty()) {
+        return Some(b.trim_start_matches("refs/heads/").to_string());
+    }
+    git_in(a["worktree"].as_str().map(str::trim)?, &["symbolic-ref", "--short", "-q", "HEAD"])
+}
+
+/// The commit the aim points at now (`aim_now`): its pinned sha, else its worktree's head, else its
+/// branch's tip in the task's repo.
+pub fn aim_head(t: &Row) -> Option<String> {
+    let a = aim_now(t);
     let s = |k: &str| a[k].as_str().filter(|x| !x.trim().is_empty()).map(|x| x.trim().to_string());
     if let Some(sha) = s("sha") {
         return Some(sha);
     }
-    let (dir, rev) = match (s("worktree"), s("branch")) {
-        (Some(w), _) => (w, "HEAD".to_string()),
-        (None, Some(b)) => (t.st("repo_path"), format!("refs/heads/{b}")),
-        _ => return None,
-    };
-    if dir.is_empty() || !std::path::Path::new(&dir).is_dir() {
-        return None;
+    match (s("worktree"), s("branch")) {
+        (Some(w), _) => rev_in(&w, "HEAD"),
+        (None, Some(b)) => rev_in(&t.st("repo_path"), &format!("refs/heads/{b}")),
+        _ => None,
     }
-    let git = crate::proc::which("git")?;
-    let args: Vec<String> = vec!["-C".into(), dir, "rev-parse".into(), "--verify".into(), "-q".into(), format!("{rev}^{{commit}}")];
-    let out = crate::proc::run(&git, &args, None, 5.0).ok().filter(|o| o.code == Some(0))?;
-    Some(out.stdout.trim().to_string()).filter(|h| !h.is_empty())
 }
 
 /// The head a gate judges per-head steps on: the saved aim's, else the one the caller names, else the
@@ -508,7 +567,7 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
         })
         .collect();
     Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_for(app, t),
-              "head": known, "aim": saved_aim(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t)}))
+              "head": known, "aim": aim_now(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t)}))
 }
 
 /// The steps in a `GET /steps` answer, with whether each has passed.

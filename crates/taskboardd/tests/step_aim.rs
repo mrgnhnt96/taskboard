@@ -83,7 +83,8 @@ fn a_pinned_aim_is_what_rounds_and_gates_judge() {
     let id = b.new_task();
     let (aimed, here) = ("a".repeat(40), "c".repeat(40));
     let v = b.report("tb.step_aim", json!({"branch": "main", "sha": aimed})).unwrap();
-    assert_eq!(v["aim"], json!({"branch": "main", "sha": aimed}));
+    let main = git(&b.repo(), &["rev-parse", "main"]);
+    assert_eq!(v["aim"], json!({"branch": "main", "sha": aimed, "tip": main}), "the pin keeps its branch's tip");
     assert_eq!(v["head"], json!(aimed));
     // `GET /steps` hands the aim to `tb`, and judges the step on it, not on the caller's checkout.
     let s = b.steps(&here);
@@ -120,4 +121,64 @@ fn a_branch_or_worktree_aim_follows_its_latest_commit() {
     b.report("tb.step_aim", json!({"worktree": wt.to_string_lossy()})).unwrap();
     assert_eq!(steps::aim_head(&b.row(id)), Some(moved));
     assert_eq!(steps::saved_aim(&b.row(id)), json!({"worktree": wt.to_string_lossy()}), "a new aim replaces the old");
+}
+
+#[test]
+fn a_pin_is_dropped_once_its_branch_moves_on() {
+    let b = new_board();
+    let id = b.new_task();
+    let repo = b.repo();
+    std::fs::write(repo.join("two"), "x").unwrap();
+    git(&repo, &["add", "two"]);
+    git(&repo, &["commit", "-q", "-m", "Two"]);
+    git(&repo, &["checkout", "-q", "-b", "feat/a"]);
+    let pinned = git(&repo, &["rev-parse", "HEAD~1"]);
+    let tip = git(&repo, &["rev-parse", "HEAD"]);
+    b.report("tb.step_aim", json!({"branch": "feat/a", "sha": pinned, "tip": tip})).unwrap();
+    b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": true, "head": pinned})).unwrap();
+    // While the branch stays where it was pinned, the pin holds, and `{branch}` is the aimed branch.
+    assert_eq!(steps::aim_head(&b.row(id)), Some(pinned.clone()));
+    assert!(steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap().is_empty());
+    assert_eq!(steps::vars(&b.row(id))["branch"], "feat/a", "prompts follow the aim");
+    // New work on the branch: the pin no longer counts, the gate judges the new tip, and rounds follow it.
+    std::fs::write(repo.join("three"), "x").unwrap();
+    git(&repo, &["add", "three"]);
+    git(&repo, &["commit", "-q", "-m", "Three"]);
+    let moved = git(&repo, &["rev-parse", "HEAD"]);
+    let s = b.steps(&pinned);
+    assert_eq!(s["aim"], json!({"branch": "feat/a", "dropped": pinned}));
+    assert_eq!(s["head"], json!(moved));
+    assert_eq!(s["steps"][0]["done"], false, "tb done can't pass on a commit that's no longer the branch's tip");
+    assert_eq!(steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap().len(), 1);
+    // The next round's report drops it from the task, with a line saying so.
+    b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": true, "head": moved})).unwrap();
+    assert_eq!(steps::saved_aim(&b.row(id)), json!({"branch": "feat/a"}));
+    let logged = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE 'Rounds no longer pinned%'", taskboardd::p![id]).unwrap();
+    assert_eq!(logged.len(), 1);
+    assert!(steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap().is_empty());
+}
+
+#[test]
+fn the_board_keeps_the_tip_when_tb_leaves_it_out() {
+    let b = new_board();
+    let id = b.new_task();
+    let main = git(&b.repo(), &["rev-parse", "main"]);
+    b.report("tb.step_aim", json!({"branch": "main", "sha": main, "tip": ""})).unwrap();
+    assert_eq!(steps::saved_aim(&b.row(id))["tip"], json!(main));
+    b.report("tb.step_aim", json!({"branch": "main", "tip": main})).unwrap();
+    assert_eq!(steps::saved_aim(&b.row(id)), json!({"branch": "main"}), "a tip without a pin isn't kept");
+}
+
+#[test]
+fn a_publish_is_recorded_on_the_task() {
+    let b = new_board();
+    let id = b.new_task();
+    let (code, why) = b.report("tb.step_publish", json!({"name": "Author review", "ok": true, "head": "a".repeat(40)})).unwrap_err();
+    assert_eq!(code, 400, "{why}");
+    assert!(why.contains("nothing to publish"), "{why}");
+    std::fs::write(&b.app.cfg.config_path, format!("{REVIEW}publish = \"wd review publish {{repo}} {{pr}}\"\n")).unwrap();
+    let v = b.report("tb.step_publish", json!({"name": "Author review", "ok": true, "head": "a".repeat(40)})).unwrap();
+    assert_eq!(v["passed"], true);
+    let logged = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE 'Published%'", taskboardd::p![id]).unwrap();
+    assert_eq!(logged[0].st("text"), format!("Published Author review for {}", "a".repeat(12)));
 }

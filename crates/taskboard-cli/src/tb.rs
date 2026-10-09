@@ -649,6 +649,12 @@ enum StepCmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Republish a step's passing round for the PR's head (its publish script), as after a rebase's push
+    Publish {
+        name: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// Answer one finding of a step's last round: tb step triage "Review" F2 --state fixed --commit abc123
     Triage {
         name: String,
@@ -2108,7 +2114,9 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
                 return Err(format!("{dir} has {has} checked out, not {want}. Aim again with tb step aim."));
             }
         }
-        (dir, has)
+        // A detached checkout looks at the branch named with it.
+        let b = has.or_else(|| given(&a.branch).map(|b| b.trim_start_matches("refs/heads/").to_string()));
+        (dir, b)
     } else if let Some(b) = given(&a.branch) {
         let b = b.trim_start_matches("refs/heads/").to_string();
         let dir = worktree_with(if here.is_empty() { "." } else { &here }, &b)
@@ -2125,10 +2133,12 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
         None => tip.clone(),
         Some(r) => {
             let sha = resolve_commit(&dir, &r)?;
-            if let Some(b) = &branch {
-                if git_out(&dir, &["merge-base", "--is-ancestor", &sha, "HEAD"]).is_none() {
-                    return Err(format!("{} isn't on {b}.", &sha[..sha.len().min(12)]));
-                }
+            // A commit must be on a branch, so the pin can be dropped once the branch moves on.
+            let Some(b) = &branch else {
+                return Err(format!("{dir} isn't on a branch. Say which one with --branch."));
+            };
+            if git_out(&dir, &["merge-base", "--is-ancestor", &sha, &format!("refs/heads/{b}")]).is_none() {
+                return Err(format!("{} isn't on {b}.", &sha[..sha.len().min(12)]));
             }
             Some(sha)
         }
@@ -2259,6 +2269,11 @@ fn aim_cmd(c: &Ctx, a: Aim, clear: bool, t: TaskArg) -> Result<i32, String> {
         "worktree": if given(&a.worktree) { json!(at.dir) } else { Value::Null },
         "branch": if given(&a.branch) || given(&a.commit) { json!(at.branch) } else { Value::Null },
         "sha": if given(&a.commit) { json!(at.head) } else { Value::Null },
+        // The branch's tip now: once it moves on, the board drops the pin.
+        "tip": match (given(&a.commit), at.dir.as_deref(), at.branch.as_deref()) {
+            (true, Some(d), Some(b)) => json!(resolve_commit(d, &format!("refs/heads/{b}")).ok()),
+            _ => Value::Null,
+        },
     });
     c.run_report("tb.step_aim", f, task, true, |v| {
         let a = &v["aim"];
@@ -2349,6 +2364,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
         StepCmd::Done { name, note, skip, aim, t } => done_step(c, &name, note, skip, t, &aim),
         StepCmd::SetAim { aim, clear, t } => aim_cmd(c, aim, clear, t),
         StepCmd::Run { name, aim, t } => run_step(c, &name, t.task, &aim),
+        StepCmd::Publish { name, t } => publish_step(c, &name, t.task),
         StepCmd::Again { name, aim, t } => {
             let (_, step) = find_step(c, t.task.clone(), &name)?;
             if step.owner || (step.run.is_empty() && step.check.is_empty()) {
@@ -2449,6 +2465,46 @@ fn run_step(c: &Ctx, name: &str, task: Option<String>, aim_at: &Aim) -> Result<i
     step_report(c, f, task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
 }
 
+/// `tb step publish`: runs a step's `publish` script for the head it passed on (the aim's, else this
+/// checkout's), with that round's result as `$TASKBOARD_RESULT`, and records it on the task.
+fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String> {
+    let (v, step) = find_step(c, task.clone(), name)?;
+    if step.publish.trim().is_empty() {
+        return Err(format!("“{}” has no publish script.", step.name));
+    }
+    let at = aim(c, &v, &Aim::default())?;
+    let head = at.head.clone().or_else(|| v["head"].as_str().map(|h| h.to_string()));
+    let short = head.as_deref().map(|h| h[..h.len().min(12)].to_string()).unwrap_or_else(|| "this commit".into());
+    let done = steps::from_listing(&v).into_iter().any(|(s, done)| done && steps::key(&s.name) == steps::key(&step.name));
+    if !done {
+        return Err(format!("“{}” hasn't passed on {short} yet: {}, then publish it.", step.name, step.how("tb")));
+    }
+    let task_id = task.clone().or_else(|| v["task"].as_str().map(|s| s.to_string()));
+    // The round being published, for the script to read.
+    let round = task_id
+        .as_deref()
+        .and_then(|t| c.call("GET", &format!("/tasks/{}", task_ref(t).ok()?), None).ok())
+        .and_then(|d| d["step_results"].as_array().and_then(|a| a.iter().find(|r| r["name"].as_str().map(steps::key) == Some(steps::key(&step.name))).cloned()));
+    let path = std::env::temp_dir().join(format!("tb-publish-{}-{}.json", std::process::id(), taskboardd::util::now_ts() as u64));
+    let mut vars = step_vars(c, &v, &step.name, &at);
+    if let Some(r) = &round {
+        if std::fs::write(&path, r.to_string()).is_ok() {
+            vars.insert("result".into(), path.to_string_lossy().to_string());
+        }
+    }
+    let (passed, output) = run_script(c, "Publish", &steps::fill(&step.publish, &vars), &vars, step.timeout_secs());
+    let _ = std::fs::remove_file(&path);
+    let f = json!({"name": step.name, "head": head, "ok": passed, "output": output});
+    let reported = task_id.map(|t| task_ref(&t)).transpose()?;
+    match c.report("tb.step_publish", f, reported.as_deref(), TB_TIMEOUT)? {
+        None => out(SAVED),
+        Some(v) if !v["task"].is_string() => out(NO_TASK),
+        Some(_) if passed => out(&format!("Published {} for {short}.", step.name)),
+        Some(_) => out(&format!("{} didn't publish (output above). Fix what it reports and run tb step publish \"{}\" again.", step.name, step.name)),
+    }
+    Ok(if passed { 0 } else { 1 })
+}
+
 /// Reports a step's outcome; a failed one exits 1 so the agent sees it.
 fn step_report(c: &Ctx, f: Value, task: Option<String>) -> Result<i32, String> {
     let task = task.map(|t| task_ref(&t)).transpose()?;
@@ -2493,7 +2549,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if all.is_empty() {
                 out(&format!("{task} has no steps."));
             }
-            let vars = step_vars(c, &v, "", &Aimed { dir: None, head: None, branch: None, pinned: false });
+            // Placeholders follow the aim (`{branch}` is the aimed branch), else this checkout.
+            let at = aim(c, &v, &Aim::default()).unwrap_or(Aimed { dir: None, head: None, branch: None, pinned: false });
+            let vars = step_vars(c, &v, "", &at);
             for (st, done) in all {
                 let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
                 let st = st.filled(&vars);
@@ -2506,6 +2564,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     .filter_map(|(k, pre)| a[*k].as_str().map(|x| format!("{pre}{}", if *k == "sha" { &x[..x.len().min(12)] } else { x })))
                     .collect();
                 out(&format!("Rounds look at {} (tb step aim --clear drops it).", bits.join(" ")));
+                if let Some(sha) = a["dropped"].as_str() {
+                    out(&format!(
+                        "The pin at {} was dropped: {} has moved on since.",
+                        &sha[..sha.len().min(12)],
+                        a["branch"].as_str().unwrap_or("its branch")
+                    ));
+                }
             }
             // The latest round of each step that ran: its headline and findings, to triage.
             if let Ok(d) = c.call("GET", &format!("/tasks/{task}"), None) {
@@ -4012,7 +4077,35 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_from_a_detached_checkout_needs_its_branch() {
+        let (root, c, [first, _second, feat]) = repo("detached");
+        let det = root.join("det");
+        git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det.to_string_lossy(), &first]);
+        let det = std::fs::canonicalize(det).unwrap().to_string_lossy().to_string();
+        let c = Ctx { cwd: det.clone(), ..c };
+        let v = json!({"vars": {"repo": det}});
+        let a = |branch: Option<&str>, worktree: Option<&str>, commit: Option<&str>| Aim {
+            branch: branch.map(Into::into),
+            worktree: worktree.map(Into::into),
+            commit: commit.map(Into::into),
+        };
+        let e = aim(&c, &v, &a(None, None, Some(&feat))).err().unwrap();
+        assert!(e.contains("isn't on a branch. Say which one with --branch."), "{e}");
+        let e = aim(&c, &v, &a(None, Some(&det), Some("HEAD"))).err().unwrap();
+        assert!(e.contains("isn't on a branch"), "{e}");
+        // Named with the checkout, the branch is what the commit must be on.
+        let e = aim(&c, &v, &a(Some("main"), Some(&det), Some(&feat))).err().unwrap();
+        assert!(e.contains("isn't on main"), "{e}");
+        let at = aim(&c, &v, &a(Some("main"), Some(&det), Some(&first))).unwrap();
+        assert_eq!((at.head.as_deref(), at.branch.as_deref()), (Some(first.as_str()), Some("main")));
+        // Without a commit, a detached checkout is still looked at as it is.
+        assert_eq!(aim(&c, &v, &Aim::default()).unwrap().head.as_deref(), Some(first.as_str()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn step_commands_take_an_aim() {
+        assert!(Cli::try_parse_from(["tb", "step", "publish", "Review", "--task", "T3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "done", "Review", "--branch", "feat", "--commit", "HEAD~1"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--worktree", "/tmp", "--commit", "abc1234"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear"]).is_ok());
