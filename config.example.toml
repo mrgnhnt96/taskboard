@@ -180,6 +180,12 @@ refuse_message = "The board doesn't take {ext} files as attachments: publish it 
 [terminals]
 background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 
+# Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
+# so many worktree agents don't each cold-build the project with every core at once.
+[builds]
+shared_target = true                 # CARGO_TARGET_DIR = the main checkout's target/, shared by its worktrees; builds take turns and reuse each other
+jobs = 4                             # CARGO_BUILD_JOBS per terminal; 0 leaves cargo's default (every core)
+
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
 # MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`
 # while the branch adds any. A comment whose text starts with a pragma is fine.

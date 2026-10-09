@@ -198,10 +198,14 @@ pub fn state(app: &App) -> Value {
     out
 }
 
-/// What a board terminal's Claude gets as `--settings`, if the compact window is on.
-pub fn settings_arg(app: &App) -> Option<String> {
+/// The context-limit part of a board terminal's `--settings` (`builds::settings_arg` adds its build env).
+pub fn settings(app: &App) -> serde_json::Map<String, Value> {
     let n = get(app).compact_window;
-    (n > 0).then(|| json!({"autoCompactWindow": n}).to_string())
+    let mut s = serde_json::Map::new();
+    if n > 0 {
+        s.insert("autoCompactWindow".into(), json!(n));
+    }
+    s
 }
 
 /// A conversation's size and how long it's been idle (wall-clock minutes), as far as the board can tell.

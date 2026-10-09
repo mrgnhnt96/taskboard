@@ -10,6 +10,7 @@ pub mod bits;
 pub mod board;
 pub mod botrun;
 pub mod breaks;
+pub mod builds;
 pub mod clock;
 pub mod comments;
 pub mod config;
