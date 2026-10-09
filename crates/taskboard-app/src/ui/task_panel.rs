@@ -1328,7 +1328,7 @@ impl Draw<'_> {
             .flex()
             .gap(px(8.))
             .pb(px(12.))
-            .child(div().flex_none().w(px(52.)).pt(px(1.)).children(time))
+            .child(div().flex_none().w(px(64.)).pt(px(1.)).children(time))
             .child(div().flex_none().w(px(14.)).pt(px(6.)).children(dot))
             .child(
                 div()

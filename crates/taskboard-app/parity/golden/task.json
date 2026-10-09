@@ -12064,7 +12064,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log All Status Turns Checkpoints Questions Found Jira 2:59 PM T7 Sign in Turn Ran the tests. 2:57 PM Task board Status Working Oct 6 Alex Answer Yes. 1:50 PM T7 Sign in Question Which? 1:40 PM T7 Sign in Commit a1b2 Add 1:30 PM Task board Checkpoint Saved 1:25 PM Task board Found B3 1:24 PM Jira Jira PROJ-12 In Progress 1:23 PM Midna Midna Opened 1:22 PM Task board Handoff Handed off 1:21 PM You Note A note 1:20 PM x Custom_kind Odd The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log All Status Turns Checkpoints Questions Found Jira 2:59 PM T7 Sign in Turn Ran the tests. 2:57 PM Task board Status Working Yesterday 1:00 PM Alex Answer Yes. 1:50 PM T7 Sign in Question Which? 1:40 PM T7 Sign in Commit a1b2 Add 1:30 PM Task board Checkpoint Saved 1:25 PM Task board Found B3 1:24 PM Jira Jira PROJ-12 In Progress 1:23 PM Midna Midna Opened 1:22 PM Task board Handoff Handed off 1:21 PM You Note A note 1:20 PM x Custom_kind Odd The log is saved as it happens, so it survives a closed terminal or a restart.",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -12874,7 +12874,7 @@
         }
       },
       "expect": {
-        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log All Status Turns Checkpoints Questions Found Jira Oct 6 Alex Answer Yes. 1:50 PM T7 Sign in Question Which? The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "Working T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log All Status Turns Checkpoints Questions Found Jira Yesterday 1:00 PM Alex Answer Yes. 1:50 PM T7 Sign in Question Which? The log is saved as it happens, so it survives a closed terminal or a restart.",
         "acts": [
           "close-panel",
           "tab:overview",
