@@ -73,12 +73,17 @@ the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an aler
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
 by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
 `POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
-outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on.
+outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on,
+never with the rest of its task's alerts. Raising it leaves the task's other alerts up; while it's up, new plain
+alerts for that task aren't raised (`POST /alerts` answers 409), though a PR-review alert still is. The app shows
+each urgent alert first, in a red row of its own; only the other alerts fold into "N tasks need your attention."
 
 Each alert's desktop notification (Midna `notify.send`) carries the id `taskboard-alert-<alert id>` and the snooze
 buttons from config.toml's `[alerts] snooze_mins` ("Snooze 15 min", "Snooze 30 min", "Snooze 1 hour" by default).
-The board waits for the owner's pick (`notify.response`) and a snooze button snoozes the alert; a click opens the
-app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
+The board keeps one waiter per alert on the owner's pick (`notify.response`, 600 s at a time) for as long as the
+alert is up, so a late Snooze still counts; each notification's pick counts once (`answered` on the alert holds the
+`notified_at` it answered), and a repeat moves the same waiter on to the new notification. A snooze button snoozes
+the alert; a click opens the app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
 #### `work_hours` (from `hours.state`)
 ```
@@ -609,7 +614,7 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
-| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
+| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. **Response read:** `{alert}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
 | `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 

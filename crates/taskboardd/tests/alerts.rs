@@ -96,3 +96,71 @@ fn notifications_carry_the_alert_id_and_snooze_buttons() {
     let quiet = App::for_tests(cfg);
     assert!(dispatch::alert_params(&quiet, &a).get("actions").is_none());
 }
+
+fn board_with_task() -> (tempfile::TempDir, std::sync::Arc<App>, i64) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    app.db
+        .set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string()))
+        .unwrap();
+    let t = post(&app, "tasks", json!({"title": "Fix the header", "detail": "Do it.", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    (dir, app, t)
+}
+
+fn texts(app: &App) -> Vec<String> {
+    let mut v: Vec<String> = dispatch::alerts(app).iter().map(|a| a["text"].as_str().unwrap().to_string()).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn an_urgent_alert_keeps_the_tasks_alerts_and_holds_back_new_ones() {
+    let (_dir, app, t) = board_with_task();
+    let task = format!("T{t}");
+    app.db.tx(|| dispatch::add_alert(&app, "T1 didn't start.", Some(t), None, None, None)).unwrap();
+    post(&app, "alerts", json!({"text": "main is red", "urgent": true, "key": "main:web", "task": task})).unwrap();
+    assert_eq!(texts(&app), vec!["T1 didn't start.", "main is red"], "raising an urgent alert keeps the task's alerts");
+
+    app.db.tx(|| dispatch::add_alert(&app, "T1 has a question.", Some(t), None, None, None)).unwrap();
+    assert_eq!(texts(&app), vec!["T1 didn't start.", "main is red"], "no new plain alert while the urgent one is up");
+    let (code, msg) = post(&app, "alerts", json!({"text": "Another", "task": task})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("urgent"), "{msg}");
+    app.db.tx(|| dispatch::add_alert(&app, "PR #1 is ready for review.", Some(t), None, None, Some("review"))).unwrap();
+    assert!(texts(&app).contains(&"PR #1 is ready for review.".to_string()), "a review alert still comes in");
+
+    // Clearing the task's alerts leaves the urgent one (and the review one) up.
+    app.db.tx(|| dispatch::clear_alerts(&app, Some(t), None)).unwrap();
+    assert_eq!(texts(&app), vec!["PR #1 is ready for review.", "main is red"]);
+
+    // Cleared by its key, the task's alerts come in again.
+    post(&app, "alerts/main:web/clear", json!({})).unwrap();
+    app.db.tx(|| dispatch::add_alert(&app, "T1 has a question.", Some(t), None, None, None)).unwrap();
+    assert!(texts(&app).contains(&"T1 has a question.".to_string()));
+}
+
+#[test]
+fn a_notifications_snooze_counts_once_however_late() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    let a = post(&app, "alerts", json!({"text": "T1 didn't start"})).unwrap()["alert"].clone();
+    let id = a["id"].as_str().unwrap();
+    let mins = app.cfg.alerts.snooze_mins.iter().copied().find(|m| *m > 0).unwrap();
+    let pick = json!({"response": {"kind": "action", "action": dispatch::snooze_label(mins)}, "sent_at": a["notified_at"]});
+    assert!(dispatch::handle_response(&app, id, &pick).unwrap());
+    assert!(!dispatch::handle_response(&app, id, &pick).unwrap(), "the same notification's pick counts once");
+    let mut again = pick.clone();
+    again["sent_at"] = json!("2099-01-01T00:00:00Z");
+    assert!(dispatch::handle_response(&app, id, &again).unwrap(), "the next notification's pick counts");
+
+    // One waiter per alert: a repeat only moves it on to the newer notification.
+    let waiters = app.shared.lock().alert_waiters.clone();
+    assert!(dispatch::Waiter::start(waiters.clone(), id, "a").is_some());
+    assert!(dispatch::Waiter::start(waiters.clone(), id, "b").is_none());
+    assert_eq!(waiters.lock().get(id).map(String::as_str), Some("b"));
+    post(&app, &format!("alerts/{id}/dismiss"), json!({})).unwrap();
+    dispatch::tick(&app).unwrap();
+    assert!(!waiters.lock().contains_key(id), "its waiter stops once the alert is gone");
+}
