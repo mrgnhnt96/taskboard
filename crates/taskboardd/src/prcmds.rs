@@ -583,7 +583,7 @@ pub fn rebase_commands(remote: &str, base: &str, branch: &str, gate: &[String], 
     if base.is_empty() {
         return vec![];
     }
-    let mut out = vec![format!("git fetch {remote} {base} && git rebase {remote}/{base}"), "run the tests again".into()];
+    let mut out = vec![format!("git fetch {remote} {base} && git rebase {remote}/{base}"), "run the tests covering your change again (not the whole suite)".into()];
     out.extend(gate.iter().cloned());
     out.push(if branch.is_empty() { "git push --force-with-lease".into() } else { format!("git push --force-with-lease {remote} {branch}") });
     out.extend(republish.iter().cloned());

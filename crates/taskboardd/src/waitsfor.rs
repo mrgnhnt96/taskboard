@@ -480,7 +480,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
             let mut lines = vec![format!("[task-board:{}] Work this task builds on has moved:", rf("task", t.id()))];
             lines.extend(notes.iter().cloned());
             lines.push(format!(
-                "Rebase, run the tests, and push with git push --force-with-lease if the branch was pushed. Don't ask {}; this is routine.",
+                "Rebase, run the tests covering your change (not the whole suite), and push with git push --force-with-lease if the branch was pushed. Don't ask {}; this is routine.",
                 app.cfg.owner
             ));
             let text = lines.join("\n");

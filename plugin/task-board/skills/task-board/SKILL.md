@@ -21,6 +21,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   - `tb task new "<title>" --detail "<the ask>" --here --next` queues it in this terminal after the current task; carry on with the current one.
   - `--here --now` switches to it now; the current task waits here to resume. Commit or stash its changes first when they share the checkout.
   - `tb switch T<n>` moves to a task in this terminal's line; `tb line` lists the line; `tb line drop T<n>` sends one back to the board.
+- **Tests**: run only the tests that cover what you changed (the crate, package, module or test file you touched, e.g. `cargo test -p <crate>`, `flutter test test/<area>`), never the whole suite. CI runs the rest; when a CI check fails, run the failing tests and the ones covering your fix.
 - **Something outside the task**: don't fix it. Report it and carry on:
   `tb found "<short summary, 80 chars max>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
 - **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"` (add `--merged` when you need its PR merged first), then end your turn. Never ask the owner; see `questions.md`.
