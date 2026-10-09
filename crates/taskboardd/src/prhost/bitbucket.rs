@@ -196,6 +196,7 @@ impl PrHost for BitbucketHost {
         let mut r = summarize(&p, &comments, tasks.as_deref().unwrap_or(&[]), &statuses);
         r.tasks_error = tasks.err();
         r.viewer = self.viewer();
+        r.leave_out_viewer();
         Ok(r)
     }
 

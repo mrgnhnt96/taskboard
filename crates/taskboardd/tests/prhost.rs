@@ -343,7 +343,9 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
     let v = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")]);
     let live = &v["live"];
     assert_eq!(live["base_moved"], true);
-    let f = &live["failures"][0];
+    let rebase: Vec<&str> = live["rebase"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+    assert_eq!(rebase[rebase.len() - 2..], ["git push --force-with-lease origin feat", "Don't push only to rebase."], "{rebase:?}");
+    let f =&live["failures"][0];
     assert_eq!(f["check"], "e2e");
     assert_eq!(f["base_fails"], true);
     assert_eq!(f["steps"], json!(["Run e2e"]));
@@ -408,7 +410,12 @@ fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
     assert_eq!(card["stage"]["open_threads"], 1, "the board's own account answered 1");
     b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done"}));
     assert_eq!(h.rec.lock().threads[1].last_author, "bot", "a reply is the board's account's");
-    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    // #77: green and approved, but its tasks are unknown: the stage holds as the merge does, and
+    // nobody is woken for a merge that would be refused.
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "unread tasks hold the stage");
+    assert!(!b.flow(id)["woke"].as_str().unwrap_or("").starts_with("merge"), "no wake to merge: {}", b.flow(id));
+    let e =b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
     assert!(e.contains("couldn't read its PR tasks (Bitbucket answered 403)"), "{e}");
     assert!(!e.contains("thread"), "{e}");
     let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
@@ -417,6 +424,24 @@ fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
     h.rec.lock().tasks_error = None;
     b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
     assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn the_board_s_own_approval_doesn_t_count() {
+    // #77: like the PR's author, the board's own account doesn't approve its PRs.
+    let b = board_with(|c| c.pr.approvals = 2);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.viewer = "bot".into();
+    rec.reviewers = vec![reviewer("a", "approved"), reviewer("bot", "approved")];
+    rec.approvals = 2;
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "one approval of the two it needs");
+    assert_eq!(board::task_card(&b.app, &b.task(id)).unwrap()["pr"]["bar"]["approvals"], 1);
+    h.rec.lock().reviewers.push(reviewer("c", "approved"));
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
 }
 
 #[test]

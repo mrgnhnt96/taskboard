@@ -1232,7 +1232,7 @@ fn print_pr_status(t: &str, v: &Value) {
     }
     let reviewers = live["reviewers"].as_array().cloned().unwrap_or_default();
     if !reviewers.is_empty() {
-        let need = live["approvals"]["need"].as_i64().map(|n| format!(" · {} of {n} approvals", live["approvals"]["have"])).unwrap_or_default();
+        let need = live["approvals"]["need"].as_i64().map(|n| format!(" · {} of {n} approval{}", live["approvals"]["have"], if n == 1 { "" } else { "s" })).unwrap_or_default();
         out(&format!("Reviewers{need}:"));
         for r in reviewers {
             let name = r["name"].as_str().filter(|n| !n.is_empty()).or(r["user"].as_str()).unwrap_or("");
@@ -3333,7 +3333,7 @@ fn project_line(p: &Value) -> String {
     let r = &p["pr_rules"];
     let approvals = match r["approvals"].as_i64() {
         Some(0) => " · approvals: the host's decision".to_string(),
-        Some(n) => format!(" · {n} approvals"),
+        Some(n) => format!(" · {n} approval{}", if n == 1 { "" } else { "s" }),
         None => String::new(),
     };
     let expected = match r["expected"].as_array() {

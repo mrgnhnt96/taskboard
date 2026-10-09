@@ -122,6 +122,7 @@ impl PrHost for GithubHost {
         let threads = self.graphql(THREADS_QUERY, &[("owner", owner), ("name", name)], &[("num", pr.num.to_string())])?;
         let mut r = summarize(&view, &threads);
         r.viewer = self.viewer();
+        r.leave_out_viewer();
         Ok(r)
     }
 
