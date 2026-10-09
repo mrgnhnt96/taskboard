@@ -135,7 +135,7 @@ fn provider(id: &str) -> Result<Provider> {
 }
 
 /// A token and who it belongs to: (email or user, secret).
-type Cred = (String, String);
+pub type Cred = (String, String);
 
 /// What the board knows about the accounts beyond `accounts.json`: GitHub's browser sign-in, and the
 /// sandbox's Keychain.
@@ -637,6 +637,15 @@ fn device_prompt(text: &str) -> Option<(String, String)> {
 /// The token for `tb token` / `tb api`: (user or email, secret), from Taskboard's Keychain item.
 pub fn credentials(_cfg: &Config, p: Provider) -> Option<Cred> {
     keychain_get(p.service())
+}
+
+/// The account the board itself calls a service with (the PR hosts in `prhost.rs`): (user or email,
+/// secret), when that account is connected. On a sandbox board, the in-memory one.
+pub fn board_credentials(app: &App, p: Provider) -> Option<Cred> {
+    if !load_who(&app.cfg).contains_key(p.id()) {
+        return None;
+    }
+    app.accounts.get(p)
 }
 
 /// What `tb git-credential` hands git for an HTTPS host: (user name, token), when Taskboard has that

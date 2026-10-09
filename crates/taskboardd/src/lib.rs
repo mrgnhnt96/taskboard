@@ -21,6 +21,7 @@ pub mod mdcopy;
 pub mod midna;
 pub mod ops;
 pub mod prflow;
+pub mod prhost;
 pub mod proc;
 pub mod projects;
 pub mod qa;

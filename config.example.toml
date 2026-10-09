@@ -69,6 +69,16 @@ wake = true                          # bring a done task back when its PR has fa
 agents_merge = false                 # let agents merge an approved, green PR
 gh = "gh"
 no_checks_after_mins = 15.0
+bitbucket_api = "https://api.bitbucket.org/2.0"
+azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, to read failed steps and tests
+
+# Per-project PR rules, by project name. Every key is optional.
+# [pr.projects.webapp]
+# approvals = 2                       # approvals needed before it's ready to merge (unset: the host's decision, or any approval)
+# expected = ["build", "test"]        # checks that must post on every push ([] = don't wait; unset = the no_checks_after_mins grace)
+# expected_wait_mins = 90             # how long to wait for them
+# failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
+# merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
 # env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email).

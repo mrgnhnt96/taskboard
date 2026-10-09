@@ -140,13 +140,59 @@ pub struct PrConfig {
     pub gh: String,
     /// Minutes after the head was pushed with no checks before the checks count as passed.
     pub no_checks_after_mins: f64,
+    /// Bitbucket Cloud's REST API (2.0).
+    pub bitbucket_api: String,
+    /// The environment variable holding an Azure DevOps personal access token, for reading the failed
+    /// steps and tests of an Azure Pipelines check.
+    pub azure_token_env: String,
+    /// Per-project PR rules, by the project's name (`[pr.projects.webapp]`).
+    pub projects: BTreeMap<String, PrProject>,
 }
 
 impl Default for PrConfig {
     fn default() -> Self {
-        PrConfig { watch: true, wake: true, agents_merge: false, gh: "gh".into(), no_checks_after_mins: 15.0 }
+        PrConfig {
+            watch: true,
+            wake: true,
+            agents_merge: false,
+            gh: "gh".into(),
+            no_checks_after_mins: 15.0,
+            bitbucket_api: "https://api.bitbucket.org/2.0".into(),
+            azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
+            projects: BTreeMap::new(),
+        }
     }
 }
+
+impl PrConfig {
+    /// The PR rules of a task's project (the defaults when it has none).
+    pub fn project(&self, name: Option<&str>) -> PrProject {
+        name.and_then(|n| self.projects.get(n)).cloned().unwrap_or_default()
+    }
+}
+
+/// One project's PR rules. Every key is optional; unset keys keep the board-wide behaviour.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct PrProject {
+    /// Approvals a PR needs before it's ready to merge. Unset: the host's own decision, or any approval.
+    pub approvals: Option<i64>,
+    /// Check names that must post on every push before the checks count as finished. Unset: the
+    /// `no_checks_after_mins` grace; an empty list: no wait at all.
+    pub expected: Option<Vec<String>>,
+    /// How long to wait for the expected checks to post, in minutes.
+    pub expected_wait_mins: Option<f64>,
+    /// A command that prints a failed check's steps and tests (for CI the board can't read itself).
+    /// It gets TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD, TB_CHECK and TB_CHECK_URL, and prints JSON
+    /// (`{"steps": [...], "tests": [...]}`) or one step per line (`test: <name>` for a test).
+    pub failures_cmd: Option<String>,
+    /// How `tb pr merge` merges: merge, squash or rebase (Bitbucket: merge_commit, squash,
+    /// fast_forward). Unset: the repository's default.
+    pub merge_strategy: Option<String>,
+}
+
+/// How long expected checks may take to post when a project doesn't say.
+pub const EXPECTED_WAIT_MINS: f64 = 90.0;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
