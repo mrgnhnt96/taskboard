@@ -125,6 +125,9 @@ fn wtask(t: &Value) -> WTask {
     if b(t, "lost") {
         facts.push(("warn", "Terminal lost".into()));
     }
+    if let Some(c) = fmt::compacting(t) {
+        facts.push(("compact", c));
+    }
     let term = (fmt::opt_s(t, "who").is_some() && fmt::opt_s(t, "session_id").is_some() && !matches!(s(t, "status"), "planned" | "queued"))
         .then(|| s(t, "session_id").to_string());
     if term.is_some() {
@@ -433,6 +436,7 @@ fn wchip(t: &Theme, cls: &str, text: &str) -> Div {
         "warn" => (t.warn_fg, t.warn_soft),
         "bad" => (t.down, t.down_soft),
         "quiet" => (t.muted, t.panel_2),
+        "compact" => (t.accent_fg, t.accent_soft),
         _ => (t.text_2, t.panel_2),
     };
     div().flex_none().px(px(8.)).py(px(2.)).rounded(px(6.)).text_size(px(12.5)).text_color(fg).bg(bg).whitespace_nowrap().child(text.to_string())

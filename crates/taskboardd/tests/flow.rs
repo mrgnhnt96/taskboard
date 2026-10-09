@@ -525,7 +525,7 @@ fn tb_moves_issues_by_ref_and_unattaches_by_link() {
 
     let att = |b: &Board| b.get("/goals/G1")["attachments"].as_array().unwrap().iter().map(|a| a["title"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     b.report("tb.attach", "s1", json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc", "goal": "G1"}));
-    b.report("tb.attach", "s1", json!({"url": "~/notes.md", "title": "Notes", "kind": "other", "goal": "G1"}));
+    b.report("tb.attach", "s1", json!({"url": "~/notes.pdf", "title": "Notes", "kind": "other", "goal": "G1"}));
     assert_eq!(att(&b), vec!["Spec", "Notes"]);
     // By link, then by title.
     assert_eq!(b.report("tb.unattach", "s1", json!({"url": "https://example.com/spec", "goal": "G1"}))["removed"], "Spec");

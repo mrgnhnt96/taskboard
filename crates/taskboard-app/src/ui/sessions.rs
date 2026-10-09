@@ -445,7 +445,13 @@ pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
         (None, Some(role)) => role.to_string(),
         (None, None) => ["No task", s(x, "branch")].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" · "),
     };
-    let state = if b(x, "closing") { "Closing…".to_string() } else { sess_label(&status).to_string() };
+    let state = if b(x, "closing") {
+        "Closing…".to_string()
+    } else if opt_s(x, "compacting").is_some() {
+        "Compacting".to_string()
+    } else {
+        sess_label(&status).to_string()
+    };
     let when = if status == "idle" {
         if idle_ms(x) > 60000 { format!("for {}", long_ago(idle_ms(x))) } else { "just now".into() }
     } else {
@@ -749,6 +755,8 @@ pub struct DetailVm {
     pub status: String,
     pub pill: &'static str,
     pub status_line: Option<String>,
+    /// "Compacting since 3:05 PM".
+    pub compacting: Option<String>,
     /// None while the rename field replaces the title.
     pub title: Option<NameVm>,
     pub path: String,
@@ -952,6 +960,7 @@ pub fn detail_vm(c: &DetailCtx) -> DetailView {
             sess_label(&status)
         },
         status_line: (!closing).then(|| status_line(d)),
+        compacting: fmt::compacting(d).filter(|_| !closing),
         title: (!c.renaming).then(|| name_vm(d, if gone { "" } else { DETAIL_HINT }, c.flash)),
         path: opt_s(d, "project_path").map(short_path).unwrap_or_else(|| s(d, "project").to_string()),
         branch: s(d, "branch").to_string(),
@@ -2151,7 +2160,9 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
     let id = v.id.clone();
 
     // `.pill.st-{status}` and the muted "for 4 min".
-    let status_row = div().flex().items_center().gap(px(8.)).child(sess_pill(t, &v.status, v.pill)).children(v.status_line.clone().map(|l| div().text_color(t.muted).child(l)));
+    let status_row = div().flex().items_center().gap(px(8.)).child(sess_pill(t, &v.status, v.pill))
+        .children(v.compacting.clone().map(|c| pill_el(t.accent_fg, t.accent_soft, c, false)))
+        .children(v.status_line.clone().map(|l| div().text_color(t.muted).child(l)));
 
     // `.shead h2`: 22px bold, 1.3 line height, 4px above.
     let title: AnyElement = match &v.title {
