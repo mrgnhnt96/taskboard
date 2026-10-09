@@ -10,6 +10,10 @@ use crate::util::*;
 
 const REMOTE_TTL: Duration = Duration::from_secs(600);
 const PR_FLOW_SETTING: &str = "project_pr_flow";
+/// `tb project set --approvals / --expected-check / --expected-wait`: name → the rules set on the board.
+const PR_RULES_SETTING: &str = "project_pr_rules";
+/// The PR rules `tb project set` can change, over `[pr.projects.<name>]`.
+pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins"];
 pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {
@@ -89,6 +93,83 @@ pub fn set_pr_flow(app: &App, name: &str, flow: &str) -> Result<()> {
     app.db.set_setting(PR_FLOW_SETTING, Some(&jdumps(&Value::Object(flows))))
 }
 
+fn pr_rule_overrides(app: &App) -> Result<Row> {
+    Ok(jloads_obj(app.db.get_setting(PR_RULES_SETTING)?.as_deref()))
+}
+
+/// The rules `tb project set` put on a project (only the keys it set).
+pub fn pr_rules_set(app: &App, name: &str) -> Result<Row> {
+    Ok(pr_rule_overrides(app)?.get(name).and_then(|v| v.as_object()).cloned().unwrap_or_default())
+}
+
+/// A project's PR rules: `[pr.projects.<name>]` with what `tb project set` changed on top.
+pub fn pr_rules(app: &App, name: Option<&str>) -> crate::config::PrProject {
+    let mut r = app.cfg.pr.project(name);
+    let Some(name) = name.filter(|n| !n.is_empty()) else { return r };
+    let set = pr_rules_set(app, name).unwrap_or_default();
+    if let Some(n) = set.get("approvals").and_then(|v| v.as_i64()) {
+        r.approvals = Some(n);
+    }
+    if let Some(list) = set.get("expected").and_then(|v| v.as_array()) {
+        r.expected = Some(list.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+    }
+    if let Some(m) = set.get("expected_wait_mins").and_then(|v| v.as_f64()) {
+        r.expected_wait_mins = Some(m);
+    }
+    r
+}
+
+/// Changes a project's PR rules from a body: each of [`PR_RULE_KEYS`] given is set, or with null goes
+/// back to config.toml's. True when the body named any.
+pub fn set_pr_rules(app: &App, name: &str, body: &Value) -> Result<bool> {
+    let mut set = pr_rules_set(app, name)?;
+    let mut any = false;
+    for key in PR_RULE_KEYS {
+        let Some(v) = body.get(*key) else { continue };
+        any = true;
+        if v.is_null() {
+            set.remove(*key);
+            continue;
+        }
+        let clean = match *key {
+            "approvals" => match v.as_i64() {
+                Some(n) if (0..=20).contains(&n) => json!(n),
+                _ => return err(400, "approvals is a count from 0 (the host's own decision) to 20."),
+            },
+            "expected" => {
+                let Some(list) = v.as_array() else { return err(400, "expected is a list of check names ([] for none).") };
+                let mut names: Vec<String> = vec![];
+                for x in list {
+                    let n = x.as_str().map(|s| one_line(s, 200)).unwrap_or_default();
+                    if n.is_empty() {
+                        return err(400, "An expected check needs a name.");
+                    }
+                    if !names.iter().any(|m| m.eq_ignore_ascii_case(&n)) {
+                        names.push(n);
+                    }
+                }
+                json!(names)
+            }
+            _ => match v.as_f64() {
+                Some(m) if m > 0.0 && m <= 24.0 * 60.0 => json!(m),
+                _ => return err(400, "expected_wait_mins is minutes, more than 0 and at most a day (1440)."),
+            },
+        };
+        set.insert(key.to_string(), clean);
+    }
+    if !any {
+        return Ok(false);
+    }
+    let mut all = pr_rule_overrides(app)?;
+    if set.is_empty() {
+        all.remove(name);
+    } else {
+        all.insert(name.into(), Value::Object(set));
+    }
+    app.db.set_setting(PR_RULES_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
 /// Whether a project's work ends in pull requests (and so gets Jira tickets): on when it has a git remote.
 pub fn ships_prs(app: &App, name: &str) -> Result<bool> {
     let flow = pr_flow(app, name)?;
@@ -145,6 +226,14 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("remote".into(), json!(has_remote(app, name)?));
     o.insert("pr_flow".into(), json!(pr_flow(app, name)?));
     o.insert("ships_prs".into(), json!(ships_prs(app, name)?));
+    let r = pr_rules(app, Some(name));
+    let approvals = r.approvals.unwrap_or(app.cfg.pr.approvals);
+    o.insert(
+        "pr_rules".into(),
+        json!({"approvals": approvals, "expected": r.expected,
+               "expected_wait_mins": r.expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS),
+               "set": pr_rules_set(app, name)?}),
+    );
     Ok(d)
 }
 

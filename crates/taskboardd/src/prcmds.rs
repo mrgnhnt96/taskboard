@@ -261,12 +261,57 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     if !blockers.is_empty() {
         return err(409, format!("PR #{} can't merge yet: {}.", pr.num, blockers.join("; ")));
     }
-    let rules = app.cfg.pr.project(t.s("project"));
+    // The merge deletes this PR's branch, and a host may close a PR that goes into a deleted branch: move
+    // the PRs stacked on it onto its base first.
+    move_stacked_off(app, &t, &rec, pr.num)?;
+    let rules = crate::projects::pr_rules(app, t.s("project"));
     let opts = MergeOpts { strategy: rules.merge_strategy.clone().filter(|s| !s.trim().is_empty()), close_source_branch: true };
     host(app, &pr)?.merge(&pr, &opts).map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
     app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who_of(body)))?;
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(&t)}))
+}
+
+/// Open PRs that go into this PR's branch: other tasks' PRs in its repo whose base is that branch, and
+/// tasks stacked on it (`tb task set --stack-on`) whose PR hasn't been read yet.
+fn stacked_children(app: &App, t: &Row, branch: &str) -> Result<Vec<Row>> {
+    let rows = app.db.q(
+        "SELECT * FROM tasks WHERE id != ? AND pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined')) \
+         AND ((pr_repo = ? AND json_extract(pr_flow, '$.rec.base') = ?) OR (pr_after = ? AND json_extract(pr_flow, '$.rec.base') IS NULL)) \
+         ORDER BY id",
+        p![t.id(), t.st("pr_repo"), branch, t.id()],
+    )?;
+    Ok(rows.into_iter().filter(board::pr_still_open).collect())
+}
+
+/// Points every open PR stacked on this one at this PR's base, before the merge deletes its branch. A
+/// PR that can't be moved stops the merge, so it isn't closed with the branch.
+fn move_stacked_off(app: &App, t: &Row, rec: &Value, num: i64) -> Result<()> {
+    let (Some(branch), Some(base)) = (rec["branch"].as_str().filter(|b| !b.is_empty()), rec["base"].as_str().filter(|b| !b.is_empty())) else {
+        return Ok(());
+    };
+    for child in stacked_children(app, t, branch)? {
+        let res = crate::propen::host::retarget(app, &child, base);
+        app.db.tx(|| match &res {
+            Ok(()) => {
+                prflow::merge_flow(app, child.id(), fields!["retargeted" => base])?;
+                board::log_event(app, child.id(), board::BOARD, "status", &format!("PR #{} now goes into {base}: {}'s PR #{num} is merging and its branch {branch} goes away", child.i0("pr_num"), rf("task", t.id())))
+                    .map(|_| ())
+            }
+            Err(_) => Ok(()),
+        })?;
+        if let Err(e) = res {
+            return err(
+                502,
+                format!(
+                    "PR #{num} didn't merge: {}'s PR #{} goes into its branch {branch} and couldn't be moved onto {base} first ({e}). Point it at {base}, then merge again.",
+                    rf("task", child.id()),
+                    child.i0("pr_num")
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn is_link(s: &str) -> bool {
@@ -358,7 +403,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         (true, false, Some(base)) if !base.is_empty() => host(app, &pr).map_err(|e| e.message).and_then(|h| h.base_failures(&pr, base, BASE_COMMITS)),
         _ => Ok(vec![]),
     };
-    let rules = app.cfg.pr.project(t.s("project"));
+    let rules = crate::projects::pr_rules(app, t.s("project"));
     let mut failures = vec![];
     for c in rec["checks"].as_array().cloned().unwrap_or_default().into_iter().filter(|c| c["state"] == "failed") {
         let Ok(check) = serde_json::from_value::<prhost::Check>(c.clone()) else { continue };

@@ -417,3 +417,54 @@ fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
     b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
     assert_eq!(b.phase(id), "merged");
 }
+
+#[test]
+fn a_pr_needs_two_approvals_unless_its_project_is_set_otherwise_with_tb() {
+    // #50: the board's default is 2 (tests otherwise run with the host's verdict).
+    let b = board_with(|c| c.pr.approvals = taskboardd::config::DEFAULT_APPROVALS);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    rec.approvals = 1;
+    rec.review_decision = "APPROVED".into();
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "one approval isn't enough, whatever the host says");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({})).unwrap_err();
+    assert!(e.contains("it has 1 of the 2 approvals it needs"), "{e}");
+    let v = b.post("/projects/webapp", json!({"approvals": 1}));
+    assert_eq!(v["pr_rules"]["approvals"], 1);
+    assert_eq!(v["pr_rules"]["set"], json!({"approvals": 1}));
+    assert_eq!(v["pr_flow"], "auto", "the PR flow is left alone");
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    assert!(b.try_post("/projects/webapp", json!({"approvals": -1})).unwrap_err().contains("0 (the host's own decision) to 20"));
+    let v = b.post("/projects/webapp", json!({"approvals": null}));
+    assert_eq!(v["pr_rules"]["approvals"], 2, "back to the board's default");
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    assert!(b.try_post("/projects/webapp", json!({})).unwrap_err().contains("Say what to change"));
+}
+
+#[test]
+fn merging_moves_the_prs_stacked_on_it_onto_its_base_first() {
+    // #50: the merge deletes the branch, so the PR into it is pointed at the base before.
+    let b = board_with(|_| {});
+    let parent = b.pr_task(BB);
+    let mut rec = green();
+    rec.branch = "base-work".into();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    let child = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
+    let child_rec = Record { base: "base-work".into(), branch: "more-work".into(), head: "h9".into(), ..green() }.to_value();
+    prflow::merge_flow(&b.app, child, vec![("rec", child_rec)]).unwrap();
+    b.post(&format!("/tasks/T{parent}/pr/merge"), json!({}));
+    let calls = h.calls();
+    let at = |c: &str| calls.iter().position(|x| x.starts_with(c)).unwrap_or_else(|| panic!("{c} in {calls:?}"));
+    assert!(at("retarget main") < at("merge "), "{calls:?}");
+    assert_eq!(b.flow(child)["retargeted"], "main");
+    assert_eq!(b.phase(parent), "merged");
+    let said: Vec<String> = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", taskboardd::p![child]).unwrap().iter().map(|r| r.st("text")).collect();
+    assert!(said.iter().any(|l| l.contains("now goes into main")), "{said:?}");
+}

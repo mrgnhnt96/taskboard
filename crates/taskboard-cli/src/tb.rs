@@ -778,11 +778,20 @@ enum AlertCmd {
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
-    /// Change a project: --pr-flow auto (by its git remote), on or off
+    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks)
     Set {
         name: String,
         #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
         pr_flow: Option<String>,
+        /// Approvals its PRs need before they're ready to merge (0: the host's own decision; default: config.toml's)
+        #[arg(long)]
+        approvals: Option<String>,
+        /// A check that must post on every push (repeat for more; none: wait for none; default: config.toml's)
+        #[arg(long = "expected-check")]
+        expected_check: Vec<String>,
+        /// Minutes to wait for the expected checks before going on without them (default: config.toml's)
+        #[arg(long = "expected-wait")]
+        expected_wait: Option<String>,
     },
 }
 
@@ -2696,12 +2705,50 @@ fn project_line(p: &Value) -> String {
         Some(false) => "no git remote",
         None => "no folder",
     };
+    let r = &p["pr_rules"];
+    let approvals = match r["approvals"].as_i64() {
+        Some(0) => " · approvals: the host's decision".to_string(),
+        Some(n) => format!(" · {n} approvals"),
+        None => String::new(),
+    };
+    let expected = match r["expected"].as_array() {
+        Some(l) if l.is_empty() => " · expects no checks".to_string(),
+        Some(l) => format!(
+            " · expects {} (waits {} min)",
+            l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
+            r["expected_wait_mins"].as_f64().map(|m| m.to_string()).unwrap_or_default()
+        ),
+        None => String::new(),
+    };
     format!(
-        "{} · PR flow {} · {} · {remote}",
+        "{} · PR flow {} · {} · {remote}{approvals}{expected}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
     )
+}
+
+/// `tb project set`'s PR-rule flags as the API's body: `default` sends null (back to config.toml's).
+fn project_rules(approvals: Option<String>, expected: Vec<String>, wait: Option<String>) -> Result<serde_json::Map<String, Value>, String> {
+    let mut b = serde_json::Map::new();
+    let is_default = |s: &str| s.trim().eq_ignore_ascii_case("default");
+    if let Some(a) = approvals {
+        let v = if is_default(&a) { Value::Null } else { json!(a.trim().parse::<i64>().map_err(|_| format!("--approvals takes a count or default, not “{a}”"))?) };
+        b.insert("approvals".into(), v);
+    }
+    if !expected.is_empty() {
+        let v = match expected.as_slice() {
+            [one] if is_default(one) => Value::Null,
+            [one] if one.trim().eq_ignore_ascii_case("none") => json!([]),
+            list => json!(list),
+        };
+        b.insert("expected".into(), v);
+    }
+    if let Some(w) = wait {
+        let v = if is_default(&w) { Value::Null } else { json!(w.trim().parse::<f64>().map_err(|_| format!("--expected-wait takes minutes or default, not “{w}”"))?) };
+        b.insert("expected_wait_mins".into(), v);
+    }
+    Ok(b)
 }
 
 fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
@@ -2721,11 +2768,15 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow } => {
-            let Some(flow) = pr_flow else {
-                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off"));
-            };
-            let v = c.call("POST", &format!("/projects/{name}"), Some(json!({"pr_flow": flow})))?;
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait } => {
+            let mut body = project_rules(approvals, expected_check, expected_wait)?;
+            if let Some(flow) = pr_flow {
+                body.insert("pr_flow".into(), json!(flow));
+            }
+            if body.is_empty() {
+                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off, or --approvals 2"));
+            }
+            let v = c.call("POST", &format!("/projects/{name}"), Some(Value::Object(body)))?;
             out(&format!("Changed {}.", project_line(&v)));
             Ok(0)
         }

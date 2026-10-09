@@ -169,6 +169,9 @@ pub struct PrConfig {
     /// The environment variable holding an Azure DevOps personal access token, for reading the failed
     /// steps and tests of an Azure Pipelines check.
     pub azure_token_env: String,
+    /// Approvals a PR needs before it's ready to merge, when its project doesn't say. 0: the host's own
+    /// decision, or any approval.
+    pub approvals: i64,
     /// Per-project PR rules, by the project's name (`[pr.projects.webapp]`).
     pub projects: BTreeMap<String, PrProject>,
 }
@@ -183,6 +186,7 @@ impl Default for PrConfig {
             no_checks_after_mins: 15.0,
             bitbucket_api: "https://api.bitbucket.org/2.0".into(),
             azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
+            approvals: DEFAULT_APPROVALS,
             projects: BTreeMap::new(),
         }
     }
@@ -195,11 +199,14 @@ impl PrConfig {
     }
 }
 
-/// One project's PR rules. Every key is optional; unset keys keep the board-wide behaviour.
+/// One project's PR rules. Every key is optional; unset keys keep the board-wide behaviour. `tb project
+/// set` changes `approvals`, `expected` and `expected_wait_mins` on the board, over these
+/// (`projects::pr_rules`).
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct PrProject {
-    /// Approvals a PR needs before it's ready to merge. Unset: the host's own decision, or any approval.
+    /// Approvals a PR needs before it's ready to merge. Unset: `pr.approvals`; 0: the host's own
+    /// decision, or any approval.
     pub approvals: Option<i64>,
     /// Check names that must post on every push before the checks count as finished. Unset: the
     /// `no_checks_after_mins` grace; an empty list: no wait at all.
@@ -214,6 +221,9 @@ pub struct PrProject {
     /// fast_forward). Unset: the repository's default.
     pub merge_strategy: Option<String>,
 }
+
+/// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).
+pub const DEFAULT_APPROVALS: i64 = 2;
 
 /// How long expected checks may take to post when a project doesn't say.
 pub const EXPECTED_WAIT_MINS: f64 = 90.0;
@@ -594,6 +604,8 @@ impl Config {
         c.questions.screen = false;
         c.backlog.ai = false;
         c.pr.watch = false;
+        // The host's verdict (or any approval) is enough, unless a test asks for a count.
+        c.pr.approvals = 0;
         c.accounts_sandbox = true;
         c.page_url = "taskboard://".into();
         c
@@ -673,6 +685,8 @@ mod tests {
         assert!(!c.owner.is_empty());
         assert_eq!(c.intervals.runner, 5.0);
         assert_eq!(c.first_weekday, chrono::Weekday::Sun);
+        assert_eq!(c.pr.approvals, DEFAULT_APPROVALS);
+        assert_eq!(Config::from_file(FileConfig::default(), PathBuf::from("/tmp/x.toml")).pr.approvals, 2, "a PR needs 2 approvals unless told otherwise");
     }
 
     #[test]

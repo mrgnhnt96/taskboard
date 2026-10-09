@@ -477,7 +477,7 @@ pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
 
 /// Expected checks (`[pr.projects.<name>] expected`) that haven't posted on this push.
 pub fn expected_missing(app: &App, t: &Row, rec: &Value) -> Option<Vec<String>> {
-    let want = app.cfg.pr.project(t.s("project")).expected?;
+    let want = crate::projects::pr_rules(app, t.s("project")).expected?;
     let posted: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter_map(|c| c["name"].as_str().map(|s| s.to_lowercase())).collect();
     Some(want.into_iter().filter(|w| !posted.contains(&w.to_lowercase())).collect())
 }
@@ -523,12 +523,13 @@ pub fn review_of(f: &Row, rec: &Value) -> Review {
     Review { changes, approvals, decision, requesters }
 }
 
-/// Approvals this task's project needs, if it says.
+/// Approvals this task's PR needs: its project's count, else `pr.approvals` (2). None (a count of 0):
+/// the host's own verdict decides.
 pub fn approvals_needed(app: &App, t: &Row) -> Option<i64> {
-    app.cfg.pr.project(t.s("project")).approvals
+    Some(crate::projects::pr_rules(app, t.s("project")).approvals.unwrap_or(app.cfg.pr.approvals)).filter(|n| *n > 0)
 }
 
-/// Approved enough to merge: the project's count, or (unset) the host's verdict or any approval.
+/// Approved enough to merge: the count it needs, or (0) the host's verdict or any approval.
 pub fn approved(app: &App, t: &Row, r: &Review) -> bool {
     if r.changes {
         return false;
@@ -593,7 +594,7 @@ pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
     let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
     match expected_missing(app, t, rec) {
         Some(missing) => {
-            let wait = app.cfg.pr.project(t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS);
+            let wait = crate::projects::pr_rules(app, t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS);
             !missing.is_empty() && waited < wait * 60.0
         }
         None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && waited < app.cfg.pr.no_checks_after_mins * 60.0,

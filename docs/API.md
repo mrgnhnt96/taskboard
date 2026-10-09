@@ -556,20 +556,22 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
 | `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
-| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
+| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then points every open PR that goes into its branch at its base (a PR that can't be moved stops the merge: 502), merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
 | `POST /tasks/:id/pr/skip-checks` | `{reason?, all?: bool, who?}` | Counts this push's checks (or every push's) as passed: for builds a hook cancelled, not for failures (use `not-ours`). |
 | `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
 | `POST /tasks/:id/pr/merged` | `{who?}` | `tb pr merged`: the PR was merged outside the board. |
 
 `thread = {id, kind: "review"|"comment"|"summary"|"task", resolvable, resolved, author, author_name, last_author, last_id,
-last_at, path?, line?, text, url?, outdated?}`. A thread is open while it's unresolved and someone other than the PR's
-author spoke last (a PR task: until it's resolved), unless it was acknowledged at its last comment.
+last_at, path?, line?, text, url?, outdated?}`. A thread is open while it's unresolved and someone other than the
+board's own account on the host (the account it reads and posts as; the PR's author when that isn't known) spoke last
+(a PR task: until it's resolved), unless it was acknowledged at its last comment.
 
-**Per-project rules** (`[pr.projects.<name>]` in config.toml): `approvals` (needed to be ready to merge; unset = the
-host's verdict or any approval), `expected` (check names that must post on every push; checks count as running until
-they do, for up to `expected_wait_mins`, default 90; `[]` = don't wait at all; unset = the `no_checks_after_mins`
-grace), `failures_cmd` and `merge_strategy`.
+**Per-project rules** (`[pr.projects.<name>]` in config.toml): `approvals` (needed to be ready to merge; unset =
+`pr.approvals`, default 2; 0 = the host's verdict or any approval), `expected` (check names that must post on every
+push; checks count as running until they do, for up to `expected_wait_mins`, default 90; `[]` = don't wait at all;
+unset = the `no_checks_after_mins` grace), `failures_cmd` and `merge_strategy`. `approvals`, `expected` and
+`expected_wait_mins` can be changed on the board with `tb project set` (`POST /projects/:name`), over config.toml's.
 
 **`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
 `TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
@@ -577,8 +579,8 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
-| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool` (`tb project show`). |
-| `POST /projects/:name` | `{pr_flow: "auto"\|"on"\|"off"}` | Whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). **Response read:** the project as in `GET /projects`. |
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, set: {…what tb project set changed}}` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
 
 ### Goals
 | Path | Body | Notes |

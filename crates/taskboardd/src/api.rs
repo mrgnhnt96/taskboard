@@ -551,11 +551,20 @@ fn get_summary(app: &App) -> Result<Value> {
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
     let list = projects::list_projects(app)?;
     let Some(p) = list.iter().find(|p| p["name"] == name) else { return err(404, format!("There's no project called {name}.")) };
-    let flow = body_str(body, "pr_flow");
-    if !projects::PR_FLOWS.contains(&flow.as_str()) {
+    let rules = projects::PR_RULE_KEYS.iter().any(|k| body.get(*k).is_some());
+    let flow = body.get("pr_flow").filter(|v| !v.is_null()).map(|_| body_str(body, "pr_flow"));
+    if flow.is_none() && !rules {
+        return err(400, format!("Say what to change: pr_flow, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")));
+    }
+    if flow.as_ref().is_some_and(|f| !projects::PR_FLOWS.contains(&f.as_str())) {
         return err(400, "pr_flow is auto (by its git remote), on or off.");
     }
-    app.db.tx(|| projects::set_pr_flow(app, name, &flow))?;
+    app.db.tx(|| {
+        if let Some(f) = &flow {
+            projects::set_pr_flow(app, name, f)?;
+        }
+        projects::set_pr_rules(app, name, body).map(|_| ())
+    })?;
     projects::describe(app, p)
 }
 
