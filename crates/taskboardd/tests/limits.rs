@@ -199,6 +199,46 @@ fn a_repo_no_longer_looked_after_loses_its_block() {
 }
 
 #[test]
+fn a_removed_project_with_finished_work_loses_its_block() {
+    let b = board_with(|c| c.limits.generated = vec!["*.g.dart".into()]);
+    git_repo(&b.repo());
+    let attrs = b.repo().join(".git").join("info").join("attributes");
+    let id = b.new_task();
+    gitattrs::sync(&b.app).unwrap();
+    assert!(std::fs::read_to_string(&attrs).unwrap().contains("*.g.dart -diff"));
+
+    b.app.db.set_setting("midna_projects", Some("[]")).unwrap();
+    gitattrs::sync(&b.app).unwrap();
+    assert!(std::fs::read_to_string(&attrs).unwrap().contains("*.g.dart -diff"), "its task is still open");
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", p![id]).unwrap();
+    b.app.db.x("UPDATE sessions SET status = 'gone'", p![]).unwrap();
+    gitattrs::sync(&b.app).unwrap();
+    assert!(!std::fs::read_to_string(&attrs).unwrap().contains("-diff"), "a done task doesn't keep it a target");
+}
+
+#[test]
+fn blocks_from_before_they_were_tracked_and_the_python_board_s_are_cleaned_up() {
+    let b = board_with(|c| c.limits.generated = vec!["*.g.dart".into()]);
+    git_repo(&b.repo());
+    let gone = b.dir.path().join("old");
+    std::fs::create_dir_all(&gone).unwrap();
+    git_repo(&gone);
+    let id = b.post("/tasks", json!({"title": "Old", "detail": "Old.", "project": "old"})).unwrap()["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE tasks SET status = 'done', repo_path = ? WHERE id = ?", p![gone.to_string_lossy(), id]).unwrap();
+    let old_attrs = gone.join(".git").join("info").join("attributes");
+    std::fs::create_dir_all(old_attrs.parent().unwrap()).unwrap();
+    std::fs::write(&old_attrs, format!("*.png binary\n\n{}\n*.g.dart -diff\n{}\n", gitattrs::BEGIN, gitattrs::END)).unwrap();
+    let attrs = b.repo().join(".git").join("info").join("attributes");
+    std::fs::create_dir_all(attrs.parent().unwrap()).unwrap();
+    std::fs::write(&attrs, "# task-board: generated files (diff-skipped)\n*.lock -diff\n# task-board: end\n").unwrap();
+
+    gitattrs::sync(&b.app).unwrap();
+    assert_eq!(std::fs::read_to_string(&old_attrs).unwrap(), "*.png binary\n", "a repo that stopped being a target before the upgrade");
+    let text = std::fs::read_to_string(&attrs).unwrap();
+    assert_eq!(text, format!("{}\n*.g.dart -diff\n{}\n", gitattrs::BEGIN, gitattrs::END), "the Python board's block is replaced, not doubled");
+}
+
+#[test]
 fn a_compacting_terminal_is_flagged_until_it_speaks_again() {
     let b = board_with(|_| {});
     let id = b.new_task();

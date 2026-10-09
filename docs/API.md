@@ -710,7 +710,9 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 `POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
 comma-separated string, or `"none"`) with an optional `project` for that project's own globs, and `reset: true`.
 It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes),
-and takes the block out of a repo it no longer looks after (its project removed, its work done).
+and takes the block out of a repo it no longer looks after (its project off Midna's list with no open goal, task, PR or terminal
+there; its work done). The Python board's block (`# task-board: generated files …` to `# task-board: end`) is replaced
+by the board's, and once after an upgrade every repo the board has known is swept for blocks from before they were tracked.
 
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
@@ -785,7 +787,8 @@ linked by hand; a failed ask waits for `tb task set T<n> --jira new` (try again)
 covers its work (over REST: the open epic sharing the most of its name's words, stopwords aside, when they're at least
 half of either's; through Claude or the desk, the one it judges covers it), and only gets a new one when none fits.
 With `desk`, new tickets go to the Jira desk: one Claude terminal the board opens in Midna's Background group (an
-`agent` job, purpose `jira_desk`; take `jira_desk` out of `[terminals] background` to open it with the project tabs)
+`agent` job, purpose `jira_desk`; take `jira_desk` out of `[terminals] background` to open it with the project tabs; an
+older `init`'s `background = []                      # example: ["plan"]` line is rewritten to `["jira_desk"]` on load)
 and never closes. Its `--allowedTools` are `claude_tools` plus `Bash(tb jira:*)` and
 `Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
 at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
