@@ -2165,7 +2165,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             if let Some((kind, text)) = session_history(&r, &out) {
                 // Every board marker (a task's, a goal's planner, the ticket desk's) says the board sent it.
                 let sent = r.event == "hook.prompt" && crate::startword::MARKER_RE.is_match(r.body["prompt"].as_str().unwrap_or(""));
-                board::session_event_with(app, &sid, kind, &text, Some(&r.at), sent.then_some(crate::startword::BOARD_PROMPT))?;
+                let kept = r.event == "hook.prompt" && r.b("prompt_cut") == crate::startword::KEPT_ENDS;
+                let data = if sent { Some(crate::startword::BOARD_PROMPT) } else { kept.then_some(crate::startword::KEPT_ENDS) };
+                board::session_event_with(app, &sid, kind, &text, Some(&r.at), data)?;
             }
         }
         if !spooled {

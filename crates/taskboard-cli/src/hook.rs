@@ -21,6 +21,7 @@ const SLACK: f64 = 0.35;
 const SESSION_END_POST_CAP: f64 = 0.8;
 const MAX_CONTEXT: usize = 9900;
 /// A prompt is sent whole up to what the board keeps of one; a longer one keeps its start and its end.
+#[cfg(test)]
 const MAX_PROMPT: usize = taskboardd::board::PROMPT_FULL_KEEP;
 const MAX_LAST_MESSAGE: usize = 2000;
 const MAX_OUTPUT: usize = 1000;
@@ -267,7 +268,10 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             extra.insert("reason".into(), json!(reason));
         }
         "UserPromptSubmit" => {
-            extra.insert("prompt".into(), json!(taskboardd::startword::keep_ends(&s("prompt"), MAX_PROMPT)));
+            // The prompt, and that its only cut is the board's own: a "…" at its end is the owner's.
+            if let Value::Object(m) = taskboardd::startword::hook_prompt(&s("prompt")) {
+                extra.extend(m);
+            }
         }
         "Stop" => {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
@@ -439,7 +443,9 @@ mod tests {
     #[test]
     fn a_long_prompt_keeps_its_start_and_its_end() {
         let typed = format!("start T8. here's the log:\n{}\njk", "INFO all good\n".repeat(3000));
-        let sent = taskboardd::startword::keep_ends(&typed, MAX_PROMPT);
+        let report = taskboardd::startword::hook_prompt(&typed);
+        assert_eq!(report["prompt_cut"], taskboardd::startword::KEPT_ENDS, "it says how it cut");
+        let sent = report["prompt"].as_str().unwrap();
         assert!(sent.chars().count() <= MAX_PROMPT);
         assert!(sent.starts_with("start T8.") && sent.ends_with("\njk") && sent.contains(taskboardd::startword::CUT_MARK));
         let short = format!("start T8. {}…", "word ".repeat(1000));

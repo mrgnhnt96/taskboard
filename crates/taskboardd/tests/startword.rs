@@ -303,12 +303,18 @@ fn queue_it_after_the_task_was_made_is_the_word() {
 #[test]
 fn queue_it_after_the_task_was_made_is_no_word_when_it_may_mean_something_else() {
     let b = board();
-    // Something newer was said in between.
+    // Something newer was asked for in between: "it" may be that.
+    b.said("make a task for the footer");
+    let id = b.new_task();
+    b.said("also fix the typo in the header");
+    b.said("queue it");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    // Only thanks in between (#128) leaves "it" the task.
     b.said("make a task for the footer");
     let id = b.new_task();
     b.said("thanks");
     b.said("queue it");
-    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
 
     // The prompt says more than the ask: "it" may be the dev server.
     b.said("make a task for the footer");
@@ -539,7 +545,7 @@ fn log_paste(n: usize) -> String {
 impl Board {
     /// What the UserPromptSubmit hook sends for a typed prompt: the same cut, then the report.
     fn typed(&self, prompt: &str) {
-        self.said(&startword::keep_ends(prompt, board::PROMPT_FULL_KEEP));
+        self.report("hook.prompt", startword::hook_prompt(prompt));
     }
 }
 
@@ -631,6 +637,91 @@ fn the_start_word_holds_only_the_start_its_no_time_or_condition_is_about() {
         (vec!["I forbid you: start T8".into()], "T8"),
         (vec!["here's the output.\nstart T8\nexit 1".into()], "T8"),
     ];
+    // #128: the real asks beta.16 still refused, and a hold on another task.
+    let mut starts = starts;
+    for ask in [
+        "go ahead with T8",
+        "go for T8",
+        "do T8",
+        "fire off T8",
+        "put T8 in the queue",
+        "start T8 now rather than later",
+        "start T8, sorry for the wait",
+        "ok - start T8",
+        "start T8, hold off on T9",
+        "start T8 now rather than tomorrow",
+        "start T8. T9 can wait",
+        "start T8. hold off on T9",
+        "start T8 now and T9 tomorrow",
+        "start T8 and T9, but T9 not until T8 merges",
+    ] {
+        starts.push((vec![ask.into()], "T8"));
+    }
+    for said in [
+        vec!["make a task for the footer", "+", "thanks", "queue it"],
+        vec!["make a task for the footer", "+", "looks right", "ok, queue it"],
+        vec!["put the footer fix on the board", "+", "queue it"],
+        vec!["track this as a task", "+", "queue it"],
+    ] {
+        starts.push((said.into_iter().map(String::from).collect(), "M1"));
+    }
+    // A typed prompt of about 8000 characters that ends in "…" is whole: the hook marks its own cut.
+    let near: String = format!("start T8. {typed}{typed}").chars().take(7993).collect::<String>() + "…";
+    assert_eq!(near.chars().count(), 7994);
+    starts.push((vec![near], "T8"));
+    let mut holds = holds;
+    for said in [
+        // A time or a condition after the ask.
+        "start T8, over lunch",
+        "start T8 over lunch",
+        "start T8, but not until T9 is merged",
+        "start T8 but not until T9 is merged",
+        "start T8 in a while",
+        "start T8, in a while",
+        "start T8 at the top of the hour",
+        "start T8, at the top of the hour",
+        "start T8 ASAP once T9 merges",
+        "start T8, ASAP once T9 merges",
+        "start T8 as soon as T9 is in",
+        "start T8, as soon as T9 is in",
+        "start T8 during work hours",
+        "start T8, during work hours",
+        "start T8 in work hours",
+        "start T8, in work hours",
+        "start T8 during business hours",
+        "start T8, during business hours",
+        "start T8, once you've had lunch",
+        "start T8, after I merge T9",
+        "start T8, when I'm back",
+        "start T8 but wait for T9",
+        "start T8 over the weekend",
+        "start T8 around 3",
+        "start T8 after hours",
+        "start T8 in a bit",
+        // Quoted or pasted text.
+        "the ticket reads — start T8 — weird",
+        "copied from CI - start T8",
+        "CI output - start T8",
+        // A no.
+        "I don't want you to, start T8",
+    ] {
+        holds.push((vec![said.into()], "T8"));
+    }
+    for (said, t) in [
+        ("start T8. T9 can wait", "T9"),
+        ("start T8. hold off on T9", "T9"),
+        ("start T8 now and T9 tomorrow", "T9"),
+        ("start T8 and T9, but T9 not until T8 merges", "T9"),
+    ] {
+        holds.push((vec![said.into()], t));
+    }
+    // A take-back on the last line of a paste.
+    for n in [500, 2000, 9000, 25_000] {
+        let log = log_paste(n);
+        for back in ["jk", "never mind"] {
+            holds.push((vec![format!("start T8. here's the log:\n{}\n{back}", log.trim_end())], "T8"));
+        }
+    }
     let b = board();
     let mut wrong = vec![];
     for (want, cases) in [(true, &starts), (false, &holds)] {
