@@ -60,21 +60,39 @@ const TAIL: &str = r"(?:\s*$|\s*[:,)]|\s+(?:and|then|now|please|pls|too|again|up
 /// The start words.
 const VERB: &str = r"(?:start|queue|begin|launch|kick\s+off)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on)?";
 
-/// A start word at the start of a clause, on a task, with nothing after the task that makes it a story.
-static ASK_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(&format!(
-        r"(?i){EDGE}\s*{LEAD}(?:\b{VERB}\s+(?:(?P<named>{NAMED})|(?P<unnamed>{UNNAMED}))|\bkick\s+(?:(?P<named2>{NAMED})|(?P<unnamed2>{UNNAMED}))\s+off){TAIL}"
-    ))
-    .unwrap()
-});
-/// A start word on a task anywhere: an ask, or (when it's no ask) a mention that takes the start back.
-static MENTION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(&format!(
-        r"(?i)(?:\b{VERB}\s+(?:(?P<named>{NAMED})|(?P<unnamed>{UNNAMED}))|\bkick\s+(?:(?P<named2>{NAMED})|(?P<unnamed2>{UNNAMED}))\s+off)\b"
-    ))
-    .unwrap()
-});
-static REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[Tt](\d+)\b").unwrap());
+/// The goals an ask names: "G2", "goal G2", "the goal G2", "G2 and G3".
+const NAMED_GOAL: &str = r"(?:the\s+)?(?:goal\s+)?[Gg]\d+(?:\s*,?\s*(?:and\s+|&\s*)?(?:goal\s+)?[Gg]\d+)*";
+/// The goal an ask doesn't name: "the goal", "this goal", "the whole goal".
+const UNNAMED_GOAL: &str = r"(?:(?:the|this|that|my|your|our|its)\s+(?:whole\s+|new\s+)?goal)";
+/// The start words for a goal, which also runs.
+const GOAL_VERB: &str = r"(?:start|queue|begin|launch|kick\s+off|run)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on)?";
+
+/// What a start is read on: tasks (`tb start T4`) or goals (`tb start G2`).
+pub struct Kind {
+    /// A start word at the start of a clause, on one, with nothing after it that makes it a story.
+    ask: Regex,
+    /// A start word on one anywhere: an ask, or (when it's no ask) a mention that takes the start back.
+    mention: Regex,
+    /// One named, with its number.
+    ids: Regex,
+    /// Anything named that an ask's "no" can fall on.
+    refs: Regex,
+}
+
+fn kind(named: &str, unnamed: &str, verb: &str, ids: &str, refs: &str) -> Kind {
+    let on = format!(r"(?:\b{verb}\s+(?:(?P<named>{named})|(?P<unnamed>{unnamed}))|\bkick\s+(?:(?P<named2>{named})|(?P<unnamed2>{unnamed}))\s+off)");
+    Kind {
+        ask: Regex::new(&format!(r"(?i){EDGE}\s*{LEAD}{on}{TAIL}")).unwrap(),
+        mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(),
+        ids: Regex::new(ids).unwrap(),
+        refs: Regex::new(refs).unwrap(),
+    }
+}
+
+/// Starts of tasks.
+pub static TASKS: Lazy<Kind> = Lazy::new(|| kind(NAMED, UNNAMED, VERB, r"\b[Tt](\d+)\b", r"\b[Tt]\d+\b"));
+/// Runs of goals. A task named in the same sentence still takes a "no" ("don't run G2, start T4").
+pub static GOALS: Lazy<Kind> = Lazy::new(|| kind(NAMED_GOAL, UNNAMED_GOAL, GOAL_VERB, r"\b[Gg](\d+)\b", r"\b[TtGg]\d+\b"));
 /// A sentence and what ends it.
 static SENTENCE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?P<s>[^.!?;\n]*)(?P<end>[.!?;\n]*)").unwrap());
 /// A word that says no ("don't", "never", "do not, under any circumstances,").
@@ -244,26 +262,26 @@ pub fn owners_text(text: &str) -> String {
 }
 
 /// The task spans and asks of one mention.
-fn mention_of<'h>(c: &regex::Captures<'h>) -> Option<(regex::Match<'h>, Ask)> {
+fn mention_of<'h>(k: &Kind, c: &regex::Captures<'h>) -> Option<(regex::Match<'h>, Ask)> {
     let (named, unnamed) = (c.name("named").or(c.name("named2")), c.name("unnamed").or(c.name("unnamed2")));
     match (named, unnamed) {
-        (Some(n), _) => Some((n, Ask::Named(named_tasks(n.as_str())))),
+        (Some(n), _) => Some((n, Ask::Named(ids_in(k, n.as_str())))),
         (None, Some(u)) => Some((u, if PLURAL_RE.is_match(u.as_str()) { Ask::Them } else { Ask::Unnamed })),
         _ => None,
     }
 }
 
 /// The tasks a stretch of a sentence points at: by name, or by a start word on an unnamed one.
-fn refs_in(s: &str) -> Vec<(usize, usize)> {
-    let mut out: Vec<(usize, usize)> = REF_RE.find_iter(s).map(|m| (m.start(), m.end())).collect();
-    out.extend(MENTION_RE.captures_iter(s).filter_map(|c| c.name("unnamed").or(c.name("unnamed2")).map(|u| (u.start(), u.end()))));
+fn refs_in(k: &Kind, s: &str) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = k.refs.find_iter(s).map(|m| (m.start(), m.end())).collect();
+    out.extend(k.mention.captures_iter(s).filter_map(|c| c.name("unnamed").or(c.name("unnamed2")).map(|u| (u.start(), u.end()))));
     out.sort();
     out
 }
 
 /// The task spans of the start words in a sentence.
-fn mentions_in(s: &str) -> Vec<(usize, usize)> {
-    MENTION_RE.captures_iter(s).filter_map(|c| mention_of(&c).map(|(t, _)| (t.start(), t.end()))).collect()
+fn mentions_in(k: &Kind, s: &str) -> Vec<(usize, usize)> {
+    k.mention.captures_iter(s).filter_map(|c| mention_of(k, &c).map(|(t, _)| (t.start(), t.end()))).collect()
 }
 
 /// The words in `s` that say no, less the "no" of "no problem".
@@ -276,8 +294,8 @@ fn negs_in(s: &str) -> Vec<regex::Match<'_>> {
 /// sentence points at after it ("don't start T4, start T5"), or, with none after it, to every task
 /// before it ("start T8, never mind"). When the next task is only named, not started ("don't (like T9),
 /// start T8"), the no falls on the next start too: an aside doesn't take the no off it.
-fn said_no(s: &str, span: (usize, usize)) -> bool {
-    let (refs, mentions) = (refs_in(s), mentions_in(s));
+fn said_no(k: &Kind, s: &str, span: (usize, usize)) -> bool {
+    let (refs, mentions) = (refs_in(k, s), mentions_in(k, s));
     negs_in(s).iter().any(|n| match refs.iter().find(|r| r.0 >= n.end()) {
         Some(next) => {
             next.0 == span.0
@@ -296,8 +314,8 @@ fn makes_in(s: &str) -> bool {
 
 /// Where in sentence `s` it takes back every start before it, if it does: a take-back word with no task
 /// after it in the sentence ("start T8, scratch that", "jk", "no.", "on second thought, don't").
-fn halt_in(s: &str) -> Option<usize> {
-    let refs = refs_in(s);
+fn halt_in(k: &Kind, s: &str) -> Option<usize> {
+    let refs = refs_in(k, s);
     let last = |at: usize| !refs.iter().any(|r| r.0 >= at);
     let mut at: Vec<usize> = HALT_RE.find_iter(s).filter(|m| last(m.end())).map(|m| m.start()).collect();
     at.extend(ENDS_NO_RE.find(s).filter(|m| last(m.end())).map(|m| m.start()));
@@ -315,6 +333,11 @@ fn halt_in(s: &str) -> Option<usize> {
 
 /// What `text` says about starting tasks.
 pub fn read(text: &str) -> Reading {
+    read_of(&TASKS, text)
+}
+
+/// What `text` says about starting tasks or running goals.
+pub fn read_of(k: &Kind, text: &str) -> Reading {
     let own = owners_text(text);
     let timed = TIME_RE.is_match(&own) || CONDITION_RE.is_match(&own);
     let mut r = Reading::default();
@@ -328,26 +351,27 @@ pub fn read(text: &str) -> Reading {
         }
         r.makes |= makes_in(s);
         let asked = c.name("end").map(|m| m.as_str().contains('?')).unwrap_or(false);
-        // Where a clean ask lands: the task span of each ASK_RE match.
+        // Where a clean ask lands: the task span of each `k.ask` match.
         let mut ask_spans = vec![];
         let mut at = 0;
-        while let Some(m) = ASK_RE.captures_at(s, at) {
-            let Some((task, _)) = mention_of(&m) else { break };
+        while let Some(m) = k.ask.captures_at(s, at) {
+            let Some((task, _)) = mention_of(k, &m) else { break };
             ask_spans.push((task.start(), task.end()));
             at = task.end();
         }
         let mentions: Vec<((usize, usize), Ask)> =
-            MENTION_RE.captures_iter(s).filter_map(|m| mention_of(&m).map(|(t, a)| ((t.start(), t.end()), a))).collect();
+            k.mention.captures_iter(s).filter_map(|m| mention_of(k, &m).map(|(t, a)| ((t.start(), t.end()), a))).collect();
         // "start T9 instead": the asks before this one are off.
         if !mentions.is_empty() && INSTEAD_RE.is_match(s) {
             steps.push((base, Step::Hold(Ask::Unnamed)));
         }
         for (span, ask) in &mentions {
-            let clean = ask_spans.contains(span) && !asked && !timed && !said_no(s, *span);
+            let clean = ask_spans.contains(span) && !asked && !timed && !said_no(k, s, *span);
             steps.push((base + span.0, if clean { Step::Ask(ask.clone()) } else { Step::Hold(ask.clone()) }));
         }
         // A task named outside a start, in a sentence that holds it off ("hold off on T8", "T8 can wait").
-        let loose: Vec<i64> = REF_RE
+        let loose: Vec<i64> = k
+            .ids
             .captures_iter(s)
             .filter(|c| {
                 let m = c.get(0).unwrap();
@@ -358,7 +382,7 @@ pub fn read(text: &str) -> Reading {
         if !loose.is_empty() && HOLD_RE.is_match(s) {
             steps.push((base + s.len(), Step::Hold(Ask::Named(loose))));
         }
-        if let Some(at) = halt_in(s) {
+        if let Some(at) = halt_in(k, s) {
             steps.push((base + at, Step::Hold(Ask::Unnamed)));
         }
     }
@@ -401,7 +425,12 @@ pub fn says_start(text: &str) -> bool {
 
 /// The tasks `text` names (T4 → 4).
 pub fn named_tasks(text: &str) -> Vec<i64> {
-    REF_RE.captures_iter(text).filter_map(|c| c[1].parse().ok()).collect()
+    ids_in(&TASKS, text)
+}
+
+/// The tasks or goals `text` names (T4 → 4, G2 → 2).
+fn ids_in(k: &Kind, text: &str) -> Vec<i64> {
+    k.ids.captures_iter(text).filter_map(|c| c[1].parse().ok()).collect()
 }
 
 /// One prompt of the conversation, for [`word_in`].
@@ -518,6 +547,64 @@ pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     }
     prompts.reverse();
     Ok(word_in(&prompts, id).map(|i| prompts[i].text.clone()))
+}
+
+/// Which prompt, newest first, is the word to run goal `id`, each with whether "the goal" in it means
+/// `id` (the conversation's goal then). Read like [`word_in`]: the latest prompt that speaks of the run
+/// decides, and what wasn't read in full may take it back.
+pub fn goal_word_in(prompts: &[(Prompt, bool)], id: i64) -> Option<usize> {
+    for (i, (p, ours)) in prompts.iter().enumerate() {
+        if p.boards() {
+            continue;
+        }
+        if p.clipped {
+            return None;
+        }
+        match read_of(&GOALS, &p.text).word_for(id, |_| *ours) {
+            Some(true) => return Some(i),
+            Some(false) => return None,
+            None => {}
+        }
+    }
+    None
+}
+
+/// The prompt a human typed in terminal `sid`, since its Claude conversation began, that asks for goal
+/// `id` to run, if there's one and no later prompt takes it back. "Run the goal" means `id` when it's the
+/// conversation's goal: the terminal's task is in it, the conversation made a task in it, or (for the
+/// prompts after it) the board handed it the goal.
+pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    let since = "COALESCE((SELECT MAX(id) FROM session_events WHERE session_id = ? AND kind = 'start'), 0)";
+    let rows = app.db.q(
+        &format!("SELECT id, text, full, data FROM session_events WHERE session_id = ? AND kind = 'prompt' AND id > {since} ORDER BY id DESC"),
+        p![sid, sid],
+    )?;
+    let board = |r: &Row| r.s("data") == Some(BOARD_PROMPT);
+    // Newest first: the prompts after the board's handoff, if any, come before it in `rows`.
+    let handed = rows.iter().position(|r| board(r) && MARKER_RE.find_iter(&typed(r).0).any(|m| ids_in(&GOALS, m.as_str()).contains(&id)));
+    let on_task = crate::board::task_for_session(app, Some(sid))?.and_then(|t| t.i("goal_id")) == Some(id);
+    let made = app
+        .db
+        .q1(
+            &format!(
+                "SELECT 1 FROM session_events e JOIN tasks t ON t.id = CAST(e.data AS INTEGER)
+                  WHERE e.session_id = ? AND e.kind = ? AND e.id > {since} AND t.goal_id = ? LIMIT 1"
+            ),
+            p![sid, MADE, sid, id],
+        )?
+        .is_some();
+    let prompts: Vec<(Prompt, bool)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let (text, clipped) = typed(r);
+            (Prompt { text, made: vec![], clipped, board: board(r) }, on_task || made || handed.is_some_and(|h| i < h))
+        })
+        .collect();
+    Ok(goal_word_in(&prompts, id).map(|i| prompts[i].0.text.clone()))
 }
 
 #[cfg(test)]
@@ -1019,5 +1106,49 @@ mod tests {
         assert_eq!(word_in(&convo(&[("the dev server won't come up; start it", &[9])]), 9), None);
         assert_eq!(word_in(&convo(&[("the dev server won't come up. Start it.", &[9])]), 9), None);
         assert_eq!(word_in(&convo(&[("start it", &[9])]), 9), None);
+    }
+
+    #[test]
+    fn a_goal_run_is_asked_for_by_name_or_as_the_goal() {
+        let goal = |t: &str| read_of(&GOALS, t);
+        for yes in ["start G1", "run G1", "ok, run the goal", "start the goal", "kick off G1", "please queue goal G1", "run the goal G1 now", "You can start the goal"] {
+            assert!(!goal(yes).asks.is_empty(), "{yes}");
+        }
+        for no in [
+            "run it",
+            "run the tests",
+            "start T1",
+            "did you start G1?",
+            "don't run G1",
+            "run G1 tomorrow",
+            "run G1 once T4 lands",
+            "the log says: run G1",
+            "G1 started an hour ago",
+            "how do I run the goal",
+            "run G1. jk",
+        ] {
+            assert!(goal(no).asks.is_empty(), "{no}");
+        }
+        assert_eq!(goal("run G1 and G2").asks, vec![Ask::Named(vec![1, 2])]);
+        assert_eq!(goal("start the goal G3").asks, vec![Ask::Named(vec![3])]);
+        // A goal ask is no word for a task, and the other way around.
+        assert!(!says_start("start G1"));
+        assert!(!says_start("start the goal"));
+    }
+
+    #[test]
+    fn the_latest_prompt_on_a_goal_run_decides() {
+        let word = |ps: &[(&str, bool)], id| goal_word_in(&ps.iter().map(|(t, o)| (Prompt::new(t), *o)).collect::<Vec<_>>(), id);
+        assert_eq!(word(&[("start G1", false)], 1), Some(0));
+        assert_eq!(word(&[("start G1", false)], 2), None);
+        assert_eq!(word(&[("thanks", false), ("run G1", false)], 1), Some(1));
+        assert_eq!(word(&[("wait, don't run G1", false), ("run G1", false)], 1), None);
+        assert_eq!(word(&[("hold off on G1", false), ("run G1", false)], 1), None);
+        assert_eq!(word(&[("wait", false), ("run G1", false)], 1), None);
+        assert_eq!(word(&[("start the goal", false)], 1), None, "not this conversation's goal");
+        assert_eq!(word(&[("start the goal", true)], 1), Some(0));
+        assert_eq!(word(&[("[task-board:G1] Plan the goal. Run G1.", true)], 1), None);
+        let clipped = Prompt { clipped: true, ..Prompt::new("run G1 …") };
+        assert_eq!(goal_word_in(&[(clipped, false)], 1), None, "its unread end may take it back");
     }
 }

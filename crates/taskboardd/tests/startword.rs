@@ -442,3 +442,84 @@ fn an_ask_for_the_goal_points_the_agent_at_the_goal() {
     assert_eq!(code, 403);
     assert!(why.contains(&format!("run tb start G{g}")), "{why}");
 }
+
+impl Board {
+    fn goal(&self) -> i64 {
+        api::dispatch(&self.app, "POST", "/goals", &Query::new(), &json!({"name": "Settings", "project": "webapp"})).unwrap()["id"].as_i64().unwrap()
+    }
+    /// A planned task in goal `g`, made elsewhere (not by this terminal's conversation).
+    fn planned(&self, g: i64) -> i64 {
+        let id = api::dispatch(&self.app, "POST", "/tasks", &Query::new(), &json!({"title": "Chips", "project": "webapp"}))
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap();
+        board::update_task(&self.app, id, vec![("status", json!("planned")), ("goal_id", json!(g))]).unwrap();
+        id
+    }
+    /// What `tb start G<g>` and `tb goal set G<g> --run` send from terminal s1.
+    fn tb_run(&self, g: i64) -> Result<Value, (u16, String)> {
+        api::dispatch(&self.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({"via_session": "s1"})).map_err(|e| (e.status, e.message))
+    }
+}
+
+#[test]
+fn an_agent_runs_a_goal_only_on_the_owners_word() {
+    let b = board();
+    let g = b.goal();
+    let id = b.planned(g);
+    let (code, why) = b.tb_run(g).unwrap_err();
+    assert_eq!(code, 403);
+    assert!(why.contains(&format!("Only a human can run G{g}")), "{why}");
+    assert_eq!(b.status(id), "planned");
+
+    for no in [format!("did you run G{g}?"), format!("run G{g} tomorrow"), format!("the log says: run G{g}")] {
+        b.said(&no);
+        assert_eq!(b.tb_run(g).unwrap_err().0, 403, "{no}");
+    }
+    // "The goal" alone means no goal this conversation has.
+    b.said("start the goal");
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+    b.said(&format!("[task-board:G{g}] Plan the goal. Run G{g}."));
+    b.said("thanks");
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403, "the board's prompt is no one's word");
+
+    for yes in [format!("start G{g}"), format!("run G{g}"), format!("ok, kick off goal G{g}")] {
+        b.said(&yes);
+        assert!(b.tb_run(g).is_ok(), "{yes}");
+    }
+    assert_eq!(b.status(id), "queued");
+
+    b.said(&format!("wait, don't run G{g}"));
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+}
+
+#[test]
+fn the_goal_unnamed_is_this_conversations_goal() {
+    let b = board();
+    let g = b.goal();
+    let other = b.goal();
+    b.planned(g);
+    b.planned(other);
+    // The conversation made a task in goal g: "the goal" is g, not the other.
+    b.report("tb.new_task", json!({"title": "Chips", "goal": format!("G{g}")}));
+    b.said("You can start the goal");
+    assert!(b.tb_run(g).is_ok());
+    assert_eq!(b.tb_run(other).unwrap_err().0, 403);
+
+    // A conversation the board handed the goal to.
+    b.report("hook.session_start", json!({"source": "clear"}));
+    b.said(&format!("[task-board:G{other}] Plan the goal."));
+    b.said("looks good, run the goal");
+    assert!(b.tb_run(other).is_ok());
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+}
+
+#[test]
+fn the_boards_run_needs_no_word() {
+    let b = board();
+    let g = b.goal();
+    let id = b.planned(g);
+    let v = api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({})).unwrap();
+    assert_eq!(v["queued_now"], 1);
+    assert_eq!(b.status(id), "queued");
+}

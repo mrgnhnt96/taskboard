@@ -2888,7 +2888,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Start { task, queue } => {
             if task.trim().starts_with(['G', 'g']) {
                 let g = goal_ref(&task)?;
-                let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
+                let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
                 let n = v["queued_now"].as_i64().unwrap_or(0);
                 out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
                 return Ok(0);
@@ -3112,7 +3112,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
                 }
                 if run {
-                    let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
+                    let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
                     let n = v["queued_now"].as_i64().unwrap_or(0);
                     out(&format!("{g} runs: queued {n} planned task{}.", if n == 1 { "" } else { "s" }));
                 }
