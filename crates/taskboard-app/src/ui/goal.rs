@@ -280,11 +280,28 @@ fn counts(g: &Value) -> Counts {
     }
 }
 
-/// `goalPrCount(tasks)`: "2 of 3 PRs merged" / "1 PR open" / "".
-fn pr_count(tasks: &[Value]) -> String {
+/// `goalPrCount(tasks)`: "2 of 3 PRs merged" / "1 PR open" / "". With the board's PR plan on its
+/// tasks (`ships_pr`): "1 of 3 PRs opened · 1 canceled", or "No PRs planned".
+pub fn pr_count(tasks: &[Value]) -> String {
     let prs: Vec<&Value> = tasks.iter().filter(|t| has_pr(t)).collect();
     let merged = prs.iter().filter(|t| s(&t["pr"], "state").eq_ignore_ascii_case("merged")).count() as i64;
     let n = prs.len() as i64;
+    if tasks.iter().any(|t| t["ships_pr"].is_boolean()) {
+        let canceled = tasks.iter().filter(|t| fmt::opt_s(t, "no_pr").is_some()).count() as i64;
+        let planned = tasks.iter().filter(|t| t["ships_pr"] == true && fmt::opt_s(t, "no_pr").is_none()).count() as i64;
+        let planned = planned.max(n);
+        if planned == 0 {
+            return if canceled > 0 { format!("No PRs planned · {canceled} canceled") } else { "No PRs planned".into() };
+        }
+        let mut out = format!("{n} of {} opened", fmt::plural(planned, "PR", "PRs"));
+        if merged > 0 {
+            out += &format!(" · {merged} merged");
+        }
+        if canceled > 0 {
+            out += &format!(" · {canceled} canceled");
+        }
+        return out;
+    }
     if n == 0 {
         String::new()
     } else if merged > 0 {
@@ -553,6 +570,8 @@ pub struct TaskRow {
     pub pr_tip: Option<String>,
     pub pr_phase: String,
     pub planned: bool,
+    /// It ends in a PR that isn't open yet (the PR plan's icon).
+    pub pr_planned: bool,
     /// The row's tooltip (shared rows: which goal runs it).
     pub tip: Option<String>,
 }
@@ -580,6 +599,12 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
         _ => vec![after(if in_order { prev_open() } else { 0 })],
     };
     let mut parts = parts;
+    // A PR the task finished without (`tb done --no-pr`), or a task planned without one.
+    if fmt::opt_s(t, "no_pr").is_some() {
+        parts.push(Some("PR canceled".into()));
+    } else if t["ships_pr"] == false && t["ships_pr_set"] == false {
+        parts.push(Some("no PR".into()));
+    }
     let also: Vec<&str> = arr(t, "also").iter().map(|x| s(x, "ref")).collect();
     if !also.is_empty() {
         parts.push(Some(format!("also for {}", also.join(", "))));
@@ -621,6 +646,7 @@ pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskR
         pr_tip,
         pr_phase,
         planned: s(t, "status") == "planned",
+        pr_planned: !has_pr(t) && t["ships_pr"] == true && fmt::opt_s(t, "no_pr").is_none() && s(t, "status") != "done",
         tip: None,
     }
 }
@@ -2140,6 +2166,16 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, cx: &mut Context<Ma
                                 .when_some(stage_icon(&row.pr_phase), |d, st| d.child(div().ml(px(3.)).child(ico(Ico::Stage(st), 13., pr_color))))
                                 .tooltip(kit::tip(row.pr_tip.clone().unwrap_or_default()))
                         }))
+                        .when(row.pr_planned, |d| {
+                            d.child(
+                                div()
+                                    .id(SharedString::from(format!("goal-pr-plan-{}", row.r)))
+                                    .flex()
+                                    .flex_none()
+                                    .child(ico(Ico::PrOpen, 13., t.faint))
+                                    .tooltip(kit::tip("Ends in a PR")),
+                            )
+                        })
                         .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(row.title.clone())),
                 )
                 .when(!row.meta.is_empty(), |d| d.child(div().text_size(px(12.5)).text_color(t.muted).truncate().child(row.meta.clone()))),
@@ -3339,5 +3375,25 @@ mod tests {
         let g2 = json!({"backlog": [{"id": 2, "ref": "B2", "state": "drop"}]});
         assert!(backlog_rows(&g2, &HashMap::new(), &[], false).is_empty());
         assert_eq!(backlog_rows(&g2, &HashMap::new(), &[], true).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod pr_plan_tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn the_goal_counts_its_planned_prs() {
+        let open = json!({"status": "done", "ships_pr": true, "pr": {"num": 3, "state": "OPEN"}});
+        let todo = json!({"status": "queued", "ships_pr": true});
+        let none = json!({"status": "queued", "ships_pr": false});
+        let canceled = json!({"status": "done", "ships_pr": true, "no_pr": "not needed"});
+        assert_eq!(pr_count(&[open.clone(), todo.clone(), none.clone(), canceled.clone()]), "1 of 2 PRs opened · 1 canceled");
+        assert_eq!(pr_count(&[none.clone()]), "No PRs planned");
+        // The web board's own count, before the board sent a plan.
+        assert_eq!(pr_count(&[json!({"pr": {"num": 3, "state": "MERGED"}})]), "1 of 1 PR merged");
+        let row = task_row_view(&todo, 0, std::slice::from_ref(&todo), &json!({}));
+        assert!(row.pr_planned);
+        assert!(task_meta(&canceled, 0, std::slice::from_ref(&canceled), &json!({})).contains("PR canceled"));
     }
 }
