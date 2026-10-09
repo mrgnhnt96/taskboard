@@ -203,8 +203,14 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
         if !stopped.is_empty() {
             out.push(format!("builds were stopped: {} (run them again, or tb pr skip-checks)", stopped.join(", ")));
         }
-        if let Some(missing) = prflow::expected_missing(app, t, rec).filter(|m| !m.is_empty()) {
-            out.push(format!("expected checks haven't posted: {}", missing.join(", ")));
+        // The same rule as the stage (`prflow::checks_waiting`): once the wait is over, an expected check
+        // that never posted doesn't hold the merge; only failed ones do.
+        if let Some(missing) = prflow::expected_missing(app, t, rec).filter(|m| !m.is_empty() && !prflow::expected_wait_over(app, t, &f, rec)) {
+            out.push(format!(
+                "expected checks haven't posted: {} (it waits up to {} min for them)",
+                missing.join(", "),
+                prflow::expected_wait_mins(app, t)
+            ));
         }
     }
     if !prflow::review_skipped(&f, rec) {
@@ -453,6 +459,8 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     live["base_error"] = json!(base_failing.err());
     live["not_ours"] = prflow::not_ours(&f, &rec);
     live["expected_missing"] = json!(prflow::expected_missing(app, &t, &rec));
+    live["expected_wait_mins"] = json!(prflow::expected_wait_mins(app, &t));
+    live["expected_waited_out"] = json!(prflow::expected_wait_over(app, &t, &f, &rec));
     live["reviewers"] = json!(reviewers);
     live["approvals"] = json!({"have": review.approvals, "need": prflow::approvals_needed(app, &t)});
     live["open_threads"] = json!(prflow::open_threads(&f, &rec));

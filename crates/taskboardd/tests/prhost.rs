@@ -447,6 +447,34 @@ fn a_pr_needs_two_approvals_unless_its_project_is_set_otherwise_with_tb() {
 }
 
 #[test]
+fn an_expected_check_that_never_posts_stops_holding_the_merge_once_the_wait_is_over() {
+    // #51: expected checks set with tb; after the wait only failed checks block the merge.
+    let b = board_with(|c| c.pr.agents_merge = true);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    fake(&b, rec);
+    let v = b.post("/projects/webapp", json!({"expected": ["build", "E2E"], "expected_wait_mins": 30}));
+    assert_eq!(v["pr_rules"]["expected"], json!(["build", "E2E"]));
+    assert_eq!(v["pr_rules"]["expected_wait_mins"], 30.0);
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "e2e hasn't posted");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("expected checks haven't posted: E2E (it waits up to 30 min for them)"), "{e}");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 31.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!((live["expected_missing"].clone(), live["expected_waited_out"].clone()), (json!(["E2E"]), json!(true)));
+    assert!(live["blockers"].as_array().unwrap().is_empty(), "{live}");
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+    let v = b.post("/projects/webapp", json!({"expected": null, "expected_wait_mins": null}));
+    assert!(v["pr_rules"]["expected"].is_null(), "back to config.toml's (none)");
+    assert!(b.try_post("/projects/webapp", json!({"expected": [""]})).unwrap_err().contains("needs a name"));
+}
+
+#[test]
 fn merging_moves_the_prs_stacked_on_it_onto_its_base_first() {
     // #50: the merge deletes the branch, so the PR into it is pointed at the base before.
     let b = board_with(|_| {});

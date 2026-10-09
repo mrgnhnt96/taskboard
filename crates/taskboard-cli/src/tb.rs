@@ -934,7 +934,12 @@ fn print_pr_status(t: &str, v: &Value) {
         out(&format!("Couldn't compare with the base branch: {e}"));
     }
     if let Some(m) = live["expected_missing"].as_array().filter(|m| !m.is_empty()) {
-        out(&format!("Expected checks not posted yet: {}", m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+        let names = m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ");
+        match live["expected_wait_mins"].as_f64() {
+            Some(w) if live["expected_waited_out"] == true => out(&format!("Expected checks never posted: {names} (stopped waiting after {w} min; they don't hold the merge)")),
+            Some(w) => out(&format!("Expected checks not posted yet: {names} (waits up to {w} min)")),
+            None => out(&format!("Expected checks not posted yet: {names}")),
+        }
     }
     if live["not_ours"].is_object() {
         let n = &live["not_ours"];

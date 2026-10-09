@@ -590,15 +590,27 @@ pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
     if rec["running"].as_i64().unwrap_or(0) > 0 {
         return true;
     }
-    let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
-    let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
     match expected_missing(app, t, rec) {
-        Some(missing) => {
-            let wait = crate::projects::pr_rules(app, t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS);
-            !missing.is_empty() && waited < wait * 60.0
-        }
-        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && waited < app.cfg.pr.no_checks_after_mins * 60.0,
+        Some(missing) => !missing.is_empty() && !expected_wait_over(app, t, f, rec),
+        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && head_waited(f, rec) < app.cfg.pr.no_checks_after_mins * 60.0,
     }
+}
+
+/// Seconds (awake) since this push was first seen.
+fn head_waited(f: &Row, rec: &Value) -> f64 {
+    let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
+    first.map(crate::clock::awake_since).unwrap_or(0.0)
+}
+
+/// The project's `expected_wait_mins` (90 unless it says).
+pub fn expected_wait_mins(app: &App, t: &Row) -> f64 {
+    crate::projects::pr_rules(app, t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS)
+}
+
+/// This push has waited out its expected checks: one that hasn't posted by now no longer holds the PR
+/// (the stage moves on, and `tb pr merge` doesn't wait on it).
+pub fn expected_wait_over(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
+    head_waited(f, rec) >= expected_wait_mins(app, t) * 60.0
 }
 
 /// The task's flow with this record's head noted (when it was first seen), as `step` will save it.
