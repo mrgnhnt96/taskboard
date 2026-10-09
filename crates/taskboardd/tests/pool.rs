@@ -234,3 +234,44 @@ fn a_held_wave_waits_and_so_does_everything_after_it_until_continued() {
     let (code, _) = b.post_err(&format!("goals/G{g}/waves/2/hold"), json!({}));
     assert_eq!(code, 409);
 }
+
+#[test]
+fn tb_take_lends_devices_and_they_come_back_when_the_task_ends() {
+    let b = new_board();
+    let repo = b._dir.path().join("webapp");
+    taskboardd::midna::sync(&b.app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
+    b.post("devices", json!({"name": "iphone-15", "tags": "ios", "note": "iOS 18"}));
+    let t = b.task("Sim test", json!({"devices": "ios"}));
+    let r = taskboardd::reports::handle(
+        &b.app,
+        json!({"event": "tb.take", "session": "s1", "claude_session": "c-s1", "cwd": "", "task": format!("T{t}")}),
+        false,
+    )
+    .unwrap_or_else(|e| panic!("tb.take: {}", e.message));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["iphone-15"]));
+    let ctx = r.to_string();
+    assert!(ctx.contains("The board lent this task the device iphone-15"), "{ctx}");
+    assert_eq!(b.get("devices")["devices"][0]["held_by"]["ref"], format!("T{t}"));
+
+    b.set(t, "done");
+    runner::tick(&b.app).unwrap();
+    assert!(b.get("devices")["devices"][0]["held_by"].is_null(), "the device came back");
+}
+
+#[test]
+fn a_task_can_need_no_devices_over_its_goals_needs() {
+    let b = new_board();
+    let g = b.goal();
+    b.post(&format!("goals/G{g}"), json!({"devices": "ios"}));
+    let t = b.task("Docs only", json!({"goal_id": g}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "ios");
+    b.post(&format!("tasks/T{t}"), json!({"devices": "none"}));
+    assert!(b.get(&format!("tasks/T{t}"))["devices"].is_null(), "its own none wins over the goal's ios");
+    b.post(&format!("goals/G{g}/run"), json!({}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![t], "it needs no device, so the empty pool doesn't hold it");
+    b.post(&format!("tasks/T{t}"), json!({"devices": "goal"}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "ios", "goal: back to the goal's needs");
+    b.post(&format!("goals/G{g}"), json!({"devices": "none"}));
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_needs WHERE owner LIKE 'G%'", p![]).unwrap(), 0);
+}

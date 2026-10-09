@@ -1271,6 +1271,8 @@ fn on_take(r: &mut Report) -> Result<Value> {
         crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
     }
     let t = board::get_task(app, t.id())?;
+    // Lent before the handoff is built, so it names them, the same as a runner start.
+    crate::devices::lend(app, &t)?;
     let c = r.handoff_for(&t)?;
     Ok(ok(Some(&t), Some(c)))
 }

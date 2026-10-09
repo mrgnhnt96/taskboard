@@ -750,8 +750,10 @@ context as `plan_files`; its handoff names them, and each wave mate's handoff li
 
 One pool of devices for every project (`tb devices`, `tb device add|set|remove|focus`). A task asks for devices by
 tag or name (`{devices: "android:2 ios"}` on `POST /tasks`, `POST /tasks/:id`, or `POST /goals/:id` for the goal's
-tasks that don't ask for their own; `"none"` clears). The runner starts it only once that many are free, lends them
-when it starts (before the handoff is built, which names them), and takes them back once the task isn't active
+tasks that don't ask for their own; `"none"` clears). On a task, `"none"` (or `[]`) is its own "needs none", over
+its goal's needs, and `"goal"` drops its own so it asks for its goal's again. The runner starts it only once that many
+are free, lends them when it starts or an agent takes it with `tb take` (before the handoff is built, which names
+them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
 device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
 
