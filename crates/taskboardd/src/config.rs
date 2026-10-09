@@ -415,11 +415,17 @@ impl Default for AttachmentsConfig {
 }
 
 /// How the board's terminals open in Midna.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct TerminalsConfig {
-    /// Job purposes (start, pr, plan, reopen) whose terminals open in Midna's Background group.
+    /// Job purposes (start, pr, plan, reopen, jira_desk) whose terminals open in Midna's Background group.
     pub background: Vec<String>,
+}
+
+impl Default for TerminalsConfig {
+    fn default() -> Self {
+        TerminalsConfig { background: vec![crate::jira_desk::PURPOSE.into()] }
+    }
 }
 
 /// The comment guard: agents may not add code comments, pragmas aside.
@@ -614,6 +620,10 @@ impl Config {
     pub fn url(&self) -> String {
         env("TASKBOARD_URL").unwrap_or_else(|| format!("http://127.0.0.1:{}", self.port))
     }
+    /// Where the JSON API answers.
+    pub fn api_url(&self) -> String {
+        format!("{}/tasks/api", self.url().trim_end_matches('/'))
+    }
     pub fn jira_on(&self) -> bool {
         !self.jira.site.trim().is_empty() && !self.jira.project.trim().is_empty()
     }
@@ -673,6 +683,20 @@ mod tests {
         assert!(!c.owner.is_empty());
         assert_eq!(c.intervals.runner, 5.0);
         assert_eq!(c.first_weekday, chrono::Weekday::Sun);
+    }
+
+    #[test]
+    fn api_url_has_its_slash() {
+        let c = Config::for_tests(Path::new("/tmp/x"));
+        assert_eq!(c.api_url(), format!("http://127.0.0.1:{}/tasks/api", c.port));
+    }
+
+    #[test]
+    fn the_jira_desk_opens_in_the_background_by_default() {
+        let f: FileConfig = toml::from_str("").unwrap();
+        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, vec!["jira_desk"]);
+        let f: FileConfig = toml::from_str("[terminals]\nbackground = []").unwrap();
+        assert!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background.is_empty());
     }
 
     #[test]

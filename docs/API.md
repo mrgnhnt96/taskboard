@@ -622,7 +622,8 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 `GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, line: str}`.
 `POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
 comma-separated string, or `"none"`) with an optional `project` for that project's own globs, and `reset: true`.
-It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes).
+It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes),
+and takes the block out of a repo it no longer looks after (its project removed, its work done).
 
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
@@ -697,7 +698,8 @@ linked by hand; a failed ask waits for `tb task set T<n> --jira new` (try again)
 covers its work (over REST: the open epic sharing the most of its name's words, stopwords aside, when they're at least
 half of either's; through Claude or the desk, the one it judges covers it), and only gets a new one when none fits.
 With `desk`, new tickets go to the Jira desk: one Claude terminal the board opens in Midna's Background group (an
-`agent` job, purpose `jira_desk`) and never closes. Its `--allowedTools` are `claude_tools` plus `Bash(tb jira:*)` and
+`agent` job, purpose `jira_desk`; take `jira_desk` out of `[terminals] background` to open it with the project tabs)
+and never closes. Its `--allowedTools` are `claude_tools` plus `Bash(tb jira:*)` and
 `Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
 at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
 
