@@ -280,6 +280,10 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
     store_plugin(r)?;
     if NEW_PROCESS_SOURCES.contains(&r.b("source").as_str()) {
         r.note_background(transcript::Background::default())?;
+        // A new process loads its hooks afresh: until they send a call's end, they may not stamp calls.
+        if let Some(sid) = r.sid().filter(|_| !r.spooled) {
+            app.db.x("UPDATE sessions SET tool_ends = 0 WHERE id = ?", p![sid])?;
+        }
     }
     let Some(t) = r.task()? else {
         if crate::jira_desk::is_desk(app, r.sid())? {
@@ -539,6 +543,15 @@ fn turn_scope(cwd: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
         let d = if d == "~" { home.clone() } else if let Some(rest) = d.strip_prefix("~/") { format!("{home}/{rest}") } else { d.clone() };
         dirs.push(clean_path(&if d.starts_with('/') { d } else { format!("{cwd}/{d}") }));
     }
+    for p in &turn.shell_paths {
+        // A path a command names, and the folder it sits in.
+        let p = if p == "~" { home.clone() } else if let Some(rest) = p.strip_prefix("~/") { format!("{home}/{rest}") } else { p.clone() };
+        let full = clean_path(&if p.starts_with('/') { p } else { format!("{cwd}/{p}") });
+        if let Some(parent) = std::path::Path::new(&full).parent() {
+            dirs.push(parent.to_string_lossy().to_string());
+        }
+        dirs.push(full);
+    }
     for f in &turn.files {
         if let Some(parent) = std::path::Path::new(f).parent().filter(|p| p.is_absolute()) {
             dirs.push(clean_path(&parent.to_string_lossy()));
@@ -749,13 +762,20 @@ fn turn_windows(app: &App, sid: &str) -> Result<Option<Value>> {
     Ok(s.and_then(|s| s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok())).filter(|w| w.is_object()))
 }
 
-/// Adds what changed in the checkout between a call's two stamps to the turn's windows.
-fn window_changes(windows: &mut Value, before: &Value, after: &Value) {
+/// Where a call's changed files go in the turn's windows: a subagent's count anywhere in the checkout
+/// (`files`), a shell command's only in the folders the turn worked in (`shell_files`), as an older
+/// hook's turn did, so a save in a sibling folder during a long command isn't the agent's.
+fn window_key(tool: &str) -> &'static str {
+    if tool == "Agent" || tool == "Task" { "files" } else { "shell_files" }
+}
+
+/// Adds what changed in the checkout between a call's two stamps to the turn's windows, under `key`.
+fn window_changes(windows: &mut Value, key: &str, before: &Value, after: &Value) {
     let (files, commit) = tree_changes(before, after);
-    if !windows["files"].is_array() {
-        windows["files"] = json!([]);
+    if !windows[key].is_array() {
+        windows[key] = json!([]);
     }
-    let list = windows["files"].as_array_mut().expect("an array");
+    let list = windows[key].as_array_mut().expect("an array");
     for f in files {
         if !list.iter().any(|x| x.as_str() == Some(f.as_str())) {
             list.push(json!(f));
@@ -775,7 +795,7 @@ fn on_tool_start(r: &mut Report) -> Result<Value> {
         windows["open"] = json!({});
     }
     let tree = r.body.get("tree").cloned().unwrap_or(Value::Null);
-    windows["open"][r.b("tool_use_id")] = json!({"tree": tree, "background": as_bool(r.body.get("background"), false)});
+    windows["open"][r.b("tool_use_id")] = json!({"tree": tree, "tool": r.b("tool"), "background": as_bool(r.body.get("background"), false)});
     app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
     Ok(ok(None, None))
 }
@@ -785,6 +805,8 @@ fn on_tool_start(r: &mut Report) -> Result<Value> {
 fn on_tool_end(r: &mut Report) -> Result<Value> {
     let Some(sid) = r.sid().filter(|_| !r.spooled) else { return Ok(ok(None, None)) };
     let app = r.app;
+    // These hooks close the windows they open, so the Stop can go by them.
+    app.db.x("UPDATE sessions SET tool_ends = 1 WHERE id = ? AND COALESCE(tool_ends, 0) = 0", p![sid])?;
     let Some(mut windows) = turn_windows(app, sid)? else { return Ok(ok(None, None)) };
     let id = r.b("tool_use_id");
     let Some(open) = windows["open"].get(&id).cloned() else { return Ok(ok(None, None)) };
@@ -795,7 +817,7 @@ fn on_tool_end(r: &mut Report) -> Result<Value> {
         o.remove(&id);
     }
     if let Some(after) = r.body.get("tree") {
-        window_changes(&mut windows, &open["tree"], after);
+        window_changes(&mut windows, window_key(open["tool"].as_str().unwrap_or("")), &open["tree"], after);
     }
     app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
     Ok(ok(None, None))
@@ -2330,17 +2352,30 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 r.turn_at = turn.at.as_str().map(|s| s.to_string());
             }
             let before = s.s("turn_tree").and_then(|t| serde_json::from_str::<Value>(t).ok());
-            let windows = s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok()).filter(|w| w.is_object());
+            // Windows only once these hooks have closed one: a terminal still on hooks loaded before
+            // the plugin stamped each call opens none for a subagent and closes none.
+            let windows = s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok()).filter(|w| w.is_object() && s.b("tool_ends"));
             if let Some(mut windows) = windows {
                 // The hook stamped each Bash and subagent call: only what changed while one ran is the
-                // turn's, anywhere in the checkout. A call still open (cut off, or run in the
-                // background) runs to the Stop.
+                // turn's. A call still open (its end lost, or run in the background) runs to the Stop,
+                // unless it never ran: no result in the transcript, or one refused or failed.
                 let after = r.body.get("tree").cloned().unwrap_or(Value::Null);
-                let open: Vec<Value> = windows["open"].as_object().map(|o| o.values().cloned().collect()).unwrap_or_default();
-                for w in open {
-                    window_changes(&mut windows, &w["tree"], &after);
+                let open: Vec<(String, Value)> = windows["open"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+                for (id, w) in open {
+                    // An id the hook made up (no `tool_use_id`) can't be looked up.
+                    let ran = match &turn {
+                        Some(turn) if !id.starts_with("call-") => turn.results.iter().any(|(i, error)| *i == id && !error),
+                        _ => true,
+                    };
+                    if ran {
+                        window_changes(&mut windows, window_key(w["tool"].as_str().unwrap_or("")), &w["tree"], &after);
+                    }
                 }
-                for f in windows["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
+                let none = transcript::Turn::default();
+                let scope = turn_scope(&r.b("cwd"), turn.as_ref().unwrap_or(&none));
+                let anywhere = windows["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str());
+                let scoped = windows["shell_files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).filter(|f| scope.as_ref().is_none_or(|dirs| under_any(f, dirs)));
+                for f in anywhere.chain(scoped) {
                     if !r.turn_files.iter().any(|x| x == f) {
                         r.turn_files.push(f.to_string());
                     }

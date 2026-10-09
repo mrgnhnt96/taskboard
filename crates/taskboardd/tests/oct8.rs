@@ -415,29 +415,133 @@ fn a_commit_counts_only_when_one_of_the_agents_calls_made_it() {
     assert!(out["block"].as_str().is_some_and(|x| x.contains("a commit: mine")), "{out}");
 }
 
+/// A tool call the transcript shows, by its id.
+fn tool_use(id: &str, tool: &str, input: Value) -> Value {
+    json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": tool, "input": input}]}})
+}
+
+/// The result the transcript shows for call `id`.
+fn tool_result(id: &str, error: bool) -> Value {
+    json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": error, "content": "x"}]}})
+}
+
+/// A prompt from hooks that stamp each call, which have already closed one call's window (so the board
+/// knows they send `ToolEnd`).
+fn prompt_with_windows(b: &Board, before: &Value) {
+    b.report("hook.tool_end", "s1", json!({"tool": "Bash", "tool_use_id": "t0", "tree": before}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": before}));
+}
+
 #[test]
-fn a_call_that_never_ended_or_runs_in_the_background_counts_to_the_stop() {
+fn a_call_whose_end_was_lost_or_runs_in_the_background_counts_to_the_stop() {
     let b = new_board();
     b.add_session("s1");
     let clean = tree(&b, "aaa", &[]);
     let changed = tree(&b, "aaa", &[("a.rs", "h1:5")]);
     let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": changed.clone()}))["block"].as_str().map(|s| s.to_string());
 
-    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
-    turn(&b, "s1", "Go", &[bash("python3 fix.py")]);
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py"})), tool_result("t1", false)]);
     call(&b, "t1", clean.clone(), None);
-    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a call cut off before its end");
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a call that ran, whose end the hook didn't send");
 
-    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
-    turn(&b, "s1", "Go", &[bash("./watch.sh")]);
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "./watch.sh", "run_in_background": true})), tool_result("t1", false)]);
     b.report("hook.tool_start", "s1", json!({"tool": "Bash", "tool_use_id": "t1", "background": true, "tree": clean.clone()}));
     b.report("hook.tool_end", "s1", json!({"tool": "Bash", "tool_use_id": "t1", "tree": clean.clone()}));
     assert!(stop().is_some_and(|x| x.contains("a.rs")), "a background command goes on past its end");
 
-    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    prompt_with_windows(&b, &clean);
     turn(&b, "s1", "Go", &[bash("ls")]);
     b.report("hook.tool_end", "s1", json!({"tool": "Bash", "tool_use_id": "t9", "tree": changed.clone()}));
     assert_eq!(stop(), None, "an end with no start this turn opens nothing");
+}
+
+#[test]
+fn a_call_refused_or_never_answered_doesnt_count_the_owners_edits() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": saved.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    // Denied at the permission prompt, or by another PreToolUse hook: an error result, and no ToolEnd.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "rm -rf build"})), tool_result("t1", true)]);
+    call(&b, "t1", clean.clone(), None);
+    assert_eq!(stop(), None, "a refused call never ran");
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix it"}))]);
+    b.report("hook.tool_start", "s1", json!({"tool": "Agent", "tool_use_id": "t1", "tree": clean.clone()}));
+    assert_eq!(stop(), None, "a call with no result in the transcript never ran");
+}
+
+#[test]
+fn a_long_command_doesnt_count_saves_outside_the_folders_the_turn_worked_in() {
+    let b = new_board();
+    b.add_session("s1");
+    let app = format!("{}/app", b.repo());
+    std::fs::create_dir_all(&app).unwrap();
+    let clean = tree(&b, "aaa", &[]);
+    let stop = |after: Value| b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": app, "tree": after}))["block"].as_str().map(|s| s.to_string());
+
+    // From `app/`, `cargo test` runs a while; the owner saves `lib/x.rs` meanwhile, and the build writes `app/gen.rs`.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "cargo test"})), tool_result("t1", false)]);
+    call(&b, "t1", clean.clone(), Some(tree(&b, "aaa", &[("lib/x.rs", "h1:5")])));
+    assert_eq!(stop(tree(&b, "aaa", &[("lib/x.rs", "h1:5")])), None, "a save in a sibling folder");
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "cargo test"})), tool_result("t1", false)]);
+    let both = tree(&b, "aaa", &[("lib/x.rs", "h1:5"), ("app/gen.rs", "h2:5")]);
+    call(&b, "t1", clean.clone(), None);
+    let block = stop(both.clone()).expect("a change in the terminal's folder");
+    assert!(block.contains("gen.rs") && !block.contains("x.rs"), "{block}");
+
+    // A path the command names, or a subagent, counts outside it.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "cargo fmt --manifest-path=../lib/Cargo.toml"})), tool_result("t1", false)]);
+    call(&b, "t1", clean.clone(), Some(tree(&b, "aaa", &[("lib/x.rs", "h1:5")])));
+    assert!(stop(tree(&b, "aaa", &[("lib/x.rs", "h1:5")])).is_some_and(|x| x.contains("x.rs")), "the folder of a path the command names");
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix lib"})), tool_result("t1", false)]);
+    b.report("hook.tool_start", "s1", json!({"tool": "Agent", "tool_use_id": "t1", "tree": clean.clone()}));
+    b.report("hook.tool_end", "s1", json!({"tool": "Agent", "tool_use_id": "t1", "tree": tree(&b, "aaa", &[("lib/x.rs", "h1:5")])}));
+    assert!(stop(tree(&b, "aaa", &[("lib/x.rs", "h1:5")])).is_some_and(|x| x.contains("x.rs")), "a subagent works anywhere in the checkout");
+}
+
+#[test]
+fn hooks_loaded_before_the_call_stamps_keep_to_the_prompts_stamp() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let edited = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = |after: Value| b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": after}))["block"].as_str().map(|s| s.to_string());
+
+    // The new `tb` says it stamps each call, but the terminal's hooks.json has no Agent matcher and no
+    // ToolEnd: a subagent's edit, a background one's, and its commit still block.
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix it"})), tool_result("t1", false)]);
+    assert!(stop(edited.clone()).is_some_and(|x| x.contains("a.rs")), "a subagent's edit");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix it", "run_in_background": true})), tool_result("t1", false)]);
+    let committed = tree_with(&b, "bbb", &[], &[("bbb", "commit: theirs too"), ("aaa", "commit (initial): start")]);
+    assert!(stop(committed).is_some_and(|x| x.contains("a commit: theirs too")), "a background subagent's commit");
+
+    // Once these hooks send a call's end, the windows decide.
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "ls"})), tool_result("t1", false)]);
+    call(&b, "t1", clean.clone(), Some(clean.clone()));
+    assert_eq!(stop(edited.clone()), None, "a save between the agent's calls");
+
+    // A new Claude process may have loaded other hooks.
+    b.report("hook.session_start", "s1", json!({"source": "startup"}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix it"})), tool_result("t1", false)]);
+    assert!(stop(edited).is_some_and(|x| x.contains("a.rs")), "back to the prompt's stamp after a restart");
 }
 
 #[test]

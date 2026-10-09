@@ -186,6 +186,7 @@ fn edits(e: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Default)]
 pub struct Turn {
     pub at: Value,
     pub prompt: String,
@@ -197,13 +198,48 @@ pub struct Turn {
     pub ran_subagent: bool,
     /// Directories the turn's shell commands moved into (`cd`, `pushd`, `git -C`), as written.
     pub shell_dirs: Vec<String>,
+    /// Paths the turn's shell commands name (`../lib/x.rs`, `/abs/dir`), as written.
+    pub shell_paths: Vec<String>,
+    /// The turn's tool calls that came back, by `tool_use_id`, and whether each came back an error
+    /// (refused at the permission prompt or by a hook, cut off, or failed).
+    pub results: Vec<(String, bool)>,
+}
+
+/// The paths a shell command names: its words with a `/` in them (a flag's `--x=` value included),
+/// quotes taken off. URLs and bare words aren't paths; a bare name sits in the folder the command runs in.
+fn named_paths(command: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for word in command.split(|c: char| c.is_whitespace() || ";&|()<>".contains(c)) {
+        let w = word.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        let w = if w.starts_with('-') { w.split_once('=').map(|(_, v)| v.trim_matches(|c| c == '"' || c == '\'')).unwrap_or("") } else { w };
+        if w.contains('/') && !w.contains("://") && !w.contains('$') && !out.iter().any(|x| x == w) {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
+/// The tool results in one of the main conversation's events, as (tool_use_id, is_error).
+fn tool_results(e: &Value) -> Vec<(String, bool)> {
+    if e["type"] != "user" || e["isSidechain"] == true {
+        return vec![];
+    }
+    e["message"]["content"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|b| b["type"] == "tool_result")
+                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), b["is_error"] == true)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn turns_of(events: &[Value]) -> Vec<Turn> {
     let mut out: Vec<Turn> = vec![];
     for e in events {
         if let Some(p) = prompt_of(e) {
-            out.push(Turn { at: e["timestamp"].clone(), prompt: p, files: vec![], closed: false, ran_shell: false, ran_subagent: false, shell_dirs: vec![] });
+            out.push(Turn { at: e["timestamp"].clone(), prompt: p, ..Turn::default() });
             continue;
         }
         let Some(cur) = out.last_mut() else { continue };
@@ -215,13 +251,20 @@ fn turns_of(events: &[Value]) -> Vec<Turn> {
                     cur.files.push(p);
                 }
             }
+            cur.results.extend(tool_results(e));
             for (name, input) in tool_uses(e) {
                 if SUBAGENT_TOOLS.contains(&name) {
                     cur.ran_subagent = true;
                 }
                 if SHELL_TOOLS.contains(&name) {
                     cur.ran_shell = true;
-                    for c in SHELL_DIR.captures_iter(input["command"].as_str().unwrap_or("")) {
+                    let command = input["command"].as_str().unwrap_or("");
+                    for p in named_paths(command) {
+                        if !cur.shell_paths.contains(&p) {
+                            cur.shell_paths.push(p);
+                        }
+                    }
+                    for c in SHELL_DIR.captures_iter(command) {
                         let d = c[1].trim_matches(|ch| ch == '"' || ch == '\'').to_string();
                         if !d.is_empty() && d != "-" && !cur.shell_dirs.contains(&d) {
                             cur.shell_dirs.push(d);
@@ -332,6 +375,21 @@ mod tests {
         let mut ev = ev;
         ev.push(json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Task", "input": {"prompt": "x"}}]}}));
         assert!(turns_of(&ev)[0].ran_subagent);
+    }
+
+    #[test]
+    fn reads_the_paths_a_command_names_and_each_calls_result() {
+        assert_eq!(named_paths(r#"sed -i '' s/a/b/ ../lib/x.rs && cat "/abs/dir/y.rs" --out=build/z curl https://x.io/a $HOME/q ls"#), vec!["s/a/b/", "../lib/x.rs", "/abs/dir/y.rs", "build/z"]);
+        let ev = vec![
+            json!({"type": "user", "message": {"content": "Go"}, "timestamp": "2026-10-01T10:00:00Z"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "denied"}]}}),
+            json!({"type": "user", "isSidechain": true, "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t3", "content": "ok"}]}}),
+        ];
+        let t = turns_of(&ev);
+        assert_eq!(t.len(), 1, "a tool result isn't a prompt");
+        assert_eq!(t[0].results, vec![("t1".to_string(), true), ("t3".to_string(), false)]);
     }
 
     #[test]

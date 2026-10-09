@@ -209,6 +209,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The turn's Bash and subagent calls, each stamped by the hook as it starts and ends: the stamps
     // of the calls still running, and what changed while the finished ones ran.
     ("sessions", "turn_windows", "TEXT"),
+    // Set once this Claude process's hooks sent a call's end (`hook.tool_end`): until then they may be
+    // ones loaded before the plugin stamped each call, and the Stop keeps to the prompt's stamp.
+    ("sessions", "tool_ends", "INT DEFAULT 0"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
