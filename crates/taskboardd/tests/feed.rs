@@ -208,7 +208,7 @@ fn changes_requested_without_comments_does_not_move_the_stage() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("t1".into());
-    rec.reviewers = vec![Reviewer { user: "rev".into(), name: "Rev".into(), state: "changes".into(), requested: true }];
+    rec.reviewers = vec![Reviewer { user: "rev".into(), name: "Rev".into(), state: "changes".into(), requested: true, changes_at: None }];
     let h = fake(&b, rec);
     prflow::refresh(&b.app).unwrap();
     assert_eq!(b.phase(id), "review", "a bare request for changes is no work to do");

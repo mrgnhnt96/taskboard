@@ -142,16 +142,28 @@ pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(crate::feed::holding(app, first))
 }
 
+/// PR phases past asking: the reviewers have been at it (or the PR is done), so the owner's review
+/// no longer gates an ask.
+const PAST_ASKING: &[&str] = &["rereview", "merge", "waits", "merged", "declined"];
+
 /// Whether the owner's review gates this ask (the `ask` stage): it's on for the project, the owner
-/// hasn't reviewed the PR, and nobody has been asked on it yet. Whatever the task's status, so a
-/// reopened task waits too; a later swap or drop doesn't.
+/// hasn't reviewed the PR, the PR isn't past asking, and nobody has been asked on it yet (by the
+/// board, or on the host: anyone on the PR's reviewer list or who reviewed it, the board's own
+/// account aside). Whatever the task's status, so a reopened task waits too; a later swap or drop
+/// doesn't.
 pub fn needs_owner_review(app: &App, t: &Row) -> Result<bool> {
-    if !reviewers::ask_stage_on(app, t.s("project")) {
+    if !reviewers::ask_stage_on(app, t.s("project")) || PAST_ASKING.contains(&t.s("pr_phase").unwrap_or("")) {
         return Ok(false);
     }
     let f = flow(t);
     if f.contains_key("reviewed") || f.contains_key("asked") {
         return Ok(false);
+    }
+    if let Some(rec) = f.get("rec").filter(|r| r.is_object()) {
+        let viewer = rec["viewer"].as_str().filter(|v| !v.is_empty());
+        if on_pr(&f, rec).iter().any(|w| !w.user.is_empty() && Some(w.user.as_str()) != viewer) {
+            return Ok(false);
+        }
     }
     Ok(app.db.count("SELECT COUNT(*) FROM review_asks WHERE task_id = ?", crate::p![t.id()])? == 0)
 }
@@ -489,16 +501,36 @@ pub fn sweep(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// Each reviewer's standing request for changes on the PR record: `{host id: when}`, which
+/// `tb pr addressed` keeps as `answered_changes_by`.
+pub fn changes_by(rec: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for r in rec["reviewers"].as_array().cloned().unwrap_or_default() {
+        if let (Some(u), Some(at)) = (r["user"].as_str(), r["changes_at"].as_str().filter(|c| !c.is_empty())) {
+            out.insert(u.to_string(), json!(at));
+        }
+    }
+    Value::Object(out)
+}
+
 /// Whether the PR record `rec` (read at `read_at`) is older than the ask `a`, so its reviewer's
 /// answer there (`ans`) can't answer it: it was read before the ask (by the second), or, for a
-/// `rereview` ask, it still shows the request for changes `tb pr addressed` answered
-/// (`answered_changes` in `f`, the flow as it is now).
+/// `rereview` ask, it still shows the request for changes `tb pr addressed` answered. That's the
+/// reviewer's own request (`answered_changes_by` in `f`, the flow as it is now) when the host says
+/// when each was made, so one reviewer's earlier read isn't taken for an answer to another's; else
+/// the PR's latest (`answered_changes`).
 fn read_before(f: &Row, rec: &Value, read_at: &str, a: &Row, ans: &str) -> bool {
     if read_at < a.s("asked_at").unwrap_or("") {
         return true;
     }
     if a.s("why") != Some("rereview") || ans != "changes" {
         return false;
+    }
+    let user = a.st("host_user");
+    let mine = reviewer_of(rec, &user).and_then(|r| r["changes_at"].as_str()).filter(|c| !c.is_empty());
+    let answered_mine = f.get("answered_changes_by").and_then(|m| m.as_object()).and_then(|m| m.iter().find(|(u, _)| u.eq_ignore_ascii_case(&user))).and_then(|(_, v)| v.as_str());
+    if let (Some(mine), Some(answered)) = (mine, answered_mine) {
+        return mine == answered;
     }
     let changes_at = rec["changes_at"].as_str().filter(|c| !c.is_empty());
     changes_at.is_some() && f.get("answered_changes").and_then(|v| v.as_str()) == changes_at

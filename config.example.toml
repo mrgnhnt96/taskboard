@@ -302,7 +302,7 @@ cache_mins = 10.0
 bot_window_hours = 12.0               # marked comments this recent count
 bot_scan_prs = 20                     # the repo's most recently updated PRs read for bot runs (anyone's)
 bot_scan_mins = 10.0                  # how often they're read
-bot_run_gap_mins = 30.0               # marked comments this close together are one run
+bot_run_gap_mins = 30.0               # marked comments this close to the one before are one run
 bot_due_mins = 45.0
 # Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the
 # PR host by the picker's choice (only inside work hours). Someone swapped off who reviews anyway counts

@@ -396,15 +396,25 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
             "COMMENTED" => "commented",
             _ => "pending",
         };
+        // When they asked for changes: this review's time, else their latest request among every review.
+        let mine = (state == "changes").then(|| {
+            r["submittedAt"].as_str().map(|s| s.to_string()).or_else(|| {
+                reviews.iter().filter(|x| x["state"] == "CHANGES_REQUESTED" && login(x) == user).filter_map(|x| x["submittedAt"].as_str()).max().map(|s| s.to_string())
+            })
+        });
+        let mine = mine.flatten();
         match reviewers.iter_mut().find(|x| x.user == user) {
-            Some(x) => x.state = state.into(),
-            None => reviewers.push(Reviewer { name: user.clone(), user, state: state.into(), requested: false }),
+            Some(x) => {
+                x.state = state.into();
+                x.changes_at = mine;
+            }
+            None => reviewers.push(Reviewer { name: user.clone(), user, state: state.into(), requested: false, changes_at: mine }),
         }
     }
     for u in &requested {
         match reviewers.iter_mut().find(|x| &x.user == u) {
             Some(x) => x.requested = true,
-            None => reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true }),
+            None => reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true, changes_at: None }),
         }
     }
     let approvals = reviewers.iter().filter(|r| r.state == "approved").count() as i64;
@@ -595,6 +605,8 @@ pub(crate) mod tests {
         assert_eq!(r.base_head, "b1");
         assert_eq!(r.checks[1].url.as_deref(), Some("https://github.com/acme/webapp/actions/runs/77/job/1"));
         let states: Vec<(String, String, bool)> = r.reviewers.iter().map(|x| (x.user.clone(), x.state.clone(), x.requested)).collect();
+        let at: Vec<Option<&str>> = r.reviewers.iter().map(|x| x.changes_at.as_deref()).collect();
+        assert_eq!(at, vec![Some("2026-10-01T10:00:00Z"), None, None], "each reviewer's own request for changes");
         assert_eq!(
             states,
             vec![("rev".into(), "changes".into(), false), ("ok".into(), "approved".into(), false), ("new".into(), "pending".into(), true)]

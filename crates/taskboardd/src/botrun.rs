@@ -2,9 +2,9 @@
 //! --mark <text>`). The board spots each run from the marker anywhere in that person's comments on
 //! the repo's `bot_scan_prs` most recently updated PRs (whoever opened them; read at most every
 //! `bot_scan_mins`, `PrHost::recent_comments`; a read that fails is tried again on the next sweep),
-//! from the last `bot_window_hours`, and keeps them in `reviewer_bot_runs`. Comments within
-//! `bot_run_gap_mins` of a run are the same run, which starts at its earliest comment, whatever order
-//! the host lists them in.
+//! from the last `bot_window_hours`, and keeps them in `reviewer_bot_runs`. A comment within
+//! `bot_run_gap_mins` of another comment of a run is the same run (gap to gap), which starts at its
+//! earliest comment, whatever order the host lists them in.
 //!
 //! Once a run has been seen, the bot is timed: its next run is the last one plus the interval, rolled
 //! forward by the interval until it's in the future; the picker asks that person only when the next run
@@ -149,31 +149,34 @@ pub fn note_runs(app: &App) -> Result<i64> {
     Ok(noted)
 }
 
-/// Records one run at `at` unless a run within `bot_run_gap_mins` already covers it, or this comment
-/// was counted before. A comment earlier than the run it's part of moves the run back to it (a run
-/// starts at its earliest comment). True when it's a new run.
+/// Records one run at `at` unless this comment was counted before, or it's within `bot_run_gap_mins`
+/// of a comment of a run already seen: comments chain gap to gap, so a slow run that keeps commenting
+/// stays one run. A comment earlier than the run it's part of moves the run back to it (a run starts at
+/// its earliest comment), and one that bridges two runs makes them one. True when it's a new run.
 pub fn note_run(app: &App, r: &Row, at: f64, comment: &str) -> Result<bool> {
     if app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs WHERE reviewer_id = ? AND ref = ?", p![r.id(), comment])? > 0 {
         return Ok(false);
     }
     let gap = app.cfg.reviewers.bot_run_gap_mins * 60.0;
-    let near = app
+    // The runs (by start) with a comment this close; a row from before `comment_at` is its run's start.
+    let mut near: Vec<String> = app
         .db
-        .q("SELECT at FROM reviewer_bot_runs WHERE reviewer_id = ?", p![r.id()])?
+        .q("SELECT at, COALESCE(comment_at, at) AS c FROM reviewer_bot_runs WHERE reviewer_id = ?", p![r.id()])?
         .iter()
-        .filter_map(|x| x.s("at").and_then(parse_iso))
-        .find(|x| (x - at).abs() < gap);
+        .filter(|x| x.s("c").and_then(parse_iso).is_some_and(|c| (c - at).abs() < gap))
+        .map(|x| x.st("at"))
+        .collect();
+    near.sort();
+    near.dedup();
+    let start = near.iter().filter_map(|n| parse_iso(n)).fold(at, f64::min);
     // A comment of a run already seen is kept at that run's time, so it isn't counted again.
-    let run_at = match near {
-        Some(n) if at < n => {
-            app.db.x("UPDATE reviewer_bot_runs SET at = ? WHERE reviewer_id = ? AND at = ?", p![iso(at), r.id(), iso(n)])?;
-            at
+    for n in &near {
+        if parse_iso(n) != Some(start) {
+            app.db.x("UPDATE reviewer_bot_runs SET at = ? WHERE reviewer_id = ? AND at = ?", p![iso(start), r.id(), n])?;
         }
-        Some(n) => n,
-        None => at,
-    };
-    app.db.insert("reviewer_bot_runs", fields!["reviewer_id" => r.id(), "at" => iso(run_at), "ref" => comment])?;
-    Ok(near.is_none())
+    }
+    app.db.insert("reviewer_bot_runs", fields!["reviewer_id" => r.id(), "at" => iso(start), "ref" => comment, "comment_at" => iso(at)])?;
+    Ok(near.is_empty())
 }
 
 #[cfg(test)]

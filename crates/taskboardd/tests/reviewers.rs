@@ -123,7 +123,7 @@ pub fn set_state(h: &FakeHost, user: &str, state: &str) {
     let mut r = h.rec.lock();
     match r.reviewers.iter_mut().find(|x| x.user == user) {
         Some(x) => x.state = state.into(),
-        None => r.reviewers.push(Reviewer { user: user.into(), name: user.into(), state: state.into(), requested: false }),
+        None => r.reviewers.push(Reviewer { user: user.into(), name: user.into(), state: state.into(), requested: false, changes_at: None }),
     }
 }
 
@@ -717,7 +717,7 @@ fn a_main_contributor_already_on_the_pr_means_no_second_one() {
     let h = fake(&b, rec_on(&base, &head));
     members(&h);
     let id = b.pr_task(BB);
-    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true }];
+    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true, changes_at: None }];
     poll(&b);
     let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
     // Bo is a main contributor too, but he's picked in turn (a tie broken by his commits), not as a second main.
@@ -867,7 +867,7 @@ fn tb_pr_addressed_records_an_ask_so_a_slow_rereview_is_swapped() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("t1".into());
-    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None }];
     rec.threads = vec![prhost::Thread {
         id: "1".into(),
         kind: "review".into(),
@@ -949,7 +949,7 @@ fn a_read_from_before_tb_pr_addressed_does_not_answer_the_rereview() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("2026-10-01T09:00:00Z".into());
-    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None }];
     rec.threads = vec![prhost::Thread {
         id: "1".into(),
         kind: "review".into(),
@@ -991,6 +991,44 @@ fn a_read_from_before_tb_pr_addressed_does_not_answer_the_rereview() {
 }
 
 #[test]
+fn one_reviewer_s_new_request_for_changes_doesn_t_answer_another_s_rereview() {
+    let b = board_with(|_| {});
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("2026-10-01T10:00:00Z".into());
+    let changes = |user: &str, at: &str| Reviewer { user: user.into(), name: user.into(), state: "changes".into(), requested: false, changes_at: Some(at.into()) };
+    rec.reviewers = vec![changes("{ana}", "2026-10-01T09:00:00Z"), changes("{bo}", "2026-10-01T10:00:00Z")];
+    let thread = |id: &str, who: &str| prhost::Thread {
+        id: id.into(),
+        kind: "review".into(),
+        resolvable: true,
+        resolved: true,
+        author: who.into(),
+        last_author: who.into(),
+        last_id: id.into(),
+        text: "Rename this".into(),
+        ..Default::default()
+    };
+    rec.threads = vec![thread("1", "{ana}"), thread("2", "{bo}")];
+    let h = fake(&b, rec);
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    b.post(&format!("/tasks/{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(b.flow(id)["answered_changes_by"], json!({"{ana}": "2026-10-01T09:00:00Z", "{bo}": "2026-10-01T10:00:00Z"}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open"), pair("Bo", "open")]);
+
+    // Bo looks again and asks for more: that answers his ask, not Ana's (her request is the old one).
+    {
+        let mut r = h.rec.lock();
+        r.changes_at = Some("2026-10-02T09:00:00Z".into());
+        r.reviewers[1].changes_at = Some("2026-10-02T09:00:00Z".into());
+    }
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open"), pair("Bo", "answered")]);
+}
+
+#[test]
 fn the_owner_s_review_gates_a_first_ask_whatever_the_status_and_not_a_later_swap() {
     let b = board_with(|_| {});
     let _h = fake(&b, green());
@@ -1010,6 +1048,42 @@ fn the_owner_s_review_gates_a_first_ask_whatever_the_status_and_not_a_later_swap
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"replace": "Ana", "with": "Cy"}));
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Bo"}));
     assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "dropped"), pair("Cy", "open")]);
+}
+
+#[test]
+fn someone_asked_on_the_host_or_a_pr_past_asking_doesn_t_wait_for_the_owner() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("hasn't reviewed PR #9 yet"), "{e}");
+    // The board's own account on the PR isn't an ask.
+    h.rec.lock().viewer = "{me}".into();
+    h.rec.lock().reviewers = vec![Reviewer { user: "{me}".into(), name: "Me".into(), state: "commented".into(), ..Default::default() }];
+    poll(&b);
+    assert!(b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err().contains("hasn't reviewed"));
+    // Dee was asked on the host: the PR has been asked, so the board may ask more.
+    h.rec.lock().reviewers.push(Reviewer { user: "{dee}".into(), name: "Dee".into(), state: "pending".into(), requested: true, ..Default::default() });
+    poll(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")]);
+
+    // Past asking (approved, re-review…), the owner's review doesn't gate an ask, whoever is on it.
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    poll(&b);
+    let gated = |phase: &str| {
+        b.app.db.x("UPDATE tasks SET pr_phase = ? WHERE id = ?", vec![json!(phase), json!(id)]).unwrap();
+        taskboardd::asks::needs_owner_review(&b.app, &b.task(id)).unwrap()
+    };
+    assert!(gated("review"));
+    assert!(gated("comments"));
+    for p in ["rereview", "merge", "waits", "merged", "declined"] {
+        assert!(!gated(p), "{p}");
+    }
 }
 
 #[test]
@@ -1038,4 +1112,27 @@ fn a_bot_run_starts_at_its_earliest_comment_and_a_failed_read_is_tried_again() {
     assert_eq!(b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap(), 1);
     let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
     assert!((at - earlier).abs() < 1.0);
+}
+
+#[test]
+fn a_slow_bot_run_chains_comment_to_comment_and_a_bridge_joins_two_runs() {
+    let b = board_with(|c| c.reviewers.bot_run_gap_mins = 30.0);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
+    let ana = b.app.db.q1("SELECT * FROM reviewers WHERE name = 'Ana'", vec![]).unwrap().unwrap();
+    let t0 = taskboardd::util::now_ts() - 5.0 * 3600.0;
+    let runs = || b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap();
+    // Every 20 minutes for an hour: each within the gap of the one before, though not of the first.
+    assert!(taskboardd::botrun::note_run(&b.app, &ana, t0, "r#1:a").unwrap());
+    for (i, m) in [20.0, 40.0, 60.0].iter().enumerate() {
+        assert!(!taskboardd::botrun::note_run(&b.app, &ana, t0 + m * 60.0, &format!("r#1:b{i}")).unwrap(), "{m}");
+    }
+    assert_eq!(runs(), 1, "one slow run");
+    // A run well apart is another, and a comment between the two makes them one, at the earlier start.
+    assert!(taskboardd::botrun::note_run(&b.app, &ana, t0 + 110.0 * 60.0, "r#2:a").unwrap());
+    assert_eq!(runs(), 2);
+    assert!(!taskboardd::botrun::note_run(&b.app, &ana, t0 + 85.0 * 60.0, "r#2:b").unwrap());
+    assert_eq!(runs(), 1);
+    let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
+    assert!((at - t0).abs() < 1.0);
 }

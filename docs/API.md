@@ -971,9 +971,10 @@ messages anyone.
 board reads every comment (whole: a marker in a footer counts) on the repo's `bot_scan_prs` (20) most recently updated
 PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10, counted from the last read
 that worked: a failed read is tried again on the next sweep), and records each comment of theirs that carries `mark`
-(case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`. Comments within
-`bot_run_gap_mins` are one run, at its earliest comment's time, whatever order the host lists them in (Bitbucket
-lists the newest first). Until a run is seen, that person isn't asked.
+(case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`. A comment within
+`bot_run_gap_mins` of another comment of a run is part of it (they chain gap to gap, so a slow run that keeps
+commenting stays one run, and a comment between two runs joins them); a run is at its earliest comment's time,
+whatever order the host lists them in (Bitbucket lists the newest first). Until a run is seen, that person isn't asked.
 Then the bot is timed: its next run is the last + `every_h`, rolled forward by `every_h` until it's in the future
 (the reviewer's `bot.next_run`); the picker asks that person only when it's at most `bot_due_mins` away, and their
 pace is the fastest in `speed_by_minutes`.
@@ -992,8 +993,10 @@ by the picker's choice (`swap`): only inside work hours and never while `feed::h
 health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
 except a PR's first ask outside the feed's hours. Each change is logged on the task and the PR is read again. The
 sweep doesn't take a reviewer's state from a PR read made before their ask (`pr_flow.checked_at` earlier than
-`asked_at`), nor a `rereview` ask's request for changes while the PR still shows the one `tb pr addressed` answered
-(`pr_flow.answered_changes`): the old review isn't an answer to the new ask.
+`asked_at`), nor a `rereview` ask's request for changes while the PR still shows the one `tb pr addressed` answered: that
+reviewer's own (`reviewers[].changes_at` against `pr_flow.answered_changes_by`, `{host id: when}`), else the PR's
+latest (`pr_flow.answered_changes`). The old review isn't an answer to the new ask, and another reviewer's new
+request for changes doesn't make it one.
 
 **The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
@@ -1006,7 +1009,9 @@ spent. Then the phase moves on to `review`. While the feed holds (`feed::holding
 ask and the board doesn't ask; the sweep brings the agent back once the feed has settled. `tb pr reviewers` (besides
 `--dry-run`) answers 409 while the feed holds, and, with the stage on, when it would ask someone before the owner
 has reviewed the PR and before anyone was asked on it, whatever the task's status (a reopened task waits too); a
-later `--replace` or `--drop` doesn't wait for the owner.
+later `--replace` or `--drop` doesn't wait for the owner. Asked on it counts the host too: anyone on the PR's
+reviewer list or who reviewed it (not the board's own account). Nor does it wait once the PR is past asking
+(`rereview`, `merge`, `waits`, `merged`, `declined`).
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 
