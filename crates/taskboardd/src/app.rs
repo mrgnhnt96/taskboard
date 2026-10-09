@@ -21,6 +21,8 @@ pub struct Shared {
     pub midna_down: bool,
     pub midna_opened: Option<Instant>,
     pub midna_usage: Option<Value>,
+    /// Midna's `keep_awake.status` from the last sync (absent on a Midna without keep-awake).
+    pub midna_keep_awake: Option<Value>,
     /// Midna's `agents.resume_after_network`, and when the board last read it.
     pub midna_resumes_network: Option<(Instant, bool)>,
     pub recent_reports: VecDeque<String>,
