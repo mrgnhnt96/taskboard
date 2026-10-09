@@ -709,7 +709,7 @@ pub fn set_ci_token(app: &App, body: &Value) -> Result<Value> {
     } else {
         keychain_set(CI_SERVICE, "azure-devops", &token).map_err(|e| ApiError::new(400, e))?;
     }
-    app.info("accounts: CI token stored".to_string());
+    app.info("accounts: CI token stored");
     Ok(ci_token_status(app))
 }
 

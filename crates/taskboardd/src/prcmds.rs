@@ -189,11 +189,12 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
         out.push(format!("it's {}", state.to_lowercase()));
         return Ok(out);
     }
+    // A failure holds the merge unless the owner's hook skipped it; `tb pr skip-checks` doesn't cover one.
+    let failing = prflow::failing(&f, rec);
+    if !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
+        out.push(format!("checks failed: {}", failing.join(", ")));
+    }
     if prflow::checks_skipped(&f, rec).is_none() {
-        let failing = prflow::failing(&f, rec);
-        if !failing.is_empty() {
-            out.push(format!("checks failed: {}", failing.join(", ")));
-        }
         let checks = rec["checks"].as_array().cloned().unwrap_or_default();
         let running: Vec<String> = checks.iter().filter(|c| c["state"] == "running").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
         if !running.is_empty() {
@@ -318,6 +319,31 @@ fn move_stacked_off(app: &App, t: &Row, rec: &Value, num: i64) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A proof link's name for people: "GitHub Actions run 123", "Pipelines build #41", "Issue #12", a Jira
+/// key, else the site it's on.
+pub fn proof_label(url: &str) -> String {
+    let cap = |re: &str| regex::Regex::new(re).ok().and_then(|r| r.captures(url)).map(|c| c[1].to_string());
+    if let Some(n) = prhost::github::run_id(url) {
+        return format!("GitHub Actions run {n}");
+    }
+    if let Some(n) = prhost::bitbucket::pipeline_build(url) {
+        return format!("Pipelines build #{n}");
+    }
+    if let Some((_, n)) = prhost::ci::azure_build(url) {
+        return format!("Azure build #{n}");
+    }
+    if let Some(n) = cap(r"github\.com/[^/]+/[^/]+/issues/(\d+)") {
+        return format!("Issue #{n}");
+    }
+    if let Some(n) = cap(r"(?:github\.com/[^/]+/[^/]+/pull|bitbucket\.org/[^/]+/[^/]+/pull-requests)/(\d+)") {
+        return format!("PR #{n}");
+    }
+    if let Some(k) = cap(r"/browse/([A-Z][A-Z0-9]+-\d+)") {
+        return k;
+    }
+    cap(r"^https?://(?:www\.)?([^/?#]+)").unwrap_or_else(|| url.to_string())
 }
 
 fn is_link(s: &str) -> bool {
@@ -577,6 +603,17 @@ mod tests {
     fn rebase_commands_name_the_remote_and_base() {
         assert_eq!(rebase_commands("origin", "main")[0], "git fetch origin main && git rebase origin/main");
         assert!(rebase_commands("origin", "").is_empty());
+    }
+
+    #[test]
+    fn proof_links_are_named_for_people() {
+        assert_eq!(proof_label("https://github.com/a/b/actions/runs/123/job/4"), "GitHub Actions run 123");
+        assert_eq!(proof_label("https://bitbucket.org/w/r/pipelines/results/41"), "Pipelines build #41");
+        assert_eq!(proof_label("https://dev.azure.com/o/P/_build/results?buildId=9"), "Azure build #9");
+        assert_eq!(proof_label("https://github.com/a/b/issues/12"), "Issue #12");
+        assert_eq!(proof_label("https://bitbucket.org/w/r/pull-requests/7"), "PR #7");
+        assert_eq!(proof_label("https://acme.atlassian.net/browse/WEB-12"), "WEB-12");
+        assert_eq!(proof_label("https://www.ci.example.com/b/1"), "ci.example.com");
     }
 
     #[test]

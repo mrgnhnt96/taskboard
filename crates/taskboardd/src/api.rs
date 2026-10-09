@@ -73,7 +73,10 @@ fn required(body: &Value, key: &str, limit: usize, label: &str) -> Result<String
 
 /// Counts the PR's checks as passed for its current push (or every push, with `all`), and moves it on.
 fn pr_skip_checks(app: &App, id: i64, body: &Value) -> Result<Value> {
-    let reason = { let r = one_line(&body_str(body, "reason"), 500); if r.is_empty() { "no reason given".to_string() } else { r } };
+    let reason = one_line(&body_str(body, "reason"), 500);
+    if reason.is_empty() {
+        return err(400, "Say why the checks don't need to pass: --reason \"<why>\" (a hook cancelled the builds, say).");
+    }
     let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
     app.db.tx(|| {
         let t = board::get_task(app, id)?;

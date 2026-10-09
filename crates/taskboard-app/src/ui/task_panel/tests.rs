@@ -407,6 +407,12 @@ fn a_failure_cleared_as_not_ours_shows_its_reason_and_proof() {
     for want in ["Failed, but not because of this PR", "Flaky login e2e", "The base branch fails it on its last five builds.", "e2e", "https://ci.example.com/b/1"] {
         assert!(text.contains(want), "{want} in {text}");
     }
+    let at = (chrono::Utc::now() - chrono::Duration::minutes(12)).to_rfc3339();
+    task["pr"]["stage"]["not_ours"]["links"] = json!([{"url": "https://ci.example.com/b/1", "label": "ci.example.com"}]);
+    task["pr"]["stage"]["not_ours"]["at"] = json!(at);
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {}})));
+    assert!(text.contains("ci.example.com") && !text.contains("https://ci.example.com/b/1"), "the link goes by its label: {text}");
+    assert!(text.contains("Checked 12m ago"), "{text}");
     task["pr"]["stage"]["not_ours"] = Value::Null;
     assert!(!view::text(&tree(&json!({"task": task, "state": {}, "ui": {}}))).contains("not because of this PR"));
 }
@@ -446,6 +452,8 @@ fn checks_say_when_they_arent_needed_or_this_prs() {
     assert!(text.contains("Checks Not needed") && text.contains("You Review Not asked"), "{text}");
     let text = panel_text(with_bar(json!({"checks": "not_ours", "you": "reviewed"}), Value::Null, "approved"), json!({}));
     assert!(text.contains("Checks Not this PR's") && text.contains("You Reviewed") && text.contains("Review Approved"), "{text}");
+    let text = panel_text(with_bar(json!({"checks": "skipped"}), Value::Null, "none"), json!({}));
+    assert!(text.contains("Checks Skipped") && !text.contains("Not this PR's"), "{text}");
     let text = panel_text(with_bar(json!({"new_comments": 2}), json!({"phase": "review"}), "none"), json!({}));
     assert!(text.contains("Review New comments"), "{text}");
 }

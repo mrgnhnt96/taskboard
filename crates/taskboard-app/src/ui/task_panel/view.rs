@@ -1101,6 +1101,7 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let build = opt_s(bar, "build_url").filter(|u| is_web(u)).map(str::to_string);
     out.push(match s(bar, "checks") {
         "not_ours" => step("Checks", StepSt::Done, Some("Not this PR's"), None),
+        "skipped" => step("Checks", StepSt::Done, Some("Skipped"), None),
         "not_needed" => step("Checks", StepSt::Done, Some("Not needed"), None),
         _ => step(checks.0, checks.1, checks.2.as_deref(), if checks.1 == StepSt::Todo { None } else { build }),
     });
@@ -1400,7 +1401,7 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
 }
 
 /// The "Failed, but not because of this PR" box: this push's checks cleared with `tb pr not-ours`,
-/// with the reason and the proof links.
+/// with the reason, the proof links (named by the board) and when it was checked.
 fn not_ours_box(p: &Value) -> Option<Node> {
     let n = obj(p, "stage").and_then(|st| obj(st, "not_ours"))?;
     if !pr_open(p) {
@@ -1417,8 +1418,19 @@ fn not_ours_box(p: &Value) -> Option<Node> {
     if let Some(r) = opt_s(n, "reason").filter(|r| !r.is_empty()) {
         kids.push(txt(r, St::Plain));
     }
-    for u in arr(n, "proof").iter().filter_map(|u| u.as_str()).filter(|u| is_web(u)) {
-        kids.push(Node::Link { s: u.to_string(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Plain });
+    let links = arr(n, "links");
+    if links.is_empty() {
+        for u in arr(n, "proof").iter().filter_map(|u| u.as_str()).filter(|u| is_web(u)) {
+            kids.push(Node::Link { s: u.to_string(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Plain });
+        }
+    }
+    for l in links {
+        let Some(u) = opt_s(l, "url").filter(|u| is_web(u)) else { continue };
+        let label = opt_s(l, "label").filter(|x| !x.is_empty()).unwrap_or(u);
+        kids.push(Node::Link { s: label.to_string(), go: Go::Url(u.to_string()), tip: Some(u.to_string()), look: LinkLook::Plain });
+    }
+    if let Some(at) = opt_s(n, "at").map(fmt::ago).filter(|a| !a.is_empty()) {
+        kids.push(txt(format!("Checked {at}"), St::Small));
     }
     Some(el(K::Box(BoxTone::Info), kids))
 }

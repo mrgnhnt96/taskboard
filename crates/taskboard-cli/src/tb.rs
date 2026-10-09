@@ -823,11 +823,12 @@ enum PrCmd {
         /// The file (- for stdin)
         file: String,
     },
-    /// Count the PR's checks as passed (e.g. a hook cancelled the builds), so it moves on to review
+    /// Count checks that were stopped or never ran as passed (e.g. a hook cancelled the builds); not failures (use not-ours)
     SkipChecks {
         task: Option<String>,
-        #[arg(long)]
-        reason: Option<String>,
+        /// Why they don't need to pass
+        #[arg(long, required = true)]
+        reason: String,
         /// Every later push too, not just the current one
         #[arg(long)]
         all: bool,
@@ -2672,8 +2673,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             PrCmd::SkipChecks { task, reason, all } => {
                 let t = c.pr_task(task)?;
                 let who = if c.session.is_empty() { "tb" } else { "The agent" };
-                c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason.unwrap_or_default(), "all": all, "who": who})))?;
-                out(&format!("{t}'s PR checks count as passed{}.", if all { " on every push" } else { " for this push" }));
+                c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason, "all": all, "who": who})))?;
+                out(&format!("{t}'s PR checks that didn't fail count as passed{}.", if all { " on every push" } else { " for this push" }));
                 Ok(0)
             }
             PrCmd::BodyCheck { file } => {
