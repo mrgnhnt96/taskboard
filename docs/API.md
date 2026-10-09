@@ -564,7 +564,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `rebase: [str]` (when the base moved: the commands to rebase onto it, test and push), `failures: [{check, url, steps, tests, source, error?, base_fails, base_steps, base_tests, base_compared, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines (with the token from `tb ci-token set`, else `$pr.azure_token_env`) or the project's `failures_cmd`; the base branch's last 5 commits' runs of the same check are read too, and `base_steps` / `base_tests` are this PR's failed steps and tests that fail there too; `base_fails` when all of them do; `base_compared`: `steps` (compared one by one), `check` (only the check's name could be compared) or null (the base doesn't fail it)), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
 | `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
-| `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
+| `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, records an ask for each (`why: "rereview"`, unless they have one open, so a slow re-review is swapped like any ask), and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
 | `POST /tasks/:id/pr/reviewers` | `{ask?: [who], replace?: who, with?: who, drop?: who, count?, dry_run?: bool, who?}` | `tb pr reviewers`: sets the PR's reviewers through its host. With none of `ask`, `replace` and `drop`, the picker chooses (`count` more, else enough to have `[reviewers] count` on the PR; `dry_run` answers `{picks: [{user, name, why: "pinned"\|"main"\|"turn"}]}` and asks nobody); 409 when nobody on the roster can review. `replace` without `with` takes the picker's choice. `ask` requests each (a roster name, alias, email or host id; someone on the PR's list by name; else a host id as given); `replace` takes one off and asks `with` in their place; `drop` takes one off. 409 for the PR's author or someone removed from the roster. Each ask is recorded (`review_asks`), the people taken off go into `pr_flow.swapped_off` (their requests for changes stop holding), and `pr_flow.asked` notes who was asked. **Response:** `{asked: [{user, name}], dropped, replaced: {old, new}?, asks: [ask], pr}`. |
 | `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted, until their `expected_wait_mins` is over; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then points every open PR that goes into its branch at its base (a PR that can't be moved stops the merge: 502), merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
@@ -595,10 +595,12 @@ board reads that one PR again and steps it (`feed.rs` documents the health rules
 |---|---|---|
 | `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
 | `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
-| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null}`; also `state.pr_feed`. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null}` (`settling_secs`: what's left of the settle window); also `state.pr_feed`. |
 
 While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
-reviewer asks, nudges and swaps (the first ask on a PR still goes out outside the work hours); the PR poll runs (while
+reviewer asks, nudges and swaps. A stuck feed (down or stale) holds even a PR's first ask, at any hour; only a feed
+that's merely quiet outside the work hours lets the first ask through. Once the feed is healthy again, `holding` keeps
+holding for `settle_secs` (300) while the events it missed catch up (`pr_feed.healthy_at`). The PR poll runs (while
 healthy it rests unless `poll_while_healthy`); the board restarts the feed at `restart_mins` (1, 5, 15) after it went
 bad with `restart_cmd` (or by restarting its own `listener`), and raises the `pr-feed` alert if a restart fails or it's
 still bad 5 minutes after the last one. The alert clears when the feed is healthy again.
@@ -664,8 +666,8 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
-| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, set: {…what tb project set changed}}` (`tb project show`). |
-| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, set: {…what tb project set changed}}` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null, swap?: bool\|"on"\|"off"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`, `--swap on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
 
 ### Goals
 | Path | Body | Notes |
@@ -890,10 +892,10 @@ host accounts and spellings fold into one, and any of them names the reviewer. A
 ask is a row in the ledger (`review_asks`).
 
 `reviewer`: `{id, project, name, user: str|null (host id), emails, aliases, slack, source: "tb"|"git"|"host"|"import",
-commits, removed, removed_at, removed_why, pinned, automation, bot: {every_h, mark, last_run}|null,
+commits, removed, removed_at, removed_why, pinned, automation, bot: {every_h, mark, last_run, next_run}|null,
 median_work_mins, open_asks, asks, last_asked}`.
 
-`ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage", by, state:
+`ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage"|"rereview", by, state:
 "open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces}`.
 
 Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (any name of theirs), plus `who`.
@@ -920,9 +922,10 @@ asks) × `turn_gap_hours` / weight, earliest first (ties: fewest asks, then pinn
 files, then to the project); weight = automation × speed, where speed comes from the median work minutes they took
 to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`) over their last `speed_asks` asks of the last
 `speed_days`: an ask swapped off counts as `slow_cap_mins`, and one still open counts its time so far (up to the
-cap) once that's slower than the rest. After each poll the ledger
+cap) once that's slower than the rest. Each review sweep the ledger
 marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: minutes inside the work hours, or every
-minute with the hours off), and closed when the PR merged or closed first.
+minute with the hours off), and closed when the PR merged or closed first. The sweep runs every `[intervals] reviews`
+seconds (60) on its own timer, whether or not the PRs are polled: with a healthy feed the poll rests, the sweep doesn't.
 
 **Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). During the board's work hours the
 picker checks candidates, in turn order and at most `pick_tries` per pick, with Taskboard's Slack account: tiers
@@ -937,28 +940,39 @@ checked, but an out status seen within `out_keeps_hours` still keeps them from b
 calls `users.lookupByEmail`, `users.list`, `users.info`, `users.getPresence` and `search.messages`: the board never
 messages anyone.
 
-**Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. After each poll the
-board looks for comments by them that carry `mark` (case-insensitive) on the PRs it watches, from the last
-`bot_window_hours`, and records each run in `reviewer_bot_runs` (comments within `bot_run_gap_mins` are one run).
-With a run seen within two intervals the bot is timed: its next run is the last + `every_h`, the picker asks that
-person only when it's at most `bot_due_mins` away, and their pace is the fastest in `speed_by_minutes`.
+**Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. Each review sweep the
+board reads every comment (whole: a marker in a footer counts) on the repo's `bot_scan_prs` (20) most recently updated
+PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10), and records each comment of
+theirs that carries `mark` (case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`, at the
+comment's own time (comments within `bot_run_gap_mins` are one run). Until a run is seen, that person isn't asked.
+Then the bot is timed: its next run is the last + `every_h`, rolled forward by `every_h` until it's in the future
+(the reviewer's `bot.next_run`); the picker asks that person only when it's at most `bot_due_mins` away, and their
+pace is the fastest in `speed_by_minutes`.
 
-**The sweep** (`asks.rs`, after each poll) applies the stand-in rules to asks swapped off an open PR (by a swap or
+**The sweep** (`asks.rs`, every `[intervals] reviews` seconds) applies the stand-in rules to asks swapped off an open PR (by a swap or
 `tb pr reviewers --replace`): someone swapped off who reviews anyway is `came_back` (their review counts again: they
 leave `pr_flow.swapped_off`), and a stand-in who hasn't reviewed yet is taken off the PR (`dropped`). Someone swapped
 off who asks for changes doesn't block the PR (`prflow::review_of` waives anyone in `swapped_off`), and one more
-reviewer is asked (`fill_in`, once per ask). With `[reviewers] swap = true`, an ask still open after
+reviewer is asked (`fill_in`, once per ask) while the PR has fewer than `[reviewers] count` on it. An open ask whose
+reviewer was taken off the PR on the host (a read after the ask no longer lists them) is closed as `dropped`, so
+nobody stands in for them. With `[reviewers] swap = true` (per project: `[pr.projects.<name>] swap`, or `tb project
+set <name> --swap on|off|default`, which `taskboardd import` turns on where the old board swapped), an ask still open after
 `swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
 by the picker's choice (`swap`): only inside work hours and never while `feed::holding` (the event feed's
 health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
-except a PR's first ask outside work hours. Each change is logged on the task and the PR is read again.
+except a PR's first ask while the feed is merely quiet outside work hours. Each change is logged on the task and the
+PR is read again.
 
-**The `ask` stage** (`[reviewers] ask_stage`, off by default). Once the owner has marked a green PR reviewed
+**The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
+`tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
+board used the stage). Once the owner has marked a green PR reviewed
 (`POST /tasks/:id/pr/reviewed`, "I reviewed it"), its phase is `ask` until reviewers are asked (`pr_flow.asked`).
 In work hours, with `pr.wake` on, the agent is brought back to run `tb pr reviewers` (which finishes the visit);
 otherwise the board picks and asks them itself through the host (asks with `why: "stage"`, by "Task board"),
 retrying after each of `ask_retry_waits` seconds (`pr_flow.ask_tries`, `ask_retry_at`) and alerting once they're
-spent. Then the phase moves on to `review`.
+spent. Then the phase moves on to `review`. While the feed holds (`feed::holding`), the agent isn't brought back to
+ask and the board doesn't ask; the sweep brings the agent back once the feed has settled. `tb pr reviewers` (besides
+`--dry-run`) answers 409 while the feed holds, and, with the stage on, before the owner has reviewed the PR.
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 

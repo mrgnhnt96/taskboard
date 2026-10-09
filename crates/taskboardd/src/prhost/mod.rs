@@ -25,6 +25,7 @@
 //! | [`cancel_builds`](PrHost::cancel_builds) for a head | `gh run cancel` on its Actions runs | `stopPipeline` on its Pipelines runs; other CI: [`Cancelled::Unsupported`] |
 //! | [`base_failures`](PrHost::base_failures): checks failing on the base's last few commits | check runs and statuses of `commits?sha=<base>` | statuses of `commits/<base>` |
 //! | [`members`](PrHost::members): who can review in the repo (the reviewer picker, `picker.rs`) | `repos/{repo}/collaborators` | `workspaces/{ws}/members` |
+//! | [`recent_comments`](PrHost::recent_comments): every comment on the repo's last few PRs, whole (review bots, `botrun.rs`) | GraphQL `pullRequests(orderBy: UPDATED_AT)` with their comments, reviews and review comments | `pullrequests?sort=-updated_on`, then each one's `/comments` |
 //!
 //! Users are named by the host's own id ([`Reviewer::user`]): a GitHub login, a Bitbucket account's
 //! `{uuid}` (an `account_id` works too). [`Reviewer::name`] is for people.
@@ -145,6 +146,20 @@ pub struct Thread {
     /// The comments after the first, oldest first (what `tb pr status` shows under it).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replies: Vec<Reply>,
+}
+
+/// A comment on one of a repo's PRs, with its whole text and its own time ([`PrHost::recent_comments`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Comment {
+    /// The PR's number.
+    pub pr: i64,
+    pub id: String,
+    /// The host's id for who wrote it.
+    pub author: String,
+    pub author_name: String,
+    /// When it was written (ISO).
+    pub at: String,
+    pub text: String,
 }
 
 /// A reply on a thread.
@@ -301,6 +316,12 @@ pub trait PrHost: Send + Sync {
     fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
         Ok(self.base_failures(pr, base, commits)?.into_iter().map(|name| Check { name, state: "failed".into(), url: None }).collect())
     }
+
+    /// Every comment (review summaries and code comments too) on `repo`'s `prs` most recently updated
+    /// PRs, open or not, whoever opened them: each with its whole text and its own time.
+    fn recent_comments(&self, _repo: &str, _prs: usize) -> HostResult<Vec<Comment>> {
+        Err(format!("the board can't list a {} repo's comments", self.id()))
+    }
 }
 
 /// The host a task's PR lives on: one [`install`]ed for this board, else the real one.
@@ -355,11 +376,13 @@ pub struct FakeHost {
     pub members: Mutex<Vec<Reviewer>>,
     /// Base-branch failed runs to report (with links); empty: `base_failing` without links.
     pub base_checks: Mutex<Vec<Check>>,
+    /// What `recent_comments` answers (any repo).
+    pub comments: Mutex<Vec<Comment>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -460,6 +483,11 @@ impl PrHost for FakeHost {
         }
         self.log(format!("base {base} {commits}"));
         Ok(checks)
+    }
+
+    fn recent_comments(&self, repo: &str, prs: usize) -> HostResult<Vec<Comment>> {
+        self.log(format!("comments {repo} {prs}"));
+        Ok(self.comments.lock().clone())
     }
 }
 

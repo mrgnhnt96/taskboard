@@ -113,8 +113,10 @@ pub fn fake(b: &Board, rec: Record) -> Arc<FakeHost> {
     h
 }
 
+/// One poll of the PRs, then the review sweep (which runs on its own timer, `runner::reviews`).
 pub fn poll(b: &Board) {
     prflow::refresh(&b.app).unwrap();
+    taskboardd::runner::reviews(&b.app).unwrap();
 }
 
 pub fn set_state(h: &FakeHost, user: &str, state: &str) {
@@ -349,24 +351,21 @@ fn availability_tiers_steer_the_picker_and_the_out_are_never_picked() {
     assert_eq!((bo["removed"].clone(), bo["removed_why"].clone()), (json!(true), json!("canned")), "not on Slack: off the roster");
 }
 
-fn bot_comment(id: &str, mins_ago: f64) -> taskboardd::prhost::Thread {
-    taskboardd::prhost::Thread {
+/// A comment of Ana's on PR `pr` of the repo (anyone's PR), `mins_ago` minutes ago, its marker in a footer.
+fn bot_comment(pr: i64, id: &str, mins_ago: f64) -> taskboardd::prhost::Comment {
+    taskboardd::prhost::Comment {
+        pr,
         id: id.into(),
-        kind: "summary".into(),
         author: "{ana}".into(),
         author_name: "Ana".into(),
-        last_author: "{ana}".into(),
-        last_id: format!("{id}-c"),
-        last_at: taskboardd::util::iso(taskboardd::util::now_ts() - mins_ago * 60.0),
-        text: "🤖 AI review: 2 findings".into(),
-        resolved: true,
-        ..Default::default()
+        at: taskboardd::util::iso(taskboardd::util::now_ts() - mins_ago * 60.0),
+        text: "2 findings: see below.\n\nRename `x`.\n\n---\n🤖 AI Review".into(),
     }
 }
 
 #[test]
 fn a_reviewer_with_a_timed_bot_is_asked_just_before_it_runs() {
-    let b = board_with(|_| {});
+    let b = board_with(|c| c.reviewers.bot_scan_mins = 0.0);
     let h = fake(&b, green());
     let id = b.pr_task(BB);
     for (n, u) in [("Ana", "{ana}"), ("Bo", "{bo}"), ("Cy", "{cy}")] {
@@ -374,26 +373,44 @@ fn a_reviewer_with_a_timed_bot_is_asked_just_before_it_runs() {
     }
     b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
     let names = |v: &Value| -> Vec<String> { picks(v).into_iter().map(|(n, _)| n).collect() };
-    // No run seen yet: Ana is a reviewer like any other.
-    assert!(names(&b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}))).contains(&"Ana".to_string()));
+    let dry = || b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}));
+    // No run seen yet: she isn't asked until one is.
+    assert!(!names(&dry()).contains(&"Ana".to_string()));
 
-    // Her bot ran an hour ago (two comments of one run): the next run is 3 hours off, so she waits.
-    h.rec.lock().threads = vec![bot_comment("t1", 60.0), bot_comment("t2", 50.0)];
+    // Her bot ran an hour ago on someone else's PRs (two comments of one run, the marker in a
+    // footer): the next run is 3 hours off, so she waits.
+    *h.comments.lock() = vec![bot_comment(31, "c1", 60.0), bot_comment(32, "c2", 50.0)];
     poll(&b);
+    assert!(h.calls().contains(&"comments acme/webapp 20".to_string()), "the repo's recent PRs: {:?}", h.calls());
     assert_eq!(b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap(), 1, "one run");
-    assert!(!names(&b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}))).contains(&"Ana".to_string()));
+    let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
+    assert!((taskboardd::util::now_ts() - at - 3600.0).abs() < 60.0, "the bot comment's own time");
+    assert!(!names(&dry()).contains(&"Ana".to_string()));
     assert!(b.roster()[0]["bot"]["last_run"].is_string());
+    assert!(b.roster()[0]["bot"]["next_run"].is_string());
 
     // A run 3h40m ago: the next is 20 minutes off, so she's asked, and first (the fastest pace).
     b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
-    h.rec.lock().threads = vec![bot_comment("t3", 220.0)];
+    *h.comments.lock() = vec![bot_comment(31, "c3", 220.0)];
     poll(&b);
-    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}));
+    let v = dry();
     assert_eq!(names(&v).len(), 3);
     assert!(names(&v).contains(&"Ana".to_string()));
+
+    // Overdue (a run 7h50m ago, the one at 4h missed): the next is rolled forward to 10 minutes off.
+    b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
+    *h.comments.lock() = vec![bot_comment(31, "c5", 470.0)];
+    poll(&b);
+    assert!(names(&dry()).contains(&"Ana".to_string()));
+    // Overdue by a little more than an hour: the rolled-forward run is hours off, so she waits.
+    b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
+    *h.comments.lock() = vec![bot_comment(31, "c6", 5.0 * 60.0 + 10.0)];
+    poll(&b);
+    assert!(!names(&dry()).contains(&"Ana".to_string()), "not asked at any time just because a run is overdue");
+
     // An old comment outside the window isn't a run.
     b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
-    h.rec.lock().threads = vec![bot_comment("t4", 13.0 * 60.0)];
+    *h.comments.lock() = vec![bot_comment(31, "c4", 13.0 * 60.0)];
     poll(&b);
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs", vec![]).unwrap(), 0);
 }
@@ -461,6 +478,25 @@ fn a_swapped_off_request_for_changes_is_waived_and_someone_else_asked() {
     assert_eq!(b.asks(id)[2].st("why"), "fill_in");
     poll(&b);
     assert_eq!(b.asks(id).len(), 3, "once");
+}
+
+#[test]
+fn the_sweep_swaps_while_a_healthy_feed_drives_the_prs() {
+    let b = board_with(|c| {
+        c.reviewers.swap = true;
+        c.feed.on = true;
+    });
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post("/prs/heartbeat", json!({}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert!(!taskboardd::feed::poll_due(&b.app), "a healthy feed: no poll");
+    age_asks(&b, 100.0);
+    // Only the sweep's own timer runs: no poll of the PRs.
+    taskboardd::runner::reviews(&b.app).unwrap();
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open")]);
+    assert!(h.calls().contains(&"remove {ana}".to_string()), "{:?}", h.calls());
 }
 
 #[test]
@@ -680,4 +716,170 @@ fn someone_out_stays_out_after_hours_for_a_while() {
     b.app.db.set_setting(&format!("reviewer_out:{ana}"), Some(&old)).unwrap();
     let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
     assert_eq!(picks(&v), vec![pair("Ana", "turn")]);
+}
+
+fn ago(secs: f64) -> String {
+    taskboardd::util::iso(taskboardd::util::now_ts() - secs)
+}
+
+/// The feed's state as `feed.rs` keeps it (times in seconds before now).
+fn feed_state(b: &Board, st: Value) {
+    b.app.db.set_setting("pr_feed", Some(&st.to_string())).unwrap();
+}
+
+#[test]
+fn tb_pr_reviewers_waits_for_a_held_feed_and_its_settle_window() {
+    let b = board_with(|c| c.feed.on = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    // Stuck: no heartbeat for over 3 minutes.
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("Holding reviewer asks") && e.contains("heartbeat"), "{e}");
+    assert!(b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true})).is_ok(), "a dry run asks nobody");
+
+    // Back, but only just: the missed events catch up first.
+    taskboardd::feed::check(&b.app).unwrap();
+    b.post("/prs/heartbeat", json!({}));
+    taskboardd::feed::check(&b.app).unwrap();
+    assert!(taskboardd::feed::feed_healthy(&b.app));
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("just came back"), "{e}");
+    assert!(b.get("/prs/feed", &[])["settling_secs"].as_f64().unwrap() > 290.0);
+
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(1.0), "healthy_at": ago(301.0)}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")]);
+}
+
+#[test]
+fn a_stuck_feed_holds_even_the_first_ask_outside_work_hours() {
+    let b = board_with(|c| c.feed.on = true);
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
+    closed_hours(&b);
+    assert!(taskboardd::feed::holding(&b.app, true).is_some(), "stuck is down or stale, not a quiet night");
+    feed_state(&b, json!({"since": ago(9000.0)}));
+    assert_eq!(taskboardd::feed::holding(&b.app, true), None, "merely quiet outside the hours: the first ask goes");
+}
+
+#[test]
+fn with_the_ask_stage_reviewers_wait_for_the_owner_s_review() {
+    let b = board_with(|_| {});
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    // The project's own switch, as tb project set --ask-stage on sets it.
+    let v = b.post("/projects/webapp", json!({"ask_stage": true}));
+    assert_eq!(v["pr_rules"]["ask_stage"], true);
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("hasn't reviewed PR #9 yet"), "{e}");
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    assert_eq!(b.phase(id), "ask", "the project's switch turns the stage on");
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert_eq!(b.phase(id), "review");
+    let v = b.post("/projects/webapp", json!({"ask_stage": "off"}));
+    assert_eq!(v["pr_rules"]["ask_stage"], false);
+    assert!(b.try_post("/projects/webapp", json!({"ask_stage": "maybe"})).unwrap_err().contains("on or off"));
+}
+
+#[test]
+fn the_agent_isn_t_woken_to_ask_while_the_feed_holds_and_is_once_it_s_back() {
+    let b = board_with(|c| {
+        c.reviewers.ask_stage = true;
+        c.feed.on = true;
+    });
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    assert_eq!(b.phase(id), "ask");
+    assert!(pr_jobs(&b, id).is_empty(), "held: no wake");
+    taskboardd::runner::reviews(&b.app).unwrap();
+    assert!(pr_jobs(&b, id).is_empty());
+
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(1.0), "healthy_at": ago(400.0)}));
+    taskboardd::runner::reviews(&b.app).unwrap();
+    let jobs = pr_jobs(&b, id);
+    assert_eq!(jobs.len(), 1, "the sweep brings it back once the feed has settled");
+    assert!(jobs[0].contains("pr reviewers T"), "{}", jobs[0]);
+}
+
+#[test]
+fn tb_pr_addressed_records_an_ask_so_a_slow_rereview_is_swapped() {
+    let b = board_with(|_| {});
+    let v = b.post("/projects/webapp", json!({"swap": true}));
+    assert_eq!(v["pr_rules"]["swap"], true, "the project's own switch, as tb project set --swap on sets it");
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("t1".into());
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.threads = vec![prhost::Thread {
+        id: "1".into(),
+        kind: "review".into(),
+        resolvable: true,
+        resolved: true,
+        author: "ana".into(),
+        last_author: "ana".into(),
+        last_id: "1".into(),
+        text: "Rename this".into(),
+        ..Default::default()
+    }];
+    let h = FakeHost::new("github", rec);
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task("https://github.com/acme/webapp/pull/9");
+    for (n, u) in [("Ana", "ana"), ("Bo", "bo"), ("Cy", "cy")] {
+        b.add(n, json!({"user": u}));
+    }
+    poll(&b);
+    assert_eq!(b.phase(id), "comments");
+    b.post(&format!("/tasks/{id}/pr/addressed"), json!({"who": "The agent"}));
+    assert_eq!(b.phase(id), "rereview");
+    assert_eq!(b.asks(id).iter().map(|a| (a.st("name"), a.st("why"), a.st("asked_by"))).collect::<Vec<_>>(),
+               vec![("Ana".to_string(), "rereview".to_string(), "The agent".to_string())]);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "her old request for changes isn't an answer to this one");
+
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open")]);
+    assert!(h.calls().contains(&"remove ana".to_string()), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "review", "a swapped-off request for changes no longer holds");
+}
+
+#[test]
+fn an_ask_of_someone_taken_off_the_pr_on_the_host_is_closed() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    h.rec.lock().reviewers.retain(|r| r.user != "{ana}");
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "dropped")], "nobody stands in for someone who isn't on it");
+    assert!(!h.calls().iter().any(|c| c.starts_with("remove")), "{:?}", h.calls());
+}
+
+#[test]
+fn a_fill_in_is_asked_only_while_the_pr_is_short_of_reviewers() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
+    // Bo has looked (a comment): the PR still waits for review.
+    set_state(&h, "{bo}", "commented");
+    poll(&b);
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "answered"), pair("Cy", "open")]);
+    set_state(&h, "{ana}", "changes");
+    poll(&b);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "answered"), pair("Cy", "open")], "Bo and Cy are its two");
+    assert!(b.asks(id)[0].b("filled"));
 }

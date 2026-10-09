@@ -37,10 +37,10 @@
 //! | `task_id`, `project`, `pr_host`, `pr_repo`, `pr_num` | the PR |
 //! | `reviewer_id` | the roster row (NULL for someone not on it) |
 //! | `host_user`, `name` | who was asked, as the host knows them |
-//! | `why` | `pick` (the picker), `ask` (named with `--ask`), `replace` (`--replace`), `swap` (timed out), `fill_in` (a swapped-off reviewer asked for changes), `stage` (the board's own ask at the `ask` stage) |
+//! | `why` | `pick` (the picker), `ask` (named with `--ask`), `replace` (`--replace`), `swap` (timed out), `fill_in` (a swapped-off reviewer asked for changes), `stage` (the board's own ask at the `ask` stage), `rereview` (`tb pr addressed` asked them to look again) |
 //! | `asked_by` | who asked: the agent, the owner, the board |
 //! | `replaces` | the ask this one stands in for |
-//! | `state` | `open` (no review yet), `answered`, `swapped` (timed out and replaced), `came_back` (swapped off, then reviewed anyway), `dropped` (taken off the PR), `closed` (the PR merged or closed first) |
+//! | `state` | `open` (no review yet), `answered`, `swapped` (timed out and replaced), `came_back` (swapped off, then reviewed anyway), `dropped` (taken off the PR, by the board or on the host), `closed` (the PR merged or closed first) |
 //! | `asked_at`, `answered_at`, `closed_at` | ISO times |
 //! | `answer` | approved, changes or commented |
 //! | `work_mins` | work minutes from the ask to the review: the reviewer's speed |
@@ -114,6 +114,9 @@ pub struct ReviewersConfig {
     pub cache_mins: f64,
     /// How far back a reviewer's marked comments count as their bot's runs, in hours.
     pub bot_window_hours: f64,
+    /// How many of the repo's most recently updated PRs are read for bot runs, and how often, in minutes.
+    pub bot_scan_prs: usize,
+    pub bot_scan_mins: f64,
     /// Marked comments this close together are one run, in minutes.
     pub bot_run_gap_mins: f64,
     /// A timed bot's owner is asked only when it runs within this many minutes.
@@ -161,6 +164,8 @@ impl Default for ReviewersConfig {
             drop_not_on_slack: true,
             cache_mins: 10.0,
             bot_window_hours: 12.0,
+            bot_scan_prs: 20,
+            bot_scan_mins: 10.0,
             bot_run_gap_mins: 30.0,
             bot_due_mins: 45.0,
             swap: false,
@@ -174,6 +179,18 @@ impl Default for ReviewersConfig {
             out_keeps_hours: 24.0,
         }
     }
+}
+
+/// Whether a project's PRs have the `ask` stage: its own switch (`tb project set --ask-stage`,
+/// `[pr.projects.<name>] ask_stage`), else `[reviewers] ask_stage`.
+pub fn ask_stage_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).ask_stage.unwrap_or(app.cfg.reviewers.ask_stage)
+}
+
+/// Whether reviewers who take too long are swapped on a project's PRs: its own switch (`tb project
+/// set --swap`, `[pr.projects.<name>] swap`), else `[reviewers] swap`.
+pub fn swap_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).swap.unwrap_or(app.cfg.reviewers.swap)
 }
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
@@ -441,13 +458,14 @@ pub fn dict(app: &App, r: &Row) -> Result<Value> {
     let asks = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
     let last = app.db.val("SELECT MAX(asked_at) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
     let last_run = app.db.val("SELECT MAX(at) FROM reviewer_bot_runs WHERE reviewer_id = ?", p![r.id()])?;
+    let next_run = crate::botrun::next_run(app, r)?.map(iso);
     Ok(json!({
         "id": r.id(), "project": r.v("project"), "name": r.v("name"), "user": r.v("host_user"),
         "emails": list_of(r, "emails"), "aliases": list_of(r, "aliases"), "slack": r.v("slack"), "source": r.v("source"),
         "commits": r.i0("commits"),
         "removed": r.s("removed_at").is_some(), "removed_at": r.v("removed_at"), "removed_why": r.v("removed_why"),
         "pinned": r.b("pinned"), "automation": r.f("automation").unwrap_or(1.0),
-        "bot": if r.f("bot_every_h").is_some() { json!({"every_h": r.v("bot_every_h"), "mark": r.v("bot_mark"), "last_run": last_run}) } else { Value::Null },
+        "bot": if r.f("bot_every_h").is_some() { json!({"every_h": r.v("bot_every_h"), "mark": r.v("bot_mark"), "last_run": last_run, "next_run": next_run}) } else { Value::Null },
         "median_work_mins": median_work_mins(app, r.id())?, "open_asks": open, "asks": asks, "last_asked": last,
     }))
 }

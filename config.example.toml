@@ -32,6 +32,7 @@ claude_projects = "~/.claude/projects"
 runner = 5.0
 spool = 10.0
 prs = 60.0
+reviews = 60.0                       # the review sweep: swaps, stand-ins, the board's own asks and retries, bot runs
 midna_sync = 3.0
 midna_up = 20.0
 running_job_expiry = 360.0
@@ -93,6 +94,8 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # expected_wait_mins = 90             # how long to wait for them
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
+# ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
+# swap = true                         # swap slow reviewers on this project (unset: [reviewers] swap; tb project set --swap)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
 # relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
@@ -108,6 +111,7 @@ stuck_secs = 180.0                   # no heartbeat (POST /prs/heartbeat) this l
 silent_secs = 3600.0                 # no event or heartbeat this long inside the work hours
 restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the board restarts it
 poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
+settle_secs = 300.0                  # after it comes back, asks, nudges and swaps wait this long while missed events catch up
 
 # PR builds stopped (`tb pr-builds stop`, on your word): every build of your PRs and your pushes is
 # cancelled when the board hears of it (a build event on the feed, or a running check on a poll), and
@@ -289,14 +293,18 @@ quiet_from = "10:00"                  # away with no post today is quiet only fr
 out_keeps_hours = 24.0                # after hours, an out status seen this recently still holds
 cache_mins = 10.0
 # Review bots (`tb reviewers bot <who> --every <hours> --mark <text>`): a run is spotted from the marker
-# in that person's comments on the board's PRs; once its schedule is known they're asked only when it
-# runs within bot_due_mins, at the fastest pace.
+# anywhere in that person's comments on the repo's recent PRs (anyone's), at each comment's own time;
+# until a run is seen they aren't asked, then only when the next run (rolled forward by the interval)
+# is within bot_due_mins, at the fastest pace.
 bot_window_hours = 12.0               # marked comments this recent count
+bot_scan_prs = 20                     # the repo's most recently updated PRs read for bot runs (anyone's)
+bot_scan_mins = 10.0                  # how often they're read
 bot_run_gap_mins = 30.0               # marked comments this close together are one run
 bot_due_mins = 45.0
 # Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the
 # PR host by the picker's choice (only inside work hours). Someone swapped off who reviews anyway counts
-# again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is asked.
+# again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is
+# asked while the PR has fewer than `count`. tb pr addressed's asks to look again are timed too.
 swap = false
 swap_after_mins = 90.0
 # The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The agent is

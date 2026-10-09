@@ -495,6 +495,16 @@ pub fn prs(app: &App) -> Result<()> {
     worktrees::clean_up(app).map(|_| ())
 }
 
+/// The review sweep (`asks::sweep`), on its own timer (`[intervals] reviews`): it runs whether or not
+/// the PRs are polled, so swaps, stand-ins, the board's own asks and bot runs keep going while a
+/// healthy feed drives the PRs. The sweep holds what the feed's health says to hold itself.
+pub fn reviews(app: &App) -> Result<()> {
+    if !app.cfg.pr.watch {
+        return Ok(());
+    }
+    crate::asks::sweep(app)
+}
+
 pub fn run(app: Arc<App>) {
     let iv = app.cfg.intervals.clone();
     let safe = |name: &str, r: Result<()>| {
@@ -505,6 +515,7 @@ pub fn run(app: Arc<App>) {
     safe("spool", reports::ingest_spool(&app).map(|_| ()));
     let (mut last_tick, mut last_spool, mut last_prs) = (None::<Instant>, Instant::now(), None::<Instant>);
     let mut last_attrs = None::<Instant>;
+    let mut last_reviews = None::<Instant>;
     while !app.stopping() {
         let due = |last: Option<Instant>, every: f64| every > 0.0 && last.map(|l| l.elapsed().as_secs_f64() >= every).unwrap_or(true);
         if due(last_tick, iv.runner) {
@@ -518,6 +529,10 @@ pub fn run(app: Arc<App>) {
         if due(last_prs, iv.prs) {
             last_prs = Some(Instant::now());
             safe("prs", prs(&app));
+        }
+        if due(last_reviews, iv.reviews) {
+            last_reviews = Some(Instant::now());
+            safe("reviews", reviews(&app));
         }
         if due(last_attrs, gitattrs::EVERY_SECS) {
             last_attrs = Some(Instant::now());

@@ -113,6 +113,8 @@ pub struct Report {
     pub settings: Vec<String>,
     /// The highest T, G and B numbers carried over.
     pub last: Vec<(&'static str, i64)>,
+    /// Review switches turned on for a project because the old board used them ("webapp: ask stage").
+    pub switched: Vec<String>,
 }
 
 impl Report {
@@ -133,6 +135,9 @@ impl Report {
         if !self.skipped.is_empty() {
             out.push(format!("skipped: {}", self.skipped.len()));
             out.extend(self.skipped.iter().map(|s| format!("  {s}")));
+        }
+        if !self.switched.is_empty() {
+            out.push(format!("turned on, as the old board used them: {}", self.switched.join(", ")));
         }
         let last: Vec<String> = self.last.iter().filter(|(_, n)| *n > 0).map(|(k, n)| format!("{k}{n}")).collect();
         if !last.is_empty() {
@@ -296,6 +301,7 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
     jira_desk(app, c, old, &mut rep)?;
     pr_links(app, &mut rep)?;
     reviewers(app, c, old, &mut rep)?;
+    review_switches(app, &mut rep)?;
     breaks(app, c, old, &mut rep)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
@@ -1103,6 +1109,35 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             }
         }
         rep.copied.push(("reviewer_bot_runs".into(), n));
+    }
+    Ok(())
+}
+
+/// The review switches the old board used, per project (`tb project set --ask-stage / --swap`): turned
+/// on where what came over shows them at work, unless the project already says.
+/// - the `ask` stage: a PR waiting at it, a PR whose reviewers it noted asking (`pr_flow.asked`), or
+///   the board's own ask at that stage;
+/// - swaps: a stand-in it asked for a reviewer who timed out (`why: swap`).
+fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
+    let used: &[(&str, &str, &str)] = &[(
+        "ask_stage",
+        "ask stage",
+        "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_phase = 'ask' OR CASE WHEN json_valid(pr_flow) THEN json_extract(pr_flow, '$.asked') END IS NOT NULL) \
+         UNION SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL AND why = 'stage'",
+    ), (
+        "swap",
+        "swaps",
+        "SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL AND why = 'swap'",
+    )];
+    for (key, label, sql) in used {
+        for r in app.db.q(sql, vec![])? {
+            let Some(project) = r.s("project").filter(|p| !p.is_empty()).map(str::to_string) else { continue };
+            if crate::projects::pr_rules_set(app, &project)?.contains_key(*key) {
+                continue;
+            }
+            crate::projects::set_pr_rules(app, &project, &json!({ *key: true }))?;
+            rep.switched.push(format!("{project}: {label}"));
+        }
     }
     Ok(())
 }

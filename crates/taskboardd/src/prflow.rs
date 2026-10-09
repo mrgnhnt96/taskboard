@@ -626,7 +626,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         // A stacked PR waits for the PR it builds on to merge first (`stack.rs`).
         return if crate::stack::holds(app, t).unwrap_or(false) { "waits" } else { "merge" }.into();
     }
-    if app.cfg.reviewers.ask_stage && f.contains_key("reviewed") && !f.contains_key("asked") {
+    if crate::reviewers::ask_stage_on(app, t.s("project")) && f.contains_key("reviewed") && !f.contains_key("asked") {
         return "ask".into();
     }
     "review".into()
@@ -878,6 +878,8 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         && !retry_later(&f)
         && live_job(app, t)?.is_none()
         && hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref())
+        // The agent isn't brought back to ask for reviews while the PR feed holds asks.
+        && (phase != "ask" || crate::asks::held(app, t)?.is_none())
     {
         let mut probe = t.clone();
         probe.insert("pr_phase".into(), json!(phase));
@@ -974,7 +976,6 @@ pub fn refresh(app: &App) -> Result<i64> {
         }
     }
     crate::stack::retarget(app)?;
-    crate::asks::sweep(app)?;
     crate::propen::add_evidence(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {
