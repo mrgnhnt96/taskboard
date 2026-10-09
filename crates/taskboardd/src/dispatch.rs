@@ -49,21 +49,37 @@ fn root_for(app: &App, cwd: &str) -> String {
     project_roots(app).into_iter().filter(|r| under(&cwd, r)).max_by_key(|r| r.len()).unwrap_or(cwd)
 }
 
-fn project_busy(app: &App, root: &str) -> Result<bool> {
+fn busy_terminals(app: &App, root: &str) -> Result<i64> {
     let rows = app.db.q("SELECT project_path, status, background, background_at FROM sessions WHERE status IN ('working','needs','idle')", p![])?;
-    Ok(rows.iter().filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r)).any(|r| under(&real(&r.st("project_path")), root)))
+    Ok(rows.iter().filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r)).filter(|r| under(&real(&r.st("project_path")), root)).count() as i64)
 }
 
-/// A queued agent job (pickup "queue") waits while another terminal in its project is busy.
-pub fn launch_ready(app: &App, j: &Row) -> Result<bool> {
+/// Why a queued agent job (pickup "queue") can't open its terminal yet: its project already has
+/// as many busy terminals as it may (`[terminals] project_max`, or the project's own `max_terminals`).
+pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
     if !new_terminal(app, j) {
-        return Ok(true);
+        return Ok(None);
     }
     let a = board::job_args(j);
-    if as_bool(a.get("queue"), false) {
-        return Ok(!project_busy(app, &root_for(app, &a.st("cwd")))?);
+    if !as_bool(a.get("queue"), false) {
+        return Ok(None);
     }
-    Ok(true)
+    let root = root_for(app, &a.st("cwd"));
+    let name = match board::find_task(app, j.i("task_id"))?.and_then(|t| t.s("project").filter(|p| !p.is_empty()).map(str::to_string)) {
+        Some(n) => Some(n),
+        None => crate::projects::project_for_path(app, Some(&root))?,
+    };
+    let cap = crate::projects::max_terminals(app, name.as_deref());
+    let busy = busy_terminals(app, &root)?;
+    if busy < cap {
+        return Ok(None);
+    }
+    let name = name.unwrap_or_else(|| "its project".into());
+    Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy in {name}")))
+}
+
+pub fn launch_ready(app: &App, j: &Row) -> Result<bool> {
+    Ok(start_hold(app, j)?.is_none())
 }
 
 pub fn alerts(app: &App) -> Vec<Value> {

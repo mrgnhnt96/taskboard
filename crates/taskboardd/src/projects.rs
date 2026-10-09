@@ -18,6 +18,8 @@ pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 /// `tb project agents-merge on|off`: the board's own word on `pr.agents_merge`, over config.toml's
 /// (`taskboardd import` turns it on: the old board's agents merged on every project).
 const AGENTS_MERGE_SETTING: &str = "pr_agents_merge";
+/// `tb project set --max-terminals`: name → how many of its terminals may be busy before a queued task waits.
+const MAX_TERMINALS_SETTING: &str = "project_max_terminals";
 
 /// Whether agents merge PRs on a project that doesn't say: the board's word (`tb project agents-merge`),
 /// else config.toml's `pr.agents_merge`.
@@ -218,6 +220,42 @@ pub fn set_pr_rules(app: &App, name: &str, body: &Value) -> Result<bool> {
     Ok(true)
 }
 
+fn max_terminals_overrides(app: &App) -> Result<Row> {
+    Ok(jloads_obj(app.db.get_setting(MAX_TERMINALS_SETTING)?.as_deref()))
+}
+
+/// What `tb project set --max-terminals` put on a project, if anything.
+pub fn max_terminals_set(app: &App, name: &str) -> Result<Option<i64>> {
+    Ok(max_terminals_overrides(app)?.get(name).and_then(|v| v.as_i64()))
+}
+
+/// How many of a project's terminals may be busy before its queued tasks wait: its own, else `[terminals] project_max`.
+pub fn max_terminals(app: &App, name: Option<&str>) -> i64 {
+    let set = name.filter(|n| !n.is_empty()).and_then(|n| max_terminals_set(app, n).ok().flatten());
+    set.unwrap_or(app.cfg.terminals.project_max).max(1)
+}
+
+/// Sets a project's terminal cap from a body's `max_terminals` (null or "default": back to config.toml's).
+/// False when the body doesn't name it.
+pub fn set_max_terminals(app: &App, name: &str, body: &Value) -> Result<bool> {
+    let Some(v) = body.get("max_terminals") else { return Ok(false) };
+    let n = match v {
+        Value::Null => None,
+        Value::String(s) if s.trim().eq_ignore_ascii_case("default") => None,
+        _ => match v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) {
+            Some(n) if (1..=50).contains(&n) => Some(n),
+            _ => return err(400, "max_terminals is a count from 1 to 50, or default."),
+        },
+    };
+    let mut all = max_terminals_overrides(app)?;
+    match n {
+        Some(n) => all.insert(name.into(), json!(n)),
+        None => all.remove(name),
+    };
+    app.db.set_setting(MAX_TERMINALS_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
 /// Whether a project's work ends in pull requests (and so gets Jira tickets): on when it has a git remote.
 pub fn ships_prs(app: &App, name: &str) -> Result<bool> {
     let flow = pr_flow(app, name)?;
@@ -281,6 +319,8 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("remote".into(), json!(has_remote(app, name)?));
     o.insert("pr_flow".into(), json!(pr_flow(app, name)?));
     o.insert("ships_prs".into(), json!(ships_prs(app, name)?));
+    o.insert("max_terminals".into(), json!(max_terminals(app, Some(name))));
+    o.insert("max_terminals_set".into(), json!(max_terminals_set(app, name)?));
     let r = pr_rules(app, Some(name));
     let approvals = r.approvals.unwrap_or(app.cfg.pr.approvals);
     o.insert(

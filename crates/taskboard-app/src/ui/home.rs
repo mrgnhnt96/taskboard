@@ -288,7 +288,7 @@ pub fn tile_vm(c: &Value) -> Tile {
         "needs" => ("Needs you", "needs", since("Updated")),
         "working" if c["compacting"].is_string() => ("Compacting", "working", fmt::compacting(c).unwrap_or_default()),
         "working" => ("Working", "working", busy(c)),
-        "queued" if b(c, "starting") => ("Starting", "working", "Opening a terminal".into()),
+        "queued" if b(c, "starting") => ("Starting", "working", opt_s(c, "waiting").unwrap_or("Opening a terminal").to_string()),
         "queued" => ("Queued", "queued", opt_s(c, "waiting").unwrap_or("When a terminal is free").to_string()),
         "done" if pr.is_some() => {
             let p = pr.unwrap_or(&Value::Null);

@@ -970,7 +970,12 @@ fn terminal_row(c: &Ctx, t: &Value) -> Node {
         all.push(serde_json::json!({"name": t["who"], "status": "gone"}));
     }
     if all.is_empty() {
-        let mut body = vec![txt(if s(t, "status") == "done" { "No terminal." } else { "No terminal yet." }, St::Small)];
+        let none = match s(t, "status") {
+            "done" => "No terminal.",
+            "queued" if b(t, "starting") => opt_s(t, "waiting").unwrap_or("No terminal yet."),
+            _ => "No terminal yet.",
+        };
+        let mut body = vec![txt(none, St::Small)];
         if s(t, "status") != "done" {
             body.extend(c.note(&grp));
         }
