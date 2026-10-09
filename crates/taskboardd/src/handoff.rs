@@ -129,8 +129,16 @@ fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
                  bigger off with tb found. Open the PR with the repository's usual tools, then finish with tb done and \
                  the PR link in the summary."
         .to_string();
-    if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
-        s += &format!(" Its Jira ticket is {k}: put the key in the branch name, the commit messages and the PR title.");
+    let branch = branch_name(app, t)?;
+    let key = t.s("jira_key").filter(|k| !k.is_empty());
+    match (key, &branch) {
+        (Some(k), Some(_)) => s += &format!(" Its Jira ticket is {k}: put the key in the commit messages and the PR title."),
+        (Some(k), None) => s += &format!(" Its Jira ticket is {k}: put the key in the branch name, the commit messages and the PR title."),
+        _ => {}
+    }
+    if let Some(b) = &branch {
+        let setup = board::find_goal(app, t.i("goal_id"))?.is_some_and(|g| g.s("setup").is_some_and(|x| !x.trim().is_empty()));
+        s += &format!(" Name its branch {b}{}.", if setup { " unless the goal's setup says otherwise" } else { "" });
     }
     if app.cfg.pr.watch && app.cfg.pr.wake {
         s += " Once it's done, the board watches the PR and brings this conversation back when a check fails or a \
@@ -373,6 +381,115 @@ fn worktree_and_lock_lines(t: &Row, ctx: &Row) -> Vec<String> {
     lines
 }
 
+/// A task title as a branch slug: lowercase words joined by dashes, at most 40 characters.
+pub fn slug(title: &str) -> String {
+    let mut out = String::new();
+    for w in title.to_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()) {
+        if !out.is_empty() && out.len() + 1 + w.len() > 40 {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('-');
+        }
+        out.push_str(&w.chars().take(40).collect::<String>());
+    }
+    out
+}
+
+/// The branch the task's PR goes on, from `[handoff] branch` ({type} {key} {slug} {task} {n}).
+/// None when no template is set.
+pub fn branch_name(app: &App, t: &Row) -> Result<Option<String>> {
+    let tpl = app.cfg.handoff.branch.trim();
+    if tpl.is_empty() {
+        return Ok(None);
+    }
+    let bug = board::find_issue(app, t.i("from_issue_id"))?.is_some_and(|b| b.s("kind") == Some("bug"));
+    Ok(Some(fill_branch(tpl, if bug { "fix" } else { "feat" }, t.s("jira_key").unwrap_or(""), &t.st("title"), t.id())))
+}
+
+/// Fills a branch template. With no ticket, {key} goes along with the separator after it.
+pub fn fill_branch(tpl: &str, kind: &str, key: &str, title: &str, id: i64) -> String {
+    let mut b = tpl.to_string();
+    if key.is_empty() {
+        b = regex::Regex::new(r"\{key\}[-_.]?").unwrap().replace_all(&b, "").to_string();
+    }
+    let b = b
+        .replace("{type}", kind)
+        .replace("{key}", key)
+        .replace("{slug}", &slug(title))
+        .replace("{task}", &rf("task", id))
+        .replace("{n}", &id.to_string());
+    b.trim_matches(|c| c == '-' || c == '_' || c == '/').to_string()
+}
+
+/// The goal's setup text (`tb goal setup`) with {task} {n} {wave} {goal} filled for this task.
+pub fn fill_setup(text: &str, t: &Row) -> String {
+    text.replace("{task}", &rf("task", t.id()))
+        .replace("{n}", &t.id().to_string())
+        .replace("{wave}", &t.i("wave").map(|w| w.to_string()).unwrap_or_default())
+        .replace("{goal}", &t.i("goal_id").map(|g| rf("goal", g)).unwrap_or_default())
+}
+
+fn setup_block(t: &Row, g: Option<&Row>) -> Vec<String> {
+    let Some(text) = g.and_then(|g| g.s("setup")).filter(|s| !s.trim().is_empty()) else { return vec![] };
+    vec![format!("Set up (every task in this goal does this):\n{}", clip(fill_setup(text, t).trim(), 1500))]
+}
+
+/// The task's wave: where it sits, who runs beside it (and the files each has touched), whether the
+/// goal stops after it, and what comes next.
+fn wave_section(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> {
+    let (Some(g), Some(n)) = (g, t.i("wave")) else { return Ok(vec![]) };
+    let tasks = board::goal_tasks(app, g.id())?;
+    let wl = crate::waves::waves(app, g, &tasks)?;
+    let Some(pos) = wl.iter().position(|w| w["wave"].as_i64() == Some(n)) else { return Ok(vec![]) };
+    let w = &wl[pos];
+    let name = w["name"].as_str().filter(|s| !s.is_empty()).map(|s| format!(" ({s})")).unwrap_or_default();
+    let mut lines = vec![format!("This task is in wave {} of {}{name}.", pos + 1, wl.len())];
+    let mates: Vec<&Row> = tasks.iter().filter(|m| m.i("wave") == Some(n) && m.id() != t.id()).collect();
+    if mates.is_empty() {
+        lines.push("Nothing else runs in this wave.".into());
+    } else {
+        lines.push("These run side by side with it, so keep to this task's files and leave theirs alone:".into());
+        for m in mates.iter().take(8) {
+            let files: Vec<String> = str_list(board::task_context(m).get("files")).into_iter().rev().take(5).collect();
+            let owns = if files.is_empty() { String::new() } else { format!(", has touched {}", files.join(", ")) };
+            lines.push(format!("- {} “{}” ({}{owns})", rf("task", m.id()), short(&m.st("title"), 60), m.st("status")));
+        }
+    }
+    if w["stop_after"] == true {
+        lines.push(format!("The goal stops after this wave for {}'s review.", app.cfg.owner));
+    }
+    match wl.get(pos + 1) {
+        Some(next) => {
+            let refs: Vec<String> = next["tasks"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+            lines.push(format!("Next is {}: {}.", crate::waves::wave_label(next), refs.join(", ")));
+        }
+        None => lines.push("This is the goal's last wave.".into()),
+    }
+    Ok(vec![lines.join("\n")])
+}
+
+/// `[handoff] footer` and `footer_file`, joined.
+fn footer(app: &App) -> Option<String> {
+    let h = &app.cfg.handoff;
+    let mut parts = vec![];
+    if !h.footer.trim().is_empty() {
+        parts.push(h.footer.trim().to_string());
+    }
+    if !h.footer_file.trim().is_empty() {
+        if let Ok(text) = std::fs::read_to_string(expand_home(h.footer_file.trim())) {
+            if !text.trim().is_empty() {
+                parts.push(text.trim().to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(clip(&parts.join("\n\n"), 1500))
+    }
+}
+
 fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>) -> String {
     let all = |p: &[String]| p.iter().chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n\n");
     let text = all(&parts);
@@ -408,6 +525,8 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     let mut parts = vec![first_line(&t)];
     parts.extend(goal_and_notes(app, g.as_ref())?);
     parts.extend(also_goals(app, &t)?);
+    parts.extend(wave_section(app, &t, g.as_ref())?);
+    parts.extend(setup_block(&t, g.as_ref()));
     parts.extend(branch_and_last_commit(&w));
     parts.extend(checkpoint_and_answers(app, &t, &ctx));
     parts.extend(attachments_block(app, &t, g.as_ref())?);
@@ -418,7 +537,11 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     }
     parts.extend(other_tasks(app, &t)?);
     parts.extend(worktree_and_lock_lines(&t, &ctx));
-    let tail = vec![pr_block(app, &t, &tb)?, report_block(app, &tb), CLOSING.to_string()];
+    let mut tail = vec![pr_block(app, &t, &tb)?];
+    tail.extend(crate::jira::handoff_block(app, &t)?);
+    tail.push(report_block(app, &tb));
+    tail.extend(footer(app));
+    tail.push(CLOSING.to_string());
     Ok(fit_to_limit(parts, tail))
 }
 

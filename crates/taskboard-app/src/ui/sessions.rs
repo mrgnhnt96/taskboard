@@ -439,9 +439,11 @@ impl RowVm {
 pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
     let id = s(x, "id").to_string();
     let status = display_status(x).to_string();
-    let sub = match opt_s(x, "task_ref") {
-        Some(r) => format!("{r} · {}", s(x, "task_title")),
-        None => ["No task", s(x, "branch")].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" · "),
+    let sub = match (opt_s(x, "task_ref"), opt_s(x, "role")) {
+        (Some(r), _) => format!("{r} · {}", s(x, "task_title")),
+        // The Jira desk: "Handles Jira for the board".
+        (None, Some(role)) => role.to_string(),
+        (None, None) => ["No task", s(x, "branch")].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" · "),
     };
     let state = if b(x, "closing") { "Closing…".to_string() } else { sess_label(&status).to_string() };
     let when = if status == "idle" {
@@ -904,7 +906,8 @@ pub fn detail_vm(c: &DetailCtx) -> DetailView {
             LinkVm { k: "Last task", r: r.clone(), title: s(lt, "title").into(), pill: None, go: Some(("Open task", LinkTarget::Task(r))) }
         });
         if !gone {
-            links.push(LinkVm { k: "Task", r: String::new(), title: "No task".into(), pill: None, go: None });
+            let title = opt_s(d, "role").unwrap_or("No task").to_string();
+            links.push(LinkVm { k: "Task", r: String::new(), title, pill: None, go: None });
         }
         links.extend(last);
     }
@@ -2475,6 +2478,16 @@ mod tests {
             flash: None,
         });
         json!({"text": v.text(), "acts": v.acts()})
+    }
+
+    #[::core::prelude::v1::test]
+    fn desk_row_shows_its_role() {
+        let x = json!({"id": "s9", "name": "TB Jira desk", "status": "idle", "role": "Handles Jira for the board", "close": null});
+        list_case(&json!({"f": "all"}), |c| {
+            assert_eq!(row_vm(&x, c).sub, "Handles Jira for the board");
+            json!(null)
+        });
+        assert!(!bulkable(&x), "the desk is never closed in a batch");
     }
 
     #[::core::prelude::v1::test]

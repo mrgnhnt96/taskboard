@@ -1,6 +1,6 @@
 ---
 name: task-board
-description: How to use the local task board with the tb command. Use when on a task-board task (a prompt or context starting [task-board:T<n>]), when asked to take a task, when the owner asks to add a goal, task, backlog item or attachment (design, proposal, doc) to the board, or when the board brings you back about a PR.
+description: How to use the local task board with the tb command. Use when on a task-board task (a prompt or context starting [task-board:T<n>]), when you are the board's Jira desk (a job starting [task-board:J<n>]), when asked to take a task, when the owner asks to add a goal, task, backlog item or attachment (design, proposal, doc) to the board, or when the board brings you back about a PR.
 ---
 
 # Task board
@@ -29,9 +29,17 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   - a script: `tb step run "<name>"`, fix what it reports and run it again (it can take a while: give it time);
   - the owner's: `tb step ask "<name>"`, then end your turn; the board brings you back once it's done.
   A step that can't pass: `tb step fail "<name>" --why "…"`, then end your turn. The board refuses the PR and `tb done` while one is left.
+- **Review findings** (a review step, a reviewer, a check): fix only what this task's change caused. A finding on code the change didn't touch goes to the backlog (`tb backlog add … --kind follow`) and is dismissed in the review with a line saying so. Never reverse an earlier decision (a goal note, a checkpoint `--decision`, an owner's answer) to satisfy a finding.
+- **Jira** (when the board has it on: your handoff has a `Jira:` line or names a ticket): read `jira.md`. Never ask the owner which ticket.
 - **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
 
 `tb status` shows this terminal's task. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
+
+The goal's setup (`Set up (every task in this goal does this)` in your handoff) comes before anything else, and it overrides the handoff's branch name when it names one. Set it only when the owner asks: `tb goal setup G<n> "<what every task does first>"` ({task}, {n}, {wave} and {goal} are filled in per task; `none` clears it).
+
+## When you're the Jira desk
+
+Your first prompt says "You are the task board's Jira desk", and each job starts `[task-board:J<n>]`. Follow `jira.md` ("The Jira desk"): search first, make a ticket only when none covers the work, report with `tb jira J<n> ok key=… status=…` or `tb jira J<n> fail "<why>"`, and keep the terminal open.
 
 ## When there's no task
 
@@ -56,6 +64,10 @@ Planning a goal? Read `planning.md` first.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.
+   - On the owner's word, act on an issue: `tb backlog task B<n>` (a planned task in its goal; `--board` queues it on the board), `tb backlog ticket B<n>` (a Jira ticket), `tb backlog drop B<n> --reason "..."` (won't do), `tb backlog reopen B<n>`.
+   - Run, hold back or bring back a goal when the owner says so: `tb goal set G<n> --run` (queues its planned tasks), `--deprioritize`, `--prioritize`, `--paused on|off`.
+   - Something the owner must see that isn't a question on your task (a watcher or script you were asked to set up finds main red): `tb alert raise "<what>" --key <name> [--urgent] [--task T<n>]`, and `tb alert clear <name>` once it's fixed. `--urgent` only for what can't wait: it repeats outside the work hours and can't be dismissed.
+   - Whether a project's work ends in PRs: `tb project show [<name>]`; the owner can override it with `tb project set <name> --pr-flow auto|on|off`.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
    - Remove an attachment by its link, path or title: `tb unattach "<link-or-title>"` with `--task T<n>` or `--goal G<n>`. To change one, unattach it and attach it again.
    - A tester's Jira comment the owner gave you their word on (when QA comments are on): `tb qa task Q<n> --note "<what they said>"` or `tb qa ignore Q<n>`; `tb qa waiting` lists the ones waiting.
@@ -68,6 +80,6 @@ Titles are short summaries a person reads at a glance (80 characters at most, no
 
 ## Work hours
 
-The board starts agents only inside the owner's work hours. `tb hours` shows them; change them only when the owner asks (`tb hours --start 09:00 --end 17:00 --days mon-fri`, `--on`/`--off`, `--today-until 4pm` for today only).
+The board starts agents only inside the owner's work hours. `tb hours` shows them; change them only when the owner asks (`tb hours --start 09:00 --end 17:00 --days mon-fri`, `--on`/`--off`, `--today-until 4pm` for today only, `--alert-every 10` for how often unanswered alerts repeat, 0 for never).
 
 Midna keeps the Mac awake during the work hours so agents keep running while the owner is away (idle sleep only: the display still sleeps and closing the lid still sleeps). The work hours are its schedule: `tb hours` changes both, and `--today-until` ends both early today. `tb keep-awake` shows whether it's held and why. Change it only when the owner asks: `--on`/`--off`, `--mode with-work|always`, `--min-battery 20` (on battery it lets the Mac sleep below this), `--linger 5`, `--day fri=9am-3pm` / `--day sat=off` / `--day fri=default` for one day's own keep-awake hours, `--today off` / `--today clear`.

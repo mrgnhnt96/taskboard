@@ -22,6 +22,7 @@ It's built like Midna: a daemon that owns the work, a CLI for agents, and a GPUI
 | `crates/taskboard-app` | `Taskboard.app`: the native window (GPUI via `gpui-kit`): board, goals, backlog, sessions, task and issue panels, forms, work hours. |
 | `packaging/`, `scripts/` | `build-app.sh` assembles and signs `Taskboard.app`; `install-app.sh` installs it to /Applications; `dev-app.sh` installs a separate "Taskboard Dev". |
 | `docs/API.md` | The JSON API the app (and `tb`) rely on. |
+| `docs/CUTOVER.md` | Moving over from the old Python board: stop it, `taskboardd import` its `tasks.db`, swap the plugin, start. |
 | `docs/PARITY.md` | The audit of the app against the web board it replaced, with the tests that hold each behaviour. |
 | `plugin/` | The Claude Code plugin: hooks, the `bin/tb` shim and the `task-board` skill. |
 | `review-profiles/` | Generic code-review reviewer profiles. |
@@ -40,6 +41,9 @@ else (a repo checkout, an app that's gone); the tooltip says which.
 
 If macOS asks, switch Taskboard on in System Settings ▸ General ▸ Login Items (the app shows a banner until you do).
 `/Applications/Taskboard.app/Contents/MacOS/taskboardd init` writes a starting config.
+
+Coming from the old board? Follow `docs/CUTOVER.md` first: it holds the same port, and
+`taskboardd import` brings its tasks, goals and backlog over with their numbers.
 
 Without the app: `./install.sh` builds and copies `taskboardd` and `tb` into `~/.local/bin`; run
 `taskboardd serve` yourself (or `taskboardd launchd` prints a LaunchAgent plist).

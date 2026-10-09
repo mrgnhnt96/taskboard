@@ -44,6 +44,16 @@ enum Cmd {
     },
     /// Print the config the board would use
     Config,
+    /// Carry an old board's tasks.db (the Python board's, or an older taskboardd's) into a fresh board, keeping T/G/B numbers. Stop the old board first (docs/CUTOVER.md)
+    Import {
+        /// The old board's SQLite file, e.g. ~/.task-board/tasks.db (only ever read: it's copied first)
+        old: PathBuf,
+        /// Import into this data folder instead of the configured one
+        #[arg(long)]
+        data: Option<PathBuf>,
+    },
+    /// Check for what would get in the way of this board: another board on its port, another tb on the PATH, another task-board plugin
+    Check,
 }
 
 fn load(data: Option<PathBuf>, port: Option<u16>, runner: bool) -> Config {
@@ -96,8 +106,16 @@ fn serve(cfg: Config) -> i32 {
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                eprintln!("taskboardd: something is already listening on {addr}; is the board already running?");
-                return 0;
+                return match taskboardd::cutover::who_listens(&addr.ip().to_string(), addr.port()) {
+                    taskboardd::cutover::Listener::Other(what) => {
+                        eprintln!("taskboardd: {addr} is taken by {what}, not this board. Stop it (see docs/CUTOVER.md for the old board) or set another port in config.toml.");
+                        1
+                    }
+                    _ => {
+                        eprintln!("taskboardd: the board is already running on {addr}.");
+                        0
+                    }
+                };
             }
             Err(e) => {
                 eprintln!("taskboardd: can't listen on {addr}: {e}");
@@ -240,6 +258,42 @@ fn main() {
             }
         }
         Cmd::Launchd { label } => launchd(&label),
+        Cmd::Import { old, data } => {
+            let mut cfg = load(data, None, false);
+            cfg.runner = false;
+            let old = expand_home(&old.to_string_lossy());
+            match App::new(cfg, false).and_then(|a| taskboardd::import::import(&a, &old).map(|r| (a, r))) {
+                Ok((a, r)) => {
+                    println!("Imported {} into {}:", old.display(), a.cfg.data.display());
+                    for l in r.lines() {
+                        println!("  {l}");
+                    }
+                    for t in a.db.q("SELECT id FROM tasks", taskboardd::p![]).unwrap_or_default() {
+                        let _ = taskboardd::mdcopy::write(&a, t["id"].as_i64().unwrap_or(0));
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("taskboardd: {e}");
+                    1
+                }
+            }
+        }
+        Cmd::Check => {
+            widen_path();
+            let cfg = load(None, None, false);
+            let claude = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| expand_home("~/.claude"));
+            let found = taskboardd::cutover::problems(&cfg.host, cfg.port, &std::env::var("PATH").unwrap_or_default(), &claude);
+            if found.is_empty() {
+                println!("Nothing in the way: port {} is free or this board's, tb is this board's, and no other task-board plugin is installed.", cfg.port);
+                0
+            } else {
+                for p in &found {
+                    println!("{p}");
+                }
+                1
+            }
+        }
         Cmd::Config => {
             let mut cfg = load(None, None, false);
             if !cfg.jira.token.is_empty() {

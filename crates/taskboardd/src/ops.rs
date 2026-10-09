@@ -125,6 +125,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "priority" => priority, "status" => status, "goal_id" => goal_id, "position" => board::next_position(app, goal_id)?,
                 "pickup" => mode, "pickup_session" => if mode == "attach" { sid } else { None },
                 "auto_close" => auto_close as i64, "jira_key" => jkey, "jira_sync" => as_bool(body.get("jira_sync"), true) as i64,
+                "jira_none" => (jopt["mode"] == "none") as i64,
                 "from_issue_id" => body.get("from_issue_id"), "context" => "{}",
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
@@ -198,6 +199,7 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
                 "run_in_order" => as_bool(body.get("run_in_order"), true) as i64, "max_terminals" => max_t,
                 "auto_close" => as_bool(body.get("auto_close"), true) as i64, "product" => product,
                 "worktree_base" => crate::worktrees::clean_base(body.get("worktree_base"))?,
+                "setup" => clean_setup(body),
                 "created_at" => now, "updated_at" => now, "archived" => 0],
     )?;
     let g = board::get_goal(app, gid)?;
@@ -208,6 +210,16 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
         jira::request_job(app, json!({"op": "status", "key": k}), json!({"goal": gid}))?;
     }
     board::goal_dict(app, &g)
+}
+
+/// A goal's setup text (`tb goal setup`): every task in the goal does it first. Empty or "none" clears it.
+pub fn clean_setup(body: &Value) -> Value {
+    let s = clip(body_str(body, "setup").trim(), 3000);
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
+        Value::Null
+    } else {
+        json!(s)
+    }
 }
 
 pub fn task_detail(app: &App, id: i64) -> Result<Value> {
@@ -344,6 +356,7 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         }
         let sid = s.st("id");
         let t = tasks.get(&sid);
+        let desk = t.is_none() && crate::jira_desk::is_desk(app, Some(&sid))?;
         let mut row = json!({
             "id": sid, "name": s.s("name").filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("Terminal {}", sid.chars().take(8).collect::<String>())),
             "project": s.v("project"), "project_path": s.v("project_path"), "status": board::shown_status(&s),
@@ -356,6 +369,12 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
             "closing": jobs::closing(app, &sid)?, "close": board::close_rule(Some(&s)),
             "branch": s.v("branch"), "dirty": s.v("dirty"), "renaming": null, "rename_error": null,
         });
+        if desk {
+            // The desk is never closed: the board sends it every Jira job.
+            row["role"] = json!(crate::jira_desk::ROLE);
+            row["close"] = Value::Null;
+            row["can_take"] = json!(false);
+        }
         for (k, v) in jobs::rename_state(app, &sid)? {
             row[k] = v;
         }
@@ -507,6 +526,10 @@ pub fn session_detail(app: &App, sid: &str) -> Result<Value> {
     });
     for (k, v) in jobs::rename_state(app, sid)? {
         out[k] = v;
+    }
+    if t.is_none() && crate::jira_desk::is_desk(app, Some(sid))? {
+        out["role"] = json!(crate::jira_desk::ROLE);
+        out["close"] = Value::Null;
     }
     Ok(out)
 }

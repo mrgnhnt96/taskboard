@@ -65,13 +65,20 @@ Planned tasks never appear in `columns`; they only show on the goal page. Column
 
 #### `alert`
 ```
-{"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null}
+{"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null, "urgent"?: true, "review"?: true, "key"?: str,
+ "snoozed_until"?: iso}
 ```
 Something that needs the reader (a task that couldn't start, an answer that didn't arrive…). `task`/`goal` give
 the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an alert with `"review": true` (a PR waiting
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
-by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). (The original's `urgent` "Master is red" alerts
-are gone.)
+by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
+`POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
+outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on.
+
+Each alert's desktop notification (Midna `notify.send`) carries the id `taskboard-alert-<alert id>` and the snooze
+buttons from config.toml's `[alerts] snooze_mins` ("Snooze 15 min", "Snooze 30 min", "Snooze 1 hour" by default).
+The board waits for the owner's pick (`notify.response`) and a snooze button snoozes the alert; a click opens the
+app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
 #### `work_hours` (from `hours.state`)
 ```
@@ -84,7 +91,9 @@ are gone.)
   "line": str,            // one plain sentence, used as the pill's tooltip, e.g. "Work hours 6am–3pm: agents start until 3pm"
   "next_open": str|null,  // when the hours next open, null while open. LOCAL time WITHOUT a zone, "2026-10-08T06:00",
                           // because the browser parses it as local time (Python: isoformat(timespec="minutes") of a naive local datetime)
-  "today_until": "HH:MM"|null  // today's end overridden by "Today until", null when not set or not today
+  "today_until": "HH:MM"|null, // today's end overridden by "Today until", null when not set or not today
+  "week_days": ["sun", …]      // all seven days in week order, from config.toml's first_weekday (Sunday by default);
+                               // the hours menu lays its day buttons out in this order
 }
 ```
 The pill reads "Work hours until 4pm today" (open + today_until), "Work hours 6am–3pm" (open), "Agents off until
@@ -120,7 +129,9 @@ window at 100 % makes goals show "Queued until agents can start".
   "closing": bool,             // a close job is pending/running for it
   "close": "close"|"force"|null, // how it can be closed: idle → "close", busy → "force" (press-and-hold), gone → null
   "renaming": str|null,        // a rename job to this name is pending/running (UI shows the new name greyed)
-  "rename_error": str|null     // the last rename failed within ~10 min: first line of Midna's error
+  "rename_error": str|null,    // the last rename failed within ~10 min: first line of Midna's error
+  "role": str                  // only on the Jira desk's terminal: "Handles Jira for the board" (shown instead of "No task");
+                               // its close is null, so it's never closed from the app
 }
 ```
 The UI also accepts a missing `renaming`/`rename_error`.
@@ -140,6 +151,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
   "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
+  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
@@ -355,7 +367,8 @@ the backlog, and kept in `day_stats` (one row per project), so it outlives the c
               "marks": [{"at": iso, "kind": "commit"|"question"|"pr"|"done"|"found", "task": int, "ref": str, "text": str}]}],
    "waits": [{"task": int, "ref": str, "at": iso, "min": float, "open": bool, "reason": str, "text": str, "title": str, "project": str}],
    "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}]},
- "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, Monday first
+ "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, from config.toml's first_weekday (Sunday by default)
+ "first_weekday": "sun"|"mon"|…,
  "last_week": [same],
  "week_tasks": [{"task", "ref", "title", "project", "work_min", "wait_min", "state", "date"}],   // ≤ 12, longest first
  "week_task_median": float,                 // minutes, finished tasks of the week
@@ -397,9 +410,11 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "session_id": str|null,
   "goal": {"id": int, "ref": "G3", "name": str} | null,
   "also": [{"id": int, "ref": "G4", "name": str}],   // other goals this task also finishes (shared task; its home goal runs it)
-  "jira": {"key": str|null, "status": str|null, "url": str|null} | null,
-          // null = no ticket. key null + status "Ticket asked for" = being created. url = the ticket's browse URL, built
-          // by the server from the configured Jira site (the UI never builds Jira URLs).
+  "jira": {"key": str|null, "status": str|null, "url": str|null, "desk"?: bool, "failed"?: bool} | null,
+          // null = no ticket. key null: status says where it is: "Ticket asked for" (or "Ticket asked for · Jira desk")
+          // while it's found or made; "No ticket yet" (desk: "No ticket yet. The Jira desk finds or makes one…") while a
+          // PR task waits for one ([jira] auto_ticket); "Couldn't make the ticket: <why>" with failed true.
+          // url = the ticket's browse URL, built by the server from the configured Jira site (the UI never builds Jira URLs).
   "pr": pr | null,
   "position": number|null,        // order in the goal (unused by the UI apart from sorting done server-side)
   "starting": bool,               // queued and a start job is pending/running ("Starting")
@@ -462,6 +477,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 |---|---|---|
 | `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | `tb task new`. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the caller shows it. |
 | `POST /tasks/:id` | `{status: "queued"}` | "Queue it now" on a planned task (planned → queued only). |
+| `POST /tasks/:id` | `{jira_key: "PROJ-1"\|"new"\|"none"}` | `tb task set --jira`: link a ticket, ask for one (again, after a failure), or no ticket (a PR task then stops waiting for one). |
 | `POST /tasks/:id/start` | `{mode: "new"\|"queue"}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
@@ -475,22 +491,29 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
+### Projects
+| Path | Body | Notes |
+|---|---|---|
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow: "auto"\|"on"\|"off"}` | Whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). **Response read:** the project as in `GET /projects`. |
+
 ### Goals
 | Path | Body | Notes |
 |---|---|---|
 | `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | `tb goal new`. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the caller shows it. |
-| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool}` | `tb goal set` (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
-| `POST /goals/:id/run` | `{}` or `{now: true}` | Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
+| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool, setup: str\|"none"}` | `tb goal set` (`epic_key` only with Jira; `--deprioritize`/`--prioritize` set `deprioritized`), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
+| `POST /goals/:id/run` | `{}` or `{now: true}` | `tb goal set --run`. Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
 | `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
 
 ### Backlog
 | Path | Body | Notes |
 |---|---|---|
-| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?}` | Add an issue (source `you`; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
-| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task: `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
-| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira). |
-| `POST /backlog/:id/drop` | `{}` | Won't do. |
+| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?, source?: "answer"\|"review_log"}` | Add an issue (source `you` unless it says `answer` or `review_log`, the external PR feed, which the app shows as "From the Review log"; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
+| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task (`tb backlog task`, `--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
+| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira; `tb backlog ticket`). |
+| `POST /backlog/:id/drop` | `{reason?}` | Won't do (`tb backlog drop --reason`). |
+| `POST /backlog/:id/reopen` | `{}` | Open it again (`tb backlog reopen`). |
 | `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none (`tb backlog move`; `goal_id` also takes a ref like `"G2"`). |
 | `POST /backlog/:id/note` | `{text}` | Add a note to its history (no app button). |
 | `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
@@ -506,8 +529,11 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 ### Work hours, alerts
 | Path | Body | Notes |
 |---|---|---|
-| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off"}` | Sent on every change in the hours menu. `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
-| `POST /alerts/:id/dismiss` | `{}` | |
+| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
+| `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
+| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
+| `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
+| `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
 ### History
 | Path | Body | Notes |
@@ -532,7 +558,7 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 |---|---|---|
 | `POST /sessions/:id/rename` | `{name}` | ≤ 80 chars. The UI then expects `renaming` on the session until Midna confirms. |
 | `POST /sessions/:id/focus` | `{}` | |
-| `POST /sessions/:id/close` | `{force: bool}` | `force` from the press-and-hold Force close. |
+| `POST /sessions/:id/close` | `{force: bool}` | `force` from the press-and-hold Force close. 409 for the Jira desk's terminal. |
 | `POST /sessions/close` | `{ids: [str]}` | Close several idle terminals with no task. **Response read:** `{closing: [id], skipped: [id]}`. |
 | `POST /sessions/:id/reopen` | `{}` | Reopen a closed terminal's conversation in a new Midna terminal. |
 
@@ -558,6 +584,23 @@ Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
 | `GET /qa-comments` | `?limit&waiting=1` | `{on, comments: [qa_comment]}`, newest first. |
 | `GET /qa-comments/:id` | | One `qa_comment`. |
 | `POST /qa-comments/:id` | `{action: "task"\|"ignore", note?, pr?, who?}` | The owner's word on a flag (`tb qa task Q3`). Answers the comment plus `started: "T9"\|null`. |
+
+## Jira
+
+Optional: off while `[jira] site` or `project` is empty. Jobs (`J<n>`) run through the REST API with a token, or with
+`via = "claude"` through a headless `claude -p` limited to the Atlassian connector's tools (`claude_tools`), one at a
+time. A new ticket is always searched for first: an open ticket of the type that already covers the work is linked
+instead of making another. With `auto_ticket`, every queued or working task in a project that ships PRs asks for a
+ticket and waits (`waiting`: "Waits for its Jira ticket…") until it has one, it says `--jira none`, or the ticket is
+linked by hand; a failed ask waits for `tb task set T<n> --jira new`. With `desk`, new tickets go to the Jira desk:
+one Claude terminal the board opens in Midna's Background group (an `agent` job, purpose `jira_desk`) and never
+closes. It gets one job at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
+
+| Request | Body | What |
+|---|---|---|
+| `GET /jira` | | `{on, site, project, via: "rest"\|"claude", auto_ticket, desk, desk_session, products: [{name, what}], jobs: [job]}` (`tb jira`). |
+| `GET /jira/jobs/:id` | | One Jira job (`tb jira J12`). |
+| `POST /jira/jobs/:id` | `{ok: bool, key?, status?, found?: bool, product?, message?}` | The desk's report (`tb jira J12 ok key=PROJ-1 status="To Do"`, `tb jira J12 fail "<why>"`). A new ticket's `ok` needs `key` (400); a `fail` needs `message`. `product` (picked from the products' `what`) goes on a goal that has none. |
 
 ## Waves
 

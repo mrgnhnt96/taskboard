@@ -385,6 +385,7 @@ pub fn issue_from(x: &Value) -> String {
         "you" => "Added by you".to_string(),
         "" if opt_s(x, "found_by_name").is_none() && !found => "Added by you".to_string(),
         "answer" => "From your answer".to_string(),
+        src if fmt::from_review_log(src) => "From the Review log".to_string(),
         _ => opt_s(x, "found_by_name").unwrap_or("Found by a terminal").to_string(),
     };
     [who, fmt::hhmm(s(x, "created_at"))].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" · ")

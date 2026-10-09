@@ -205,15 +205,7 @@ pub fn jira_url(app: &App, key: &str) -> Value {
 }
 
 pub fn jira_card(app: &App, t: &Row) -> Result<Value> {
-    if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
-        return Ok(json!({"key": k, "status": t.v("jira_status"), "url": jira_url(app, k)}));
-    }
-    let asked = app.db.q1(
-        "SELECT id FROM jobs WHERE kind = 'jira' AND task_id = ? AND state IN ('pending', 'running') \
-         AND json_extract(args, '$.op') = 'create' LIMIT 1",
-        p![t.id()],
-    )?;
-    Ok(if asked.is_some() { json!({"key": null, "status": "Ticket asked for", "url": null}) } else { Value::Null })
+    crate::jira::card(app, t)
 }
 
 pub fn goal_ref(g: Option<&Row>) -> Value {
@@ -501,7 +493,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
-        "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"),
+        "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),
         "state": goal_state_line(&c),
         "peek": goal_peek(app, g)?,
@@ -699,7 +691,7 @@ pub fn issue_from_line(b: &Row) -> String {
             format!("Found by {by} · {who} · {t}")
         }
         Some("answer") => format!("From an answer · {t}"),
-        Some("review") => format!("From a review · {t}"),
+        Some("review" | "review_log") => format!("From the Review log · {t}"),
         _ => format!("Added by you · {t}"),
     }
 }

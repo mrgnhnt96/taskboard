@@ -438,6 +438,24 @@ fn wchip(t: &Theme, cls: &str, text: &str) -> Div {
     div().flex_none().px(px(8.)).py(px(2.)).rounded(px(6.)).text_size(px(12.5)).text_color(fg).bg(bg).whitespace_nowrap().child(text.to_string())
 }
 
+/// The `term` fact: Midna's mark and the terminal's name; it shows the terminal's tab in Midna.
+fn term_chip(t: &Theme, text: &str) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .px(px(8.))
+        .py(px(2.))
+        .rounded(px(6.))
+        .text_size(px(12.5))
+        .text_color(t.text_2)
+        .bg(t.panel_2)
+        .whitespace_nowrap()
+        .child(kit::icon(kit::Icon::Midna, 13., t.text_2))
+        .child(text.to_string())
+}
+
 fn task_el(m: &MainWindow, t: &Theme, x: &WTask, ix: usize, in_ref: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let hover = accent_tint(t);
     let target = x.r.clone();
@@ -493,9 +511,12 @@ fn task_el(m: &MainWindow, t: &Theme, x: &WTask, ix: usize, in_ref: bool, cx: &m
                 div()
                     .id(SharedString::from(format!("wt-term-{}-{fi}", x.r)))
                     .cursor_pointer()
-                    .child(wchip(t, "term", text))
-                    .tooltip(kit::tip("Open this terminal"))
-                    .on_click(cx.listener(move |m, _, _, cx| crate::ui::sessions::open(m, &sid, cx))),
+                    .child(term_chip(t, text))
+                    .tooltip(kit::tip("Show in Midna"))
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        cx.stop_propagation();
+                        crate::ui::sessions::menu_focus(m, &sid, cx)
+                    })),
             );
         } else {
             facts = facts.child(wchip(t, cls, text));
