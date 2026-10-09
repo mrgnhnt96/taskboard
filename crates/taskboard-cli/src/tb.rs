@@ -1358,14 +1358,23 @@ fn plural_threads(v: &Value) -> String {
     }
 }
 
-/// Prints a line. When the reader has gone (`tb take | head`), what was asked is done, so tb stops
-/// quietly instead of panicking on the broken pipe.
+/// Set once stdout's reader has gone (`tb take | head`, `tb step again … | true`).
+static STDOUT_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Prints a line. A write that fails (the reader has gone) is ignored, and later lines aren't tried: tb
+/// carries on with the work and its report, cleans up after itself, and exits as it would have, rather
+/// than panicking or stopping before the work is done.
 fn out(line: &str) {
-    use std::io::Write;
-    if let Err(e) = writeln!(std::io::stdout(), "{}", line.trim_end_matches('\n')) {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
-        }
+    out_to(&mut std::io::stdout(), &STDOUT_GONE, line);
+}
+
+fn out_to(w: &mut impl std::io::Write, gone: &std::sync::atomic::AtomicBool, line: &str) {
+    use std::sync::atomic::Ordering;
+    if gone.load(Ordering::Relaxed) {
+        return;
+    }
+    if writeln!(w, "{}", line.trim_end_matches('\n')).and_then(|_| w.flush()).is_err() {
+        gone.store(true, Ordering::Relaxed);
     }
 }
 
@@ -2164,13 +2173,14 @@ fn home_checkout(c: &Ctx, v: &Value) -> String {
     }
 }
 
-/// What a round looks at: `--worktree` (that checkout), `--branch` (the worktree that has it checked
+/// What a round looks at: `--worktree` (that checkout; a detached one with `--branch`, that branch's tip), `--branch` (the worktree that has it checked
 /// out), `--commit` (that commit, which must be on the checkout's branch); with none of them, the aim
 /// `tb step aim` saved, else this checkout's head.
 fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
     let a = if a.is_empty() { Aim::saved(v) } else { a.clone() };
     let given = |x: &Option<String>| x.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string());
     let here = home_checkout(c, v);
+    let mut detached_tip = None;
     let (dir, branch) = if let Some(w) = given(&a.worktree) {
         let dir = std::fs::canonicalize(&w).map_err(|_| format!("There's no folder {w}."))?.to_string_lossy().to_string();
         resolve_commit(&dir, "HEAD").map_err(|_| format!("{dir} isn't a git checkout."))?;
@@ -2180,9 +2190,23 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
                 return Err(format!("{dir} has {has} checked out, not {want}. Aim again with tb step aim."));
             }
         }
-        // A detached checkout looks at the branch named with it.
-        let b = has.or_else(|| given(&a.branch).map(|b| b.trim_start_matches("refs/heads/").to_string()));
-        (dir, b)
+        // A detached checkout looks at the branch named with it: the branch's tip, which must exist and
+        // have the checkout's head on it, as the Python board judged `refs/heads/<branch>`.
+        if has.is_none() {
+            if let Some(want) = given(&a.branch) {
+                let b = want.trim_start_matches("refs/heads/").to_string();
+                let tip = resolve_commit(&dir, &format!("refs/heads/{b}")).map_err(|_| format!("{dir} has no branch {b}."))?;
+                if git_out(&dir, &["merge-base", "--is-ancestor", "HEAD", &tip]).is_none() {
+                    return Err(format!("{dir}'s head isn't on {b}. Aim at a checkout of {b}, or name the branch its head is on."));
+                }
+                detached_tip = Some(tip);
+                (dir, Some(b))
+            } else {
+                (dir, None)
+            }
+        } else {
+            (dir, has)
+        }
     } else if let Some(b) = given(&a.branch) {
         let b = b.trim_start_matches("refs/heads/").to_string();
         let dir = worktree_with(if here.is_empty() { "." } else { &here }, &b)
@@ -2194,9 +2218,9 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
         let b = branch_in(&here);
         (here, b)
     };
-    let tip = resolve_commit(&dir, "HEAD").ok();
+    let checkout = resolve_commit(&dir, "HEAD").ok();
     let head = match given(&a.commit) {
-        None => tip.clone(),
+        None => detached_tip.or_else(|| checkout.clone()),
         Some(r) => {
             let sha = resolve_commit(&dir, &r)?;
             // A commit must be on a branch, so the pin can be dropped once the branch moves on.
@@ -2209,7 +2233,8 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
             Some(sha)
         }
     };
-    let pinned = matches!((&head, &tip), (Some(h), Some(t)) if h != t);
+    // The head isn't what the checkout has: the round runs on a checkout of it.
+    let pinned = matches!((&head, &checkout), (Some(h), Some(t)) if h != t);
     Ok(Aimed { dir: Some(dir), head, branch, pinned })
 }
 
@@ -2273,7 +2298,7 @@ fn run_with_result(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, S
     let _ = std::fs::remove_file(&path);
     let mut vars = vars.clone();
     vars.insert("result".into(), path.to_string_lossy().to_string());
-    let (passed, output) = run_script(c, label, &steps::fill(script, &vars), &vars, timeout);
+    let (passed, output) = run_script(c, label, &steps::fill_shell(script, &vars), &vars, timeout);
     let result = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v.is_object());
     let _ = std::fs::remove_file(&path);
     let passed = match result.as_ref().and_then(|r| r["verdict"].as_str()) {
@@ -2361,7 +2386,7 @@ fn aim_cmd(c: &Ctx, a: Aim, clear: bool, t: TaskArg) -> Result<i32, String> {
 /// Runs a step's script in the repo (else here), its output shown as it comes; the exit and the
 /// output's tail.
 fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String>, timeout: u64) -> (bool, String) {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let dir = ["worktree", "repo"]
@@ -2385,7 +2410,7 @@ fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String
         let mut tail: std::collections::VecDeque<String> = Default::default();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             // A reader that went away (`tb step run … | head`) doesn't stop the script.
-            let _ = writeln!(std::io::stdout(), "{line}");
+            out(&line);
             tail.push_back(line);
             if tail.len() > 200 {
                 tail.pop_front();
@@ -2539,6 +2564,14 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
     if step.publish.trim().is_empty() {
         return Err(format!("“{}” has no publish script.", step.name));
     }
+    // With no PR, a publish has nowhere to go, and its script's `{pr}` would be empty.
+    if !has_pr(&v) {
+        return Err(format!(
+            "{} has no PR yet, so there's nothing to publish “{}” on. Open the PR, then publish it.",
+            v["task"].as_str().unwrap_or("The task"),
+            step.name
+        ));
+    }
     let at = aim(c, &v, &Aim::default())?;
     let head = at.head.clone().or_else(|| v["head"].as_str().map(|h| h.to_string()));
     let short = head.as_deref().map(|h| h[..h.len().min(12)].to_string()).unwrap_or_else(|| "this commit".into());
@@ -2556,7 +2589,7 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
             vars.insert("result".into(), path.to_string_lossy().to_string());
         }
     }
-    let (passed, output) = run_script(c, "Publish", &steps::fill(&step.publish, &vars), &vars, step.timeout_secs());
+    let (passed, output) = run_script(c, "Publish", &steps::fill_shell(&step.publish, &vars), &vars, step.timeout_secs());
     let _ = std::fs::remove_file(&path);
     let f = json!({"name": step.name, "head": head, "ok": passed, "output": output});
     let reported = task_id.map(|t| task_ref(&t)).transpose()?;
@@ -2567,6 +2600,11 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
         Some(_) => out(&format!("{} didn't publish (output above). Fix what it reports and run tb step publish \"{}\" again.", step.name, step.name)),
     }
     Ok(if passed { 0 } else { 1 })
+}
+
+/// The task in a `GET /steps` answer has a PR (`{pr}` or `{pr_url}`).
+fn has_pr(v: &Value) -> bool {
+    ["pr", "pr_url"].iter().any(|k| v["vars"][*k].as_str().is_some_and(|x| !x.trim().is_empty()))
 }
 
 /// The step's round that passed on `head` (any passing round, for a step that isn't per head), from
@@ -4195,6 +4233,62 @@ mod tests {
         // Without a commit, a detached checkout is still looked at as it is.
         assert_eq!(aim(&c, &v, &Aim::default()).unwrap().head.as_deref(), Some(first.as_str()));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_detached_checkout_with_its_branch_looks_at_the_branch_tip() {
+        let (root, c, [first, second, feat]) = repo("detached-tip");
+        let det = root.join("det");
+        git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det.to_string_lossy(), &first]);
+        let det = std::fs::canonicalize(det).unwrap().to_string_lossy().to_string();
+        let v = json!({"vars": {"repo": c.cwd}});
+        let a = |branch: &str, worktree: &str| Aim { branch: Some(branch.into()), worktree: Some(worktree.into()), commit: None };
+        // main has moved past the checkout: the round judges main's tip, on a checkout of it.
+        let at = aim(&c, &v, &a("main", &det)).unwrap();
+        assert_eq!((at.head.as_deref(), at.branch.as_deref(), at.pinned), (Some(second.as_str()), Some("main"), true));
+        let e = aim(&c, &v, &a("no-such-branch", &det)).err().unwrap();
+        assert_eq!(e, format!("{det} has no branch no-such-branch."));
+        // A branch the checkout's head isn't on is refused.
+        let det2 = root.join("det2");
+        git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det2.to_string_lossy(), &feat]);
+        let det2 = std::fs::canonicalize(det2).unwrap().to_string_lossy().to_string();
+        let e = aim(&c, &v, &a("main", &det2)).err().unwrap();
+        assert!(e.contains("head isn't on main"), "{e}");
+        let at = aim(&c, &v, &a("feat", &det2)).unwrap();
+        assert_eq!((at.head.as_deref(), at.pinned), (Some(feat.as_str()), false), "at the tip, it runs in the checkout");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_gone_reader_doesnt_stop_tb() {
+        struct Gone(usize);
+        impl std::io::Write for Gone {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let gone = std::sync::atomic::AtomicBool::new(false);
+        let mut w = Gone(0);
+        out_to(&mut w, &gone, "Checked out abc in /tmp/x for this round.");
+        // Still here: the round carries on, and later lines aren't tried.
+        out_to(&mut w, &gone, "Check: true");
+        assert!(gone.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(w.0, 1);
+        let mut buf = vec![];
+        out_to(&mut buf, &std::sync::atomic::AtomicBool::new(false), "line\n");
+        assert_eq!(buf, b"line\n");
+    }
+
+    #[test]
+    fn publish_needs_a_pr() {
+        assert!(!has_pr(&json!({"vars": {"pr": "", "pr_url": ""}})));
+        assert!(!has_pr(&json!({"vars": {}})));
+        assert!(has_pr(&json!({"vars": {"pr": "12", "pr_url": ""}})));
+        assert!(has_pr(&json!({"vars": {"pr": "", "pr_url": "https://example.com/pr/1"}})));
     }
 
     #[test]

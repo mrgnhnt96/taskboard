@@ -236,8 +236,11 @@ prompt = "Sign off the screens this task changes."
   `{base}` (the branch the PR goes into: a stacked task's parent branch while that's unmerged, else origin's
   default branch), `{base_ref}` (`{base}` with the remote, like `origin/main`), `{pr_url}`, `{pr}` (its number), `{jira}`. Scripts also
   get them as `TASKBOARD_TASK`, `TASKBOARD_BRANCH`, … and `TASKBOARD_STEP`, and `TASKBOARD_RESULT` (below). One with
-  no value yet (`{pr}` before the PR opens) is empty; one the board doesn't know is left as written. Refusals
-  (the PR, `tb done`) show the steps filled in.
+  no value yet (`{pr}` before the PR opens) is empty; one the board doesn't know is left as written. In a
+  script (`run`, `check`, `publish`) each value is quoted as one shell word for where it sits (`''` when empty, as
+  Python's `shlex.quote`; escaped instead inside "…" or '…'), so an empty `{pr}` doesn't shift the arguments after
+  it. Refusals (the PR, `tb done`) and the handoff show the steps filled in, `{head}` (the head the gate judges) and
+  `{worktree}` (the aim's checkout, else the task's) included, as `tb steps` does.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
   comment that starts with a `pragmas` entry passes. An Edit is judged on the whole file: it's applied to the
@@ -291,7 +294,9 @@ bar = "WD"            # its name in the app's PR bar
 - **Aiming a round.** `tb step done|run|again "<step>"` looks at this checkout's head. `--worktree <dir>` runs it in
   that checkout; `--branch <name>` runs it in the worktree that has the branch checked out, and is refused when none
   has ("No worktree has <name> checked out. Say which checkout with --worktree <dir> --branch <name>."); both
-  together look at that checkout, and name the branch a detached one is on; `--commit <ref>` looks at that commit
+  together look at that checkout, and name the branch a detached one is on: the round then judges that branch's
+  tip (`refs/heads/<branch>`, run on a throwaway checkout of it when the checkout is behind), and is refused when
+  the branch doesn't exist ("<dir> has no branch <b>.") or doesn't contain the checkout's head; `--commit <ref>` looks at that commit
   (with `--branch` or `--worktree`, on that checkout), which must be on the checkout's branch ("<sha> isn't on
   <branch>."). A commit other than the checkout's head runs on a throwaway detached checkout of it, removed after
   the round, so a check that doesn't read `{head}` still reviews the commit the round records. The round is
@@ -300,7 +305,7 @@ bar = "WD"            # its name in the app's PR bar
 - **Saving the aim.** `tb step aim [--task T<n>] --branch <b> | --worktree <dir> [--commit <ref>]` saves the aim
   on the task (report `tb.step_aim`, shown by `tb steps`): every later `tb step done|run|again` without flags
   follows it, and the gates (`tb done`, the board opening the PR, `GET /steps`) judge per-head steps on its commit
-  (the pinned sha, else the worktree's or branch's latest commit) rather than the checkout the command runs in.
+  (the pinned sha, else the branch's latest commit, else the worktree's head) rather than the checkout the command runs in.
   `tb step aim --clear` drops it. A pinned `--commit` keeps the branch's tip at the time; once the branch gets a
   new commit the pin no longer counts (the aim follows the branch, and `tb steps` says "The pin at <sha> was
   dropped: <branch> has moved on since."), and the next round drops it from the task, so `tb done` can't pass on
@@ -308,12 +313,14 @@ bar = "WD"            # its name in the app's PR bar
   branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
 - **Republishing.** A step with `publish` (a script, with the placeholders, `{head}`, and the round's
   `step_result` as `$TASKBOARD_RESULT`) is republished with `tb step publish "<step>"` once it has passed on the
-  head (the aim's, else this checkout's), with the round that passed on that head (not a later one on another
+  head (the aim's, else this checkout's) and the task has a PR (it's refused before one opens), with the round that passed on that head (not a later one on another
   commit); report `tb.step_publish`. The script runs in the task's repo unless the aim names a worktree, so give
   it `{worktree}` or `{branch}` rather than leaning on what the main checkout has checked out. When the base
-  moved, `tb pr status`'s rebase commands end with republishing each `per_head` step: rebase, test, pass the
-  step, push, then `tb step publish "<step>"` (or, for a step with no `publish`, "publish <step>'s round for the
-  pushed head where the PR shows it").
+  moved, `tb pr status`'s rebase commands end with republishing each `per_head` step the PR shows: rebase, test,
+  pass the step, push, then `tb step publish "<step>"` (or, for a step with no `publish` but a `bar` in the PR bar,
+  "publish <step>'s round for the pushed head where the PR shows it"; a step with neither gets no such line).
+- **A reader that goes away.** When stdout's reader goes (`tb step again "<step>" | true`, `tb take | head`), tb
+  stops printing but still runs the round, records it, removes its throwaway checkout and exits as it would have.
 - **Older pins.** A pin saved without the branch's `tip` (before the board kept it) is dropped once the
   branch's tip isn't the pinned sha.
 
