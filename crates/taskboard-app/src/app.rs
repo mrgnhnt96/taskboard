@@ -856,9 +856,9 @@ pub struct BannerRow {
     pub buttons: Vec<(&'static str, String)>,
 }
 
-/// `alertStays`: a PR waiting on your review stays until you review it (the board refuses a dismiss).
+/// `alertStays`: a PR waiting on your review stays until you review it, and an urgent alert until it clears (the board refuses a dismiss).
 pub fn alert_stays(a: &Value) -> bool {
-    a["review"] == true
+    a["review"] == true || a["urgent"] == true
 }
 
 fn alert_buttons(a: &Value) -> Vec<(&'static str, String)> {
@@ -1295,6 +1295,16 @@ mod tests {
             let foot: Vec<&str> = if arr(i, "alerts").iter().any(|a| !super::alert_stays(a)) { vec!["alerts-dismiss-all"] } else { vec![] };
             json!({"title": title, "rows": rows, "foot": foot})
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn urgent_alerts_cant_be_dismissed() {
+        let urgent = json!({"id": "a1", "text": "Main is red", "at": "2026-10-08T10:00:00Z", "urgent": true, "task": "T3"});
+        let rows = banner_view(None, &[urgent.clone()]);
+        assert!(rows[0].buttons.iter().all(|(a, _)| *a != "alert-dismiss"));
+        assert!(rows[0].buttons.iter().any(|(a, _)| *a == "alert-open"));
+        assert!(super::alert_stays(&urgent));
+        assert!(!super::alert_stays(&json!({"id": "a2"})));
     }
 
     #[::core::prelude::v1::test]

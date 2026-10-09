@@ -30,6 +30,21 @@ pub struct FileConfig {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub alerts: AlertsConfig,
+}
+
+/// Alerts' desktop notifications.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AlertsConfig {
+    /// The snooze buttons on each alert's notification, in minutes (at most four; empty for none).
+    pub snooze_mins: Vec<i64>,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        AlertsConfig { snooze_mins: vec![15, 30, 60] }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -226,6 +241,7 @@ pub struct Config {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub alerts: AlertsConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -309,6 +325,7 @@ impl Config {
             backlog: f.backlog,
             pr: f.pr,
             jira,
+            alerts: f.alerts,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }

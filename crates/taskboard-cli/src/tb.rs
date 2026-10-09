@@ -163,6 +163,11 @@ enum Cmd {
         #[command(subcommand)]
         action: BacklogCmd,
     },
+    /// Raise an alert for the owner (the banner and a notification), or clear one you raised
+    Alert {
+        #[command(subcommand)]
+        action: AlertCmd,
+    },
     /// Show a project or change its PR flow
     Project {
         #[command(subcommand)]
@@ -516,6 +521,27 @@ enum BacklogCmd {
     },
     /// Open a closed backlog issue again
     Reopen { issue: String },
+}
+
+#[derive(Subcommand)]
+enum AlertCmd {
+    /// Raise an alert: tb alert raise "main is red on web" --urgent --key main:web
+    Raise {
+        text: String,
+        /// It repeats outside the work hours too, shows first and can't be dismissed until it's cleared
+        #[arg(long)]
+        urgent: bool,
+        /// Name it so raising it again changes nothing and `tb alert clear <key>` takes it away
+        #[arg(long)]
+        key: Option<String>,
+        /// The task it's about (its banner gets an Open button; it clears once the task moves on)
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        goal: Option<String>,
+    },
+    /// Clear an alert by its id or key
+    Clear { id: String },
 }
 
 #[derive(Subcommand)]
@@ -1533,6 +1559,24 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Project { action } => project_cmd(c, action),
+        Cmd::Alert { action: AlertCmd::Raise { text, urgent, key, task, goal } } => {
+            let task = task.map(|t| task_ref(&t)).transpose()?;
+            let goal = goal.map(|g| goal_ref(&g)).transpose()?;
+            let v = c.call("POST", "/alerts", Some(json!({"text": text, "urgent": urgent, "key": key, "task": task, "goal": goal})))?;
+            let a = &v["alert"];
+            out(&format!(
+                "Raised {}alert {}{}.",
+                if a["urgent"] == true { "an urgent " } else { "an " },
+                a["id"].as_str().unwrap_or(""),
+                a["key"].as_str().map(|k| format!(" ({k})")).unwrap_or_default()
+            ));
+            Ok(0)
+        }
+        Cmd::Alert { action: AlertCmd::Clear { id } } => {
+            c.call("POST", &format!("/alerts/{id}/clear"), Some(json!({})))?;
+            out(&format!("Cleared {id}."));
+            Ok(0)
+        }
         Cmd::Unattach { url, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let needs = goal.is_none();
@@ -1938,6 +1982,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B3", "--reason", "dupe"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "alert", "clear", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());

@@ -66,8 +66,26 @@ pub fn alerts(app: &App) -> Vec<Value> {
     jloads_arr(app.db.get_setting("alerts").ok().flatten().as_deref())
 }
 
+/// The alerts in the order the app shows them: urgent ones first, then as they came.
+pub fn listing(app: &App) -> Vec<Value> {
+    let mut rows = alerts(app);
+    rows.sort_by_key(|a| a["urgent"] != true);
+    rows
+}
+
+/// Saves the alerts and withdraws the notifications of any that are gone.
 fn keep(app: &App, rows: &[Value]) -> Result<()> {
-    app.db.set_setting("alerts", Some(&jdumps(&Value::Array(rows.to_vec()))))
+    let gone: Vec<String> = alerts(app)
+        .iter()
+        .filter_map(|a| a["id"].as_str())
+        .filter(|id| !rows.iter().any(|r| r["id"].as_str() == Some(id)))
+        .map(str::to_string)
+        .collect();
+    app.db.set_setting("alerts", Some(&jdumps(&Value::Array(rows.to_vec()))))?;
+    for id in gone {
+        withdraw(app, &id);
+    }
+    Ok(())
 }
 
 fn new_alert_id() -> String {
@@ -76,17 +94,18 @@ fn new_alert_id() -> String {
     format!("{n:016x}")[..10].to_string()
 }
 
-/// An alert for a PR waiting on the owner's review: it can't be dismissed (it still snoozes), other alerts for
-/// the task don't replace it, and it only clears once the PR is reviewed (`resolved`).
+/// An alert that can't be dismissed (it still snoozes), isn't replaced by other alerts for its task and isn't
+/// pushed out by the 20-alert cap: a PR waiting on the owner's review (it clears once the PR is reviewed,
+/// `resolved`) or an urgent alert (it clears when what raised it clears it, or its task moves on).
 pub fn stays(a: &Value) -> bool {
-    a["review"] == true
+    a["review"] == true || a["urgent"] == true
 }
 
 pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, session_id: Option<&str>, extra: Option<&str>) -> Result<()> {
     let review = extra == Some("review");
     let mut rows: Vec<Value> = alerts(app)
         .into_iter()
-        .filter(|a| !(task_id.is_some() && a["task_id"].as_i64() == task_id) || (stays(a) && !review))
+        .filter(|a| !(task_id.is_some() && a["task_id"].as_i64() == task_id) || (stays(a) && !review) || (a["urgent"] == true && extra != Some("urgent")))
         .collect();
     let now = now_iso();
     let mut new = json!({"id": new_alert_id(), "at": now, "text": text, "task_id": task_id, "session_id": session_id,
@@ -94,6 +113,7 @@ pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i6
     if let Some(flag) = extra {
         new[flag] = json!(true);
     }
+    let new_id = new["id"].clone();
     rows.push(new);
     // The newest 20 alerts, plus every one that stays, however many others came after it.
     let (staying, mut rest): (Vec<Value>, Vec<Value>) = rows.into_iter().partition(stays);
@@ -103,8 +123,31 @@ pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i6
     }
     let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
     keep(app, &rows)?;
-    notify(app, text, &alert_url(app, task_id, goal_id, session_id), None);
+    if let Some(a) = rows.iter().find(|a| a["id"] == new_id) {
+        notify_alert(app, a);
+    }
     Ok(())
+}
+
+/// An alert raised through `POST /alerts` (`tb alert raise`): with a `key`, raising it again while it's up
+/// changes nothing, and `clear_alert_key` takes it away.
+pub fn raise(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, key: Option<&str>, urgent: bool) -> Result<Value> {
+    if let Some(k) = key {
+        if let Some(a) = alerts(app).into_iter().find(|a| a["key"] == k) {
+            return Ok(a);
+        }
+    }
+    add_alert(app, text, task_id, goal_id, None, urgent.then_some("urgent"))?;
+    let mut rows = alerts(app);
+    let Some(a) = rows.iter_mut().rev().find(|a| a["text"] == text && a["task_id"].as_i64() == task_id) else {
+        return err(500, "The alert wasn't kept.");
+    };
+    if let Some(k) = key {
+        a["key"] = json!(k);
+    }
+    let out = a.clone();
+    keep(app, &rows)?;
+    Ok(out)
 }
 
 /// An alert that goes with a thing rather than a task (a QA comment, `qa:3`): one per key, cleared by
@@ -130,10 +173,54 @@ pub fn clear_alerts(app: &App, task_id: Option<i64>, alert_id: Option<&str>) -> 
     let rows: Vec<Value> = alerts(app)
         .into_iter()
         .filter(|a| {
-            !((task_id.is_some() && a["task_id"].as_i64() == task_id && !stays(a)) || (alert_id.is_some() && a["id"].as_str() == alert_id))
+            !((task_id.is_some() && a["task_id"].as_i64() == task_id && a["review"] != true) || (alert_id.is_some() && a["id"].as_str() == alert_id))
         })
         .collect();
     keep(app, &rows)
+}
+
+/// The snooze buttons on a notification, from config.toml's `[alerts] snooze_mins` (at most four).
+pub fn snooze_actions(app: &App) -> Vec<String> {
+    app.cfg.alerts.snooze_mins.iter().filter(|m| **m > 0).take(4).map(|m| snooze_label(*m)).collect()
+}
+
+/// "Snooze 15 min", "Snooze 1 hour", "Snooze 2 hours".
+pub fn snooze_label(mins: i64) -> String {
+    match mins {
+        60 => "Snooze 1 hour".into(),
+        m if m % 60 == 0 => format!("Snooze {} hours", m / 60),
+        m => format!("Snooze {m} min"),
+    }
+}
+
+/// The minutes a snooze button stands for, when it's one of the configured ones.
+pub fn snooze_mins(app: &App, label: &str) -> Option<i64> {
+    app.cfg.alerts.snooze_mins.iter().copied().filter(|m| *m > 0).take(4).find(|m| snooze_label(*m) == label)
+}
+
+/// What the owner did with an alert's notification (Midna's `notify.response`): a snooze button snoozes the
+/// alert; a click opens the app on it (Midna does that) and a dismissal leaves it to repeat. Whether it snoozed.
+pub fn handle_response(app: &App, alert_id: &str, response: &Value) -> Result<bool> {
+    let r = response.get("response").filter(|r| r.is_object()).unwrap_or(response);
+    if r["kind"] != "action" {
+        return Ok(false);
+    }
+    let Some(mins) = r["action"].as_str().and_then(|l| snooze_mins(app, l)) else { return Ok(false) };
+    if !alerts(app).iter().any(|a| a["id"] == alert_id) {
+        return Ok(false);
+    }
+    snooze_alert(app, alert_id, mins)?;
+    Ok(true)
+}
+
+/// Handles the notification responses Midna has reported since the last tick.
+fn take_responses(app: &App) -> Result<()> {
+    let inbox = app.shared.lock().notify_inbox.clone();
+    let got: Vec<(String, Value)> = std::mem::take(&mut *inbox.lock());
+    for (id, r) in got {
+        handle_response(app, &id, &r)?;
+    }
+    Ok(())
 }
 
 pub fn snooze_alert(app: &App, alert_id: &str, mins: i64) -> Result<Option<Value>> {
@@ -149,13 +236,18 @@ pub fn snooze_alert(app: &App, alert_id: &str, mins: i64) -> Result<Option<Value
 
 fn repeat_alerts(app: &App) -> Result<()> {
     let every = hours::get(app).alert_every_mins as f64 * 60.0;
-    if every <= 0.0 || !hours::is_open(app) {
+    let open = hours::is_open(app);
+    if every <= 0.0 {
         return Ok(());
     }
     let mut rows = alerts(app);
     let now = now_ts();
     let mut sent = false;
     for a in rows.iter_mut() {
+        // Outside the work hours only urgent alerts keep repeating.
+        if !open && a["urgent"] != true {
+            continue;
+        }
         // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
         let due = match a["snoozed_until"].as_str().and_then(parse_iso) {
             Some(s) => now >= s,
@@ -165,8 +257,7 @@ fn repeat_alerts(app: &App) -> Result<()> {
             a["notified_at"] = json!(now_iso());
             a["snoozed_until"] = Value::Null;
             sent = true;
-            let goal = a["goal"].as_str().and_then(|g| parse_ref_str(g, "goal").ok().flatten());
-            notify(app, a["text"].as_str().unwrap_or(""), &alert_url(app, a["task_id"].as_i64(), goal, a["session_id"].as_str()), None);
+            notify_alert(app, a);
         }
     }
     if sent {
@@ -235,6 +326,60 @@ pub fn alert_url(app: &App, task_id: Option<i64>, goal_id: Option<i64>, session_
     if base.ends_with("://") { format!("{base}{page}") } else { format!("{base}/{page}") }
 }
 
+/// The id an alert's notification goes by in Midna: sending it again replaces the one showing, and
+/// `notify.withdraw` takes it away.
+pub fn notification_id(alert_id: &str) -> String {
+    format!("taskboard-alert-{alert_id}")
+}
+
+/// `notify.send`'s params for an alert: its id, its text, the link to it and the snooze buttons.
+pub fn alert_params(app: &App, a: &Value) -> Value {
+    let goal = a["goal"].as_str().and_then(|g| parse_ref_str(g, "goal").ok().flatten());
+    let mut p = json!({"title": if a["urgent"] == true { "Task board · urgent" } else { "Task board" },
+                       "body": a["text"], "category": "board", "sound": true,
+                       "open": alert_url(app, a["task_id"].as_i64(), goal, a["session_id"].as_str()),
+                       "id": notification_id(a["id"].as_str().unwrap_or(""))});
+    let actions = snooze_actions(app);
+    if !actions.is_empty() {
+        p["actions"] = json!(actions);
+    }
+    p
+}
+
+/// An alert's desktop notification. With snooze buttons, a thread waits for the owner's pick
+/// (`notify.response`) and leaves it for the next tick to act on.
+fn notify_alert(app: &App, a: &Value) {
+    if !app.cfg.notify || !app.cfg.runner {
+        return;
+    }
+    let params = alert_params(app, a);
+    let wait = params.get("actions").is_some();
+    let (midna, inbox) = (app.cfg.midna.clone(), app.shared.lock().notify_inbox.clone());
+    let (alert_id, nid) = (a["id"].as_str().unwrap_or("").to_string(), params["id"].clone());
+    std::thread::spawn(move || {
+        if midna::call_exe(&midna, "notify.send", &params, 30.0).is_err() || !wait {
+            return;
+        }
+        if let Ok(r) = midna::call_exe(&midna, "notify.response", &json!({"id": nid, "wait_secs": 600}), 620.0) {
+            if r.get("response").is_some_and(|x| x.is_object()) {
+                inbox.lock().push((alert_id, r));
+            }
+        }
+    });
+}
+
+/// Takes a cleared alert's notification away (Notification Center, Midna's card and badge).
+fn withdraw(app: &App, alert_id: &str) {
+    if !app.cfg.notify || !app.cfg.runner {
+        return;
+    }
+    let midna = app.cfg.midna.clone();
+    let params = json!({"id": notification_id(alert_id)});
+    std::thread::spawn(move || {
+        let _ = midna::call_exe(&midna, "notify.withdraw", &params, 30.0);
+    });
+}
+
 /// A desktop notification through Midna, sent on its own thread.
 pub fn notify(app: &App, text: &str, url: &str, title: Option<&str>) {
     if !app.cfg.notify || !app.cfg.runner {
@@ -248,6 +393,7 @@ pub fn notify(app: &App, text: &str, url: &str, title: Option<&str>) {
 }
 
 pub fn tick(app: &App) -> Result<()> {
+    take_responses(app)?;
     prune_alerts(app)?;
     repeat_alerts(app)
 }

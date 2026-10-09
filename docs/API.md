@@ -65,13 +65,20 @@ Planned tasks never appear in `columns`; they only show on the goal page. Column
 
 #### `alert`
 ```
-{"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null}
+{"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null, "urgent"?: true, "review"?: true, "key"?: str,
+ "snoozed_until"?: iso}
 ```
 Something that needs the reader (a task that couldn't start, an answer that didn't arrive…). `task`/`goal` give
 the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an alert with `"review": true` (a PR waiting
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
-by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). (The original's `urgent` "Master is red" alerts
-are gone.)
+by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
+`POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
+outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on.
+
+Each alert's desktop notification (Midna `notify.send`) carries the id `taskboard-alert-<alert id>` and the snooze
+buttons from config.toml's `[alerts] snooze_mins` ("Snooze 15 min", "Snooze 30 min", "Snooze 1 hour" by default).
+The board waits for the owner's pick (`notify.response`) and a snooze button snoozes the alert; a click opens the
+app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
 #### `work_hours` (from `hours.state`)
 ```
@@ -517,7 +524,10 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | Path | Body | Notes |
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
-| `POST /alerts/:id/dismiss` | `{}` | |
+| `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
+| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
+| `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
+| `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
 ### History
 | Path | Body | Notes |
