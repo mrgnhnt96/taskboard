@@ -272,7 +272,7 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
             "A check failed on its head ({}). Run {tb} pr status {r}: it lists each failed check's failed steps and tests \
              where it can read them, and marks a check the base branch fails too. Read the failing check's log when that \
              isn't enough (for GitHub: gh pr checks {num} and gh run view --log-failed). Work from that error, not a guess. \
-             If the PR's change causes it, fix exactly that in this task's worktree, run the tests, and push; the checks \
+             If the PR's change causes it, fix exactly that in this task's worktree, run the failing tests and the ones covering your fix (not the whole suite), and push; the checks \
              run again. If the base branch has moved, rebase onto it before you push (git push --force-with-lease). If the \
              failure isn't this PR's (the base branch fails it too), don't change unrelated code: clear it with {tb} pr \
              not-ours {r} --check \"<check>\" --title \"<what fails>\" --reason \"<why it isn't this PR>\" --proof <link to \
