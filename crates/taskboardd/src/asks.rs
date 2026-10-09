@@ -111,7 +111,33 @@ pub fn note_asked(app: &App, id: i64, names: &[String], by: &str) -> Result<()> 
         .map(|_| ())
 }
 
-/// `tb pr reviewers [--ask WHO…] [--replace X [--with Y]] [--drop X]`.
+/// Host ids the picker must skip on this PR: everyone on it now, everyone swapped off, everyone
+/// who already reviewed it.
+pub fn skip_list(f: &Row, rec: &Value) -> Vec<String> {
+    let mut out: Vec<String> = rec["reviewers"].as_array().cloned().unwrap_or_default().iter().filter_map(|r| r["user"].as_str().map(|s| s.to_string())).collect();
+    out.extend(prflow::swapped_off(f));
+    out
+}
+
+/// Picks `n` reviewers for the PR (`picker.rs`), skipping `skip` too.
+pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Result<Vec<(Who, String)>> {
+    let mut all = skip_list(&flow(t), rec);
+    all.extend(skip.iter().cloned());
+    Ok(crate::picker::pick(app, t, rec, n, &all)?.into_iter().map(|p| (Who { user: p.user, name: p.name }, p.why)).collect())
+}
+
+/// How many more reviewers the PR needs to have `count` asked (not counting anyone swapped off).
+pub fn wanted(app: &App, t: &Row, rec: &Value, count: Option<usize>) -> usize {
+    let n = count.unwrap_or(app.cfg.reviewers.count);
+    if count.is_some() {
+        return n;
+    }
+    n.saturating_sub(on_pr(&flow(t), rec).len())
+}
+
+/// `tb pr reviewers [--ask WHO…] [--replace X [--with Y]] [--drop X] [--count N] [--dry-run]`. With
+/// none of `ask`, `replace` and `drop`, the picker chooses (`count`, else enough for `[reviewers]
+/// count`).
 pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
@@ -121,17 +147,23 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     };
     let t = board::get_task(app, id)?;
     let by = who_of(body);
-    let h = host(app, &pr)?;
     let fail = |what: &str, e: String| ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num));
-    let mut asked: Vec<Who> = vec![];
-    let mut dropped: Vec<Who> = vec![];
-    let mut replaced: Option<(Who, Who)> = None;
     let drop = body_str(body, "drop");
     let replace = body_str(body, "replace");
     let ask = str_list(body.get("ask"));
-    if drop.is_empty() && replace.is_empty() && ask.is_empty() {
-        return err(400, "Say who: --ask <name> (repeat for more), --replace <name> --with <name>, or --drop <name>.");
+    let count = body["count"].as_u64().map(|n| n as usize).or_else(|| body_str(body, "count").parse().ok());
+    let dry = as_bool(body.get("dry_run"), false);
+    let why = Some(body_str(body, "why")).filter(|w| !w.is_empty());
+    let picking = drop.is_empty() && replace.is_empty() && ask.is_empty();
+    if picking && dry {
+        let picks = pick(app, &t, &rec, wanted(app, &t, &rec, count), &[])?;
+        return Ok(json!({"task": rf("task", id), "dry_run": true,
+                         "picks": picks.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>()}));
     }
+    let h = host(app, &pr)?;
+    let mut asked: Vec<(Who, String)> = vec![];
+    let mut dropped: Vec<Who> = vec![];
+    let mut replaced: Option<(Who, Who)> = None;
     if !drop.is_empty() {
         let w = resolve(app, &t, &rec, &drop)?;
         h.remove_reviewers(&pr, std::slice::from_ref(&w.user)).map_err(|e| fail("take a reviewer off", e))?;
@@ -140,28 +172,38 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     if !replace.is_empty() {
         let old = resolve(app, &t, &rec, &replace)?;
         let with = body_str(body, "with");
-        if with.is_empty() {
-            return err(400, format!("Who stands in for {}? Add --with <name>.", old.name));
-        }
-        let new = resolve(app, &t, &rec, &with)?;
+        let new = if with.is_empty() {
+            match pick(app, &t, &rec, 1, std::slice::from_ref(&old.user))?.into_iter().next() {
+                Some((w, _)) => w,
+                None => return err(409, format!("Nobody else on {}'s roster can stand in for {}. Name someone with --with.", t.st("project"), old.name)),
+            }
+        } else {
+            resolve(app, &t, &rec, &with)?
+        };
         may_ask(app, &t, &rec, &new)?;
         h.replace_reviewer(&pr, &old.user, &new.user).map_err(|e| fail("swap the reviewer", e))?;
         replaced = Some((old, new));
     }
-    let mut want = vec![];
+    let mut want: Vec<(Who, String)> = vec![];
     for a in &ask {
         let w = resolve(app, &t, &rec, a)?;
         may_ask(app, &t, &rec, &w)?;
-        if !want.iter().any(|x: &Who| x.user == w.user) {
-            want.push(w);
+        if !want.iter().any(|(x, _)| x.user == w.user) {
+            want.push((w, why.clone().unwrap_or_else(|| "ask".into())));
+        }
+    }
+    if picking {
+        let n = wanted(app, &t, &rec, count);
+        want = pick(app, &t, &rec, n, &[])?.into_iter().map(|(w, _)| (w, why.clone().unwrap_or_else(|| "pick".into()))).collect();
+        if want.is_empty() && n > 0 && on_pr(&flow(&t), &rec).is_empty() {
+            return err(409, format!("Nobody on {}'s roster can review this PR: add reviewers with tb reviewers add, or name one with --ask.", t.st("project")));
         }
     }
     if !want.is_empty() {
-        let users: Vec<String> = want.iter().map(|w| w.user.clone()).collect();
+        let users: Vec<String> = want.iter().map(|(w, _)| w.user.clone()).collect();
         h.request_reviews(&pr, &users).map_err(|e| fail("ask for reviews", e))?;
         asked.extend(want);
     }
-    let why = if body_str(body, "why").is_empty() { "ask".to_string() } else { body_str(body, "why") };
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let num = pr.num;
@@ -181,19 +223,19 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
             reviewers::record_ask(app, &t, &new.user, &new.name, "replace", &by, prior.map(|a| a.id()))?;
             reviewers::note(app, &t, &by, &format!("Asked {} to review PR #{num} in place of {}", new.name, old.name))?;
         }
-        for w in &asked {
+        for (w, why) in &asked {
             if reviewers::open_ask(app, id, &w.user)?.is_none() {
-                reviewers::record_ask(app, &t, &w.user, &w.name, &why, &by, None)?;
+                reviewers::record_ask(app, &t, &w.user, &w.name, why, &by, None)?;
             }
         }
         if !asked.is_empty() {
-            reviewers::note(app, &t, &by, &format!("Asked {} to review PR #{num}", asked.iter().map(|w| w.name.clone()).collect::<Vec<_>>().join(", ")))?;
+            reviewers::note(app, &t, &by, &format!("Asked {} to review PR #{num}", asked.iter().map(|(w, _)| w.name.clone()).collect::<Vec<_>>().join(", ")))?;
         }
-        let mut names: Vec<String> = asked.iter().map(|w| w.name.clone()).collect();
+        let mut names: Vec<String> = asked.iter().map(|(w, _)| w.name.clone()).collect();
         if let Some((_, new)) = &replaced {
             names.push(new.name.clone());
         }
-        if !names.is_empty() {
+        if !names.is_empty() || picking {
             note_asked(app, id, &names, &by)?;
         }
         Ok(())
@@ -202,10 +244,49 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
     Ok(json!({
         "task": rf("task", id),
-        "asked": asked.iter().map(|w| json!({"user": w.user, "name": w.name})).collect::<Vec<_>>(),
+        "asked": asked.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>(),
         "dropped": dropped.iter().map(|w| json!({"user": w.user, "name": w.name})).collect::<Vec<_>>(),
         "replaced": replaced.as_ref().map(|(o, n)| json!({"old": o.name, "new": n.name})),
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
         "pr": board::pr_card(&t),
     }))
+}
+
+/// The event feed (#3) says the PR reads can't be trusted right now: the sweep then swaps nobody.
+/// False until the feed's health gate is wired in here.
+pub fn feed_holding(_app: &App) -> bool {
+    false
+}
+
+/// What a reviewer's host state says about an ask: their answer, if they've reviewed.
+fn answer_of(rec: &Value, user: &str) -> Option<String> {
+    rec["reviewers"].as_array()?.iter().find(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user))).and_then(|r| {
+        let st = r["state"].as_str().unwrap_or("");
+        matches!(st, "approved" | "changes" | "commented").then(|| st.to_string())
+    })
+}
+
+/// After each poll: brings the ledger up to date with what the PRs say. An ask is answered when its
+/// reviewer has reviewed (their speed is the work minutes it took), and closed when the PR merged
+/// or closed first.
+pub fn sweep(app: &App) -> Result<()> {
+    let tasks = app.db.q("SELECT DISTINCT t.* FROM tasks t JOIN review_asks a ON a.task_id = t.id WHERE a.state = 'open'", vec![])?;
+    for t in tasks {
+        let f = flow(&t);
+        let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { continue };
+        let finished = matches!(t.s("pr_phase"), Some("merged") | Some("declined"));
+        app.db.tx(|| {
+            for a in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'open'", crate::p![t.id()])? {
+                if let Some(ans) = answer_of(&rec, &a.st("host_user")) {
+                    let at = a.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
+                    let mins = crate::picker::work_minutes(app, at, now_ts());
+                    app.db.update("review_asks", &json!(a.id()), fields!["state" => "answered", "answer" => ans, "answered_at" => now_iso(), "work_mins" => (mins * 10.0).round() / 10.0])?;
+                } else if finished {
+                    reviewers::close_ask(app, a.id(), "closed")?;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }

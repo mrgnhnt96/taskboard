@@ -28,10 +28,11 @@ The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Acc
 
 Set a PR's reviewers with `tb pr reviewers T<n>` (GitHub and Bitbucket alike), never with the host's own tools: the board records every ask and never asks the PR's author or anyone removed from the project's roster.
 
+- `tb pr reviewers T<n>` alone: the board picks (a main contributor of the changed files, then whoever's turn it is) and asks them. `--dry-run` shows who it would pick; `--count N` asks N more.
 - `--ask <name>` (repeat for more): a reviewer's name, alias, email or host id.
-- `--replace <name> --with <name>`: take one off and ask another in their place. `--drop <name>`: take one off.
+- `--replace <name>` (`--with <name>`, else the board's pick): take one off and ask another in their place. `--drop <name>`: take one off.
 
-The roster is the project's (`tb reviewers`, run in the project's folder or with `--project`): `list`, `add "<name>" --user <host id> --email <commit email> --alias <other name>`, `alias`, `merge <keep> <other>` (two rows that are one person), `remove <name> --reason "…"` (never ask them; only on the owner's word), `back`, `pin`/`unpin` (asked on every PR), `bot <name> --every <hours> --mark "<text its comments carry>"`, `auto <name> low|normal|high`.
+The roster is the project's (`tb reviewers`, run in the project's folder or with `--project`): `list`, `sync` (commit authors join it), `add "<name>" --user <host id> --email <commit email> --alias <other name>`, `alias`, `merge <keep> <other>` (two rows that are one person), `remove <name> --reason "…"` (never ask them; only on the owner's word), `back`, `pin`/`unpin` (asked on every PR), `bot <name> --every <hours> --mark "<text its comments carry>"`, `auto <name> low|normal|high`.
 
 ## After the PR opens
 

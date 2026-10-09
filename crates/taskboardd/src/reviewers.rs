@@ -49,6 +49,7 @@
 //! `reviewer_bot_runs`: runs of a reviewer's bot spotted in PR comments (`reviewer_id`, `at`, and
 //! `ref`, the comment that showed it; unique per reviewer).
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -72,6 +73,49 @@ CREATE INDEX IF NOT EXISTS review_asks_reviewer ON review_asks(reviewer_id);
 CREATE TABLE IF NOT EXISTS reviewer_bot_runs(
   reviewer_id INT NOT NULL, at TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY(reviewer_id, ref));
 "#;
+
+/// `[reviewers]` in config.toml: how the picker (`picker.rs`) chooses who to ask.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ReviewersConfig {
+    /// How many reviewers a PR gets.
+    pub count: usize,
+    /// How many of the changed files' top contributors the main-contributor pick comes from.
+    pub main_contributors: usize,
+    /// How far back commit history counts, in months.
+    pub history_months: i64,
+    /// Commits in that window to join the roster from the history.
+    pub min_commits: i64,
+    /// Each open ask pushes a reviewer's next turn back this many hours (divided by their weight).
+    pub turn_gap_hours: f64,
+    /// Speed by median review time: [[work minutes up to, speed], …], fastest first.
+    pub speed_by_minutes: Vec<(f64, f64)>,
+    /// The speed of someone slower than the table's last step.
+    pub slow_speed: f64,
+    /// The speed of someone who hasn't reviewed yet.
+    pub no_speed_yet: f64,
+    /// The owner's own names, emails and host ids: never picked (besides the PR's author).
+    pub me: Vec<String>,
+    /// How often the roster picks up commit authors and host accounts, in hours.
+    pub sync_every_hours: f64,
+}
+
+impl Default for ReviewersConfig {
+    fn default() -> Self {
+        ReviewersConfig {
+            count: 2,
+            main_contributors: 3,
+            history_months: 6,
+            min_commits: 5,
+            turn_gap_hours: 4.0,
+            speed_by_minutes: vec![(30.0, 3.0), (60.0, 2.0), (120.0, 1.5), (240.0, 1.0), (480.0, 0.75)],
+            slow_speed: 0.5,
+            no_speed_yet: 1.0,
+            me: vec![],
+            sync_every_hours: 12.0,
+        }
+    }
+}
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
 const LEVELS: [(&str, f64); 4] = [("off", 0.25), ("low", 0.5), ("normal", 1.0), ("high", 2.0)];
@@ -436,11 +480,24 @@ fn act(app: &App, action: &str, body: &Value) -> Result<Value> {
     Ok(out)
 }
 
+/// `tb reviewers sync`: commit authors join the roster now, and host accounts are matched.
+fn sync(app: &App, body: &Value) -> Result<Value> {
+    let project = project_of(app, body, None)?;
+    let repo = crate::projects::project_path(app, Some(&project))?;
+    let last = app.db.q1("SELECT * FROM tasks WHERE project = ? AND pr_num IS NOT NULL AND pr_repo IS NOT NULL ORDER BY id DESC LIMIT 1", p![project])?;
+    let pr = last.as_ref().and_then(crate::prhost::PrRef::of);
+    let mut out = crate::picker::sync(app, &project, repo.as_deref(), pr.as_ref(), true)?;
+    out["project"] = json!(project);
+    out["reviewers"] = json!(roster(app, &project)?.iter().map(|r| dict(app, r)).collect::<Result<Vec<_>>>()?);
+    Ok(out)
+}
+
 /// `/reviewers…`.
 pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, body: &Value) -> Result<Value> {
     match (method, rest) {
         ("GET", []) => list(app, query),
         ("POST", []) => app.db.tx(|| add(app, body)),
+        ("POST", ["sync"]) => sync(app, body),
         ("POST", [action]) => app.db.tx(|| act(app, action, body)),
         _ => err(404, "There's nothing at that address."),
     }

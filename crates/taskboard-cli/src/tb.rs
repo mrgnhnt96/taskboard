@@ -526,6 +526,11 @@ enum ReviewersCmd {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Pick up commit authors (and their host accounts) into the roster now
+    Sync {
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Two reviewers are one person: fold the second into the first
     Merge {
         keep: String,
@@ -907,13 +912,13 @@ enum PrCmd {
     },
     /// Every thread is answered: ask the reviewers who wanted changes to look again
     Addressed { task: Option<String> },
-    /// Set the PR's reviewers through its host: --ask, --replace X --with Y, or --drop X
+    /// Ask for reviews through the PR host: the board picks, or --ask, --replace X [--with Y], --drop X
     Reviewers {
         task: Option<String>,
         /// Ask this person (repeat for more)
         #[arg(long)]
         ask: Vec<String>,
-        /// Take this reviewer off and ask --with in their place
+        /// Take this reviewer off and ask --with (or the board's pick) in their place
         #[arg(long)]
         replace: Option<String>,
         #[arg(long, requires = "replace")]
@@ -921,6 +926,12 @@ enum PrCmd {
         /// Take this reviewer off the PR
         #[arg(long)]
         drop: Option<String>,
+        /// How many to pick (else enough for [reviewers] count)
+        #[arg(long)]
+        count: Option<usize>,
+        /// Show who the board would pick, and ask nobody
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Merge it once it's approved, green and every thread is answered (the board checks first)
     Merge { task: Option<String> },
@@ -1559,6 +1570,14 @@ fn reviewers_cmd(c: &Ctx, action: ReviewersCmd) -> Result<i32, String> {
         }
         ReviewersCmd::Auto { who, level, project } => c.call("POST", "/reviewers/auto", Some(body(&project, &who, json!({"level": level}))))?,
         ReviewersCmd::Alias { who, aliases, project } => c.call("POST", "/reviewers/alias", Some(body(&project, &who, json!({"aliases": aliases}))))?,
+        ReviewersCmd::Sync { project } => {
+            let v = c.call("POST", "/reviewers/sync", Some(body(&project, "", json!({}))))?;
+            out(&format!("{}: {} joined from the commit history, {} matched to a host account.", v["project"].as_str().unwrap_or(""), v["joined"], v["matched"]));
+            for r in v["reviewers"].as_array().cloned().unwrap_or_default() {
+                out(&format!("  {}", reviewer_line(&r)));
+            }
+            return Ok(0);
+        }
         ReviewersCmd::Merge { keep, other, project } => c.call("POST", "/reviewers/merge", Some(body(&project, &keep, json!({"other": other}))))?,
     };
     out(&format!("{}: {}", v["project"].as_str().unwrap_or(""), reviewer_line(&v)));
@@ -2789,9 +2808,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            PrCmd::Reviewers { task, ask, replace, with, drop } => {
+            PrCmd::Reviewers { task, ask, replace, with, drop, count, dry_run } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "who": c.pr_who()})))?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "count": count, "dry_run": dry_run, "who": c.pr_who()})))?;
+                if dry_run {
+                    let picks: Vec<String> = v["picks"].as_array().cloned().unwrap_or_default().iter().map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["why"].as_str().unwrap_or(""))).collect();
+                    out(&if picks.is_empty() { "The board would ask nobody.".to_string() } else { format!("The board would ask {}.", picks.join(", ")) });
+                    return Ok(0);
+                }
                 out(&pr_reviewers_line(&t, &v));
                 Ok(0)
             }

@@ -198,3 +198,134 @@ fn tb_pr_reviewers_sets_reviewers_through_the_host_and_records_each_ask() {
     let names: Vec<String> = h.rec.lock().reviewers.iter().map(|r| r.user.clone()).collect();
     assert_eq!(names, vec!["{cy}".to_string()]);
 }
+
+pub fn sh_git(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git").arg("-C").arg(repo).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A repo where Ana and Bo wrote a.rs, Bo and Cy wrote b.rs, Dee has too few commits, and the
+/// owner (me@acme.com) has plenty; `feat` changes a.rs. (base sha, head sha).
+pub fn history(b: &Board) -> (String, String) {
+    let repo = b.repo();
+    sh_git(&repo, &["init", "-q", "-b", "main"]);
+    sh_git(&repo, &["config", "user.email", "me@acme.com"]);
+    sh_git(&repo, &["config", "user.name", "Me"]);
+    let mut n = 0;
+    let mut commit = |file: &str, who: &str, email: &str| {
+        n += 1;
+        std::fs::write(repo.join(file), format!("{n}\n")).unwrap();
+        sh_git(&repo, &["add", "."]);
+        sh_git(&repo, &["commit", "-q", "-m", &format!("c{n}"), "--author", &format!("{who} <{email}>")]);
+    };
+    for _ in 0..6 {
+        commit("a.rs", "Ana Lima", "ana@acme.com");
+    }
+    commit("a.rs", "Bo Park", "bo@acme.com");
+    for _ in 0..4 {
+        commit("b.rs", "Bo Park", "bo@acme.com");
+    }
+    for _ in 0..5 {
+        commit("b.rs", "Cy Ng", "cy@acme.com");
+    }
+    for _ in 0..2 {
+        commit("c.rs", "Dee", "dee@acme.com");
+    }
+    for _ in 0..5 {
+        commit("c.rs", "Me", "me@acme.com");
+    }
+    let base = sh_git(&repo, &["rev-parse", "HEAD"]);
+    sh_git(&repo, &["checkout", "-q", "-b", "feat"]);
+    commit("a.rs", "Me", "me@acme.com");
+    let head = sh_git(&repo, &["rev-parse", "HEAD"]);
+    sh_git(&repo, &["checkout", "-q", "main"]);
+    (base, head)
+}
+
+pub fn members(h: &FakeHost) {
+    *h.members.lock() = ["Ana Lima", "Bo Park", "Cy Ng", "Dee", "Me"]
+        .iter()
+        .map(|n| Reviewer { user: format!("{{{}}}", n.split(' ').next().unwrap().to_lowercase()), name: n.to_string(), ..Default::default() })
+        .collect();
+}
+
+pub fn rec_on(base: &str, head: &str) -> Record {
+    Record { base_head: base.into(), head: head.into(), author: "{me}".into(), ..green() }
+}
+
+fn picks(v: &Value) -> Vec<(String, String)> {
+    v["picks"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap().to_string(), p["why"].as_str().unwrap().to_string())).collect()
+}
+
+fn pair(a: &str, b: &str) -> (String, String) {
+    (a.to_string(), b.to_string())
+}
+
+#[test]
+fn the_picker_asks_a_main_contributor_and_rotates_the_rest() {
+    let b = board_with(|_| {});
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    let id = b.pr_task(BB);
+
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    assert_eq!(picks(&v), vec![pair("Ana Lima", "main"), pair("Bo Park", "turn")]);
+    // The commit history joined the roster: Dee has too few commits.
+    let names: Vec<String> = b.roster().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names, vec!["Ana Lima", "Bo Park", "Cy Ng", "Me"]);
+    assert_eq!(b.roster()[0]["user"], "{ana}", "the host's members gave them their account");
+    assert!(h.calls().iter().all(|c| !c.starts_with("request")), "a dry run asks nobody");
+
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert!(h.calls().contains(&"request {ana},{bo}".to_string()));
+    assert_eq!(b.asks(id).iter().map(|a| a.st("why")).collect::<Vec<_>>(), vec!["pick", "pick"]);
+    // Asked again with two on the PR, there's nobody more to ask.
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({}));
+    assert_eq!(b.asks(id).len(), 2);
+
+    // The next PR: Ana is still the main contributor; Cy's turn comes before Bo's, who has an open ask.
+    *h.rec.lock() = rec_on(&base, &head);
+    let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true}));
+    assert_eq!(picks(&v), vec![pair("Ana Lima", "main"), pair("Cy Ng", "turn")]);
+
+    // A removed reviewer is never picked; a pinned one always is.
+    b.act("remove", "cy@acme.com", json!({})).unwrap();
+    b.act("pin", "Bo Park", json!({})).unwrap();
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true}));
+    assert_eq!(picks(&v), vec![pair("Bo Park", "pinned"), pair("Ana Lima", "turn")], "Bo is a main contributor too");
+}
+
+#[test]
+fn a_review_is_timed_in_work_minutes() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    let asked = taskboardd::util::parse_iso(&b.asks(id)[0].st("asked_at")).unwrap();
+    b.app.db.x("UPDATE review_asks SET asked_at = ?", vec![json!(taskboardd::util::iso(asked - 20.0 * 60.0))]).unwrap();
+    set_state(&h, "{ana}", "approved");
+    poll(&b);
+    let a = &b.asks(id)[0];
+    assert_eq!((a.st("state"), a.st("answer")), ("answered".to_string(), "approved".to_string()));
+    let mins = a.f("work_mins").unwrap();
+    assert!((19.0..=21.0).contains(&mins), "{mins}");
+    assert_eq!(b.roster()[0]["median_work_mins"].as_f64().map(|m| m.round()), Some(mins.round()));
+}
+
+pub fn local_ts(y: i32, m: u32, d: u32, h: u32, min: u32) -> f64 {
+    use chrono::TimeZone;
+    chrono::Local.with_ymd_and_hms(y, m, d, h, min, 0).single().unwrap().timestamp() as f64
+}
+
+#[test]
+fn work_minutes_count_only_the_work_hours() {
+    let b = board_with(|_| {});
+    let (a, z) = (local_ts(2026, 10, 7, 16, 0), local_ts(2026, 10, 8, 10, 0));
+    assert_eq!(taskboardd::picker::work_minutes(&b.app, a, z), 18.0 * 60.0, "hours off: every minute");
+    b.post("/hours", json!({"on": true, "start": "09:00", "end": "17:00", "days": "all"}));
+    assert_eq!(taskboardd::picker::work_minutes(&b.app, a, z), 120.0);
+}

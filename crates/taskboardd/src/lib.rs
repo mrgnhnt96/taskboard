@@ -30,6 +30,7 @@ pub mod locks;
 pub mod mdcopy;
 pub mod midna;
 pub mod ops;
+pub mod picker;
 pub mod prcmds;
 pub mod prbar;
 pub mod prflow;

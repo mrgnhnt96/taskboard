@@ -195,6 +195,22 @@ focus_timeout_secs = 15.0
 tool = ""                            # its name, as the app says it ("Create in Flagsmith"); empty = "the flag tool"
 create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
 
+# Who reviews a PR (`tb pr reviewers` with no names, and the `ask` stage): `count` people from the
+# project's roster (`tb reviewers`), one a main contributor of the changed files, the rest in turn.
+# A reviewer is due at their last ask + open asks x turn_gap_hours / weight; weight = automation level
+# x speed, from their median review time in work minutes.
+[reviewers]
+count = 2
+main_contributors = 3                 # the main-contributor pick comes from this many top authors of the changed files
+history_months = 6                    # commit history that counts
+min_commits = 5                       # commits in that window to join the roster from the history
+turn_gap_hours = 4.0
+speed_by_minutes = [[30, 3.0], [60, 2.0], [120, 1.5], [240, 1.0], [480, 0.75]]   # [work minutes up to, speed]
+slow_speed = 0.5                      # slower than the last step
+no_speed_yet = 1.0                    # hasn't reviewed yet
+me = []                               # your own names, emails and host ids (the PR's author is never asked anyway)
+sync_every_hours = 12.0               # how often commit authors and host accounts join the roster
+
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
