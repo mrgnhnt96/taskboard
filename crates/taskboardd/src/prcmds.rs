@@ -221,7 +221,7 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
             out.push(if who.is_empty() { "a reviewer asked for changes".into() } else { format!("{} asked for changes", who.join(", ")) });
         } else if !prflow::approved(app, t, &review) {
             out.push(match prflow::approvals_needed(app, t) {
-                Some(n) => format!("it has {} of the {} approvals it needs", review.approvals, n),
+                Some(n) => format!("it has {} of the {n} approval{} it needs", review.approvals, if n == 1 { "" } else { "s" }),
                 None => "it isn't approved".into(),
             });
         }
@@ -342,6 +342,12 @@ pub fn proof_label(url: &str) -> String {
     }
     if let Some(k) = cap(r"/browse/([A-Z][A-Z0-9]+-\d+)") {
         return k;
+    }
+    if let Some(sha) = cap(r"/commits?/([0-9a-fA-F]{7,40})(?:[/?#]|$)") {
+        return format!("Commit {}", &sha[..7]);
+    }
+    if cap(r"^https?://[^/?#]+(/(?:[^?#]*/)?artifacts?/)").is_some() {
+        return "Evidence".into();
     }
     cap(r"^https?://(?:www\.)?([^/?#]+)").unwrap_or_else(|| url.to_string())
 }
@@ -631,6 +637,11 @@ mod tests {
         assert_eq!(proof_label("https://github.com/a/b/issues/12"), "Issue #12");
         assert_eq!(proof_label("https://bitbucket.org/w/r/pull-requests/7"), "PR #7");
         assert_eq!(proof_label("https://acme.atlassian.net/browse/WEB-12"), "WEB-12");
+        assert_eq!(proof_label("https://github.com/a/b/commit/abc1234def5678"), "Commit abc1234");
+        assert_eq!(proof_label("https://bitbucket.org/w/r/commits/abc1234def5678"), "Commit abc1234");
+        assert_eq!(proof_label("https://claude.ai/code/artifact/0b1c"), "Evidence");
+        assert_eq!(proof_label("https://claude.ai/artifact/0b1c"), "Evidence");
+        assert_eq!(proof_label("https://ci.example.com/job/7/artifacts/log.txt"), "Evidence");
         assert_eq!(proof_label("https://www.ci.example.com/b/1"), "ci.example.com");
     }
 
