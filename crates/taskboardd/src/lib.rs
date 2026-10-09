@@ -52,6 +52,7 @@ pub mod seed;
 pub mod server;
 pub mod shared;
 pub mod stack;
+pub mod startword;
 pub mod steps;
 pub mod transcript;
 pub mod triage;

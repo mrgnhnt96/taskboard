@@ -117,6 +117,13 @@ enum Cmd {
     },
     /// Take a task in this terminal (prints its handoff)
     Take { task: String },
+    /// Start a task, only when the human told you to in this conversation (the board checks their prompts)
+    Start {
+        task: String,
+        /// Queue it to start when its repo is free, instead of now in a new terminal
+        #[arg(long)]
+        queue: bool,
+    },
     /// This terminal's task
     Status {
         #[command(flatten)]
@@ -2805,6 +2812,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Start { task, queue } => {
+            let r = task_ref(&task)?;
+            if c.session.is_empty() {
+                return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {r} on the board."));
+            }
+            let mode = if queue { "queue" } else { "new" };
+            let v = c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
+            let status = v["status"].as_str().unwrap_or("");
+            out(&format!("{} {r}{}.", if queue { "Queued" } else { "Starting" }, if status.is_empty() { String::new() } else { format!(" ({status})") }));
+            Ok(0)
+        }
         Cmd::Status { t } => {
             if let Some(x) = t.task {
                 let v = c.call("GET", &format!("/tasks/{}", task_ref(&x)?), None)?;
@@ -3228,7 +3246,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
-                        let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
+                        let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"));
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
                     }

@@ -61,6 +61,7 @@ Planning a goal? Read `planning.md` first.
 2. Pick the smallest thing that fits:
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`. Tasks that run side by side in a wave can name the files each will edit, so its wave mates leave them alone: `--task "title::detail::<wave>::::src/a.rs, src/b.rs"` (or `tb task new --goal G<n> --wave 2 --file src/a.rs`).
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
+   - Only a human starts a task: it waits for the owner to press Start. When the owner tells you in this conversation to start or queue one ("start T4", "make a task and queue it"), run `tb start T<n>` (`--queue` to start it once its repo is free); never on your own. The board checks the owner's prompts in this terminal and refuses without their word.
    - Another goal's task does it: `tb task set T<n> --also G<n>`.
    - Waves, waits, locks, running alone, worktrees, devices and bits (feature flags): `planning.md`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.

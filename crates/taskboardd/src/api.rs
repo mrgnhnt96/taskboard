@@ -1002,6 +1002,23 @@ fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
     if !["new", "queue", "attach"].contains(&mode.as_str()) {
         return err(400, "Start mode must be new, queue or attach.");
     }
+    // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's.
+    let via = body_str(body, "via_session");
+    let started = if via.is_empty() {
+        "Started in the UI".to_string()
+    } else {
+        if crate::startword::owners_word(app, &via, id)?.is_none() {
+            return err(
+                403,
+                format!(
+                    "Only a human can start {}: nobody asked for it in this terminal's conversation. {} can press Start on the board, or tell you to start it.",
+                    rf("task", id),
+                    app.cfg.owner
+                ),
+            );
+        }
+        format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
+    };
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
     }
@@ -1026,6 +1043,7 @@ fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
             fields!["pickup" => mode, "pickup_session" => if mode == "attach" { sid.clone() } else { None }, "lost" => 0,
                     "session_id" => if t.b("lost") { None } else { t.s("session_id").map(|s| s.to_string()) }],
         )?;
+        board::log_event(app, id, board::OWNER, "status", &started)?;
         runner::start_task(app, &board::get_task(app, id)?, &mode, sid.as_deref(), None, None, None)?;
         Ok(())
     })?;
