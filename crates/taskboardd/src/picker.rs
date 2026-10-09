@@ -211,11 +211,6 @@ fn selves(app: &App, repo: Option<&str>, rec: &Value) -> Vec<String> {
     out
 }
 
-/// The candidate to take from `pool` (indexes into the candidates, earliest due first).
-fn best(pool: &[usize]) -> Option<usize> {
-    pool.first().copied()
-}
-
 /// Picks up to `n` reviewers for a task's PR (fewer when the roster runs out), skipping `skip`
 /// (host ids already on the PR or swapped off).
 pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Result<Vec<Pick>> {
@@ -251,13 +246,13 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     let have_main = out.iter().any(|p| mains.contains(&p.reviewer.id()));
     if out.len() < n && !have_main {
         let pool: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| mains.contains(&c.reviewer.id())).map(|(i, _)| i).collect();
-        if let Some(i) = best(&pool) {
+        if let Some(i) = crate::presence::best(app, &mut cands, &pool)? {
             take(&mut out, &mut cands, i, "main");
         }
     }
     while out.len() < n && !cands.is_empty() {
         let pool: Vec<usize> = (0..cands.len()).collect();
-        match best(&pool) {
+        match crate::presence::best(app, &mut cands, &pool)? {
             Some(i) => take(&mut out, &mut cands, i, "turn"),
             None => break,
         }

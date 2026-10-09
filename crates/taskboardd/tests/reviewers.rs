@@ -316,6 +316,39 @@ fn a_review_is_timed_in_work_minutes() {
     assert_eq!(b.roster()[0]["median_work_mins"].as_f64().map(|m| m.round()), Some(mins.round()));
 }
 
+struct Around(Vec<(&'static str, taskboardd::presence::Tier)>);
+impl taskboardd::presence::Availability for Around {
+    fn check(&self, r: &serde_json::Map<String, Value>) -> Result<taskboardd::presence::Presence, String> {
+        let tier = self.0.iter().find(|(n, _)| r.st("name").starts_with(n)).map(|(_, t)| *t).unwrap_or(taskboardd::presence::Tier::Quiet);
+        Ok(taskboardd::presence::Presence { tier, why: "canned".into() })
+    }
+}
+
+#[test]
+fn availability_tiers_steer_the_picker_and_the_out_are_never_picked() {
+    use taskboardd::presence::Tier;
+    let b = board_with(|c| c.reviewers.availability = "slack".into());
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Ana", Tier::Out), ("Bo", Tier::Quiet), ("Cy", Tier::Online), ("Me", Tier::Online)])));
+    let id = b.pr_task(BB);
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    // Ana is out, so the main pick is Bo (quiet, the only other main contributor); Cy is online.
+    assert_eq!(picks(&v), vec![pair("Bo Park", "main"), pair("Cy Ng", "turn")]);
+
+    taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Ana", Tier::Online), ("Bo", Tier::Missing), ("Cy", Tier::Off)])));
+    let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
+    let _ = id;
+    // Cached checks hold for a while; a fresh board-wide wait isn't needed for the next ones.
+    taskboardd::util::advance_clock(11.0 * 60.0);
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true}));
+    taskboardd::util::reset_clock();
+    assert_eq!(picks(&v), vec![pair("Ana Lima", "main"), pair("Cy Ng", "turn")], "off beats nobody");
+    let bo = b.roster().into_iter().find(|r| r["name"] == "Bo Park").unwrap();
+    assert_eq!((bo["removed"].clone(), bo["removed_why"].clone()), (json!(true), json!("canned")), "not on Slack: off the roster");
+}
+
 pub fn local_ts(y: i32, m: u32, d: u32, h: u32, min: u32) -> f64 {
     use chrono::TimeZone;
     chrono::Local.with_ymd_and_hms(y, m, d, h, min, 0).single().unwrap().timestamp() as f64

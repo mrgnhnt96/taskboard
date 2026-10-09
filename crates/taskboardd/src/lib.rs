@@ -32,6 +32,7 @@ pub mod midna;
 pub mod ops;
 pub mod picker;
 pub mod prcmds;
+pub mod presence;
 pub mod prbar;
 pub mod prflow;
 pub mod prhost;

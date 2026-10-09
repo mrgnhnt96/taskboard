@@ -98,6 +98,20 @@ pub struct ReviewersConfig {
     pub me: Vec<String>,
     /// How often the roster picks up commit authors and host accounts, in hours.
     pub sync_every_hours: f64,
+    /// Where the picker checks who's around (`presence.rs`): "" (nowhere) or "slack".
+    pub availability: String,
+    /// How many candidates it checks per pick.
+    pub pick_tries: usize,
+    /// A Slack status matching this (a regex) is out: never picked.
+    pub out_pattern: String,
+    /// Each person's working hours in their own time zone; outside them they're off.
+    pub local_start: String,
+    pub local_end: String,
+    pub weekends_off: bool,
+    /// Someone Slack doesn't know is taken off the roster ("not on Slack").
+    pub drop_not_on_slack: bool,
+    /// How long one check holds, in minutes.
+    pub cache_mins: f64,
 }
 
 impl Default for ReviewersConfig {
@@ -113,6 +127,14 @@ impl Default for ReviewersConfig {
             no_speed_yet: 1.0,
             me: vec![],
             sync_every_hours: 12.0,
+            availability: String::new(),
+            pick_tries: 6,
+            out_pattern: r"(?i)\b(out|ooo|off|vacation|holiday|pto|sick|leave)\b|🌴|🤒|🏖".into(),
+            local_start: "08:00".into(),
+            local_end: "18:00".into(),
+            weekends_off: true,
+            drop_not_on_slack: true,
+            cache_mins: 10.0,
         }
     }
 }

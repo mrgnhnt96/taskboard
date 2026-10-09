@@ -808,6 +808,14 @@ work minutes they took to review (`speed_by_minutes`, `slow_speed`, `no_speed_ye
 marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: minutes inside the work hours, or every
 minute with the hours off), and closed when the PR merged or closed first.
 
+**Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). During the board's work hours the
+picker checks candidates, in turn order and at most `pick_tries` per pick, with Taskboard's Slack account: tiers
+online (active, or posted today) > quiet > off (outside `local_start`–`local_end` in their Slack time zone, or a
+weekend). A status matching `out_pattern` is out and never picked; someone Slack doesn't know leaves the roster
+("not on Slack") with `drop_not_on_slack`. It takes the first one online, else the best tier it saw. Outside work
+hours, or without a provider, nobody is checked. The client only calls `users.lookupByEmail`, `users.info`,
+`users.getPresence` and `search.messages`: the board never messages anyone.
+
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 
 ## The PR plan and flow
