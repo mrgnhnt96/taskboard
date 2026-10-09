@@ -875,22 +875,40 @@ fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<String> {
 }
 
 /// The handoff's line about the devices lent to the task, how to start and stop each, and which
-/// devices other tasks have.
-pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
+/// devices other tasks have. Lent devices are described from their own rows (as the Python board
+/// did from the task's loans), so one reserved for another goal since it was lent keeps its details.
+/// A task that needs devices but has none still hears which ones to leave alone. `starting`: the
+/// handoff it starts with (it has started, though `started_at` isn't set yet).
+pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> {
     let names = lent(app, t.id())?;
     if names.is_empty() {
         let needs = needs(app, t)?;
         if needs.is_empty() {
             return Ok(vec![]);
         }
-        return Ok(vec![format!(
-            "This task asks for devices ({}), but none were free when it started. Run {} devices to see who has them.",
-            needs_text(&needs),
-            board::tb_cmd(app)
-        )]);
+        let mut text = if starting || has(t.s("started_at")) {
+            format!(
+                "This task asks for devices ({}), but none were free when it started. Run {} devices to see who has them.",
+                needs_text(&needs),
+                board::tb_cmd(app)
+            )
+        } else {
+            format!(
+                "This task asks for devices ({}). The board lends it to this task when it starts, and this handoff then says which.",
+                needs_text(&needs)
+            )
+        };
+        let others = others_text(app, t, &[])?;
+        if !others.is_empty() {
+            text += &format!("\nOther devices in use, don't touch them: {others}.");
+        }
+        return Ok(vec![text]);
     }
-    let (all, _) = view(app, t.i("goal_id"))?;
-    let rows: Vec<Option<&Row>> = names.iter().map(|n| all.iter().find(|d| d.s("name") == Some(n.as_str()))).collect();
+    let (seen, _) = view(app, t.i("goal_id"))?;
+    let all = pool(app)?;
+    // The task's view first (its goal's purposes added to the tags), else the device's own row.
+    let rows: Vec<Option<&Row>> =
+        names.iter().map(|n| seen.iter().chain(&all).find(|d| d.s("name") == Some(n.as_str()))).collect();
     let described: Vec<String> = names
         .iter()
         .zip(&rows)

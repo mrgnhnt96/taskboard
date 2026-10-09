@@ -265,3 +265,53 @@ fn a_lent_devices_note_is_clipped_to_300() {
     let note: String = h[start..].chars().take_while(|c| *c != ')').collect();
     assert!(note.chars().count() <= 300 && note.ends_with('…'), "{}: {note}", note.chars().count());
 }
+
+// --- #113 ---
+
+#[test]
+fn a_lent_device_keeps_its_details_once_another_goal_reserves_it() {
+    let b = new_board();
+    b.post(
+        "devices",
+        json!({"name": "dev-c", "tags": "ios", "kind": "ios", "target": "ABCD-UDID",
+               "start_cmd": "xcrun simctl boot {target}", "stop_cmd": "xcrun simctl shutdown {target}"}),
+    );
+    b.app.db.x("UPDATE devices SET note = 'The one on the left' WHERE name = 'dev-c'", p![]).unwrap();
+    let a = b.task("A", "ios");
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(taskboardd::devices::lent(&b.app, a).unwrap(), vec!["dev-c".to_string()]);
+    let other = b.post("/goals", json!({"name": "Other", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("goals/G{other}/devices"), json!({"device": "dev-c", "reserved": true}));
+    let h = handoff::build(&b.app, a).unwrap();
+    assert!(
+        h.contains("The board lent this task the device dev-c (iOS simulator, ABCD-UDID, The one on the left): use only that one"),
+        "{h}"
+    );
+    assert!(h.contains("Start it: xcrun simctl boot ABCD-UDID"), "{h}");
+    assert!(h.contains("Stop it when you're done: xcrun simctl shutdown ABCD-UDID"), "{h}");
+    assert!(!h.contains("Other devices in use"), "its own device isn't another's, reserved or not: {h}");
+}
+
+#[test]
+fn a_task_with_no_device_lent_still_hears_which_to_leave_alone() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "android", "target": "emulator-5554"}));
+    let a = b.task("A", "android");
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![a]);
+    let others = format!("Other devices in use, don't touch them: dev-a emulator-5554 (with T{a}).");
+    // Queued behind A: it hasn't started, so the board lends it one later.
+    let c = b.task("C", "android");
+    assert!(taskboardd::devices::lent(&b.app, c).unwrap().is_empty());
+    let h = handoff::build(&b.app, c).unwrap();
+    assert!(h.contains("This task asks for devices (android). The board lends it to this task when it starts, and this handoff then says which."), "{h}");
+    assert!(!h.contains("none were free") && h.contains(&others), "{h}");
+
+    // The handoff it starts with, and once it has started: none were free.
+    let starting = handoff::build_starting(&b.app, c).unwrap();
+    board::update_task(&b.app, c, fields!["started_at" => taskboardd::util::now_iso()]).unwrap();
+    for h in [starting, handoff::build(&b.app, c).unwrap()] {
+        assert!(h.contains("but none were free when it started."), "{h}");
+        assert!(!h.contains("lends it to this task when it starts") && h.contains(&others), "{h}");
+    }
+}

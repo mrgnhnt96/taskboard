@@ -556,6 +556,16 @@ fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>, kept: &[usize]) -> St
 }
 
 pub fn build(app: &App, task_id: i64) -> Result<String> {
+    build_with(app, task_id, false)
+}
+
+/// The handoff a task starts with: it has started, though `started_at` is set only once a
+/// terminal takes it, so the devices line says none were free rather than that they come later.
+pub fn build_starting(app: &App, task_id: i64) -> Result<String> {
+    build_with(app, task_id, true)
+}
+
+fn build_with(app: &App, task_id: i64, starting: bool) -> Result<String> {
     let t = board::get_task(app, task_id)?;
     let ctx = board::task_context(&t);
     let g = board::find_goal(app, t.i("goal_id"))?;
@@ -568,7 +578,7 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     parts.extend(setup_block(app, &t, g.as_ref())?);
     // The devices lent to it, early and never cut, so a long handoff keeps how to start and stop them.
     let mut kept = vec![];
-    for line in crate::devices::handoff_lines(app, &t)? {
+    for line in crate::devices::handoff_lines(app, &t, starting)? {
         kept.push(parts.len());
         parts.push(line);
     }

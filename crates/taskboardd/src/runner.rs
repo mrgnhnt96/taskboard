@@ -45,7 +45,7 @@ pub fn start_task(
     crate::devices::lend(app, t)?;
     let prompt = match prompt {
         Some(p) => p,
-        None => handoff::build(app, t.id())?,
+        None => handoff::build_starting(app, t.id())?,
     };
     let jid = if mode == "attach" {
         let s = board::get_session(app, session_id)?;
