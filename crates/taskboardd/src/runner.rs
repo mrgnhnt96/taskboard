@@ -473,7 +473,8 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
     close_pr_tabs(app)?;
-    app.db.tx(|| crate::feed::check(app))?;
+    // Outside a transaction: a restart command may take a while.
+    crate::feed::check(app)?;
     crate::prbuilds::tick(app)?;
     crate::breaks::tick(app)?;
     let made = start_queued(app)?;

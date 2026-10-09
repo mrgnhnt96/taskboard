@@ -747,7 +747,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], body: &Value) -> Result<Val
         ("GET", []) => list(app),
         ("POST", ["check"]) => {
             for (name, p) in app.cfg.master.projects.clone() {
-                app.db.tx(|| check_project(app, &name, &p))?;
+                check_project(app, &name, &p)?;
             }
             list(app)
         }
