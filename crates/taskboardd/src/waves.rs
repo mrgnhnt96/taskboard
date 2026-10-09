@@ -140,8 +140,8 @@ pub fn set_wave(app: &App, goal_id: i64, n: i64, f: Vec<(&str, Value)>) -> Resul
 }
 
 /// "Continue to wave N": the goal goes on past this wave (a review stop or a failed task). A held
-/// wave that isn't done is let start instead.
-pub fn release(app: &App, goal_id: i64, n: i64, who: &str) -> Result<()> {
+/// wave that isn't done is let start instead. True when it was a held wave let start.
+pub fn release(app: &App, goal_id: i64, n: i64, who: &str) -> Result<bool> {
     let g = board::get_goal(app, goal_id)?;
     let ts: Vec<Row> = board::goal_tasks(app, goal_id)?.into_iter().filter(|t| t.i("wave") == Some(n)).collect();
     if ts.is_empty() {
@@ -153,7 +153,7 @@ pub fn release(app: &App, goal_id: i64, n: i64, who: &str) -> Result<()> {
         for t in &ts {
             board::log_event(app, t.id(), who, "status", &format!("{who} let wave {n} start"))?;
         }
-        return Ok(());
+        return Ok(true);
     }
     set_wave(app, goal_id, n, vec![("released_at", json!(now_iso()))])?;
     for t in &ts {
@@ -162,7 +162,7 @@ pub fn release(app: &App, goal_id: i64, n: i64, who: &str) -> Result<()> {
     if g.b("paused") {
         board::update_goal(app, goal_id, crate::fields!["paused" => 0, "updated_at" => now_iso()])?;
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Holds a wave (`POST /goals/:id/waves/:n/hold`, `tb goal wave --hold`): none of its tasks that

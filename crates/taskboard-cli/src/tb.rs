@@ -2135,8 +2135,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             GoalCmd::Continue { goal, wave } => {
                 let g = goal_ref(&goal)?;
-                c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
-                out(&format!("{g} goes on past wave {wave}."));
+                let v = c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
+                out(&if v["let_start"] == true { format!("Wave {wave} of {g} can start now.") } else { format!("{g} goes on past wave {wave}.") });
                 Ok(0)
             }
             GoalCmd::Delete { goal, keep_tasks, delete_tasks, delete_backlog } => {

@@ -722,7 +722,7 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 |---|---|---|
 | `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app`); from anyone else it's 403. Answers the goal detail. |
 | `POST /goals/:id/waves/:n/hold` | `{on?: bool (true), who?}` | Hold a wave (`tb goal wave --hold`): its tasks that haven't started don't, nor any later wave, until it's continued. `on: false` lifts it. 409 on a done wave. Answers the goal detail. |
-| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail. |
+| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail, with `let_start: true` when it let a held wave start. |
 | `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |
 
 ## Locks, running alone and worktrees

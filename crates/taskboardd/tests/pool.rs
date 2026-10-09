@@ -218,7 +218,7 @@ fn a_held_wave_waits_and_so_does_everything_after_it_until_continued() {
     assert!(b.started().is_empty());
     assert_eq!(b.get(&format!("goals/G{g}"))["held"], 2);
 
-    b.post(&format!("goals/G{g}/waves/1/continue"), json!({}));
+    assert_eq!(b.post(&format!("goals/G{g}/waves/1/continue"), json!({}))["let_start"], true);
     let w = b.get(&format!("goals/G{g}"))["waves"].clone();
     assert_eq!(w[0]["state"], "ready");
     assert!(w[0]["released_at"].is_null(), "continuing a held wave lets it start, it doesn't skip it");
