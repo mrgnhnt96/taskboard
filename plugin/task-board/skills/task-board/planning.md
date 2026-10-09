@@ -30,7 +30,8 @@ A goal with no waves runs its tasks one after another (or in any order). When ta
 - A new task's wave: `tb task new "<title>" --goal G<n> --wave 2`, or `--task "title::what to do::2"` on `tb propose` and `tb goal new`.
 - An existing task: `tb task set T<n> --wave 3` (`--wave none` takes it out; tasks with no wave run after the waves, in the group called Post).
 - Name a wave: `tb goal wave G<n> 2 --name "API"`.
-- Stop the goal after a wave for the owner's review: `tb goal wave G<n> 2 --stop on`, only when the owner asks. The goal page then shows "Continue to wave 3"; `tb goal continue G<n> 2` does the same when the owner says so, and also goes on past a wave whose task failed.
+- A review stop after a wave is the owner's own: they tick "Stop after this wave for my review" on the goal page. You can't set one. The goal page then shows "Continue to wave 3"; `tb goal continue G<n> 2` does the same when the owner says so, and also goes on past a wave whose task failed.
+- Hold a wave that mustn't start yet (it needs something outside the board first): `tb goal wave G<n> 3 --hold`. None of its tasks start, nor any later wave, until `tb goal continue G<n> 3` (or `--hold off`).
 - `tb goal show G<n>` shows each task's wave and the waves' states.
 
 ## Waits, locks and running alone
@@ -42,6 +43,21 @@ All opt-in: a goal that sets none of it runs as before.
 - A task that needs nothing else running, like a measurement: `tb task set T<n> --alone` waits until the rest of its goal is quiet, then nothing else in the goal starts until it's done. `--alone board` does the same for the whole board; `--alone none` undoes it.
 - A goal whose tasks run side by side in one repo: `tb goal set G<n> --worktrees origin/<base>` starts each task in its own git worktree, `.claude/worktrees/T<n>`, detached at that base. The agent makes its branch there with `git switch -c`. The board removes the worktree once the task is done, its PR is merged or closed (or it has none) and its terminal is closed; one with uncommitted changes is kept. `--worktrees off` goes back to the shared folder.
 - `tb goal show G<n>` marks each task with "waits for T12", "holds local-core" or "runs alone in its goal".
+
+## Devices
+
+The board keeps one pool of devices (emulators, simulators, phones) for every project; `tb devices` lists each one, its tags, who has it and who waits. A task that needs devices asks for them by tag or name, and the runner starts it only once that many are free, lends them to it while it runs, and names them in its handoff.
+
+- `tb task set T<n> --device android:2` (or `--device ios --device pixel-7`; `--device none` takes its goal's), `--device` on `tb task new`, or for every task in a goal that doesn't ask for its own: `tb goal set G<n> --device ios`.
+- Add a device when the owner says to: `tb device add pixel-7 --tag android --tag phone [--focus "<command that raises its window>"]`. Change it with `tb device set`, switch it off with `--off off`, take it out with `tb device remove`.
+- `tb device focus <name>` raises a device's window.
+
+## Bits (feature flags)
+
+When a goal's work goes behind feature flags, put them on the board: `tb bit add <key> --backend --task T<n>` for a flag that has to exist in the flag tool too, `--local` for one in the code only (`--goal G<n>` for the whole goal). Link more tasks with `tb task set T<n> --bit <key>`.
+
+- A task waits to start until its backend bits are made in the tool, and a goal whose tasks are all done still waits on its unmade backend bits. The goal page lists them with a link to make each one.
+- `tb bit made <key>` records it made, only on the owner's word (`--undo` if it wasn't). `tb bits --goal G<n>` lists a goal's bits.
 
 ## Work that also finishes another goal
 
