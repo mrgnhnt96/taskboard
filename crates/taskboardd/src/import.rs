@@ -118,7 +118,8 @@ pub struct Report {
     pub settings: Vec<String>,
     /// The highest T, G and B numbers carried over.
     pub last: Vec<(&'static str, i64)>,
-    /// Review switches turned on for a project because the old board used them ("webapp: ask stage").
+    /// PR switches turned on for a project because the old board used them ("webapp: ask stage",
+    /// "webapp: agents merge").
     pub switched: Vec<String>,
 }
 
@@ -1495,7 +1496,9 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
 /// - the `ask` stage: a PR waiting at it, a PR whose reviewers it noted asking (`pr_flow.asked`), or
 ///   the board's own ask at that stage;
 /// - swaps: always on there, so every project that came over with a PR or a review ask (with or
-///   without a swap in its history).
+///   without a swap in its history);
+/// - agents merging (`agents_merge`): the old board's agents always merged their own approved, green
+///   PRs, so every project that came over with a PR.
 fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     let used: &[(&str, &str, &str)] = &[(
         "ask_stage",
@@ -1507,6 +1510,10 @@ fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
         "swaps",
         "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_num IS NOT NULL OR (pr_url IS NOT NULL AND pr_url != '')) \
          UNION SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL",
+    ), (
+        "agents_merge",
+        "agents merge",
+        "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_num IS NOT NULL OR (pr_url IS NOT NULL AND pr_url != ''))",
     )];
     for (key, label, sql) in used {
         for r in app.db.q(sql, vec![])? {
