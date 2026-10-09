@@ -190,18 +190,42 @@ fn switch_and_drop_work_on_this_terminals_line_only() {
     let t4 = b.on_task("s2", "Elsewhere");
     assert!(b.try_report("tb.switch", "s1", json!({"to": t4})).unwrap_err().contains("isn't in this terminal's line"));
 
-    let (code, _) = {
-        let e = api::dispatch(&b.app, "POST", &format!("tasks/{t2}/start"), &Query::new(), &json!({})).expect_err("refused");
-        (e.status, e.message)
-    };
-    assert_eq!(code, 409, "a task in a line isn't started from the board");
-
     b.report("tb.line", "s1", json!({"drop": t2}));
     let card = b.task(&t2);
     assert!(card["line"].is_null());
     assert_eq!(card["status"], "queued");
     let listed = b.report("tb.line", "s1", json!({}));
     assert!(listed["context"].as_str().unwrap().contains(&format!("{t1} “Fix the header” to resume")));
+}
+
+fn from_app() -> Query {
+    let mut q = Query::new();
+    q.insert(api::FROM.into(), "app".into());
+    q
+}
+
+#[test]
+fn the_owners_start_takes_a_task_out_of_its_line_and_runs_it() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    let t2 = b.on_task("s2", "Tidy the nav");
+    board::update_task(&b.app, id(&t2), fields!["status" => "queued", "session_id" => null]).unwrap();
+    // `tb take` on a busy terminal shelves its task into that terminal's line.
+    b.report("tb.take", "s1", json!({"task": t2}));
+    assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()));
+    assert_eq!(b.task(&t1)["line"]["session"], "s1");
+
+    let card = api::dispatch(&b.app, "POST", &format!("tasks/{t1}/start"), &from_app(), &json!({"mode": "new"})).unwrap();
+    assert!(card["line"].is_null(), "Start takes it out of the line");
+    assert_eq!(card["starting"], true, "and runs it");
+    assert!(b.get("whoami?session=s1")["line"].as_array().unwrap().is_empty());
+    let said = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = 'Taken out of Term s1''s line'", p![id(&t1)]).unwrap();
+    assert_eq!(said, 1);
+
+    // It isn't pulled back into s1 once that terminal is free.
+    b.report("tb.done", "s1", json!({"summary": "Done.", "no_pr": "Test"}));
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1"), None);
 }
 
 #[test]

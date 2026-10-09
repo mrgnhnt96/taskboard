@@ -464,8 +464,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
-The card is draggable to Working when it's queued/planned, not in a goal, not starting and not in a terminal's line (drop = start with mode `new`).
-`POST /tasks/T<n>/start` refuses (409) a task in a terminal's line; `tb line drop T<n>` takes it out first.
+The card is draggable to Working when it's queued/planned, not starting, and not in a goal unless it waits in a terminal's line (drop = start with mode `new`).
+`POST /tasks/T<n>/start` (the owner's Start, or `tb start` on their word) takes a task out of the terminal's line it waits in and runs it as asked.
 
 ### `pr`
 ```
