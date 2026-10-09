@@ -877,7 +877,7 @@ the work.
 
 Each project has a roster of reviewers (`reviewers.rs` documents the tables). One row per person: commit emails,
 host accounts and spellings fold into one, and any of them names the reviewer. A removed reviewer is never asked
-(not by the board, nor by `tb pr reviewers --ask`) until they're back; a pinned one is asked on every PR. Every
+(not by the board, nor by `tb pr reviewers --ask`) until they're back; a pinned one comes first for the main-contributor pick. Every
 ask is a row in the ledger (`review_asks`).
 
 `reviewer`: `{id, project, name, user: str|null (host id), emails, aliases, slack, source: "tb"|"git"|"host"|"import",
@@ -892,22 +892,26 @@ Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (an
 | Request | Body | What |
 |---|---|---|
 | `GET /reviewers` | query `project` (`all` for every project) or `cwd` | `{project, projects: [{name, reviewers: [reviewer]}]}`. |
-| `POST /reviewers` | `{reviewer: name, user?, emails?: [], aliases?: [], slack?}` | `tb reviewers add`: adds them, or folds what's new into the reviewer they already are (a shared name, host id or email; two rows that both match become one). |
+| `POST /reviewers` | `{reviewer: name, user?, emails?: [], aliases?: [], slack?}` | `tb reviewers add`: adds them, or folds what's new into the reviewer they already are (a shared host id, email or alias, or the same name unless both have their own, different host ids; two rows that both match become one). Commit authors from a sync fold on a shared name only when one side is just a name. |
 | `POST /reviewers/remove` | `{reason?}` | Never ask them (`tb reviewers remove`). |
 | `POST /reviewers/back` | | Ask them again. |
-| `POST /reviewers/pin` | `{on?: bool}` | Ask them on every PR (`tb reviewers pin`/`unpin`). |
+| `POST /reviewers/pin` | `{on?: bool}` | First in line for the main-contributor pick (`tb reviewers pin`/`unpin`). |
 | `POST /reviewers/auto` | `{level: "off"\|"low"\|"normal"\|"high"\|number}` | How automated their reviewing is (0.25, 0.5, 1, 2, or 0.1–10): a weight on their turn. |
 | `POST /reviewers/bot` | `{every_h, mark}` or `{off: true}` | Their review bot's schedule and the text its comments carry. |
-| `POST /reviewers/alias` | `{aliases: []}` | More names, emails or host ids of theirs (409 for one that names someone else). |
+| `POST /reviewers/alias` | `{aliases: []}` | More names, emails or host ids of theirs (409 for one that names someone else). For someone without a host account, a host id (one word, `@login` or `{uuid}`) becomes it. |
 | `POST /reviewers/merge` | `{other}` | Fold `other` into them: names, accounts, asks and bot runs. |
-| `POST /reviewers/sync` | | `tb reviewers sync`: commit authors of the last `history_months` with at least `min_commits` commits join the roster now (a GitHub noreply email gives their login), and the host's members (`PrHost::members`) give reviewers without an account theirs, matched by name. The picker does this itself at most every `sync_every_hours`. **Response:** `{project, joined, matched, reviewers: [reviewer]}`. |
+| `POST /reviewers/sync` | | `tb reviewers sync`: commit authors of the last `history_months` with at least `min_commits` commits (added up per person: emails of one reviewer, or one author name with one work email plus noreply ones) join the roster now (a GitHub noreply email gives their login), and the host's members (`PrHost::members`) give reviewers without an account theirs, matched by name. The picker does this itself at most every `sync_every_hours`. **Response:** `{project, joined, matched, reviewers: [reviewer]}`. |
 
-**The picker** (`picker.rs`, `[reviewers]` in config.toml) asks pinned reviewers first, then one of the
-`main_contributors` people with the most commits to the files the PR changes, then the rest in turn. It never picks
+**The picker** (`picker.rs`, `[reviewers]` in config.toml) asks one main contributor (pinned reviewers first, then
+the `main_contributors` people with the most commits to the files the PR changes; skipped when one of them is
+already on the PR), then the rest in turn, `count` in all. It never picks
 the PR's author (nor `[reviewers] me`, nor the repo's `git config user.email`), anyone removed, anyone without a
-host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + open
-asks × `turn_gap_hours` / weight, earliest first; weight = automation × speed, where speed comes from the median
-work minutes they took to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`). After each poll the ledger
+host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + (1 + open
+asks) × `turn_gap_hours` / weight, earliest first (ties: fewest asks, then pinned, then most commits to the changed
+files, then to the project); weight = automation × speed, where speed comes from the median work minutes they took
+to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`) over their last `speed_asks` asks of the last
+`speed_days`: an ask swapped off counts as `slow_cap_mins`, and one still open counts its time so far (up to the
+cap) once that's slower than the rest. After each poll the ledger
 marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: minutes inside the work hours, or every
 minute with the hours off), and closed when the PR merged or closed first.
 

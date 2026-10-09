@@ -518,13 +518,13 @@ enum ReviewersCmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Ask this reviewer on every PR of the project
+    /// Put this reviewer first in line for each PR's main-contributor pick
     Pin {
         who: String,
         #[arg(long)]
         project: Option<String>,
     },
-    /// Stop asking this reviewer on every PR
+    /// Take this reviewer out of the front of the line
     Unpin {
         who: String,
         #[arg(long)]
@@ -549,7 +549,7 @@ enum ReviewersCmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Another name, email or host account of theirs
+    /// Another name, email or host account of theirs (a host id becomes their account when they have none)
     Alias {
         who: String,
         #[arg(required = true)]

@@ -572,3 +572,89 @@ fn work_minutes_count_only_the_work_hours() {
     b.post("/hours", json!({"on": true, "start": "09:00", "end": "17:00", "days": "all"}));
     assert_eq!(taskboardd::picker::work_minutes(&b.app, a, z), 120.0);
 }
+
+/// An ask of `who` on task `id`, asked `mins_ago` minutes ago, in `state` (with `work_mins` when answered).
+fn ask_row(b: &Board, id: i64, who: &str, mins_ago: f64, state: &str, work_mins: Option<f64>) {
+    let r = b.roster().into_iter().find(|r| r["name"] == who).unwrap();
+    let at = taskboardd::util::iso(taskboardd::util::now_ts() - mins_ago * 60.0);
+    b.app
+        .db
+        .x(
+            "INSERT INTO review_asks(task_id, project, reviewer_id, host_user, name, why, state, asked_at, work_mins) VALUES (?, 'webapp', ?, ?, ?, 'pick', ?, ?, ?)",
+            vec![json!(id), r["id"].clone(), r["user"].clone(), json!(who), json!(state), json!(at), json!(work_mins)],
+        )
+        .unwrap();
+}
+
+fn median_of(b: &Board, who: &str) -> Option<f64> {
+    b.roster().into_iter().find(|r| r["name"] == who).unwrap()["median_work_mins"].as_f64()
+}
+
+#[test]
+fn weight_spaces_reviewers_out_and_non_answers_count_as_slow() {
+    let b = board_with(|_| {});
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.act("auto", "Ana", json!({"level": "low"})).unwrap();
+    b.act("auto", "Bo", json!({"level": "high"})).unwrap();
+    b.act("remove", "Cy", json!({})).unwrap();
+    b.act("remove", "Dee", json!({})).unwrap();
+    // Nobody has an open ask: the higher weight still goes first.
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Bo", "turn")]);
+
+    // A swap counts as the cap; an ask older than speed_days doesn't count at all.
+    ask_row(&b, id, "Ana", 60.0, "swapped", None);
+    ask_row(&b, id, "Ana", 20.0 * 24.0 * 60.0, "answered", Some(5.0));
+    assert_eq!(median_of(&b, "Ana"), Some(240.0));
+    // An open ask counts once it's slower than the rest; a fresh one doesn't.
+    ask_row(&b, id, "Bo", 300.0, "answered", Some(20.0));
+    ask_row(&b, id, "Bo", 10.0, "open", None);
+    assert_eq!(median_of(&b, "Bo"), Some(20.0));
+    ask_row(&b, id, "Bo", 200.0, "open", None);
+    let m = median_of(&b, "Bo").unwrap();
+    assert!((105.0..=115.0).contains(&m), "{m}");
+}
+
+#[test]
+fn pins_order_the_main_pick_and_count_toward_the_reviewers() {
+    let b = board_with(|_| {});
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    for n in ["Ana", "Bo", "Cy"] {
+        b.act("pin", n, json!({})).unwrap();
+    }
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    let got = picks(&v);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0].1, "pinned");
+    assert_eq!(got[1].1, "turn");
+}
+
+#[test]
+fn a_main_contributor_already_on_the_pr_means_no_second_one() {
+    let b = board_with(|_| {});
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    let id = b.pr_task(BB);
+    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true }];
+    poll(&b);
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    // Bo is a main contributor too, but he's picked in turn (a tie broken by his commits), not as a second main.
+    assert_eq!(picks(&v), vec![pair("Bo Park", "turn")]);
+}
+
+#[test]
+fn an_alias_links_a_host_account_and_a_shared_name_alone_is_not_one_person() {
+    let b = board_with(|_| {});
+    b.add("Dee", json!({"emails": ["dee@acme.com"]}));
+    let r = b.act("alias", "Dee", json!({"aliases": ["@dee-gh", "Dee D"]})).unwrap();
+    assert_eq!(r["user"], "dee-gh");
+    assert_eq!(r["aliases"], json!(["Dee D"]));
+    // Someone else with the same name and their own host account is another reviewer.
+    b.add("Dee", json!({"user": "{dee2}"}));
+    assert_eq!(b.roster().len(), 2);
+}
