@@ -102,7 +102,7 @@ fn tb_limits_shows_changes_and_resets() {
     let v = b.post("/limits", json!({"reset": true})).unwrap();
     assert_eq!(v["compact_window"], 150_000);
     assert_eq!(v["generated"], json!([]));
-    assert_eq!(taskboardd::limits::settings_arg(&b.app).as_deref(), Some(r#"{"autoCompactWindow":150000}"#));
+    assert_eq!(taskboardd::builds::settings_arg(&b.app, "/nonexistent").as_deref(), Some(r#"{"autoCompactWindow":150000}"#));
 }
 
 #[test]
