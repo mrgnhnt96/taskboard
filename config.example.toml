@@ -327,8 +327,9 @@ ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when i
 # once per head commit (every push is checked again, and a push to the open PR waits for it);
 # min_gap_mins keeps its rounds apart; bar = "WD" shows it in the app's PR bar. A check can write its
 # verdict, headline and findings to $TASKBOARD_RESULT. A per_head step's `publish` script republishes its
-# passing round for the PR (`tb step publish`, listed in the rebase commands after the push); unset, the
-# rebase commands still say to republish it, in words. Give it {worktree} or {branch}: the main checkout may
+# passing round for the PR (`tb step publish`, listed in the rebase commands after the push); unset, a step
+# with a `bar` is still listed there, in words. Values fill scripts as single shell words ('' when empty, so
+# {pr} keeps its place before the PR opens). Give it {worktree} or {branch}: the main checkout may
 # have another branch checked out. See docs/HOOKS.md ("Steps").
 # [[steps]]
 # name = "Author-side review"

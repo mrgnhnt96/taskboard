@@ -1147,7 +1147,7 @@ fn finishing(r: &Report) -> Result<()> {
             let line = format!("Not finished: {} waits for {}", rf("task", t.id()), steps::names(&left));
             app.db.tx(|| crate::dispatch::add_alert(app, &line, Some(t.id()), t.i("goal_id"), None, None).map(|_| ()))?;
         }
-        return err(409, steps::refusal_for(app, &t, "finishing", &left));
+        return err(409, steps::refusal_at(app, &t, "finishing", &left, head.as_deref()));
     }
     let here = if r.away(&t)? { None } else { r.cwd.as_deref() };
     if let Some(why) = crate::comments::task_refusal(app, &t, here, "finishing")? {

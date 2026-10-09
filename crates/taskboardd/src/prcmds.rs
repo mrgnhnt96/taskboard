@@ -597,18 +597,24 @@ fn review_gate(app: &App, t: &Row) -> Vec<String> {
     crate::steps::for_task(app, t).into_iter().filter(|s| s.per_head).map(|s| s.how(&tb)).collect()
 }
 
-/// After the push: republish each `per_head` step's passing round for the pushed head, as the Python board
-/// always said: with `tb step publish` when it has a `publish` script, else in words.
+/// After the push: republish the passing round for the pushed head of each `per_head` step the PR shows,
+/// as the Python board said: with `tb step publish` when it has a `publish` script, else in words.
 fn review_republish(app: &App, t: &Row) -> Vec<String> {
     let tb = board::tb_cmd(app);
-    crate::steps::for_task(app, t).into_iter().filter(|s| s.per_head).map(|s| republish_line(&tb, &s)).collect()
+    crate::steps::for_task(app, t).into_iter().filter_map(|s| republish_line(&tb, &s)).collect()
 }
 
-fn republish_line(tb: &str, s: &crate::steps::Step) -> String {
-    if s.publish.trim().is_empty() {
-        format!("publish {}'s round for the pushed head where the PR shows it", s.name)
+/// How to republish a step for the pushed head; none for a step nothing on the PR shows (it isn't per
+/// head, or has neither a `publish` script nor a `bar` name in the PR bar).
+fn republish_line(tb: &str, s: &crate::steps::Step) -> Option<String> {
+    if !s.per_head {
+        None
+    } else if !s.publish.trim().is_empty() {
+        Some(s.republish(tb))
+    } else if !s.bar.trim().is_empty() {
+        Some(format!("publish {}'s round for the pushed head where the PR shows it", s.name))
     } else {
-        s.republish(tb)
+        None
     }
 }
 
@@ -651,11 +657,14 @@ mod tests {
     }
 
     #[test]
-    fn a_per_head_step_is_republished_with_or_without_a_publish_script() {
-        let s = crate::steps::parse("[[steps]]\nname = \"Owner review\"\nprompt = \"x\"\nper_head = true\n").unwrap();
-        assert_eq!(republish_line("tb", &s[0]), "publish Owner review's round for the pushed head where the PR shows it");
-        let s = crate::steps::parse("[[steps]]\nname = \"Owner review\"\nprompt = \"x\"\nper_head = true\npublish = \"wd review publish\"\n").unwrap();
-        assert_eq!(republish_line("tb", &s[0]), "tb step publish \"Owner review\"");
+    fn a_per_head_step_the_pr_shows_is_republished_with_or_without_a_publish_script() {
+        let step = |extra: &str| crate::steps::parse(&format!("[[steps]]\nname = \"Owner review\"\nprompt = \"x\"\nper_head = true\n{extra}")).unwrap().remove(0);
+        assert_eq!(republish_line("tb", &step("bar = \"WD\"\n")).as_deref(), Some("publish Owner review's round for the pushed head where the PR shows it"));
+        assert_eq!(republish_line("tb", &step("publish = \"wd review publish\"\n")).as_deref(), Some("tb step publish \"Owner review\""));
+        // Nothing on the PR shows it: no advice to republish it.
+        assert_eq!(republish_line("tb", &step("")), None);
+        let s = crate::steps::parse("[[steps]]\nname = \"Lint\"\nrun = \"make lint\"\nbar = \"L\"\n").unwrap();
+        assert_eq!(republish_line("tb", &s[0]), None, "a step that isn't per head isn't republished");
     }
 
     #[test]
