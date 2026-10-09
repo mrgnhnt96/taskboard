@@ -8,7 +8,8 @@
 //! and their links, the Jira desk's terminal, PR links kept as repo and number, reviewers and their
 //! asks, master breaks) are mapped into the board's own, reading their columns by any of the names
 //! they went by. Old tables the board has no place for are kept whole in `settings` as
-//! `import.<table>`, so nothing is lost. Jobs aren't carried over (the old board's pending work
+//! `import.<table>`, so nothing is lost; so are the columns of the mapped reviewer, ask and break
+//! tables that nothing read (`import.<table>.unmapped`). Jobs aren't carried over (the old board's pending work
 //! would run again), nor are its alerts or its other running state.
 //!
 //! The old file is never opened in place: it's copied (with its `-wal` and `-shm`) to a scratch
@@ -53,6 +54,7 @@ const LEFT_SETTINGS: &[&str] = &[
     "tb_path",
     "plugin_version",
     "midna_projects",
+    "saggar_projects",
     "usage_closed_for",
     "work_hours_today",
     "history_last_cleanup",
@@ -109,6 +111,9 @@ pub struct Report {
     pub left_settings: Vec<String>,
     /// (old table, rows) kept in settings as `import.<table>`.
     pub kept: Vec<(String, usize)>,
+    /// (old table, its columns the board has no place for, rows with them) kept in settings as
+    /// `import.<table>.unmapped`.
+    pub unmapped: Vec<(String, Vec<String>, usize)>,
     /// Settings carried over.
     pub settings: Vec<String>,
     /// The highest T, G and B numbers carried over.
@@ -129,6 +134,9 @@ impl Report {
         }
         for (t, n) in &self.kept {
             out.push(format!("{t}: {n} rows kept as settings import.{t} (the board has no table for them yet)"));
+        }
+        for (t, cols, n) in &self.unmapped {
+            out.push(format!("{t}: {} of {n} rows kept as settings import.{t}.unmapped (the board has no place for them yet)", cols.join(", ")));
         }
         if !self.skipped.is_empty() {
             out.push(format!("skipped: {}", self.skipped.len()));
@@ -211,9 +219,21 @@ fn find_old<'a>(old: &'a [String], name: &str, alts: &[&str]) -> Option<&'a Stri
     std::iter::once(name).chain(alts.iter().copied()).find_map(|n| old.iter().find(|o| o.eq_ignore_ascii_case(n)))
 }
 
+/// What the old file can't say for itself.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// The project the old master breaks were on (the Python board watched one, so its breaks name
+    /// none): `--master-project`, else the only project in `[master.projects]`.
+    pub master_project: Option<String>,
+}
+
 /// Fills a fresh board from the old database at `src`. Refuses a board that already has tasks,
 /// goals or backlog issues: their numbers would clash with the old ones.
 pub fn import(app: &App, src: &Path) -> Result<Report> {
+    import_with(app, src, &Options::default())
+}
+
+pub fn import_with(app: &App, src: &Path, opts: &Options) -> Result<Report> {
     let have = app.db.count("SELECT (SELECT COUNT(*) FROM tasks) + (SELECT COUNT(*) FROM goals) + (SELECT COUNT(*) FROM issues)", vec![])?;
     if have > 0 {
         return err(409, format!("This board already has tasks, goals or backlog issues, so the old numbers would clash. Import into a fresh data folder (taskboardd import --data <empty folder> {}).", src.display()));
@@ -225,13 +245,13 @@ pub fn import(app: &App, src: &Path) -> Result<Report> {
         if !old.iter().any(|t| t == "tasks" || t == "goals") {
             return err(400, format!("{} doesn't look like a task board's database: it has no tasks or goals table.", src.display()));
         }
-        app.db.tx(|| fill(app, &c, &old))
+        app.db.tx(|| fill(app, &c, &old, opts))
     })();
     let _ = std::fs::remove_dir_all(&dir);
     out
 }
 
-fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
+fn fill(app: &App, c: &Connection, old: &[String], opts: &Options) -> Result<Report> {
     let mut rep = Report::default();
     let mut used: Vec<String> = vec![];
     for (table, alts) in TABLES {
@@ -296,7 +316,7 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
     jira_desk(app, c, old, &mut rep)?;
     pr_links(app, &mut rep)?;
     reviewers(app, c, old, &mut rep)?;
-    breaks(app, c, old, &mut rep)?;
+    breaks(app, c, old, opts, &mut rep)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
         let mapped = MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) && !(goal_pool && t.eq_ignore_ascii_case("goal_devices"));
@@ -376,11 +396,13 @@ fn slug(s: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
-/// One old table read whole, its columns looked up by any of the names they went by.
+/// One old table read whole, its columns looked up by any of the names they went by. It notes
+/// which columns were looked at, so the rest can be kept (`park_unread`).
 struct Old {
     table: String,
     names: Vec<String>,
     rows: Vec<Vec<Value>>,
+    read: std::cell::RefCell<Vec<bool>>,
 }
 
 const NULL: Value = Value::Null;
@@ -389,7 +411,8 @@ impl Old {
     fn read(c: &Connection, old: &[String], name: &str, alts: &[&str]) -> Result<Option<Old>> {
         let Some(t) = find_old(old, name, alts) else { return Ok(None) };
         let (names, rows) = old_rows(c, t)?;
-        Ok(Some(Old { table: t.clone(), names, rows }))
+        let read = std::cell::RefCell::new(vec![false; names.len()]);
+        Ok(Some(Old { table: t.clone(), names, rows, read }))
     }
 
     fn has(&self, cols: &[&str]) -> bool {
@@ -398,11 +421,21 @@ impl Old {
 
     /// The first of `cols` the row has a value in.
     fn get<'a>(&self, r: &'a [Value], cols: &[&str]) -> &'a Value {
-        cols.iter()
-            .filter_map(|c| self.names.iter().position(|n| n.eq_ignore_ascii_case(c)))
-            .map(|i| &r[i])
-            .find(|v| !v.is_null() && v.as_str() != Some(""))
-            .unwrap_or(&NULL)
+        let at: Vec<usize> = cols.iter().filter_map(|c| self.names.iter().position(|n| n.eq_ignore_ascii_case(c))).collect();
+        let mut read = self.read.borrow_mut();
+        for i in &at {
+            read[*i] = true;
+        }
+        at.into_iter().map(|i| &r[i]).find(|v| !v.is_null() && v.as_str() != Some("")).unwrap_or(&NULL)
+    }
+
+    /// The columns nothing read that have a value in some row.
+    fn unread(&self) -> Vec<usize> {
+        let read = self.read.borrow();
+        (0..self.names.len())
+            .filter(|i| !read[*i] && !self.names[*i].eq_ignore_ascii_case("id"))
+            .filter(|i| self.rows.iter().any(|r| !r[*i].is_null() && r[*i].as_str() != Some("")))
+            .collect()
     }
 
     fn text(&self, r: &[Value], cols: &[&str]) -> Option<String> {
@@ -843,9 +876,22 @@ fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
 /// The project a task was in (on the board, already imported), with its PR.
 fn task_of(app: &App, id: Option<i64>) -> Result<Option<Row>> {
     match id {
-        Some(id) => app.db.q1("SELECT id, project, pr_host, pr_repo, pr_num, status, finished_at, updated_at FROM tasks WHERE id = ?", vec![json!(id)]),
+        Some(id) => app.db.q1(
+            "SELECT id, project, pr_host, pr_repo, pr_num, pr_state, pr_phase, status, finished_at, updated_at FROM tasks WHERE id = ?",
+            vec![json!(id)],
+        ),
         None => Ok(None),
     }
+}
+
+/// Whether a task's PR is done with: merged, declined or closed. A task is done once its PR is
+/// opened, so its status doesn't say; one that's done without a PR has nothing left to review.
+fn pr_over(t: &Row) -> bool {
+    let state = t.s("pr_state").unwrap_or("").to_uppercase();
+    if matches!(state.as_str(), "MERGED" | "DECLINED" | "CLOSED" | "SUPERSEDED") || matches!(t.s("pr_phase"), Some("merged" | "closed" | "declined")) {
+        return true;
+    }
+    t.i("pr_num").is_none() && t.s("status") == Some("done")
 }
 
 /// An old list column as the board's JSON list of strings.
@@ -863,6 +909,81 @@ fn json_text(v: &Value) -> Value {
         },
         other => json!(jdumps(other)),
     }
+}
+
+/// An old time (ISO text, or Unix seconds or milliseconds) as the board's ISO text.
+fn when(v: &Value) -> Option<String> {
+    match v {
+        Value::Number(n) => n.as_f64().filter(|f| *f > 0.0).map(|f| iso(if f > 1e12 { f / 1000.0 } else { f })),
+        Value::String(s) if s.trim().parse::<f64>().is_ok() => when(&json!(s.trim().parse::<f64>().unwrap_or(0.0))),
+        Value::String(s) => parse_iso(s).map(iso).or_else(|| text(v)),
+        _ => None,
+    }
+}
+
+/// An old number column.
+fn num(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// An old bot interval in hours: `3h`, `180m`, or a bare number in the column's own unit
+/// (`per_hour`: 1 for an hours column, 60 for a minutes one, as the Python board's `bot_every`).
+fn bot_hours(v: &Value, per_hour: f64) -> Option<f64> {
+    let h = match v {
+        Value::String(s) => {
+            let s = s.trim().to_lowercase();
+            if let Some(h) = s.strip_suffix('h') {
+                h.trim().parse().ok()
+            } else if let Some(m) = s.strip_suffix("min").or_else(|| s.strip_suffix('m')) {
+                m.trim().parse::<f64>().ok().map(|m| m / 60.0)
+            } else {
+                s.parse::<f64>().ok().map(|n| n / per_hour)
+            }
+        }
+        other => num(other).map(|n| n / per_hour),
+    }?;
+    (h > 0.0).then_some(h)
+}
+
+/// An old automation level: one of the board's names, or a weight.
+fn level(v: &Value) -> Option<f64> {
+    let l = match v {
+        Value::String(s) => crate::reviewers::LEVELS.iter().find(|(n, _)| n.eq_ignore_ascii_case(s.trim())).map(|(_, v)| *v).or_else(|| s.trim().parse().ok()),
+        other => num(other),
+    }?;
+    (0.1..=10.0).contains(&l).then_some(l)
+}
+
+/// A commit sha (7 to 40 hex digits).
+fn is_sha(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Keeps the old table's columns nothing read (with their row's id) as `import.<table>.unmapped`.
+fn park_unread(app: &App, o: &Old, rep: &mut Report) -> Result<()> {
+    let cols = o.unread();
+    if cols.is_empty() {
+        return Ok(());
+    }
+    let id = o.names.iter().position(|n| n.eq_ignore_ascii_case("id"));
+    let rows: Vec<Value> = o
+        .rows
+        .iter()
+        .filter(|r| cols.iter().any(|i| !r[*i].is_null()))
+        .map(|r| {
+            let mut m: serde_json::Map<String, Value> = id.map(|i| ("id".to_string(), r[i].clone())).into_iter().collect();
+            m.extend(cols.iter().filter(|i| !r[**i].is_null()).map(|i| (o.names[*i].clone(), r[*i].clone())));
+            Value::Object(m)
+        })
+        .collect();
+    let names: Vec<String> = cols.iter().map(|i| o.names[*i].clone()).collect();
+    app.db.set_setting(&format!("import.{}.unmapped", o.table), Some(&jdumps(&json!({"columns": names, "rows": rows, "imported_at": now_iso()}))))?;
+    rep.unmapped.push((o.table.clone(), names, rows.len()));
+    Ok(())
 }
 
 /// An ask's old state, as the board says it.
@@ -906,28 +1027,65 @@ fn ask_why(raw: Option<&str>, replaces: bool) -> &'static str {
     }
 }
 
-/// The roster (`reviewers`), each ask of one of them (`review_asks`), and their bots' runs. People
-/// the old board kept twice on one project fold into one reviewer, as `tb reviewers` would.
+/// The columns an old reviewer or ask names its host account by.
+const HOST_USER: &[&str] = &["host_user", "account_id", "uuid", "bb_uuid", "bb_account_id", "bb_user", "github", "login", "username", "user", "bitbucket", "account"];
+/// The columns an old ask names who was asked by (the Python board: `email`, matched against the
+/// reviewers' emails and aliases).
+const ASK_WHO: &[&str] = &["email", "reviewer_email", "emails"];
+/// The columns an old ask names the reviewer row by.
+const ASK_REVIEWER: &[&str] = &["reviewer_id", "reviewer"];
+
+/// The old board's rotation counts of one reviewer: asks, swaps, the last ask.
+#[derive(Default)]
+struct Counts {
+    asks: i64,
+    swaps: i64,
+    last: Option<String>,
+}
+
+/// The roster (`reviewers`), each ask of one of them (`review_asks`), and their bots' runs (a runs
+/// table, or the Python board's `reviewers.bot_ran_at`). People the old board kept twice on one
+/// project fold into one reviewer, as `tb reviewers` would: the most active row stays, with its own
+/// removed mark, and the commits, asks and swaps add up.
 fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
-    // Old reviewer id → the board's reviewer row id.
+    // Old reviewer id, name, email or alias → the board's reviewer row id.
     let mut ids: HashMap<String, i64> = HashMap::new();
+    let mut counts: HashMap<i64, Counts> = HashMap::new();
+    let mut bot_runs = 0;
     let asks = Old::read(c, old, "review_asks", &["reviewer_asks", "asks"])?;
     if let Some(rv) = Old::read(c, old, "reviewers", &["reviewer_roster", "roster"])? {
         let before = app.db.count("SELECT COUNT(*) FROM reviewers", vec![])?;
         let mut folded = 0;
-        for r in &rv.rows {
+        // The most active first, so a fold keeps them (and their removed mark).
+        let mut order: Vec<&Vec<Value>> = rv.rows.iter().collect();
+        order.sort_by_key(|r| -rv.id(r, &["commits"]).unwrap_or(0));
+        for r in order {
             let old_id = rv.text(r, &["id"]);
-            let host_user = rv.text(r, &["host_user", "account_id", "uuid", "github", "login", "username", "user", "bitbucket", "account"]);
+            let host_user = rv.text(r, HOST_USER);
             let emails = str_words(rv.get(r, &["emails", "email"]));
-            let Some(name) = rv.text(r, &["name", "display_name", "display", "person"]).or_else(|| host_user.clone()).or_else(|| emails.first().cloned()) else {
+            let host_name = rv.text(r, &["bb_name", "host_name", "display_name"]);
+            let Some(name) = rv.text(r, &["name", "display", "person"]).or_else(|| host_name.clone()).or_else(|| host_user.clone()).or_else(|| emails.first().cloned()) else {
                 rep.skipped.push(format!("{} {}: no name", rv.table, old_id.unwrap_or_default()));
                 continue;
             };
+            let mut aliases = str_words(rv.get(r, &["aliases", "alias", "other_names", "names"]));
+            // The host's display name, which the old board matched them by.
+            if let Some(h) = host_name.filter(|h| !h.eq_ignore_ascii_case(&name)) {
+                aliases.push(h);
+            }
             // Its project, else the project of a task it was asked on.
             let mut project = rv.text(r, &["project", "repo", "repo_name"]);
             if project.is_none() {
-                if let (Some(a), Some(oid)) = (&asks, &old_id) {
-                    let task = a.rows.iter().find(|x| a.text(x, &["reviewer_id", "reviewer"]).as_deref() == Some(oid.as_str())).and_then(|x| a.id(x, &["task_id", "task"]));
+                if let Some(a) = &asks {
+                    let mine: Vec<String> = emails.iter().chain(aliases.iter()).map(|s| s.to_lowercase()).collect();
+                    let task = a
+                        .rows
+                        .iter()
+                        .find(|x| {
+                            let by_id = a.text(x, ASK_REVIEWER).is_some_and(|k| old_id.as_deref() == Some(k.as_str()));
+                            by_id || a.text(x, ASK_WHO).is_some_and(|e| mine.contains(&e.to_lowercase()))
+                        })
+                        .and_then(|x| a.id(x, &["task_id", "task"]));
                     project = task_of(app, task)?.and_then(|t| t.s("project").map(str::to_string));
                 }
             }
@@ -938,20 +1096,23 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             let person = crate::reviewers::Person {
                 name: name.clone(),
                 host_user: host_user.filter(|u| u != &name),
-                emails,
-                aliases: str_words(rv.get(r, &["aliases", "alias", "other_names", "names"])),
+                emails: emails.clone(),
+                aliases: aliases.clone(),
                 slack: rv.text(r, &["slack", "slack_id", "slack_user"]),
                 source: "import".into(),
-                commits: rv.id(r, &["commits"]),
+                commits: None,
             };
             let had = app.db.count("SELECT COUNT(*) FROM reviewers", vec![])?;
             let row = crate::reviewers::fold(app, &project, &person)?;
-            if app.db.count("SELECT COUNT(*) FROM reviewers", vec![])? == had {
+            let fold_in = app.db.count("SELECT COUNT(*) FROM reviewers", vec![])? == had;
+            if fold_in {
                 folded += 1;
             }
-            let mut f: Vec<(&str, Value)> = vec![];
+            let row = crate::reviewers::get(app, row.id())?;
+            let mut f: Vec<(&str, Value)> = vec![("commits", json!(row.i0("commits") + rv.id(r, &["commits"]).unwrap_or(0)))];
+            // A row folded in keeps the reviewer's own removed mark, weight and bot.
             let removed = rv.get(r, &["removed_at"]).clone();
-            if !removed.is_null() || rv.truthy(r, &["removed", "never", "never_assign", "excluded", "blocked"]) {
+            if !fold_in && (!removed.is_null() || rv.truthy(r, &["removed", "never", "never_assign", "excluded", "blocked"])) {
                 let at = if removed.is_null() || removed.is_number() { rv.get(r, &["updated_at", "updated"]).clone() } else { removed };
                 f.push(("removed_at", if at.is_null() { json!(now_iso()) } else { at }));
                 f.push(("removed_why", rv.get(r, &["removed_why", "removed_reason", "why", "reason"]).clone()));
@@ -959,61 +1120,94 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             if rv.truthy(r, &["pinned", "pin"]) {
                 f.push(("pinned", json!(1)));
             }
-            let auto = rv.get(r, &["automation", "auto", "level", "automation_level"]);
-            let level = match auto {
-                Value::Number(n) => n.as_f64(),
-                Value::String(s) => crate::reviewers::LEVELS.iter().find(|(n, _)| n.eq_ignore_ascii_case(s.trim())).map(|(_, v)| *v).or_else(|| s.trim().parse().ok()),
-                _ => None,
-            };
-            if let Some(v) = level.filter(|v| (0.1..=10.0).contains(v)) {
-                f.push(("automation", json!(v)));
+            if let Some(v) = level(rv.get(r, &["automated", "automation", "auto", "level", "automation_level"])) {
+                if !fold_in || row.f("automation").unwrap_or(1.0) == 1.0 {
+                    f.push(("automation", json!(v)));
+                }
             }
-            if let Some(h) = match rv.get(r, &["bot_every_h", "bot_hours", "bot_every_hours", "bot_every"]) {
-                Value::Number(n) => n.as_f64(),
-                Value::String(s) => s.trim().trim_end_matches('h').parse().ok(),
-                _ => None,
-            } {
+            let every = bot_hours(rv.get(r, &["bot_every_h", "bot_hours", "bot_every_hours"]), 1.0)
+                .or_else(|| bot_hours(rv.get(r, &["bot_every", "bot_every_mins", "bot_mins", "bot_every_minutes"]), 60.0));
+            if let Some(h) = every.filter(|_| !fold_in || row.f("bot_every_h").is_none()) {
                 f.push(("bot_every_h", json!(h)));
                 f.push(("bot_mark", rv.get(r, &["bot_mark", "bot_marker", "mark"]).clone()));
             }
-            for (k, alts) in [("created_at", &["created_at", "created", "added_at"][..]), ("updated_at", &["updated_at", "updated"][..])] {
-                let v = rv.get(r, alts);
-                if !v.is_null() {
-                    f.push((k, v.clone()));
+            if !fold_in {
+                for (k, alts) in [("created_at", &["created_at", "created", "added_at"][..]), ("updated_at", &["updated_at", "updated"][..])] {
+                    let v = rv.get(r, alts);
+                    if !v.is_null() {
+                        f.push((k, v.clone()));
+                    }
                 }
             }
-            if !f.is_empty() {
-                app.db.update("reviewers", &json!(row.id()), f)?;
+            app.db.update("reviewers", &json!(row.id()), f)?;
+            if let Some(at) = when(rv.get(r, &["bot_ran_at", "bot_last_run", "bot_run_at"])) {
+                let at_ref = format!("import:{}", old_id.clone().unwrap_or_else(|| name.clone()));
+                app.db.x("INSERT OR IGNORE INTO reviewer_bot_runs(reviewer_id, at, ref) VALUES(?, ?, ?)", vec![json!(row.id()), json!(at), json!(at_ref)])?;
+                if wrote(app)? {
+                    bot_runs += 1;
+                }
+            }
+            let n = counts.entry(row.id()).or_default();
+            n.asks += rv.id(r, &["asks", "ask_count", "times_asked"]).unwrap_or(0);
+            n.swaps += rv.id(r, &["swaps", "swap_count"]).unwrap_or(0);
+            if let Some(l) = when(rv.get(r, &["last_asked", "last_asked_at", "last_ask"])) {
+                if n.last.as_deref().and_then(parse_iso).unwrap_or(0.0) < parse_iso(&l).unwrap_or(0.0) {
+                    n.last = Some(l);
+                }
             }
             if let Some(oid) = old_id {
-                ids.insert(oid.to_lowercase(), row.id());
+                ids.insert(format!("#{}", oid.to_lowercase()), row.id());
             }
-            ids.entry(name.to_lowercase()).or_insert(row.id());
+            for k in std::iter::once(&name).chain(emails.iter()).chain(aliases.iter()) {
+                ids.entry(k.to_lowercase()).or_insert(row.id());
+            }
         }
         rep.copied.push(("reviewers".into(), (app.db.count("SELECT COUNT(*) FROM reviewers", vec![])? - before) as usize));
         if folded > 0 {
             rep.skipped.push(format!("{}: {folded} rows were the same person as another on the project, folded into one reviewer", rv.table));
         }
+        park_unread(app, &rv, rep)?;
     }
-    if let Some(a) = asks {
+    if let Some(a) = &asks {
         let mut n = 0;
         let mut stand_ins: Vec<(i64, i64)> = vec![];
         for r in &a.rows {
             let task = task_of(app, a.id(r, &["task_id", "task"]))?;
-            let who_raw = a.get(r, &["reviewer_id", "reviewer"]);
-            let mut reviewer = text(who_raw).and_then(|k| ids.get(&k.to_lowercase()).copied());
             let project = a.text(r, &["project"]).or_else(|| task.as_ref().and_then(|t| t.s("project").map(str::to_string)));
-            let host_user = a.text(r, &["host_user", "account_id", "uuid", "user", "login", "username", "github"]);
-            if reviewer.is_none() {
-                if let (Some(p), Some(k)) = (&project, host_user.clone().or_else(|| text(who_raw))) {
-                    reviewer = crate::reviewers::find(app, p, &k)?.map(|x| x.id());
+            let host_user = a.text(r, HOST_USER);
+            let email = a.text(r, ASK_WHO);
+            // The roster row: by its old id, else by the email (or host id) on the ask's project.
+            let in_project = |id: i64| -> Result<Option<i64>> {
+                let row = crate::reviewers::get(app, id)?;
+                Ok((project.is_none() || row.s("project") == project.as_deref()).then_some(id))
+            };
+            let mut reviewer = match a.text(r, ASK_REVIEWER).and_then(|k| ids.get(&format!("#{}", k.to_lowercase())).copied()) {
+                Some(id) => in_project(id)?,
+                None => None,
+            };
+            for k in [email.clone(), host_user.clone(), a.text(r, ASK_REVIEWER)].into_iter().flatten() {
+                if reviewer.is_some() {
+                    break;
+                }
+                reviewer = match &project {
+                    Some(p) => crate::reviewers::find(app, p, &k)?.map(|x| x.id()),
+                    None => None,
+                };
+                if reviewer.is_none() {
+                    if let Some(id) = ids.get(&k.to_lowercase()).copied() {
+                        reviewer = in_project(id)?;
+                    }
                 }
             }
             let rrow = match reviewer {
                 Some(id) => Some(crate::reviewers::get(app, id)?),
                 None => None,
             };
-            let name = a.text(r, &["name", "reviewer_name", "display_name"]).or_else(|| rrow.as_ref().map(|x| x.st("name"))).or_else(|| host_user.clone());
+            let name = a
+                .text(r, &["name", "reviewer_name", "display_name", "bb_name"])
+                .or_else(|| rrow.as_ref().map(|x| x.st("name")))
+                .or_else(|| host_user.clone())
+                .or_else(|| email.clone());
             let host_user = host_user.or_else(|| rrow.as_ref().and_then(|x| x.s("host_user").map(str::to_string)));
             if task.is_none() && project.is_none() {
                 rep.skipped.push(format!("{} {}: its task isn't known", a.table, a.text(r, &["id"]).unwrap_or_default()));
@@ -1023,7 +1217,23 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
                 rep.skipped.push(format!("{} {}: who was asked isn't known", a.table, a.text(r, &["id"]).unwrap_or_default()));
                 continue;
             }
-            let replaces = a.id(r, &["replaces", "replaced", "stands_in_for", "for_ask"]);
+            // The ask this one stands in for: its id, or (the Python board) who it replaced, as
+            // that person's latest ask on the same task before this one.
+            let replaces = match a.get(r, &["replaces", "replaced", "stands_in_for", "for_ask"]) {
+                Value::Number(x) => x.as_i64(),
+                Value::String(s) if s.trim().parse::<i64>().is_ok() => s.trim().parse().ok(),
+                Value::String(s) => {
+                    let me = a.id(r, &["id"]).unwrap_or(i64::MAX);
+                    a.rows
+                        .iter()
+                        .filter(|x| a.id(x, &["task_id", "task"]) == task.as_ref().map(|t| t.id()))
+                        .filter(|x| a.text(x, ASK_WHO).is_some_and(|e| e.eq_ignore_ascii_case(s.trim())))
+                        .filter_map(|x| a.id(x, &["id"]))
+                        .filter(|id| *id < me)
+                        .max()
+                }
+                _ => None,
+            };
             let answered_at = a.get(r, &["answered_at", "reviewed_at"]).clone();
             let closed_at = a.get(r, &["closed_at", "swapped_at", "ended_at", "dropped_at"]).clone();
             let answer = ask_answer(a.text(r, &["answer", "verdict", "review", "result"]).as_deref());
@@ -1036,10 +1246,10 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             } else {
                 "open"
             });
-            // An ask still open on a task that's finished: its PR is done with.
-            let done = task.as_ref().map(|t| t.s("status") == Some("done")).unwrap_or(false);
+            // An ask still open on a PR that's merged or closed: nothing left to review.
+            let over = task.as_ref().is_some_and(pr_over);
             let (state, closed_at) = match state {
-                "open" if done => ("closed", task.as_ref().map(|t| t.v("finished_at")).filter(|v| !v.is_null()).unwrap_or_else(|| json!(now_iso()))),
+                "open" if over => ("closed", task.as_ref().map(|t| t.v("updated_at")).filter(|v| !v.is_null()).unwrap_or_else(|| json!(now_iso()))),
                 s => (s, closed_at),
             };
             let pr = |col: &str, alts: &[&str]| -> Value {
@@ -1049,6 +1259,7 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
                 }
                 task.as_ref().map(|t| t.v(col)).unwrap_or(Value::Null)
             };
+            let filled = a.truthy(r, &["filled", "filled_in"]) || !a.get(r, &["filled_at"]).is_null();
             let new_id = app.db.x(
                 "INSERT OR IGNORE INTO review_asks(id, task_id, project, pr_host, pr_repo, pr_num, reviewer_id, host_user, name, why, asked_by, replaces, \
                  state, asked_at, answered_at, closed_at, answer, work_mins, filled) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1071,7 +1282,7 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
                     closed_at,
                     json!(answer),
                     a.get(r, &["work_mins", "mins", "minutes"]).clone(),
-                    json!(a.truthy(r, &["filled", "filled_in"]) as i64),
+                    json!(filled as i64),
                 ],
             )?;
             if !wrote(app)? {
@@ -1088,21 +1299,32 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             app.db.x("UPDATE review_asks SET replaces = COALESCE(replaces, ?) WHERE id = ?", vec![json!(id), json!(by)])?;
         }
         rep.copied.push(("review_asks".into(), n));
+        park_unread(app, a, rep)?;
+    }
+    // The old board's counts past what its ledger kept, so turns carry on where they were.
+    for (id, n) in counts {
+        let ledger = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ?", vec![json!(id)])?;
+        let swapped = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ? AND state IN ('swapped', 'came_back')", vec![json!(id)])?;
+        app.db.x(
+            "UPDATE reviewers SET carried_asks = ?, carried_swaps = ?, carried_last_ask = ? WHERE id = ?",
+            vec![json!((n.asks - ledger).max(0)), json!((n.swaps - swapped).max(0)), json!(n.last), json!(id)],
+        )?;
     }
     if let Some(b) = Old::read(c, old, "reviewer_bot_runs", &["bot_runs"])? {
-        let mut n = 0;
         for r in &b.rows {
-            let rid = b.text(r, &["reviewer_id", "reviewer"]).and_then(|k| ids.get(&k.to_lowercase()).copied());
+            let rid = b.text(r, &["reviewer_id", "reviewer"]).and_then(|k| ids.get(&format!("#{}", k.to_lowercase())).copied());
             let (Some(rid), Some(at), Some(rf)) = (rid, b.text(r, &["at", "seen_at", "created_at"]), b.text(r, &["ref", "comment", "comment_id", "url"])) else {
                 rep.skipped.push(format!("{} {}: its reviewer, time or comment isn't known", b.table, b.text(r, &["id"]).unwrap_or_default()));
                 continue;
             };
             app.db.x("INSERT OR IGNORE INTO reviewer_bot_runs(reviewer_id, at, ref) VALUES(?, ?, ?)", vec![json!(rid), json!(at), json!(rf)])?;
             if wrote(app)? {
-                n += 1;
+                bot_runs += 1;
             }
         }
-        rep.copied.push(("reviewer_bot_runs".into(), n));
+    }
+    if bot_runs > 0 {
+        rep.copied.push(("reviewer_bot_runs".into(), bot_runs));
     }
     Ok(())
 }
@@ -1117,16 +1339,32 @@ fn break_verdict(raw: Option<&str>) -> Option<&'static str> {
     })
 }
 
-/// The old board's master breaks (`M<n>`), numbers kept. One still open on a project the board
-/// doesn't watch (`[master.projects]`) comes over closed: nothing would ever close it.
-fn breaks(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+/// The project old breaks with none of their own were on: the option, else the only watched one.
+fn breaks_project(app: &App, opts: &Options) -> Option<String> {
+    if let Some(p) = opts.master_project.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        return Some(p.to_string());
+    }
+    let watched: Vec<&String> = app.cfg.master.projects.keys().collect();
+    (watched.len() == 1).then(|| watched[0].clone())
+}
+
+/// The old board's master breaks (`M<n>`), numbers kept. The Python board watched one project, so
+/// its breaks name none: they're on `--master-project` (or the only `[master.projects]` one). Its
+/// build (`url`, `build_id`, `pipeline`), `title`, `error`, `fix` and `base` go into the evidence;
+/// a `fix` that names a task is the fix task, `base` the branch. One still open on a project the
+/// board doesn't watch comes over closed: nothing would ever close it.
+fn breaks(app: &App, c: &Connection, old: &[String], opts: &Options, rep: &mut Report) -> Result<()> {
     let Some(b) = Old::read(c, old, "master_breaks", &["breaks"])? else { return Ok(()) };
+    let fallback = breaks_project(app, opts);
     let mut n = 0;
     for r in &b.rows {
         let id = b.id(r, &["id", "num", "number"]);
         let label = id.map(crate::breaks::bref).unwrap_or_else(|| "a break".into());
-        let Some(project) = b.text(r, &["project"]) else {
-            rep.skipped.push(format!("{} {label}: no project", b.table));
+        let Some(project) = b.text(r, &["project"]).or_else(|| fallback.clone()) else {
+            rep.skipped.push(format!(
+                "{} {label}: no project (the old board's breaks were on one project: import again with --master-project <name>)",
+                b.table
+            ));
             continue;
         };
         let closed_at = b.get(r, &["closed_at", "resolved_at", "fixed_at", "green_at"]).clone();
@@ -1143,31 +1381,82 @@ fn breaks(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result
         }
         let head = b.get(r, &["head", "sha", "head_sha", "red_sha", "commit"]).clone();
         let last = b.get(r, &["last_head", "latest_sha", "last_sha"]).clone();
-        let checks = b.get(r, &["checks", "failed_checks", "failing", "failing_checks"]);
-        let checks = if checks.is_null() { Value::Null } else { json!(jdumps(&json!(str_words(checks)))) };
+        let base = b.text(r, &["base", "base_branch"]);
+        let (base_branch, base_sha) = match base.as_deref() {
+            Some(s) if is_sha(s) => (None, Some(s.to_string())),
+            other => (other.map(str::to_string), None),
+        };
+        let fix = b.text(r, &["fix"]);
+        let fix_task = fix.as_deref().filter(|f| !is_sha(f)).and_then(|f| parse_ref_str(f, "task").ok().flatten());
+        let fix_sha = fix.as_deref().filter(|f| is_sha(f)).map(str::to_string);
+        let pipeline = b.text(r, &["pipeline", "pipeline_name", "check", "job"]);
+        let title = b.text(r, &["title"]);
+        let error = b.text(r, &["error", "error_text", "failure"]);
+        let mut checks = str_words(b.get(r, &["checks", "failed_checks", "failing", "failing_checks"]));
+        if checks.is_empty() {
+            checks.extend(pipeline.clone().or_else(|| title.clone()));
+        }
+        // The evidence the old board kept, else its build, title and error as one.
+        let mut evidence = json_text(b.get(r, &["evidence", "ci", "ci_evidence"]));
+        let url = b.text(r, &["url", "build_url", "link"]);
+        let build_id = b.text(r, &["build_id", "build", "build_number"]);
+        let proof_raw = b.get(r, &["proof"]).clone();
+        let proof: Vec<String> = str_words(&proof_raw).into_iter().filter(|w| w.starts_with("http://") || w.starts_with("https://")).collect();
+        let old_bits = [("title", json!(title)), ("build_id", json!(build_id)), ("error", json!(error)), ("fix", json!(fix)), ("base", json!(base))];
+        let build = url.is_some() || pipeline.is_some() || title.is_some() || error.is_some() || build_id.is_some();
+        if evidence.is_null() && (build || fix.is_some() || (proof.is_empty() && text(&proof_raw).is_some())) {
+            let steps: Vec<String> = error.as_deref().unwrap_or("").lines().map(str::trim).filter(|l| !l.is_empty()).take(5).map(|l| short(l, 200)).collect();
+            let name = pipeline.clone().or_else(|| title.clone()).or_else(|| checks.first().cloned()).unwrap_or_else(|| "build".into());
+            let checks = if build { json!([{"name": name, "url": url, "steps": steps, "tests": []}]) } else { json!([]) };
+            let mut ev = json!({"checks": checks, "read_at": b.get(r, &["opened_at", "at", "created_at", "started_at"])});
+            for (k, v) in old_bits {
+                if !v.is_null() {
+                    ev[k] = v;
+                }
+            }
+            if proof.is_empty() {
+                if let Some(t) = text(&proof_raw) {
+                    ev["proof"] = json!(t);
+                }
+            }
+            evidence = json!(jdumps(&ev));
+        } else if let Some(s) = evidence.as_str() {
+            // Kept as it was, with the old columns beside it.
+            let mut ev: Value = serde_json::from_str(s).unwrap_or(json!({}));
+            if ev.is_object() {
+                for (k, v) in old_bits {
+                    if !v.is_null() {
+                        ev[k] = v;
+                    }
+                }
+                evidence = json!(jdumps(&ev));
+            }
+        }
+        let task_id = b.id(r, &["task_id", "fix_task", "task"]).or(fix_task);
         app.db.x(
             "INSERT OR IGNORE INTO breaks(id, project, host, repo, branch, state, head, last_head, green_head, fixed_head, checks, evidence, suspects, \
-             verdict, verdict_by, verdict_why, verdict_at, task_id, escalated_at, opened_at, closed_at, checked_at) \
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             verdict, verdict_by, verdict_why, verdict_at, task_id, proof, escalated_at, opened_at, closed_at, checked_at) \
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 json!(id),
                 json!(project),
                 b.get(r, &["host", "pr_host"]).clone(),
                 b.get(r, &["repo", "pr_repo"]).clone(),
-                b.get(r, &["branch", "default_branch"]).clone(),
+                json!(b.text(r, &["branch", "default_branch"]).or(base_branch)),
                 json!(state),
                 head.clone(),
                 if last.is_null() { head } else { last },
-                b.get(r, &["green_head", "green_sha", "last_green"]).clone(),
-                b.get(r, &["fixed_head", "fixed_sha", "fixed_by"]).clone(),
-                checks,
-                json_text(b.get(r, &["evidence", "ci", "ci_evidence"])),
+                json!(b.text(r, &["green_head", "green_sha", "last_green"]).or(base_sha)),
+                json!(b.text(r, &["fixed_head", "fixed_sha", "fixed_by"]).or(fix_sha)),
+                if checks.is_empty() { Value::Null } else { json!(jdumps(&json!(checks))) },
+                evidence,
                 json_text(b.get(r, &["suspects", "commits"])),
                 json!(break_verdict(b.text(r, &["verdict", "fault", "decision", "owner"]).as_deref())),
                 b.get(r, &["verdict_by", "decided_by"]).clone(),
                 b.get(r, &["verdict_why", "reason", "why"]).clone(),
                 b.get(r, &["verdict_at", "decided_at"]).clone(),
-                json!(b.id(r, &["task_id", "fix_task", "task"])),
+                json!(task_id),
+                if proof.is_empty() { Value::Null } else { json!(jdumps(&json!(proof))) },
                 b.get(r, &["escalated_at"]).clone(),
                 b.get(r, &["opened_at", "at", "created_at", "started_at"]).clone(),
                 if closed_at.is_null() && state == "closed" { json!(now_iso()) } else { closed_at },
@@ -1185,6 +1474,7 @@ fn breaks(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result
         crate::breaks::carry_branch(app, &r.st("project"), &r.st("branch"))?;
     }
     rep.copied.push(("breaks".into(), n));
+    park_unread(app, &b, rep)?;
     Ok(())
 }
 
