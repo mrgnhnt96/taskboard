@@ -383,7 +383,7 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     }
     let left = steps::missing_at(app, t, &[steps::Before::Pr, steps::Before::Done], body["git"]["sha"].as_str().filter(|h| !h.is_empty()))?;
     if !left.is_empty() {
-        return err(409, steps::refusal(&board::tb_cmd(app), "opening the PR", &left));
+        return err(409, steps::refusal_for(app, t, "opening the PR", &left));
     }
     let pr = open(app, t, &body_str(body, "cwd"), &text, &body_str(body, "pr_title"))?;
     app.db.tx(|| {

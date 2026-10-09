@@ -74,8 +74,17 @@ impl<'a> Report<'a> {
         self.sid.as_deref()
     }
 
+    /// The terminal's name, as a session's own report gives it. A `tb` report's `name` is what it's about
+    /// (a step, a goal), never the terminal's.
+    fn terminal_name(&self) -> Option<&str> {
+        if self.event.starts_with("tb.") {
+            return None;
+        }
+        self.body.get("name").and_then(|v| v.as_str())
+    }
+
     pub fn name(&self) -> String {
-        board::session_name(self.app, self.sid(), self.body.get("name").and_then(|v| v.as_str()))
+        board::session_name(self.app, self.sid(), self.terminal_name())
     }
 
     fn b(&self, k: &str) -> String {
@@ -109,7 +118,7 @@ impl<'a> Report<'a> {
         if let Some(c) = &self.claude {
             f.push(("claude_session_id", json!(c)));
         }
-        if let Some(n) = self.body.get("name").and_then(|v| v.as_str()).filter(|n| !n.is_empty()) {
+        if let Some(n) = self.terminal_name().filter(|n| !n.is_empty()) {
             f.push(("name", json!(n)));
             board::note_rename(app, cur.as_ref(), Some(n))?;
         }
@@ -1138,7 +1147,7 @@ fn finishing(r: &Report) -> Result<()> {
             let line = format!("Not finished: {} waits for {}", rf("task", t.id()), steps::names(&left));
             app.db.tx(|| crate::dispatch::add_alert(app, &line, Some(t.id()), t.i("goal_id"), None, None).map(|_| ()))?;
         }
-        return err(409, steps::refusal(&board::tb_cmd(app), "finishing", &left));
+        return err(409, steps::refusal_for(app, &t, "finishing", &left));
     }
     let here = if r.away(&t)? { None } else { r.cwd.as_deref() };
     if let Some(why) = crate::comments::task_refusal(app, &t, here, "finishing")? {

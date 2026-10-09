@@ -679,8 +679,8 @@ enum StepCmd {
 /// What a step's round looks at, when it isn't this checkout's head (else the aim `tb step aim` saved).
 #[derive(Args, Clone, Default)]
 struct Aim {
-    /// Look at this branch, in the worktree that has it checked out
-    #[arg(long, conflicts_with = "worktree")]
+    /// Look at this branch, in the worktree that has it checked out (with --worktree, the branch that checkout is on, for a detached one)
+    #[arg(long)]
     branch: Option<String>,
     /// Look at the checkout in this folder
     #[arg(long)]
@@ -1334,8 +1334,15 @@ fn plural_threads(v: &Value) -> String {
     }
 }
 
+/// Prints a line. When the reader has gone (`tb take | head`), what was asked is done, so tb stops
+/// quietly instead of panicking on the broken pipe.
 fn out(line: &str) {
-    println!("{}", line.trim_end_matches('\n'));
+    use std::io::Write;
+    if let Err(e) = writeln!(std::io::stdout(), "{}", line.trim_end_matches('\n')) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+    }
 }
 
 fn task_ref(v: &str) -> Result<String, String> {
@@ -2140,7 +2147,7 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
     } else if let Some(b) = given(&a.branch) {
         let b = b.trim_start_matches("refs/heads/").to_string();
         let dir = worktree_with(if here.is_empty() { "." } else { &here }, &b)
-            .ok_or_else(|| format!("No worktree has {b} checked out. Say which one with --worktree."))?;
+            .ok_or_else(|| format!("No worktree has {b} checked out. Say which checkout with --worktree <dir> --branch {b}."))?;
         (dir, Some(b))
     } else if here.is_empty() {
         return Ok(Aimed { dir: None, head: None, branch: None, pinned: false });
@@ -2315,7 +2322,7 @@ fn aim_cmd(c: &Ctx, a: Aim, clear: bool, t: TaskArg) -> Result<i32, String> {
 /// Runs a step's script in the repo (else here), its output shown as it comes; the exit and the
 /// output's tail.
 fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String>, timeout: u64) -> (bool, String) {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let dir = ["worktree", "repo"]
@@ -2338,7 +2345,8 @@ fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String
     let reader = std::thread::spawn(move || {
         let mut tail: std::collections::VecDeque<String> = Default::default();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            println!("{line}");
+            // A reader that went away (`tb step run … | head`) doesn't stop the script.
+            let _ = writeln!(std::io::stdout(), "{line}");
             tail.push_back(line);
             if tail.len() > 200 {
                 tail.pop_front();
@@ -2500,11 +2508,8 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
         return Err(format!("“{}” hasn't passed on {short} yet: {}, then publish it.", step.name, step.how("tb")));
     }
     let task_id = task.clone().or_else(|| v["task"].as_str().map(|s| s.to_string()));
-    // The round being published, for the script to read.
-    let round = task_id
-        .as_deref()
-        .and_then(|t| c.call("GET", &format!("/tasks/{}", task_ref(t).ok()?), None).ok())
-        .and_then(|d| d["step_results"].as_array().and_then(|a| a.iter().find(|r| r["name"].as_str().map(steps::key) == Some(steps::key(&step.name))).cloned()));
+    // The round being published, for the script to read: the one that passed on this head.
+    let round = publish_round(&v, &step, head.as_deref());
     let path = std::env::temp_dir().join(format!("tb-publish-{}-{}.json", std::process::id(), taskboardd::util::now_ts() as u64));
     let mut vars = step_vars(c, &v, &step.name, &at);
     if let Some(r) = &round {
@@ -2523,6 +2528,19 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
         Some(_) => out(&format!("{} didn't publish (output above). Fix what it reports and run tb step publish \"{}\" again.", step.name, step.name)),
     }
     Ok(if passed { 0 } else { 1 })
+}
+
+/// The step's round that passed on `head` (any passing round, for a step that isn't per head), from
+/// `passed_rounds` in `GET /steps`; none when the board doesn't say, or its round is on another commit.
+fn publish_round(v: &Value, step: &Step, head: Option<&str>) -> Option<Value> {
+    let r = v["passed_rounds"].as_object()?.iter().find(|(k, _)| steps::key(k) == steps::key(&step.name))?.1;
+    let on_head = match (head, r["head"].as_str()) {
+        _ if !step.per_head => true,
+        (Some(h), Some(rh)) => steps::same_head(h, rh),
+        (Some(_), None) => false,
+        (None, _) => true,
+    };
+    (on_head && r["passed"] != false).then(|| r.clone())
 }
 
 /// Reports a step's outcome; a failed one exits 1 so the agent sees it.
@@ -4147,7 +4165,7 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--worktree", "/tmp", "--commit", "abc1234"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear", "--branch", "x"]).is_err());
-        assert!(Cli::try_parse_from(["tb", "step", "run", "Review", "--branch", "x", "--worktree", "/tmp"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "step", "run", "Review", "--branch", "x", "--worktree", "/tmp"]).is_ok(), "a detached checkout takes its branch with it");
     }
 
     #[test]

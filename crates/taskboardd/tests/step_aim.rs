@@ -182,3 +182,58 @@ fn a_publish_is_recorded_on_the_task() {
     let logged = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE 'Published%'", taskboardd::p![id]).unwrap();
     assert_eq!(logged[0].st("text"), format!("Published Author review for {}", "a".repeat(12)));
 }
+
+#[test]
+fn publish_gets_the_round_that_passed_on_the_head() {
+    let b = new_board();
+    b.new_task();
+    let (old, new) = ("a".repeat(40), "b".repeat(40));
+    b.report("tb.step", json!({"name": "Author review", "via": "run", "ok": true, "head": new, "result": {"headline": "Clean"}})).unwrap();
+    // A later round on another commit doesn't take its place.
+    b.report("tb.step", json!({"name": "Author review", "via": "run", "ok": true, "head": old, "result": {"headline": "Old"}})).unwrap();
+    let s = b.steps(&new);
+    let r = &s["passed_rounds"]["Author review"];
+    assert_eq!((r["head"].as_str(), r["headline"].as_str(), r["stale"].as_bool()), (Some(new.as_str()), Some("Clean"), Some(false)));
+    assert!(b.steps(&"c".repeat(40))["passed_rounds"]["Author review"].is_null(), "nothing passed on that head");
+}
+
+#[test]
+fn a_pin_saved_without_its_tip_goes_once_the_branch_moves() {
+    let b = new_board();
+    let id = b.new_task();
+    let repo = b.repo();
+    let pinned = git(&repo, &["rev-parse", "main"]);
+    // As a pin saved before the board kept the tip.
+    let ctx = json!({"step_aim": {"branch": "main", "sha": pinned}}).to_string();
+    b.app.db.update("tasks", &json!(id), vec![("context", json!(ctx))]).unwrap();
+    assert_eq!(steps::aim_head(&b.row(id)), Some(pinned.clone()), "it holds while the branch is at the pin");
+    std::fs::write(repo.join("two"), "x").unwrap();
+    git(&repo, &["add", "two"]);
+    git(&repo, &["commit", "-q", "-m", "Two"]);
+    let moved = git(&repo, &["rev-parse", "main"]);
+    assert_eq!(steps::aim_now(&b.row(id))["dropped"], json!(pinned));
+    assert_eq!(steps::aim_head(&b.row(id)), Some(moved));
+}
+
+#[test]
+fn refusals_and_handoffs_fill_placeholders() {
+    let b = new_board();
+    std::fs::write(&b.app.cfg.config_path, "[[steps]]\nname = \"Review\"\nprompt = \"Run review on {branch} (pr {pr})\"\n").unwrap();
+    let id = b.new_task();
+    git(&b.repo(), &["branch", "feat"]);
+    b.report("tb.step_aim", json!({"branch": "feat"})).unwrap();
+    let left = steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap();
+    let r = steps::refusal_for(&b.app, &b.row(id), "opening the PR", &left);
+    assert!(r.contains("Run review on feat (pr )"), "{r}");
+    let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
+    assert!(h.contains("Run review on feat") && !h.contains("{pr}"), "{h}");
+}
+
+#[test]
+fn a_step_report_doesnt_rename_the_terminal() {
+    let b = new_board();
+    b.new_task();
+    b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": true, "head": "a".repeat(40)})).unwrap();
+    let s = board::get_session(&b.app, Some("s1")).unwrap().unwrap();
+    assert_eq!(s.st("name"), "Term");
+}
