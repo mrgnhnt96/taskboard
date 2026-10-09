@@ -12,6 +12,8 @@ use taskboardd::steps::{self, Step};
 use std::collections::BTreeMap;
 
 const TB_TIMEOUT: f64 = 5.0;
+/// `tb done --pr-body`: the board fetches, checks the branch and opens the PR before it answers.
+const PR_OPEN_TIMEOUT: f64 = 300.0;
 const QUESTION_TIMEOUT: f64 = 100.0;
 const SAVED: &str = "Saved; the board will pick it up when it's back.";
 const NO_TASK: &str = "No task on this terminal, so nothing was logged. Run tb take T<n> first, or pass --task T<n>.";
@@ -77,8 +79,20 @@ enum Cmd {
     Done {
         summary: String,
         /// The PR this task opened (or put its link in the summary)
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["pr_body", "no_pr"])]
         pr: Option<String>,
+        /// Let the board open the PR: a file with its description (- for stdin), checked first
+        #[arg(long = "pr-body", value_name = "FILE", conflicts_with = "no_pr")]
+        pr_body: Option<String>,
+        /// The PR's title with --pr-body (default: the task's title, after its ticket key)
+        #[arg(long = "title", requires = "pr_body")]
+        pr_title: Option<String>,
+        /// It finishes without the PR it was meant to open, and why
+        #[arg(long = "no-pr", value_name = "WHY")]
+        no_pr: Option<String>,
+        /// It finishes without evidence (screenshots, results), and why
+        #[arg(long = "no-evidence", value_name = "WHY")]
+        no_evidence: Option<String>,
         /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d
         #[arg(long)]
         human: Option<String>,
@@ -323,6 +337,28 @@ enum StepCmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Run another round of a step's check or script, on this commit or a new one
+    Again {
+        name: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
+    /// Answer one finding of a step's last round: tb step triage "Review" F2 --state fixed --commit abc123
+    Triage {
+        name: String,
+        /// The finding's id (tb steps lists them)
+        finding: String,
+        #[arg(long, value_parser = ["open", "fixed", "answered", "dismissed"])]
+        state: String,
+        /// Why, or what you did
+        #[arg(long)]
+        note: Option<String>,
+        /// The commit that deals with it (points the next round at it)
+        #[arg(long)]
+        commit: Option<String>,
+        #[command(flatten)]
+        t: TaskArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -422,6 +458,15 @@ enum TaskCmd {
         /// Nothing else in its goal runs while it does (board: nothing else on the board)
         #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
         alone: Option<String>,
+        /// Its PR builds on this task's PR (any goal): it starts once that's done, from its branch
+        #[arg(long = "stack-on", value_name = "T12")]
+        stack_on: Option<String>,
+        /// It ends in a PR, whatever its project does
+        #[arg(long, conflicts_with = "no_pr")]
+        pr: bool,
+        /// It ends without a PR
+        #[arg(long = "no-pr")]
+        no_pr: bool,
     },
     /// Change a task
     Set {
@@ -454,6 +499,12 @@ enum TaskCmd {
         /// A Jira key to link, `new` for a new ticket, or `none`
         #[arg(long)]
         jira: Option<String>,
+        /// Its PR builds on this task's PR (any goal), or none
+        #[arg(long = "stack-on", value_name = "T12|none")]
+        stack_on: Option<String>,
+        /// Whether it ends in a PR: yes, no, or auto (its project's default)
+        #[arg(long, value_parser = ["yes", "no", "auto"])]
+        pr: Option<String>,
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
@@ -492,6 +543,11 @@ enum PrCmd {
     Wait { task: Option<String> },
     /// The PR was merged
     Merged { task: Option<String> },
+    /// Check a PR description against the rules tb done --pr-body uses ([pr_body] in config.toml)
+    BodyCheck {
+        /// The file (- for stdin)
+        file: String,
+    },
     /// Count the PR's checks as passed (e.g. a hook cancelled the builds), so it moves on to review
     SkipChecks {
         task: Option<String>,
@@ -780,10 +836,59 @@ fn find_step(c: &Ctx, task: Option<String>, name: &str) -> Result<(Value, Step),
 }
 
 fn steps_path(c: &Ctx, task: Option<String>) -> Result<String, String> {
+    let head = local_head(&c.cwd).map(|h| format!("&head={h}")).unwrap_or_default();
     Ok(match task {
-        Some(x) => format!("/steps?task={}", task_ref(&x)?),
-        None => format!("/steps?session={}", c.session),
+        Some(x) => format!("/steps?task={}{head}", task_ref(&x)?),
+        None => format!("/steps?session={}{head}", c.session),
     })
+}
+
+/// This checkout's head commit, so per-head steps are judged on what's here.
+pub fn local_head(cwd: &str) -> Option<String> {
+    if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
+        return None;
+    }
+    let o = std::process::Command::new("git").args(["-C", cwd, "rev-parse", "HEAD"]).output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty())
+}
+
+/// A PR description from a file, or stdin for `-`.
+fn read_body(file: &str) -> Result<String, String> {
+    if file == "-" {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("couldn't read the description from stdin: {e}"))?;
+        return Ok(s);
+    }
+    std::fs::read_to_string(file).map_err(|e| format!("couldn't read {file}: {e}"))
+}
+
+/// Refuses a round that comes too soon after the last (the step's `min_gap_mins`).
+fn round_gap(v: &Value, name: &str) -> Result<(), String> {
+    let at = v["steps"].as_array().into_iter().flatten().find(|s| s["name"].as_str().map(steps::key) == Some(steps::key(name))).and_then(|s| s["next_round_at"].as_str());
+    match at {
+        Some(at) => Err(format!(
+            "“{name}” ran a round too recently; the next can start at {}. Work on what it found until then.",
+            taskboardd::util::local_clock(Some(at))
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Runs a step's check or script with `$TASKBOARD_RESULT` set, and reads what it wrote there.
+fn run_with_result(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String>, timeout: u64) -> (bool, String, Option<Value>) {
+    let path = std::env::temp_dir().join(format!("tb-result-{}-{}.json", std::process::id(), taskboardd::util::now_ts() as u64));
+    let _ = std::fs::remove_file(&path);
+    let mut vars = vars.clone();
+    vars.insert("result".into(), path.to_string_lossy().to_string());
+    let (passed, output) = run_script(c, label, &steps::fill(script, &vars), &vars, timeout);
+    let result = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v.is_object());
+    let _ = std::fs::remove_file(&path);
+    let passed = match result.as_ref().and_then(|r| r["verdict"].as_str()) {
+        Some("pass") | Some("skip") => true,
+        Some("fail") => false,
+        _ => passed,
+    };
+    (passed, output, result)
 }
 
 /// The placeholders' values for a script: the board's, with this checkout's branch.
@@ -871,28 +976,41 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
                 out(&format!("{} {} on {task}.", step.name, if skip { "skipped" } else { "done" }));
                 return Ok(0);
             }
-            let mut f = json!({"name": step.name, "note": note, "via": "done"});
+            let mut f = json!({"name": step.name, "note": note, "via": "done", "head": local_head(&c.cwd)});
             if !step.check.is_empty() && !step.owner {
+                round_gap(&v, &step.name)?;
                 let vars = step_vars(c, &v, &step.name);
-                let (passed, output) = run_script(c, "Check", &steps::fill(&step.check, &vars), &vars, step.timeout_secs());
+                let (passed, output, result) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
                 f["ok"] = json!(passed);
                 f["output"] = json!(output);
+                f["result"] = json!(result);
             }
-            step_report(c, f, t.task)
+            step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
         }
-        StepCmd::Run { name, t } => {
-            let (v, step) = find_step(c, t.task.clone(), &name)?;
+        StepCmd::Run { name, t } => run_step(c, &name, t.task),
+        StepCmd::Again { name, t } => {
+            let (_, step) = find_step(c, t.task.clone(), &name)?;
+            if step.owner || (step.run.is_empty() && step.check.is_empty()) {
+                return Err(format!("“{}” has no check or script to run again: {}.", step.name, step.how("tb")));
+            }
             if step.run.is_empty() {
-                return Err(format!("“{}” has no script to run: {}.", step.name, step.how("tb")));
+                return step_cmd(c, StepCmd::Done { name, note: Some("Another round".into()), skip: false, t });
             }
-            let vars = step_vars(c, &v, &step.name);
-            let (mut passed, mut output) = run_script(c, "Script", &steps::fill(&step.run, &vars), &vars, step.timeout_secs());
-            if passed && !step.check.is_empty() {
-                let (p, o) = run_script(c, "Check", &steps::fill(&step.check, &vars), &vars, step.timeout_secs());
-                passed = p;
-                output = format!("{output}\n{o}");
-            }
-            step_report(c, json!({"name": step.name, "via": "run", "ok": passed, "output": output}), t.task)
+            run_step(c, &name, t.task)
+        }
+        StepCmd::Triage { name, finding, state, note, commit, t } => {
+            let (v, step) = find_step(c, t.task.clone(), &name)?;
+            let task = t.task.or_else(|| v["task"].as_str().map(|s| s.to_string()));
+            c.run_report("tb.step_triage", json!({"name": step.name, "finding": finding, "state": state, "note": note, "commit": commit}), task, true, |v| {
+                let open = v["open"].as_i64().unwrap_or(0);
+                format!(
+                    "{} is {} on {}. {}",
+                    v["finding"].as_str().unwrap_or("The finding"),
+                    v["state"].as_str().unwrap_or(""),
+                    v["step"].as_str().unwrap_or("the step"),
+                    if open == 0 { "No open findings left.".to_string() } else { format!("{} still open.", if open == 1 { "1 finding is".to_string() } else { format!("{open} findings are") }) }
+                )
+            })
         }
         StepCmd::Ask { name, t } => c.run_report("tb.step_ask", json!({"name": name}), t.task, true, |v| {
             if v["already"] == true {
@@ -908,6 +1026,25 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
         }),
     }
+}
+
+/// `tb step run`: a script step's script, then its check.
+fn run_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String> {
+    let (v, step) = find_step(c, task.clone(), name)?;
+    if step.run.is_empty() {
+        return Err(format!("“{}” has no script to run: {}.", step.name, step.how("tb")));
+    }
+    round_gap(&v, &step.name)?;
+    let vars = step_vars(c, &v, &step.name);
+    let (mut passed, mut output, mut result) = run_with_result(c, "Script", &step.run, &vars, step.timeout_secs());
+    if passed && !step.check.is_empty() {
+        let (p, o, r) = run_with_result(c, "Check", &step.check, &vars, step.timeout_secs());
+        passed = p;
+        output = format!("{output}\n{o}");
+        result = r.or(result);
+    }
+    let f = json!({"name": step.name, "via": "run", "ok": passed, "output": output, "result": result, "head": local_head(&c.cwd)});
+    step_report(c, f, task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
 }
 
 /// Reports a step's outcome; a failed one exits 1 so the agent sees it.
@@ -959,6 +1096,27 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
                 let st = st.filled(&vars);
                 out(&format!("[{}] {} ({when}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
+            }
+            // The latest round of each step that ran: its headline and findings, to triage.
+            if let Ok(d) = c.call("GET", &format!("/tasks/{task}"), None) {
+                for r in d["step_results"].as_array().into_iter().flatten() {
+                    let moved = if r["stale"] == true { " (the branch has moved since)" } else { "" };
+                    out(&format!("{}: {}{moved}", r["name"].as_str().unwrap_or(""), r["headline"].as_str().unwrap_or("")));
+                    for f in r["findings"].as_array().into_iter().flatten() {
+                        let at = match (f["file"].as_str(), f["line"].as_i64()) {
+                            (Some(file), Some(l)) => format!(" {file}:{l}"),
+                            (Some(file), None) => format!(" {file}"),
+                            _ => String::new(),
+                        };
+                        out(&format!(
+                            "  {} [{}{}] {}{at}",
+                            f["id"].as_str().unwrap_or("?"),
+                            f["state"].as_str().filter(|s| !s.is_empty()).unwrap_or("open"),
+                            f["severity"].as_str().map(|s| format!(", {s}")).unwrap_or_default(),
+                            f["title"].as_str().unwrap_or("")
+                        ));
+                    }
+                }
             }
             Ok(0)
         }
@@ -1018,8 +1176,33 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             res
         }
-        Cmd::Done { summary, pr, human, t } => {
-            c.run_report("tb.done", json!({"summary": summary, "pr": pr, "human": human}), t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")))
+        Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, human, t } => {
+            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence});
+            let Some(file) = pr_body else {
+                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")));
+            };
+            let text = read_body(&file)?;
+            let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &text);
+            if !problems.is_empty() {
+                return Err(format!("the PR description needs work first:\n- {}", problems.join("\n- ")));
+            }
+            f["pr_body"] = json!(text);
+            f["pr_title"] = json!(pr_title);
+            // Not spooled: the PR opens now or not at all.
+            let task = t.task.map(|x| task_ref(&x)).transpose()?;
+            let body = c.body("tb.done", f, task.as_deref());
+            let v = match client::request(&c.cfg, "POST", "/report", Some(&body), PR_OPEN_TIMEOUT) {
+                Ok(v) => v,
+                Err(CallError::Refused(m)) => return Err(m),
+                Err(CallError::Unreachable(e)) => return Err(format!("the board isn't answering ({e}), so it can't open the PR. Try again once it's back.")),
+            };
+            if !v["task"].is_string() {
+                out(NO_TASK);
+                return Ok(0);
+            }
+            let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
+            out(&format!("{} is done.{pr}", v["task"].as_str().unwrap_or("")));
+            Ok(0)
         }
         Cmd::Fail { reason, t } => {
             c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.", v["task"].as_str().unwrap_or("")))
@@ -1304,7 +1487,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone } => {
+            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -1335,6 +1518,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(a) = alone {
                     body["alone"] = json!(a);
                 }
+                if let Some(x) = stack_on {
+                    body["stack_on"] = json!(task_ref(&x)?);
+                }
+                if pr || no_pr {
+                    body["ships_pr"] = json!(pr);
+                }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) if here => {
@@ -1350,7 +1539,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, stack_on, pr } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -1389,6 +1578,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = jira {
                     b["jira_key"] = json!(x);
                 }
+                if let Some(x) = stack_on {
+                    b["stack_on"] = if x.eq_ignore_ascii_case("none") { json!("none") } else { json!(task_ref(&x)?) };
+                }
+                if let Some(x) = pr {
+                    b["ships_pr"] = json!(x);
+                }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
                 }
@@ -1396,6 +1591,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let mut bits = String::new();
                 for x in lock_bits(&v) {
                     bits += &format!(" · {x}");
+                }
+                if let Some(l) = v["stack_on"]["line"].as_str() {
+                    bits += &format!(" · {l}");
+                }
+                if v["ships_pr_set"].is_boolean() {
+                    bits += if v["ships_pr"] == true { " · ends in a PR" } else { " · no PR" };
                 }
                 out(&format!("Changed {t} “{}”{bits}.", v["title"].as_str().unwrap_or("")));
                 print_warnings(&v);
@@ -1555,6 +1756,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let (Some(b), Some(base)) = (rec["branch"].as_str(), rec["base"].as_str()) {
                     out(&format!("Branch {b} into {base}"));
                 }
+                if let Some(l) = pr["bar"]["stacks_on"]["line"].as_str() {
+                    out(l);
+                }
                 if v["watched"] != true {
                     out("The board doesn't watch this PR's host; read it with the host's own tools.");
                 }
@@ -1573,6 +1777,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason.unwrap_or_default(), "all": all, "who": who})))?;
                 out(&format!("{t}'s PR checks count as passed{}.", if all { " on every push" } else { " for this push" }));
                 Ok(0)
+            }
+            PrCmd::BodyCheck { file } => {
+                let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &read_body(&file)?);
+                if problems.is_empty() {
+                    out("The description is fine.");
+                    return Ok(0);
+                }
+                out(&format!("The description needs work:\n- {}", problems.join("\n- ")));
+                Ok(1)
             }
             PrCmd::Merged { task } => {
                 let t = c.pr_task(task)?;
@@ -1796,6 +2009,18 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());
         assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--stack-on", "T3", "--no-pr"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--pr", "--no-pr"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-on", "none", "--pr", "auto"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--pr", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "done", "x", "--no-pr", "covered by T3", "--no-evidence", "no UI"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "done", "x", "--pr-body", "body.md", "--title", "Add x"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "done", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "done", "x", "--title", "Add x"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "fixed", "--commit", "abc"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "gone"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "step", "again", "Review"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr", "body-check", "-"]).is_ok());
     }
 
     #[test]

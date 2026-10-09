@@ -29,6 +29,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   - a script: `tb step run "<name>"`, fix what it reports and run it again (it can take a while: give it time);
   - the owner's: `tb step ask "<name>"`, then end your turn; the board brings you back once it's done.
   A step that can't pass: `tb step fail "<name>" --why "…"`, then end your turn. The board refuses the PR and `tb done` while one is left.
+  A review step may report findings: `tb steps` lists them with their ids. Fix each, then `tb step triage "<name>" F2 --state fixed --commit <sha>` (or `answered`/`dismissed` with `--note "why"`), and `tb step again "<name>"` for another round. A step that runs per push needs a round on each new commit; rounds may need a gap between them (the refusal says when).
 - **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
 
 `tb status` shows this terminal's task. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.

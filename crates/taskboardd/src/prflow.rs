@@ -10,7 +10,7 @@ use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, p, proc, runner};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge"];
-pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge"];
+pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -24,6 +24,7 @@ pub fn label(phase: &str) -> &str {
         "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
         "merge" => "Ready to merge",
+        "waits" => "Waits on base",
         "merged" => "Merged",
         "declined" => "Closed",
         other => other,
@@ -387,7 +388,7 @@ pub fn read_github(app: &App, t: &Row) -> std::result::Result<Value, String> {
         "view",
         &t.st("pr_url"),
         "--json",
-        "number,state,title,author,headRefOid,headRefName,baseRefName,reviewDecision,statusCheckRollup,comments,reviews,mergeable",
+        "number,state,title,author,headRefOid,headRefName,baseRefName,reviewDecision,statusCheckRollup,comments,reviews,mergeable,reviewRequests",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -425,7 +426,8 @@ pub fn summarize_github(d: &Value) -> Value {
         if state == "running" {
             running += 1;
         }
-        checks.push(json!({"name": name, "state": state}));
+        let link = c["detailsUrl"].as_str().or(c["targetUrl"].as_str()).filter(|u| !u.is_empty());
+        checks.push(json!({"name": name, "state": state, "url": link}));
     }
     let comments = d["comments"].as_array().map(|a| a.iter().filter(|c| c["author"]["login"].as_str() != Some(author)).count()).unwrap_or(0)
         + d["reviews"]
@@ -456,6 +458,7 @@ pub fn summarize_github(d: &Value) -> Value {
         "branch": d["headRefName"], "base": d["baseRefName"], "review_decision": d["reviewDecision"].as_str().unwrap_or(""),
         "checks": checks, "failed": failed, "running": running, "comments": comments, "approvals": approvals,
         "mergeable": d["mergeable"], "changes_at": changes_at,
+        "requested": d["reviewRequests"].as_array().map(|a| a.len()).unwrap_or(0),
     })
 }
 
@@ -496,7 +499,8 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         return "rereview".into();
     }
     if review_skipped || decision == "APPROVED" || (decision.is_empty() && rec["approvals"].as_i64().unwrap_or(0) > 0) {
-        return "merge".into();
+        // A stacked PR waits for the PR it builds on to merge first (`stack.rs`).
+        return if crate::stack::holds(app, t).unwrap_or(false) { "waits" } else { "merge" }.into();
     }
     "review".into()
 }
@@ -777,6 +781,7 @@ pub fn refresh(app: &App) -> Result<i64> {
             Err(e) => app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url"))),
         }
     }
+    crate::stack::retarget(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {
         app.db.tx(|| heal(app, &t))?;

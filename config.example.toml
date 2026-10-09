@@ -70,6 +70,21 @@ agents_merge = false                 # let agents merge an approved, green PR
 gh = "gh"
 no_checks_after_mins = 15.0
 
+# `tb done "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
+# (GitHub, with gh) into the real base: a stacked task's parent branch, else the default branch.
+# `tb pr body-check FILE` runs the description check alone.
+[pr_body]
+sections = ["Summary", "Changes", "Testing"]   # `## <name>` sections it needs, in this order
+bullets = ["Changes", "Testing"]               # sections that are bullet lists
+max_paragraph = 400                  # longest paragraph in characters; 0 for no limit
+no_board_refs = true                 # refuse T12 / G3 / B7 and "task board"
+forbid = []                          # more regexes it mustn't match (case-insensitive), e.g. a review tool's name
+rebased = true                       # the branch must sit on <remote>/<base> with no merge commits
+require_ticket = false               # refuse a task with no Jira ticket
+title_prefix = true                  # "ABC-12 Add login"
+context = true                       # add a "## Context" section: ticket, the PR it stacks on, evidence links
+remote = "origin"
+
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
 # env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email).
 [jira]
@@ -87,6 +102,8 @@ in_progress = "In Progress"
 in_review = "In Review"
 done = ""                            # status for a finished task without a PR; empty = leave it
 merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
+canceled = ""                        # status when a task finishes without its PR (tb done --no-pr), with the
+                                     # reason as a comment, e.g. "Withdrawn"; empty = like any task without a PR
 
 # Products decide the labels, components and extra fields on a goal's tickets (`tb goal set G1 --product web`).
 # [jira.products.web]
@@ -98,13 +115,20 @@ merged = ""                          # status once its PR merges, e.g. "Ready fo
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
-# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {pr_url} {jira}. The board
-# refuses the PR and `tb done` until they pass. See docs/HOOKS.md ("Steps").
+# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {base_ref} {pr_url} {jira};
+# {base} is the PR's real base (a stacked task's parent branch) and {base_ref} has the remote on it
+# (origin/main). The board refuses the PR and `tb done` until they pass. A step with per_head = true passes
+# once per head commit (every push is checked again, and a push to the open PR waits for it);
+# min_gap_mins keeps its rounds apart; bar = "WD" shows it in the app's PR bar. A check can write its
+# verdict, headline and findings to $TASKBOARD_RESULT. See docs/HOOKS.md ("Steps").
 # [[steps]]
 # name = "Author-side review"
 # projects = "work-app|work-api"
-# prompt = "Run /author-review on {branch} against {base}, and fix what it finds."
-# check = "test -f .review/{branch}.passed"
+# prompt = "Run /author-review on {branch} against {base_ref}, and fix what it finds."
+# check = "author-review --since {base_ref} --result $TASKBOARD_RESULT"
+# per_head = true
+# min_gap_mins = 10
+# bar = "WD"
 #
 # [[steps]]
 # name = "Lint and unit tests"

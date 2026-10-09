@@ -133,10 +133,17 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["steps"]) => {
             let t = match query.get("task").filter(|s| !s.is_empty()) {
                 Some(r) => Some(board::get_task(app, tid(r)?)?),
-                None => board::task_for_session(app, query.get("session").map(|s| s.as_str()))?,
+                None => {
+                    let sid = query.get("session").map(|s| s.as_str());
+                    match board::task_for_session(app, sid)? {
+                        Some(t) => Some(t),
+                        // A terminal working on a done task's PR: its pushes are that task's.
+                        None => prflow::visited_by(app, sid.unwrap_or(""))?,
+                    }
+                }
             };
             match t {
-                Some(t) => steps::list(app, &t),
+                Some(t) => steps::list(app, &t, query.get("head").map(|s| s.as_str()).filter(|h| !h.is_empty())),
                 None => Ok(json!({"task": null, "steps": []})),
             }
         }
@@ -771,8 +778,22 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 bump = true;
             }
         }
+        // Stacking (`--stack-on`) and the PR plan (`--pr yes|no`) log their own change.
+        let mut planned = false;
+        if has_key("stack_on") {
+            planned |= crate::stack::set(app, &t, &body["stack_on"], OWNER)?;
+        }
+        if has_key("ships_pr") {
+            planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], OWNER)?;
+        }
+        if planned && f.is_empty() {
+            return board::bump_ctx(app, id);
+        }
         if f.is_empty() {
             return Ok(());
+        }
+        if planned {
+            bump = true;
         }
         let edited = f.iter().any(|(k, _)| matches!(*k, "title" | "detail" | "meta"));
         board::update_task(app, id, f)?;
@@ -976,7 +997,7 @@ fn owner_step(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let resumes = steps::waiting(&t).map(|w| steps::key(&w) == steps::key(&step.name)).unwrap_or(false);
     app.db.tx(|| {
-        board::log_event_full(app, id, OWNER, "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": true, "note": note, "skipped": skip})), None)?;
+        board::log_event_full(app, id, OWNER, "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": true, "note": note, "skipped": skip, "head": crate::waitsfor::head_of(&t)})), None)?;
         let mut ctx = board::task_context(&t);
         if resumes && ctx.remove("step_waiting").is_some() {
             board::save_context(app, id, &ctx, false)?;
@@ -2044,5 +2065,7 @@ fn pr_merged(app: &App, id: i64, body: &Value) -> Result<Value> {
         let who = { let w = body_str(body, "who"); if w.is_empty() { board::BOARD.to_string() } else { w } };
         prflow::mark_merged(app, &t, &who)
     })?;
+    // PRs stacked on this one go into its base now.
+    crate::stack::retarget(app)?;
     get_pr(app, id)
 }

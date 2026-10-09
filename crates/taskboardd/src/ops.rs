@@ -143,6 +143,13 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         let wf = waitsfor::clean(app, &body["waits_for"], Some(&t))?;
         board::update_task(app, tid, fields!["waits_for" => wf])?;
     }
+    if body_has(body, "stack_on") {
+        let t = board::get_task(app, tid)?;
+        board::update_task(app, tid, fields!["pr_after" => crate::stack::clean(app, &body["stack_on"], Some(&t))?])?;
+    }
+    if body_has(body, "ships_pr") {
+        board::update_task(app, tid, fields!["ships_pr" => projects::clean_ships_pr(&body["ships_pr"])?])?;
+    }
     let mut text = log_text.map(|s| s.to_string()).unwrap_or_else(|| if status == "planned" { "Added as planned".into() } else { "Added to the queue".into() });
     if let Some(k) = &jkey {
         text += &format!(", linked {k}");
@@ -276,6 +283,19 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "goal_attachments": match &g { Some(g) => Value::Array(board::attachments(app, None, Some(g.id()))?), None => json!([]) },
         }),
     ))
+    .and_then(|d| with_step_results(app, &t, d))
+}
+
+/// The latest round of each of the task's steps (headline, findings), and the PR bar's step (`bar`).
+fn with_step_results(app: &App, t: &Row, mut d: Value) -> Result<Value> {
+    let results = crate::steps::results(app, t)?;
+    if d["pr"].is_object() && d["pr"]["bar"].is_object() {
+        if let Some(wd) = results.iter().find(|r| r["bar"].is_string()) {
+            d["pr"]["bar"]["wd"] = wd.clone();
+        }
+    }
+    d["step_results"] = json!(results);
+    Ok(d)
 }
 
 pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
