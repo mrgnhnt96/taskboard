@@ -8,25 +8,22 @@ use crate::app::App;
 use crate::util::*;
 use crate::{prflow, stack};
 
-/// Where the Checks step links: the first failed check, else the newest build (by its `at`: a running
-/// one, else any), else the PR's own list of checks (GitHub's Checks tab; elsewhere the PR). Checks
-/// with no time count as older than ones with; among those, the last the host lists is newest.
+/// Where the Checks step links: the newest build by its `at` (a failed one, else a running one, else
+/// any), else the PR's own list of checks (GitHub's Checks tab; elsewhere the PR). Checks with no
+/// time count as older than ones with; among equal times, the last the host lists is newest.
 pub fn build_url(rec: &Value, pr_url: Option<&str>) -> Value {
     let checks = rec["checks"].as_array().cloned().unwrap_or_default();
     let link = |c: &Value| c["url"].as_str().filter(|u| u.starts_with("http")).map(|u| u.to_string());
-    let failed = checks.iter().filter(|c| c["state"] == "failed").find_map(link);
-    let newest = |running: bool| {
+    let newest = |state: Option<&str>| {
         checks
             .iter()
             .enumerate()
-            .filter(|(_, c)| !running || c["state"] == "running")
+            .filter(|(_, c)| state.is_none_or(|s| c["state"] == s))
             .filter_map(|(i, c)| Some((c["at"].as_str().and_then(parse_iso).unwrap_or(f64::NEG_INFINITY), i, link(c)?)))
             .max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
             .map(|(_, _, u)| u)
     };
-    let running = || newest(true);
-    let latest = || newest(false);
-    let failed = failed.or_else(running).or_else(latest);
+    let failed = newest(Some("failed")).or_else(|| newest(Some("running"))).or_else(|| newest(None));
     let all = pr_url.filter(|u| u.starts_with("http")).map(|u| {
         let u = u.trim_end_matches('/');
         if u.starts_with("https://github.com/") { format!("{u}/checks") } else { u.to_string() }
@@ -191,5 +188,30 @@ mod tests {
         let failed = rec(json!([{"name": "build #9", "state": "passed", "url": "https://ci/9", "at": "2026-09-01T12:00:00Z"},
                                 {"name": "test", "state": "failed", "url": "https://ci/test", "at": "2026-09-01T08:00:00Z"}]));
         assert_eq!(build_url(&failed, bb), "https://ci/test", "a failed check still comes first");
+    }
+
+    #[test]
+    fn checks_open_the_newest_of_several_failed_builds() {
+        let bb = Some("https://bitbucket.org/ws/repo/pull-requests/7");
+        // A re-run that failed again (Bitbucket keys build-1 and build-2), listed older first or not.
+        let rerun = rec(json!([{"name": "build-2", "state": "failed", "url": "https://ci/2", "at": "2026-09-01T11:00:00Z"},
+                               {"name": "build-1", "state": "failed", "url": "https://ci/1", "at": "2026-09-01T10:00:00Z"}]));
+        assert_eq!(build_url(&rerun, bb), "https://ci/2", "the newer failed build, listed first");
+        let rerun = rec(json!([{"name": "build-1", "state": "failed", "url": "https://ci/1", "at": "2026-09-01T10:00:00Z"},
+                               {"name": "build-2", "state": "failed", "url": "https://ci/2", "at": "2026-09-01T11:00:00Z"},
+                               {"name": "e2e", "state": "running", "url": "https://ci/e2e", "at": "2026-09-01T12:00:00Z"}]));
+        assert_eq!(build_url(&rerun, bb), "https://ci/2", "the newer failed build, over a newer running one");
+        let untimed = rec(json!([{"name": "build-2", "state": "failed", "url": "https://ci/2", "at": "2026-09-01T11:00:00Z"},
+                                 {"name": "gate", "state": "failed", "url": "https://ci/gate"}]));
+        assert_eq!(build_url(&untimed, bb), "https://ci/2", "a failed check with no time counts as older");
+        let ties = rec(json!([{"name": "a", "state": "failed", "url": "https://ci/a", "at": "2026-09-01T11:00:00Z"},
+                              {"name": "b", "state": "failed", "url": "https://ci/b", "at": "2026-09-01T11:00:00+00:00"},
+                              {"name": "c", "state": "failed", "url": "https://ci/c"},
+                              {"name": "d", "state": "failed", "url": "https://ci/d"}]));
+        assert_eq!(build_url(&ties, bb), "https://ci/b", "equal times: the one listed later");
+        let none_timed = rec(json!([{"name": "c", "state": "failed", "url": "https://ci/c"},
+                                    {"name": "d", "state": "failed", "url": "https://ci/d"},
+                                    {"name": "e", "state": "failed"}]));
+        assert_eq!(build_url(&none_timed, bb), "https://ci/d", "no times: the last failed one with a link");
     }
 }

@@ -121,6 +121,8 @@ pub struct Report {
     /// PR switches turned on for a project because the old board used them ("webapp: ask stage",
     /// "webapp: agents merge").
     pub switched: Vec<String>,
+    /// PR switches left off because config.toml turns them off ("webapp: agents merge").
+    pub kept_off: Vec<String>,
 }
 
 impl Report {
@@ -147,6 +149,9 @@ impl Report {
         }
         if !self.switched.is_empty() {
             out.push(format!("turned on, as the old board used them: {}", self.switched.join(", ")));
+        }
+        if !self.kept_off.is_empty() {
+            out.push(format!("kept off, as config.toml says: {}", self.kept_off.join(", ")));
         }
         let last: Vec<String> = self.last.iter().filter(|(_, n)| *n > 0).map(|(k, n)| format!("{k}{n}")).collect();
         if !last.is_empty() {
@@ -1500,6 +1505,9 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
 /// - agents merging (`agents_merge`): the old board's agents always merged their own approved, green
 ///   PRs, so every project that came over with a PR, and the board-wide switch (`tb project
 ///   agents-merge`) for the rest, unless the board already says.
+///
+/// A switch config.toml sets (`[pr.projects.<name>]`, or `pr.agents_merge` board-wide) is left as it
+/// says; one it sets off is named in the report as kept off.
 fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     let used: &[(&str, &str, &str)] = &[(
         "ask_stage",
@@ -1522,15 +1530,33 @@ fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
             if crate::projects::pr_rules_set(app, &project)?.contains_key(*key) {
                 continue;
             }
+            let own = app.cfg.pr.project(Some(&project));
+            let config = match *key {
+                "ask_stage" => own.ask_stage,
+                "swap" => own.swap,
+                _ => own.agents_merge,
+            };
+            if let Some(on) = config {
+                if !on {
+                    rep.kept_off.push(format!("{project}: {label} ([pr.projects.{project}] {key} = false)"));
+                }
+                continue;
+            }
             crate::projects::set_pr_rules(app, &project, &json!({ *key: true }))?;
             rep.switched.push(format!("{project}: {label}"));
         }
     }
     // The old board's agents merged on every project, so the board-wide switch comes on too: projects
     // with no PR yet, and ones added later. A project's own rule still wins.
-    if crate::projects::agents_merge_set(app).is_none() && !app.cfg.pr.agents_merge {
-        crate::projects::set_agents_merge(app, Some(true))?;
-        rep.switched.push("every other project: agents merge (pr.agents_merge; tb project agents-merge off to turn it off)".into());
+    if crate::projects::agents_merge_set(app).is_none() {
+        match app.cfg.pr.agents_merge {
+            None => {
+                crate::projects::set_agents_merge(app, Some(true))?;
+                rep.switched.push("every other project: agents merge (pr.agents_merge; tb project agents-merge off to turn it off)".into());
+            }
+            Some(false) => rep.kept_off.push("every other project: agents merge (pr.agents_merge = false)".into()),
+            Some(true) => {}
+        }
     }
     Ok(())
 }

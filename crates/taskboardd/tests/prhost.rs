@@ -186,7 +186,7 @@ fn addressed_refuses_while_threads_are_open_then_asks_the_reviewers_again() {
 #[test]
 fn merge_checks_everything_first_then_merges_and_closes_the_branch() {
     let b = board_with(|c| {
-        c.pr.agents_merge = true;
+        c.pr.agents_merge = Some(true);
         c.pr.projects.insert("webapp".into(), PrProject { approvals: Some(2), merge_strategy: Some("squash".into()), ..Default::default() });
     });
     let id = b.pr_task(BB);
@@ -431,7 +431,7 @@ fn a_stacked_pr_is_retargeted_through_its_host() {
 #[test]
 fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
     // #49: the board posts as "bot", not as the PR's author "me".
-    let b = board_with(|c| c.pr.agents_merge = true);
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
     let id = b.pr_task(BB);
     let mut rec = green();
     rec.viewer = "bot".into();
@@ -510,7 +510,7 @@ fn a_pr_needs_two_approvals_unless_its_project_is_set_otherwise_with_tb() {
 #[test]
 fn an_expected_check_that_never_posts_stops_holding_the_merge_once_the_wait_is_over() {
     // #51: expected checks set with tb; after the wait only failed checks block the merge.
-    let b = board_with(|c| c.pr.agents_merge = true);
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
     let id = b.pr_task(BB);
     let mut rec = green();
     rec.reviewers = vec![reviewer("a", "approved")];

@@ -3894,7 +3894,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             };
             let on = if v["agents_merge"] == true { "on" } else { "off" };
             let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.agents_merge" };
-            out(&format!("Agents merge {on} on projects that don't say ({from})."));
+            out(&format!("Agents merge: {on} for projects that don't say ({from})."));
             Ok(0)
         }
     }
