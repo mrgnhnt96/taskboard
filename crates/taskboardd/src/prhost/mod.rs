@@ -26,6 +26,7 @@
 //! | [`base_failures`](PrHost::base_failures): checks failing on the base's last few commits | check runs and statuses of `commits?sha=<base>` | statuses of `commits/<base>` |
 //! | [`members`](PrHost::members): who can review in the repo (the reviewer picker, `picker.rs`) | `repos/{repo}/collaborators` | `workspaces/{ws}/members` |
 //! | [`recent_comments`](PrHost::recent_comments): every comment on the repo's last few PRs, whole (review bots, `botrun.rs`) | GraphQL `pullRequests(orderBy: UPDATED_AT)` with their comments, reviews and review comments | `pullrequests?sort=-updated_on`, then each one's `/comments` |
+//! | [`my_open_prs`](PrHost::my_open_prs): the board's account's open PRs in a repo, opened by the board or by hand (`prbuilds.rs`) | `gh pr list --author @me --state open` | `pullrequests?state=OPEN` by the account's `{uuid}` (`GET /user`) |
 //!
 //! Users are named by the host's own id ([`Reviewer::user`]): a GitHub login, a Bitbucket account's
 //! `{uuid}` (an `account_id` works too). [`Reviewer::name`] is for people.
@@ -269,10 +270,19 @@ pub struct MergeOpts {
 /// What [`PrHost::cancel_builds`] did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cancelled {
-    /// This many builds were stopped (0: none were running).
-    Stopped(usize),
+    /// These builds were stopped, by name (none: none were running).
+    Stopped(Vec<String>),
     /// The host can't stop this PR's builds, and why.
     Unsupported(String),
+}
+
+/// One of the board's account's open PRs ([`PrHost::my_open_prs`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OpenPr {
+    pub num: i64,
+    /// Its source branch.
+    pub branch: String,
+    pub url: String,
 }
 
 /// Everything the board does to a PR on its host. See the module docs for what each call is on GitHub
@@ -330,6 +340,12 @@ pub trait PrHost: Send + Sync {
     fn recent_comments(&self, _repo: &str, _prs: usize) -> HostResult<Vec<Comment>> {
         Err(format!("the board can't list a {} repo's comments", self.id()))
     }
+
+    /// The open PRs in `repo` by the account the board signs in as (the owner's), whoever opened them:
+    /// the board or the owner by hand.
+    fn my_open_prs(&self, _repo: &str) -> HostResult<Vec<OpenPr>> {
+        Err(format!("the board can't list a {} repo's open PRs", self.id()))
+    }
 }
 
 /// The host a task's PR lives on: one [`install`]ed for this board, else the real one.
@@ -386,11 +402,15 @@ pub struct FakeHost {
     pub base_checks: Mutex<Vec<Check>>,
     /// What `recent_comments` answers (any repo).
     pub comments: Mutex<Vec<Comment>>,
+    /// What `my_open_prs` answers (any repo).
+    pub open_prs: Mutex<Vec<OpenPr>>,
+    /// The builds `cancel_builds` stops.
+    pub stops: Mutex<Vec<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -472,9 +492,13 @@ impl PrHost for FakeHost {
         self.rec.lock().base = base.to_string();
         Ok(())
     }
-    fn cancel_builds(&self, _pr: &PrRef, head: &str) -> HostResult<Cancelled> {
-        self.log(format!("cancel {head}"));
-        Ok(Cancelled::Stopped(0))
+    fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
+        self.log(if head.is_empty() { format!("cancel #{}", pr.num) } else { format!("cancel {head}") });
+        Ok(Cancelled::Stopped(self.stops.lock().clone()))
+    }
+    fn my_open_prs(&self, repo: &str) -> HostResult<Vec<OpenPr>> {
+        self.log(format!("open prs {repo}"));
+        Ok(self.open_prs.lock().clone())
     }
     fn base_failures(&self, _pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         self.log(format!("base {base} {commits}"));

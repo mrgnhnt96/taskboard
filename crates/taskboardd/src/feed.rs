@@ -244,6 +244,8 @@ pub fn intake(app: &App, body: &Value) -> Result<Value> {
     let Some(t) = t else {
         if kind == "build" {
             out["builds"] = crate::prbuilds::on_push_build(app, body)?;
+        } else {
+            out["owner_pr"] = crate::prbuilds::on_pr_event(app, body)?;
         }
         return Ok(out);
     };

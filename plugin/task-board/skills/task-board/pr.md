@@ -58,4 +58,4 @@ When the owner comes to you in a terminal with changes for a done task whose PR 
 
 When the owner asks you to set up something that hears about PR changes (a Slack listener, a webhook relay), have it run `tb feed event <PR link>` for each PR change (`--kind build --state started|running|passed|failed --head <sha> --provider <ci>` for a build) and `tb feed heartbeat` every minute or so; the board reads that PR again at once. `tb feed` shows whether the board trusts the feed.
 
-`tb pr-builds stop --reason "<why>"` cancels every build of the owner's PRs and pushes board-wide (their checks count as passed) and `tb pr-builds resume` lets them run: only on the owner's word, with `--who "<owner>"`. `tb pr-builds` says whether they're stopped and lists the recent cancels.
+`tb pr-builds stop --reason "<why>"` cancels every build of the owner's PRs (the board's and ones opened by hand) and pushes board-wide (their checks count as passed) and `tb pr-builds resume` lets them run: only on the owner's word, with `--who "<owner>"`. `tb pr-builds` says whether they're stopped and lists the recent cancels.

@@ -1129,9 +1129,13 @@ enum FeedCmd {
         /// The build's link
         #[arg(long = "build-url")]
         build_url: Option<String>,
-        /// Who pushed (an email): a push build of the owner's is cancelled too while PR builds are stopped
+        /// Who pushed (an email): a push build of the owner's is cancelled too while PR builds are stopped.
+        /// On a PR event, who opened the PR: one of the owner's opened by hand is noted as theirs
         #[arg(long)]
         author: Option<String>,
+        /// The PR is the owner's (a PR event): its builds are cancelled too while PR builds are stopped
+        #[arg(long)]
+        mine: bool,
         /// Where the event came from (slack, webhook, …)
         #[arg(long)]
         source: Option<String>,
@@ -3744,10 +3748,13 @@ fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
         Some(FeedCmd::Heartbeat) => {
             c.call("POST", "/prs/heartbeat", Some(json!({})))?;
         }
-        Some(FeedCmd::Event { url, repo, num, task, kind, state, head, branch, provider, build_url, author, source }) => {
+        Some(FeedCmd::Event { url, repo, num, task, kind, state, head, branch, provider, build_url, author, mine, source }) => {
             let task = task.map(|t| task_ref(&t)).transpose()?;
-            let body = json!({"url": url, "repo": repo, "num": num, "task": task, "kind": kind, "state": state, "head": head, "branch": branch,
-                              "provider": provider, "build_url": build_url, "author": author, "source": source});
+            let mut body = json!({"url": url, "repo": repo, "num": num, "task": task, "kind": kind, "state": state, "head": head, "branch": branch,
+                                  "provider": provider, "build_url": build_url, "author": author, "source": source});
+            if mine {
+                body["mine"] = json!(true);
+            }
             let v = c.call("POST", "/prs/event", Some(body))?;
             match v["task"].as_str() {
                 Some(t) if v["refreshed"] == true => out(&format!("Read {t}'s PR again: {}.", v["phase"].as_str().unwrap_or("no stage"))),
@@ -3804,7 +3811,11 @@ fn pr_builds_recent_line(r: &Value) -> String {
     let head: String = r["head"].as_str().unwrap_or("").chars().take(8).collect();
     let at = if head.is_empty() { String::new() } else { format!(" at {head}") };
     let again = if r["follow_up"] == true { " (follow-up)" } else { "" };
-    let how = if r["ok"] == true { r["what"].as_str().unwrap_or("").to_string() } else { format!("gave up: {}", r["what"].as_str().unwrap_or("")) };
+    let how = match (r["ok"] == true, r["build"].as_str()) {
+        (true, Some(b)) => format!("stopped {b}"),
+        (true, None) => r["what"].as_str().unwrap_or("").to_string(),
+        (false, _) => format!("gave up: {}", r["what"].as_str().unwrap_or("")),
+    };
     format!("  {when}  {what}{at}{again}: {how}")
 }
 
@@ -4055,6 +4066,9 @@ mod tests {
         assert!(line.ends_with("PR #9 (T12) at 1a2b3c4d (follow-up): stopped 2 builds"), "{line}");
         let line = pr_builds_recent_line(&json!({"ok": false, "what": "no command", "repo": "acme/web", "branch": "wip", "num": 0}));
         assert!(line.ends_with("acme/web wip: gave up: no command"), "{line}");
+        let line = pr_builds_recent_line(&json!({"ok": true, "what": "stopped 2 builds", "build": "CI #12", "repo": "acme/web", "num": 14}));
+        assert!(line.ends_with("PR #14: stopped CI #12"), "one line per build, by its pipeline's name: {line}");
+        assert!(Cli::try_parse_from(["tb", "feed", "event", "https://github.com/acme/web/pull/14", "--mine", "--branch", "hand"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky", "--proof", "https://ci/1", "--proof", "https://ci/2"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "show", "M3"]).is_ok());

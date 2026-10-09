@@ -121,6 +121,7 @@ settle_secs = 300.0                  # after it comes back, asks, nudges and swa
 retry_secs = [0.0, 10.0, 30.0, 60.0, 120.0]
 timeout_secs = 30.0
 follow_up_secs = [10.0, 30.0, 60.0, 120.0]   # after a cancel, sweep the push again (builds queued late)
+owner_prs_secs = 120.0               # while stopped, read your open PRs on each known repo (ones opened by hand); 0: never
 
 # The command that cancels builds, by CI provider (github, bitbucket, azure, or the `provider` a
 # build event names). Run with `sh -c` and TB_PROVIDER, TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD,

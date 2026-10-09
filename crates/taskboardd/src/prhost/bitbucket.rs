@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, OpenPr, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// One HTTP call: method, full URL and JSON body; answers the JSON reply (Null when it's empty). An
 /// error starts with "Bitbucket answered <code>" when Bitbucket answered.
@@ -296,18 +296,41 @@ impl PrHost for BitbucketHost {
             }
             Err(e) => return Err(e),
         };
-        let mut n = 0;
+        let mut stopped = vec![];
         for r in runs {
-            let hash = r["target"]["commit"]["hash"].as_str().unwrap_or("");
+            let target = &r["target"];
+            let hash = target["commit"]["hash"].as_str().unwrap_or("");
             let same = !hash.is_empty() && !head.is_empty() && (hash.starts_with(head) || head.starts_with(hash));
-            if !same || !matches!(r["state"]["name"].as_str(), Some("PENDING" | "IN_PROGRESS")) {
+            // A pull-request pipeline runs for the PR by its number, whatever commit it built.
+            let this_pr = pr.num > 0 && [&target["pullrequest"], &target["pull_request"]].iter().any(|p| p["id"].as_i64() == Some(pr.num));
+            if !(same || this_pr) || !matches!(r["state"]["name"].as_str(), Some("PENDING" | "IN_PROGRESS")) {
                 continue;
             }
             let uuid = r["uuid"].as_str().unwrap_or("");
             self.http.call("POST", &format!("{}/pipelines/{}/stopPipeline", self.repo_url(&pr.repo), seg(uuid)), None)?;
-            n += 1;
+            let name = target["selector"]["pattern"].as_str().or(target["ref_name"].as_str()).filter(|n| !n.is_empty()).unwrap_or("pipeline");
+            stopped.push(format!("{name} #{}", r["build_number"].as_i64().unwrap_or(0)));
         }
-        Ok(Cancelled::Stopped(n))
+        Ok(Cancelled::Stopped(stopped))
+    }
+
+    fn my_open_prs(&self, repo: &str) -> HostResult<Vec<OpenPr>> {
+        let me = self.viewer();
+        if me.is_empty() {
+            return Err("Bitbucket didn't say which account the board signs in as".into());
+        }
+        let list = self.get_all(&format!("{}/pullrequests?state=OPEN&pagelen=50", self.repo_url(repo)), 4)?;
+        Ok(list
+            .iter()
+            .filter(|p| same_user(&p["author"], &me))
+            .filter_map(|p| {
+                Some(OpenPr {
+                    num: p["id"].as_i64()?,
+                    branch: p["source"]["branch"]["name"].as_str().unwrap_or("").to_string(),
+                    url: p["links"]["html"]["href"].as_str().unwrap_or("").to_string(),
+                })
+            })
+            .collect())
     }
 
     fn members(&self, repo: &str) -> HostResult<Vec<Reviewer>> {
@@ -633,7 +656,9 @@ pub(crate) mod tests {
                 ("PUT https://api/repositories/ws/repo/pullrequests/7", json!({})),
                 ("POST https://api/repositories/ws/repo/pullrequests/7/", json!({})),
                 ("GET https://api/repositories/ws/repo/pipelines/", json!({"values": [
-                    {"uuid": "{p1}", "build_number": 41, "state": {"name": "IN_PROGRESS"}, "target": {"commit": {"hash": "abc123def"}}},
+                    {"uuid": "{p1}", "build_number": 41, "state": {"name": "IN_PROGRESS"}, "target": {"commit": {"hash": "abc123def"}, "ref_name": "feat"}},
+                    {"uuid": "{p2}", "build_number": 42, "state": {"name": "PENDING"},
+                     "target": {"type": "pipeline_pullrequest_target", "commit": {"hash": "merge9"}, "selector": {"pattern": "**"}, "pullrequest": {"id": 7}}},
                     {"uuid": "{p0}", "build_number": 40, "state": {"name": "COMPLETED"}, "target": {"commit": {"hash": "abc123def"}}}
                 ]})),
                 ("POST https://api/repositories/ws/repo/pipelines/", Value::Null),
@@ -723,7 +748,7 @@ pub(crate) mod tests {
         h.request_reviews(&pr(), &["557058:abc".to_string()]).unwrap();
         h.merge(&pr(), &MergeOpts { strategy: Some("squash".into()), close_source_branch: true }).unwrap();
         h.retarget(&pr(), "develop").unwrap();
-        assert_eq!(h.cancel_builds(&pr(), "abc123").unwrap(), Cancelled::Stopped(1));
+        assert_eq!(h.cancel_builds(&pr(), "abc123").unwrap(), Cancelled::Stopped(vec!["feat #41".into(), "** #42".into()]), "the head's builds and the PR's own");
         assert_eq!(h.base_failures(&pr(), "main", 5).unwrap(), vec!["Tests".to_string()]);
         assert_eq!(
             h.base_failed_checks(&pr(), "main", 5).unwrap(),
@@ -751,6 +776,23 @@ pub(crate) mod tests {
             vec![json!({"title": "Add x", "description": "## Summary", "source": {"branch": {"name": "feat"}}, "destination": {"branch": {"name": "main"}}, "close_source_branch": true})]
         );
         assert!(find("POST", "/pipelines/%7Bp0%7D/stopPipeline").is_empty(), "a finished run isn't stopped");
+    }
+
+    #[test]
+    fn lists_the_account_s_open_prs_whoever_opened_them() {
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let http = FakeHttp {
+            answers: vec![
+                ("GET https://api/user", json!({"uuid": ME})),
+                ("GET https://api/repositories/ws/repo/pullrequests?state=OPEN", json!({"values": [
+                    {"id": 7, "author": {"uuid": ME}, "source": {"branch": {"name": "by-hand"}}, "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/7"}}},
+                    {"id": 8, "author": {"uuid": REV}, "source": {"branch": {"name": "theirs"}}}
+                ]})),
+            ],
+            calls,
+        };
+        let got = BitbucketHost::new(Box::new(http), "https://api/").my_open_prs("ws/repo").unwrap();
+        assert_eq!(got, vec![OpenPr { num: 7, branch: "by-hand".into(), url: "https://bitbucket.org/ws/repo/pull-requests/7".into() }]);
     }
 
     #[test]

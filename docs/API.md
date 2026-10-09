@@ -595,7 +595,7 @@ board reads that one PR again and steps it (`feed.rs` documents the health rules
 
 | Path | Body | Notes |
 |---|---|---|
-| `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
+| `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, mine?: bool, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. A PR event for no task whose `author` is in `owner_emails` (or with `mine: true`, `tb feed event --mine`) notes it as one of the owner's open PRs (until a `merged`, `declined` or `closed` state), for PR builds. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?, owner_pr?: {owners, open?}}`. |
 | `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
 | `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null}` (`settling_secs`: what's left of the settle window); also `state.pr_feed`. |
 
@@ -615,17 +615,22 @@ A board-wide switch for when CI time is scarce, set only on the owner's word (`p
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int, recent: [{at, ok, what, task, repo, num, branch, head, follow_up}]}` (`recent`: the last 10 cancels and give-ups, newest first); also `state.pr_builds` (the app's "PR builds stopped" pill). |
+| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int, recent: [{at, ok, what, build, task, repo, num, branch, head, follow_up}], owner_prs: [{repo, num, branch, url}]}` (`recent`: the last 20, newest first: one per build stopped, `build` its pipeline's name, else one per cancel or give-up; `owner_prs`: the owner's open PRs off the board, opened by hand); also `state.pr_builds` (the app's "PR builds stopped" pill). |
 | `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. Both take down the `pr-builds:*` give-up alerts. **Response:** as `GET`. |
 
 While stopped: a build event (`POST /prs/event` with `kind: build`, a running `state` such as `started`) on one of the
 board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails` or whose `branch` is
 the branch of one of the board's open PRs in that `repo` (merges, rebases, others' commits; cancelled as that PR's),
-queues a cancel (once per push). After a cancel the push is swept again after each of `follow_up_secs` (10, 30, 60,
+queues a cancel (once per push). So does a build on one of the owner's open PRs the board didn't open (opened by hand),
+by its link or `repo` + `num`, or its `branch`; it's cancelled by the PR's number too (`TB_PR_NUM`; Bitbucket's
+pull-request pipelines). Those PRs are read from the host on each repo the board knows (`gh pr list --author @me`,
+Bitbucket's open PRs by the board's account) every `owner_prs_secs` (120 s; 0: never) while builds are stopped, and
+noted from the feed's PR events. After a cancel the push is swept again after each of `follow_up_secs` (10, 30, 60,
 120 s) for builds queued just after it. It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
 bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
-way to cancel alerts at once. A cancelled push is logged on its task. The PRs' checks count as passed: the build reads
+way to cancel alerts at once. A cancelled push is logged on its task; a follow-up only when it stopped a build (a cancel
+command's follow-ups, whose count isn't known, only go in `recent`). The PRs' checks count as passed: the build reads
 "Builds stopped" and the PR moves on to review.
 
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build

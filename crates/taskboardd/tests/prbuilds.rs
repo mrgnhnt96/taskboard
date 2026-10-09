@@ -267,3 +267,73 @@ fn build_hooks_fire_for_a_pr_on_a_host_the_board_does_not_watch() {
     let v = b.post("/prs/event", json!({"url": "https://gitlab.com/acme/webapp/-/merge_requests/4", "kind": "build", "state": "running", "head": "g1"}));
     assert!(v["builds"].get("hook").is_none(), "asked once per push");
 }
+
+#[test]
+fn builds_on_a_pr_the_owner_opened_by_hand_are_cancelled_one_recent_entry_per_build() {
+    let b = board_with(|c, _| c.pr_builds.owner_prs_secs = 120.0);
+    b.pr_task(GH);
+    let h = FakeHost::new("github", running());
+    *h.open_prs.lock() = vec![prhost::OpenPr { num: 12, branch: "by-hand".into(), url: "https://github.com/acme/webapp/pull/12".into() }];
+    *h.stops.lock() = vec!["CI #3".into(), "Lint #4".into()];
+    prhost::install(&b.app, h.clone());
+    b.post("/pr-builds", json!({"stopped": true}));
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(b.get("/pr-builds")["owner_prs"][0]["num"], 12, "read from the host on the repos the board knows");
+
+    let v = b.post("/prs/event", json!({"kind": "build", "state": "started", "url": "https://github.com/acme/webapp/pull/12", "head": "x1"}));
+    assert_eq!((v["task"].is_null(), v["builds"]["owners"].as_bool(), v["builds"]["pr"].as_i64()), (true, Some(true), Some(12)));
+    assert_eq!(b.queue()[0]["key"], "acme/webapp#12:x1");
+    assert_eq!((b.queue()[0]["num"].as_i64(), b.queue()[0]["branch"].as_str()), (Some(12), Some("by-hand")), "cancelled as that PR's, by its number");
+    prbuilds::tick(&b.app).unwrap();
+    assert!(h.calls().contains(&"cancel x1".to_string()), "{:?}", h.calls());
+    let recent = b.get("/pr-builds")["recent"].as_array().cloned().unwrap();
+    let builds: Vec<&str> = recent.iter().filter_map(|r| r["build"].as_str()).collect();
+    assert_eq!(builds, vec!["CI #3", "Lint #4"], "one entry per build, with its pipeline's name");
+
+    let v = b.post("/prs/event", json!({"kind": "build", "state": "started", "repo": "acme/webapp", "host": "github", "branch": "by-hand", "head": "x2"}));
+    assert_eq!(v["builds"]["pr"], 12, "or by its branch");
+    let v = b.post("/prs/event", json!({"kind": "build", "state": "started", "repo": "acme/webapp", "host": "github", "branch": "someone-else", "head": "x3"}));
+    assert_eq!(v["builds"]["owners"], false);
+}
+
+#[test]
+fn the_feed_names_the_owner_s_hand_opened_prs_until_they_close() {
+    let b = board_with(|c, dir| {
+        c.owner_emails = vec!["sam@acme.dev".into()];
+        c.pr_builds.cancel.insert("github".into(), format!("echo \"$TB_PR_NUM $TB_BRANCH\" >> '{}'", dir.join("cancels.log").display()));
+    });
+    b.post("/pr-builds", json!({"stopped": true}));
+    let url = "https://github.com/acme/webapp/pull/14";
+    let v = b.post("/prs/event", json!({"kind": "pr", "url": url, "author": "pat@acme.dev", "branch": "theirs"}));
+    assert_eq!(v["owner_pr"]["owners"], false);
+    let v = b.post("/prs/event", json!({"kind": "pr", "url": url, "author": "Sam@acme.dev", "branch": "hand2", "state": "open"}));
+    assert_eq!(v["owner_pr"]["open"], true);
+    let build = || json!({"kind": "build", "state": "started", "repo": "acme/webapp", "host": "github", "branch": "hand2", "head": "y1", "author": "pat@acme.dev"});
+    assert_eq!(b.post("/prs/event", build())["builds"]["cancel"], "queued");
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap().trim(), "14 hand2");
+
+    b.post("/prs/event", json!({"kind": "pr", "url": url, "mine": true, "state": "merged"}));
+    b.app.db.set_setting("pr_build_cancels", None).unwrap();
+    assert_eq!(b.post("/prs/event", build())["builds"]["owners"], false, "merged: no longer an open PR of the owner's");
+}
+
+#[test]
+fn a_cancel_command_s_follow_ups_are_not_logged_on_the_task() {
+    let b = board_with(|c, dir| {
+        c.pr_builds.cancel.insert("azure".into(), format!("echo \"$TB_HEAD\" >> '{}'", dir.join("cancels.log").display()));
+    });
+    let id = b.pr_task(GH);
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h5", "provider": "azure"}));
+    prbuilds::tick(&b.app).unwrap();
+    for _ in 0..4 {
+        b.due_now();
+        prbuilds::tick(&b.app).unwrap();
+    }
+    assert!(b.queue().is_empty());
+    assert_eq!(std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap().lines().count(), 5, "the first cancel and four follow-ups ran");
+    let logged = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE 'PR builds are stopped: cancelled%'", vec![json!(id)]).unwrap();
+    assert_eq!(logged, 1, "only the first cancel is told on the task");
+    assert_eq!(b.get("/pr-builds")["recent"].as_array().unwrap().len(), 5, "each one is in the recent list");
+}
