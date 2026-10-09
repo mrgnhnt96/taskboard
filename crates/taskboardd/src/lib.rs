@@ -6,6 +6,7 @@ pub mod app;
 pub mod asks;
 pub mod bits;
 pub mod board;
+pub mod botrun;
 pub mod clock;
 pub mod comments;
 pub mod config;

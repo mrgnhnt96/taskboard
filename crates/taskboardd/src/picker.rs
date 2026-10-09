@@ -10,7 +10,8 @@
 //! - It's turn-based: a reviewer is due at their last ask + open asks × `turn_gap_hours` / weight, and
 //!   the earliest due goes first. Weight is automation level × speed, where speed comes from the
 //!   median time they took to review, in work minutes (`speed_by_minutes`, `slow_speed` past the
-//!   last step, `no_speed_yet` before their first review).
+//!   last step, `no_speed_yet` before their first review). A reviewer whose bot runs on a known
+//!   schedule (`botrun.rs`) is asked only shortly before its next run, at the fastest pace.
 
 use std::path::Path;
 
@@ -194,7 +195,7 @@ pub fn due(app: &App, r: &Row) -> Result<(f64, f64)> {
     let last = app.db.val("SELECT MAX(asked_at) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
     let last = last.as_str().and_then(parse_iso).unwrap_or(0.0);
     let open = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ? AND state = 'open'", p![r.id()])? as f64;
-    let pace = speed(cfg, reviewers::median_work_mins(app, r.id())?);
+    let pace = if crate::botrun::timed(app, r)? { fastest(cfg) } else { speed(cfg, reviewers::median_work_mins(app, r.id())?) };
     let weight = (r.f("automation").unwrap_or(1.0) * pace).max(0.01);
     Ok((last + open * cfg.turn_gap_hours * 3600.0 / weight, weight))
 }
@@ -224,6 +225,9 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     for r in reviewers::roster(app, &project)? {
         let Some(user) = r.s("host_user").filter(|u| !u.is_empty()).map(|s| s.to_string()) else { continue };
         if r.s("removed_at").is_some() || skip.contains(&user.to_lowercase()) || reviewers::idents(&r).iter().any(|i| me.contains(i)) {
+            continue;
+        }
+        if !crate::botrun::may_ask(app, &r)? {
             continue;
         }
         let (due, weight) = due(app, &r)?;

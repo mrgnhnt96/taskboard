@@ -349,6 +349,55 @@ fn availability_tiers_steer_the_picker_and_the_out_are_never_picked() {
     assert_eq!((bo["removed"].clone(), bo["removed_why"].clone()), (json!(true), json!("canned")), "not on Slack: off the roster");
 }
 
+fn bot_comment(id: &str, mins_ago: f64) -> taskboardd::prhost::Thread {
+    taskboardd::prhost::Thread {
+        id: id.into(),
+        kind: "summary".into(),
+        author: "{ana}".into(),
+        author_name: "Ana".into(),
+        last_author: "{ana}".into(),
+        last_id: format!("{id}-c"),
+        last_at: taskboardd::util::iso(taskboardd::util::now_ts() - mins_ago * 60.0),
+        text: "🤖 AI review: 2 findings".into(),
+        resolved: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_reviewer_with_a_timed_bot_is_asked_just_before_it_runs() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    for (n, u) in [("Ana", "{ana}"), ("Bo", "{bo}"), ("Cy", "{cy}")] {
+        b.add(n, json!({"user": u}));
+    }
+    b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
+    let names = |v: &Value| -> Vec<String> { picks(v).into_iter().map(|(n, _)| n).collect() };
+    // No run seen yet: Ana is a reviewer like any other.
+    assert!(names(&b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}))).contains(&"Ana".to_string()));
+
+    // Her bot ran an hour ago (two comments of one run): the next run is 3 hours off, so she waits.
+    h.rec.lock().threads = vec![bot_comment("t1", 60.0), bot_comment("t2", 50.0)];
+    poll(&b);
+    assert_eq!(b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap(), 1, "one run");
+    assert!(!names(&b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}))).contains(&"Ana".to_string()));
+    assert!(b.roster()[0]["bot"]["last_run"].is_string());
+
+    // A run 3h40m ago: the next is 20 minutes off, so she's asked, and first (the fastest pace).
+    b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
+    h.rec.lock().threads = vec![bot_comment("t3", 220.0)];
+    poll(&b);
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}));
+    assert_eq!(names(&v).len(), 3);
+    assert!(names(&v).contains(&"Ana".to_string()));
+    // An old comment outside the window isn't a run.
+    b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
+    h.rec.lock().threads = vec![bot_comment("t4", 13.0 * 60.0)];
+    poll(&b);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs", vec![]).unwrap(), 0);
+}
+
 pub fn local_ts(y: i32, m: u32, d: u32, h: u32, min: u32) -> f64 {
     use chrono::TimeZone;
     chrono::Local.with_ymd_and_hms(y, m, d, h, min, 0).single().unwrap().timestamp() as f64

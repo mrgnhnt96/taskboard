@@ -112,6 +112,12 @@ pub struct ReviewersConfig {
     pub drop_not_on_slack: bool,
     /// How long one check holds, in minutes.
     pub cache_mins: f64,
+    /// How far back a reviewer's marked comments count as their bot's runs, in hours.
+    pub bot_window_hours: f64,
+    /// Marked comments this close together are one run, in minutes.
+    pub bot_run_gap_mins: f64,
+    /// A timed bot's owner is asked only when it runs within this many minutes.
+    pub bot_due_mins: f64,
 }
 
 impl Default for ReviewersConfig {
@@ -135,6 +141,9 @@ impl Default for ReviewersConfig {
             weekends_off: true,
             drop_not_on_slack: true,
             cache_mins: 10.0,
+            bot_window_hours: 12.0,
+            bot_run_gap_mins: 30.0,
+            bot_due_mins: 45.0,
         }
     }
 }

@@ -270,6 +270,7 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
 /// reviewer has reviewed (their speed is the work minutes it took), and closed when the PR merged
 /// or closed first.
 pub fn sweep(app: &App) -> Result<()> {
+    app.db.tx(|| crate::botrun::note_runs(app))?;
     let tasks = app.db.q("SELECT DISTINCT t.* FROM tasks t JOIN review_asks a ON a.task_id = t.id WHERE a.state = 'open'", vec![])?;
     for t in tasks {
         let f = flow(&t);

@@ -816,6 +816,12 @@ weekend). A status matching `out_pattern` is out and never picked; someone Slack
 hours, or without a provider, nobody is checked. The client only calls `users.lookupByEmail`, `users.info`,
 `users.getPresence` and `search.messages`: the board never messages anyone.
 
+**Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. After each poll the
+board looks for comments by them that carry `mark` (case-insensitive) on the PRs it watches, from the last
+`bot_window_hours`, and records each run in `reviewer_bot_runs` (comments within `bot_run_gap_mins` are one run).
+With a run seen within two intervals the bot is timed: its next run is the last + `every_h`, the picker asks that
+person only when it's at most `bot_due_mins` away, and their pace is the fastest in `speed_by_minutes`.
+
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 
 ## The PR plan and flow

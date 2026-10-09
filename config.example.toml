@@ -222,6 +222,12 @@ local_end = "18:00"
 weekends_off = true
 drop_not_on_slack = true              # someone Slack doesn't know leaves the roster (tb reviewers back undoes it)
 cache_mins = 10.0
+# Review bots (`tb reviewers bot <who> --every <hours> --mark <text>`): a run is spotted from the marker
+# in that person's comments on the board's PRs; once its schedule is known they're asked only when it
+# runs within bot_due_mins, at the fastest pace.
+bot_window_hours = 12.0               # marked comments this recent count
+bot_run_gap_mins = 30.0               # marked comments this close together are one run
+bot_due_mins = 45.0
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
