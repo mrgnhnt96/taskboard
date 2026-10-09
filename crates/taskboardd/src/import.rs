@@ -291,7 +291,9 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
             }
         }
     }
-    let goal_pool = devices(app, c, old, &mut rep)?;
+    if devices(app, c, old, &mut rep)? {
+        goal_pools(app, c, old, &mut rep)?;
+    }
     bits(app, c, old, &mut rep)?;
     jira_desk(app, c, old, &mut rep)?;
     pr_links(app, &mut rep)?;
@@ -299,7 +301,7 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
     breaks(app, c, old, &mut rep)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
-        let mapped = MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) && !(goal_pool && t.eq_ignore_ascii_case("goal_devices"));
+        let mapped = MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m));
         if used.contains(t) || LEFT.contains(&t.as_str()) || mapped || t.starts_with("sqlite_") {
             continue;
         }
@@ -463,7 +465,7 @@ fn set_needs(app: &App, owner: &str, needs: &str) -> Result<()> {
 }
 
 /// The device pool, its loans, and what tasks (`tasks.device_need`) and goals (`goal_devices`) ask for.
-/// True when `goal_devices` is a goal's pool, to be kept whole rather than mapped.
+/// True when `goal_devices` is a goal's own pool (purpose, reserved) rather than its needs.
 fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<bool> {
     // Old device id or name → the board's name for it.
     let mut names: HashMap<String, String> = HashMap::new();
@@ -485,14 +487,27 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                     }
                 }
             }
-            let off = d.truthy(r, &["off", "disabled", "retired"]) || (d.has(&["enabled"]) && !d.truthy(r, &["enabled"]));
+            for k in [d.text(r, &["id"]), raw.clone()].into_iter().flatten() {
+                names.entry(k.to_lowercase()).or_insert_with(|| name.clone());
+            }
+            // Taken out of the old pool: the board deletes a removed device, so it doesn't come over.
+            if !d.get(r, &["removed_at"]).is_null() || d.truthy(r, &["removed"]) {
+                rep.skipped.push(format!("{} {name}: removed from the old pool", d.table));
+                continue;
+            }
+            let (kept, kept_note) = old_blocked(&d, r);
+            let off = kept || d.truthy(r, &["off", "disabled", "retired"]) || (d.has(&["enabled"]) && !d.truthy(r, &["enabled"]));
+            let note = match (text(d.get(r, &["note", "notes", "description", "detail"])), kept_note) {
+                (Some(n), Some(k)) => json!(format!("{n}; {k}")),
+                (n, k) => json!(n.or(k)),
+            };
             app.db.x(
                 "INSERT OR IGNORE INTO devices(name, tags, focus, note, off, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
                 vec![
                     json!(name),
                     json!(jdumps(&json!(tags))),
                     d.get(r, &["focus", "focus_cmd", "focus_command"]).clone(),
-                    d.get(r, &["note", "notes", "description", "detail"]).clone(),
+                    note,
                     json!(off as i64),
                     d.get(r, &["created_at", "created", "added_at"]).clone(),
                     d.get(r, &["updated_at", "updated"]).clone(),
@@ -502,9 +517,6 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 n += 1;
             } else {
                 rep.skipped.push(format!("{} {name}: a device with that name came first", d.table));
-            }
-            for k in [d.text(r, &["id"]), raw].into_iter().flatten() {
-                names.entry(k.to_lowercase()).or_insert_with(|| name.clone());
             }
         }
         rep.copied.push(("devices".into(), n));
@@ -566,7 +578,7 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
     }
     // What each goal asks for: a need per row (a tag and a count, a device, or the need as text).
     // Rows with a purpose or a reserved flag are a goal's own device pool, not a need for one of
-    // each: the board has no goal pools, so they're kept whole (`import.goal_devices`) instead.
+    // each: `goal_pools` maps those.
     const GOAL_NEED: &[&str] = &["need", "needs", "device_need", "spec"];
     let mut goal_pool = false;
     if let Some(g) = Old::read(c, old, "goal_devices", &[])?.filter(|g| {
@@ -604,6 +616,71 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         rep.copied.push(("device_needs".into(), n));
     }
     Ok(goal_pool)
+}
+
+/// An old device's `blocked` ("kept for …"): whether it's kept back, and the note that says what for.
+fn old_blocked(d: &Old, r: &[Value]) -> (bool, Option<String>) {
+    let v = d.get(r, &["blocked", "blocked_for", "kept_for", "blocked_reason"]);
+    match v {
+        Value::Null | Value::Bool(false) => (false, None),
+        Value::Bool(true) => (true, None),
+        Value::Number(n) => (n.as_f64().unwrap_or(0.0) != 0.0, None),
+        Value::String(s) => match s.trim().to_lowercase().as_str() {
+            "0" | "false" | "no" | "off" => (false, None),
+            "1" | "true" | "yes" | "on" => (true, None),
+            l if l.starts_with("kept for ") => (true, Some(format!("Kept for {}", &s.trim()[9..]))),
+            _ => (true, Some(format!("Kept for {}", s.trim()))),
+        },
+        other => (true, text(other).map(|s| format!("Kept for {s}"))),
+    }
+}
+
+/// A goal's own device pool from the old `goal_devices` (a device, its purpose, reserved), into the
+/// board's `goal_devices`. The purpose counts as a tag, so it's made one (`Payments on Android` →
+/// `payments-on-android`).
+fn goal_pools(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+    let Some(g) = Old::read(c, old, "goal_devices", &[])? else { return Ok(()) };
+    // Old device id or name → the board's name, as `devices` named them.
+    let mut names: HashMap<String, String> = HashMap::new();
+    if let Some(d) = Old::read(c, old, "devices", &[])? {
+        for r in &d.rows {
+            let raw = d.text(r, &["name", "label", "id"]);
+            if let Some(name) = raw.as_deref().and_then(slug) {
+                for k in [d.text(r, &["id"]), raw].into_iter().flatten() {
+                    names.entry(k.to_lowercase()).or_insert_with(|| name.clone());
+                }
+            }
+        }
+    }
+    let mut n = 0;
+    for r in &g.rows {
+        let dev = g.text(r, &["device", "device_id", "device_name", "name"]);
+        let name = dev.as_deref().and_then(|k| names.get(&k.to_lowercase()).cloned().or_else(|| slug(k)));
+        let (Some(goal), Some(name)) = (g.id(r, &["goal_id", "goal"]), name) else {
+            rep.skipped.push(format!("{} {}: its goal or device isn't known", g.table, g.text(r, &["id"]).unwrap_or_default()));
+            continue;
+        };
+        if app.db.q1("SELECT 1 FROM devices WHERE name = ?", vec![json!(name)])?.is_none() || app.db.q1("SELECT 1 FROM goals WHERE id = ?", vec![json!(goal)])?.is_none() {
+            rep.skipped.push(format!("{} {} {name}: that goal or device didn't come over", g.table, rf("goal", goal)));
+            continue;
+        }
+        let purpose = g.text(r, &["purpose", "role", "for"]).as_deref().and_then(slug).map(|p| p.replace(':', "-"));
+        let mut reserved = g.truthy(r, &["reserved", "reserve"]);
+        // One goal reserves a device; a later claim keeps it in that goal's pool, unreserved.
+        if reserved && app.db.q1("SELECT 1 FROM goal_devices WHERE device = ? AND reserved = 1 AND goal_id != ?", vec![json!(name), json!(goal)])?.is_some() {
+            rep.skipped.push(format!("{} {} {name}: reserved for another goal first, so it's in the pool unreserved", g.table, rf("goal", goal)));
+            reserved = false;
+        }
+        app.db.x(
+            "INSERT OR IGNORE INTO goal_devices(goal_id, device, purpose, reserved, at) VALUES(?, ?, ?, ?, ?)",
+            vec![json!(goal), json!(name), json!(purpose), json!(reserved as i64), g.get(r, &["created_at", "added_at", "at"]).clone()],
+        )?;
+        if wrote(app)? {
+            n += 1;
+        }
+    }
+    rep.copied.push(("goal_devices".into(), n));
+    Ok(())
 }
 
 /// A bit to link, by old id or name, to a task or a goal.

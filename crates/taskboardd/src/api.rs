@@ -265,6 +265,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("GET", ["goals", id]) => goal_detail(app, gid(id)?),
         ("POST", ["goals", id]) => patch_goal(app, gid(id)?, body),
+        (_, ["goals", id, "devices", rest @ ..]) => crate::devices::goal_route(app, method, gid(id)?, rest, body),
         ("POST", ["goals", id, "attachments"]) => {
             let g = gid(id)?;
             app.db.tx(|| {

@@ -328,3 +328,56 @@ fn a_task_started_by_hand_without_free_devices_says_so() {
     let d = b.post("devices/pixel-7", json!({"off": true}));
     assert_eq!((d["off"].clone(), d["held_by"]["ref"].clone()), (json!(true), json!(format!("T{a}"))));
 }
+
+#[test]
+fn a_goal_keeps_its_own_devices() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices", json!({"name": "pixel-8", "tags": "android"}));
+    b.post("devices", json!({"name": "rig", "tags": "bench"}));
+    let g3 = b.goal();
+    let g4 = b.goal();
+    // G3 reserves pixel-8 and gives the rig its purpose.
+    let pool = b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8", "reserved": true}));
+    assert_eq!(pool["devices"][0]["reserved"], true);
+    b.post(&format!("goals/G{g3}/devices"), json!({"device": "rig", "purpose": "measure"}));
+    let (code, msg) = b.post_err(&format!("goals/G{g4}/devices"), json!({"device": "pixel-8", "reserved": true}));
+    assert_eq!(code, 409, "{msg}");
+    assert!(msg.contains(&format!("reserved for G{g3}")), "{msg}");
+    let (code, _) = b.post_err(&format!("goals/G{g3}/devices"), json!({"device": "rig", "purpose": "Not A Tag!"}));
+    assert_eq!(code, 400);
+
+    // Another goal's task, and a task in no goal, never get pixel-8.
+    let other = b.task("Other", json!({"goal_id": g4, "devices": "android:2"}));
+    b.post(&format!("goals/G{g4}/run"), json!({}));
+    assert_eq!(b.waiting(other), format!("Needs 2 android devices, and the pool has 1 (pixel-8 is reserved for G{g3})"));
+    b.post(&format!("tasks/T{other}"), json!({"devices": "android"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{other}"))["devices"]["lent"], json!(["pixel-7"]));
+    let loose = b.task("Loose", json!({"devices": "android"}));
+    let why = b.waiting(loose).as_str().unwrap_or("").to_string();
+    assert_eq!(why, format!("Waits for a android device (T{other} has them)"), "pixel-8 isn't its to wait for");
+    b.post("devices/pixel-7", json!({"off": true}));
+    let why = b.waiting(loose).as_str().unwrap_or("").to_string();
+    assert_eq!(why, format!("Needs a android device, and the pool has none for it (pixel-8 is reserved for G{g3})"));
+
+    // G3's task gets its own pool first, and the purpose counts as a tag there only.
+    let mine = b.task("Mine", json!({"goal_id": g3, "devices": "android measure"}));
+    b.post(&format!("goals/G{g3}/run"), json!({}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{mine}"))["devices"]["lent"], json!(["pixel-8", "rig"]));
+    let h = handoff::build(&b.app, mine).unwrap();
+    assert!(h.contains("rig (bench, measure)"), "{h}");
+    let outside = b.task("Measure elsewhere", json!({"goal_id": g4, "devices": "measure"}));
+    assert_eq!(b.waiting(outside), "Needs a measure device, and the pool has none (tb device add)");
+
+    let d = b.get(&format!("goals/G{g3}"));
+    assert_eq!(d["devices"]["pool"], 2);
+    assert_eq!(d["devices"]["devices"][0]["in_pool"], true);
+    assert_eq!(d["devices"]["devices"][2]["in_pool"], false, "the goal's own devices come first");
+    assert_eq!(b.get("devices/pixel-8")["reserved_for"], format!("G{g3}"));
+    b.post(&format!("goals/G{g3}/devices/pixel-8/remove"), json!({}));
+    assert!(b.get("devices/pixel-8")["reserved_for"].is_null());
+    let (code, _) = b.post_err(&format!("goals/G{g3}/devices/pixel-8/remove"), json!({}));
+    assert_eq!(code, 404);
+}

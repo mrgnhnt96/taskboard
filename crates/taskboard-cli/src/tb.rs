@@ -735,6 +735,27 @@ enum GoalCmd {
     },
     /// Let the goal go on past a wave it stopped at (a review stop or a failed task), when the owner says so; or let a held wave start
     Continue { goal: String, wave: i64 },
+    /// The goal's own devices: its tasks get them before the rest of the pool, a reserved one goes to no
+    /// other goal's tasks, and a device's purpose counts as one of its tags for this goal's tasks.
+    /// With no flags, lists them
+    Devices {
+        goal: String,
+        /// A device to put in the goal's pool (or change there)
+        #[arg(long, value_name = "DEVICE", conflicts_with = "remove")]
+        add: Option<String>,
+        /// What the goal uses it for, matched like a tag (measure); none drops it
+        #[arg(long, requires = "add")]
+        purpose: Option<String>,
+        /// Keep it for this goal's tasks only
+        #[arg(long, requires = "add", conflicts_with = "unreserve")]
+        reserve: bool,
+        /// Let other goals' tasks have it again
+        #[arg(long, requires = "add")]
+        unreserve: bool,
+        /// A device to take out of the goal's pool
+        #[arg(long, value_name = "DEVICE")]
+        remove: Option<String>,
+    },
     /// Delete a goal (only when the owner asks)
     Delete {
         goal: String,
@@ -1570,6 +1591,9 @@ fn device_line(d: &Value) -> String {
         None if d["off"] == true => " · off".to_string(),
         None => " · free".to_string(),
     };
+    if let Some(g) = d["reserved_for"].as_str() {
+        line += &format!(" · reserved for {g}");
+    }
     if let Some(n) = d["note"].as_str().filter(|n| !n.is_empty()) {
         line += &format!(" · {n}");
     }
@@ -1577,6 +1601,19 @@ fn device_line(d: &Value) -> String {
         line += " · can focus";
     }
     line
+}
+
+/// "pixel-7 · for measure · reserved · android · lent to T4" for `tb goal devices`.
+fn goal_device_line(d: &Value) -> String {
+    let mut line = d["name"].as_str().unwrap_or("").to_string();
+    if let Some(p) = d["purpose"].as_str() {
+        line += &format!(" · for {p}");
+    }
+    if d["reserved"] == true {
+        line += " · reserved";
+    }
+    let rest = device_line(&json!({"name": "", "tags": d["tags"], "held_by": d["held_by"], "off": d["off"], "note": d["note"]}));
+    line + &rest
 }
 
 /// "newCheckout · backend · not made in Flagsmith · T4, G2" for `tb bits`.
@@ -1837,6 +1874,23 @@ fn goal_lines(g: &Value) -> Vec<String> {
         if g["run_in_order"] == true { "in order" } else { "in any order" },
         g["max_terminals"]
     ));
+    let own: Vec<String> = g["devices"]["devices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|d| d["in_pool"] == true)
+        .map(|d| {
+            let mut x: Vec<String> = d["purpose"].as_str().map(|p| format!("for {p}")).into_iter().collect();
+            if d["reserved"] == true {
+                x.push("reserved".into());
+            }
+            let name = d["name"].as_str().unwrap_or("");
+            if x.is_empty() { name.to_string() } else { format!("{name} ({})", x.join(", ")) }
+        })
+        .collect();
+    if !own.is_empty() {
+        lines.push(format!("Its own devices: {}", own.join(", ")));
+    }
     if let Some(tasks) = g["tasks"].as_array() {
         for (i, t) in tasks.iter().enumerate() {
             let status = if t["failed"] == true { "failed".to_string() } else { t["status"].as_str().unwrap_or("").to_string() };
@@ -2632,6 +2686,31 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let g = goal_ref(&goal)?;
                 let v = c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
                 out(&if v["let_start"] == true { format!("Wave {wave} of {g} can start now.") } else { format!("{g} goes on past wave {wave}.") });
+                Ok(0)
+            }
+            GoalCmd::Devices { goal, add, purpose, reserve, unreserve, remove } => {
+                let g = goal_ref(&goal)?;
+                let v = match (add, remove) {
+                    (Some(d), _) => {
+                        let mut b = json!({"device": d});
+                        if let Some(p) = purpose {
+                            b["purpose"] = json!(p);
+                        }
+                        if reserve || unreserve {
+                            b["reserved"] = json!(reserve);
+                        }
+                        c.call("POST", &format!("/goals/{g}/devices"), Some(b))?
+                    }
+                    (None, Some(d)) => c.call("POST", &format!("/goals/{g}/devices/{d}/remove"), Some(json!({})))?,
+                    (None, None) => c.call("GET", &format!("/goals/{g}/devices"), None)?,
+                };
+                let devices = v["devices"].as_array().cloned().unwrap_or_default();
+                if devices.is_empty() {
+                    out(&format!("{g} has no devices of its own; its tasks use the shared pool."));
+                }
+                for d in devices {
+                    out(&goal_device_line(&d));
+                }
                 Ok(0)
             }
             GoalCmd::Delete { goal, keep_tasks, delete_tasks, delete_backlog } => {
@@ -3804,6 +3883,13 @@ mod tests {
         assert_eq!(device_arg(&["android:2, ios".into()]), json!(["android:2", "ios"]));
         let lent_off = json!({"name": "pixel-7", "tags": ["android"], "off": true, "held_by": {"ref": "T2", "title": "Sim test"}});
         assert_eq!(device_line(&lent_off), "pixel-7 · android · off, still lent to T2 Sim test");
+        assert!(Cli::try_parse_from(["tb", "goal", "devices", "G3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "devices", "G3", "--add", "rig", "--purpose", "measure", "--reserve"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "devices", "G3", "--reserve"]).is_err(), "reserve says which device");
+        assert!(Cli::try_parse_from(["tb", "goal", "devices", "G3", "--add", "rig", "--remove", "rig"]).is_err());
+        let own = json!({"name": "rig", "tags": ["bench"], "purpose": "measure", "reserved": true, "held_by": null});
+        assert_eq!(goal_device_line(&own), "rig · for measure · reserved · bench · free");
+        assert_eq!(device_line(&json!({"name": "rig", "tags": [], "reserved_for": "G3"})), "rig · free · reserved for G3");
     }
 
     #[test]

@@ -17,6 +17,9 @@ pub struct DeviceRow {
     pub state: String,
     pub ours: bool,
     pub can_focus: bool,
+    /// In this goal's own pool: its purpose and whether it's reserved here ("for measure, reserved");
+    /// reserved for another goal: "reserved for G4".
+    pub pool: String,
 }
 
 pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
@@ -30,7 +33,17 @@ pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
                 None if b(d, "off") => "Off".into(),
                 None => "Free".into(),
             };
+            let mut pool: Vec<String> = vec![];
+            if b(d, "in_pool") {
+                pool.extend(fmt::opt_s(d, "purpose").map(|p| format!("for {p}")));
+                if b(d, "reserved") {
+                    pool.push("reserved".into());
+                }
+            } else if let Some(g) = fmt::opt_s(d, "reserved_for") {
+                pool.push(format!("reserved for {g}"));
+            }
             DeviceRow {
+                pool: pool.join(", "),
                 name: s(d, "name").to_string(),
                 tags: arr(d, "tags").iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
                 ours: held_by.as_ref().is_some_and(|r| ours.contains(r)),
@@ -153,7 +166,8 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                         .flex_1()
                         .min_w_0()
                         .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(d.name.clone()))
-                        .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone()))),
+                        .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone())))
+                        .when(!d.pool.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.accent_fg).truncate().child(d.pool.clone()))),
                 )
                 .child(holder)
                 .when(d.can_focus, |x| {
@@ -259,7 +273,8 @@ mod tests {
             "tasks": [{"ref": "T4"}],
             "devices": {"needs_text": "ios", "devices": [
                 {"name": "sim-a", "tags": ["ios"], "held_by": {"ref": "T4", "title": "Sim test"}, "can_focus": true},
-                {"name": "pixel-7", "tags": ["android", "phone"], "held_by": null, "off": true, "can_focus": false},
+                {"name": "pixel-7", "tags": ["android", "phone"], "held_by": null, "off": true, "can_focus": false, "in_pool": true, "purpose": "measure", "reserved": true},
+                {"name": "pixel-9", "tags": [], "held_by": null, "reserved_for": "G4"},
                 {"name": "pixel-8", "tags": [], "held_by": {"ref": "T9", "title": "Other"}}]},
             "bits": {"tool": "Flagsmith", "backend": 2, "made": 1, "list": [
                 {"name": "beta-banner", "kind": "local", "made": false, "tasks": ["T4"], "goals": []},
@@ -267,9 +282,10 @@ mod tests {
                 {"name": "oldCheckout", "kind": "backend", "made": true, "create_url": null, "tasks": [], "goals": []}]},
         });
         let d = device_rows(&g);
-        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true });
-        assert_eq!((d[1].state.as_str(), d[1].tags.as_str()), ("Off", "android, phone"));
-        assert!(!d[2].ours);
+        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true, pool: String::new() });
+        assert_eq!((d[1].state.as_str(), d[1].tags.as_str(), d[1].pool.as_str()), ("Off", "android, phone", "for measure, reserved"));
+        assert_eq!(d[2].pool, "reserved for G4");
+        assert!(!d[3].ours);
         let b = bit_rows(&g);
         assert_eq!((b[0].state.as_str(), b[0].create.clone(), b[0].can_mark), ("Local, not in Flagsmith", None, false));
         assert!(b[1].can_mark && !b[2].can_mark, "only a backend bit not made yet can be marked created");

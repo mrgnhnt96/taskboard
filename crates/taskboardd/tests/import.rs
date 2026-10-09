@@ -288,26 +288,43 @@ fn an_old_board_comes_over_with_its_numbers() {
 }
 
 #[test]
-fn a_goals_device_pool_is_kept_whole() {
+fn a_goals_device_pool_comes_over_as_its_own_with_blocked_and_removed_devices() {
     let old_dir = tempfile::tempdir().unwrap();
     let old_path = old_dir.path().join("tasks.db");
     Connection::open(&old_path)
         .unwrap()
         .execute_batch(
             "CREATE TABLE goals(id INTEGER PRIMARY KEY, name TEXT, project TEXT);
+             CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, tags TEXT, blocked TEXT, removed_at TEXT);
              CREATE TABLE goal_devices(goal_id INT, device_id TEXT, purpose TEXT, reserved INT);
              INSERT INTO goals VALUES (3, 'Checkout v2', 'web');
-             INSERT INTO goal_devices VALUES (3, 'pixel', 'Payments on Android', 1);
-             INSERT INTO goal_devices VALUES (3, 'iphone', 'Payments on iOS', 0);",
+             INSERT INTO devices VALUES ('d1', 'Pixel', 'android', NULL, NULL);
+             INSERT INTO devices VALUES ('d2', 'iPhone', 'ios', NULL, NULL);
+             INSERT INTO devices VALUES ('d3', 'Bench rig', 'bench', 'the demo', NULL);
+             INSERT INTO devices VALUES ('d4', 'Old tab', 'android', NULL, '2026-01-02T00:00:00');
+             INSERT INTO goal_devices VALUES (3, 'd1', 'Payments on Android', 1);
+             INSERT INTO goal_devices VALUES (3, 'd2', 'measure', 0);
+             INSERT INTO goal_devices VALUES (3, 'd4', NULL, 0);",
         )
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let app = App::for_tests(Config::for_tests(dir.path()));
     let rep = import::import(&app, &old_path).unwrap();
     assert_eq!(app.db.count("SELECT COUNT(*) FROM device_needs", vec![]).unwrap(), 0, "a pool isn't a need for one of each");
-    let kept: Value = serde_json::from_str(&app.db.get_setting("import.goal_devices").unwrap().unwrap()).unwrap();
-    assert_eq!(kept["rows"][0]["purpose"], "Payments on Android");
-    assert!(rep.kept.iter().any(|(t, n)| t == "goal_devices" && *n == 2));
+    assert!(app.db.get_setting("import.goal_devices").unwrap().is_none(), "no longer parked");
+    let pool = api::dispatch(&app, "GET", "goals/G3/devices", &Default::default(), &json!({})).unwrap();
+    let rows: Vec<(String, Value, bool)> = pool["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["name"].as_str().unwrap().to_string(), d["purpose"].clone(), d["reserved"] == true))
+        .collect();
+    assert_eq!(rows, vec![("iphone".into(), json!("measure"), false), ("pixel".into(), json!("payments-on-android"), true)]);
+    assert!(rep.copied.iter().any(|(t, n)| t == "goal_devices" && *n == 2));
+    let rig = api::dispatch(&app, "GET", "devices/bench-rig", &Default::default(), &json!({})).unwrap();
+    assert_eq!((rig["off"].clone(), rig["note"].clone()), (json!(true), json!("Kept for the demo")));
+    assert_eq!(api::dispatch(&app, "GET", "devices/old-tab", &Default::default(), &json!({})).unwrap_err().status, 404, "a removed device stays out");
+    assert!(rep.skipped.iter().any(|s| s.contains("old-tab: removed")), "{:?}", rep.skipped);
 }
 
 #[test]

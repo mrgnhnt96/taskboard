@@ -54,6 +54,7 @@ The board keeps one pool of devices (emulators, simulators, phones) for every pr
 - `tb task set T<n> --device android:2` (or `--device ios --device pixel-7`; `--device none` for none even when its goal asks for some, `--device goal` for its goal's again), `--device` on `tb task new`, or for every task in a goal that doesn't ask for its own: `tb goal set G<n> --device ios`.
 - Add a device when the owner says to: `tb device add pixel-7 --tag android --tag phone [--focus "<command that raises its window>"]`. Change it with `tb device set`, switch it off with `--off` and back on with `--on`, take it out with `tb device remove`.
 - `tb device focus <name>` raises a device's window.
+- A goal can keep devices of its own when the owner says so: `tb goal devices G<n> --add <device> [--purpose measure] [--reserve]`. Its tasks get those first, a reserved one goes to no other goal's tasks, and the purpose counts as a tag for its tasks (so `--device measure` there gets that device). `tb goal devices G<n>` lists them; `--unreserve` and `--remove <device>` undo.
 
 ## Bits (feature flags)
 
