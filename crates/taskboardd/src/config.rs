@@ -170,8 +170,9 @@ pub struct PrConfig {
     pub watch: bool,
     /// Bring a done task's conversation back when its PR needs work.
     pub wake: bool,
-    /// Agents may merge a PR once it's approved and green.
-    pub agents_merge: bool,
+    /// Agents may merge a PR once it's approved and green. Unset: off, and `taskboardd import` turns
+    /// the board-wide switch on; an explicit false is left alone.
+    pub agents_merge: Option<bool>,
     pub gh: String,
     /// Minutes after the head was pushed with no checks before the checks count as passed.
     pub no_checks_after_mins: f64,
@@ -192,7 +193,7 @@ impl Default for PrConfig {
         PrConfig {
             watch: true,
             wake: true,
-            agents_merge: false,
+            agents_merge: None,
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
             bitbucket_api: "https://api.bitbucket.org/2.0".into(),
@@ -207,6 +208,11 @@ impl PrConfig {
     /// The PR rules of a task's project (the defaults when it has none).
     pub fn project(&self, name: Option<&str>) -> PrProject {
         name.and_then(|n| self.projects.get(n)).cloned().unwrap_or_default()
+    }
+
+    /// `agents_merge`, off when unset.
+    pub fn agents_merge_on(&self) -> bool {
+        self.agents_merge.unwrap_or(false)
     }
 }
 

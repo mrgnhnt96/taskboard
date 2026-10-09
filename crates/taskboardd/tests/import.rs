@@ -567,6 +567,55 @@ fn the_review_switches_the_old_board_used_come_on() {
 }
 
 #[test]
+fn an_explicit_false_in_config_toml_keeps_agents_merge_off() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let old_path = old_dir.path().join("tasks.db");
+    Connection::open(&old_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, project TEXT, status TEXT, pr_repo TEXT, pr_num INT);
+             INSERT INTO tasks VALUES (1, 'Shop PR', 'shop', 'done', 'acme/shop', 9);
+             INSERT INTO tasks VALUES (2, 'Web PR', 'web', 'done', 'acme/web', 10);
+             INSERT INTO tasks VALUES (3, 'Docs PR', 'docs', 'done', 'acme/docs', 11);",
+        )
+        .unwrap();
+
+    // Board-wide false and a project's own false, written on purpose: both left off, and the report says so.
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.pr.agents_merge = Some(false);
+    cfg.pr.projects.insert("shop".into(), taskboardd::config::PrProject { agents_merge: Some(false), ..Default::default() });
+    cfg.pr.projects.insert("docs".into(), taskboardd::config::PrProject { agents_merge: Some(true), swap: Some(false), ..Default::default() });
+    let app = App::for_tests(cfg);
+    let rep = import::import(&app, &old_path).unwrap();
+    let merges = |p: &str| taskboardd::prflow::agents_merge_on(&app, Some(p));
+    assert!(!merges("shop"), "[pr.projects.shop] agents_merge = false is left alone");
+    assert!(merges("web"), "a project config.toml doesn't name still comes on");
+    assert!(merges("docs"), "config.toml's true stands");
+    assert!(!taskboardd::reviewers::swap_on(&app, Some("docs")), "[pr.projects.docs] swap = false is left alone too");
+    assert!(!taskboardd::projects::pr_rules_set(&app, "shop").unwrap().contains_key("agents_merge"), "nothing written over config.toml's word");
+    assert!(!taskboardd::projects::pr_rules_set(&app, "docs").unwrap().contains_key("agents_merge"));
+    assert_eq!(taskboardd::projects::agents_merge_set(&app), None, "pr.agents_merge = false is left alone");
+    assert!(!merges("added-later"));
+    let lines = rep.lines();
+    assert!(!lines.iter().any(|l| l.contains("every other project") && l.contains("turned on")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("turned on") && l.contains("shop: agents merge")), "{lines:?}");
+    let kept = lines.iter().find(|l| l.starts_with("kept off")).unwrap_or_else(|| panic!("{lines:?}"));
+    assert!(kept.contains("shop: agents merge") && kept.contains("docs: swaps") && kept.contains("every other project: agents merge"), "{kept}");
+    assert!(!kept.contains("docs: agents merge"), "{kept}");
+
+    // pr.agents_merge = true: nothing to turn on, nothing kept off.
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.pr.agents_merge = Some(true);
+    let app = App::for_tests(cfg);
+    let rep = import::import(&app, &old_path).unwrap();
+    assert_eq!(taskboardd::projects::agents_merge_set(&app), None);
+    assert!(taskboardd::prflow::agents_merge_on(&app, Some("added-later")));
+    assert!(!rep.lines().iter().any(|l| l.contains("every other project")), "{:?}", rep.lines());
+}
+
+#[test]
 fn an_import_sweeps_the_known_repos_for_old_attributes_blocks_again() {
     let old_dir = tempfile::tempdir().unwrap();
     let old_path = old_dir.path().join("tasks.db");

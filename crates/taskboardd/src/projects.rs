@@ -22,7 +22,7 @@ const AGENTS_MERGE_SETTING: &str = "pr_agents_merge";
 /// Whether agents merge PRs on a project that doesn't say: the board's word (`tb project agents-merge`),
 /// else config.toml's `pr.agents_merge`.
 pub fn agents_merge_default(app: &App) -> bool {
-    agents_merge_set(app).unwrap_or(app.cfg.pr.agents_merge)
+    agents_merge_set(app).unwrap_or(app.cfg.pr.agents_merge_on())
 }
 
 /// What `tb project agents-merge` (or an import) set on the board, if anything.
@@ -41,7 +41,7 @@ pub fn set_agents_merge(app: &App, on: Option<bool>) -> Result<()> {
 
 /// `GET /projects/agents-merge`: the board-wide switch, what the board set, and config.toml's.
 pub fn describe_agents_merge(app: &App) -> Value {
-    json!({"agents_merge": agents_merge_default(app), "set": agents_merge_set(app), "config": app.cfg.pr.agents_merge})
+    json!({"agents_merge": agents_merge_default(app), "set": agents_merge_set(app), "config": app.cfg.pr.agents_merge_on()})
 }
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {

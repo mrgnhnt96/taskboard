@@ -81,7 +81,7 @@ fn a_merge_left_open_is_retried_then_alerts_once() {
     let b = board_with(|c| {
         c.pr.watch = true;
         c.pr.wake = true;
-        c.pr.agents_merge = true;
+        c.pr.agents_merge = Some(true);
     });
     let id = pr_task(&b);
     let t = || board::get_task(&b.app, id).unwrap();
