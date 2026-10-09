@@ -69,3 +69,5 @@ Titles are short summaries a person reads at a glance (80 characters at most, no
 ## Work hours
 
 The board starts agents only inside the owner's work hours. `tb hours` shows them; change them only when the owner asks (`tb hours --start 09:00 --end 17:00 --days mon-fri`, `--on`/`--off`, `--today-until 4pm` for today only).
+
+Midna keeps the Mac awake inside its own keep-awake hours so agents keep running while the owner is away (idle sleep only: the display still sleeps and closing the lid still sleeps). `tb keep-awake` shows whether it's held and why. Change it only when the owner asks: `--on`/`--off`, `--start 8am --end 6pm`, `--days weekdays`, `--day fri=9am-3pm` / `--day sat=off` / `--day fri=default` for one day's own hours, `--today "until 5pm"` / `--today off` / `--today clear` for the rest of today, `--min-battery 20` (on battery it lets the Mac sleep below this), `--mode with-work|always`, `--linger 5`.

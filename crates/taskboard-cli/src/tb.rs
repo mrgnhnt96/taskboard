@@ -198,6 +198,35 @@ enum Cmd {
         #[arg(long = "today-until")]
         today_until: Option<String>,
     },
+    /// Show or change when Midna keeps the Mac awake for agents (its hours, days, battery floor)
+    KeepAwake {
+        #[arg(long)]
+        on: bool,
+        #[arg(long)]
+        off: bool,
+        /// with-work (only while agents have work) or always (the whole window)
+        #[arg(long, value_parser = ["with-work", "always"])]
+        mode: Option<String>,
+        #[arg(long)]
+        start: Option<String>,
+        #[arg(long)]
+        end: Option<String>,
+        /// weekdays, weekends, daily, mon-fri, mon,wed,fri
+        #[arg(long)]
+        days: Option<String>,
+        /// One day's own hours: fri=9am-3pm, sat=off, sun=all day, fri=default (repeatable)
+        #[arg(long = "day")]
+        day: Vec<String>,
+        /// Let the Mac sleep on battery below this percent (0 = no limit)
+        #[arg(long = "min-battery")]
+        min_battery: Option<i64>,
+        /// Minutes to stay awake after the work runs out
+        #[arg(long)]
+        linger: Option<i64>,
+        /// The rest of today: off, on, "until 5pm", or clear
+        #[arg(long)]
+        today: Option<String>,
+    },
     /// A done task's pull request
     Pr {
         #[command(subcommand)]
@@ -1465,6 +1494,52 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             let v = if b.as_object().map(|o| o.is_empty()).unwrap_or(true) { c.call("GET", "/hours", None)? } else { c.call("POST", "/hours", Some(b))? };
             out(v["line"].as_str().unwrap_or(""));
+            Ok(0)
+        }
+        Cmd::KeepAwake { on, off, mode, start, end, days, day, min_battery, linger, today } => {
+            let mut b = json!({});
+            if on || off {
+                b["enabled"] = json!(on);
+            }
+            if let Some(x) = mode {
+                b["mode"] = json!(x.replace('-', "_"));
+            }
+            for (k, x) in [("start", start), ("end", end), ("days", days), ("today", today)] {
+                if let Some(x) = x {
+                    b[k] = json!(x);
+                }
+            }
+            if !day.is_empty() {
+                let mut hours = serde_json::Map::new();
+                for d in &day {
+                    let Some((k, v)) = d.split_once('=') else {
+                        return Err(format!("--day {d}: give a day and its hours, like fri=9am-3pm or sat=off").into());
+                    };
+                    let v = v.trim();
+                    hours.insert(k.trim().to_lowercase(), if v.eq_ignore_ascii_case("default") { Value::Null } else { json!(v) });
+                }
+                b["hours"] = Value::Object(hours);
+            }
+            if let Some(x) = min_battery {
+                b["min_battery"] = json!(x);
+            }
+            if let Some(x) = linger {
+                b["linger_mins"] = json!(x);
+            }
+            let v = if b.as_object().map(|o| o.is_empty()).unwrap_or(true) { c.call("GET", "/keep-awake", None)? } else { c.call("POST", "/keep-awake", Some(b))? };
+            out(v["line"].as_str().unwrap_or(""));
+            let st = &v["settings"];
+            if st["enabled"] == true {
+                out(&format!("Hours: {}", v["schedule"].as_str().unwrap_or("")));
+                if let Some(t) = v["today"]["line"].as_str() {
+                    out(&format!("Today: {t}"));
+                }
+                let floor = match st["min_battery"].as_i64().unwrap_or(0) {
+                    0 => "even on a low battery".to_string(),
+                    n => format!("lets it sleep on battery below {n}%"),
+                };
+                out(&format!("{} · {floor}", if st["mode"] == "always" { "Always during the hours" } else { "Only while agents have work" }));
+            }
             Ok(0)
         }
         Cmd::Pr { action } => match action {
