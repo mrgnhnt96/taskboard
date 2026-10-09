@@ -293,8 +293,23 @@ fn transition(app: &App, c: &Conn, key: &str, target: &str, comment: Option<&str
     Ok(moved)
 }
 
+/// Words that say nothing about what the work is, left out when work is matched by its words.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "with", "from", "into", "onto", "that", "this", "these", "those", "its", "it's", "are", "was", "were",
+    "been", "being", "has", "have", "had", "not", "but", "all", "any", "can", "our", "out", "you", "your", "their", "them",
+    "they", "there", "then", "than", "when", "what", "which", "who", "whom", "why", "how", "where", "will", "would", "should",
+    "could", "may", "might", "must", "also", "just", "only", "more", "most", "some", "such", "very", "too", "via", "per",
+    "about", "after", "before", "over", "under", "again", "each", "every", "both", "one", "use", "using", "used", "make",
+    "new", "add", "get", "set", "app", "does", "doesn't", "nothing", "something", "now", "off", "own",
+];
+
 fn words(text: &str) -> std::collections::BTreeSet<String> {
-    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 3).map(|w| w.to_string()).collect()
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|w| w.trim_matches('\''))
+        .filter(|w| w.chars().count() >= 3 && !STOPWORDS.contains(w))
+        .map(|w| w.replace('\'', ""))
+        .collect()
 }
 
 /// The product whose name and `what` share the most words with the work, when one clearly does.
@@ -376,16 +391,26 @@ pub fn ticket_brief(app: &App, a: &Row, g: Option<&Row>) -> String {
     for k in ["project", "summary", "issuetype", "description"] {
         extra.as_object_mut().map(|o| o.remove(k));
     }
+    let first = if epic {
+        format!(
+            "First pick an open epic (not done) in {} that already covers this work, even when it's worded differently: search \
+             the open epics by the words of the summary and description below. If one covers it, use it: don't make another \
+             and don't change it.",
+            j.project.trim()
+        )
+    } else {
+        format!(
+            "First search {} for an open ticket (not done) that already covers it, by its summary and description. If one does, \
+             use it: don't make another and don't change it.",
+            j.project.trim()
+        )
+    };
     let mut lines = vec![
         format!("Find or make the Jira {} for this work in project {}.", if epic { "epic" } else { "ticket" }, j.project.trim()),
+        first,
         format!(
-            "First search {} for an open {} (not done) that already covers it, by its summary and description. If one does, \
-             use it: don't make another and don't change it.",
-            j.project.trim(),
-            if epic { "epic" } else { "ticket" }
-        ),
-        format!(
-            "Only if none does, make a {issue_type} with this summary and description{}",
+            "Only if none {}, make a {issue_type} with this summary and description{}",
+            if epic { "fits" } else { "does" },
             if extra.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                 ".".to_string()
             } else {
@@ -413,25 +438,60 @@ pub fn ticket_brief(app: &App, a: &Row, g: Option<&Row>) -> String {
     lines.join("\n")
 }
 
-/// An open ticket of the type whose summary matches, when there is one (REST).
+/// Of these open epics (key, summary), newest first, the one that already covers a goal named
+/// `summary`: the same summary, or else the one sharing the most of its words, when they're at least
+/// half of either's.
+pub fn covering_epic(summary: &str, epics: &[(String, String)]) -> Option<String> {
+    let norm = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    if let Some((k, _)) = epics.iter().find(|(_, s)| norm(s) == norm(summary)) {
+        return Some(k.clone());
+    }
+    let want = words(summary);
+    let mut best: Option<(usize, &String)> = None;
+    for (k, s) in epics {
+        let have = words(s);
+        let n = want.intersection(&have).count();
+        if n > 0 && n * 2 >= want.len().max(have.len()) && best.map(|b| n > b.0).unwrap_or(true) {
+            best = Some((n, k));
+        }
+    }
+    best.map(|b| b.1.clone())
+}
+
+/// An open ticket of the type that already covers the work, when there is one (REST): one with the
+/// same summary, or for an epic, the open epic whose summary best shares its words.
 fn find_open(app: &App, cr: &(String, String), f: &Value) -> std::result::Result<Option<String>, JiraError> {
     let summary = f["summary"].as_str().unwrap_or("");
     let text: Vec<String> = words(summary).into_iter().collect();
     if text.is_empty() {
         return Ok(None);
     }
+    let issue_type = f["issuetype"]["name"].as_str().unwrap_or("");
+    let epic = issue_type.eq_ignore_ascii_case(&app.cfg.jira.epic_type);
+    let matching = if epic {
+        format!("({})", text.iter().take(8).map(|w| format!("summary ~ \"{w}\"")).collect::<Vec<_>>().join(" OR "))
+    } else {
+        format!("summary ~ \"{}\"", text.join(" "))
+    };
     let jql = format!(
-        "project = \"{}\" AND issuetype = \"{}\" AND statusCategory != Done AND summary ~ \"{}\" ORDER BY created DESC",
+        "project = \"{}\" AND issuetype = \"{}\" AND statusCategory != Done AND {matching} ORDER BY created DESC",
         app.cfg.jira.project.trim().replace('"', ""),
-        f["issuetype"]["name"].as_str().unwrap_or("").replace('"', ""),
-        text.join(" ")
+        issue_type.replace('"', ""),
     );
     let d = call(app, cr, "POST", "search/jql", Some(json!({"jql": jql, "fields": ["summary"], "maxResults": 20})))?;
-    let norm = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
-    Ok(d["issues"]
+    let found: Vec<(String, String)> = d["issues"]
         .as_array()
-        .and_then(|a| a.iter().find(|i| norm(i["fields"]["summary"].as_str().unwrap_or("")) == norm(summary)))
-        .and_then(|i| i["key"].as_str().map(|k| k.to_string())))
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| Some((i["key"].as_str()?.to_string(), i["fields"]["summary"].as_str().unwrap_or("").to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if epic {
+        return Ok(covering_epic(summary, &found));
+    }
+    let norm = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    Ok(found.into_iter().find(|(_, s)| norm(s) == norm(summary)).map(|(k, _)| k))
 }
 
 /// Finds an open ticket that already covers the work, or makes one. Ok((key, status, {found, product})).
@@ -756,9 +816,41 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
             }
         }
     }
+    if !ok && op == "create" {
+        ticket_failed_alert(app, &target, why)?;
+    }
     app.info(format!("jira {} {}", rf("job", job_id), if ok { "ok".to_string() } else { format!("failed: {why}") }));
     app.wake_runner();
     Ok(Some(job))
+}
+
+/// How to go on after a task's ticket couldn't be found or made.
+pub fn retry_hint(tb: &str, task: &str) -> String {
+    format!("Try again with {tb} task set {task} --jira new, or link one with {tb} task set {task} --jira KEY.")
+}
+
+/// A ticket, epic or bug ticket that couldn't be found or made raises an alert, with what to do next.
+fn ticket_failed_alert(app: &App, target: &Row, why: &str) -> Result<()> {
+    let why = why.trim_end_matches('.');
+    if let Some(t) = board::find_task(app, target.i("task"))? {
+        let n = rf("task", t.id());
+        let text = format!("Couldn't make the Jira ticket for {n} “{}”: {why}. {}", t.st("title"), retry_hint("tb", &n));
+        return crate::dispatch::add_alert(app, &text, Some(t.id()), t.i("goal_id"), None, None);
+    }
+    if let Some(b) = board::find_issue(app, target.i("issue"))? {
+        let text = format!("Couldn't make the Jira ticket for the issue “{}”: {why}.", b.st("title"));
+        return crate::dispatch::add_alert(app, &text, None, b.i("goal_id"), None, None);
+    }
+    if let Some(g) = board::find_goal(app, target.i("goal"))? {
+        let text = format!(
+            "Couldn't find or make the Jira epic for {} “{}”: {why}. Its tickets are made without one; set it with tb goal set {} --epic KEY.",
+            rf("goal", g.id()),
+            g.st("name"),
+            rf("goal", g.id())
+        );
+        return crate::dispatch::add_alert(app, &text, None, Some(g.id()), None, None);
+    }
+    Ok(())
 }
 
 pub fn expire(app: &App) -> Result<()> {
@@ -844,7 +936,9 @@ pub fn ticket_wait(app: &App, t: &Row) -> Result<Option<String>> {
     }
     let last = last_create(app, t.id())?;
     Ok(Some(match failure(last.as_ref()) {
-        Some(why) if !asked(last.as_ref()) => format!("Waits for its Jira ticket. Couldn't make it: {why}"),
+        Some(why) if !asked(last.as_ref()) => {
+            format!("Waits for its Jira ticket. Couldn't make it: {}. {}", why.trim_end_matches('.'), retry_hint("tb", &rf("task", t.id())))
+        }
         _ if crate::jira_desk::on(app) => "Waits for its Jira ticket from the Jira desk".to_string(),
         _ => "Waits for its Jira ticket".to_string(),
     }))
