@@ -464,6 +464,19 @@ fn the_review_step_counts_approvals_against_the_ones_needed() {
 }
 
 #[::core::prelude::v1::test]
+fn with_no_count_the_host_s_approval_finishes_the_review_step() {
+    // #150: no approvals count, the host decided APPROVED with 1 of 3 reviewers approving.
+    let review = |rv: &str, need: Value| {
+        let bar = json!({"approvals": 1, "reviewers": 3, "need": need, "new_comments": 0, "reviewer_rows": []});
+        let p = with_bar(bar.clone(), json!({"phase": "merge", "label": "Ready to merge"}), rv)["pr"].clone();
+        view::pr_steps_full(&p, &bar).into_iter().find(|s| s.name == "Review").map(|s| (s.sub.unwrap_or_default(), s.st)).unwrap()
+    };
+    assert_eq!(review("approved", Value::Null), ("Approved".into(), view::StepSt::Done));
+    assert_eq!(review("pending", Value::Null), ("1 of 3".into(), view::StepSt::Wait), "not approved yet: out of the reviewers");
+    assert_eq!(review("approved", json!(2)), ("1 of 2".into(), view::StepSt::Wait), "a count set goes by the count");
+}
+
+#[::core::prelude::v1::test]
 fn without_a_bar_the_review_step_waits_short_of_the_approvals_needed() {
     let review = |review: &str, have: i64, need: Value| {
         let p = json!({"num": 13, "state": "OPEN", "checks": "pass", "review": review, "approvals": {"have": have, "need": need},

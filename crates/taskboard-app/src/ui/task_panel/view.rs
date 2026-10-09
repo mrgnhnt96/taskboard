@@ -1167,6 +1167,7 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let reviewers = bar["reviewers"].as_i64().unwrap_or(0);
     let new_comments = bar["new_comments"].as_i64().unwrap_or(0);
     let rv = js_lower(&p["review"]);
+    let need = bar["need"].as_i64().filter(|n| *n > 0);
     out.push(if s(bar, "review") == "off" {
         step("Review", StepSt::Done, Some("Off"), None)
     } else if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
@@ -1174,10 +1175,13 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         let words = if new_comments > 0 { fmt::plural(new_comments, "new comment", "new comments") } else { "New comments".to_string() };
         let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
         step("Review", StepSt::Ask, Some(&words), go)
+    } else if need.is_none() && rv == "approved" && phase != "rereview" {
+        // No count set: the host decides, and it has approved, however few of the reviewers have.
+        step("Review", StepSt::Done, Some("Approved"), url)
     } else if (reviewers > 0 || approvals > 0) && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
         // "1 of 2": out of the approvals it needs, else (the host decides) the reviewers on it; more than
         // needed still reads "2 of 2".
-        let of = bar["need"].as_i64().filter(|n| *n > 0).unwrap_or(reviewers);
+        let of = need.unwrap_or(reviewers);
         let st = if approvals >= of { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
         step("Review", st, Some(&format!("{} of {of}", approvals.min(of))), url)
     } else if s(bar, "review") == "setup" && review.1 == StepSt::Todo {
