@@ -446,7 +446,7 @@ impl SettingsWindow {
 const SIDEBAR_W: f32 = 228.;
 
 /// Drags the window from empty space; a double click zooms, like a title bar.
-fn drag_window(ev: &MouseDownEvent, window: &mut Window, _: &mut App) {
+pub(crate) fn drag_window(ev: &MouseDownEvent, window: &mut Window, _: &mut App) {
     if ev.click_count >= 2 {
         window.titlebar_double_click();
     } else {

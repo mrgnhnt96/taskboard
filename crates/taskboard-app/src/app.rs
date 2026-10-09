@@ -189,7 +189,9 @@ impl MainWindow {
         let mut m = MainWindow {
             backend,
             data: Data::default(),
-            filters: Filters::load(),
+            // The rail that showed and cleared a project or goal filter is gone, so a saved one
+            // would hide work with nothing on screen to say so: start unfiltered.
+            filters: Filters { project: "all".into(), goal: "all".into(), ..Filters::load() },
             page: Page::Board,
             panel: None,
             modal: None,
@@ -774,6 +776,7 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
+        let tabs = matches!(self.page, Page::Board | Page::Backlog | Page::Days | Page::Sessions);
 
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
@@ -825,12 +828,15 @@ impl Render for MainWindow {
             .text_color(t.text)
             .font_family(t.ui_font.clone())
             .text_size(px(14.))
+            // The tabbed pages have no sidebar: a header holds them as tabs and goals open from
+            // their cards on the board. Only a goal's page keeps the sidebar, its goal list.
+            .when(tabs, |d| d.child(ui::home::header(self, &t, cx)))
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(ui::sidebar::render(self, window, cx))
+                    .when(!tabs, |d| d.child(ui::sidebar::render(self, window, cx)))
                     .child(div().flex().flex_col().flex_1().min_w_0().children(banner(self, &t, cx)).child(div().flex().flex_1().min_h_0().child(page))),
             )
             .child(status_bar(self, &t, cx))
