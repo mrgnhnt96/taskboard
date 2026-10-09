@@ -35,9 +35,10 @@ scripts/install-app.sh           # build, install to /Applications/Taskboard.app
 ```
 
 Then click **Install hooks** at the bottom right of the window. It installs the `task-board` Claude Code plugin
-(hooks, skill, `tb` shim) from the copy inside the app, so updating the app updates the hooks. The status bar shows
-**● Hooks** when they're current, and an amber **Reinstall hooks** when they're switched off or load from somewhere
-else (a repo checkout, an app that's gone); the tooltip says which.
+(hooks, skill, `tb` shim) from the copy inside the app. The status bar shows **● Hooks** when they're current, and an
+amber **Reinstall hooks** when they're switched off, load from somewhere else (a repo checkout, an app that's gone), or
+are an older version than the app ships (Claude Code keeps running its cached copy until you reinstall after an app
+update); the tooltip says which.
 
 If macOS asks, switch Taskboard on in System Settings ▸ General ▸ Login Items (the app shows a banner until you do).
 `/Applications/Taskboard.app/Contents/MacOS/taskboardd init` writes a starting config.
