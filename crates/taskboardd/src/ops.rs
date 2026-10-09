@@ -149,6 +149,8 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         text += &format!(", linked {k}");
     }
     board::log_event(app, tid, who, "status", &text)?;
+    crate::devices::take_needs(app, "task", tid, body, who)?;
+    crate::bits::take_task_bits(app, tid, body, who)?;
     let t = board::get_task(app, tid)?;
     let also = shared::clean(app, body.get("also"), Some(&t))?;
     shared::add(app, &t, &also, who)?;
@@ -320,6 +322,8 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
             "notes": board::goal_notes(app, id)?.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
             "backlog": backlog,
             "attachments": board::attachments(app, None, Some(id))?,
+            "bits": crate::bits::goal_card(app, id)?,
+            "devices": crate::devices::goal_card(app, id)?,
         }),
     ))
 }

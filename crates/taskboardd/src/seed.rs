@@ -56,6 +56,7 @@ pub fn seed(app: &App) -> Result<()> {
                     "created_at" => now, "updated_at" => now],
         )?;
         seed_waves(app, t2)?;
+        seed_pool(app, gid, t2, t3)?;
         seed_today(app, &[(t1, "done"), (t2, "working"), (t3, "needs")])?;
         seed_history(app)?;
         Ok(())
@@ -95,6 +96,25 @@ fn seed_waves(app: &App, shared: i64) -> Result<()> {
     mk("Re-measure and compare", Some(3), "queued")?;
     mk("Write up the numbers", None, "planned")?;
     crate::shared::add(app, &board::get_task(app, shared)?, &[gid], board::OWNER)?;
+    Ok(())
+}
+
+/// A small device pool (one device lent to the running passkey task) and the passkeys goal's bits.
+fn seed_pool(app: &App, gid: i64, running: i64, asking: i64) -> Result<()> {
+    let now = now_iso();
+    for (name, tags, focus) in [("iphone-16-sim", json!(["ios", "simulator"]), Some("open -a Simulator")), ("pixel-8", json!(["android", "phone"]), None)] {
+        app.db.insert("devices", fields!["name" => name, "tags" => jdumps(&tags), "focus" => focus, "off" => 0, "created_at" => now, "updated_at" => now])?;
+    }
+    app.db.insert("device_loans", fields!["device" => "iphone-16-sim", "task_id" => running, "at" => now])?;
+    app.db.x("INSERT INTO device_needs(owner, needs) VALUES(?, ?)", p![rf("task", running), jdumps(&json!([{"tag": "ios", "n": 1}]))])?;
+    for (name, kind, made, task) in [("passkeys", "backend", true, None), ("passkeys.settings", "backend", false, Some(asking)), ("passkey-banner", "local", false, Some(running))] {
+        let id = app.db.insert(
+            "bits",
+            fields!["name" => name, "kind" => kind, "project" => "webapp", "made_at" => if made { Some(now.clone()) } else { None },
+                    "made_by" => if made { Some(board::OWNER) } else { None }, "created_at" => now, "updated_at" => now],
+        )?;
+        app.db.insert("bit_links", fields!["bit_id" => id, "task_id" => task, "goal_id" => if task.is_none() { Some(gid) } else { None }, "at" => now])?;
+    }
     Ok(())
 }
 

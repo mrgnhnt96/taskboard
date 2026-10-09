@@ -279,7 +279,10 @@ fn handoff_has_the_setup_waves_branch_and_footer() {
     let t1 = b.new_task(json!({"goal_id": g, "wave": 1, "title": "Sign-in form", "jira": {"mode": "link", "key": "PROJ-5"}}));
     let t2 = b.new_task(json!({"goal_id": g, "wave": 1, "title": "Session cookie"}));
     let t3 = b.new_task(json!({"goal_id": g, "wave": 2, "title": "Logout"}));
-    b.post(&format!("/goals/G{g}/waves/1"), json!({"name": "Basics", "stop_after": true}));
+    // The review stop is the owner's own checkbox in the app.
+    let mut q = Query::new();
+    q.insert(api::FROM.into(), "app".into());
+    api::dispatch(&b.app, "POST", &format!("/goals/G{g}/waves/1"), &q, &json!({"name": "Basics", "stop_after": true})).unwrap();
     let mut ctx = board::task_context(&b.task(t2));
     ctx.insert("files".into(), json!(["src/cookie.rs"]));
     board::save_context(&b.app, t2, &ctx, false).unwrap();
