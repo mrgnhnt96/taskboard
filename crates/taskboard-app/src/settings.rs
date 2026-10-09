@@ -49,9 +49,10 @@ enum Sec {
     Accounts,
     History,
     Qa,
+    Reviewers,
 }
 
-const SECS: [Sec; 3] = [Sec::Accounts, Sec::History, Sec::Qa];
+const SECS: [Sec; 4] = [Sec::Accounts, Sec::History, Sec::Qa, Sec::Reviewers];
 
 impl Sec {
     fn label(self) -> &'static str {
@@ -59,6 +60,7 @@ impl Sec {
             Sec::Accounts => "Accounts",
             Sec::History => "History",
             Sec::Qa => "QA",
+            Sec::Reviewers => "Reviewers",
         }
     }
 
@@ -67,6 +69,7 @@ impl Sec {
             Sec::Accounts => "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers.",
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
+            Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
         }
     }
 
@@ -75,6 +78,7 @@ impl Sec {
             Sec::Accounts => "@",
             Sec::History => "◷",
             Sec::Qa => "✓",
+            Sec::Reviewers => "☺",
         }
     }
 }
@@ -135,6 +139,8 @@ pub struct SettingsWindow {
     qa: Option<Value>,
     qa_busy: bool,
     qa_note: Option<(String, bool)>,
+    /// `GET /reviewers?project=all`.
+    reviewers: Option<Value>,
 }
 
 impl SettingsWindow {
@@ -167,10 +173,12 @@ impl SettingsWindow {
             qa: None,
             qa_busy: false,
             qa_note: None,
+            reviewers: None,
         };
         s.load(false, cx);
         s.load_history(cx);
         s.load_qa(cx);
+        s.load_reviewers(cx);
         cx.spawn(async move |this, cx| {
             let mut tick = 0u32;
             loop {
@@ -195,6 +203,20 @@ impl SettingsWindow {
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.history = Some(v);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_reviewers(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("reviewers", &[("project", "all".to_string())]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(v) = r {
+                    s.reviewers = Some(v);
                 }
                 cx.notify();
             });
@@ -439,6 +461,7 @@ impl Render for SettingsWindow {
             Sec::Accounts => self.accounts_page(&t, window, cx).into_any_element(),
             Sec::History => self.history_page(&t, cx).into_any_element(),
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
+            Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
         };
         div()
             .id("settings-root")
@@ -1007,6 +1030,72 @@ impl SettingsWindow {
             card = card.child(row(t, "qa-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
         }
         list.child(card)
+    }
+}
+
+// ------------------------------------------------------------------ reviewers
+
+/// What a reviewer's row says about them: their accounts, pin, bot, pace and asks.
+pub(crate) fn reviewer_note(r: &Value) -> String {
+    let mut bits: Vec<String> = vec![];
+    let mut ids: Vec<String> = r["user"].as_str().map(|u| vec![u.to_string()]).unwrap_or_default();
+    for k in ["emails", "aliases"] {
+        ids.extend(r[k].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x.as_str().map(|s| s.to_string())));
+    }
+    if !ids.is_empty() {
+        bits.push(ids.join(", "));
+    }
+    if r["bot"].is_object() {
+        bits.push(format!("Bot every {}h", r["bot"]["every_h"].as_f64().map(|h| format!("{h}")).unwrap_or_default()));
+    }
+    if let Some(a) = r["automation"].as_f64().filter(|a| (*a - 1.0).abs() > 1e-9) {
+        bits.push(format!("Automation {a}"));
+    }
+    if let Some(m) = r["median_work_mins"].as_f64() {
+        bits.push(format!("Reviews in {}", crate::fmt::span(m.round() as i64)));
+    }
+    let open = r["open_asks"].as_i64().unwrap_or(0);
+    if open > 0 {
+        bits.push(format!("{open} open"));
+    }
+    if let Some(at) = r["last_asked"].as_str() {
+        bits.push(format!("Last asked {}", crate::fmt::full_time(at)));
+    }
+    if r["removed"] == true {
+        bits.push(r["removed_why"].as_str().map(|w| format!("Removed: {w}")).unwrap_or_else(|| "Removed".into()));
+    }
+    bits.join(" · ")
+}
+
+impl SettingsWindow {
+    fn reviewers_page(&self, t: &Theme) -> impl IntoElement {
+        let mut list = div().id("reviewer-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let Some(v) = self.reviewers.clone() else {
+            return list.child(kit::empty(t, "Asking the board…"));
+        };
+        let projects = v["projects"].as_array().cloned().unwrap_or_default();
+        if projects.is_empty() {
+            return list.child(kit::empty(t, "No reviewers"));
+        }
+        for p in projects {
+            let name = p["name"].as_str().unwrap_or("").to_string();
+            let mut card = kit::card(t).overflow_hidden();
+            for (i, r) in p["reviewers"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+                let id = format!("rev-{}", r["id"]);
+                let removed = r["removed"] == true;
+                let mut l = line(t, &id, i == 0, false, r["name"].as_str().unwrap_or(""), &reviewer_note(r), None).when(removed, |d| d.text_color(t.muted));
+                if r["pinned"] == true {
+                    l = l.child(kit::tone_pill(t, "review", "Pinned"));
+                }
+                if removed {
+                    l = l.child(kit::tone_pill(t, "neutral", "Never asked"));
+                }
+                card = card.child(l);
+            }
+            let heading = div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(name);
+            list = list.child(div().flex().flex_col().gap(px(8.)).child(heading).child(card));
+        }
+        list
     }
 }
 

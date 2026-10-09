@@ -23,6 +23,7 @@
 //! | [`open`](PrHost::open) a PR from a pushed branch | `POST repos/{repo}/pulls` | `POST …/pullrequests` |
 //! | [`cancel_builds`](PrHost::cancel_builds) for a head | `gh run cancel` on its Actions runs | `stopPipeline` on its Pipelines runs; other CI: [`Cancelled::Unsupported`] |
 //! | [`base_failures`](PrHost::base_failures): checks failing on the base's last few commits | check runs and statuses of `commits?sha=<base>` | statuses of `commits/<base>` |
+//! | [`members`](PrHost::members): who can review in the repo (the reviewer picker, `picker.rs`) | `repos/{repo}/collaborators` | `workspaces/{ws}/members` |
 //!
 //! Users are named by the host's own id ([`Reviewer::user`]): a GitHub login, a Bitbucket account's
 //! `{uuid}` (an `account_id` works too). [`Reviewer::name`] is for people.
@@ -246,6 +247,11 @@ pub trait PrHost: Send + Sync {
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;
+    /// People who can review in `repo` (`user` and `name`; `state` is empty): the reviewer picker
+    /// matches them to commit authors. None by default.
+    fn members(&self, _repo: &str) -> HostResult<Vec<Reviewer>> {
+        Ok(vec![])
+    }
 }
 
 /// The host a task's PR lives on: one [`install`]ed for this board, else the real one.
@@ -293,11 +299,13 @@ pub struct FakeHost {
     pub calls: Mutex<Vec<String>>,
     /// Base-branch failures to report.
     pub base_failing: Mutex<Vec<String>>,
+    /// What `members` answers.
+    pub members: Mutex<Vec<Reviewer>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -336,6 +344,13 @@ impl PrHost for FakeHost {
     }
     fn request_reviews(&self, _pr: &PrRef, users: &[String]) -> HostResult<()> {
         self.log(format!("request {}", users.join(",")));
+        let mut r = self.rec.lock();
+        for u in users {
+            match r.reviewers.iter_mut().find(|x| &x.user == u) {
+                Some(x) => x.requested = true,
+                None => r.reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true }),
+            }
+        }
         Ok(())
     }
     fn re_request_reviews(&self, _pr: &PrRef, users: &[String]) -> HostResult<()> {
@@ -379,6 +394,9 @@ impl PrHost for FakeHost {
     fn base_failures(&self, _pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         self.log(format!("base {base} {commits}"));
         Ok(self.base_failing.lock().clone())
+    }
+    fn members(&self, _repo: &str) -> HostResult<Vec<Reviewer>> {
+        Ok(self.members.lock().clone())
     }
 }
 

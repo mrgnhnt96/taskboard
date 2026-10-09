@@ -158,6 +158,11 @@ enum Cmd {
         #[command(subcommand)]
         action: BitCmd,
     },
+    /// A project's reviewers: list, add, remove (never ask them), back, pin, bot schedule, automation, aliases
+    Reviewers {
+        #[command(subcommand)]
+        action: Option<ReviewersCmd>,
+    },
     /// List goals
     Goals {
         #[arg(long)]
@@ -438,6 +443,96 @@ enum BitCmd {
     },
     /// Remove a bit
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum ReviewersCmd {
+    /// The project's reviewers (the default): who's pinned, removed, their bot and pace
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        /// Every project's
+        #[arg(long)]
+        all: bool,
+    },
+    /// Add a reviewer, or fold more about one into the reviewer they already are
+    Add {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+        /// Their id on the PR host: a GitHub login, a Bitbucket {uuid} or account id
+        #[arg(long)]
+        user: Option<String>,
+        /// A commit email of theirs (repeat for more)
+        #[arg(long = "email")]
+        emails: Vec<String>,
+        /// Another name or account of theirs (repeat for more)
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
+        /// Their Slack user id or email, for the availability check
+        #[arg(long)]
+        slack: Option<String>,
+    },
+    /// Never ask this person (until tb reviewers back)
+    Remove {
+        who: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Ask a removed reviewer again
+    Back {
+        who: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Ask this reviewer on every PR of the project
+    Pin {
+        who: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Stop asking this reviewer on every PR
+    Unpin {
+        who: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Their review bot runs every --every hours and marks its comments with --mark (--off: no bot)
+    Bot {
+        who: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, required_unless_present = "off")]
+        every: Option<f64>,
+        #[arg(long, required_unless_present = "off")]
+        mark: Option<String>,
+        #[arg(long)]
+        off: bool,
+    },
+    /// How automated their reviewing is: off, low, normal, high or a number (1 is normal)
+    Auto {
+        who: String,
+        level: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Another name, email or host account of theirs
+    Alias {
+        who: String,
+        #[arg(required = true)]
+        aliases: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Two reviewers are one person: fold the second into the first
+    Merge {
+        keep: String,
+        other: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -812,6 +907,21 @@ enum PrCmd {
     },
     /// Every thread is answered: ask the reviewers who wanted changes to look again
     Addressed { task: Option<String> },
+    /// Set the PR's reviewers through its host: --ask, --replace X --with Y, or --drop X
+    Reviewers {
+        task: Option<String>,
+        /// Ask this person (repeat for more)
+        #[arg(long)]
+        ask: Vec<String>,
+        /// Take this reviewer off and ask --with in their place
+        #[arg(long)]
+        replace: Option<String>,
+        #[arg(long, requires = "replace")]
+        with: Option<String>,
+        /// Take this reviewer off the PR
+        #[arg(long)]
+        drop: Option<String>,
+    },
     /// Merge it once it's approved, green and every thread is answered (the board checks first)
     Merge { task: Option<String> },
     /// A failed check isn't this PR's fault: clear it for this push, with proof
@@ -1357,6 +1467,124 @@ fn bit_cmd(c: &Ctx, action: BitCmd) -> Result<i32, String> {
     let tool = c.call("GET", "/bits", None).ok().and_then(|l| l["tool"].as_str().map(|s| s.to_string())).unwrap_or_else(|| "the flag tool".into());
     out(&bit_line(&v, &tool));
     Ok(0)
+}
+
+/// A query value, percent-encoded.
+fn qv(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn reviewer_line(r: &Value) -> String {
+    let mut ids: Vec<String> = vec![];
+    if let Some(u) = r["user"].as_str() {
+        ids.push(u.to_string());
+    }
+    for k in ["emails", "aliases"] {
+        ids.extend(r[k].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x.as_str().map(|s| s.to_string())));
+    }
+    let name = r["name"].as_str().unwrap_or("");
+    let mut bits = vec![if ids.is_empty() { name.to_string() } else { format!("{name} ({})", ids.join(", ")) }];
+    if r["user"].is_null() {
+        bits.push("no host account yet".into());
+    }
+    if r["pinned"] == true {
+        bits.push("pinned".into());
+    }
+    if let Some(a) = r["automation"].as_f64().filter(|a| (*a - 1.0).abs() > 1e-9) {
+        bits.push(format!("automation {a}"));
+    }
+    if r["bot"].is_object() {
+        bits.push(format!("bot every {}h marked “{}”", r["bot"]["every_h"], r["bot"]["mark"].as_str().unwrap_or("")));
+    }
+    if let Some(m) = r["median_work_mins"].as_f64() {
+        bits.push(format!("reviews in about {} work minutes", m.round() as i64));
+    }
+    if r["open_asks"].as_i64().unwrap_or(0) > 0 {
+        bits.push(format!("{} open", r["open_asks"]));
+    }
+    if r["removed"] == true {
+        bits.push(match r["removed_why"].as_str() {
+            Some(w) => format!("removed: {w}"),
+            None => "removed".into(),
+        });
+    }
+    bits.join(" · ")
+}
+
+fn reviewers_cmd(c: &Ctx, action: ReviewersCmd) -> Result<i32, String> {
+    let body = |project: &Option<String>, who: &str, extra: Value| -> Value {
+        let mut b = json!({"project": project, "cwd": c.cwd, "reviewer": who, "who": c.who()});
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            b[k] = v;
+        }
+        b
+    };
+    let v = match action {
+        ReviewersCmd::List { project, all } => {
+            let path = match (all, project) {
+                (true, _) => "/reviewers?project=all".to_string(),
+                (false, Some(p)) => format!("/reviewers?project={}", qv(&p)),
+                (false, None) => format!("/reviewers?cwd={}", qv(&c.cwd)),
+            };
+            let v = c.call("GET", &path, None)?;
+            let projects = v["projects"].as_array().cloned().unwrap_or_default();
+            if projects.is_empty() {
+                out("No reviewers yet. Add one with tb reviewers add NAME --user <their host id> --email <their commit email>.");
+            }
+            for p in projects {
+                out(&format!("{}:", p["name"].as_str().unwrap_or("")));
+                for r in p["reviewers"].as_array().cloned().unwrap_or_default() {
+                    out(&format!("  {}", reviewer_line(&r)));
+                }
+            }
+            return Ok(0);
+        }
+        ReviewersCmd::Add { name, project, user, emails, aliases, slack } => {
+            c.call("POST", "/reviewers", Some(body(&project, &name, json!({"user": user, "emails": emails, "aliases": aliases, "slack": slack}))))?
+        }
+        ReviewersCmd::Remove { who, project, reason } => c.call("POST", "/reviewers/remove", Some(body(&project, &who, json!({"reason": reason}))))?,
+        ReviewersCmd::Back { who, project } => c.call("POST", "/reviewers/back", Some(body(&project, &who, json!({}))))?,
+        ReviewersCmd::Pin { who, project } => c.call("POST", "/reviewers/pin", Some(body(&project, &who, json!({"on": true}))))?,
+        ReviewersCmd::Unpin { who, project } => c.call("POST", "/reviewers/pin", Some(body(&project, &who, json!({"on": false}))))?,
+        ReviewersCmd::Bot { who, project, every, mark, off } => {
+            c.call("POST", "/reviewers/bot", Some(body(&project, &who, json!({"every_h": every, "mark": mark, "off": off}))))?
+        }
+        ReviewersCmd::Auto { who, level, project } => c.call("POST", "/reviewers/auto", Some(body(&project, &who, json!({"level": level}))))?,
+        ReviewersCmd::Alias { who, aliases, project } => c.call("POST", "/reviewers/alias", Some(body(&project, &who, json!({"aliases": aliases}))))?,
+        ReviewersCmd::Merge { keep, other, project } => c.call("POST", "/reviewers/merge", Some(body(&project, &keep, json!({"other": other}))))?,
+    };
+    out(&format!("{}: {}", v["project"].as_str().unwrap_or(""), reviewer_line(&v)));
+    Ok(0)
+}
+
+fn pr_reviewers_line(t: &str, v: &Value) -> String {
+    let names = |k: &str| -> Vec<String> { v[k].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x["name"].as_str().map(|s| s.to_string())).collect() };
+    let mut parts = vec![];
+    let asked = names("asked");
+    if !asked.is_empty() {
+        parts.push(format!("asked {}", asked.join(", ")));
+    }
+    if let Some(r) = v["replaced"].as_object() {
+        parts.push(format!("asked {} in place of {}", r["new"].as_str().unwrap_or(""), r["old"].as_str().unwrap_or("")));
+    }
+    let dropped = names("dropped");
+    if !dropped.is_empty() {
+        parts.push(format!("took {} off", dropped.join(", ")));
+    }
+    if parts.is_empty() {
+        return format!("{t}'s PR reviewers are unchanged.");
+    }
+    let s = parts.join("; ");
+    let s = format!("{}{}", s[..1].to_uppercase(), &s[1..]);
+    format!("{s} on {t}'s PR. The board watches it and brings this conversation back when it needs you. You can stop here.")
 }
 
 fn goal_lines(g: &Value) -> Vec<String> {
@@ -1950,6 +2178,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Bit { action } => bit_cmd(c, action),
+        Cmd::Reviewers { action } => reviewers_cmd(c, action.unwrap_or(ReviewersCmd::List { project: None, all: false })),
         Cmd::Goals { project } => {
             let v = c.call("GET", &format!("/goals?project={}", project.unwrap_or_else(|| "all".into())), None)?;
             let goals = v["goals"].as_array().cloned().unwrap_or_default();
@@ -2560,6 +2789,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
+            PrCmd::Reviewers { task, ask, replace, with, drop } => {
+                let t = c.pr_task(task)?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "who": c.pr_who()})))?;
+                out(&pr_reviewers_line(&t, &v));
+                Ok(0)
+            }
             PrCmd::Merge { task } => {
                 let t = c.pr_task(task)?;
                 c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"who": c.pr_who(), "agent": !c.session.is_empty()})))?;
@@ -2865,6 +3100,13 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "bit", "add", "newCheckout", "--backend", "--task", "T1"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "bit", "add", "x", "--backend", "--local"]).is_err());
         assert!(Cli::try_parse_from(["tb", "bit", "made", "newCheckout", "--undo"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "reviewers"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "reviewers", "bot", "ana", "--every", "4", "--mark", "AI review"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "reviewers", "bot", "ana", "--off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "reviewers", "bot", "ana", "--every", "4"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "reviewers", "merge", "Ana", "ana2", "--project", "web"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr", "reviewers", "T3", "--replace", "bo", "--with", "cy"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr", "reviewers", "--with", "cy"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--wave", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());

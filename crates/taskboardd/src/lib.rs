@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod api;
 pub mod app;
+pub mod asks;
 pub mod bits;
 pub mod board;
 pub mod clock;
@@ -38,6 +39,7 @@ pub mod projects;
 pub mod propen;
 pub mod qa;
 pub mod reports;
+pub mod reviewers;
 pub mod runner;
 pub mod screen;
 pub mod seed;

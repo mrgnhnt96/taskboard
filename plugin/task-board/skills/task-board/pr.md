@@ -20,10 +20,18 @@ Or let the board open it (GitHub): write the description to a file with `## Summ
 The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Accounts; `tb accounts` shows which are. On GitHub use `gh` (it's signed in there). On Bitbucket and Slack call their REST API through `tb api`, which adds the token:
 
 - Comment: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n>/comments -d '{"content":{"raw":"…"}}'`
-- Reviewers: `tb api bitbucket repositories/<workspace>/<repo>/pullrequests/<n> -X PUT -d '{"title":"…","reviewers":[{"account_id":"…"}]}'` (send the title too)
 - Slack: `tb api slack chat.postMessage -d '{"channel":"#dev","text":"…"}'`
 
 `git push` over HTTPS uses Taskboard's account for that host while you're on a task (`tb git-credential`, set up when the session starts); elsewhere git uses the Mac's own sign-in. `tb token <github|bitbucket|slack>` prints a token for a script; never echo it into a log, a commit or a message. An account that isn't connected: ask the owner with `tb question`, don't ask for a token.
+
+## Reviewers
+
+Set a PR's reviewers with `tb pr reviewers T<n>` (GitHub and Bitbucket alike), never with the host's own tools: the board records every ask and never asks the PR's author or anyone removed from the project's roster.
+
+- `--ask <name>` (repeat for more): a reviewer's name, alias, email or host id.
+- `--replace <name> --with <name>`: take one off and ask another in their place. `--drop <name>`: take one off.
+
+The roster is the project's (`tb reviewers`, run in the project's folder or with `--project`): `list`, `add "<name>" --user <host id> --email <commit email> --alias <other name>`, `alias`, `merge <keep> <other>` (two rows that are one person), `remove <name> --reason "…"` (never ask them; only on the owner's word), `back`, `pin`/`unpin` (asked on every PR), `bot <name> --every <hours> --mark "<text its comments carry>"`, `auto <name> low|normal|high`.
 
 ## After the PR opens
 
