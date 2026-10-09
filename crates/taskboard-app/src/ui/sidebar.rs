@@ -172,12 +172,13 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     if b(g, "paused") {
         return ("warn", "Paused".into());
     }
+    // Stopped comes before running here; only the rail (status_of) puts the running states first.
+    if fmt::opt_s(g, "stopped").is_some() {
+        return ("warn", STOPPED_LABEL.into());
+    }
     let running = c.active - needs;
     if running != 0 {
         return ("run", if running > 1 { format!("{running} running") } else { "Running".into() });
-    }
-    if i(g, "starting") == 0 && fmt::opt_s(g, "stopped").is_some() {
-        return ("warn", STOPPED_LABEL.into());
     }
     if i(g, "queued") > 0 {
         return if i(g, "blocked") > 0 { ("warn", "Blocked".into()) } else { ("queued", "Queued".into()) };
@@ -1554,12 +1555,14 @@ mod tests {
         let (k, l) = nav_status(&stopped, &goal_counts(&stopped));
         assert_eq!((k, l.as_str()), ("warn", "Waiting on you"));
         assert_eq!(nav_tip(&stopped, k, &l).as_deref(), Some("Wave 1 is done. Review it, then continue"));
-        // Working, starting and paused show first; stopped only once nothing runs.
+        // On the rail, working, starting and paused show first; stopped only once nothing runs.
+        // The goal list puts stopped before running and starting.
         let running = json!({"tasks": [{"status": "working"}, {"status": "queued"}], "queued": 1, "stopped": "Wave 1 is done. Review it, then continue"});
         assert_eq!(status_of(&running, &goal_counts(&running), false).unwrap().key, "working");
-        assert_eq!(nav_status(&running, &goal_counts(&running)).1, "Running");
+        assert_eq!(nav_status(&running, &goal_counts(&running)).1, "Waiting on you");
         let starting = json!({"tasks": [{"status": "queued"}], "queued": 1, "starting": 1, "stopped": "x"});
         assert_eq!(status_of(&starting, &goal_counts(&starting), false).unwrap().key, "starting");
+        assert_eq!(nav_status(&starting, &goal_counts(&starting)).1, "Waiting on you");
         let paused = json!({"tasks": [{"status": "queued"}], "queued": 1, "paused": true, "stopped": "x"});
         assert_eq!(status_of(&paused, &goal_counts(&paused), false).unwrap().key, "paused");
         assert_eq!(nav_status(&paused, &goal_counts(&paused)).1, "Paused");

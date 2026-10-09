@@ -306,12 +306,17 @@ pub fn lend(app: &App, t: &Row) -> Result<Vec<String>> {
     if needs.is_empty() {
         return Ok(vec![]);
     }
-    let (picked, _) = fill(&needs, &free_for(app, t.id())?, &before);
+    let (picked, short) = fill(&needs, &free_for(app, t.id())?, &before);
     for d in &picked {
         app.db.insert("device_loans", crate::fields!["device" => d, "task_id" => t.id(), "at" => now])?;
     }
     if !picked.is_empty() && picked != before {
         board::log_event(app, t.id(), board::BOARD, "note", &format!("Lent it {}", picked.join(", ")))?;
+    }
+    // Started (by hand, or a start that didn't wait) without all it asks for: say why on the task.
+    if !short.is_empty() {
+        let why = blocker(app, t)?.unwrap_or_else(|| format!("No {} device was free", short[0].tag));
+        board::log_event(app, t.id(), board::BOARD, "note", &format!("{why}; it started without"))?;
     }
     Ok(picked)
 }

@@ -288,6 +288,8 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         "requeue" => run(m, a, tp("/requeue"), json!({}), |_, _| "Back in the queue".into(), cx),
         "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
+        // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
+        "bit-made" => run(m, a, format!("bits/{}/made", a.arg), json!({}), |_, _| String::new(), cx),
         "detach" => run(m, a, tp("/detach"), json!({}), |_, _| "Detached. It’s back in the queue.".into(), cx),
         "close-term" => run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx),
         "focus" => run(m, a, tp("/focus"), json!({}), |m, _| sent(m), cx),

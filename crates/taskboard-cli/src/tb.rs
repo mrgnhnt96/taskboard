@@ -1564,6 +1564,8 @@ fn device_line(d: &Value) -> String {
         line += &format!(" · {}", tags.join(", "));
     }
     line += &match d["held_by"]["ref"].as_str() {
+        // Switched off while lent: the task keeps it until it's done, and then it isn't lent again.
+        Some(r) if d["off"] == true => format!(" · off, still lent to {r} {}", d["held_by"]["title"].as_str().unwrap_or("")),
         Some(r) => format!(" · lent to {r} {}", d["held_by"]["title"].as_str().unwrap_or("")),
         None if d["off"] == true => " · off".to_string(),
         None => " · free".to_string(),
@@ -3800,6 +3802,8 @@ mod tests {
         assert_eq!(device_arg(&["none".into()]), json!("none"));
         assert_eq!(device_arg(&["Goal".into()]), json!("goal"));
         assert_eq!(device_arg(&["android:2, ios".into()]), json!(["android:2", "ios"]));
+        let lent_off = json!({"name": "pixel-7", "tags": ["android"], "off": true, "held_by": {"ref": "T2", "title": "Sim test"}});
+        assert_eq!(device_line(&lent_off), "pixel-7 · android · off, still lent to T2 Sim test");
     }
 
     #[test]

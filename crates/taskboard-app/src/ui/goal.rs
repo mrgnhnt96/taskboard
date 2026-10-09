@@ -256,12 +256,13 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
     if tasks.iter().any(|t| s(t, "status") == "needs") {
         return ("Waiting on you".into(), "warn");
     }
-    if tasks.iter().any(|t| s(t, "status") == "working") {
-        return ("In progress".into(), "accent");
-    }
-    // Stopped at a wave for the owner (a review stop or a failed task), once nothing runs.
+    // Stopped at a wave for the owner (a review stop or a failed task), even with a task still
+    // working (one taken by hand): only the rail puts the running states first.
     if fmt::opt_s(g, "stopped").is_some() {
         return ("Waiting on you".into(), "warn");
+    }
+    if tasks.iter().any(|t| s(t, "status") == "working") {
+        return ("In progress".into(), "accent");
     }
     let queued: Vec<&Value> = tasks.iter().filter(|t| s(t, "status") == "queued").collect();
     if queued.iter().any(|t| b(t, "blocked")) {

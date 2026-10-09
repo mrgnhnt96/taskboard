@@ -1619,8 +1619,10 @@ fn origin_row(t: &Value) -> Option<Node> {
     Some(el(K::KvRow, vec![txt("From", St::LrowKey), value]))
 }
 
-/// The devices it has (or asks for) and its bits, as Context rows.
-fn pool_rows(t: &Value) -> Vec<Node> {
+/// The devices it has (or asks for) and its bits, as Context rows. A backend bit not made yet has
+/// "Mark created" (the owner's word that it's made in the flag tool, as on the goal page).
+fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
+    let r = rf(t, "T");
     let mut out = vec![];
     let d = &t["devices"];
     let lent: Vec<&str> = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
@@ -1628,15 +1630,17 @@ fn pool_rows(t: &Value) -> Vec<Node> {
     if let Some(v) = devices {
         out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));
     }
-    let bits: Vec<String> = arr(t, "bits")
-        .iter()
-        .map(|x| {
-            let state = if s(x, "kind") == "local" { "local" } else if b(x, "made") { "created" } else { "not created" };
-            format!("⚑ {} ({state})", s(x, "name"))
-        })
-        .collect();
+    let mut bits: Vec<Node> = vec![];
+    for (ix, x) in arr(t, "bits").iter().enumerate() {
+        let state = if s(x, "kind") == "local" { "local" } else if b(x, "made") { "created" } else { "not created" };
+        let sep = if ix + 1 < arr(t, "bits").len() { ", " } else { "" };
+        bits.push(txt(format!("⚑ {} ({state}){sep}", s(x, "name")), St::Plain));
+        if s(x, "kind") != "local" && !b(x, "made") {
+            bits.push(c.btn("Mark created", Act::new("bit-made", s(x, "name"), &r, ""), Look::SoftSmall, false, Some(&format!("Tell the board {} is made", s(x, "name")))));
+        }
+    }
     if !bits.is_empty() {
-        out.push(el(K::KvRow, vec![txt("Bits", St::LrowKey), txt(bits.join(", "), St::Plain)]));
+        out.push(el(K::KvRow, vec![txt("Bits", St::LrowKey), el(K::Line, bits)]));
     }
     out
 }
@@ -1670,7 +1674,7 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     }
     let mut kv: Vec<Node> = wh.into_iter().map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)])).collect();
     kv.extend(origin_row(t));
-    kv.extend(pool_rows(t));
+    kv.extend(pool_rows(c, t));
     out.push(el(K::Kv, kv));
     for (title, key, glyph, dot) in [("Done so far", "done", "✓", Dot::Up), ("Next", "next", "→", Dot::Accent), ("Decisions", "decisions", "•", Dot::Faint), ("Your answers", "answers", "•", Dot::Warn)] {
         let items = arr(cx, key);

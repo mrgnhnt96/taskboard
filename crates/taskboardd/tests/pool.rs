@@ -310,3 +310,21 @@ fn a_task_can_need_no_devices_over_its_goals_needs() {
     b.post(&format!("goals/G{g}"), json!({"devices": "none"}));
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_needs WHERE owner LIKE 'G%'", p![]).unwrap(), 0);
 }
+
+#[test]
+fn a_task_started_by_hand_without_free_devices_says_so() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    let a = b.task("A", json!({"devices": "android"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![a]);
+    let c = b.task("C", json!({"devices": "android"}));
+    b.post(&format!("tasks/T{c}/start"), json!({"mode": "new"}));
+    assert_eq!(b.get(&format!("tasks/T{c}"))["devices"]["lent"], json!([]));
+    let want = format!("Waits for a android device (T{a} has them); it started without");
+    let said = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = ?", p![c, want]).unwrap();
+    assert_eq!(said, 1, "{:?}", b.app.db.q("SELECT text FROM events WHERE task_id = ?", p![c]).unwrap());
+    // Switched off while lent: the task keeps it.
+    let d = b.post("devices/pixel-7", json!({"off": true}));
+    assert_eq!((d["off"].clone(), d["held_by"]["ref"].clone()), (json!(true), json!(format!("T{a}"))));
+}
