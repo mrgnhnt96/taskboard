@@ -1239,6 +1239,43 @@ fn on_step_triage(r: &mut Report) -> Result<Value> {
     Ok(with(ok(Some(&t), None), json!({"step": step.name, "finding": finding, "state": state, "open": open})))
 }
 
+/// `tb step aim`: saves where the task's rounds look (a worktree, a branch, a pinned commit), so later
+/// rounds and the gates follow it; `clear` drops it.
+fn on_step_aim(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let mut ctx = board::task_context(&t);
+    let aim: serde_json::Map<String, Value> = ["worktree", "branch", "sha"]
+        .iter()
+        .filter_map(|k| Some((k.to_string(), json!(one_line(r.body.get(*k)?.as_str()?, 400)))))
+        .filter(|(_, v)| v.as_str().is_some_and(|s| !s.is_empty()))
+        .collect();
+    let text = if as_bool(r.body.get("clear"), false) || aim.is_empty() {
+        if ctx.remove("step_aim").is_none() {
+            return Ok(with(ok(Some(&t), None), json!({"aim": null})));
+        }
+        "Rounds look at the agent's checkout again".to_string()
+    } else {
+        let mut bits = vec![];
+        if let Some(b) = aim.get("branch").and_then(|v| v.as_str()) {
+            bits.push(b.to_string());
+        }
+        if let Some(s) = aim.get("sha").and_then(|v| v.as_str()) {
+            bits.push(format!("at {}", s.chars().take(12).collect::<String>()));
+        }
+        if let Some(w) = aim.get("worktree").and_then(|v| v.as_str()) {
+            bits.push(format!("in {w}"));
+        }
+        ctx.insert("step_aim".into(), Value::Object(aim.clone()));
+        format!("Rounds aimed at {}", bits.join(" "))
+    };
+    board::save_context(app, t.id(), &ctx, false)?;
+    r.log(t.id(), "status", &text, None)?;
+    let t = board::get_task(app, t.id())?;
+    Ok(with(ok(Some(&t), None), json!({"aim": steps::saved_aim(&t), "head": steps::aim_head(&t)})))
+}
+
 /// Puts the task in Needs you for a step, as a question the owner answers or acknowledges.
 fn wait_on_owner(r: &Report, t: &Row, step: &steps::Step, question: &str, failed: bool) -> Result<()> {
     let app = r.app;
@@ -1749,6 +1786,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.step_ask" => on_step_ask,
         "tb.step_fail" => on_step_fail,
         "tb.step_triage" => on_step_triage,
+        "tb.step_aim" => on_step_aim,
         "tb.take" => on_take,
         "tb.propose" => on_propose,
         "tb.goal" => on_goal,

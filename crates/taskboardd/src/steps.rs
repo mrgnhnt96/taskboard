@@ -387,6 +387,42 @@ pub fn unreviewed(r: &Round) -> bool {
     r.data["result"]["verdict"] == "skip" || r.data["output"].as_str().map(|o| o.contains("stopped after")).unwrap_or(false)
 }
 
+/// Where the task's rounds look (`tb step aim`): `{worktree, branch, sha}`, any of them; null when unaimed.
+pub fn saved_aim(t: &Row) -> Value {
+    match board::task_context(t).get("step_aim") {
+        Some(a) if a.as_object().is_some_and(|o| o.values().any(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))) => a.clone(),
+        _ => Value::Null,
+    }
+}
+
+/// The commit the saved aim points at now: its pinned sha, else its worktree's head, else its branch's
+/// tip in the task's repo.
+pub fn aim_head(t: &Row) -> Option<String> {
+    let a = saved_aim(t);
+    let s = |k: &str| a[k].as_str().filter(|x| !x.trim().is_empty()).map(|x| x.trim().to_string());
+    if let Some(sha) = s("sha") {
+        return Some(sha);
+    }
+    let (dir, rev) = match (s("worktree"), s("branch")) {
+        (Some(w), _) => (w, "HEAD".to_string()),
+        (None, Some(b)) => (t.st("repo_path"), format!("refs/heads/{b}")),
+        _ => return None,
+    };
+    if dir.is_empty() || !std::path::Path::new(&dir).is_dir() {
+        return None;
+    }
+    let git = crate::proc::which("git")?;
+    let args: Vec<String> = vec!["-C".into(), dir, "rev-parse".into(), "--verify".into(), "-q".into(), format!("{rev}^{{commit}}")];
+    let out = crate::proc::run(&git, &args, None, 5.0).ok().filter(|o| o.code == Some(0))?;
+    Some(out.stdout.trim().to_string()).filter(|h| !h.is_empty())
+}
+
+/// The head a gate judges per-head steps on: the saved aim's, else the one the caller names, else the
+/// task's as the board knows it.
+pub fn judged_head(t: &Row, head: Option<&str>) -> Option<String> {
+    aim_head(t).or_else(|| head.filter(|h| !h.is_empty()).map(|h| h.to_string())).or_else(|| waitsfor::head_of(t))
+}
+
 /// When the step may run its next round, if it keeps rounds apart and the last real round was too recent.
 pub fn next_round_at(step: &Step, rounds: &[Round]) -> Option<String> {
     let gap = step.gap_secs()?;
@@ -420,7 +456,7 @@ pub fn missing(app: &App, t: &Row, before: &[Before]) -> Result<Vec<Step>> {
 /// `missing`, judging per-head steps on `head` (else the task's head as the board knows it).
 pub fn missing_at(app: &App, t: &Row, before: &[Before], head: Option<&str>) -> Result<Vec<Step>> {
     let rounds = rounds(app, t.id())?;
-    let known = head.map(|h| h.to_string()).or_else(|| waitsfor::head_of(t));
+    let known = judged_head(t, head);
     Ok(for_task(app, t).into_iter().filter(|s| before.contains(&s.before) && !passed_on(s, &rounds, known.as_deref())).collect())
 }
 
@@ -460,7 +496,7 @@ pub fn waiting_card(app: &App, t: &Row) -> Value {
 /// per-head step), when each may run its next round, and the placeholders' values.
 pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
     let rounds = rounds(app, t.id())?;
-    let known = head.map(|h| h.to_string()).or_else(|| waitsfor::head_of(t));
+    let known = judged_head(t, head);
     let steps: Vec<Value> = for_task(app, t)
         .iter()
         .map(|s| {
@@ -472,7 +508,7 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
         })
         .collect();
     Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_for(app, t),
-              "head": known, "pr_open": t.s("status") == Some("done") && board::pr_still_open(t)}))
+              "head": known, "aim": saved_aim(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t)}))
 }
 
 /// The steps in a `GET /steps` answer, with whether each has passed.
@@ -661,7 +697,7 @@ pub fn results(app: &App, t: &Row) -> Result<Vec<Value>> {
             Some(d)
         })
         .collect();
-    let head = waitsfor::head_of(t);
+    let head = judged_head(t, None);
     let mut out = vec![];
     for st in for_task(app, t) {
         let k = key(&st.name);

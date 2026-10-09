@@ -283,11 +283,19 @@ bar = "WD"            # its name in the app's PR bar
   the next may start; a round that couldn't review (`skip`) or didn't finish (stopped at its timeout) doesn't
   count, so the next may start straight away, on the same commit or not. `--commit` takes any ref (`HEAD`,
   `HEAD~1`, a short sha) and stores its full sha.
-- **Aiming a round.** `tb step run|again "<step>"` looks at this checkout's head. `--worktree <dir>` runs it in that
-  checkout; `--branch <name>` runs it in the worktree that has the branch checked out (else here, on the branch's
-  commit); `--commit <ref>` looks at that commit. The round is recorded on the resolved sha, and scripts get
-  `{head}` / `TASKBOARD_HEAD` (and `{worktree}` / `TASKBOARD_WORKTREE` when it runs elsewhere), with `{branch}`
-  set to the aimed branch.
+- **Aiming a round.** `tb step done|run|again "<step>"` looks at this checkout's head. `--worktree <dir>` runs it in
+  that checkout; `--branch <name>` runs it in the worktree that has the branch checked out, and is refused when none
+  has ("No worktree has <name> checked out. Say which one with --worktree."); `--commit <ref>` looks at that commit
+  (with `--branch` or `--worktree`, on that checkout), which must be on the checkout's branch ("<sha> isn't on
+  <branch>."). A commit other than the checkout's head runs on a throwaway detached checkout of it, removed after
+  the round, so a check that doesn't read `{head}` still reviews the commit the round records. The round is
+  recorded on the resolved sha, and scripts get `{head}` / `TASKBOARD_HEAD`, `{worktree}` / `TASKBOARD_WORKTREE`
+  (the folder it runs in) and `{branch}` set to the aimed branch.
+- **Saving the aim.** `tb step aim [--task T<n>] --branch <b> | --worktree <dir> [--commit <ref>]` saves the aim
+  on the task (report `tb.step_aim`, shown by `tb steps`): every later `tb step done|run|again` without flags
+  follows it, and the gates (`tb done`, the board opening the PR, `GET /steps`) judge per-head steps on its commit
+  (the pinned sha, else the worktree's or branch's latest commit) rather than the checkout the command runs in.
+  `tb step aim --clear` drops it.
 
 ## Stacked PRs, the PR plan, and `tb done --pr-body`
 

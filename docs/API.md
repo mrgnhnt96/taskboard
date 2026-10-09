@@ -1007,8 +1007,11 @@ refuses an earlier round); `bar = "WD"` puts it in the PR bar. A check or script
 "detail", "url"}]}` to `$TASKBOARD_RESULT`; the verdict overrides the exit code, and `skip` (a round that couldn't
 review or didn't finish) never blocks, and neither it nor a round stopped at its timeout counts for `min_gap_mins`.
 `tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …] [--commit <ref>]` answers a finding
-(report `tb.step_triage`; `tb` resolves the ref to its sha); `tb step again|run "<step>" [--branch B | --worktree DIR
-| --commit REF]` runs another round, on what it names (the report's `head` is the resolved sha). A `[[steps]]` entry
+(report `tb.step_triage`; `tb` resolves the ref to its sha); `tb step done|again|run "<step>" [--branch B | --worktree DIR]
+[--commit REF]` runs another round, on what it names (the report's `head` is the resolved sha; a commit other than the
+checkout's head runs on a throwaway checkout of it). `tb step aim --branch B | --worktree DIR [--commit REF]` (report
+`tb.step_aim` with `worktree`, `branch`, `sha`; `clear: true` drops it) saves the aim on the task: `GET /steps` returns it
+as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so do the `tb done` and PR-opening gates. A `[[steps]]` entry
 that can't be done is left out alone, with an alert keyed `steps:<name>` until it's fixed. `pr.bar.wd` is the `bar`
 step's latest `step_result` on cards as well as in the task detail.
 
