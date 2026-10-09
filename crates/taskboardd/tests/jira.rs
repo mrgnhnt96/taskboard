@@ -247,11 +247,15 @@ fn the_desk_finds_or_makes_tickets_and_stays_open() {
     b.tick();
     assert_eq!(b.card(t)["jira"]["status"], "Ticket asked for · Jira desk");
 
-    // No desk yet: the board opens one, in the background.
+    // No desk yet: the board opens one, in the background ([terminals] background has jira_desk).
     let opened = b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
     assert_eq!(opened.len(), 1);
     let a = board::job_args(&opened[0]);
-    assert_eq!(a["background"], true);
+    assert!(a.get("background").is_none(), "the purpose list decides, not the job");
+    assert!(midna::opens_in_background(&b.app, &opened[0]));
+    let mut fg = b.app.cfg.clone();
+    fg.terminals.background.clear();
+    assert!(!midna::opens_in_background(&App::for_tests(fg), &opened[0]), "config can move it out");
     assert!(a.st("flags").contains("Bash(tb jira:*)"), "{}", a.st("flags"));
     b.tick();
     assert_eq!(b.jobs("kind = 'agent' AND purpose = 'jira_desk'").len(), 1, "opened once");

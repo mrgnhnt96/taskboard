@@ -162,9 +162,9 @@ refuse_message = "The board doesn't take {ext} files as attachments: publish it 
 
 # Terminals the board opens in Midna. `background`: the job purposes whose terminals open in Midna's
 # Background group instead of their project's tabs: start (a task), pr (a PR visit), plan (planning a
-# goal), reopen (a closed terminal reopened).
+# goal), reopen (a closed terminal reopened), jira_desk (the Jira desk's terminal).
 [terminals]
-background = []                      # example: ["plan"]
+background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
 # MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`

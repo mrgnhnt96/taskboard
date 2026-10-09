@@ -107,7 +107,7 @@ fn open(app: &App) -> Result<i64> {
     let id = board::create_job(
         app,
         "agent",
-        json!({"cwd": dir.to_string_lossy(), "title": "Jira desk", "prompt": intro(app), "flags": flags, "background": true}),
+        json!({"cwd": dir.to_string_lossy(), "title": "Jira desk", "prompt": intro(app), "flags": flags}),
         None,
         PURPOSE,
         None,
