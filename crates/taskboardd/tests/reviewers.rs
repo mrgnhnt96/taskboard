@@ -490,6 +490,9 @@ fn the_sweep_swaps_while_a_healthy_feed_drives_the_prs() {
     let id = b.pr_task(BB);
     crew(&b);
     b.post("/prs/heartbeat", json!({}));
+    assert!(taskboardd::feed::holding(&b.app, true).unwrap().contains("just came back"), "the first connect settles first");
+    // Connected long enough ago to have settled.
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(1.0), "connected_at": ago(400.0)}));
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
     assert!(!taskboardd::feed::poll_due(&b.app), "a healthy feed: no poll");
     age_asks(&b, 100.0);
@@ -882,4 +885,109 @@ fn a_fill_in_is_asked_only_while_the_pr_is_short_of_reviewers() {
     poll(&b);
     assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "answered"), pair("Cy", "open")], "Bo and Cy are its two");
     assert!(b.asks(id)[0].b("filled"));
+}
+
+/// Puts `rec` back as the PR's last read, made at `checked_at`, as if the sweep read it before a refresh.
+fn stale_read(b: &Board, id: i64, rec: &Value, checked_at: &str) {
+    b.app
+        .db
+        .x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.rec', json(?), '$.checked_at', ?) WHERE id = ?", vec![json!(rec.to_string()), json!(checked_at), json!(id)])
+        .unwrap();
+}
+
+#[test]
+fn a_read_from_before_tb_pr_addressed_does_not_answer_the_rereview() {
+    let b = board_with(|_| {});
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("2026-10-01T09:00:00Z".into());
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false }];
+    rec.threads = vec![prhost::Thread {
+        id: "1".into(),
+        kind: "review".into(),
+        resolvable: true,
+        resolved: true,
+        author: "ana".into(),
+        last_author: "ana".into(),
+        last_id: "1".into(),
+        text: "Rename this".into(),
+        ..Default::default()
+    }];
+    let h = FakeHost::new("github", rec);
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task("https://github.com/acme/webapp/pull/9");
+    b.add("Ana", json!({"user": "ana"}));
+    poll(&b);
+    let before = b.flow(id)["rec"].clone();
+    assert_eq!(before["reviewers"][0]["state"], "changes");
+    b.post(&format!("/tasks/{id}/pr/addressed"), json!({"who": "The agent"}));
+
+    // The sweep works from the read before the refresh: an earlier second, then the same one.
+    stale_read(&b, id, &before, &ago(30.0));
+    taskboardd::runner::reviews(&b.app).unwrap();
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "read before the ask");
+    let asked_at = b.asks(id)[0].st("asked_at");
+    stale_read(&b, id, &before, &asked_at);
+    taskboardd::runner::reviews(&b.app).unwrap();
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "the request for changes it answered isn't a new one");
+
+    // She looks again and asks for more changes: that's an answer.
+    {
+        let mut r = h.rec.lock();
+        r.changes_at = Some("2026-10-02T09:00:00Z".into());
+        r.reviewers[0].requested = false;
+        r.reviewers[0].state = "changes".into();
+    }
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "answered")]);
+}
+
+#[test]
+fn the_owner_s_review_gates_a_first_ask_whatever_the_status_and_not_a_later_swap() {
+    let b = board_with(|_| {});
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    b.post("/projects/webapp", json!({"ask_stage": true}));
+    b.app.db.x("UPDATE tasks SET status = 'working' WHERE id = ?", vec![json!(id)]).unwrap();
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("hasn't reviewed PR #9 yet"), "a reopened task waits too: {e}");
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", vec![json!(id)]).unwrap();
+
+    // Asked without the stage; then with it on, a swap or a drop doesn't wait for the owner.
+    b.post("/projects/webapp", json!({"ask_stage": false}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
+    b.post("/projects/webapp", json!({"ask_stage": true}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"replace": "Ana", "with": "Cy"}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Bo"}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "dropped"), pair("Cy", "open")]);
+}
+
+#[test]
+fn a_bot_run_starts_at_its_earliest_comment_and_a_failed_read_is_tried_again() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let _ = id;
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
+    // Bitbucket isn't connected: the read fails, and isn't counted as one.
+    taskboardd::botrun::note_runs(&b.app).unwrap();
+    assert!(!b.app.db.get_setting("bot_scans").unwrap().unwrap_or_default().contains("acme/webapp"), "a failed read waits for nothing");
+
+    // Newest first, as Bitbucket lists them: the run is at the earliest of its comments.
+    let h = fake(&b, green());
+    *h.comments.lock() = vec![bot_comment(31, "c2", 50.0), bot_comment(32, "c1", 60.0)];
+    assert_eq!(taskboardd::botrun::note_runs(&b.app).unwrap(), 1, "read on the next sweep");
+    assert_eq!(b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap(), 1, "one run");
+    let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
+    assert!((taskboardd::util::now_ts() - at - 3600.0).abs() < 5.0, "the earliest comment's time");
+
+    // An earlier comment of the same run seen later moves the run back to it.
+    let ana = b.app.db.q1("SELECT * FROM reviewers WHERE name = 'Ana'", vec![]).unwrap().unwrap();
+    let earlier = taskboardd::util::now_ts() - 65.0 * 60.0;
+    assert!(!taskboardd::botrun::note_run(&b.app, &ana, earlier, "acme/webapp#33:c0").unwrap());
+    assert_eq!(b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap(), 1);
+    let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
+    assert!((at - earlier).abs() < 1.0);
 }

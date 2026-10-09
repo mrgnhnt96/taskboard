@@ -142,14 +142,28 @@ pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(crate::feed::holding(app, first))
 }
 
+/// Whether the owner's review gates this ask (the `ask` stage): it's on for the project, the owner
+/// hasn't reviewed the PR, and nobody has been asked on it yet. Whatever the task's status, so a
+/// reopened task waits too; a later swap or drop doesn't.
+pub fn needs_owner_review(app: &App, t: &Row) -> Result<bool> {
+    if !reviewers::ask_stage_on(app, t.s("project")) {
+        return Ok(false);
+    }
+    let f = flow(t);
+    if f.contains_key("reviewed") || f.contains_key("asked") {
+        return Ok(false);
+    }
+    Ok(app.db.count("SELECT COUNT(*) FROM review_asks WHERE task_id = ?", crate::p![t.id()])? == 0)
+}
+
 /// Whether this PR's reviewers may be asked now (`tb pr reviewers`, besides `--dry-run`): not while
-/// the PR feed is holding (`feed::holding`; a PR's first ask goes out when the feed is merely quiet
-/// outside the work hours), and with the `ask` stage on, not before the owner has reviewed it.
-fn may_ask_now(app: &App, t: &Row) -> Result<()> {
+/// the PR feed is holding (`feed::holding`; a PR's first ask goes out outside the feed's hours), and
+/// with the `ask` stage on, a PR's first ask (`adding` someone) not before the owner has reviewed it.
+fn may_ask_now(app: &App, t: &Row, adding: bool) -> Result<()> {
     if let Some(why) = held(app, t)? {
         return err(409, format!("{why} Try again once tb feed says it's healthy."));
     }
-    if reviewers::ask_stage_on(app, t.s("project")) && !flow(t).contains_key("reviewed") && t.s("status") == Some("done") {
+    if adding && needs_owner_review(app, t)? {
         return err(409, format!("{} hasn't reviewed PR #{} yet: reviewers are asked after that (the ask stage).", app.cfg.owner, t.i0("pr_num")));
     }
     Ok(())
@@ -180,7 +194,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         return Ok(json!({"task": rf("task", id), "dry_run": true,
                          "picks": picks.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>()}));
     }
-    may_ask_now(app, &t)?;
+    may_ask_now(app, &t, picking || !ask.is_empty())?;
     let h = host(app, &pr)?;
     let mut asked: Vec<(Who, String)> = vec![];
     let mut dropped: Vec<Who> = vec![];
@@ -437,9 +451,13 @@ pub fn sweep(app: &App) -> Result<()> {
         let finished = matches!(t.s("pr_phase"), Some("merged") | Some("declined"));
         let read_at = f.s("checked_at").unwrap_or("").to_string();
         app.db.tx(|| {
+            // The flow as it is now: `tb pr addressed` may have asked again since `t` was read.
+            let now_f = flow(&board::get_task(app, t.id())?);
             for a in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'open'", crate::p![t.id()])? {
                 let user = a.st("host_user");
-                if let Some(ans) = answer_of(&t, &rec, &user) {
+                // A read from before this ask shows their old review, not an answer to it.
+                let ans = answer_of(&t, &rec, &user).filter(|ans| !read_before(&now_f, &rec, &read_at, &a, ans));
+                if let Some(ans) = ans {
                     answered(app, &a, "answered", &ans)?;
                 } else if finished {
                     reviewers::close_ask(app, a.id(), "closed")?;
@@ -469,6 +487,21 @@ pub fn sweep(app: &App) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether the PR record `rec` (read at `read_at`) is older than the ask `a`, so its reviewer's
+/// answer there (`ans`) can't answer it: it was read before the ask (by the second), or, for a
+/// `rereview` ask, it still shows the request for changes `tb pr addressed` answered
+/// (`answered_changes` in `f`, the flow as it is now).
+fn read_before(f: &Row, rec: &Value, read_at: &str, a: &Row, ans: &str) -> bool {
+    if read_at < a.s("asked_at").unwrap_or("") {
+        return true;
+    }
+    if a.s("why") != Some("rereview") || ans != "changes" {
+        return false;
+    }
+    let changes_at = rec["changes_at"].as_str().filter(|c| !c.is_empty());
+    changes_at.is_some() && f.get("answered_changes").and_then(|v| v.as_str()) == changes_at
 }
 
 fn answered(app: &App, a: &Row, state: &str, ans: &str) -> Result<()> {

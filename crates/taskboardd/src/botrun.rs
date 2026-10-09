@@ -1,9 +1,10 @@
 //! Reviewers who run their own AI review bot every few hours (`tb reviewers bot <who> --every <h>
 //! --mark <text>`). The board spots each run from the marker anywhere in that person's comments on
 //! the repo's `bot_scan_prs` most recently updated PRs (whoever opened them; read at most every
-//! `bot_scan_mins`, `PrHost::recent_comments`), from the last `bot_window_hours`, at each comment's
-//! own time (comments within `bot_run_gap_mins` of a run are the same run), and keeps them in
-//! `reviewer_bot_runs`.
+//! `bot_scan_mins`, `PrHost::recent_comments`; a read that fails is tried again on the next sweep),
+//! from the last `bot_window_hours`, and keeps them in `reviewer_bot_runs`. Comments within
+//! `bot_run_gap_mins` of a run are the same run, which starts at its earliest comment, whatever order
+//! the host lists them in.
 //!
 //! Once a run has been seen, the bot is timed: its next run is the last one plus the interval, rolled
 //! forward by the interval until it's in the future; the picker asks that person only when the next run
@@ -85,17 +86,18 @@ fn repos(app: &App, project: &str) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// Whether this repo's comments are due to be read again (`bot_scan_mins`), noting the read when
-/// they are.
+/// Whether this repo's comments are due to be read again (`bot_scan_mins` since the last good read).
 fn scan_due(app: &App, key: &str) -> Result<bool> {
-    let mut scans = jloads_obj(app.db.get_setting(SCANS_SETTING)?.as_deref());
+    let scans = jloads_obj(app.db.get_setting(SCANS_SETTING)?.as_deref());
     let last = scans.get(key).and_then(|v| v.as_str()).and_then(parse_iso);
-    if last.is_some_and(|l| now_ts() - l < app.cfg.reviewers.bot_scan_mins * 60.0) {
-        return Ok(false);
-    }
-    scans.insert(key.to_string(), json!(now_iso()));
-    app.db.set_setting(SCANS_SETTING, Some(&jdumps(&Value::Object(scans))))?;
-    Ok(true)
+    Ok(!last.is_some_and(|l| now_ts() - l < app.cfg.reviewers.bot_scan_mins * 60.0))
+}
+
+/// Notes a good read of this repo's comments, at `at` (when it started).
+fn scanned(app: &App, key: &str, at: &str) -> Result<()> {
+    let mut scans = jloads_obj(app.db.get_setting(SCANS_SETTING)?.as_deref());
+    scans.insert(key.to_string(), json!(at));
+    app.db.set_setting(SCANS_SETTING, Some(&jdumps(&Value::Object(scans))))
 }
 
 /// Notes the bot runs shown by marked comments on the repos' recent PRs. Reads the hosts outside any
@@ -111,16 +113,21 @@ pub fn note_runs(app: &App) -> Result<i64> {
     for project in projects {
         let mine: Vec<&Row> = bots.iter().filter(|r| r.st("project") == project).collect();
         for (host, repo) in repos(app, &project)? {
-            if !scan_due(app, &format!("{host}:{repo}"))? {
+            let key = format!("{host}:{repo}");
+            if !scan_due(app, &key)? {
                 continue;
             }
-            let comments = match crate::prhost::host_for(app, &host).and_then(|h| h.recent_comments(&repo, cfg.bot_scan_prs)) {
+            let started = now_iso();
+            let mut comments = match crate::prhost::host_for(app, &host).and_then(|h| h.recent_comments(&repo, cfg.bot_scan_prs)) {
                 Ok(c) => c,
                 Err(e) => {
                     app.info(format!("reviewers: couldn't read {repo}'s comments for bot runs: {e}"));
                     continue;
                 }
             };
+            scanned(app, &key, &started)?;
+            // Oldest first, so each run starts at its earliest comment (Bitbucket lists the newest first).
+            comments.sort_by(|a, b| parse_iso(&a.at).unwrap_or(0.0).total_cmp(&parse_iso(&b.at).unwrap_or(0.0)));
             noted += app.db.tx(|| {
                 let mut n = 0;
                 for c in &comments {
@@ -143,7 +150,8 @@ pub fn note_runs(app: &App) -> Result<i64> {
 }
 
 /// Records one run at `at` unless a run within `bot_run_gap_mins` already covers it, or this comment
-/// was counted before. True when it's a new run.
+/// was counted before. A comment earlier than the run it's part of moves the run back to it (a run
+/// starts at its earliest comment). True when it's a new run.
 pub fn note_run(app: &App, r: &Row, at: f64, comment: &str) -> Result<bool> {
     if app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs WHERE reviewer_id = ? AND ref = ?", p![r.id(), comment])? > 0 {
         return Ok(false);
@@ -156,7 +164,15 @@ pub fn note_run(app: &App, r: &Row, at: f64, comment: &str) -> Result<bool> {
         .filter_map(|x| x.s("at").and_then(parse_iso))
         .find(|x| (x - at).abs() < gap);
     // A comment of a run already seen is kept at that run's time, so it isn't counted again.
-    app.db.insert("reviewer_bot_runs", fields!["reviewer_id" => r.id(), "at" => iso(near.unwrap_or(at)), "ref" => comment])?;
+    let run_at = match near {
+        Some(n) if at < n => {
+            app.db.x("UPDATE reviewer_bot_runs SET at = ? WHERE reviewer_id = ? AND at = ?", p![iso(at), r.id(), iso(n)])?;
+            at
+        }
+        Some(n) => n,
+        None => at,
+    };
+    app.db.insert("reviewer_bot_runs", fields!["reviewer_id" => r.id(), "at" => iso(run_at), "ref" => comment])?;
     Ok(near.is_none())
 }
 

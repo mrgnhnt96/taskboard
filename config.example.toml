@@ -108,10 +108,10 @@ on = false
 listener = ""                        # a command the board runs and keeps running (gets TASKBOARD_URL, TB_EVENT_URL)
 restart_cmd = ""                     # example: "launchctl kickstart -k gui/501/com.me.pr-listener" (empty: restart the listener)
 stuck_secs = 180.0                   # no heartbeat (POST /prs/heartbeat) this long, once the feed has sent one
-silent_secs = 3600.0                 # no event or heartbeat this long inside the work hours
+silent_secs = 3600.0                 # no event or heartbeat this long inside the feed's hours (the listener's own, from its heartbeats' active/idle_until, else the work hours)
 restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the board restarts it
 poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
-settle_secs = 300.0                  # after it comes back, asks, nudges and swaps wait this long while missed events catch up
+settle_secs = 300.0                  # after it comes back or connects, asks, nudges and swaps wait this long while missed events catch up
 
 # PR builds stopped (`tb pr-builds stop`, on your word): every build of your PRs and your pushes is
 # cancelled when the board hears of it (a build event on the feed, or a running check on a poll), and

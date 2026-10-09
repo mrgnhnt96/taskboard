@@ -596,13 +596,16 @@ board reads that one PR again and steps it (`feed.rs` documents the health rules
 | Path | Body | Notes |
 |---|---|---|
 | `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
-| `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
-| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null}` (`settling_secs`: what's left of the settle window); also `state.pr_feed`. |
+| `POST /prs/heartbeat` | `{active?: bool, idle_until?: iso, connected_at?: iso}` | `tb feed heartbeat [--active\|--idle] [--idle-until <time>] [--connected-at <time>]`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. `active` (`activeNow` is read too) and `idle_until` are the listener's own hours: while it says it's idle (until `idle_until`, if given) it's neither stuck nor silent, and once `idle_until` comes it's timed from then. `connected_at`: when the listener last connected. The first heartbeat, a later `connected_at`, and `active` after idle each start the settle window. 400 for a time that isn't one. **Response:** the health. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null, connected_at, active: bool\|null, idle_until, off_hours: str\|null}` (`settling_secs`: what's left of the settle window; `off_hours`: why the feed is outside its hours); also `state.pr_feed`. |
 
 While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
-reviewer asks, nudges and swaps. A stuck feed (down or stale) holds even a PR's first ask, at any hour; only a feed
-that's merely quiet outside the work hours lets the first ask through. Once the feed is healthy again, `holding` keeps
-holding for `settle_secs` (300) while the events it missed catch up (`pr_feed.healthy_at`). The PR poll runs (while
+reviewer asks, nudges and swaps. A stuck feed (down or stale) holds even a PR's first ask, at any hour. Outside the
+feed's hours (`feed::off_hours`: the listener says it's idle, or, for a listener that doesn't send `active`, the work
+hours are closed) it may miss events, so `holding` holds everything but a PR's first ask. Once the feed is healthy
+again, and after every connect (the first heartbeat, a later `connected_at`, the listener waking from idle, the board
+starting its own `listener`), `holding` keeps holding for `settle_secs` (300) while the events it missed catch up
+(`pr_feed.healthy_at`, `pr_feed.connected_at`; it holds the first ask too). The PR poll runs (while
 healthy it rests unless `poll_while_healthy`); the board restarts the feed at `restart_mins` (1, 5, 15) after it went
 bad with `restart_cmd` (or by restarting its own `listener`), and raises the `pr-feed` alert if a restart fails or it's
 still bad 5 minutes after the last one. The alert clears when the feed is healthy again.
@@ -956,9 +959,11 @@ messages anyone.
 
 **Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. Each review sweep the
 board reads every comment (whole: a marker in a footer counts) on the repo's `bot_scan_prs` (20) most recently updated
-PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10), and records each comment of
-theirs that carries `mark` (case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`, at the
-comment's own time (comments within `bot_run_gap_mins` are one run). Until a run is seen, that person isn't asked.
+PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10, counted from the last read
+that worked: a failed read is tried again on the next sweep), and records each comment of theirs that carries `mark`
+(case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`. Comments within
+`bot_run_gap_mins` are one run, at its earliest comment's time, whatever order the host lists them in (Bitbucket
+lists the newest first). Until a run is seen, that person isn't asked.
 Then the bot is timed: its next run is the last + `every_h`, rolled forward by `every_h` until it's in the future
 (the reviewer's `bot.next_run`); the picker asks that person only when it's at most `bot_due_mins` away, and their
 pace is the fastest in `speed_by_minutes`.
@@ -970,12 +975,15 @@ off who asks for changes doesn't block the PR (`prflow::review_of` waives anyone
 reviewer is asked (`fill_in`, once per ask) while the PR has fewer than `[reviewers] count` on it. An open ask whose
 reviewer was taken off the PR on the host (a read after the ask no longer lists them) is closed as `dropped`, so
 nobody stands in for them. With `[reviewers] swap = true` (per project: `[pr.projects.<name>] swap`, or `tb project
-set <name> --swap on|off|default`, which `taskboardd import` turns on where the old board swapped), an ask still open after
+set <name> --swap on|off|default`, which `taskboardd import` turns on for every project that came over with a PR or a
+review ask: the old board always swapped), an ask still open after
 `swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
 by the picker's choice (`swap`): only inside work hours and never while `feed::holding` (the event feed's
 health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
-except a PR's first ask while the feed is merely quiet outside work hours. Each change is logged on the task and the
-PR is read again.
+except a PR's first ask outside the feed's hours. Each change is logged on the task and the PR is read again. The
+sweep doesn't take a reviewer's state from a PR read made before their ask (`pr_flow.checked_at` earlier than
+`asked_at`), nor a `rereview` ask's request for changes while the PR still shows the one `tb pr addressed` answered
+(`pr_flow.answered_changes`): the old review isn't an answer to the new ask.
 
 **The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
@@ -986,7 +994,9 @@ otherwise the board picks and asks them itself through the host (asks with `why:
 retrying after each of `ask_retry_waits` seconds (`pr_flow.ask_tries`, `ask_retry_at`) and alerting once they're
 spent. Then the phase moves on to `review`. While the feed holds (`feed::holding`), the agent isn't brought back to
 ask and the board doesn't ask; the sweep brings the agent back once the feed has settled. `tb pr reviewers` (besides
-`--dry-run`) answers 409 while the feed holds, and, with the stage on, before the owner has reviewed the PR.
+`--dry-run`) answers 409 while the feed holds, and, with the stage on, when it would ask someone before the owner
+has reviewed the PR and before anyone was asked on it, whatever the task's status (a reopened task waits too); a
+later `--replace` or `--drop` doesn't wait for the owner.
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 

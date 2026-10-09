@@ -1416,7 +1416,8 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
 /// on where what came over shows them at work, unless the project already says.
 /// - the `ask` stage: a PR waiting at it, a PR whose reviewers it noted asking (`pr_flow.asked`), or
 ///   the board's own ask at that stage;
-/// - swaps: a stand-in it asked for a reviewer who timed out (`why: swap`).
+/// - swaps: always on there, so every project that came over with a PR or a review ask (with or
+///   without a swap in its history).
 fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     let used: &[(&str, &str, &str)] = &[(
         "ask_stage",
@@ -1426,7 +1427,8 @@ fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     ), (
         "swap",
         "swaps",
-        "SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL AND why = 'swap'",
+        "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_num IS NOT NULL OR (pr_url IS NOT NULL AND pr_url != '')) \
+         UNION SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL",
     )];
     for (key, label, sql) in used {
         for r in app.db.q(sql, vec![])? {
