@@ -722,22 +722,31 @@ enum BacklogCmd {
     },
     /// Move a backlog issue to another goal (G2), or out of its goal (none)
     Move { issue: String, goal: String },
-    /// Make a backlog issue into a task: planned in its goal, or with --board queued on the board
+    /// Make backlog issues into tasks: planned in their goal, or with --board queued on the board.
+    /// Several issues (tb backlog task B4 B5) change together or not at all.
     Task {
-        issue: String,
+        #[arg(required = true)]
+        issues: Vec<String>,
         #[arg(long)]
         board: bool,
     },
-    /// Ask Jira for a ticket for a backlog issue
-    Ticket { issue: String },
-    /// Close a backlog issue as won't do (only when the owner says so)
+    /// Ask Jira for a ticket for each backlog issue, all or none
+    Ticket {
+        #[arg(required = true)]
+        issues: Vec<String>,
+    },
+    /// Close backlog issues as won't do, all or none (only when the owner says so)
     Drop {
-        issue: String,
+        #[arg(required = true)]
+        issues: Vec<String>,
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Open a closed backlog issue again
-    Reopen { issue: String },
+    /// Open closed backlog issues again, all or none
+    Reopen {
+        #[arg(required = true)]
+        issues: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -983,6 +992,27 @@ fn goal_ref(v: &str) -> Result<String, String> {
         return Err(format!("expected G<number>, got {v:?}"));
     }
     Ok(format!("G{digits}"))
+}
+
+/// Backlog refs in the order given, each once.
+fn issue_refs(v: &[String]) -> Result<Vec<String>, String> {
+    let mut refs: Vec<String> = vec![];
+    for x in v {
+        let r = issue_ref(x)?;
+        if !refs.contains(&r) {
+            refs.push(r);
+        }
+    }
+    Ok(refs)
+}
+
+/// One all-or-nothing backlog action over several issues, through `/backlog/bulk`, credited to this terminal.
+fn backlog_bulk(c: &Ctx, action: &str, issues: &[String], extra: Value) -> Result<Value, String> {
+    let mut b = json!({"action": action, "ids": issue_refs(issues)?, "who": c.who()});
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        b[k] = v.clone();
+    }
+    c.call("POST", "/backlog/bulk", Some(b))
 }
 
 fn issue_ref(v: &str) -> Result<String, String> {
@@ -2365,33 +2395,31 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Task { issue, board } } => {
-            let r = issue_ref(&issue)?;
-            let v = c.call("POST", &format!("/backlog/{r}/promote"), Some(json!({"where": if board { "board" } else { "goal" }})))?;
-            let t = &v["task"];
-            let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
-                (Some("planned"), Some(g)) => format!("a planned task in {g}"),
-                _ => "a queued task".to_string(),
-            };
-            out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+        Cmd::Backlog { action: BacklogCmd::Task { issues, board } } => {
+            let v = backlog_bulk(c, "task", &issues, json!({"where": if board { "board" } else { "goal" }}))?;
+            let refs = issue_refs(&issues)?;
+            for (r, t) in refs.iter().zip(v["tasks"].as_array().cloned().unwrap_or_default()) {
+                let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
+                    (Some("planned"), Some(g)) => format!("a planned task in {g}"),
+                    _ => "a queued task".to_string(),
+                };
+                out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+            }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Ticket { issue } } => {
-            let r = issue_ref(&issue)?;
-            c.call("POST", &format!("/backlog/{r}/ticket"), Some(json!({})))?;
-            out(&format!("Asked Jira for a ticket for {r}."));
+        Cmd::Backlog { action: BacklogCmd::Ticket { issues } } => {
+            backlog_bulk(c, "ticket", &issues, json!({}))?;
+            out(&format!("Asked Jira for a ticket for {}.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Drop { issue, reason } } => {
-            let r = issue_ref(&issue)?;
-            c.call("POST", &format!("/backlog/{r}/drop"), Some(json!({"reason": reason.unwrap_or_default()})))?;
-            out(&format!("Closed {r} as won't do."));
+        Cmd::Backlog { action: BacklogCmd::Drop { issues, reason } } => {
+            backlog_bulk(c, "drop", &issues, json!({"reason": reason.unwrap_or_default()}))?;
+            out(&format!("Closed {} as won't do.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Reopen { issue } } => {
-            let r = issue_ref(&issue)?;
-            c.call("POST", &format!("/backlog/{r}/reopen"), Some(json!({})))?;
-            out(&format!("Opened {r} again."));
+        Cmd::Backlog { action: BacklogCmd::Reopen { issues } } => {
+            backlog_bulk(c, "reopen", &issues, json!({}))?;
+            out(&format!("Opened {} again.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
         Cmd::Project { action } => project_cmd(c, action),
@@ -2879,6 +2907,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "ticket", "B3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B3", "--reason", "dupe"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B4", "B5", "--board"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B4", "B5", "--reason", "dupe"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B4", "B5"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task"]).is_err());
+        assert_eq!(issue_refs(&["b4".into(), "B5".into(), "B4".into()]).unwrap(), vec!["B4", "B5"]);
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "alert", "clear", "main:web"]).is_ok());
