@@ -165,7 +165,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "queued": int,       // status queued
   "starting": int,     // queued with a live start job
   "blocked": int,      // queued and waiting on another task (waits_for)
-  "held": int,         // queued, not blocked, but held back by its waves or order, a lock, a bit or the device pool
+  "held": int,         // queued, not blocked, but held back by its waves or order, a lock or the device pool
                        // (the goal shows Blocked when blocked + held covers every queued task)
   "bits_waiting": int, // its backend bits not made in the flag tool yet; a done goal waits on them ("Waiting on N bits")
   "planned": int,      // status planned
@@ -770,9 +770,10 @@ device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
 
 ## Bits (feature flags)
 
-A bit is `backend` (it has to be made in the flag tool) or `local` (in the code only), linked to tasks and goals. A
-queued task waits while a backend bit linked to it isn't made ("Waits for the bit newCheckout to be made in
-Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. The handoff lists a task's bits.
+A bit is `backend` (it has to be made in the flag tool) or `local` (in the code only), linked to tasks and goals.
+Tasks start and build behind a flag whether or not it's made; only a goal whose tasks are all done waits on its
+unmade backend bits ("Waiting on 1 bit"). The handoff lists a task's bits, and says an unmade one doesn't hold up
+the work.
 `[bits]` in config.toml names the tool and its "new flag" link.
 
 `bit`: `{id, name, kind, project, note, made: bool, made_at, made_by, waiting: bool, create_url: str|null, tasks: ["T4"], goals: ["G2"], created_at}`.
@@ -783,9 +784,9 @@ Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. T
 | `POST /bits` | `{name, kind: "backend"\|"local", tasks?: ["T4"], goals?: ["G2"], project?, note?, who?}` | Add one (`tb bit add`). The project defaults to its first task's or goal's. |
 | `GET /bits/:name` | | The bit. |
 | `POST /bits/:name` | `{name?, kind?, note?, project?, tasks?, not_tasks?, goals?, not_goals?, who?}` | Change it or its links (`tb bit set`). |
-| `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`). Never from the app. |
+| `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`, or the app's one-click "Mark created" on a backend bit). 409 on a local bit, which isn't made anywhere; changing a bit to local clears its made. |
 | `POST /bits/:name/remove` | `{who?}` | Remove it and its links. |
-| `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). |
+| `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). `tb task new --bit` sends `bits` (and `devices`) with the new task, so an unknown bit adds no task. |
 
 ## The PR plan and flow
 

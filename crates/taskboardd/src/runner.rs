@@ -218,7 +218,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
         if jira::ticket_blocker(app, &t)? || waitsfor::blocker(app, &t)?.is_some() || locks::blocker(app, &t)?.is_some() {
             continue;
         }
-        if crate::bits::blocker(app, &t)?.is_some() || crate::devices::blocker(app, &t)?.is_some() {
+        if crate::devices::blocker(app, &t)?.is_some() {
             continue;
         }
         let tid = t.id();

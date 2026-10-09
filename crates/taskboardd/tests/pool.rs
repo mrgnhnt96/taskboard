@@ -139,7 +139,7 @@ fn a_device_without_a_focus_command_uses_the_configured_one() {
 }
 
 #[test]
-fn a_task_waits_on_its_backend_bits_and_a_goal_waits_on_them_after_its_tasks() {
+fn a_task_starts_behind_unmade_bits_and_a_goal_waits_on_them_after_its_tasks() {
     let b = board_with(|c| {
         c.bits.tool = "Flagsmith".into();
         c.bits.create_url = "https://flags.example.com/new?key={name}&p={project}".into();
@@ -155,16 +155,21 @@ fn a_task_waits_on_its_backend_bits_and_a_goal_waits_on_them_after_its_tasks() {
     b.post(&format!("tasks/T{t}"), json!({"bits": "beta-banner"}));
     assert_eq!(b.get(&format!("tasks/T{t}"))["bits"].as_array().unwrap().len(), 2);
 
+    let (code, msg) = b.post_err("bits/beta-banner/made", json!({}));
+    assert_eq!(code, 409, "a local bit isn't made anywhere: {msg}");
+
     b.post(&format!("goals/G{g}/run"), json!({}));
-    assert_eq!(b.waiting(t), "Waits for the bit newCheckout to be made in Flagsmith");
+    assert!(b.waiting(t).is_null(), "an unmade bit doesn't hold a task back: {}", b.waiting(t));
     runner::start_queued(&b.app).unwrap();
-    assert!(b.started().is_empty());
+    assert_eq!(b.started(), vec![t], "the task starts and builds behind the flag");
     let d = b.get(&format!("goals/G{g}"));
     assert_eq!(d["bits"]["backend"], 1);
     assert_eq!(d["bits"]["made"], 0);
+    assert_eq!(d["held"], 0);
     assert_eq!(d["bits"]["list"].as_array().unwrap().len(), 2);
     let h = handoff::build(&b.app, t).unwrap();
     assert!(h.contains("beta-banner (local: in the code only, not in Flagsmith), newCheckout (backend: not made in Flagsmith yet)"), "{h}");
+    assert!(h.contains("doesn't hold up your work: build behind the flag anyway"), "{h}");
 
     b.set(t, "done");
     let d = b.get(&format!("goals/G{g}"));
@@ -256,6 +261,36 @@ fn tb_take_lends_devices_and_they_come_back_when_the_task_ends() {
     b.set(t, "done");
     runner::tick(&b.app).unwrap();
     assert!(b.get("devices")["devices"][0]["held_by"].is_null(), "the device came back");
+}
+
+#[test]
+fn tb_task_new_with_an_unknown_bit_adds_no_task() {
+    let b = new_board();
+    let repo = b._dir.path().join("webapp");
+    taskboardd::midna::sync(&b.app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
+    let g = b.goal();
+    let report = |extra: Value| {
+        let mut body = json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": "", "title": "Checkout", "project": "webapp"});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        taskboardd::reports::handle(&b.app, body, false)
+    };
+    let e = report(json!({"bits": ["missing"]})).expect_err("an unknown bit");
+    assert_eq!(e.status, 404, "{}", e.message);
+    let e = report(json!({"goal": format!("G{g}"), "bits": ["missing"]})).expect_err("an unknown bit in a goal");
+    assert_eq!(e.status, 404, "{}", e.message);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks", p![]).unwrap(), 0, "nothing was added");
+
+    b.post("bits", json!({"name": "newCheckout", "kind": "backend"}));
+    let v = report(json!({"goal": format!("G{g}"), "bits": ["newCheckout"], "devices": "ios"})).unwrap();
+    let r = v["created"][0].as_str().unwrap().to_string();
+    let t = b.get(&format!("tasks/{r}"));
+    assert_eq!(t["bits"][0]["name"], "newCheckout");
+    assert_eq!(t["devices"]["needs_text"], "ios");
+    let v = report(json!({"goal": format!("G{g}")})).unwrap();
+    let r = v["created"][0].as_str().unwrap().to_string();
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM device_needs WHERE owner = ?", p![r]).unwrap(), 0, "no --device sets no needs");
 }
 
 #[test]

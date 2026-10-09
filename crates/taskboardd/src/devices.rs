@@ -173,7 +173,7 @@ pub fn goal_needs(app: &App, goal_id: i64) -> Result<Vec<Need>> {
 /// A task's `none` (or an empty list) is its own "needs none", over its goal's needs; its `goal` drops
 /// its own needs so it asks for its goal's again.
 pub fn take_needs(app: &App, kind: &str, id: i64, body: &Value, who: &str) -> Result<bool> {
-    let Some(given) = body.get("devices") else { return Ok(false) };
+    let Some(given) = body.get("devices").filter(|v| !v.is_null()) else { return Ok(false) };
     let owner = rf(kind, id);
     let inherit = kind == "task" && given.as_str().map(|s| s.trim().eq_ignore_ascii_case("goal")).unwrap_or(false);
     // A goal that asks for nothing has no row; a task's empty row is its "needs none".

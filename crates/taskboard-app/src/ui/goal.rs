@@ -3036,7 +3036,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .gap(px(16.))
                 .child(attachments(m, &t, &g, cx))
                 .children(pool::devices_aside(m, &t, &g, cx))
-                .children(pool::bits_aside(&t, &g, cx))
+                .children(pool::bits_aside(m, &t, &g, cx))
                 .child(notes(m, &t, &g, cx)),
         )
     };

@@ -642,7 +642,7 @@ enum TaskCmd {
         /// none for none (even when its goal asks for some)
         #[arg(long = "device", value_name = "TAG[:N]|none")]
         devices: Vec<String>,
-        /// A bit (feature flag) its work sits behind; it waits until a backend bit is made. Repeat for more
+        /// A bit (feature flag) its work sits behind; it starts whether or not a backend bit is made. Repeat for more
         #[arg(long = "bit", value_name = "NAME")]
         bits: Vec<String>,
         /// Its PR builds on this task's PR (any goal): it starts once that's done, from its branch
@@ -2281,6 +2281,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if pr || no_pr {
                     body["ships_pr"] = json!(pr);
                 }
+                // In the same request, so an unknown bit or device tag adds no task at all.
+                if !devices.is_empty() {
+                    body["devices"] = device_arg(&devices);
+                }
+                if !bits.is_empty() {
+                    body["bits"] = json!(lock_arg(&bits));
+                }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) if here => {
@@ -2289,17 +2296,6 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
-                        // Devices and bits go on with a change, once the task is there.
-                        if !devices.is_empty() || !bits.is_empty() {
-                            let mut more = json!({"who": c.who()});
-                            if !devices.is_empty() {
-                                more["devices"] = device_arg(&devices);
-                            }
-                            if !bits.is_empty() {
-                                more["bits"] = json!(lock_arg(&bits));
-                            }
-                            c.call("POST", &format!("/tasks/{r}"), Some(more))?;
-                        }
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
@@ -2916,7 +2912,7 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--hold", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "devices"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "focus", "pixel-7"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--device", "android:2", "--bit", "newCheckout"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--device", "none", "--not-bit", "a"]).is_ok());

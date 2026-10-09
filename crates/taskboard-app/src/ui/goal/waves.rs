@@ -753,7 +753,9 @@ fn gate_el(m: &MainWindow, t: &Theme, gr: &str, g: Gate, cx: &mut Context<MainWi
 
 /// `wave-continue`: `POST goals/:g/waves/:n/continue`; "The goal goes on" under the gate.
 pub fn continue_wave(m: &mut MainWindow, gr: &str, n: i64, cx: &mut Context<MainWindow>) {
-    run(m, format!("wave-continue:{gr}:{n}"), Some(format!("wgate:{gr}")), false, format!("goals/{gr}/waves/{n}/continue"), json!({}), cx, |_, _, _| "The goal goes on".into());
+    run(m, format!("wave-continue:{gr}:{n}"), Some(format!("wgate:{gr}")), false, format!("goals/{gr}/waves/{n}/continue"), json!({}), cx, move |_, v, _| {
+        if v["let_start"] == true { format!("Wave {n} can start") } else { "The goal goes on".into() }
+    });
 }
 
 /// The owner's "Stop after this wave for my review" (the Python board's checkbox): their own word,
