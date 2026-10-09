@@ -226,3 +226,75 @@ fn changes_requested_without_comments_does_not_move_the_stage() {
     prflow::refresh(&b.app).unwrap();
     assert_eq!(b.phase(id), "comments", "with a comment it counts");
 }
+
+/// Work hours that aren't open now: only tomorrow.
+fn closed_hours(b: &Board) {
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap().format("%a").to_string().to_lowercase();
+    b.post("/hours", json!({"on": true, "start": "00:00", "end": "23:59", "days": tomorrow}));
+}
+
+#[test]
+fn outside_work_hours_only_a_pr_s_first_ask_goes_out() {
+    let b = board_with(|c, _| c.feed.on = true);
+    b.feed_state(json!({"since": ago(9000.0), "last_heartbeat_at": ago(5.0), "connected_at": ago(9000.0)}));
+    assert_eq!(feed::holding(&b.app, false), None, "inside the hours: nothing held");
+    closed_hours(&b);
+    assert!(feed::feed_healthy(&b.app), "a quiet feed outside the hours isn't a problem");
+    let why = feed::holding(&b.app, false).unwrap();
+    assert!(why.contains("outside the work hours"), "{why}");
+    assert_eq!(feed::holding(&b.app, true), None, "a PR's first ask still goes out");
+    assert!(b.get("/prs/feed")["off_hours"].is_string());
+}
+
+#[test]
+fn a_listener_s_own_hours_keep_it_from_looking_stuck() {
+    let b = board_with(|c, _| c.feed.on = true);
+    b.feed_state(json!({"since": ago(9000.0), "last_heartbeat_at": ago(9000.0), "connected_at": ago(9000.0)}));
+    b.post("/prs/heartbeat", json!({"active": false, "idle_until": iso(now_ts() + 3600.0)}));
+    // It stops heartbeating at night.
+    let mut st = b.feed();
+    st["last_heartbeat_at"] = json!(ago(4000.0));
+    b.feed_state(st.clone());
+    assert!(feed::feed_healthy(&b.app), "idle: not stuck, not silent");
+    feed::check(&b.app).unwrap();
+    assert!(b.feed().get("unhealthy_since").is_none(), "no restarts, no alert");
+    assert!(feed::holding(&b.app, false).unwrap().contains("listener is idle until"));
+    assert_eq!(feed::holding(&b.app, true), None, "the first ask goes");
+
+    // Its idle_until came and went with no heartbeat: timed from then, so stuck.
+    st["idle_until"] = json!(ago(200.0));
+    b.feed_state(st.clone());
+    assert_eq!(b.get("/prs/feed")["problem"], "stuck");
+    st["idle_until"] = json!(ago(60.0));
+    b.feed_state(st);
+    assert!(feed::feed_healthy(&b.app), "not yet stuck_secs after it was due back");
+
+    // Back: `active` after idle is a connect, so it settles first; then nothing is held, whatever the work hours.
+    b.post("/prs/heartbeat", json!({"activeNow": true}));
+    assert!(feed::holding(&b.app, true).unwrap().contains("just came back"));
+    let mut st = b.feed();
+    st["connected_at"] = json!(ago(400.0));
+    b.feed_state(st);
+    closed_hours(&b);
+    assert_eq!(feed::holding(&b.app, false), None, "the listener says it's in its hours");
+    assert!(api::dispatch(&b.app, "POST", "/prs/heartbeat", &Query::new(), &json!({"idle_until": "soon"})).is_err());
+}
+
+#[test]
+fn every_connect_starts_the_settle_window() {
+    let b = board_with(|c, _| c.feed.on = true);
+    b.feed_state(json!({"since": ago(10.0)}));
+    assert_eq!(feed::holding(&b.app, true), None);
+    b.post("/prs/heartbeat", json!({}));
+    assert!(feed::holding(&b.app, true).unwrap().contains("just came back"), "the first connect");
+    assert!(b.get("/prs/feed")["settling_secs"].as_f64().unwrap() > 290.0);
+
+    b.feed_state(json!({"since": ago(9000.0), "last_heartbeat_at": ago(5.0), "connected_at": ago(400.0)}));
+    b.post("/prs/heartbeat", json!({}));
+    assert_eq!(feed::holding(&b.app, true), None, "a plain heartbeat isn't a connect");
+    b.post("/prs/heartbeat", json!({"connected_at": ago(20.0)}));
+    let left = b.get("/prs/feed")["settling_secs"].as_f64().unwrap();
+    assert!(left > 270.0 && left < 290.0, "a quick reconnect, timed from when it connected: {left}");
+    b.post("/prs/heartbeat", json!({"connected_at": ago(20.0)}));
+    assert!(b.get("/prs/feed")["settling_secs"].as_f64().unwrap() < 290.0, "the same connect again doesn't restart it");
+}

@@ -8,16 +8,21 @@
 //!
 //! The feed is *stuck* when it has sent heartbeats (`POST /prs/heartbeat`) before and none came in
 //! `stuck_secs` (180 by default), and *silent* when neither an event nor a heartbeat came in
-//! `silent_secs` (an hour) inside the work hours. Either one makes it unhealthy:
+//! `silent_secs` (an hour) inside its hours. Its hours are the listener's own when its heartbeats say
+//! (`active`, `idle_until`): while it says it's idle it isn't stuck or silent, however long it's
+//! quiet, and from `idle_until` on it's timed again. A listener that doesn't say keeps the work hours.
+//! Either problem makes it unhealthy:
 //!
 //! - the board restarts it (`restart_cmd`, or the `listener` it runs itself) `restart_mins` after it
 //!   went bad (1, 5 and 15 minutes), and raises the `pr-feed` alert when a restart fails or it's
 //!   still bad five minutes after the last one; the alert clears once the feed is healthy again;
 //! - [`feed_healthy`] answers false, and [`holding`] tells the reviewer ask, nudge and swap logic to
-//!   wait; a stuck feed holds even a PR's first ask, at any hour (only a feed that's merely quiet
-//!   outside the work hours, when that's expected, lets the first ask through);
-//! - once it's healthy again, [`holding`] keeps holding for `settle_secs` (5 minutes) while the
-//!   events it missed catch up;
+//!   wait; a stuck feed holds even a PR's first ask, at any hour;
+//! - outside the feed's hours (the listener idle, or the work hours closed for one that doesn't
+//!   say) the feed may miss events, so [`holding`] holds everything but a PR's first ask;
+//! - once it's healthy again, and after every connect (the first heartbeat, a heartbeat's own
+//!   `connected_at`, the listener waking from idle, the board starting its `listener`), [`holding`]
+//!   keeps holding for `settle_secs` (5 minutes) while the events it missed catch up;
 //! - the PR poll (`[intervals] prs`) runs as a fallback; while the feed is healthy it only runs with
 //!   `poll_while_healthy`.
 //!
@@ -27,8 +32,10 @@
 //! # State
 //!
 //! The setting `pr_feed` keeps `{since, last_event_at, last_event, last_heartbeat_at, heartbeats,
-//! unhealthy_since, problem, restarts: [{at, ok, error?}], alerted_at, healthy_at}` (`healthy_at`: when it
-//! last came back, which starts the settle window).
+//! unhealthy_since, problem, restarts: [{at, ok, error?}], alerted_at, healthy_at, connected_at,
+//! active, idle_until}` (`healthy_at`: when it last came back, `connected_at`: when the listener last
+//! connected; the later starts the settle window; `active` and `idle_until`: the listener's own hours,
+//! as its last heartbeat that said gave them).
 
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -55,14 +62,14 @@ pub struct FeedConfig {
     pub restart_cmd: String,
     /// No heartbeat for this long (once the feed has sent one): it's stuck.
     pub stuck_secs: f64,
-    /// No event or heartbeat for this long inside the work hours: it's silent.
+    /// No event or heartbeat for this long inside the feed's hours: it's silent.
     pub silent_secs: f64,
     /// Minutes after the feed went bad at which the board restarts it.
     pub restart_mins: Vec<f64>,
     /// Keep polling every PR (`[intervals] prs`) while the feed is healthy too.
     pub poll_while_healthy: bool,
-    /// After the feed comes back, reviewer asks, nudges and swaps wait this many more seconds while the
-    /// events it missed catch up.
+    /// After the feed comes back or the listener connects, reviewer asks, nudges and swaps wait this
+    /// many more seconds while the events it missed catch up.
     pub settle_secs: f64,
 }
 
@@ -99,7 +106,38 @@ fn ts(st: &Row, k: &str) -> Option<f64> {
     st.s(k).and_then(parse_iso)
 }
 
-/// What's wrong with the feed, if anything: (`stuck` or `silent`, a sentence).
+/// Whether the listener says how its hours go (its heartbeats carry `active`).
+fn says_hours(st: &Row) -> bool {
+    st.get("active").and_then(|v| v.as_bool()).is_some()
+}
+
+/// Whether the listener says it's idle now (its own hours): its last heartbeat that said had
+/// `active: false`, and its `idle_until`, if it gave one, hasn't come yet.
+fn listener_idle(st: &Row, now: f64) -> bool {
+    st.get("active").and_then(|v| v.as_bool()) == Some(false) && ts(st, "idle_until").is_none_or(|u| u > now)
+}
+
+/// Why the feed is outside its hours now, if it is: the listener says it's idle, or (for a listener
+/// that doesn't say) the work hours are closed. The feed may miss events then.
+pub fn off_hours(app: &App) -> Option<String> {
+    if !app.cfg.feed.on {
+        return None;
+    }
+    let st = state(app);
+    if listener_idle(&st, now_ts()) {
+        return Some(match st.s("idle_until") {
+            Some(u) => format!("the PR feed's listener is idle until {}", local_clock(Some(u))),
+            None => "the PR feed's listener is idle".to_string(),
+        });
+    }
+    if !says_hours(&st) && !hours::is_open(app) {
+        return Some("it's outside the work hours, when the PR feed may miss events".to_string());
+    }
+    None
+}
+
+/// What's wrong with the feed, if anything: (`stuck` or `silent`, a sentence). An idle listener is
+/// neither; once its `idle_until` has come, it's timed from then.
 pub fn problem(app: &App) -> Option<(&'static str, String)> {
     if !app.cfg.feed.on {
         return None;
@@ -107,13 +145,19 @@ pub fn problem(app: &App) -> Option<(&'static str, String)> {
     let st = state(app);
     let now = now_ts();
     let c = &app.cfg.feed;
+    if listener_idle(&st, now) {
+        return None;
+    }
+    let woke = ts(&st, "idle_until").filter(|_| says_hours(&st));
     if let Some(hb) = ts(&st, "last_heartbeat_at") {
-        if c.stuck_secs > 0.0 && now - hb > c.stuck_secs {
+        let from = woke.map_or(hb, |w| w.max(hb));
+        if c.stuck_secs > 0.0 && now - from > c.stuck_secs {
             return Some(("stuck", format!("the PR feed hasn't sent a heartbeat for {}", span(now - hb))));
         }
     }
-    let heard = [ts(&st, "last_event_at"), ts(&st, "last_heartbeat_at"), ts(&st, "since")].into_iter().flatten().fold(f64::MIN, f64::max);
-    if c.silent_secs > 0.0 && heard > f64::MIN && now - heard > c.silent_secs && hours::is_open(app) {
+    let heard = [ts(&st, "last_event_at"), ts(&st, "last_heartbeat_at"), ts(&st, "since"), woke].into_iter().flatten().fold(f64::MIN, f64::max);
+    let in_hours = says_hours(&st) || hours::is_open(app);
+    if c.silent_secs > 0.0 && heard > f64::MIN && now - heard > c.silent_secs && in_hours {
         return Some(("silent", format!("nothing has come from the PR feed for {}", span(now - heard))));
     }
     None
@@ -136,8 +180,9 @@ pub fn feed_healthy(app: &App) -> bool {
     problem(app).is_none()
 }
 
-/// Seconds left of the settle window after the feed came back (`settle_secs`), if it's in one. A feed
-/// that's healthy again before [`check`] has noticed is in it too.
+/// Seconds left of the settle window after the feed came back or the listener connected
+/// (`settle_secs`), if it's in one. A feed that's healthy again before [`check`] has noticed is in it
+/// too.
 pub fn settling(app: &App) -> Option<f64> {
     let c = &app.cfg.feed;
     if !c.on || c.settle_secs <= 0.0 || problem(app).is_some() {
@@ -147,23 +192,24 @@ pub fn settling(app: &App) -> Option<f64> {
     if st.contains_key("unhealthy_since") {
         return Some(c.settle_secs);
     }
-    let left = c.settle_secs - (now_ts() - ts(&st, "healthy_at")?);
+    let from = [ts(&st, "healthy_at"), ts(&st, "connected_at")].into_iter().flatten().reduce(f64::max)?;
+    let left = c.settle_secs - (now_ts() - from);
     (left > 0.0).then_some(left)
 }
 
-/// Why the reviewer ask, nudge or swap logic should wait now, if it should: the feed is unhealthy, or
-/// it came back less than `settle_secs` ago. `first_ask` is the first request for review on a PR: it
-/// still goes out when the feed is merely quiet outside the work hours, but not when it's stuck (down
-/// or stale) or settling.
+/// Why the reviewer ask, nudge or swap logic should wait now, if it should: the feed is unhealthy, it
+/// came back or connected less than `settle_secs` ago, or it's outside its hours ([`off_hours`]).
+/// `first_ask` is the first request for review on a PR: it still goes out outside the feed's hours,
+/// but not when the feed is stuck (down or stale) or settling.
 pub fn holding(app: &App, first_ask: bool) -> Option<String> {
-    if let Some((kind, why)) = problem(app) {
-        if first_ask && kind == "silent" && !hours::is_open(app) {
-            return None;
-        }
+    if let Some((_, why)) = problem(app) {
         return Some(format!("Holding reviewer asks, nudges and swaps: {why}."));
     }
-    let left = settling(app)?;
-    Some(format!("Holding reviewer asks, nudges and swaps: the PR feed just came back, so its missed events catch up first ({} left).", span(left)))
+    if let Some(left) = settling(app) {
+        return Some(format!("Holding reviewer asks, nudges and swaps: the PR feed just came back, so its missed events catch up first ({} left).", span(left)));
+    }
+    let why = off_hours(app)?;
+    (!first_ask).then(|| format!("Holding reviewer asks, nudges and swaps: {why}; a PR's first ask still goes out."))
 }
 
 /// Whether the PR poll runs this round: always without the feed, else while it's unhealthy (or with
@@ -189,16 +235,64 @@ pub fn health(app: &App) -> Value {
         "listener": if app.cfg.feed.listener.trim().is_empty() { Value::Null } else { json!(listener_running()) },
         "holding": holding(app, false),
         "settling_secs": settling(app).map(|s| s.round()),
+        "connected_at": st.v("connected_at"),
+        "active": st.v("active"),
+        "idle_until": st.v("idle_until"),
+        "off_hours": off_hours(app),
     })
 }
 
-/// `POST /prs/heartbeat` (`tb feed heartbeat`): the feed is alive.
-pub fn heartbeat(app: &App) -> Result<Value> {
+/// A time a heartbeat gives (`idle_until`, `connected_at`), as ISO; 400 when it isn't one.
+fn when_of(body: &Value, key: &str) -> Result<Option<String>> {
+    let v = body_str(body, key);
+    if v.is_empty() {
+        return Ok(None);
+    }
+    match parse_iso(&v) {
+        Some(t) => Ok(Some(iso(t))),
+        None => err(400, format!("{key} is a time like 2026-10-08T08:00:00Z.")),
+    }
+}
+
+/// `POST /prs/heartbeat` (`tb feed heartbeat`): the feed is alive. `{active?, idle_until?,
+/// connected_at?}`: the listener's own hours (`active: false` while it's off, until `idle_until`;
+/// `activeNow` is read too) and when it last connected. The first heartbeat, one with a later
+/// `connected_at` and one that says it's active after it was idle are each a connect: the settle
+/// window starts again.
+pub fn heartbeat(app: &App, body: &Value) -> Result<Value> {
     let mut st = state(app);
-    st.insert("last_heartbeat_at".into(), json!(now_iso()));
+    let now = now_iso();
+    let active = body.get("active").or_else(|| body.get("activeNow")).filter(|v| !v.is_null()).map(|v| as_bool(Some(v), true));
+    let idle_until = when_of(body, "idle_until")?;
+    let connected_at = when_of(body, "connected_at")?;
+    let mut connect = !st.contains_key("last_heartbeat_at");
+    if let Some(c) = connected_at.as_deref().and_then(parse_iso) {
+        connect |= ts(&st, "connected_at").is_none_or(|old| c > old);
+    }
+    if let Some(a) = active {
+        connect |= a && st.get("active").and_then(|v| v.as_bool()) == Some(false);
+        st.insert("active".into(), json!(a));
+        match &idle_until {
+            Some(u) if !a => st.insert("idle_until".into(), json!(u)),
+            _ => st.remove("idle_until"),
+        };
+    } else if let Some(u) = &idle_until {
+        st.insert("idle_until".into(), json!(u));
+    }
+    if connect {
+        st.insert("connected_at".into(), json!(connected_at.unwrap_or_else(|| now.clone())));
+    }
+    st.insert("last_heartbeat_at".into(), json!(now));
     st.insert("heartbeats".into(), json!(st.i0("heartbeats") + 1));
     save(app, &st)?;
     Ok(health(app))
+}
+
+/// The board started its own `listener`: a connect, so the settle window starts again.
+fn note_connect(app: &App) {
+    let mut st = state(app);
+    st.insert("connected_at".into(), json!(now_iso()));
+    let _ = save(app, &st);
 }
 
 /// The task a PR event is about: `task`, else the PR's link (`url`), else `repo` and `num`.
@@ -225,7 +319,7 @@ pub fn task_of_event(app: &App, body: &Value) -> Result<Option<Row>> {
 pub fn intake(app: &App, body: &Value) -> Result<Value> {
     let kind = { let k = body_str(body, "kind"); if k.is_empty() { "pr".to_string() } else { k.to_lowercase() } };
     if kind == "heartbeat" {
-        return heartbeat(app);
+        return heartbeat(app, body);
     }
     if !matches!(kind.as_str(), "pr" | "build") {
         return err(400, "An event's kind is pr, build or heartbeat.");
@@ -390,6 +484,9 @@ pub fn listener_loop(app: Arc<App>) {
                 Ok(c) => {
                     *LISTENER.lock() = Some(c);
                     fails = 0;
+                    if app.cfg.feed.on {
+                        note_connect(&app);
+                    }
                 }
                 Err(e) => {
                     fails += 1;

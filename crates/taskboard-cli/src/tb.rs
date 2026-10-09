@@ -1137,7 +1137,20 @@ enum FeedCmd {
         source: Option<String>,
     },
     /// The feed is alive
-    Heartbeat,
+    Heartbeat {
+        /// The listener is inside its own hours
+        #[arg(long, conflicts_with = "idle")]
+        active: bool,
+        /// The listener is outside its own hours (quiet is expected; asks but a PR's first wait)
+        #[arg(long)]
+        idle: bool,
+        /// With --idle: when it's back (an ISO time)
+        #[arg(long = "idle-until")]
+        idle_until: Option<String>,
+        /// When the listener last connected (an ISO time): a later one starts the settle window again
+        #[arg(long = "connected-at")]
+        connected_at: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3729,6 +3742,12 @@ fn feed_line(v: &Value) -> String {
     if restarts > 0 {
         line += &format!(" · restarted {restarts}×");
     }
+    if v["active"] == false && v["off_hours"].is_string() {
+        line += &match v["idle_until"].as_str() {
+            Some(t) => format!(" · listener idle until {}", taskboardd::util::local_clock(Some(t))),
+            None => " · listener idle".to_string(),
+        };
+    }
     if let Some(h) = v["holding"].as_str() {
         line += &format!("\n{h}");
     }
@@ -3741,8 +3760,12 @@ fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
             let v = c.call("GET", "/prs/feed", None)?;
             out(&feed_line(&v));
         }
-        Some(FeedCmd::Heartbeat) => {
-            c.call("POST", "/prs/heartbeat", Some(json!({})))?;
+        Some(FeedCmd::Heartbeat { active, idle, idle_until, connected_at }) => {
+            let mut body = json!({"idle_until": idle_until, "connected_at": connected_at});
+            if active || idle {
+                body["active"] = json!(active);
+            }
+            c.call("POST", "/prs/heartbeat", Some(body))?;
         }
         Some(FeedCmd::Event { url, repo, num, task, kind, state, head, branch, provider, build_url, author, source }) => {
             let task = task.map(|t| task_ref(&t)).transpose()?;
@@ -4061,6 +4084,8 @@ mod tests {
         assert_eq!(break_ref("m4").as_deref(), Some("M4"));
         assert_eq!(break_ref("ours"), None);
         assert!(Cli::try_parse_from(["tb", "feed", "heartbeat"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed", "heartbeat", "--idle", "--idle-until", "2026-10-09T15:00:00Z"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed", "heartbeat", "--active", "--idle"]).is_err());
         assert!(Cli::try_parse_from(["tb", "feed", "event", "https://bitbucket.org/a/b/pull-requests/9", "--kind", "build", "--state", "started", "--head", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off"]).is_ok());

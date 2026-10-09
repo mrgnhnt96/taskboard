@@ -390,7 +390,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("GET", ["prs", "feed"]) => Ok(crate::feed::health(app)),
         ("POST", ["prs", "event"]) => crate::feed::intake(app, body),
-        ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app)),
+        ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app, body)),
         (_, ["master", rest @ ..]) => crate::breaks::route(app, method, rest, body),
         ("GET", ["pr-builds"]) => Ok(crate::prbuilds::status(app)),
         ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),

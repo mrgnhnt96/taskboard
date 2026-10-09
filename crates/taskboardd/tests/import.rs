@@ -430,6 +430,7 @@ fn the_review_switches_the_old_board_used_come_on() {
              INSERT INTO tasks VALUES (1, 'Ask stage', 'web', 'done', 'acme/web', 4, 'ask', NULL);
              INSERT INTO tasks VALUES (2, 'Asked', 'api', 'done', 'acme/api', 5, 'review', '{"asked": {"at": "2026-09-01T10:00:00Z"}}');
              INSERT INTO tasks VALUES (3, 'Plain', 'docs', 'done', 'acme/docs', 6, 'review', 'not json');
+             INSERT INTO tasks VALUES (4, 'Notes', 'blog', 'done', NULL, NULL, NULL, NULL);
              INSERT INTO review_asks VALUES (1, 3, 'ana', 'pending', 'auto', '2026-09-01T10:00:00Z');
              INSERT INTO review_asks VALUES (2, 3, 'bo', 'pending', 'timeout', '2026-09-01T11:00:00Z');"#,
         )
@@ -443,5 +444,6 @@ fn the_review_switches_the_old_board_used_come_on() {
     assert!(rep.lines().iter().any(|l| l.contains("turned on") && l.contains("web: ask stage")), "{:?}", rep.lines());
     let swaps = |p: &str| taskboardd::reviewers::swap_on(&app, Some(p));
     assert!(swaps("docs"), "it swapped a reviewer who timed out there");
-    assert!(!swaps("web"));
+    assert!(swaps("web") && swaps("api"), "the old board always swapped: a project with PRs and no swap history too");
+    assert!(!swaps("blog"), "a project that came over with no PR or ask");
 }
