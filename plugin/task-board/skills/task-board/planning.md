@@ -40,6 +40,7 @@ A goal with no waves runs its tasks one after another (or in any order). When ta
 
 All opt-in: a goal that sets none of it runs as before.
 
+- A task whose PR builds on another's unmerged PR: `tb task new … --stack-on T<m>` (or `tb task set T<n> --stack-on T<m>`), in any goal of the same project. It waits for T<m>, starts from its branch, and its PR goes into it. A task that won't end in a PR (notes, an investigation): `--no-pr` on `tb task new`, or `tb task set T<n> --pr no`.
 - Within a wave, a task that needs one other task's work can wait for just that one: `tb task set T<n> --waits-for T<m>` (or `--waits-for` on `tb task new`), or a fourth `::` field on `--task`: `"title::what to do::2::#1"` waits for the first `--task` in the same command, `"title::what to do::::T14"` for T14 (no wave). Separate several with commas.
 - Tasks that would get in each other's way without touching the same files (one emulator, a local server, a build cache) share a lock, in any goal: `tb task set T<n> --lock local-core` (several: `--lock emulator-5554,local-core`; `--lock none` clears them). Only one task that names a lock runs at a time; the others say "Waits for local-core (T12 has it)". Lock names are short lowercase words; `tb locks` shows who holds each and who waits.
 - A task that needs nothing else running, like a measurement: `tb task set T<n> --alone` waits until the rest of its goal is quiet, then nothing else in the goal starts until it's done. `--alone board` does the same for the whole board; `--alone none` undoes it.

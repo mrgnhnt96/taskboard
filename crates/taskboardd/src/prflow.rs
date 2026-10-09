@@ -1,5 +1,13 @@
-//! Pull requests after a task is done: watch GitHub PRs with `gh`, work out their stage, and bring the
-//! task's conversation back when the PR needs work (a failed check, review comments, ready to merge).
+//! Pull requests after a task is done: watch PRs on their host (GitHub or Bitbucket Cloud, see
+//! `prhost.rs`), work out their stage, and bring the task's conversation back when the PR needs work
+//! (a failed check, open review threads, ready to merge).
+//!
+//! Besides the latest read (`rec`), a task's `pr_flow` keeps the board's own state of the PR:
+//! `threads_acked` (thread id → the last comment it was acknowledged at, by `tb pr ack` or a reply to a
+//! comment the host can't resolve), `not_ours` (head → the failed checks cleared for that push, with
+//! the reason and proof), `head_base` (head → the base's commit when that push was first seen),
+//! `swapped_off` (reviewers taken off the PR, whose requests for changes no longer hold) and
+//! `addressed` (the last `tb pr addressed`).
 
 use std::path::Path;
 
@@ -7,10 +15,10 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, proc, runner};
+use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge"];
-pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge"];
+pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -24,6 +32,7 @@ pub fn label(phase: &str) -> &str {
         "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
         "merge" => "Ready to merge",
+        "waits" => "Waits on base",
         "merged" => "Merged",
         "declined" => "Closed",
         other => other,
@@ -56,7 +65,7 @@ pub fn link_pr(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {
     if app.db.q1("SELECT id FROM tasks WHERE pr_repo = ? AND pr_num = ? AND id != ?", p![pr.repo, pr.num, t.id()])?.is_some() {
         return Ok(false);
     }
-    let watched = pr.host == "github" && app.cfg.pr.watch;
+    let watched = crate::prhost::watched(Some(&pr.host)) && app.cfg.pr.watch;
     board::update_task(
         app,
         t.id(),
@@ -82,6 +91,8 @@ pub fn card(t: &Row) -> Value {
         "stopped": if waking { f.v("stopped") } else { Value::Null },
         "failed_checks": rec.get("failed").cloned().unwrap_or(json!([])),
         "comments": rec.get("comments").cloned().unwrap_or(json!(0)),
+        "open_threads": open_threads(&f, &rec).len(),
+        "not_ours": not_ours(&f, &rec),
         "review_decision": rec.get("review_decision").cloned().unwrap_or(Value::Null),
         "checked_at": f.v("checked_at"),
         "awaiting_you": t.s("status") == Some("done") && awaiting_owner(t),
@@ -250,26 +261,33 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
     let failed: Vec<String> = rec["failed"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
     let body = match phase {
         "fix" => format!(
-            "A check failed on its head ({}). Run {tb} pr status {r}, then read the failing check's log (for GitHub: \
-             gh pr checks {num} and gh run view --log-failed). Work from that error, not a guess. If the PR's change causes \
-             it, fix exactly that in this task's worktree, run the tests, and push; the checks run again. If the base \
-             branch has moved, rebase onto it before you push (git push --force-with-lease). If the failure isn't this \
-             PR's (the base branch fails it too), say so with {tb} note and don't change unrelated code.",
+            "A check failed on its head ({}). Run {tb} pr status {r}: it lists each failed check's failed steps and tests \
+             where it can read them, and marks a check the base branch fails too. Read the failing check's log when that \
+             isn't enough (for GitHub: gh pr checks {num} and gh run view --log-failed). Work from that error, not a guess. \
+             If the PR's change causes it, fix exactly that in this task's worktree, run the tests, and push; the checks \
+             run again. If the base branch has moved, rebase onto it before you push (git push --force-with-lease). If the \
+             failure isn't this PR's (the base branch fails it too), don't change unrelated code: clear it with {tb} pr \
+             not-ours {r} --check \"<check>\" --title \"<what fails>\" --reason \"<why it isn't this PR>\" --proof <link to \
+             the same failure without this change>.",
             if failed.is_empty() { "see the PR".to_string() } else { failed.join(", ") },
             num = t.i0("pr_num")
         ),
         "comments" => format!(
-            "There are new review comments{}. Read them (for GitHub: gh pr view {num} --comments, and the review threads \
-             on the PR). Address each in the worktree; a comment that can fairly wait for a later PR goes to the backlog \
-             instead ({tb} backlog add \"<title>\" --kind follow). Reply to every comment that asked for something with \
-             what you did, push the fixes, and resolve what you addressed.",
+            "There are open review threads{}. {tb} pr status {r} lists them with their ids. Address each in the worktree; \
+             one that can fairly wait for a later PR goes to the backlog instead ({tb} backlog add \"<title>\" --kind \
+             follow). Push the fixes, then answer each thread that asked for something with {tb} pr reply {r} <thread> \
+             \"<what you did>\" --resolve. A comment that asks for nothing gets {tb} pr ack {r} <thread>: it's resolved \
+             without a reply.{}",
             if rec["review_decision"] == "CHANGES_REQUESTED" { " and a reviewer asked for changes" } else { "" },
-            num = t.i0("pr_num")
+            if rec["review_decision"] == "CHANGES_REQUESTED" {
+                format!(" When every thread is answered, run {tb} pr addressed {r}: it asks the reviewers who wanted changes to look again.")
+            } else {
+                String::new()
+            }
         ),
         "merge" => format!(
-            "It's approved and every check is green. Merge it with the repository's default strategy (for GitHub: \
-             gh pr merge {num}), then run {tb} pr merged {r}.",
-            num = t.i0("pr_num")
+            "It's approved and every check is green. Merge it with {tb} pr merge {r}: it checks the PR once more, then \
+             merges it with the repository's default strategy and deletes its branch."
         ),
         _ => String::new(),
     };
@@ -277,8 +295,9 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
         head,
         body,
         format!(
-            "When you're finished, run {tb} pr wait {r}: the board watches the PR and brings you back when it needs you \
-             again. Don't take another task here, and don't run tb done: the task is already done."
+            "When you're finished, run {tb} pr wait {r} (tb pr addressed and tb pr merge finish the visit too): the board \
+             watches the PR and brings you back when it needs you again. Don't take another task here, and don't run tb \
+             done: the task is already done."
         ),
     ]
     .join("\n")
@@ -393,84 +412,126 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     Ok(out)
 }
 
-/// One GitHub PR as `gh` reports it, boiled down to what the stage needs.
-pub fn read_github(app: &App, t: &Row) -> std::result::Result<Value, String> {
-    let gh = proc::which(&app.cfg.pr.gh).ok_or_else(|| "the gh command isn't installed".to_string())?;
-    let args: Vec<String> = [
-        "pr",
-        "view",
-        &t.st("pr_url"),
-        "--json",
-        "number,state,title,author,headRefOid,headRefName,baseRefName,reviewDecision,statusCheckRollup,comments,reviews,mergeable",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    let o = proc::run_with(&gh, &args, None, 30.0, &crate::accounts::gh_env(&app.cfg), None).map_err(|_| "gh didn't answer in 30 seconds".to_string())?;
-    if o.code != Some(0) {
-        return Err(o.stderr.lines().next().unwrap_or("gh failed").to_string());
-    }
-    let d: Value = serde_json::from_str(&o.stdout).map_err(|e| format!("gh's answer doesn't parse: {e}"))?;
-    Ok(summarize_github(&d))
+/// One read of a task's PR from its host, as the flow keeps it (`prhost::Record::to_value`).
+pub fn read(app: &App, t: &Row) -> std::result::Result<Value, String> {
+    let pr = crate::prhost::PrRef::of(t).ok_or_else(|| "the task has no PR".to_string())?;
+    let host = crate::prhost::host_for(app, &pr.host)?;
+    Ok(host.read(&pr)?.to_value())
 }
 
-pub fn summarize_github(d: &Value) -> Value {
-    let author = d["author"]["login"].as_str().unwrap_or("");
-    let mut failed = vec![];
-    let mut running = 0;
-    let mut checks = vec![];
-    for c in d["statusCheckRollup"].as_array().cloned().unwrap_or_default() {
-        let name = c["name"].as_str().or(c["context"].as_str()).unwrap_or("check").to_string();
-        let state = match (c["status"].as_str(), c["conclusion"].as_str(), c["state"].as_str()) {
-            (_, _, Some(s)) => match s {
-                "SUCCESS" => "passed",
-                "FAILURE" | "ERROR" => "failed",
-                _ => "running",
-            },
-            (Some("COMPLETED"), Some(con), _) => match con {
-                "SUCCESS" | "NEUTRAL" | "SKIPPED" => "passed",
-                _ => "failed",
-            },
-            _ => "running",
-        };
-        if state == "failed" {
-            failed.push(name.clone());
-        }
-        if state == "running" {
-            running += 1;
-        }
-        checks.push(json!({"name": name, "state": state}));
+/// Reads one task's PR now and steps it, as the poll does. The record, or why the host couldn't be read.
+pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, String>> {
+    let t = board::get_task(app, id)?;
+    let rec = match read(app, &t) {
+        Ok(r) => r,
+        Err(e) => return Ok(Err(e)),
+    };
+    gate(app, &t, &rec)?;
+    let t = board::get_task(app, id)?;
+    app.db.tx(|| step(app, &t, &rec))?;
+    Ok(Ok(rec))
+}
+
+fn str_list(v: &Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default()
+}
+
+/// The threads waiting on the PR's author: unresolved, someone else spoke last, and not acknowledged on
+/// the board since. Empty for a record without threads (older reads).
+pub fn open_threads(f: &Row, rec: &Value) -> Vec<Value> {
+    let author = rec["author"].as_str().unwrap_or("");
+    let acks = f.get("threads_acked").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    rec["threads"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| {
+            let Ok(th) = serde_json::from_value::<crate::prhost::Thread>(t.clone()) else { return false };
+            th.waiting_on(author) && acks.get(&th.id).and_then(|v| v.as_str()) != Some(th.last_id.as_str())
+        })
+        .collect()
+}
+
+/// Whether this record lists threads (both hosts do now); older records only count comments.
+fn has_threads(rec: &Value) -> bool {
+    rec["threads"].is_array()
+}
+
+/// This push's `tb pr not-ours` clearance, if it has one.
+pub fn not_ours(f: &Row, rec: &Value) -> Value {
+    let head = rec["head"].as_str().unwrap_or("");
+    f.get("not_ours").and_then(|m| m.get(head)).cloned().unwrap_or(Value::Null)
+}
+
+/// The failed checks that still count: those `tb pr not-ours` didn't clear for this push.
+pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
+    let cleared = str_list(&not_ours(f, rec)["checks"]);
+    str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().any(|x| x.eq_ignore_ascii_case(c))).collect()
+}
+
+/// Expected checks (`[pr.projects.<name>] expected`) that haven't posted on this push.
+pub fn expected_missing(app: &App, t: &Row, rec: &Value) -> Option<Vec<String>> {
+    let want = app.cfg.pr.project(t.s("project")).expected?;
+    let posted: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter_map(|c| c["name"].as_str().map(|s| s.to_lowercase())).collect();
+    Some(want.into_iter().filter(|w| !posted.contains(&w.to_lowercase())).collect())
+}
+
+/// The base branch moved since this push was first seen.
+pub fn base_moved(f: &Row, rec: &Value) -> bool {
+    let now = rec["base_head"].as_str().unwrap_or("");
+    let then = f.get("head_base").and_then(|m| m.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_str()).unwrap_or("");
+    !now.is_empty() && !then.is_empty() && now != then
+}
+
+/// Reviewers taken off the PR: a request for changes from one of them no longer holds.
+pub fn swapped_off(f: &Row) -> Vec<String> {
+    str_list(f.get("swapped_off").unwrap_or(&Value::Null))
+}
+
+/// Where the review stands, with requests for changes from swapped-off reviewers waived.
+pub struct Review {
+    /// Someone (still on the PR) asked for changes.
+    pub changes: bool,
+    pub approvals: i64,
+    pub decision: String,
+    /// Who asked for changes: (user id, name).
+    pub requesters: Vec<(String, String)>,
+}
+
+pub fn review_of(f: &Row, rec: &Value) -> Review {
+    let decision = rec["review_decision"].as_str().unwrap_or("").to_string();
+    let Some(list) = rec["reviewers"].as_array() else {
+        return Review { changes: decision == "CHANGES_REQUESTED", approvals: rec["approvals"].as_i64().unwrap_or(0), decision, requesters: vec![] };
+    };
+    let off = swapped_off(f);
+    let on: Vec<&Value> = list.iter().filter(|r| !off.iter().any(|o| r["user"].as_str() == Some(o.as_str()))).collect();
+    let requesters: Vec<(String, String)> =
+        on.iter().filter(|r| r["state"] == "changes").map(|r| (r["user"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string())).collect();
+    let changes = !requesters.is_empty() || (decision == "CHANGES_REQUESTED" && list.is_empty());
+    let approvals = on.iter().filter(|r| r["state"] == "approved").count() as i64;
+    let decision = match decision.as_str() {
+        "CHANGES_REQUESTED" if !changes => String::new(),
+        _ if changes => "CHANGES_REQUESTED".to_string(),
+        d => d.to_string(),
+    };
+    Review { changes, approvals, decision, requesters }
+}
+
+/// Approvals this task's project needs, if it says.
+pub fn approvals_needed(app: &App, t: &Row) -> Option<i64> {
+    app.cfg.pr.project(t.s("project")).approvals
+}
+
+/// Approved enough to merge: the project's count, or (unset) the host's verdict or any approval.
+pub fn approved(app: &App, t: &Row, r: &Review) -> bool {
+    if r.changes {
+        return false;
     }
-    let comments = d["comments"].as_array().map(|a| a.iter().filter(|c| c["author"]["login"].as_str() != Some(author)).count()).unwrap_or(0)
-        + d["reviews"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter(|r| r["author"]["login"].as_str() != Some(author))
-                    .filter(|r| r["state"] != "APPROVED")
-                    .filter(|r| r["state"] == "CHANGES_REQUESTED" || r["body"].as_str().map(|b| !b.trim().is_empty()).unwrap_or(false))
-                    .count()
-            })
-            .unwrap_or(0);
-    let changes_at = d["reviews"]
-        .as_array()
-        .and_then(|a| {
-            a.iter()
-                .filter(|r| r["state"] == "CHANGES_REQUESTED" && r["author"]["login"].as_str() != Some(author))
-                .filter_map(|r| r["submittedAt"].as_str())
-                .max()
-                .map(|s| s.to_string())
-        });
-    let approvals = d["reviews"]
-        .as_array()
-        .map(|a| a.iter().filter(|r| r["state"] == "APPROVED" && r["author"]["login"].as_str() != Some(author)).count())
-        .unwrap_or(0);
-    json!({
-        "state": d["state"].as_str().unwrap_or("OPEN"), "title": d["title"], "head": d["headRefOid"],
-        "branch": d["headRefName"], "base": d["baseRefName"], "review_decision": d["reviewDecision"].as_str().unwrap_or(""),
-        "checks": checks, "failed": failed, "running": running, "comments": comments, "approvals": approvals,
-        "mergeable": d["mergeable"], "changes_at": changes_at,
-    })
+    match approvals_needed(app, t) {
+        Some(n) => r.approvals >= n,
+        None => r.decision == "APPROVED" || (r.decision.is_empty() && r.approvals > 0),
+    }
 }
 
 /// Why this head's checks are skipped (a hook or `tb pr skip-checks`), if they are. `*` skips every push.
@@ -483,36 +544,55 @@ pub fn checks_skipped(f: &Row, rec: &Value) -> Option<String> {
 pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     match rec["state"].as_str().unwrap_or("OPEN").to_uppercase().as_str() {
         "MERGED" => return "merged".into(),
-        "CLOSED" | "DECLINED" => return "declined".into(),
+        "CLOSED" | "DECLINED" | "SUPERSEDED" => return "declined".into(),
         _ => {}
     }
     let f = flow(t);
     let skipped = checks_skipped(&f, rec).is_some();
-    if !skipped && rec["failed"].as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+    if !skipped && !failing(&f, rec).is_empty() {
         return "fix".into();
     }
-    let checks = rec["checks"].as_array().map(|a| a.len()).unwrap_or(0);
-    let running = rec["running"].as_i64().unwrap_or(0) > 0;
-    let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
-    let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
-    if !skipped && (running || (checks == 0 && waited < app.cfg.pr.no_checks_after_mins * 60.0)) {
+    if !skipped && checks_waiting(app, t, &f, rec) {
         return "checks".into();
     }
     let seen = f.i0("comments_seen");
-    let decision = rec["review_decision"].as_str().unwrap_or("");
+    let review = review_of(&f, rec);
     let answered = f.get("answered_changes").map(|a| *a == rec["changes_at"]).unwrap_or(false);
-    if (decision == "CHANGES_REQUESTED" && !answered) || rec["comments"].as_i64().unwrap_or(0) > seen {
+    let new_comments = if has_threads(rec) { !open_threads(&f, rec).is_empty() } else { rec["comments"].as_i64().unwrap_or(0) > seen };
+    if (review.changes && !answered) || new_comments {
         return "comments".into();
     }
-    let review_skipped = f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false);
-    if decision == "CHANGES_REQUESTED" && answered && !review_skipped {
+    let review_skipped = review_skipped(&f, rec);
+    if review.changes && answered && !review_skipped {
         // The changes are pushed; the reviewer who asked for them hasn't looked again yet.
         return "rereview".into();
     }
-    if review_skipped || decision == "APPROVED" || (decision.is_empty() && rec["approvals"].as_i64().unwrap_or(0) > 0) {
-        return "merge".into();
+    if review_skipped || approved(app, t, &review) {
+        // A stacked PR waits for the PR it builds on to merge first (`stack.rs`).
+        return if crate::stack::holds(app, t).unwrap_or(false) { "waits" } else { "merge" }.into();
     }
     "review".into()
+}
+
+pub fn review_skipped(f: &Row, rec: &Value) -> bool {
+    f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false)
+}
+
+/// The checks are still going: one is running, or (since this push was first seen) the expected
+/// checks haven't all posted within their wait, or none has posted within the `no_checks_after` grace.
+pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
+    if rec["running"].as_i64().unwrap_or(0) > 0 {
+        return true;
+    }
+    let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
+    let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
+    match expected_missing(app, t, rec) {
+        Some(missing) => {
+            let wait = app.cfg.pr.project(t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS);
+            !missing.is_empty() && waited < wait * 60.0
+        }
+        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && waited < app.cfg.pr.no_checks_after_mins * 60.0,
+    }
 }
 
 /// The task's flow with this record's head noted (when it was first seen), as `step` will save it.
@@ -576,6 +656,12 @@ fn gate_once(app: &App, t: &Row, rec: &Value) -> Result<bool> {
                         if !rec["changes_at"].is_null() {
                             changes.push(("answered_changes", rec["changes_at"].clone()));
                         }
+                        // The open threads count as answered too, until someone writes on them again.
+                        let mut acks = f.get("threads_acked").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                        for th in open_threads(&f, rec) {
+                            acks.insert(th["id"].as_str().unwrap_or("").to_string(), th["last_id"].clone());
+                        }
+                        changes.push(("threads_acked", Value::Object(acks)));
                     }
                     "review" => {
                         let mut skips = f.get("skip_review").and_then(|v| v.as_object()).cloned().unwrap_or_default();
@@ -628,13 +714,24 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     if !head.is_empty() {
         changes.push(("head", json!(head)));
+        let mut bases = f.get("head_base").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        if let Some(b) = rec["base_head"].as_str().filter(|b| !b.is_empty() && !bases.contains_key(&head)) {
+            bases.insert(head.clone(), json!(b));
+            changes.push(("head_base", Value::Object(bases)));
+        }
     }
     let phase = phase_of(app, &probe(t, &f), rec);
     let old = t.st("pr_phase");
     let phase_changed = phase != old;
-    let build = if checks_skipped(&f, rec).is_some() { "Checks skipped" } else { build_label(rec) };
+    let build = if checks_skipped(&f, rec).is_some() {
+        "Checks skipped"
+    } else if !str_list(&rec["failed"]).is_empty() && failing(&f, rec).is_empty() {
+        "Failed, not this PR"
+    } else {
+        build_label(rec)
+    };
     let mut task_fields = fields!["pr_state" => rec["state"].as_str().unwrap_or("OPEN").to_uppercase(),
-                                  "pr_build" => build, "pr_review" => review_label(rec)];
+                                  "pr_build" => build, "pr_review" => review_label(&review_of(&f, rec))];
     if let Some(title) = rec["title"].as_str() {
         task_fields.push(("pr_title", json!(title)));
     }
@@ -760,27 +857,27 @@ fn build_label(rec: &Value) -> &'static str {
     }
 }
 
-fn review_label(rec: &Value) -> String {
-    match rec["review_decision"].as_str().unwrap_or("") {
+fn review_label(r: &Review) -> String {
+    match r.decision.as_str() {
         "APPROVED" => "Approved".into(),
         "CHANGES_REQUESTED" => "Changes requested".into(),
-        _ if rec["approvals"].as_i64().unwrap_or(0) > 0 => format!("{} approved", plural(rec["approvals"].as_i64().unwrap_or(0), "reviewer")),
+        _ if r.approvals > 0 => format!("{} approved", plural(r.approvals, "reviewer")),
         _ => "Not reviewed yet".into(),
     }
 }
 
-/// Reads every open GitHub PR the board's tasks made and steps each one.
+/// Reads every open PR the board's tasks made, on every watched host, and steps each one.
 pub fn refresh(app: &App) -> Result<i64> {
     if !app.cfg.pr.watch {
         return Ok(0);
     }
     let tasks = app.db.q(
-        "SELECT * FROM tasks WHERE pr_host = 'github' AND pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
+        "SELECT * FROM tasks WHERE pr_host IN ('github', 'bitbucket') AND pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
         p![],
     )?;
     let mut changed = 0;
     for t in tasks {
-        match read_github(app, &t) {
+        match read(app, &t) {
             Ok(rec) => {
                 gate(app, &board::get_task(app, t.id())?, &rec)?;
                 let t = board::get_task(app, t.id())?;
@@ -791,6 +888,7 @@ pub fn refresh(app: &App) -> Result<i64> {
             Err(e) => app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url"))),
         }
     }
+    crate::stack::retarget(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {
         app.db.tx(|| heal(app, &t))?;
@@ -875,22 +973,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summarizes_gh_output() {
-        let d = json!({
-            "state": "OPEN", "title": "Add x", "author": {"login": "me"}, "headRefOid": "abc",
-            "reviewDecision": "CHANGES_REQUESTED",
-            "statusCheckRollup": [
-                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
-                {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
-                {"context": "ci/legacy", "state": "PENDING"}
-            ],
-            "comments": [{"author": {"login": "me"}}, {"author": {"login": "rev"}}],
-            "reviews": [{"author": {"login": "rev"}, "state": "CHANGES_REQUESTED", "body": ""}]
-        });
-        let r = summarize_github(&d);
-        assert_eq!(r["failed"], json!(["test"]));
-        assert_eq!(r["running"], 1);
-        assert_eq!(r["comments"], 2);
+    fn labels_the_build() {
+        let r = json!({"checks": [{"name": "a", "state": "failed"}], "failed": ["a"], "running": 0});
         assert_eq!(build_label(&r), "Failed");
+        assert_eq!(build_label(&json!({"checks": []})), "No checks");
+    }
+
+    #[test]
+    fn open_threads_skip_acked_ones_until_someone_speaks_again() {
+        let rec = json!({"author": "me", "threads": [
+            {"id": "1", "kind": "comment", "resolvable": false, "resolved": false, "author": "rev", "author_name": "", "last_author": "rev", "last_id": "c1", "last_at": "", "text": ""},
+            {"id": "2", "kind": "review", "resolvable": true, "resolved": true, "author": "rev", "author_name": "", "last_author": "rev", "last_id": "c2", "last_at": "", "text": ""}
+        ]});
+        let mut f = Row::new();
+        assert_eq!(open_threads(&f, &rec).len(), 1);
+        f.insert("threads_acked".into(), json!({"1": "c1"}));
+        assert!(open_threads(&f, &rec).is_empty());
+        f.insert("threads_acked".into(), json!({"1": "c0"}));
+        assert_eq!(open_threads(&f, &rec).len(), 1, "a new comment reopens it");
+    }
+
+    #[test]
+    fn a_swapped_off_reviewer_s_changes_are_waived() {
+        let rec = json!({"review_decision": "CHANGES_REQUESTED", "reviewers": [
+            {"user": "a", "name": "A", "state": "changes", "requested": true}, {"user": "b", "name": "B", "state": "approved", "requested": true}]});
+        let mut f = Row::new();
+        let r = review_of(&f, &rec);
+        assert!(r.changes);
+        assert_eq!(r.requesters, vec![("a".to_string(), "A".to_string())]);
+        f.insert("swapped_off".into(), json!(["a"]));
+        let r = review_of(&f, &rec);
+        assert!(!r.changes);
+        assert_eq!((r.approvals, r.decision.as_str()), (1, ""));
     }
 }

@@ -29,6 +29,7 @@ pub struct FileConfig {
     pub questions: Questions,
     pub backlog: BacklogAi,
     pub pr: PrConfig,
+    pub pr_body: PrBodyConfig,
     pub jira: JiraConfig,
     pub handoff: HandoffConfig,
     pub alerts: AlertsConfig,
@@ -163,13 +164,59 @@ pub struct PrConfig {
     pub gh: String,
     /// Minutes after the head was pushed with no checks before the checks count as passed.
     pub no_checks_after_mins: f64,
+    /// Bitbucket Cloud's REST API (2.0).
+    pub bitbucket_api: String,
+    /// The environment variable holding an Azure DevOps personal access token, for reading the failed
+    /// steps and tests of an Azure Pipelines check.
+    pub azure_token_env: String,
+    /// Per-project PR rules, by the project's name (`[pr.projects.webapp]`).
+    pub projects: BTreeMap<String, PrProject>,
 }
 
 impl Default for PrConfig {
     fn default() -> Self {
-        PrConfig { watch: true, wake: true, agents_merge: false, gh: "gh".into(), no_checks_after_mins: 15.0 }
+        PrConfig {
+            watch: true,
+            wake: true,
+            agents_merge: false,
+            gh: "gh".into(),
+            no_checks_after_mins: 15.0,
+            bitbucket_api: "https://api.bitbucket.org/2.0".into(),
+            azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
+            projects: BTreeMap::new(),
+        }
     }
 }
+
+impl PrConfig {
+    /// The PR rules of a task's project (the defaults when it has none).
+    pub fn project(&self, name: Option<&str>) -> PrProject {
+        name.and_then(|n| self.projects.get(n)).cloned().unwrap_or_default()
+    }
+}
+
+/// One project's PR rules. Every key is optional; unset keys keep the board-wide behaviour.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct PrProject {
+    /// Approvals a PR needs before it's ready to merge. Unset: the host's own decision, or any approval.
+    pub approvals: Option<i64>,
+    /// Check names that must post on every push before the checks count as finished. Unset: the
+    /// `no_checks_after_mins` grace; an empty list: no wait at all.
+    pub expected: Option<Vec<String>>,
+    /// How long to wait for the expected checks to post, in minutes.
+    pub expected_wait_mins: Option<f64>,
+    /// A command that prints a failed check's steps and tests (for CI the board can't read itself).
+    /// It gets TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD, TB_CHECK and TB_CHECK_URL, and prints JSON
+    /// (`{"steps": [...], "tests": [...]}`) or one step per line (`test: <name>` for a test).
+    pub failures_cmd: Option<String>,
+    /// How `tb pr merge` merges: merge, squash or rebase (Bitbucket: merge_commit, squash,
+    /// fast_forward). Unset: the repository's default.
+    pub merge_strategy: Option<String>,
+}
+
+/// How long expected checks may take to post when a project doesn't say.
+pub const EXPECTED_WAIT_MINS: f64 = 90.0;
 
 /// What every handoff adds: the branch name to use and a footer (the owner's code style, say).
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -181,6 +228,49 @@ pub struct HandoffConfig {
     pub footer_file: String,
     /// The branch name a task's PR goes on: {type} {key} {slug} {task} {n}. Empty: the repo's convention.
     pub branch: String,
+}
+
+/// `tb done --pr-body FILE`: what the PR description must look like, and how the board opens the PR.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PrBodyConfig {
+    /// `## <name>` sections the description needs, in this order.
+    pub sections: Vec<String>,
+    /// Sections whose content is a bullet list.
+    pub bullets: Vec<String>,
+    /// Longest paragraph, in characters (0 for no limit).
+    pub max_paragraph: usize,
+    /// Refuse the board's own words: task, goal and backlog refs (T12, G3, B7) and "task board".
+    pub no_board_refs: bool,
+    /// More things the description mustn't say, as regexes (case-insensitive): a review tool's name, …
+    pub forbid: Vec<String>,
+    /// The branch must sit on top of the remote base (rebased), with no merge commits.
+    pub rebased: bool,
+    /// Refuse to open a PR for a task with no Jira ticket.
+    pub require_ticket: bool,
+    /// Start the PR title with the ticket key ("ABC-12 Add login").
+    pub title_prefix: bool,
+    /// Add a `## Context` section: the ticket, the PR it stacks on, the task's evidence.
+    pub context: bool,
+    /// The remote the branch is pushed to and the base is read from.
+    pub remote: String,
+}
+
+impl Default for PrBodyConfig {
+    fn default() -> Self {
+        PrBodyConfig {
+            sections: vec!["Summary".into(), "Changes".into(), "Testing".into()],
+            bullets: vec!["Changes".into(), "Testing".into()],
+            max_paragraph: 400,
+            no_board_refs: true,
+            forbid: vec![],
+            rebased: true,
+            require_ticket: false,
+            title_prefix: true,
+            context: true,
+            remote: "origin".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -212,6 +302,9 @@ pub struct JiraConfig {
     pub in_review: String,
     pub done: String,
     pub merged: String,
+    /// The status a ticket moves to when its task finishes without a PR (`tb done --no-pr`), with the
+    /// reason as a comment. Empty: it goes to `done` like any task without a PR.
+    pub canceled: String,
     pub products: BTreeMap<String, JiraProduct>,
     /// How the board talks to Jira: "rest" (the API token) or "claude" (a headless `claude -p` with
     /// the Atlassian connector's tools, for a board with no token).
@@ -250,6 +343,7 @@ impl Default for JiraConfig {
             in_review: "In Review".into(),
             done: String::new(),
             merged: String::new(),
+            canceled: String::new(),
             products: BTreeMap::new(),
             via: "rest".into(),
             claude_tools: vec!["mcp__claude_ai_Atlassian".into(), "mcp__atlassian".into()],
@@ -371,6 +465,7 @@ pub struct Config {
     pub questions: Questions,
     pub backlog: BacklogAi,
     pub pr: PrConfig,
+    pub pr_body: PrBodyConfig,
     pub jira: JiraConfig,
     pub handoff: HandoffConfig,
     pub alerts: AlertsConfig,
@@ -462,6 +557,7 @@ impl Config {
             questions: f.questions,
             backlog: f.backlog,
             pr: f.pr,
+            pr_body: f.pr_body,
             jira,
             handoff: f.handoff,
             alerts: f.alerts,

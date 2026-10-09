@@ -40,8 +40,11 @@ fn opens_pr(tool: &str, input: &Value) -> bool {
     PR_CLI_RE.is_match(cmd) || (PR_API_RE.is_match(cmd) && POST_RE.is_match(cmd))
 }
 
+static PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b").unwrap());
+
 /// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
-/// (config.toml's `[[steps]]`) aren't recorded. Anything else, no task, or no board: carry on.
+/// (config.toml's `[[steps]]`) aren't recorded, and a push to an open PR while a per-head step hasn't
+/// passed on the commit being pushed. Anything else, no task, or no board: carry on.
 fn pre_tool_use(payload: &Value, session: &str) -> i32 {
     let tool = payload["tool_name"].as_str().unwrap_or("");
     if EDIT_TOOLS.contains(&tool) {
@@ -51,22 +54,32 @@ fn pre_tool_use(payload: &Value, session: &str) -> i32 {
         }
         return 0;
     }
-    if !opens_pr(tool, &payload["tool_input"]) {
+    let opening = opens_pr(tool, &payload["tool_input"]);
+    let pushing = tool == "Bash" && PUSH_RE.is_match(payload["tool_input"]["command"].as_str().unwrap_or(""));
+    if !opening && !pushing {
         return 0;
     }
     let cfg = client::config();
     let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string()).or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
-    if let Some(reason) = cwd.and_then(|d| comments::branch_refusal(&cfg, &d, "opening the PR")) {
-        deny(&reason);
-        return 0;
+    if opening {
+        if let Some(reason) = cwd.as_deref().and_then(|d| comments::branch_refusal(&cfg, d, "opening the PR")) {
+            deny(&reason);
+            return 0;
+        }
     }
-    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return 0 };
+    let head = crate::tb::local_head(cwd.as_deref().unwrap_or("")).map(|h| format!("&head={h}")).unwrap_or_default();
+    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}{head}"), None, hook_timeout()) else { return 0 };
     let vars = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
-    let left: Vec<Step> = from_listing(&v).into_iter().filter(|(s, done)| s.before == Before::Pr && !done).map(|(s, _)| s.filled(&vars)).collect();
+    let left: Vec<Step> = from_listing(&v)
+        .into_iter()
+        .filter(|(s, done)| s.before == Before::Pr && !done && (opening || (s.per_head && v["pr_open"] == true)))
+        .map(|(s, _)| s.filled(&vars))
+        .collect();
     if left.is_empty() {
         return 0;
     }
-    deny(&taskboardd::steps::refusal(&tb_path(), "opening the PR", &left));
+    let what = if opening { "opening the PR" } else { "pushing to the open PR" };
+    deny(&taskboardd::steps::refusal(&tb_path(), what, &left));
     0
 }
 
@@ -395,6 +408,8 @@ mod tests {
         assert!(GIT_RE.is_match("git commit -m x"));
         assert!(GIT_RE.is_match("git -C /a push origin x"));
         assert!(!GIT_RE.is_match("git status"));
+        assert!(PUSH_RE.is_match("git push --force-with-lease"));
+        assert!(!PUSH_RE.is_match("git commit -m push"));
         assert_eq!(clip_middle("abcdefghij", 7), "abc\n…\nj");
     }
 }

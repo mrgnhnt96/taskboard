@@ -142,10 +142,17 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["steps"]) => {
             let t = match query.get("task").filter(|s| !s.is_empty()) {
                 Some(r) => Some(board::get_task(app, tid(r)?)?),
-                None => board::task_for_session(app, query.get("session").map(|s| s.as_str()))?,
+                None => {
+                    let sid = query.get("session").map(|s| s.as_str());
+                    match board::task_for_session(app, sid)? {
+                        Some(t) => Some(t),
+                        // A terminal working on a done task's PR: its pushes are that task's.
+                        None => prflow::visited_by(app, sid.unwrap_or(""))?,
+                    }
+                }
             };
             match t {
-                Some(t) => steps::list(app, &t),
+                Some(t) => steps::list(app, &t, query.get("head").map(|s| s.as_str()).filter(|h| !h.is_empty())),
                 None => Ok(json!({"task": null, "steps": []})),
             }
         }
@@ -170,7 +177,19 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"text": handoff::build(app, t)?}))
         }
         ("GET", ["tasks", id, "log"]) => get_log(app, tid(id)?, q(query, "kind", "all")),
-        ("GET", ["tasks", id, "pr"]) => get_pr(app, tid(id)?),
+        ("GET", ["tasks", id, "pr"]) => {
+            let t = tid(id)?;
+            let mut v = get_pr(app, t)?;
+            if matches!(q(query, "full", ""), "1" | "true") {
+                v["live"] = crate::prcmds::status(app, t)?;
+                // The read just now stepped the PR: answer with what it found.
+                let fresh = get_pr(app, t)?;
+                for k in ["pr", "record", "checked_at"] {
+                    v[k] = fresh[k].clone();
+                }
+            }
+            Ok(v)
+        }
         ("POST", ["tasks", id]) => patch_task(app, tid(id)?, body),
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
         ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, body),
@@ -205,6 +224,11 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "reply"]) => crate::prcmds::reply(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "ack"]) => crate::prcmds::ack(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "addressed"]) => crate::prcmds::addressed(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "merge"]) => crate::prcmds::merge(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "not-ours"]) => crate::prcmds::not_ours(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reviewed"]) => {
             let t = tid(id)?;
             app.db.tx(|| {
@@ -841,8 +865,22 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 bump = true;
             }
         }
+        // Stacking (`--stack-on`) and the PR plan (`--pr yes|no`) log their own change.
+        let mut planned = false;
+        if has_key("stack_on") {
+            planned |= crate::stack::set(app, &t, &body["stack_on"], OWNER)?;
+        }
+        if has_key("ships_pr") {
+            planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], OWNER)?;
+        }
+        if planned && f.is_empty() {
+            return board::bump_ctx(app, id);
+        }
         if f.is_empty() {
             return Ok(());
+        }
+        if planned {
+            bump = true;
         }
         let edited = f.iter().any(|(k, _)| matches!(*k, "title" | "detail" | "meta"));
         board::update_task(app, id, f)?;
@@ -1046,7 +1084,7 @@ fn owner_step(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let resumes = steps::waiting(&t).map(|w| steps::key(&w) == steps::key(&step.name)).unwrap_or(false);
     app.db.tx(|| {
-        board::log_event_full(app, id, OWNER, "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": true, "note": note, "skipped": skip})), None)?;
+        board::log_event_full(app, id, OWNER, "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": true, "note": note, "skipped": skip, "head": crate::waitsfor::head_of(&t)})), None)?;
         let mut ctx = board::task_context(&t);
         if resumes && ctx.remove("step_waiting").is_some() {
             board::save_context(app, id, &ctx, false)?;
@@ -2105,7 +2143,7 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
     }
     let f = jloads_obj(t.s("pr_flow"));
     Ok(json!({"task": rf("task", id), "pr": board::pr_card(&t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
-              "agents_merge": app.cfg.pr.agents_merge, "watched": t.s("pr_host") == Some("github") && app.cfg.pr.watch}))
+              "agents_merge": app.cfg.pr.agents_merge, "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {
@@ -2136,5 +2174,7 @@ fn pr_merged(app: &App, id: i64, body: &Value) -> Result<Value> {
         let who = { let w = body_str(body, "who"); if w.is_empty() { board::BOARD.to_string() } else { w } };
         prflow::mark_merged(app, &t, &who)
     })?;
+    // PRs stacked on this one go into its base now.
+    crate::stack::retarget(app)?;
     get_pr(app, id)
 }

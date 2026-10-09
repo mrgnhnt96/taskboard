@@ -166,6 +166,8 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "planned": int,      // status planned
   "open_issues": int,  // open backlog issues in the goal
   "prs_open": [int],   // PR numbers of done, not-failed tasks whose PR is still open (the goal isn't finished until they merge)
+  "prs_planned": int,  // tasks that end in a PR (`ships_pr`), not counting canceled ones
+  "prs_canceled": int, // tasks that finished without their PR (`tb done --no-pr`)
   "finished_at": iso|null,  // latest finished_at once EVERY task is done, prs_open is empty and no backend bit waits; else null
   "peek": [{"ref": "T12", "title": str, "status": "needs"|"working"|"failed"|"starting"|"blocked"|"queued", "why": str|null}]
             // hover card on the rail: non-planned, not-done tasks plus failed ones; why = the blocker line for blocked ones
@@ -224,9 +226,11 @@ The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat objec
   "found": [{"id": int, "ref": "B7", "title": str}],   // issues this task reported
   "attachments": [attachment],      // on the task
   "goal_attachments": [attachment], // on its goal (omit or [] when no goal)
-  "origin": {"from": str, "by": str, "url": str|null} | null   // where the task came from; the task panel's "From" row
+  "origin": {"from": str, "by": str, "url": str|null} | null,  // where the task came from; the task panel's "From" row
+  "step_results": [step_result]     // the latest round of each of its steps that ran (see "The PR plan and flow")
 }
 ```
+On this detail, `pr.bar.wd` is the `step_result` of the step with a `bar` name (else null).
 
 ### `GET /tasks/:id/handoff`
 
@@ -437,9 +441,15 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
   "devices": {"needs": [{"tag": "android", "n": 2}], "needs_text": "2 android", "lent": ["pixel-7"]} | null,
                                   // what it asks for from the device pool (its own, else its goal's) and what it has now
-  "bits": [{"name": str, "kind": "backend"|"local", "made": bool, "waiting": bool}]   // its bits; waiting = backend, not made
+  "bits": [{"name": str, "kind": "backend"|"local", "made": bool, "waiting": bool}],  // its bits; waiting = backend, not made
+  "ships_pr": bool,               // it ends in a PR: its own setting, else its project's (`pr_flow` / a git remote)
+  "ships_pr_set": bool|null,      // its own setting (`tb task set --pr yes|no`); null = the project's default
+  "no_pr": str|null,              // why it finished without its PR (`tb done --no-pr`): "PR canceled: <why>"
+  "no_evidence": str|null,        // why it finished without evidence (`tb done --no-evidence`)
+  "stack_on": stack_on|null       // the task whose PR this one's builds on (`--stack-on`)
 }
 ```
+`stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
 The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
 
 ### `pr`
@@ -461,12 +471,37 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "stopped": {"asked": bool, "message": str} | null
                                  // optional: that terminal stopped before finishing (asked = it asked you a question).
                                  // Shows "Needs you" and an answer box on the done task; the answer goes through POST /tasks/:id/answer.
-  } | null
+    "open_threads": int,         // review threads (and Bitbucket PR tasks) waiting on the PR's author
+    "not_ours": {"checks": [str], "title": str, "reason": str, "proof": [url], "who": str, "at": iso} | null
+                                 // this push's failed checks cleared with `tb pr not-ours`; the task panel's PR bar shows
+                                 // a "Failed, but not because of this PR" box with the title, checks, reason and proof links
+  } | null,
+  "bar": {                       // on cards from this board (absent in the frozen web fixtures)
+    "build_url": str|null,       // the failed check's link, else the first check's
+    "checks": "not_needed"|"not_ours"|null,   // no checks at all / this push's checks skipped or its failures cleared (`tb pr not-ours`)
+    "checks_why": str|null,      // why they were skipped
+    "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
+    "approvals": int, "reviewers": int,           // "1 of 2": approvals of (approvals + reviewers still asked)
+    "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
+    "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
+    "stacks_on": stack_on|null,
+    "retargeted": str|null,      // the base the board pointed it at once its parent merged (or "failed: …")
+    "wd": step_result|null,      // the author-side review step (a step with `bar`), on GET /tasks/:id only
+    "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int}]
+                                 // one pill per reviewer still on the PR, from the host's reviewer states
+  }
 }
 ```
+With `bar`, the task panel shows five steps: the review step (named by its `bar`, e.g. WD), Checks (linked to
+`build_url`; "Not needed", "Not this PR's"), You ("Waiting on you" with "Waiting on your review · Mark reviewed ›",
+"Reviewed", "Skipped"), Review ("x of N", "New comments", linked to the PR) and Merge ("Waits on base"), plus a
+"Stacks on T3 · PR #12" line. Without it, the three steps below.
+
+`checks` is `pass` when every failure on the head was cleared as not this PR's.
+
 The task panel shows three steps (Checks, Review, Merge) from `checks`, `review`, `state` and `stage.phase`. A done
 task whose PR is still OPEN shows "Awaiting merge" (or `stage.label`) instead of Done. The original's `build`,
-`review` free text, `review_log`, reviewer lists, `build_url`, `new_comments`, `not_ours`, `awaiting_you`,
+`review` free text, `review_log`, reviewer lists (now `bar.reviewer_rows`),
 `reviewed_at` and `asked` are gone.
 
 ### `attachment` (from `board.attachment_dict`)
@@ -501,9 +536,39 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/close-terminal` | `{force: bool}` | `force` false from the done box; true from Manage when the terminal is busy. |
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
+| `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--pr`, `--no-pr`. `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. `ships_pr` "auto" (or null) goes back to the project's default. |
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
+### PRs (`tb pr …`)
+The board watches GitHub PRs (through `gh`) and Bitbucket Cloud PRs (REST 2.0, with Taskboard's Bitbucket account);
+`prhost.rs` documents the host interface. Each route below reads the PR from its host first and judges what it says
+now. A host that can't be reached answers 502; a refusal answers 409 with the reasons.
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `failures: [{check, url, steps, tests, source, error?, base_fails, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines or the project's `failures_cmd`; `base_fails` when the base branch's last 5 commits fail that check too), `not_ours`, `expected_missing`, `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open`, `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
+| `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
+| `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
+| `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
+| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open, and a stacked base PR has merged. Then merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
+| `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
+| `POST /tasks/:id/pr/skip-checks` | `{reason?, all?: bool, who?}` | Counts this push's checks (or every push's) as passed: for builds a hook cancelled, not for failures (use `not-ours`). |
+| `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
+| `POST /tasks/:id/pr/merged` | `{who?}` | `tb pr merged`: the PR was merged outside the board. |
+
+`thread = {id, kind: "review"|"comment"|"summary"|"task", resolvable, resolved, author, author_name, last_author, last_id,
+last_at, path?, line?, text, url?, outdated?}`. A thread is open while it's unresolved and someone other than the PR's
+author spoke last (a PR task: until it's resolved), unless it was acknowledged at its last comment.
+
+**Per-project rules** (`[pr.projects.<name>]` in config.toml): `approvals` (needed to be ready to merge; unset = the
+host's verdict or any approval), `expected` (check names that must post on every push; checks count as running until
+they do, for up to `expected_wait_mins`, default 90; `[]` = don't wait at all; unset = the `no_checks_after_mins`
+grace), `failures_cmd` and `merge_strategy`.
+
+**`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
+`TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
+line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
@@ -703,3 +768,48 @@ Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. T
 | `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`). Never from the app. |
 | `POST /bits/:name/remove` | `{who?}` | Remove it and its links. |
 | `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). |
+
+## The PR plan and flow
+
+**Stacked PRs** (`tb task new|set --stack-on T<n>`, stored as `tasks.pr_after`). The task waits for its parent like
+`waits_for` (any goal, same project, no cycles). While the parent's PR is unmerged: its worktree starts from
+`origin/<parent branch>`, the handoff says to cut its branch from there and open the PR into it, `{base}` is the
+parent's branch, and once its PR is approved and green its phase is `waits` ("Waits on base") instead of `merge`.
+When the parent's PR merges (the watcher sees it, or `POST /tasks/:id/pr/merged`), the board points each open stacked
+PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucket) once, logs it, and alerts if it couldn't; the stacked task is told to
+rebase as for any `waits_for`.
+
+**The PR plan** (`tasks.ships_pr`): `tb task new --pr|--no-pr`, `tb task set --pr yes|no|auto`. The handoff and steps
+use it instead of the project's default.
+
+**`tb done --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
+canceled: <why>", skips the before-the-PR steps, and with `[jira] canceled` set moves the ticket there with the reason
+as a comment. **`--no-evidence "<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons
+and ticket keys linked to Jira.
+
+**`tb done "<summary>" --pr-body FILE [--title …]`**: the report carries `pr_body` (and `pr_title`). Before finishing,
+the board checks the description against `[pr_body]` (sections in order, bullet lists, paragraph length, no board
+refs, `forbid` patterns), the before-the-PR and before-done steps, and the branch (pushed as it is, rebased on
+`<remote>/<base>`, no merge commits, a ticket if `require_ticket`), then opens the PR into the real base with the
+title after the ticket key and a `## Context` section, links it and finishes. Errors come back as 400/409 with what
+to fix; nothing is spooled. It opens on GitHub or Bitbucket Cloud by the checkout's remote, through the `prhost` interface (`propen::host`; a remote naming neither falls back to `gh pr create`); `propen::host` is the one place that talks to the
+host. `tb pr body-check FILE` runs the description check alone.
+
+**Steps with rounds** (`[[steps]]`): `per_head = true` passes only for the head commit it ran on (`GET
+/steps?head=<sha>` judges `done` on that commit; the `PreToolUse` hook also holds `git push` to an open PR until
+it passes on the commit being pushed); `min_gap_mins` keeps rounds apart (`next_round_at` in `GET /steps`, and `tb`
+refuses an earlier round); `bar = "WD"` puts it in the PR bar. A check or script may write
+`{"verdict": "pass"|"fail"|"skip", "headline": str, "findings": [{"id", "title", "severity", "state", "file", "line",
+"detail", "url"}]}` to `$TASKBOARD_RESULT`; the verdict overrides the exit code, and `skip` (a round that couldn't
+review or didn't finish) never blocks. `tb step triage "<step>" F2 --state fixed|answered|dismissed|open [--note …]
+[--commit <sha>]` answers a finding (report `tb.step_triage`); `tb step again "<step>"` runs another round.
+
+`step_result`:
+```
+{"name": str, "bar": str|null, "at": iso, "head": str|null, "passed": bool, "verdict": "pass"|"fail"|"skip"|null,
+ "stale": bool,               // a per-head step whose head has moved since this round ("Moved since")
+ "headline": str,             // the tool's, else "No findings" / "2 open findings" / "Answered, not approved" / "Couldn't review this round" / "Didn't finish"
+ "open": int, "rounds": int,
+ "findings": [{"id": "F2", "title": str, "severity": str|null, "state": str|null, "file": str|null, "line": int?,
+               "detail": str|null, "url": str|null, "note": str?, "commit": str?}]}   // open first, then by severity
+```
