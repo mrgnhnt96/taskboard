@@ -206,6 +206,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The checkout's HEAD and changed-file stamps when the turn's prompt came in, so its Stop can tell
     // whether the turn changed code.
     ("sessions", "turn_tree", "TEXT"),
+    // The turn's Bash and subagent calls, each stamped by the hook as it starts and ends: the stamps
+    // of the calls still running, and what changed while the finished ones ran.
+    ("sessions", "turn_windows", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

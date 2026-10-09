@@ -79,7 +79,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__.*|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob",
+        "matcher": "Bash|Agent|Task|mcp__.*|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob",
         "hooks": [
           {
             "type": "command",
@@ -107,6 +107,36 @@
             ],
             "timeout": 5,
             "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/tb",
+            "args": [
+              "hook",
+              "ToolEnd"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/tb",
+            "args": [
+              "hook",
+              "ToolEnd"
+            ],
+            "timeout": 5
           }
         ]
       }

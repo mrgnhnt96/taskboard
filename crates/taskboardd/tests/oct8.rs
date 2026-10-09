@@ -351,6 +351,108 @@ fn the_jira_desk_isnt_asked_to_track_its_turns() {
     assert_eq!(stop_after(&b, &[bash("python3 fix.py")], tree(&b, "aaa", &[]), tree(&b, "aaa", &[("a.rs", "h1:5")])), None);
 }
 
+/// One Bash or subagent call as the hook reports it: its stamp as it starts, and as it ends.
+fn call(b: &Board, id: &str, start: Value, end: Option<Value>) {
+    b.report("hook.tool_start", "s1", json!({"tool": "Bash", "tool_use_id": id, "tree": start}));
+    if let Some(end) = end {
+        b.report("hook.tool_end", "s1", json!({"tool": "Bash", "tool_use_id": id, "tree": end}));
+    }
+}
+
+#[test]
+fn only_changes_made_while_the_agents_calls_ran_block_the_stop() {
+    let b = new_board();
+    b.add_session("s1");
+    let app = format!("{}/app", b.repo());
+    std::fs::create_dir_all(&app).unwrap();
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("src/a.rs", "h1:5")]);
+    let stop = |cwd: &str, after: Value| b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": cwd, "tree": after}))["block"].as_str().map(|s| s.to_string());
+
+    // `ls`, then the owner saves in their editor (or another terminal edits) before the Stop.
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("ls")]);
+    call(&b, "t1", clean.clone(), Some(clean.clone()));
+    assert_eq!(stop(&b.repo(), saved.clone()), None, "a save between the agent's calls isn't the agent's");
+
+    // The same save, and a generated file, while a later `git status` ran: still between calls when it
+    // landed before the call started.
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("ls"), bash("git status")]);
+    call(&b, "t1", clean.clone(), Some(clean.clone()));
+    let generated = tree(&b, "aaa", &[("src/a.rs", "h1:5"), ("coverage/lcov.info", "h2:9")]);
+    call(&b, "t2", generated.clone(), Some(generated.clone()));
+    assert_eq!(stop(&b.repo(), generated), None);
+
+    // From `app/`, a script edits `../lib/x.rs` (sed, an absolute path, python): no folder guess misses it.
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("cd app"), bash("sed -i '' s/a/b/ ../lib/x.rs")]);
+    call(&b, "t1", clean.clone(), Some(clean.clone()));
+    let edited = tree(&b, "aaa", &[("lib/x.rs", "h3:7")]);
+    call(&b, "t2", clean.clone(), Some(edited.clone()));
+    let block = stop(&app, tree(&b, "aaa", &[("lib/x.rs", "h3:7"), ("src/a.rs", "h1:5")])).expect("the agent's own edit outside its folder");
+    assert!(block.contains("x.rs") && !block.contains("a.rs"), "{block}");
+}
+
+#[test]
+fn a_commit_counts_only_when_one_of_the_agents_calls_made_it() {
+    let b = new_board();
+    b.add_session("s1");
+    let start = ("aaa", "commit (initial): start");
+    let clean = tree(&b, "aaa", &[]);
+    let theirs = tree_with(&b, "bbb", &[], &[("bbb", "commit: theirs"), start]);
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("ls")]);
+    call(&b, "t1", clean.clone(), Some(clean));
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": theirs.clone()}));
+    assert!(out.get("block").is_none(), "another terminal's commit in the same checkout: {out}");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": theirs.clone()}));
+    turn(&b, "s1", "Go", &[bash("git commit -am mine")]);
+    let mine = tree_with(&b, "ccc", &[], &[("ccc", "commit: mine"), ("bbb", "commit: theirs"), start]);
+    call(&b, "t1", theirs, Some(mine.clone()));
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": mine}));
+    assert!(out["block"].as_str().is_some_and(|x| x.contains("a commit: mine")), "{out}");
+}
+
+#[test]
+fn a_call_that_never_ended_or_runs_in_the_background_counts_to_the_stop() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let changed = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": changed.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("python3 fix.py")]);
+    call(&b, "t1", clean.clone(), None);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a call cut off before its end");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("./watch.sh")]);
+    b.report("hook.tool_start", "s1", json!({"tool": "Bash", "tool_use_id": "t1", "background": true, "tree": clean.clone()}));
+    b.report("hook.tool_end", "s1", json!({"tool": "Bash", "tool_use_id": "t1", "tree": clean.clone()}));
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a background command goes on past its end");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[bash("ls")]);
+    b.report("hook.tool_end", "s1", json!({"tool": "Bash", "tool_use_id": "t9", "tree": changed.clone()}));
+    assert_eq!(stop(), None, "an end with no start this turn opens nothing");
+}
+
+#[test]
+fn the_hooks_transcript_path_stands_in_when_the_session_id_finds_none() {
+    let b = new_board();
+    b.add_session("s1");
+    let file = b.app.cfg.claude_projects.join("-elsewhere").join("other-id.jsonl");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let edit = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": format!("{}/src/a.rs", b.repo())}}]}});
+    let lines = [json!({"type": "user", "message": {"content": "Go"}, "timestamp": "2026-10-08T10:00:00Z"}), edit];
+    std::fs::write(&file, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "transcript_path": file.to_string_lossy()}));
+    assert!(out["block"].as_str().is_some_and(|x| x.contains("a.rs")), "{out}");
+}
+
 
 #[test]
 fn a_review_alert_stays_until_the_pr_is_reviewed() {

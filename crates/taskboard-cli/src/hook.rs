@@ -46,31 +46,33 @@ static PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+
 
 /// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
 /// (config.toml's `[[steps]]`) aren't recorded, and a push to an open PR while a per-head step hasn't
-/// passed on the commit being pushed. Anything else, no task, or no board: carry on.
-fn pre_tool_use(payload: &Value, session: &str) -> i32 {
+/// passed on the commit being pushed. Anything else, no task, or no board: carry on. True when it
+/// refused the call.
+fn pre_tool_use(payload: &Value, session: &str) -> bool {
     let tool = payload["tool_name"].as_str().unwrap_or("");
     if EDIT_TOOLS.contains(&tool) {
         // The comment guard (config.toml's [comments]): read locally, no board needed.
         if let Some(reason) = comments::edit_refusal(&client::config(), tool, &payload["tool_input"]) {
             deny(&reason);
+            return true;
         }
-        return 0;
+        return false;
     }
     let opening = opens_pr(tool, &payload["tool_input"]);
     let pushing = tool == "Bash" && PUSH_RE.is_match(payload["tool_input"]["command"].as_str().unwrap_or(""));
     if !opening && !pushing {
-        return 0;
+        return false;
     }
     let cfg = client::config();
     let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string()).or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
     if opening {
         if let Some(reason) = cwd.as_deref().and_then(|d| comments::branch_refusal(&cfg, d, "opening the PR")) {
             deny(&reason);
-            return 0;
+            return true;
         }
     }
     let head = crate::tb::local_head(cwd.as_deref().unwrap_or("")).map(|h| format!("&head={h}")).unwrap_or_default();
-    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}{head}"), None, hook_timeout()) else { return 0 };
+    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}{head}"), None, hook_timeout()) else { return false };
     let vars = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
     let left: Vec<Step> = from_listing(&v)
         .into_iter()
@@ -78,11 +80,11 @@ fn pre_tool_use(payload: &Value, session: &str) -> i32 {
         .map(|(s, _)| s.filled(&vars))
         .collect();
     if left.is_empty() {
-        return 0;
+        return false;
     }
     let what = if opening { "opening the PR" } else { "pushing to the open PR" };
     deny(&taskboardd::steps::refusal(&tb_path(), what, &left));
-    0
+    true
 }
 
 /// `PreToolUse`: refuses a tool call that reads the daemon's app token (`taskboardd::apptoken`), which
@@ -98,6 +100,49 @@ fn token_refused(payload: &Value) -> bool {
 }
 
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+const SUBAGENT_TOOLS: &[&str] = &["Agent", "Task"];
+/// Tool calls that can change files without naming them: the board stamps the checkout around each
+/// one, so a no-task Stop counts only what changed while the agent's own calls ran.
+const WINDOW_TOOLS: &[&str] = &["Bash", "Agent", "Task"];
+
+/// The id Claude gives a tool call, which its PreToolUse and PostToolUse both carry; failing that, one
+/// made from the call itself.
+fn tool_call_id(payload: &Value) -> String {
+    if let Some(id) = payload["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
+        return id.to_string();
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (payload["tool_name"].as_str().unwrap_or(""), payload["tool_input"].to_string()).hash(&mut h);
+    format!("call-{:016x}", h.finish())
+}
+
+/// The report that opens (`hook.tool_start`) or closes (`hook.tool_end`) a tool call's window on the
+/// board, with the checkout's stamp at that moment. None for a call that can't change files unnamed.
+fn tool_window_body(payload: &Value, session: &str, event: &str) -> Option<Value> {
+    let tool = payload["tool_name"].as_str().unwrap_or("");
+    if !WINDOW_TOOLS.contains(&tool) {
+        return None;
+    }
+    let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string()).or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())).unwrap_or_default();
+    let mut body = client::base_body(event, session, payload["session_id"].as_str().unwrap_or(""), &cwd, Value::Null);
+    body["tool"] = json!(tool);
+    body["tool_use_id"] = json!(tool_call_id(payload));
+    body["background"] = json!(payload["tool_input"]["run_in_background"] == true);
+    body["tree"] = client::tree_stamp(&cwd, GIT_TIMEOUT);
+    Some(body)
+}
+
+/// Sends a tool call's window. One the board doesn't hear about only leaves the Stop to its older
+/// guess, so nothing is spooled.
+fn tool_window(payload: &Value, session: &str, event: &str) {
+    let start = Instant::now();
+    let Some(body) = tool_window_body(payload, session, event) else { return };
+    let left = (hook_timeout() + SLACK - start.elapsed().as_secs_f64()).min(hook_timeout());
+    if left > 0.05 {
+        let _ = client::request(&client::config(), "POST", "/report", Some(&body), left);
+    }
+}
 
 fn deny(reason: &str) {
     let o = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}});
@@ -228,15 +273,25 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     let payload: Value = serde_json::from_str(&raw).ok().filter(|v: &Value| v.is_object()).unwrap_or(json!({}));
     let hook = event_arg.map(|s| s.to_string()).filter(|s| !s.is_empty()).or_else(|| payload["hook_event_name"].as_str().map(|s| s.to_string())).unwrap_or_default();
     if hook == "PreToolUse" {
-        if token_refused(&payload) {
+        let tool = payload["tool_name"].as_str().unwrap_or("");
+        // A subagent's prompt isn't a read: its own tool calls meet the guard.
+        if !SUBAGENT_TOOLS.contains(&tool) && token_refused(&payload) {
             return 0;
         }
         if session.is_empty() {
             return 0;
         }
-        return pre_tool_use(&payload, &session);
+        if !pre_tool_use(&payload, &session) {
+            tool_window(&payload, &session, "hook.tool_start");
+        }
+        return 0;
     }
     if session.is_empty() {
+        return 0;
+    }
+    if hook == "ToolEnd" {
+        // `tb hook ToolEnd`, from PostToolUse and PostToolUseFailure: the call's window closes.
+        tool_window(&payload, &session, "hook.tool_end");
         return 0;
     }
     let Some(event) = board_event(&hook) else { return 0 };
@@ -309,6 +364,10 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     }
     if hook == "UserPromptSubmit" || hook == "Stop" {
         extra.insert("tree".into(), client::tree_stamp(&cwd, GIT_TIMEOUT));
+    }
+    if hook == "UserPromptSubmit" {
+        // This hook stamps each Bash and subagent call (`tool_window`), so the board needn't guess.
+        extra.insert("tool_windows".into(), json!(true));
     }
     let git = client::git_info(&cwd, GIT_TIMEOUT);
     let base = client::base_body(event, &session, &s("session_id"), &cwd, git);
@@ -439,6 +498,24 @@ mod tests {
         assert!(!bash("tb api bitbucket repositories/acme/web/pullrequests/9/comments -d '{}'"));
         assert!(opens_pr("mcp__github__create_pull_request", &json!({})));
         assert!(!opens_pr("mcp__github__get_pull_request", &json!({})));
+    }
+
+    #[test]
+    fn bash_and_subagent_calls_open_a_window_by_their_id() {
+        let call = |tool: &str, input: Value, id: Option<&str>| {
+            let mut p = json!({"tool_name": tool, "tool_input": input, "cwd": "/nowhere/at/all", "session_id": "c1"});
+            if let Some(id) = id {
+                p["tool_use_id"] = json!(id);
+            }
+            tool_window_body(&p, "s1", "hook.tool_start")
+        };
+        let b = call("Bash", json!({"command": "ls"}), Some("toolu_1")).expect("a Bash call");
+        assert_eq!((b["event"].as_str(), b["tool_use_id"].as_str(), b["background"].as_bool()), (Some("hook.tool_start"), Some("toolu_1"), Some(false)));
+        assert_eq!(b["tree"], Value::Null, "no checkout, no stamp");
+        let bg = call("Agent", json!({"prompt": "x", "run_in_background": true}), None).expect("a subagent");
+        assert_eq!(bg["background"], json!(true));
+        assert_eq!(bg["tool_use_id"], call("Agent", json!({"prompt": "x", "run_in_background": true}), None).unwrap()["tool_use_id"], "the same call, the same id");
+        assert!(call("Read", json!({"file_path": "/a"}), Some("toolu_2")).is_none());
     }
 
     #[test]

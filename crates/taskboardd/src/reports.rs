@@ -334,7 +334,9 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
         app.db.x("UPDATE sessions SET board_prompt = ? WHERE id = ?", p![m.is_some() as i64, sid])?;
         if !r.spooled {
             let tree = r.body.get("tree").filter(|t| t.is_object()).map(jdumps);
-            app.db.x("UPDATE sessions SET turn_tree = ? WHERE id = ?", p![tree, sid])?;
+            // A hook that stamps each Bash and subagent call says so: its turn starts with no windows.
+            let windows = as_bool(r.body.get("tool_windows"), false).then(|| jdumps(&json!({"open": {}, "files": [], "commit": null})));
+            app.db.x("UPDATE sessions SET turn_tree = ?, turn_windows = ? WHERE id = ?", p![tree, windows, sid])?;
         }
     }
     if let Some(n) = m {
@@ -434,7 +436,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     if let Some(sid) = r.sid().filter(|_| !r.spooled) {
         // The prompt's stamp was this turn's: a later Stop with no prompt between has nothing to diff.
-        app.db.x("UPDATE sessions SET turn_tree = NULL WHERE id = ?", p![sid])?;
+        app.db.x("UPDATE sessions SET turn_tree = NULL, turn_windows = NULL WHERE id = ?", p![sid])?;
     }
     r.set_session_status("idle")?;
     r.note_background(r.background)?;
@@ -740,6 +742,63 @@ fn on_commit(r: &mut Report) -> Result<Value> {
         }
     }
     Ok(ok(Some(&t), None))
+}
+
+fn turn_windows(app: &App, sid: &str) -> Result<Option<Value>> {
+    let s = board::get_session(app, Some(sid))?;
+    Ok(s.and_then(|s| s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok())).filter(|w| w.is_object()))
+}
+
+/// Adds what changed in the checkout between a call's two stamps to the turn's windows.
+fn window_changes(windows: &mut Value, before: &Value, after: &Value) {
+    let (files, commit) = tree_changes(before, after);
+    if !windows["files"].is_array() {
+        windows["files"] = json!([]);
+    }
+    let list = windows["files"].as_array_mut().expect("an array");
+    for f in files {
+        if !list.iter().any(|x| x.as_str() == Some(f.as_str())) {
+            list.push(json!(f));
+        }
+    }
+    if let Some((root, subject)) = commit {
+        windows["commit"] = json!([root, subject]);
+    }
+}
+
+/// `hook.tool_start`: a Bash or subagent call is starting; its stamp opens its window.
+fn on_tool_start(r: &mut Report) -> Result<Value> {
+    let Some(sid) = r.sid().filter(|_| !r.spooled) else { return Ok(ok(None, None)) };
+    let app = r.app;
+    let mut windows = turn_windows(app, sid)?.unwrap_or_else(|| json!({"open": {}, "files": [], "commit": null}));
+    if !windows["open"].is_object() {
+        windows["open"] = json!({});
+    }
+    let tree = r.body.get("tree").cloned().unwrap_or(Value::Null);
+    windows["open"][r.b("tool_use_id")] = json!({"tree": tree, "background": as_bool(r.body.get("background"), false)});
+    app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
+    Ok(ok(None, None))
+}
+
+/// `hook.tool_end`: the call finished; what changed while it ran is the turn's. A call run in the
+/// background goes on past its end, so its window stays open to the Stop.
+fn on_tool_end(r: &mut Report) -> Result<Value> {
+    let Some(sid) = r.sid().filter(|_| !r.spooled) else { return Ok(ok(None, None)) };
+    let app = r.app;
+    let Some(mut windows) = turn_windows(app, sid)? else { return Ok(ok(None, None)) };
+    let id = r.b("tool_use_id");
+    let Some(open) = windows["open"].get(&id).cloned() else { return Ok(ok(None, None)) };
+    if open["background"] == true {
+        return Ok(ok(None, None));
+    }
+    if let Some(o) = windows["open"].as_object_mut() {
+        o.remove(&id);
+    }
+    if let Some(after) = r.body.get("tree") {
+        window_changes(&mut windows, &open["tree"], after);
+    }
+    app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
+    Ok(ok(None, None))
 }
 
 fn on_session_end(r: &mut Report) -> Result<Value> {
@@ -2184,6 +2243,8 @@ fn handler(event: &str) -> Option<Handler> {
         "hook.stop" => on_stop,
         "hook.pre_compact" => on_pre_compact,
         "hook.commit" => on_commit,
+        "hook.tool_start" => on_tool_start,
+        "hook.tool_end" => on_tool_end,
         "hook.session_end" => on_session_end,
         "hook.attention" => on_attention,
         "hook.api_error" => on_api_error,
@@ -2262,13 +2323,32 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     }
     if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) && r.task().ok().flatten().is_none() {
         if let Some(s) = board::get_session(app, r.sid()).ok().flatten() {
-            let turn = transcript::last_turn(app, &s);
+            let path = r.body.get("transcript_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let turn = transcript::last_turn(app, &s).or_else(|| transcript::last_turn_at(&app.cfg.claude_projects, path.as_deref()));
             if let Some(turn) = &turn {
                 r.turn_files = turn.files.clone();
                 r.turn_at = turn.at.as_str().map(|s| s.to_string());
             }
             let before = s.s("turn_tree").and_then(|t| serde_json::from_str::<Value>(t).ok());
-            if let (Some(turn), Some(before), Some(after)) = (&turn, before, r.body.get("tree")) {
+            let windows = s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok()).filter(|w| w.is_object());
+            if let Some(mut windows) = windows {
+                // The hook stamped each Bash and subagent call: only what changed while one ran is the
+                // turn's, anywhere in the checkout. A call still open (cut off, or run in the
+                // background) runs to the Stop.
+                let after = r.body.get("tree").cloned().unwrap_or(Value::Null);
+                let open: Vec<Value> = windows["open"].as_object().map(|o| o.values().cloned().collect()).unwrap_or_default();
+                for w in open {
+                    window_changes(&mut windows, &w["tree"], &after);
+                }
+                for f in windows["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
+                    if !r.turn_files.iter().any(|x| x == f) {
+                        r.turn_files.push(f.to_string());
+                    }
+                }
+                r.turn_commit = windows["commit"].as_array().and_then(|c| Some((c.first()?.as_str()?.to_string(), c.get(1)?.as_str()?.to_string())));
+            } else if let (Some(turn), Some(before), Some(after)) = (&turn, before, r.body.get("tree")) {
+                // An older hook that doesn't stamp each call: the prompt's stamp, narrowed to the folders
+                // the turn worked in.
                 // The stamp only speaks for turns that could change files without naming them.
                 if turn.ran_shell || turn.ran_subagent {
                     let (files, commit) = tree_changes(&before, after);
