@@ -186,7 +186,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
     let mut started = vec![];
     let in_hours = hours::may_start(app);
     let queued = app.db.q(
-        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL ORDER BY priority = 'high' DESC, created_at, id",
+        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND line_session IS NULL ORDER BY priority = 'high' DESC, created_at, id",
         p![],
     )?;
     for t in queued {
@@ -300,7 +300,7 @@ pub fn auto_close_done(app: &App) -> Result<()> {
         p![],
     )? {
         let Some(s) = board::get_session(app, t.s("session_id"))? else { continue };
-        if !settled(&s) || board::task_for_session(app, s.s("id"))?.is_some() || !board::opened_by_board(app, s.s("id"))? {
+        if !settled(&s) || crate::lines::busy(app, &s.st("id"))? || !board::opened_by_board(app, s.s("id"))? {
             continue;
         }
         let tried = closes_since(app, &s.st("id"), t.s("finished_at").unwrap_or(""))?;
@@ -467,6 +467,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| jira::ensure_tickets(app))?;
     jira::run_pending(app)?;
     crate::qa::tick(app)?;
+    app.db.tx(|| crate::lines::tick(app))?;
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
     app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, fields, handoff, hooks, midna, ops, p, prflow, projects, screen, steps, transcript, waitsfor};
+use crate::{board, deliver, fields, handoff, hooks, lines, midna, ops, p, prflow, projects, screen, steps, transcript, waitsfor};
 
 static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[Tt](\d+)\]").unwrap());
 static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)$").unwrap());
@@ -263,7 +263,12 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
             return Ok(ok(None, Some(crate::jira_desk::intro(app))));
         }
         let s = board::get_session(app, r.sid())?;
-        return Ok(ok(None, Some(handoff::no_task_line(app, s.as_ref().and_then(|s| s.s("project")))?)));
+        let mut c = handoff::no_task_line(app, s.as_ref().and_then(|s| s.s("project")))?;
+        let waiting = r.sid().map(|sid| lines::summary(app, sid)).transpose()?.unwrap_or_default();
+        if !waiting.is_empty() {
+            c = format!("{c}\n{waiting} tb switch T<n> takes one.");
+        }
+        return Ok(ok(None, Some(c)));
     };
     if let (Some(c), true) = (&r.claude, t.s("session_id") == r.sid()) {
         board::update_task(app, t.id(), fields!["claude_session_id" => c])?;
@@ -273,7 +278,13 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
         board::set_working(app, &t, &r.name(), Some(&format!("Terminal came back ({})", if src.is_empty() { "restart" } else { &src })))?;
     }
     r.set_session_status(if t.s("status") == Some("working") { "working" } else { "idle" })?;
-    let ctx = r.handoff_for(&t)?;
+    let mut ctx = r.handoff_for(&t)?;
+    if let Some(sid) = r.sid().filter(|s| t.s("session_id") == Some(*s)) {
+        let waiting = lines::summary(app, sid)?;
+        if !waiting.is_empty() {
+            ctx = format!("{ctx}\n\n{waiting}");
+        }
+    }
     Ok(ok(Some(&t), Some(ctx)))
 }
 
@@ -342,11 +353,19 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
     }
     back_to_work(r, &board::get_task(app, t.id())?, Some(&prompt))?;
     let t = board::get_task(app, t.id())?;
-    if r.needs_context(&t)? {
-        let c = r.handoff_for(&t)?;
-        return Ok(ok(Some(&t), Some(c)));
+    let mut ctx = if r.needs_context(&t)? { vec![r.handoff_for(&t)?] } else { vec![] };
+    if m.is_none() && owners_ask(&prompt) {
+        if let Some(sid) = r.sid() {
+            ctx.push(lines::split_check(app, &t, sid)?);
+        }
     }
-    Ok(ok(Some(&t), None))
+    Ok(ok(Some(&t), Some(ctx.join("\n\n"))))
+}
+
+/// Whether a prompt is an ask the owner typed (not a slash command, the board's words, or a tool's tags).
+fn owners_ask(prompt: &str) -> bool {
+    let p = LEADING_MARKER_RE.replace(prompt, "").trim().to_string();
+    !p.is_empty() && !p.starts_with('/') && !p.starts_with('<') && !p.starts_with("[task-board")
 }
 
 fn ledger_files(app: &App, sid: &str, task_id: i64, event_id: i64) -> Result<()> {
@@ -499,10 +518,12 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
         }
     }
     let owner = &r.app.cfg.owner;
+    let waiting = lines::summary(r.app, &sid)?;
+    let switch = if waiting.is_empty() { String::new() } else { format!(" {waiting} If the work is one of those, run {tb} switch T<n> instead.") };
     Ok(Some(format!(
         "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
          Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
-         --detail \"<what {owner} asked for and what you changed>\" --here. Then end your turn without repeating your answer. \
+         --detail \"<what {owner} asked for and what you changed>\" --here.{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn."
     )))
 }
@@ -978,11 +999,21 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
         let text = waitsfor::bring_in_text(app, &t)?;
         return Ok(with(ok(Some(&t), Some(text)), json!({"parked": false})));
     }
+    let held = t.s("session_id").filter(|s| !s.is_empty()).map(|s| s.to_string());
     waitsfor::park(app, &t, merged.as_deref().unwrap_or("[]"), &r.name(), &why)?;
     let t = board::get_task(app, t.id())?;
     r.set_session_status("idle")?;
-    app.wake_runner();
     let b = waitsfor::blocker(app, &t)?;
+    if let Some(sid) = held.filter(|s| !lines::of(app, s).map(|l| l.is_empty()).unwrap_or(true)) {
+        // Its terminal has a line: it waits at the back of it, so it carries on here, not in a new terminal.
+        lines::enqueue(app, &t, &sid, lines::Place::Back)?;
+        let t = board::get_task(app, t.id())?;
+        let next = next_in_line(r, Some(&sid), &format!("{} waits for {names}", rf("task", t.id())))?;
+        let moved = next.is_some();
+        let text = [b, next].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+        return Ok(with(ok(Some(&t), Some(text)), json!({"parked": true, "moved_on": moved})));
+    }
+    app.wake_runner();
     Ok(with(ok(Some(&t), b), json!({"parked": true})))
 }
 
@@ -996,6 +1027,7 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
         t.id(),
         fields!["status" => "done", "finished_at" => now_iso(), "summary" => text, "failed" => failed as i64, "lost" => 0,
                 "needs_reason" => null, "question" => null, "answered_at" => null, "start_job" => null,
+                "line_session" => null, "line_pos" => null,
                 "latest" => if failed { format!("Stopped: {text}") } else { text.clone() }],
     )?;
     board::log_event_full(app, t.id(), who, "status", &if failed { format!("Failed: {text}") } else { format!("Marked done: {text}") }, None, at)?;
@@ -1074,8 +1106,24 @@ fn on_done(r: &mut Report) -> Result<Value> {
     }
     let t = board::get_task(r.app, t.id())?;
     let at = r.at.clone();
+    let held = t.s("session_id").map(|s| s.to_string());
     let t = finish_task(r.app, &t, &r.name(), &summary, false, Some(&at))?;
-    Ok(with(ok(Some(&t), None), json!({"pr_url": t.v("pr_url")})))
+    let next = next_in_line(r, held.as_deref(), &format!("{} is done", rf("task", t.id())))?;
+    Ok(with(ok(Some(&t), next), json!({"pr_url": t.v("pr_url")})))
+}
+
+/// Once terminal `held`'s task is done, fails or parks, moves it on to the next task in its line: the
+/// text that brings this terminal's agent onto it, or, for another terminal or a report sent late, a
+/// message delivered there.
+fn next_in_line(r: &Report, held: Option<&str>, why: &str) -> Result<Option<String>> {
+    let Some(held) = held.filter(|h| !h.is_empty()) else { return Ok(None) };
+    if Some(held) != r.sid() || r.spooled {
+        lines::deliver_next(r.app, held, why)?;
+        return Ok(None);
+    }
+    let Some((_, text)) = lines::advance(r.app, held, r.claude.as_deref(), why)? else { return Ok(None) };
+    r.set_session_status("working")?;
+    Ok(Some(text))
 }
 
 /// How long `tb done --no-pr`'s reason may be: one short line.
@@ -1399,8 +1447,10 @@ fn on_fail(r: &mut Report) -> Result<Value> {
     }
     let reason = { let s = r.b("reason"); if s.is_empty() { r.b("text") } else { s } };
     let at = r.at.clone();
+    let held = t.s("session_id").map(|s| s.to_string());
     let t = finish_task(r.app, &t, &r.name(), &reason, true, Some(&at))?;
-    Ok(ok(Some(&t), None))
+    let next = next_in_line(r, held.as_deref(), &format!("{} stopped", rf("task", t.id())))?;
+    Ok(ok(Some(&t), next))
 }
 
 fn on_take(r: &mut Report) -> Result<Value> {
@@ -1427,6 +1477,69 @@ fn on_take(r: &mut Report) -> Result<Value> {
     crate::devices::lend(app, &t)?;
     let c = r.handoff_for(&t)?;
     Ok(ok(Some(&t), Some(c)))
+}
+
+/// Why the terminal can't leave `t` for another task now: it's waiting on the owner.
+fn cant_switch(t: &Row) -> Option<String> {
+    let tr = rf("task", t.id());
+    (t.s("status") == Some("needs") && t.s("needs_reason") == Some("question"))
+        .then(|| format!("{tr} waits here for the owner's answer (a question or a step); switch once that's in."))
+}
+
+/// `tb switch T<n>`: this terminal takes a task from its line; the one it's on waits here to resume.
+fn on_switch(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(sid) = r.sid.clone() else { return err(400, "tb switch only works inside a Midna terminal.") };
+    if !body_has(&r.body, "to") {
+        return err(400, "Say which task to switch to, for example: tb switch T12.");
+    }
+    let t = board::get_task(app, need_ref(&r.body["to"], "task")?)?;
+    let tr = rf("task", t.id());
+    if t.s("line_session") != Some(sid.as_str()) || t.s("status") != Some("queued") {
+        return err(409, format!("{tr} isn't in this terminal's line. tb line shows what is; tb take {tr} takes any other task."));
+    }
+    let cur = board::task_for_session(app, Some(&sid))?;
+    if let Some(cur) = &cur {
+        if let Some(why) = cant_switch(cur) {
+            return err(409, why);
+        }
+        r.update_where(cur, false)?;
+    }
+    if let Err(why) = board::claim(app, &t, &sid, r.claude.as_deref(), None, "Switched to", false)? {
+        return err(409, why);
+    }
+    let t = board::get_task(app, t.id())?;
+    crate::devices::lend(app, &t)?;
+    waitsfor::started(app, &t)?;
+    let mut c = r.handoff_for(&board::get_task(app, t.id())?)?;
+    if let Some(cur) = &cur {
+        c = format!("{} waits here to resume once {tr} is done.\n\n{c}", rf("task", cur.id()));
+    }
+    Ok(ok(Some(&t), Some(c)))
+}
+
+/// `tb line`: this terminal's line; with `drop`, a task out of it and back to the board.
+fn on_line(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(sid) = r.sid.clone() else { return err(400, "tb line only works inside a Midna terminal.") };
+    if body_has(&r.body, "drop") {
+        let t = board::get_task(app, need_ref(&r.body["drop"], "task")?)?;
+        let tr = rf("task", t.id());
+        if t.s("line_session") != Some(sid.as_str()) {
+            return err(409, format!("{tr} isn't in this terminal's line."));
+        }
+        lines::drop(app, &t, &r.name(), &format!("Taken out of {}'s line; waits for Start", r.name()))?;
+        return Ok(with(ok(None, Some(format!("{tr} is back on the board; it waits for Start."))), json!({"line": lines::entries(app, &sid)?})));
+    }
+    let mut parts = vec![];
+    if let Some(t) = board::task_for_session(app, Some(&sid))? {
+        parts.push(format!("On {} “{}”.", rf("task", t.id()), t.st("title")));
+    }
+    let s = lines::summary(app, &sid)?;
+    parts.push(if s.is_empty() { "Nothing waits in this terminal's line.".into() } else { s });
+    Ok(with(ok(None, Some(parts.join(" "))), json!({"line": lines::entries(app, &sid)?})))
 }
 
 fn project_for(r: &Report, given: &str) -> Result<Option<String>> {
@@ -1636,8 +1749,26 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
     if body_has(&r.body, "goal") || r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
         return err(400, "--here makes a standalone task on this terminal; leave out --goal and --also.");
     }
-    if let Some(mine) = board::task_for_session(app, Some(&sid))? {
-        return err(409, format!("This terminal is already on {} “{}”; its work is tracked there.", rf("task", mine.id()), mine.st("title")));
+    let place = r.b("line");
+    let current = board::task_for_session(app, Some(&sid))?;
+    if let Some(mine) = &current {
+        let mr = rf("task", mine.id());
+        if place.is_empty() {
+            return err(
+                409,
+                format!(
+                    "This terminal is already on {mr} “{}”; its work is tracked there. If this is separate work, add it to \
+                     this terminal's line: --here --next (after {mr}), or --here --now (switch to it; {mr} waits here to resume).",
+                    mine.st("title")
+                ),
+            );
+        }
+        if place == "now" {
+            if let Some(why) = cant_switch(mine) {
+                return err(409, why);
+            }
+            r.update_where(mine, false)?;
+        }
     }
     let name = r.name();
     let owner = app.cfg.owner.clone();
@@ -1652,16 +1783,26 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
         Some(&format!("Added by {name} for the code it changed with {owner}")),
     )?;
     let t = board::get_task(app, c["id"].as_i64().unwrap_or(0))?;
+    if let (Some(mine), "next") = (&current, place.as_str()) {
+        lines::enqueue(app, &t, &sid, lines::Place::Back)?;
+        board::log_event(app, t.id(), &name, "status", &format!("Queued in {name} after {}", rf("task", mine.id())))?;
+        let (tr, mr) = (rf("task", t.id()), rf("task", mine.id()));
+        let text = format!("{tr} is queued in this terminal after {mr}; it starts here once {mr} is done. Carry on with {mr}.");
+        return Ok(with(ok(Some(mine), Some(text)), json!({"created": [tr], "status": "queued", "project": c["project"]})));
+    }
     if let Err(why) = board::claim(app, &t, &sid, r.claude.as_deref(), None, "Tracked", false)? {
         return err(409, why);
     }
     let t = board::get_task(app, t.id())?;
     r.sent(&t)?;
     let tr = rf("task", t.id());
-    let text = format!(
+    let mut text = format!(
         "Task board: you're on {tr} now, and the board tracks this terminal's work on it. Keep working with {owner}; \
          follow the task-board skill's “When you're on a task”, and finish with tb done when the work is."
     );
+    if let Some(mine) = &current {
+        text.push_str(&format!(" {} waits here to resume once {tr} is done.", rf("task", mine.id())));
+    }
     Ok(with(ok(Some(&t), Some(text)), json!({"created": [tr], "status": "working", "project": c["project"]})))
 }
 
@@ -1735,8 +1876,15 @@ fn on_status(r: &mut Report) -> Result<Value> {
         }
     };
     let g = board::find_goal(r.app, t.i("goal_id"))?;
+    let mut line = format!("{} · {} · {label}", rf("task", t.id()), t.st("title"));
+    if let Some(sid) = r.sid().filter(|s| t.s("session_id") == Some(*s)) {
+        let s = lines::summary(r.app, sid)?;
+        if !s.is_empty() {
+            line = format!("{line}\n{s}");
+        }
+    }
     Ok(with(
-        ok(Some(&t), Some(format!("{} · {} · {label}", rf("task", t.id()), t.st("title")))),
+        ok(Some(&t), Some(line)),
         json!({"title": t.v("title"), "status": t.v("status"), "jira_key": t.v("jira_key"), "pr_url": t.v("pr_url"),
                "goal": g.map(|g| g.v("name")).unwrap_or(Value::Null)}),
     ))
@@ -1822,6 +1970,7 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
         "tb.step_fail" => out["step"].as_str().map(|s| ("ask", format!("The step {s} can't pass: {}", r.b("why")))),
         "tb.fail" => Some(("fail", format!("Gave up on {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("reason")))),
         "tb.take" => out["task"].as_str().map(|t| ("take", format!("Picked up {t}"))),
+        "tb.switch" => out["task"].as_str().map(|t| ("take", format!("Switched to {t}"))),
         _ => None,
     }
 }
@@ -1860,6 +2009,8 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.new_task" => on_new_task,
         "tb.hello" => on_hello,
         "tb.status" => on_status,
+        "tb.switch" => on_switch,
+        "tb.line" => on_line,
         _ => return None,
     })
 }

@@ -29,6 +29,7 @@ pub mod jira_desk;
 pub mod jobs;
 pub mod keep_awake;
 pub mod limits;
+pub mod lines;
 pub mod locks;
 pub mod mdcopy;
 pub mod midna;

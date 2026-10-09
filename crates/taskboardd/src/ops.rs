@@ -381,6 +381,7 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         let sid = s.st("id");
         let t = tasks.get(&sid);
         let desk = t.is_none() && crate::jira_desk::is_desk(app, Some(&sid))?;
+        let line = crate::lines::entries(app, &sid)?;
         let mut row = json!({
             "id": sid, "name": s.s("name").filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("Terminal {}", sid.chars().take(8).collect::<String>())),
             "project": s.v("project"), "project_path": s.v("project_path"), "status": board::shown_status(&s),
@@ -389,7 +390,8 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
             "task_title": t.map(|t| t.v("title")).unwrap_or(Value::Null),
             "task_id": t.map(|t| json!(t.id())).unwrap_or(Value::Null),
             "last_activity": s.v("last_activity"), "seen_at": s.v("seen_at"),
-            "can_take": board::shown_status(&s) == "idle" && t.is_none(),
+            "can_take": board::shown_status(&s) == "idle" && t.is_none() && line.is_empty(),
+            "line": line,
             "closing": jobs::closing(app, &sid)?, "close": board::close_rule(Some(&s)),
             "branch": s.v("branch"), "dirty": s.v("dirty"), "renaming": null, "rename_error": null,
         });
@@ -540,6 +542,7 @@ pub fn session_detail(app: &App, sid: &str) -> Result<Value> {
         "compacting": board::compacting_since(&s),
         "close": board::close_rule(Some(&s)), "closing": jobs::closing(app, sid)?, "renaming": null, "rename_error": null,
         "task": match &t { Some(t) => board::task_card(app, t)?, None => Value::Null },
+        "line": crate::lines::of(app, sid)?.iter().map(|x| board::task_card(app, x)).collect::<Result<Vec<_>>>()?,
         "last_task": last.map(|l| json!({"ref": rf("task", l.id()), "title": l.v("title"), "status": l.v("status")})).unwrap_or(Value::Null),
         "prompt": prompt, "reply": latest("reply"),
         "waiting": if matches!(board::shown_status(&s), "needs" | "offline") { latest("wait") } else { None },

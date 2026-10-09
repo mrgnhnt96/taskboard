@@ -22,6 +22,7 @@ fn what(purpose: &str) -> &'static str {
         "checkpoint" => "the checkpoint request",
         "carry_on" => "the nudge to carry on",
         "follow" => "the rebase note",
+        "line_next" => "the next task in its line",
         _ => "the board's message",
     }
 }
@@ -33,6 +34,7 @@ fn done_text(purpose: &str, to: &str) -> String {
         "checkpoint" => format!("Asked {to} for a checkpoint"),
         "carry_on" => format!("{to} stopped with nothing to wait for, so the board told it to carry on"),
         "follow" => format!("Told {to} to rebase onto the work it builds on"),
+        "line_next" => format!("Moved {to} on to the next task in its line"),
         _ => format!("Delivered a message to {to}"),
     }
 }

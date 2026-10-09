@@ -258,6 +258,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         }).collect::<Result<Vec<_>>>()?,
         "locks": crate::locks::names(t),
         "alone": t.v("alone"),
+        "line": crate::lines::card(app, t)?,
         "waiting": waiting,
         "blocked": is_blocked(app, t)?,
         "step": crate::steps::waiting_card(app, t),
@@ -970,14 +971,14 @@ pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&s
     let name = session_name(app, Some(sid), None);
     if let Some(prev) = task_for_session(app, Some(sid))? {
         if prev.id() != t.id() {
-            update_task(
-                app,
-                prev.id(),
-                fields!["session_id" => null, "status" => "queued", "pickup" => "manual", "start_job" => null],
-            )?;
-            log_event(app, prev.id(), &name, "status", &format!("{name} took {tref} instead, so this went back to the queue"))?;
+            crate::lines::shelve(app, &prev, sid, &name, &format!("{name} switched to {tref}; this waits there to resume"))?;
         }
     }
+    if let Some(from) = t.s("line_session").filter(|f| *f != sid) {
+        log_event(app, t.id(), &name, "status", &format!("Taken out of {}'s line", session_name(app, Some(from), None)))?;
+    }
+    crate::lines::leave(app, t)?;
+    crate::lines::follow(app, t, sid)?;
     let already = t.s("session_id") == Some(sid) && t.s("status") == Some("working");
     let mut f = fields!["session_id" => sid, "session_name" => name, "start_job" => null, "lost" => 0];
     if !already {

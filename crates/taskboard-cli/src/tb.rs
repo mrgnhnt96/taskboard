@@ -117,6 +117,13 @@ enum Cmd {
     },
     /// Take a task in this terminal (prints its handoff)
     Take { task: String },
+    /// Switch this terminal to a task in its line; the one it's on waits here to resume
+    Switch { task: String },
+    /// This terminal's line: the tasks waiting their turn here
+    Line {
+        #[command(subcommand)]
+        action: Option<LineCmd>,
+    },
     /// Start a task, only when the human told you to in this conversation (the board checks their prompts)
     Start {
         task: String,
@@ -838,6 +845,12 @@ enum GoalCmd {
 }
 
 #[derive(Subcommand)]
+enum LineCmd {
+    /// Take a task out of this terminal's line and back to the board, to wait for Start
+    Drop { task: String },
+}
+
+#[derive(Subcommand)]
 enum TaskCmd {
     /// Add a task: planned in a goal, or on its own
     New {
@@ -862,6 +875,12 @@ enum TaskCmd {
         /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
         #[arg(long)]
         here: bool,
+        /// With --here on a terminal that has a task: queue it in this terminal's line, after that task
+        #[arg(long, requires = "here", conflicts_with = "now")]
+        next: bool,
+        /// With --here on a terminal that has a task: switch to it now; that task waits here to resume
+        #[arg(long, requires = "here")]
+        now: bool,
         /// It starts only once this task (any goal) is done; repeat for more
         #[arg(long = "waits-for", value_name = "T12")]
         waits_for: Vec<String>,
@@ -1599,6 +1618,11 @@ fn device_arg(values: &[String]) -> Value {
         [one] if one.trim().eq_ignore_ascii_case("none") => json!("none"),
         _ => json!(lock_arg(values)),
     }
+}
+
+/// After `tb done` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
+fn then_next(v: &Value) -> String {
+    v["context"].as_str().filter(|c| !c.trim().is_empty()).map(|c| format!("\n\n{c}")).unwrap_or_default()
 }
 
 fn print_warnings(v: &Value) {
@@ -2776,7 +2800,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence});
             let Some(file) = pr_body else {
-                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")));
+                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(v)));
             };
             let text = read_body(&file)?;
             let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &text);
@@ -2798,17 +2822,36 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             }
             let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
-            out(&format!("{} is done.{pr}", v["task"].as_str().unwrap_or("")));
+            out(&format!("{} is done.{pr}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
             Ok(0)
         }
         Cmd::Fail { reason, t } => {
-            c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.", v["task"].as_str().unwrap_or("")))
+            c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.{}", v["task"].as_str().unwrap_or(""), then_next(v)))
         }
         Cmd::Take { task } => {
             let r = task_ref(&task)?;
             match c.report("tb.take", json!({"task": r}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
                 Some(v) => out(v["context"].as_str().unwrap_or(&format!("Took {r}."))),
+            }
+            Ok(0)
+        }
+        Cmd::Switch { task } => {
+            let r = task_ref(&task)?;
+            match c.report("tb.switch", json!({"to": r}), None, TB_TIMEOUT)? {
+                None => out(SAVED),
+                Some(v) => out(v["context"].as_str().unwrap_or(&format!("Switched to {r}."))),
+            }
+            Ok(0)
+        }
+        Cmd::Line { action } => {
+            let body = match action {
+                Some(LineCmd::Drop { task }) => json!({"drop": task_ref(&task)?}),
+                None => json!({}),
+            };
+            match c.report("tb.line", body, None, TB_TIMEOUT)? {
+                None => out("The board isn't answering."),
+                Some(v) => out(v["context"].as_str().unwrap_or("")),
             }
             Ok(0)
         }
@@ -2845,7 +2888,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 json!(tasks.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?)
             };
             c.run_report("tb.wait_for", json!({"tasks": list, "why": why}), t.task, true, |v| {
-                if v["parked"] == true {
+                if v["moved_on"] == true {
+                    format!("{} waits now; this terminal moves on.\n\n{}", v["task"].as_str().unwrap_or(""), v["context"].as_str().unwrap_or(""))
+                } else if v["parked"] == true {
                     format!(
                         "{} waits now: {}. End your turn; the board carries this conversation on once it's ready.",
                         v["task"].as_str().unwrap_or(""),
@@ -3185,7 +3230,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -3206,6 +3251,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if here {
                     body["here"] = json!(true);
+                }
+                if next || now {
+                    body["line"] = json!(if next { "next" } else { "now" });
                 }
                 if let Some(w) = wave {
                     body["wave"] = json!(w);
@@ -4307,6 +4355,18 @@ mod tests {
         assert!(!has_pr(&json!({"vars": {}})));
         assert!(has_pr(&json!({"vars": {"pr": "12", "pr_url": ""}})));
         assert!(has_pr(&json!({"vars": {"pr": "", "pr_url": "https://example.com/pr/1"}})));
+    }
+
+    #[test]
+    fn asks_split_into_this_terminals_line() {
+        let ok = |a: &[&str]| Cli::try_parse_from(a).is_ok();
+        assert!(ok(&["tb", "task", "new", "Footer", "--here", "--next"]));
+        assert!(ok(&["tb", "task", "new", "Footer", "--here", "--now"]));
+        assert!(!ok(&["tb", "task", "new", "Footer", "--next"]), "--next needs --here");
+        assert!(!ok(&["tb", "task", "new", "Footer", "--here", "--next", "--now"]));
+        assert!(ok(&["tb", "switch", "T3"]));
+        assert!(ok(&["tb", "line"]));
+        assert!(ok(&["tb", "line", "drop", "T3"]));
     }
 
     #[test]
