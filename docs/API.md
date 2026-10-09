@@ -503,7 +503,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 ### Backlog
 | Path | Body | Notes |
 |---|---|---|
-| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?}` | Add an issue (source `you`; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
+| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?, source?: "answer"\|"review_log"}` | Add an issue (source `you` unless it says `answer` or `review_log`, the external PR feed, which the app shows as "From the Review log"; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
 | `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task (`tb backlog task`, `--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
 | `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira; `tb backlog ticket`). |
 | `POST /backlog/:id/drop` | `{reason?}` | Won't do (`tb backlog drop --reason`). |

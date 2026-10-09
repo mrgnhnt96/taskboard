@@ -362,6 +362,12 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// The logo (`#/`): the board, with no task or issue open.
+    pub fn go_home(&mut self, cx: &mut Context<Self>) {
+        self.go(Page::Board, cx);
+        self.close_panel(cx);
+    }
+
     pub fn set_modal(&mut self, modal: Option<ui::modals::Modal>, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = modal;
         window.focus(&self.focus, cx);
@@ -1023,7 +1029,14 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
     let alerts = arr(m.state(), "alerts").to_vec();
     let rows = banner_view(m.down.as_deref(), &alerts);
     for r in rows.iter().filter(|r| r.kind == "down") {
-        out.push(bar(t.down_soft, t.down, t.down_line).child(kit::dot(t.down, 8.)).child(div().flex_1().min_w_0().child(r.text.clone())).into_any_element());
+        let text = r.text.clone();
+        out.push(
+            bar(t.down_soft, t.down, t.down_line)
+                .child(kit::dot(t.down, 8.))
+                .child(div().flex_1().min_w_0().child(r.text.clone()))
+                .child(banner_btn(t, "down-copy", "Copy", false).on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx))))
+                .into_any_element(),
+        );
     }
     match crate::install::status() {
         crate::install::LoginItem::RequiresApproval => out.push(
@@ -1088,9 +1101,19 @@ pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
                 open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
             }))
         }))
+        .child({
+            let text = r.text.clone();
+            banner_btn(t, SharedString::from(format!("alert-copy-{id}")), "Copy", false).on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx)))
+        })
         .when(r.buttons.iter().any(|(act, _)| *act == "alert-dismiss"), |d| {
             d.child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
         })
+}
+
+/// The banner's Copy: its text on the clipboard, and a toast.
+pub fn copy_text(m: &mut MainWindow, text: &str, cx: &mut Context<MainWindow>) {
+    cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+    m.toast("Copied".to_string(), false, cx);
 }
 
 /// `alert-open`: close the alerts dialog, then the task (or else the goal).
@@ -1350,6 +1373,26 @@ mod tests {
         assert_eq!(posts[0], ("alerts/a1/dismiss".to_string(), json!({})));
         assert!(posts.iter().any(|(p, b)| p == "alerts/x1/dismiss" && *b == json!({})));
         assert!(posts.iter().any(|(p, b)| p == "alerts/x2/dismiss" && *b == json!({})));
+    }
+
+    #[gpui_kit::test]
+    fn the_logo_goes_to_the_board_home(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.go(Page::Backlog, cx);
+            m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
+            m.go_home(cx);
+            assert!(m.page == Page::Board);
+            assert!(m.panel.is_none(), "nothing stays open");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_banner_copies_its_text(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| super::copy_text(m, "T4 didn't start: no folder", cx)).unwrap();
+        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("T4 didn't start: no folder"));
     }
 
     #[gpui_kit::test]

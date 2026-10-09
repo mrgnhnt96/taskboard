@@ -1801,8 +1801,16 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
             _ => "the Backlog page",
         };
         let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
-        let source = if body_str(body, "source") == "answer" { "answer" } else { "you" };
-        let how = if source == "answer" { "It was raised in answer to a question.".to_string() } else { format!("Added from {page}.") };
+        let source = match body_str(body, "source").as_str() {
+            "answer" => "answer",
+            "review_log" => "review_log",
+            _ => "you",
+        };
+        let how = match source {
+            "answer" => "It was raised in answer to a question.".to_string(),
+            "review_log" => "It came in from the Review log.".to_string(),
+            _ => format!("Added from {page}."),
+        };
         let detail = body_str(body, "detail");
         let now = now_iso();
         let id = app.db.insert(

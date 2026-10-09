@@ -1281,7 +1281,7 @@ pub fn meta_rows(t: &Value, ui: &Ui) -> Vec<(String, String)> {
 /// `originRow(t)`: where the task came from ("From Backlog B3: Flaky test · You"), linked when it has a URL.
 fn origin_row(t: &Value) -> Option<Node> {
     let o = obj(t, "origin")?;
-    let from = opt_s(o, "from")?;
+    let from = opt_s(o, "from").or_else(|| crate::fmt::from_review_log(opt_s(o, "source").unwrap_or("")).then_some("the Review log"))?;
     let by = opt_s(o, "by").map(|b| format!(" · {b}")).unwrap_or_default();
     let value = match opt_s(o, "url") {
         Some(url) => el(K::Line, vec![Node::Link { s: from.to_string(), go: Go::Url(url.to_string()), tip: None, look: LinkLook::Plain }, txt(by, St::Plain)]),
