@@ -475,12 +475,18 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
+### Projects
+| Path | Body | Notes |
+|---|---|---|
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow: "auto"\|"on"\|"off"}` | Whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). **Response read:** the project as in `GET /projects`. |
+
 ### Goals
 | Path | Body | Notes |
 |---|---|---|
 | `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | `tb goal new`. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the caller shows it. |
-| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool}` | `tb goal set` (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
-| `POST /goals/:id/run` | `{}` or `{now: true}` | Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
+| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool}` | `tb goal set` (`epic_key` only with Jira; `--deprioritize`/`--prioritize` set `deprioritized`), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
+| `POST /goals/:id/run` | `{}` or `{now: true}` | `tb goal set --run`. Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
 | `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
 
@@ -488,9 +494,10 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | Path | Body | Notes |
 |---|---|---|
 | `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?}` | Add an issue (source `you`; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
-| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task: `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
-| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira). |
-| `POST /backlog/:id/drop` | `{}` | Won't do. |
+| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task (`tb backlog task`, `--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
+| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira; `tb backlog ticket`). |
+| `POST /backlog/:id/drop` | `{reason?}` | Won't do (`tb backlog drop --reason`). |
+| `POST /backlog/:id/reopen` | `{}` | Open it again (`tb backlog reopen`). |
 | `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none (`tb backlog move`; `goal_id` also takes a ref like `"G2"`). |
 | `POST /backlog/:id/note` | `{text}` | Add a note to its history (no app button). |
 | `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
@@ -506,7 +513,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 ### Work hours, alerts
 | Path | Body | Notes |
 |---|---|---|
-| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off"}` | Sent on every change in the hours menu. `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
+| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
 | `POST /alerts/:id/dismiss` | `{}` | |
 
 ### History
