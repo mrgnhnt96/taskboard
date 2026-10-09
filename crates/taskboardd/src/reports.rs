@@ -156,11 +156,13 @@ impl<'a> Report<'a> {
     }
 
     /// Saves how many background commands and agents the turn that just ended left running, so the
-    /// terminal shows it's waiting on them rather than idle.
+    /// terminal shows it's waiting on them rather than idle. It's newer than what Midna last listed,
+    /// so it stands until Midna's next sync says.
     fn note_background(&self, running: transcript::Background) -> Result<()> {
         if let Some(sid) = self.sid() {
             self.app.db.x(
-                "UPDATE sessions SET background = ?, background_agents = ?, background_at = ? WHERE id = ?",
+                "UPDATE sessions SET background = ?, background_agents = ?, background_at = ?, \
+                 live_background = NULL, live_background_agents = NULL WHERE id = ?",
                 p![running.total() as i64, running.agents as i64, now_iso(), sid],
             )?;
         }
@@ -321,6 +323,8 @@ fn back_to_work(r: &Report, t: &Row, prompt: Option<&str>) -> Result<()> {
 fn on_prompt(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
+    // A turn starts (a task-notification waking it is one): its own end recounts what's running.
+    r.note_background(transcript::Background::default())?;
     let prompt = r.body.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let m = MARKER_RE.captures(&prompt).and_then(|c| c[1].parse::<i64>().ok());
     if let Some(sid) = r.sid() {
@@ -712,10 +716,13 @@ fn on_attention(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
     let kind = r.b("notification_type");
-    if kind == "idle_prompt" && r.background.total() > 0 {
+    if kind == "idle_prompt" {
+        // Every idle prompt recounts, so work that finished since the last Stop stops holding it.
         r.note_background(r.background)?;
-        r.waiting_on_background = true;
-        return Ok(ok(r.task()?.as_ref(), None));
+        if r.background.total() > 0 {
+            r.waiting_on_background = true;
+            return Ok(ok(r.task()?.as_ref(), None));
+        }
     }
     r.set_session_status("needs")?;
     let Some(t) = r.task()? else {

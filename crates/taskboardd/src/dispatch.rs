@@ -50,7 +50,7 @@ fn root_for(app: &App, cwd: &str) -> String {
 }
 
 fn project_busy(app: &App, root: &str) -> Result<bool> {
-    let rows = app.db.q("SELECT project_path, status, background, background_at FROM sessions WHERE status IN ('working','needs','idle')", p![])?;
+    let rows = app.db.q("SELECT project_path, status, background, background_at, live_background FROM sessions WHERE status IN ('working','needs','idle')", p![])?;
     Ok(rows.iter().filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r)).any(|r| under(&real(&r.st("project_path")), root)))
 }
 

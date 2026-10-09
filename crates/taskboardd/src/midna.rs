@@ -1,7 +1,7 @@
 //! Midna, the terminal app: the board calls its CLI (`midna call <method> '<json>'`).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
@@ -364,6 +364,22 @@ fn state_of(s: &str) -> &'static str {
     }
 }
 
+/// Background work states Midna lists that are over.
+const BACKGROUND_DONE: &[&str] = &["completed", "failed", "killed", "stopped", "cancelled"];
+
+/// How much background work Midna lists running in a terminal's `agent_info`, and how much of it is
+/// agents: None when Midna doesn't say (no `background` list and no `background_at`). Midna leaves
+/// an empty list out, so `background_at` alone means nothing's running.
+pub fn live_background(info: &Row) -> Option<(i64, i64)> {
+    let list = info.get("background").and_then(|v| v.as_array());
+    if list.is_none() && info.get("background_at").is_none_or(|v| v.is_null()) {
+        return None;
+    }
+    let running: Vec<&Value> = list.into_iter().flatten().filter(|t| !BACKGROUND_DONE.contains(&t["status"].as_str().unwrap_or(""))).collect();
+    let agents = running.iter().filter(|t| t["kind"] == "subagent").count();
+    Some((running.len() as i64, agents as i64))
+}
+
 /// Applies Midna's terminal and project lists to the board.
 pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<String>, Vec<String>)> {
     let mut seen_ids: Vec<String> = vec![];
@@ -424,6 +440,9 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
             if let Some(c) = info.s("conversation_id").filter(|c| !c.is_empty()) {
                 f.push(("claude_session_id", json!(c)));
             }
+            let (live, live_agents) = live_background(&info).map_or((Value::Null, Value::Null), |(n, a)| (json!(n), json!(a)));
+            f.push(("live_background", live));
+            f.push(("live_background_agents", live_agents));
             if let Some(cur) = &cur {
                 board::note_rename(app, Some(cur), Some(&name))?;
                 app.db.update("sessions", &json!(sid), f)?;
@@ -499,18 +518,35 @@ pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
     })
 }
 
-fn read_closed(app: &App) -> MResult<()> {
+/// The last `events.list` failure logged, so one that keeps failing is logged once.
+static CLOSED_FAILED: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// Reads who closed which terminals. A failed read is logged and the sync carries on: a terminal
+/// that then goes missing just ends for an unknown reason.
+fn read_closed(app: &App) {
     let since = app.db.get_setting("midna_event_seq").ok().flatten().and_then(|s| s.parse::<u64>().ok());
-    let events = call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed"]}}), 10.0)?;
-    if let Err(e) = closed_events(app, events.as_array().map(|a| a.as_slice()).unwrap_or(&[])) {
-        app.info(format!("midna: couldn't apply closed terminals: {e}"));
+    match call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed"]}}), 10.0) {
+        Ok(events) => {
+            *CLOSED_FAILED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            if let Err(e) = closed_events(app, events.as_array().map(|a| a.as_slice()).unwrap_or(&[])) {
+                app.info(format!("midna: couldn't apply closed terminals: {e}"));
+            }
+        }
+        // Midna isn't running: the session list finds that out too.
+        Err(MidnaError::Down(_)) => {}
+        Err(MidnaError::Refused(e)) => {
+            let mut last = CLOSED_FAILED.lock().unwrap_or_else(|e| e.into_inner());
+            if last.as_deref() != Some(e.as_str()) {
+                app.info(format!("midna: couldn't read closed terminals: {e}"));
+                *last = Some(e);
+            }
+        }
     }
-    Ok(())
 }
 
 pub fn sync_once(app: &App) -> MResult<()> {
     // Before the list, so a terminal Morgan closed is known to be theirs when it goes missing.
-    read_closed(app)?;
+    read_closed(app);
     let sessions = call_timeout(app, "session.list", json!({}), 10.0)?;
     let projects = call_timeout(app, "project.list", json!({}), 10.0)?;
     let empty = vec![];
