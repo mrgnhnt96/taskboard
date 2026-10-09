@@ -170,10 +170,7 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
         .take(STRIP_MAX)
         .map(|x| {
             let (status, label) = sess_status(s(x, "status"));
-            let state_label = match i(x, "background") {
-                n if status == "waiting" && n > 0 => format!("Waiting on {n}"),
-                _ => label.to_string(),
-            };
+            let state_label = if status == "waiting" { fmt::background_label(&x["background"]) } else { label.to_string() };
             let id = s(x, "id").to_string();
             let sub = opt_s(x, "task_title").map(str::to_string);
             let task_ref = opt_s(x, "task_ref").map(str::to_string);

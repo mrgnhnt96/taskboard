@@ -380,6 +380,16 @@ pub fn waiting_on_background(s: &Row) -> bool {
     background(s) > 0
 }
 
+/// What a waiting terminal is waiting on, for the page: `{"agents": 1, "commands": 1}`, or null.
+pub fn background_view(s: &Row) -> Value {
+    let total = background(s);
+    if total == 0 {
+        return Value::Null;
+    }
+    let agents = s.i("background_agents").unwrap_or(0).clamp(0, total);
+    json!({"agents": agents, "commands": total - agents})
+}
+
 /// A session's status for the page. A terminal whose last turn ended on an API error and that hasn't
 /// started another shows it: "offline" when the network went, else "needs". One whose turn ended
 /// with background work still running shows "waiting".
@@ -462,7 +472,7 @@ pub fn terminal_status(s: Option<&Row>) -> &str {
 
 pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
     let rows = app.db.q(
-        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_at FROM task_terminals tt \
+        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_agents, s.background_at FROM task_terminals tt \
          LEFT JOIN sessions s ON s.id = tt.session_id WHERE tt.task_id = ? ORDER BY tt.rowid DESC",
         p![t.id()],
     )?;
@@ -471,14 +481,14 @@ pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
         .map(|r| {
             let sid = r.st("session_id");
             json!({"id": sid, "name": r.s("name").map(|s| s.to_string()).unwrap_or_else(|| session_name(app, Some(&sid), t.s("session_name"))),
-                   "status": terminal_status(Some(r)), "background": background(r), "why": r.v("why"), "at": r.v("at")})
+                   "status": terminal_status(Some(r)), "background": background_view(r), "why": r.v("why"), "at": r.v("at")})
         })
         .collect();
     if let Some(sid) = t.s("session_id").filter(|s| !s.is_empty()) {
         if !out.iter().any(|x| x["id"] == sid) {
             let s = get_session(app, Some(sid))?;
             out.push(json!({"id": sid, "name": session_name(app, Some(sid), t.s("session_name")),
-                            "status": terminal_status(s.as_ref()), "background": s.as_ref().map_or(0, background),
+                            "status": terminal_status(s.as_ref()), "background": s.as_ref().map_or(Value::Null, background_view),
                             "why": "Worked on the task", "at": t.v("started_at")}));
         }
     }

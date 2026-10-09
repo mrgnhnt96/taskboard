@@ -163,6 +163,18 @@ pub fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// A waiting terminal's pill: what its background work is. "2 agents running", "1 command
+/// running", "1 agent, 1 command"; "Running in background" when the board didn't say.
+pub fn background_label(background: &Value) -> String {
+    let (agents, commands) = (i(background, "agents"), i(background, "commands"));
+    match (agents, commands) {
+        (0, 0) => "Running in background".into(),
+        (a, 0) => format!("{} running", plural(a, "agent", "agents")),
+        (0, c) => format!("{} running", plural(c, "command", "commands")),
+        (a, c) => format!("{}, {}", plural(a, "agent", "agents"), plural(c, "command", "commands")),
+    }
+}
+
 /// An issue or task that came in from the external PR feed (the Review log): source `review_log` (or `review`).
 pub fn from_review_log(source: &str) -> bool {
     matches!(source, "review_log" | "review")
@@ -239,6 +251,14 @@ pub fn device_now() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn background_labels_name_what_is_running() {
+        assert_eq!(background_label(&json!({"agents": 2, "commands": 0})), "2 agents running");
+        assert_eq!(background_label(&json!({"agents": 0, "commands": 1})), "1 command running");
+        assert_eq!(background_label(&json!({"agents": 1, "commands": 1})), "1 agent, 1 command");
+        assert_eq!(background_label(&json!(null)), "Running in background");
+    }
 
     #[test]
     fn clocks_and_spans() {

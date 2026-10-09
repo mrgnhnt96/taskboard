@@ -41,9 +41,22 @@ pub fn transcript_file(root: &Path, project_path: &str, claude_id: &str) -> Path
     p
 }
 
-/// How many background commands and background agents in this transcript started (under two hours
+/// Background work a transcript started that hasn't reported back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Background {
+    pub commands: usize,
+    pub agents: usize,
+}
+
+impl Background {
+    pub fn total(&self) -> usize {
+        self.commands + self.agents
+    }
+}
+
+/// The background commands and background agents in this transcript that started (under two hours
 /// ago) and haven't reported back.
-pub fn background_running(root: &Path, path: Option<&str>) -> Option<usize> {
+pub fn background_running(root: &Path, path: Option<&str>) -> Option<Background> {
     let p = std::fs::canonicalize(expand_home(path?)).ok()?;
     let root = std::fs::canonicalize(root).ok()?;
     if p.extension().map(|e| e != "jsonl").unwrap_or(true) || !p.starts_with(&root) {
@@ -51,35 +64,41 @@ pub fn background_running(root: &Path, path: Option<&str>) -> Option<usize> {
     }
     let data = std::fs::read(&p).ok()?;
     let ended: Vec<&[u8]> = BG_ENDED.captures_iter(&data).filter_map(|c| c.get(1).map(|m| m.as_bytes())).collect();
-    let mut running = 0;
+    let mut running = Background::default();
     for line in data.split(|b| *b == b'\n') {
         if !BG_STARTED.is_match(line) && !line.windows(AGENT_LAUNCHED.len()).any(|w| w == AGENT_LAUNCHED) {
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
-        let Some(id) = started_in_background(line, &v) else { continue };
+        let Some((id, agent)) = started_in_background(line, &v) else { continue };
         if ended.contains(&id.as_bytes()) {
             continue;
         }
         let Some(at) = v["timestamp"].as_str().and_then(parse_iso) else { continue };
-        if crate::clock::awake_since(at) < CLAUDE_STOPS_BACKGROUND_AFTER {
-            running += 1;
+        if crate::clock::awake_since(at) >= CLAUDE_STOPS_BACKGROUND_AFTER {
+            continue;
+        }
+        if agent {
+            running.agents += 1;
+        } else {
+            running.commands += 1;
         }
     }
     Some(running)
 }
 
 /// The id a background command (`backgroundTaskId`) or background agent (an `async_launched` agent's
-/// `agentId`) started on this line goes by; its `<task-notification>` carries the same id.
-fn started_in_background(line: &[u8], v: &Value) -> Option<String> {
+/// `agentId`) started on this line goes by, and whether it's an agent; its `<task-notification>`
+/// carries the same id.
+fn started_in_background(line: &[u8], v: &Value) -> Option<(String, bool)> {
     if let Some(c) = BG_STARTED.captures(line) {
-        return Some(String::from_utf8_lossy(c.get(1)?.as_bytes()).into_owned());
+        return Some((String::from_utf8_lossy(c.get(1)?.as_bytes()).into_owned(), false));
     }
     let r = &v["toolUseResult"];
     if r["status"] != "async_launched" {
         return None;
     }
-    r["agentId"].as_str().filter(|id| !id.is_empty()).map(|id| id.to_string())
+    r["agentId"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), true))
 }
 
 fn session_path(app: &App, s: &Row) -> Option<PathBuf> {

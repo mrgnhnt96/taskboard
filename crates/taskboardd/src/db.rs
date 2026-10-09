@@ -195,6 +195,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("session_events", "full", "TEXT"),
     // Background commands and agents its last turn left running, and when the board counted them.
     ("sessions", "background", "INT DEFAULT 0"),
+    ("sessions", "background_agents", "INT DEFAULT 0"),
     ("sessions", "background_at", "TEXT"),
 ];
 

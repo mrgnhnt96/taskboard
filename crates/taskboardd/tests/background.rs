@@ -81,7 +81,7 @@ fn counts_background_commands_and_agents_until_each_reports_back() {
         finished("a2", &now),
         shell_started("b-old", &long_ago),
     ]);
-    assert_eq!(transcript::background_running(&b.app.cfg.claude_projects, Some(&path)), Some(2), "b1 and a1; b-old is past Claude's limit");
+    assert_eq!(transcript::background_running(&b.app.cfg.claude_projects, Some(&path)), Some(transcript::Background { commands: 1, agents: 1 }), "b1 and a1; b-old is past Claude's limit");
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn a_turn_that_leaves_background_work_running_waits_on_it() {
     b.report("hook.stop", json!({"last_message": "Both are running. I'll wait for them.", "transcript_path": path}));
     let s = b.session();
     assert_eq!(s["status"], "waiting");
-    assert_eq!(s["background"], 2);
+    assert_eq!(s["background"], json!({"agents": 1, "commands": 1}));
     assert_eq!(s["close"], "force", "closing it would stop its background work");
     assert_eq!(s["can_take"], false);
 
@@ -107,7 +107,7 @@ fn a_turn_that_leaves_background_work_running_waits_on_it() {
     b.report("hook.stop", json!({"last_message": "Both finished.", "transcript_path": path}));
     let s = b.session();
     assert_eq!(s["status"], "idle");
-    assert_eq!(s["background"], 0);
+    assert_eq!(s["background"], Value::Null);
     assert_eq!(s["close"], "close");
 }
 

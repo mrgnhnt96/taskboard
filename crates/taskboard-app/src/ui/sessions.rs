@@ -129,10 +129,11 @@ fn sess_label(st: &str) -> &'static str {
     }
 }
 
-/// The status pill's text: "Waiting on 2" while its background work runs, else `sess_label`.
+/// The status pill's text: what's running ("2 agents running") while its background work runs,
+/// else `sess_label`.
 fn state_label(x: &Value, st: &str) -> String {
-    match i(x, "background") {
-        n if st == "waiting" && n > 0 => format!("Waiting on {n}"),
+    match st {
+        "waiting" => fmt::background_label(&x["background"]),
         _ => sess_label(st).to_string(),
     }
 }
@@ -2526,9 +2527,9 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn a_terminal_waiting_on_background_work_says_so() {
-        let x = json!({"id": "s9", "name": "T35 Release", "status": "waiting", "background": 2, "close": "force"});
+        let x = json!({"id": "s9", "name": "T35 Release", "status": "waiting", "background": {"agents": 2, "commands": 0}, "close": "force"});
         list_case(&json!({"f": "all"}), |c| {
-            assert_eq!(row_vm(&x, c).state, "Waiting on 2");
+            assert_eq!(row_vm(&x, c).state, "2 agents running");
             json!(null)
         });
         assert!(for_filter(&x, "working"));

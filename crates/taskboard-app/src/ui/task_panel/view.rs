@@ -5,7 +5,7 @@
 //! (`parity/golden/task.json`), so the two can't drift apart.
 //!
 //! Every function here is a port of the web function named in its doc comment.
-use crate::fmt::{self, arr, b, i, obj, opt_s, s};
+use crate::fmt::{self, arr, b, obj, opt_s, s};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -888,13 +888,12 @@ fn goal_row(c: &Ctx, t: &Value) -> Option<Node> {
     Some(lrow("Goal", vec![txt("Not in a goal.", St::Small)]))
 }
 
-/// `SESS`, with "Waiting on 2" while the terminal's background work runs.
-fn sess_label(st: &str, background: i64) -> String {
+/// `SESS`, with what's running ("2 agents running") while the terminal's background work runs.
+fn sess_label(st: &str, background: &Value) -> String {
     match st {
         "idle" => "Idle".into(),
         "working" => "Working".into(),
-        "waiting" if background > 0 => format!("Waiting on {background}"),
-        "waiting" => "Waiting".into(),
+        "waiting" => fmt::background_label(background),
         "needs" => "Needs you".into(),
         _ => "Gone".into(),
     }
@@ -923,7 +922,7 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
     let id = opt_s(x, "id").map(str::to_string);
     let name = opt_s(x, "name").map(str::to_string).unwrap_or_else(|| or_empty(&x["id"]));
     let state = if live {
-        sess_label(st, i(x, "background"))
+        sess_label(st, &x["background"])
     } else if b(cur, "lost") && js_eq(field(x, "id"), cur.get("session").and_then(|ss| field(ss, "id"))) {
         "Gone".into()
     } else {
