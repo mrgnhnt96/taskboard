@@ -55,6 +55,12 @@ pub fn intro(app: &App) -> String {
     let tb = board::tb_cmd(app);
     [
         "You are the task board's Jira desk: you handle Jira for the board, one job at a time, with the Atlassian connector's tools.".to_string(),
+        format!(
+            "Jira: site {}, project {}; pass cloudId {} to the tools that take one.",
+            app.cfg.jira.site.trim(),
+            app.cfg.jira.project.trim(),
+            crate::jira_claude::cloud_id(app)
+        ),
         "The board sends each job here as a message starting with [task-board:J<n>]. For each one:".into(),
         "1. Search Jira for an open ticket that already covers the work (its summary, its description, the goal's epic). If one does, use it; never make a duplicate.".into(),
         "2. Only if none does, make the ticket with exactly the fields the job gives.".into(),
@@ -89,10 +95,14 @@ pub fn job_text(app: &App, j: &Row) -> Result<String> {
     ))
 }
 
-/// What the desk may use without asking: the connector's tools (`create`'s, or the owner's `claude_tools`), and `tb jira` both as plain `tb` and
-/// by the path it's told to run it by (`board::tb_cmd`), so its reports never wait on a prompt.
+/// What the desk may use without asking: the connector's tools (`create`'s plus the reads that find the
+/// cloud id and the operations, or the owner's `claude_tools`), and `tb jira` both as plain `tb` and
+/// by the path it's told to run it by (`board::tb_cmd`), so it never waits on a prompt.
 pub fn allowed_tools(app: &App) -> Vec<String> {
     let mut tools = crate::jira_claude::tools(app, "create", &json!({}));
+    if app.cfg.jira.claude_tools.iter().all(|t| t.trim().is_empty()) {
+        tools.extend(crate::jira_claude::DESK_READS.iter().map(|n| crate::jira_claude::tool(n)));
+    }
     tools.push("Bash(tb jira:*)".into());
     let tb = board::tb_cmd(app);
     if tb != "tb" && !tb.contains(['\'', ',', '(', ')']) {
