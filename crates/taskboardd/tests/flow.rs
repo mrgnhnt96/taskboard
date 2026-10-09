@@ -190,6 +190,51 @@ fn a_closed_terminal_requeues_the_task_then_waits_for_the_owner() {
     assert!(t.b("lost"));
 }
 
+fn closed(b: &Board, seq: u64, sid: &str, by: &str) {
+    let e = json!({"seq": seq, "at": taskboardd::util::now_iso(), "kind": "session.closed", "actor": {"kind": by}, "session_id": sid, "data": {"force": true}});
+    midna::closed_events(&b.app, &[e]).unwrap();
+}
+
+#[test]
+fn a_terminal_you_closed_waits_for_you_instead_of_restarting() {
+    let b = new_board();
+    let id = new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    closed(&b, 1, "s1", "human");
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+    let t = b.task(id);
+    assert_eq!(t.s("status"), Some("needs"), "Midna said you closed it, so it doesn't start again");
+    assert_eq!(t.s("needs_reason"), Some("lost"));
+    assert!(t.b("lost"));
+
+    let id = new_task(&b, "Other job", json!({}));
+    b.add_session("s2", "working");
+    b.report("tb.take", "s2", json!({"task": "T2"}));
+    b.report("hook.session_end", "s2", json!({"reason": "other"}));
+    assert_eq!(b.task(id).s("status"), Some("queued"));
+    assert!(runner::start_queued(&b.app).unwrap().is_empty(), "it waits a moment in case the close was yours");
+    closed(&b, 2, "s2", "human");
+    let t = b.task(id);
+    assert_eq!(t.s("status"), Some("needs"), "the close that came after SessionEnd still stops the restart");
+    assert!(t.b("lost"));
+    assert_eq!(b.app.db.get_setting("midna_event_seq").unwrap().as_deref(), Some("2"));
+}
+
+#[test]
+fn a_terminal_an_agent_closed_still_restarts() {
+    let b = new_board();
+    let id = new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    closed(&b, 1, "s1", "agent");
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+    closed(&b, 2, "s1", "agent");
+    let t = b.task(id);
+    assert_eq!(t.s("status"), Some("queued"));
+    assert!(!t.b("lost"));
+}
+
 #[test]
 fn midna_sync_tracks_terminals_and_marks_missing_ones_gone() {
     let b = new_board();

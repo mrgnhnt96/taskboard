@@ -190,6 +190,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Why a PR-flow task finished without a PR (`tb done --no-pr`), or without evidence (`--no-evidence`).
     ("tasks", "no_pr", "TEXT"),
     ("tasks", "no_evidence", "TEXT"),
+    // Who closed the terminal, from Midna's `session.closed` event (`human`, `agent`, ...).
+    ("sessions", "closed_by", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
