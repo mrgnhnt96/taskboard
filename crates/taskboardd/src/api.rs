@@ -2015,7 +2015,7 @@ fn drop_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
 fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     let b = board::get_issue(app, id)?;
     if b.s("state") == Some("open") {
-        return err(409, "It's already open.");
+        return err(409, format!("{} is already open.", rf("issue", id)));
     }
     app.db.update("issues", &json!(id), fields!["state" => "open", "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, &issue_actor(body), "note", "Opened again", None)?;
@@ -2111,6 +2111,9 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
             let b = board::get_issue(app, *id)?;
             if ["task", "ticket", "drop", "defer", "goal"].contains(&action.as_str()) && b.s("state") != Some("open") {
                 return err(409, format!("{} isn't open any more, so nothing changed.", rf("issue", *id)));
+            }
+            if action == "reopen" && b.s("state") == Some("open") {
+                return err(409, format!("{} is already open, so nothing changed.", rf("issue", *id)));
             }
             match action.as_str() {
                 "task" => tasks.push(promote(app, *id, body)?["task"].clone()),

@@ -304,12 +304,38 @@ const STOPWORDS: &[&str] = &[
 ];
 
 fn words(text: &str) -> std::collections::BTreeSet<String> {
-    text.to_lowercase()
+    words_in_order(text).into_iter().collect()
+}
+
+/// The text's meaningful words in the order it says them, each once.
+fn words_in_order(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for w in text
+        .to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '\'')
         .map(|w| w.trim_matches('\''))
         .filter(|w| w.chars().count() >= 3 && !STOPWORDS.contains(w))
         .map(|w| w.replace('\'', ""))
-        .collect()
+    {
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    out
+}
+
+/// The JQL that finds open tickets covering `summary`: for an epic any of its first 8 words (in the
+/// title's order, so the ones it leads with), else all of them.
+pub fn summary_jql(summary: &str, epic: bool) -> Option<String> {
+    let text = words_in_order(summary);
+    if text.is_empty() {
+        return None;
+    }
+    Some(if epic {
+        format!("({})", text.iter().take(8).map(|w| format!("summary ~ \"{w}\"")).collect::<Vec<_>>().join(" OR "))
+    } else {
+        format!("summary ~ \"{}\"", text.join(" "))
+    })
 }
 
 /// The product whose name and `what` share the most words with the work, when one clearly does.
@@ -462,17 +488,9 @@ pub fn covering_epic(summary: &str, epics: &[(String, String)]) -> Option<String
 /// same summary, or for an epic, the open epic whose summary best shares its words.
 fn find_open(app: &App, cr: &(String, String), f: &Value) -> std::result::Result<Option<String>, JiraError> {
     let summary = f["summary"].as_str().unwrap_or("");
-    let text: Vec<String> = words(summary).into_iter().collect();
-    if text.is_empty() {
-        return Ok(None);
-    }
     let issue_type = f["issuetype"]["name"].as_str().unwrap_or("");
     let epic = issue_type.eq_ignore_ascii_case(&app.cfg.jira.epic_type);
-    let matching = if epic {
-        format!("({})", text.iter().take(8).map(|w| format!("summary ~ \"{w}\"")).collect::<Vec<_>>().join(" OR "))
-    } else {
-        format!("summary ~ \"{}\"", text.join(" "))
-    };
+    let Some(matching) = summary_jql(summary, epic) else { return Ok(None) };
     let jql = format!(
         "project = \"{}\" AND issuetype = \"{}\" AND statusCategory != Done AND {matching} ORDER BY created DESC",
         app.cfg.jira.project.trim().replace('"', ""),
@@ -838,7 +856,8 @@ fn ticket_failed_alert(app: &App, target: &Row, why: &str) -> Result<()> {
         return crate::dispatch::add_alert(app, &text, Some(t.id()), t.i("goal_id"), None, None);
     }
     if let Some(b) = board::find_issue(app, target.i("issue"))? {
-        let text = format!("Couldn't make the Jira ticket for the issue “{}”: {why}.", b.st("title"));
+        let n = rf("issue", b.id());
+        let text = format!("Couldn't make the Jira ticket for {n} “{}”: {why}. Try again with tb backlog ticket {n}.", b.st("title"));
         return crate::dispatch::add_alert(app, &text, None, b.i("goal_id"), None, None);
     }
     if let Some(g) = board::find_goal(app, target.i("goal"))? {

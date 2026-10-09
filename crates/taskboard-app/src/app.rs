@@ -1076,7 +1076,7 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
             out.push(
                 bar(t.down_soft, t.down, t.down_line)
                     .child(kit::dot(t.down, 8.))
-                    .child(alert_text(t, &r))
+                    .child(alert_text(&r, t.muted))
                     .child(banner_btn(t, "alerts-open", "Show all", true).on_click(cx.listener(|m, _, window, cx| {
                         m.set_modal(Some(ui::modals::Modal::Alerts), window, cx);
                     })))
@@ -1091,7 +1091,8 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
     out
 }
 
-fn alert_text(t: &Theme, r: &BannerRow) -> Div {
+/// The alert's text, then its age in `ago` (the muted color, or the row's own on a solid red one).
+fn alert_text(r: &BannerRow, ago: Hsla) -> Div {
     div()
         .flex_1()
         .min_w_0()
@@ -1100,7 +1101,7 @@ fn alert_text(t: &Theme, r: &BannerRow) -> Div {
         .items_baseline()
         .gap(px(4.))
         .child(r.text.clone())
-        .children(r.ago.clone().map(|a| div().ml(px(4.)).text_size(px(10.8)).text_color(t.muted).child(a)))
+        .children(r.ago.clone().map(|a| div().ml(px(4.)).text_size(px(10.8)).text_color(ago).child(a)))
 }
 
 /// One alert: its text and age, "Open T12" and Dismiss. Also used by the alerts dialog.
@@ -1112,7 +1113,7 @@ pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
     let urgent = r.kind == "urgent";
     let row = if urgent { bar(t.down, t.on_accent, t.down).font_weight(FontWeight::SEMIBOLD) } else { bar(t.down_soft, t.down, t.down_line) };
     row.child(kit::dot(if urgent { t.on_accent } else { t.down }, 8.))
-        .child(alert_text(t, &r))
+        .child(alert_text(&r, if urgent { t.on_accent } else { t.muted }))
         .children(r.buttons.iter().filter(|(act, _)| *act == "alert-open").map(|(_, label)| {
             let (task, goal) = (task.clone(), goal.clone());
             banner_btn(t, SharedString::from(format!("alert-open-{id}")), label.clone(), true).on_click(cx.listener(move |m, _, window, cx| {

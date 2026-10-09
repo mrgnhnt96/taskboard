@@ -315,6 +315,29 @@ fn the_desk_fails_a_job_with_its_reason() {
 }
 
 #[test]
+fn a_backlog_tickets_failure_names_the_issue_and_the_retry() {
+    let b = board_with(|c, _| c.jira.desk = true);
+    let i = b.post("/backlog", json!({"title": "Totals round wrong", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("/backlog/B{i}/ticket"), json!({}));
+    let jid = b.jobs("kind = 'jira'")[0].id();
+    b.post(&format!("/jira/jobs/J{jid}"), json!({"ok": false, "message": "PROJ needs a team"}));
+    let alerts = taskboardd::dispatch::alerts(&b.app);
+    let text = alerts.iter().filter_map(|a| a["text"].as_str()).find(|t| t.contains("Totals round wrong")).expect("an alert").to_string();
+    assert_eq!(text, format!("Couldn't make the Jira ticket for B{i} “Totals round wrong”: PROJ needs a team. Try again with tb backlog ticket B{i}."));
+    // The retry it names works: the issue is open again.
+    b.post(&format!("/backlog/B{i}/ticket"), json!({}));
+}
+
+#[test]
+fn an_epic_is_searched_by_the_words_its_title_leads_with() {
+    let jql = jira::summary_jql("Zebra checkout redesign for the mobile app with apple pay and wallet support plus coupons", true).unwrap();
+    assert!(jql.starts_with(r#"(summary ~ "zebra" OR summary ~ "checkout" OR summary ~ "redesign""#), "{jql}");
+    assert!(!jql.contains("coupons"), "only the first 8: {jql}");
+    assert_eq!(jira::summary_jql("Fix the login", false).as_deref(), Some(r#"summary ~ "fix login""#));
+    assert!(jira::summary_jql("the and", true).is_none());
+}
+
+#[test]
 fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     let tb = "/Applications/Taskboard.app/Contents/MacOS/tb";
     let b = board_with(|c, _| c.jira.desk = true);
@@ -440,6 +463,10 @@ fn wave_mates_are_the_ones_still_to_run_with_their_planned_files() {
     let ids: Vec<i64> = r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect();
     let (t1, t2, t3) = (ids[0], ids[1], ids[2]);
     assert_eq!(b.task(t1).st("detail"), "Build it");
+    // Before the goal runs every mate is planned, and they're still listed.
+    let h0 = handoff::build(&b.app, t2).unwrap();
+    assert!(h0.contains(&format!("- T{t1} “Sign-in form” (planned, owns src/form.rs, src/form.css)")), "{h0}");
+    assert!(!h0.contains("Nothing else runs in this wave."), "{h0}");
     for t in [t1, t2] {
         board::update_task(&b.app, t, fields!["status" => "queued"]).unwrap();
     }
