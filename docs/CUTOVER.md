@@ -43,11 +43,18 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
 - maps the device pool (`devices`, `device_loans`, a task's `device_need`, `goal_devices`) and the
   bits (`bits`, a task's or goal's `bits`, link tables) into the board's own tables, and marks the
   old Jira desk terminal (`sessions.jira_desk`) as the desk;
+- maps the reviewer roster (`reviewers`: one row per person and project, duplicates folded into one
+  with aliases, removed / pinned / automation / bot schedule kept, `source` = `import`), every
+  review ask (`review_asks`, with its state, answer and stand-in; an ask still open on a finished
+  task comes over closed) and the reviewers' bot runs;
+- maps the master breaks (`master_breaks`), keeping each `M<n>` number and its verdict (the old
+  yours / not yours / unsure); a break still open on a project `[master.projects]` doesn't watch
+  comes over closed, and is listed;
 - keeps every T, G and B number, and new ones carry on after the highest;
 - leaves out the old board's jobs (its pending work would run again), its alerts, and its other
   running state (`bridge_*`, `dispatch_seen:*`, `usage_guard_handled:*`, `review_round:*`, …);
-- keeps old tables this board has no table for yet (reviewers and review asks, master breaks, …)
-  whole in `settings` as `import.<table>`, and lists them;
+- keeps any other old table this board has no table for whole in `settings` as `import.<table>`,
+  and lists it;
 - counts the rows it actually wrote, and lists every old row it skipped (a clash, an unknown
   device, a device need the board can't take) with why;
 - refuses a board that already has tasks, goals or backlog issues (`--data <empty folder>` imports

@@ -44,9 +44,13 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, project TEXT, status TEXT, claude_session_id TEXT, status_at TEXT, jira_desk INT DEFAULT 0);
         CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE jobs(id INTEGER PRIMARY KEY, kind TEXT, state TEXT);
-        CREATE TABLE reviewers(id INTEGER PRIMARY KEY, name TEXT, github TEXT);
-        CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INT, reviewer_id INT, at TEXT);
-        CREATE TABLE master_breaks(id INTEGER PRIMARY KEY, project TEXT, at TEXT);
+        CREATE TABLE reviewers(id INTEGER PRIMARY KEY, project TEXT, name TEXT, github TEXT, email TEXT, aliases TEXT,
+          removed INT DEFAULT 0, removed_reason TEXT, pinned INT DEFAULT 0, auto TEXT, bot_hours REAL, bot_mark TEXT);
+        CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INT, reviewer_id TEXT, at TEXT, status TEXT, verdict TEXT,
+          replaced_by INT, reason TEXT, reviewed_at TEXT);
+        CREATE TABLE master_breaks(id INTEGER PRIMARY KEY, project TEXT, status TEXT, sha TEXT, fault TEXT, reason TEXT,
+          task_id INT, failed_checks TEXT, at TEXT, resolved_at TEXT);
+        CREATE TABLE photos(id INTEGER PRIMARY KEY, url TEXT);
         CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, kind TEXT, tags TEXT, focus_cmd TEXT, disabled INT DEFAULT 0);
         CREATE TABLE device_loans(id INTEGER PRIMARY KEY, device_id TEXT, task_id INT, lent_at TEXT, returned_at TEXT);
         CREATE TABLE goal_devices(goal_id INT, tag TEXT, count INT);
@@ -81,9 +85,22 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         INSERT INTO settings VALUES ('review_round:T7', '2');
         INSERT INTO settings VALUES ('nudge_sent:T7', '1');
         INSERT INTO jobs VALUES (1, 'agent', 'pending');
-        INSERT INTO reviewers VALUES (1, 'Ana', 'ana-gh');
-        INSERT INTO review_asks VALUES (1, 7, 1, '2026-09-03T09:00:00Z');
-        INSERT INTO master_breaks VALUES (1, 'web', '2026-09-03T09:00:00Z');
+        INSERT INTO reviewers VALUES (1, 'web', 'Ana', 'ana-gh', 'ana@acme.dev', NULL, 0, NULL, 1, 'high', NULL, NULL);
+        INSERT INTO reviewers VALUES (2, 'web', 'Ana B', NULL, 'ana@acme.dev', '["anab"]', 0, NULL, 0, NULL, NULL, NULL);
+        INSERT INTO reviewers VALUES (3, 'web', 'Bo', 'bo-gh', 'bo@acme.dev', NULL, 1, 'Left the team', 0, NULL, NULL, NULL);
+        INSERT INTO reviewers VALUES (4, 'web', 'Reviewbot', 'rb-gh', NULL, NULL, 0, NULL, 0, '0.5', 6, '[bot]');
+        INSERT INTO reviewers VALUES (5, NULL, 'Cy', 'cy-gh', NULL, NULL, 0, NULL, 0, NULL, NULL, NULL);
+        INSERT INTO reviewers VALUES (6, NULL, 'Nobody', NULL, NULL, NULL, 0, NULL, 0, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (1, 7, '1', '2026-09-03T09:00:00Z', 'pending', NULL, NULL, 'auto', NULL);
+        INSERT INTO review_asks VALUES (2, 7, '3', '2026-09-03T09:00:00Z', 'replaced', NULL, 3, 'auto', NULL);
+        INSERT INTO review_asks VALUES (3, 7, '4', '2026-09-03T11:00:00Z', 'reviewed', 'changes_requested', NULL, 'nudge', '2026-09-03T12:00:00Z');
+        INSERT INTO review_asks VALUES (4, 12, '2', '2026-09-03T09:00:00Z', 'pending', NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (5, 14, '5', '2026-09-03T09:00:00Z', 'asked', NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (6, 99, 'zed', '2026-09-03T09:00:00Z', 'asked', NULL, NULL, NULL, NULL);
+        INSERT INTO master_breaks VALUES (1, 'web', 'fixed', 'abc1', 'yours', 'My commit broke the build', 12, 'build, test', '2026-09-03T09:00:00Z', '2026-09-03T10:00:00Z');
+        INSERT INTO master_breaks VALUES (2, 'web', 'red', 'def2', 'not_yours', NULL, NULL, '["lint"]', '2026-09-04T09:00:00Z', NULL);
+        INSERT INTO master_breaks VALUES (4, 'api', 'red', 'fed4', 'unsure', 'Flaky?', NULL, NULL, '2026-09-04T09:00:00Z', NULL);
+        INSERT INTO photos VALUES (1, 'x.png');
         INSERT INTO devices VALUES ('pixel', 'Pixel 9', 'android', 'phone', 'open -a Pixel', 0);
         INSERT INTO devices VALUES ('emu', 'emu-1', 'android', NULL, NULL, 0);
         INSERT INTO devices VALUES ('iphone', 'iPhone 15', 'ios', '["phone","usb"]', NULL, 1);
@@ -113,7 +130,9 @@ fn an_old_board_comes_over_with_its_numbers() {
     let before = std::fs::read(&old_path).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
-    let app = App::for_tests(Config::for_tests(dir.path()));
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.master.projects.insert("api".into(), Default::default());
+    let app = App::for_tests(cfg);
     let rep = import::import(&app, &old_path).unwrap();
     assert_eq!(std::fs::read(&old_path).unwrap(), before, "the old file is only read");
 
@@ -196,15 +215,55 @@ fn an_old_board_comes_over_with_its_numbers() {
     }
     assert_eq!(app.db.count("SELECT COUNT(*) FROM jobs WHERE purpose IS NOT 'jira_desk'", vec![]).unwrap(), 0);
 
-    // Tables the board has no place for yet are kept whole (reviewers and breaks: their mapping is to come).
-    let kept: Value = serde_json::from_str(&app.db.get_setting("import.reviewers").unwrap().unwrap()).unwrap();
-    assert_eq!(kept["rows"][0]["github"], "ana-gh");
-    assert!(rep.kept.iter().any(|(t, n)| t == "review_asks" && *n == 1));
-    assert!(rep.kept.iter().any(|(t, n)| t == "master_breaks" && *n == 1));
-    for t in ["devices", "device_loans", "goal_devices", "bits"] {
+    // The reviewer roster: one row per person and project, with what the old board knew of them.
+    let rv = |name: &str| app.db.q1("SELECT * FROM reviewers WHERE name = ?", vec![json!(name)]).unwrap().unwrap();
+    assert_eq!(app.db.count("SELECT COUNT(*) FROM reviewers", vec![]).unwrap(), 4, "Ana B is Ana (one email); Nobody has no project");
+    let ana = rv("Ana");
+    assert_eq!((ana.st("project"), ana.st("host_user"), ana.st("source")), ("web".into(), "ana-gh".into(), "import".into()));
+    assert_eq!(serde_json::from_str::<Value>(&ana.st("emails")).unwrap(), json!(["ana@acme.dev"]));
+    assert_eq!(serde_json::from_str::<Value>(&ana.st("aliases")).unwrap(), json!(["Ana B", "anab"]));
+    assert_eq!((ana.i("pinned"), ana.f("automation")), (Some(1), Some(2.0)));
+    let bo = rv("Bo");
+    assert!(bo.s("removed_at").is_some(), "removed: never asked again");
+    assert_eq!(bo.s("removed_why"), Some("Left the team"));
+    let bot = rv("Reviewbot");
+    assert_eq!((bot.f("bot_every_h"), bot.s("bot_mark"), bot.f("automation")), (Some(6.0), Some("[bot]"), Some(0.5)));
+    assert_eq!(rv("Cy").st("project"), "api", "no project of its own: the one it was asked on");
+    assert!(rep.skipped.iter().any(|s| s == "reviewers Nobody: no project"));
+    assert!(rep.copied.iter().any(|(t, n)| t == "reviewers" && *n == 4));
+
+    // Each ask, with its state, answer and stand-in; an open ask on a finished task is closed.
+    let ask = |id: i64| app.db.q1("SELECT * FROM review_asks WHERE id = ?", vec![json!(id)]).unwrap().unwrap();
+    let a1 = ask(1);
+    assert_eq!((a1.i("reviewer_id"), a1.st("state"), a1.st("why"), a1.st("host_user")), (Some(ana.id()), "open".into(), "pick".into(), "ana-gh".into()));
+    assert_eq!((a1.st("pr_host"), a1.st("pr_repo"), a1.i("pr_num")), ("github".into(), "acme/web".into(), Some(41)), "the PR comes from the task");
+    assert_eq!((ask(2).st("state"), ask(2).i("reviewer_id")), ("swapped".into(), Some(bo.id())));
+    let a3 = ask(3);
+    assert_eq!((a3.st("state"), a3.s("answer"), a3.i("replaces"), a3.st("why")), ("answered".into(), Some("changes"), Some(2), "swap".into()));
+    assert_eq!((ask(4).st("state"), ask(4).i("reviewer_id")), ("closed".into(), Some(ana.id())), "T12 is done; Ana B's ask is Ana's");
+    assert_eq!(ask(5).st("name"), "Cy");
+    assert!(rep.skipped.iter().any(|s| s.starts_with("review_asks 6")));
+
+    // Master breaks keep their numbers and verdicts; one open on a project nobody watches is closed.
+    let br = |id: i64| app.db.q1("SELECT * FROM breaks WHERE id = ?", vec![json!(id)]).unwrap().unwrap();
+    let m1 = br(1);
+    assert_eq!((m1.st("state"), m1.st("verdict"), m1.i("task_id"), m1.st("head")), ("closed".into(), "ours".into(), Some(12), "abc1".into()));
+    assert_eq!(serde_json::from_str::<Value>(&m1.st("checks")).unwrap(), json!(["build", "test"]));
+    assert_eq!(m1.s("verdict_why"), Some("My commit broke the build"));
+    assert_eq!((br(2).st("state"), br(2).st("verdict")), ("closed".into(), "not_ours".into()));
+    assert!(br(2).s("closed_at").is_some());
+    assert!(rep.skipped.iter().any(|s| s.starts_with("M2: open on the old board")));
+    assert_eq!((br(4).st("state"), br(4).st("verdict")), ("open".into(), "unsure".into()), "api is watched");
+    assert_eq!(taskboardd::breaks::banner(&app).unwrap().len(), 1);
+
+    // Mapped tables aren't parked; a table the board has no place for is kept whole.
+    for t in ["devices", "device_loans", "goal_devices", "bits", "reviewers", "review_asks", "master_breaks"] {
         assert!(!rep.kept.iter().any(|(k, _)| k == t), "{t} is mapped, not parked");
         assert!(app.db.get_setting(&format!("import.{t}")).unwrap().is_none());
     }
+    let kept: Value = serde_json::from_str(&app.db.get_setting("import.photos").unwrap().unwrap()).unwrap();
+    assert_eq!(kept["rows"][0]["url"], "x.png");
+    assert!(rep.kept.iter().any(|(t, n)| t == "photos" && *n == 1));
     assert!(rep.lines().iter().any(|l| l.contains("T15") && l.contains("G3") && l.contains("B5")));
 
     // New work carries on after the old numbers.
