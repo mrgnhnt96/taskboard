@@ -398,7 +398,7 @@ fn st_tone(k: &str) -> Tone {
     match k {
         "planned" => Tone::Planned,
         "blocked" => Tone::Blocked,
-        "working" => Tone::Working,
+        "working" | "waiting" => Tone::Working,
         "needs" => Tone::Needs,
         "done" => Tone::Done,
         "failed" => Tone::Failed,
@@ -888,20 +888,21 @@ fn goal_row(c: &Ctx, t: &Value) -> Option<Node> {
     Some(lrow("Goal", vec![txt("Not in a goal.", St::Small)]))
 }
 
-/// `SESS`.
-fn sess_label(st: &str) -> &'static str {
+/// `SESS`, with what's running ("2 agents running") while the terminal's background work runs.
+fn sess_label(st: &str, background: &Value) -> String {
     match st {
-        "idle" => "Idle",
-        "working" => "Working",
-        "needs" => "Needs you",
-        _ => "Gone",
+        "idle" => "Idle".into(),
+        "working" => "Working".into(),
+        "waiting" => fmt::background_label(background),
+        "needs" => "Needs you".into(),
+        _ => "Gone".into(),
     }
 }
 
 /// `termItem(x, cur)`.
 fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
     let raw = match s(x, "status") {
-        k @ ("idle" | "working" | "needs" | "gone") => k,
+        k @ ("idle" | "working" | "waiting" | "needs" | "gone") => k,
         _ => "gone",
     };
     let stage = &cur["pr"]["stage"];
@@ -921,11 +922,11 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
     let id = opt_s(x, "id").map(str::to_string);
     let name = opt_s(x, "name").map(str::to_string).unwrap_or_else(|| or_empty(&x["id"]));
     let state = if live {
-        sess_label(st)
+        sess_label(st, &x["background"])
     } else if b(cur, "lost") && js_eq(field(x, "id"), cur.get("session").and_then(|ss| field(ss, "id"))) {
-        "Gone"
+        "Gone".into()
     } else {
-        "Closed"
+        "Closed".into()
     };
     let mut head = Vec::new();
     match &id {
@@ -943,7 +944,7 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
         Dot::None
     } else {
         match st {
-            "working" => Dot::Working,
+            "working" | "waiting" => Dot::Working,
             "needs" => Dot::Needs,
             "idle" => Dot::Idle,
             _ => Dot::Gone,
@@ -1854,7 +1855,7 @@ fn log_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                 el(
                     K::LogItem,
                     vec![
-                        txt_tip(fmt::hhmm(at), St::Time, fmt::full_time(at)),
+                        txt_tip(fmt::log_time(at), St::Time, fmt::full_time(at)),
                         Node::Dot(log_dot(kind)),
                         txt(opt_s(e, "who").unwrap_or("Task board"), St::Strong),
                         txt(log_label(kind), St::Kind),

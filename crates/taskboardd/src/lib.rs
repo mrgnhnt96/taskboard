@@ -56,6 +56,7 @@ pub mod server;
 pub mod shared;
 pub mod stack;
 pub mod startword;
+pub mod statusbar;
 pub mod steps;
 pub mod transcript;
 pub mod triage;

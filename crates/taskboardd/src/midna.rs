@@ -479,7 +479,38 @@ fn read_settings(app: &App) {
     }
 }
 
+/// How far back the first look at Midna's event log reaches (the board keeps its place after that).
+const CLOSED_LOOKBACK_SECS: f64 = 60.0;
+
+/// Applies Midna's `session.closed` events: who closed each terminal.
+pub fn closed_events(app: &App, events: &[Value]) -> Result<()> {
+    let mut last = app.db.get_setting("midna_event_seq")?.and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    app.db.tx(|| {
+        for e in events {
+            let seq = e["seq"].as_u64().unwrap_or(0);
+            last = last.max(seq);
+            let (Some(sid), Some(by)) = (e["session_id"].as_str(), e["actor"]["kind"].as_str()) else { continue };
+            if e["kind"] != "session.closed" || age_secs(e["at"].as_str()).is_none_or(|a| a > CLOSED_LOOKBACK_SECS) {
+                continue;
+            }
+            board::terminal_closed(app, sid, by)?;
+        }
+        app.db.set_setting("midna_event_seq", Some(&last.to_string()))
+    })
+}
+
+fn read_closed(app: &App) -> MResult<()> {
+    let since = app.db.get_setting("midna_event_seq").ok().flatten().and_then(|s| s.parse::<u64>().ok());
+    let events = call_timeout(app, "events.list", json!({"since_seq": since, "limit": 200, "filter": {"kinds": ["session.closed"]}}), 10.0)?;
+    if let Err(e) = closed_events(app, events.as_array().map(|a| a.as_slice()).unwrap_or(&[])) {
+        app.info(format!("midna: couldn't apply closed terminals: {e}"));
+    }
+    Ok(())
+}
+
 pub fn sync_once(app: &App) -> MResult<()> {
+    // Before the list, so a terminal Morgan closed is known to be theirs when it goes missing.
+    read_closed(app)?;
     let sessions = call_timeout(app, "session.list", json!({}), 10.0)?;
     let projects = call_timeout(app, "project.list", json!({}), 10.0)?;
     let empty = vec![];
@@ -488,6 +519,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     app.shared.lock().midna_usage = usage.and_then(|u| u.get("claude").cloned()).filter(|v| v.is_object());
     keep_awake::sync(app);
     read_settings(app);
+    crate::statusbar::offer(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         if let Err(e) = call(app, "session.close", json!({"id": sid})) {
             app.info(format!("midna: couldn't close {sid} after Claude exited: {e}"));

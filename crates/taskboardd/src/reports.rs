@@ -33,7 +33,7 @@ pub struct Report<'a> {
     pub stalled: bool,
     pub screened: Option<Value>,
     /// Background commands still running in the transcript, read before the transaction.
-    pub background: usize,
+    pub background: transcript::Background,
     /// The files the turn edited, read before the transaction for a stop on a terminal with no task.
     pub turn_files: Vec<String>,
     /// When that turn started.
@@ -64,7 +64,7 @@ impl<'a> Report<'a> {
             waiting_on_background: false,
             stalled: false,
             screened: None,
-            background: 0,
+            background: transcript::Background::default(),
             turn_files: vec![],
             turn_at: None,
         }
@@ -151,6 +151,18 @@ impl<'a> Report<'a> {
     fn set_session_status(&self, status: &str) -> Result<()> {
         if let Some(sid) = self.sid() {
             self.app.db.x("UPDATE sessions SET status = ? WHERE id = ? AND status != 'gone'", p![status, sid])?;
+        }
+        Ok(())
+    }
+
+    /// Saves how many background commands and agents the turn that just ended left running, so the
+    /// terminal shows it's waiting on them rather than idle.
+    fn note_background(&self, running: transcript::Background) -> Result<()> {
+        if let Some(sid) = self.sid() {
+            self.app.db.x(
+                "UPDATE sessions SET background = ?, background_agents = ?, background_at = ? WHERE id = ?",
+                p![running.total() as i64, running.agents as i64, now_iso(), sid],
+            )?;
         }
         Ok(())
     }
@@ -254,10 +266,16 @@ fn store_plugin(r: &Report) -> Result<()> {
     Ok(())
 }
 
+/// SessionStart sources that mean a new Claude process: the old one's background work died with it.
+const NEW_PROCESS_SOURCES: &[&str] = &["startup", "resume"];
+
 fn on_session_start(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
     store_plugin(r)?;
+    if NEW_PROCESS_SOURCES.contains(&r.b("source").as_str()) {
+        r.note_background(transcript::Background::default())?;
+    }
     let Some(t) = r.task()? else {
         if crate::jira_desk::is_desk(app, r.sid())? {
             return Ok(ok(None, Some(crate::jira_desk::intro(app))));
@@ -404,6 +422,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
     r.set_session_status("idle")?;
+    r.note_background(r.background)?;
     let Some(t) = r.task()? else {
         if let Some(ask) = changed_with_no_task(r)? {
             r.set_session_status("working")?;
@@ -552,7 +571,7 @@ fn stalled(r: &Report, t: &Row) -> Result<bool> {
     if !s.b("board_prompt") || t.s("session_id") != r.sid() {
         return Ok(false);
     }
-    Ok(r.background == 0)
+    Ok(r.background.total() == 0)
 }
 
 fn on_pre_compact(r: &mut Report) -> Result<Value> {
@@ -693,7 +712,8 @@ fn on_attention(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
     let kind = r.b("notification_type");
-    if kind == "idle_prompt" && r.background > 0 {
+    if kind == "idle_prompt" && r.background.total() > 0 {
+        r.note_background(r.background)?;
         r.waiting_on_background = true;
         return Ok(ok(r.task()?.as_ref(), None));
     }
@@ -2109,7 +2129,7 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     };
     if r.event == "hook.stop" || r.event == "hook.attention" {
         let path = r.body.get("transcript_path").and_then(|v| v.as_str()).map(|s| s.to_string());
-        r.background = transcript::background_running(&app.cfg.claude_projects, path.as_deref()).unwrap_or(0);
+        r.background = transcript::background_running(&app.cfg.claude_projects, path.as_deref()).unwrap_or_default();
     }
     if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) && r.task().ok().flatten().is_none() {
         if let Some(s) = board::get_session(app, r.sid()).ok().flatten() {

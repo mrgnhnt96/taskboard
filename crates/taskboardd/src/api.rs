@@ -146,7 +146,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"session": sid,
                       "task": match t { Some(t) => board::task_card(app, &t)?, None => Value::Null },
                       "line": crate::lines::entries(app, sid)?,
-                      "visiting": match v { Some(v) => board::task_card(app, &v)?, None => Value::Null }}))
+                      "visiting": match v { Some(v) => board::task_card(app, &v)?, None => Value::Null },
+                      "status_bar": crate::statusbar::get(app).to_json()}))
         }
         ("GET", ["steps"]) => {
             let t = match query.get("task").filter(|s| !s.is_empty()) {
@@ -381,6 +382,11 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["keep-awake"]) => keep_awake::call(app, None),
         ("POST", ["keep-awake"]) => keep_awake::call(app, Some(body)),
         ("GET", ["usage"]) => Ok(usage::state(app)),
+        ("GET", ["status-bar"]) => Ok(crate::statusbar::state(app)),
+        ("POST", ["status-bar"]) => {
+            crate::statusbar::set(app, body)?;
+            Ok(crate::statusbar::state(app))
+        }
         ("GET", ["limits"]) => Ok(crate::limits::state(app)),
         ("POST", ["limits"]) => {
             crate::limits::set(app, body)?;
@@ -439,7 +445,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"alert": a}))
         }
         _ => {
-            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "limits", "usage", "prs", "alerts"];
+            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "limits", "status-bar", "usage", "prs", "alerts"];
             if segs.first().map(|s| known.contains(s)).unwrap_or(false) && (method == "GET" || method == "POST") {
                 return err(404, "There's nothing at that address.");
             }
