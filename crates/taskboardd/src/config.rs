@@ -19,6 +19,7 @@ pub struct FileConfig {
     pub midna_bundle: Option<String>,
     pub open_midna: Option<bool>,
     pub notify: Option<bool>,
+    pub first_weekday: Option<String>,
     pub claude: Option<String>,
     pub claude_projects: Option<String>,
     pub statusline_dir: Option<String>,
@@ -30,6 +31,21 @@ pub struct FileConfig {
     pub pr: PrConfig,
     pub jira: JiraConfig,
     pub handoff: HandoffConfig,
+    pub alerts: AlertsConfig,
+}
+
+/// Alerts' desktop notifications.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AlertsConfig {
+    /// The snooze buttons on each alert's notification, in minutes (at most four; empty for none).
+    pub snooze_mins: Vec<i64>,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        AlertsConfig { snooze_mins: vec![15, 30, 60] }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -253,6 +269,8 @@ pub struct Config {
     pub midna_bundle: String,
     pub open_midna: bool,
     pub notify: bool,
+    /// The day weeks start on (the Days page, its `week` array and the hours menu): Sunday unless set.
+    pub first_weekday: chrono::Weekday,
     pub claude: String,
     pub claude_projects: PathBuf,
     pub statusline_dir: PathBuf,
@@ -264,6 +282,7 @@ pub struct Config {
     pub pr: PrConfig,
     pub jira: JiraConfig,
     pub handoff: HandoffConfig,
+    pub alerts: AlertsConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -335,6 +354,7 @@ impl Config {
             midna_bundle: f.midna_bundle.clone().unwrap_or_else(|| "com.mrgnhnt.midna".into()),
             open_midna: f.open_midna.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
+            first_weekday: f.first_weekday.as_deref().and_then(parse_weekday).unwrap_or(chrono::Weekday::Sun),
             claude: env("TASKBOARD_CLAUDE").or(f.claude.clone()).unwrap_or_else(|| "claude".into()),
             claude_projects: expand_home(
                 &env("TASKBOARD_CLAUDE_PROJECTS").or(f.claude_projects.clone()).unwrap_or_else(|| "~/.claude/projects".into()),
@@ -347,6 +367,7 @@ impl Config {
             pr: f.pr,
             jira,
             handoff: f.handoff,
+            alerts: f.alerts,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }
@@ -405,6 +426,22 @@ impl Config {
     }
 }
 
+/// `sun`, `Monday`, `sat` … as a weekday (the first three letters count).
+pub fn parse_weekday(s: &str) -> Option<chrono::Weekday> {
+    use chrono::Weekday::*;
+    let s: String = s.trim().to_lowercase().chars().take(3).collect();
+    Some(match s.as_str() {
+        "mon" => Mon,
+        "tue" => Tue,
+        "wed" => Wed,
+        "thu" => Thu,
+        "fri" => Fri,
+        "sat" => Sat,
+        "sun" => Sun,
+        _ => return None,
+    })
+}
+
 pub mod anyhow_like {
     pub type Result<T> = std::result::Result<T, String>;
 }
@@ -421,5 +458,14 @@ mod tests {
         let c = Config::from_file(f, PathBuf::from("/tmp/x.toml"));
         assert!(!c.owner.is_empty());
         assert_eq!(c.intervals.runner, 5.0);
+        assert_eq!(c.first_weekday, chrono::Weekday::Sun);
+    }
+
+    #[test]
+    fn first_weekday_parses() {
+        let f: FileConfig = toml::from_str("first_weekday = \"Monday\"").unwrap();
+        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).first_weekday, chrono::Weekday::Mon);
+        let f: FileConfig = toml::from_str("first_weekday = \"someday\"").unwrap();
+        assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).first_weekday, chrono::Weekday::Sun);
     }
 }

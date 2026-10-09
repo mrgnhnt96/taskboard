@@ -65,13 +65,20 @@ Planned tasks never appear in `columns`; they only show on the goal page. Column
 
 #### `alert`
 ```
-{"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null}
+{"id": str, "at": iso, "text": str, "task": "T12"|null, "goal": "G3"|null, "urgent"?: true, "review"?: true, "key"?: str,
+ "snoozed_until"?: iso}
 ```
 Something that needs the reader (a task that couldn't start, an answer that didn't arrive…). `task`/`goal` give
 the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an alert with `"review": true` (a PR waiting
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
-by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). (The original's `urgent` "Master is red" alerts
-are gone.)
+by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
+`POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
+outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on.
+
+Each alert's desktop notification (Midna `notify.send`) carries the id `taskboard-alert-<alert id>` and the snooze
+buttons from config.toml's `[alerts] snooze_mins` ("Snooze 15 min", "Snooze 30 min", "Snooze 1 hour" by default).
+The board waits for the owner's pick (`notify.response`) and a snooze button snoozes the alert; a click opens the
+app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
 #### `work_hours` (from `hours.state`)
 ```
@@ -84,7 +91,9 @@ are gone.)
   "line": str,            // one plain sentence, used as the pill's tooltip, e.g. "Work hours 6am–3pm: agents start until 3pm"
   "next_open": str|null,  // when the hours next open, null while open. LOCAL time WITHOUT a zone, "2026-10-08T06:00",
                           // because the browser parses it as local time (Python: isoformat(timespec="minutes") of a naive local datetime)
-  "today_until": "HH:MM"|null  // today's end overridden by "Today until", null when not set or not today
+  "today_until": "HH:MM"|null, // today's end overridden by "Today until", null when not set or not today
+  "week_days": ["sun", …]      // all seven days in week order, from config.toml's first_weekday (Sunday by default);
+                               // the hours menu lays its day buttons out in this order
 }
 ```
 The pill reads "Work hours until 4pm today" (open + today_until), "Work hours 6am–3pm" (open), "Agents off until
@@ -358,7 +367,8 @@ the backlog, and kept in `day_stats` (one row per project), so it outlives the c
               "marks": [{"at": iso, "kind": "commit"|"question"|"pr"|"done"|"found", "task": int, "ref": str, "text": str}]}],
    "waits": [{"task": int, "ref": str, "at": iso, "min": float, "open": bool, "reason": str, "text": str, "title": str, "project": str}],
    "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}]},
- "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, Monday first
+ "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, from config.toml's first_weekday (Sunday by default)
+ "first_weekday": "sun"|"mon"|…,
  "last_week": [same],
  "week_tasks": [{"task", "ref", "title", "project", "work_min", "wait_min", "state", "date"}],   // ≤ 12, longest first
  "week_task_median": float,                 // minutes, finished tasks of the week
@@ -481,22 +491,29 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
+### Projects
+| Path | Body | Notes |
+|---|---|---|
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow: "auto"\|"on"\|"off"}` | Whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). **Response read:** the project as in `GET /projects`. |
+
 ### Goals
 | Path | Body | Notes |
 |---|---|---|
 | `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | `tb goal new`. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the caller shows it. |
-| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool, setup: str\|"none"}` | `tb goal set` (`epic_key` only with Jira), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
-| `POST /goals/:id/run` | `{}` or `{now: true}` | Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
+| `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool, setup: str\|"none"}` | `tb goal set` (`epic_key` only with Jira; `--deprioritize`/`--prioritize` set `deprioritized`), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
+| `POST /goals/:id/run` | `{}` or `{now: true}` | `tb goal set --run`. Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
 | `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
 
 ### Backlog
 | Path | Body | Notes |
 |---|---|---|
-| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?}` | Add an issue (source `you`; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
-| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task: `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
-| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira). |
-| `POST /backlog/:id/drop` | `{}` | Won't do. |
+| `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?, source?: "answer"\|"review_log"}` | Add an issue (source `you` unless it says `answer` or `review_log`, the external PR feed, which the app shows as "From the Review log"; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
+| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task (`tb backlog task`, `--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
+| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira; `tb backlog ticket`). |
+| `POST /backlog/:id/drop` | `{reason?}` | Won't do (`tb backlog drop --reason`). |
+| `POST /backlog/:id/reopen` | `{}` | Open it again (`tb backlog reopen`). |
 | `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none (`tb backlog move`; `goal_id` also takes a ref like `"G2"`). |
 | `POST /backlog/:id/note` | `{text}` | Add a note to its history (no app button). |
 | `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
@@ -512,8 +529,11 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 ### Work hours, alerts
 | Path | Body | Notes |
 |---|---|---|
-| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off"}` | Sent on every change in the hours menu. `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
-| `POST /alerts/:id/dismiss` | `{}` | |
+| `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
+| `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
+| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
+| `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
+| `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
 ### History
 | Path | Body | Notes |

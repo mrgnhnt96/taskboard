@@ -448,6 +448,28 @@ pub enum Icon {
     Fwd,
     /// `ICON.board`: the logo's three columns (stroke 2).
     Board,
+    /// Midna's mark: a rounded window with its crescent moon.
+    Midna,
+}
+
+/// A crescent: the disc at (cx, cy) radius r less the disc at (bx, by) radius br, as one outline
+/// (the outer arc outside the bite, then the bite's arc back inside the disc).
+pub fn crescent(c: (f32, f32), r: f32, bite: (f32, f32), br: f32) -> Vec<(f32, f32)> {
+    let n = 48;
+    let inside = |p: (f32, f32), o: (f32, f32), rr: f32| (p.0 - o.0).powi(2) + (p.1 - o.1).powi(2) < rr * rr;
+    let ring = |o: (f32, f32), rr: f32| -> Vec<(f32, f32)> {
+        (0..n).map(|i| std::f32::consts::TAU * i as f32 / n as f32).map(|a| (o.0 + rr * a.cos(), o.1 + rr * a.sin())).collect()
+    };
+    let outer = ring(c, r);
+    let inner = ring(bite, br);
+    // Start the outer walk just after a point the bite covers, so the kept points come out in one run.
+    let start = (0..n).find(|&i| inside(outer[i], bite, br) && !inside(outer[(i + 1) % n], bite, br)).map_or(0, |i| i + 1);
+    let mut pts: Vec<(f32, f32)> = (0..n).map(|k| outer[(start + k) % n]).filter(|p| !inside(*p, bite, br)).collect();
+    let istart = (0..n).find(|&i| !inside(inner[i], c, r) && inside(inner[(i + 1) % n], c, r)).map_or(0, |i| i + 1);
+    let back: Vec<(f32, f32)> = (0..n).map(|k| inner[(istart + k) % n]).filter(|p| inside(*p, c, r)).collect();
+    // The outer arc runs one way round; the bite's arc must come back the other way.
+    pts.extend(back.into_iter().rev());
+    pts
 }
 
 /// An `Icon` at `size` px in `color`.
@@ -509,9 +531,40 @@ pub fn icon(kind: Icon, size: f32, color: Hsla) -> impl IntoElement {
                     rect(10., 4., 5., 11., 1.5, 2., window);
                     rect(17., 4., 4., 7., 1.5, 2., window);
                 }
+                Icon::Midna => {
+                    rect(3., 3., 18., 18., 4.5, 2., window);
+                    let pts = crescent((11.5, 12.5), 5., (14., 10.), 4.);
+                    if let Some(first) = pts.first() {
+                        let mut p = PathBuilder::fill();
+                        p.move_to(u(first.0, first.1));
+                        for (x, y) in &pts[1..] {
+                            p.line_to(u(*x, *y));
+                        }
+                        p.close();
+                        if let Ok(p) = p.build() {
+                            window.paint_path(p, color);
+                        }
+                    }
+                }
             }
         },
     )
     .size(px(size))
     .flex_none()
+}
+
+#[cfg(test)]
+mod tests {
+    #[::core::prelude::v1::test]
+    fn the_crescent_is_one_simple_outline() {
+        let pts = super::crescent((11.5, 12.5), 5., (14., 10.), 4.);
+        // Its area (shoelace) is the disc less the overlap, so the two arcs run opposite ways.
+        let n = pts.len();
+        let area = (0..n).map(|i| pts[i].0 * pts[(i + 1) % n].1 - pts[(i + 1) % n].0 * pts[i].1).sum::<f32>().abs() / 2.;
+        let (r, br, d) = (5f32, 4f32, ((14f32 - 11.5).powi(2) + (10f32 - 12.5).powi(2)).sqrt());
+        let lens = r * r * ((d * d + r * r - br * br) / (2. * d * r)).acos() + br * br * ((d * d + br * br - r * r) / (2. * d * br)).acos()
+            - 0.5 * ((-d + r + br) * (d + r - br) * (d - r + br) * (d + r + br)).sqrt();
+        let want = std::f32::consts::PI * r * r - lens;
+        assert!((area - want).abs() < want * 0.08, "area {area}, want {want}");
+    }
 }

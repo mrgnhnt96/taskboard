@@ -325,17 +325,38 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let changed = prflow::refresh(app)?;
             Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at}))
         }
+        ("POST", ["alerts"]) => {
+            let text = required(body, "text", 300, "The alert")?;
+            let task = match body.get("task").filter(|v| !v.is_null()) {
+                Some(v) => Some(board::get_task(app, need_ref(v, "task")?)?.id()),
+                None => None,
+            };
+            let goal = match body.get("goal").filter(|v| !v.is_null()) {
+                Some(v) => Some(board::get_goal(app, need_ref(v, "goal")?)?.id()),
+                None => None,
+            };
+            let key = one_line(&body_str(body, "key"), 120);
+            let a = app.db.tx(|| alerts::raise(app, &text, task, goal, (!key.is_empty()).then_some(key.as_str()), as_bool(body.get("urgent"), false)))?;
+            Ok(json!({"alert": a}))
+        }
+        ("POST", ["alerts", id, "clear"]) => {
+            let found = alerts::alerts(app).into_iter().find(|a| a["id"] == *id || a["key"] == *id);
+            let Some(a) = found else { return err(404, "There's no alert with that id or key.") };
+            app.db.tx(|| alerts::clear_alerts(app, None, a["id"].as_str()))?;
+            Ok(json!({"alerts": alerts::listing(app)}))
+        }
         ("POST", ["alerts", id, "dismiss"]) => {
-            if alerts::alerts(app).iter().any(|a| a["id"] == *id && alerts::stays(a)) {
-                return err(409, "A PR waiting for your review stays until you review it.");
+            if let Some(a) = alerts::alerts(app).into_iter().find(|a| a["id"] == *id && alerts::stays(a)) {
+                return err(409, if a["urgent"] == true { "An urgent alert stays until it clears." } else { "A PR waiting for your review stays until you review it." });
             }
             app.db.tx(|| alerts::clear_alerts(app, None, Some(id)))?;
-            Ok(json!({"alerts": alerts::alerts(app)}))
+            Ok(json!({"alerts": alerts::listing(app)}))
         }
         ("POST", ["alerts", id, "snooze"]) => {
             let mins = body["mins"].as_i64().unwrap_or(0);
-            if ![15, 30, 60].contains(&mins) {
-                return err(400, "Snooze for 15, 30 or 60 minutes.");
+            let allowed: Vec<i64> = app.cfg.alerts.snooze_mins.iter().copied().filter(|m| *m > 0).collect();
+            if !allowed.contains(&mins) && ![15, 30, 60].contains(&mins) {
+                return err(400, format!("Snooze for {} minutes.", allowed.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")));
             }
             let a = app.db.tx(|| alerts::snooze_alert(app, id, mins))?;
             Ok(json!({"alert": a}))
@@ -440,7 +461,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
     let mut out = json!({
         "now": now_iso(), "midna": midna::status(app), "jira": {"enabled": app.cfg.jira_on(), "site": app.cfg.jira.site},
         "owner": app.cfg.owner,
-        "alerts": alerts::alerts(app), "work_hours": hours::state(app), "usage": usage::state(app),
+        "alerts": alerts::listing(app), "work_hours": hours::state(app), "usage": usage::state(app),
         "keep_awake": app.shared.lock().midna_keep_awake.clone(),
         "accounts": accounts::attention(&app.cfg),
         "prs_checked_at": app.shared.lock().prs_checked_at,
@@ -1802,8 +1823,16 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
             _ => "the Backlog page",
         };
         let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
-        let source = if body_str(body, "source") == "answer" { "answer" } else { "you" };
-        let how = if source == "answer" { "It was raised in answer to a question.".to_string() } else { format!("Added from {page}.") };
+        let source = match body_str(body, "source").as_str() {
+            "answer" => "answer",
+            "review_log" => "review_log",
+            _ => "you",
+        };
+        let how = match source {
+            "answer" => "It was raised in answer to a question.".to_string(),
+            "review_log" => "It came in from the Review log.".to_string(),
+            _ => format!("Added from {page}."),
+        };
         let detail = body_str(body, "detail");
         let now = now_iso();
         let id = app.db.insert(

@@ -98,6 +98,8 @@ pub fn issue_from(b: &Value, long: bool) -> String {
         "Added by you".to_string()
     } else if source == "answer" {
         "From your answer".to_string()
+    } else if fmt::from_review_log(source) {
+        "From the Review log".to_string()
     } else if let (true, Some(r)) = (long, ft.as_ref()) {
         format!("Found by {r} · {}", name.unwrap_or("a terminal"))
     } else {

@@ -64,6 +64,10 @@ Planning a goal? Read `planning.md` first.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.
+   - On the owner's word, act on an issue: `tb backlog task B<n>` (a planned task in its goal; `--board` queues it on the board), `tb backlog ticket B<n>` (a Jira ticket), `tb backlog drop B<n> --reason "..."` (won't do), `tb backlog reopen B<n>`.
+   - Run, hold back or bring back a goal when the owner says so: `tb goal set G<n> --run` (queues its planned tasks), `--deprioritize`, `--prioritize`, `--paused on|off`.
+   - Something the owner must see that isn't a question on your task (a watcher or script you were asked to set up finds main red): `tb alert raise "<what>" --key <name> [--urgent] [--task T<n>]`, and `tb alert clear <name>` once it's fixed. `--urgent` only for what can't wait: it repeats outside the work hours and can't be dismissed.
+   - Whether a project's work ends in PRs: `tb project show [<name>]`; the owner can override it with `tb project set <name> --pr-flow auto|on|off`.
    - A design, proposal, doc or link: `tb attach` as above, with `--task T<n>` or `--goal G<n>`.
    - Remove an attachment by its link, path or title: `tb unattach "<link-or-title>"` with `--task T<n>` or `--goal G<n>`. To change one, unattach it and attach it again.
    - A tester's Jira comment the owner gave you their word on (when QA comments are on): `tb qa task Q<n> --note "<what they said>"` or `tb qa ignore Q<n>`; `tb qa waiting` lists the ones waiting.
@@ -76,6 +80,6 @@ Titles are short summaries a person reads at a glance (80 characters at most, no
 
 ## Work hours
 
-The board starts agents only inside the owner's work hours. `tb hours` shows them; change them only when the owner asks (`tb hours --start 09:00 --end 17:00 --days mon-fri`, `--on`/`--off`, `--today-until 4pm` for today only).
+The board starts agents only inside the owner's work hours. `tb hours` shows them; change them only when the owner asks (`tb hours --start 09:00 --end 17:00 --days mon-fri`, `--on`/`--off`, `--today-until 4pm` for today only, `--alert-every 10` for how often unanswered alerts repeat, 0 for never).
 
 Midna keeps the Mac awake during the work hours so agents keep running while the owner is away (idle sleep only: the display still sleeps and closing the lid still sleeps). The work hours are its schedule: `tb hours` changes both, and `--today-until` ends both early today. `tb keep-awake` shows whether it's held and why. Change it only when the owner asks: `--on`/`--off`, `--mode with-work|always`, `--min-battery 20` (on battery it lets the Mac sleep below this), `--linger 5`, `--day fri=9am-3pm` / `--day sat=off` / `--day fri=default` for one day's own keep-awake hours, `--today off` / `--today clear`.

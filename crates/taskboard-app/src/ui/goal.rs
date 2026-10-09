@@ -203,6 +203,8 @@ pub fn issue_from(bl: &Value, long: bool) -> String {
         "Added by you".to_string()
     } else if source == Some("answer") {
         "From your answer".to_string()
+    } else if fmt::from_review_log(source.unwrap_or("")) {
+        "From the Review log".to_string()
     } else if let (true, Some(r)) = (long, &ft) {
         format!("Found by {r} · {}", name.unwrap_or("a terminal"))
     } else {
@@ -3205,6 +3207,14 @@ mod tests {
                 issue_from(&json!({"source": "you", "created_at": "2026-10-03T09:00:00Z"}), true)
             ]),
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn review_log_issues_say_so() {
+        let from = |src: &str| issue_from(&json!({"source": src, "found_by_name": "Sam", "created_at": ""}), true);
+        assert_eq!(from("review_log"), "From the Review log");
+        assert_eq!(crate::ui::board::issue_from(&json!({"source": "review_log", "created_at": ""})), "From the Review log");
+        assert_eq!(from("you"), "Added by you");
     }
 
     // ---------------------------------------------------------------- actions through a real window

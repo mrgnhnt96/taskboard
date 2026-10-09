@@ -15,6 +15,7 @@ midna = "~/.local/bin/midna"         # env TASKBOARD_MIDNA
 midna_bundle = "com.mrgnhnt.midna"   # opened with `open -g -b` when Midna isn't running
 open_midna = true
 notify = true                        # desktop notifications through Midna
+first_weekday = "sun"                # the day weeks start on: the Days page's week and the hours menu's days
 
 claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening (and Jira with via = "claude")
 claude_projects = "~/.claude/projects"
@@ -41,6 +42,11 @@ start = "09:00"
 end = "17:00"
 days = ["mon", "tue", "wed", "thu", "fri"]
 alert_every_mins = 10
+
+# Alerts' desktop notifications (through Midna). Each carries these snooze buttons, in minutes (at most
+# four; [] for none). Urgent alerts (`tb alert raise --urgent`) repeat outside the work hours too.
+[alerts]
+snooze_mins = [15, 30, 60]
 
 # Screen agents' questions with a headless `claude -p` first: when the rules already answer a
 # question, the agent gets the answer and the owner isn't asked.

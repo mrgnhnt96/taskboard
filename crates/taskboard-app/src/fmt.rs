@@ -158,6 +158,11 @@ pub fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// An issue or task that came in from the external PR feed (the Review log): source `review_log` (or `review`).
+pub fn from_review_log(source: &str) -> bool {
+    matches!(source, "review_log" | "review")
+}
+
 pub fn cap(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {

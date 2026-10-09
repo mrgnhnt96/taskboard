@@ -169,10 +169,20 @@ enum Cmd {
         #[command(subcommand)]
         action: TaskCmd,
     },
-    /// Add a backlog issue
+    /// Add, change, promote or close backlog issues
     Backlog {
         #[command(subcommand)]
         action: BacklogCmd,
+    },
+    /// Raise an alert for the owner (the banner and a notification), or clear one you raised
+    Alert {
+        #[command(subcommand)]
+        action: AlertCmd,
+    },
+    /// Show a project or change its PR flow
+    Project {
+        #[command(subcommand)]
+        action: ProjectCmd,
     },
     /// Attach a link or file path (design, proposal, doc, evidence, results) to a task or goal
     Attach {
@@ -208,6 +218,9 @@ enum Cmd {
         days: Option<String>,
         #[arg(long = "today-until")]
         today_until: Option<String>,
+        /// How often unanswered alerts repeat, in minutes (0 for never)
+        #[arg(long = "alert-every", value_name = "MIN")]
+        alert_every: Option<i64>,
     },
     /// Show or change how Midna keeps the Mac awake for agents in the work hours (`tb hours` sets when)
     KeepAwake {
@@ -377,6 +390,15 @@ enum GoalCmd {
         /// Start each task in its own git worktree, detached at this branch (like origin/main); off for the shared folder
         #[arg(long, value_name = "BASE|off")]
         worktrees: Option<String>,
+        /// Queue its planned tasks to run (and unpause it), when the owner says so
+        #[arg(long)]
+        run: bool,
+        /// Hold its queued tasks back until it's prioritized or run again
+        #[arg(long, conflicts_with = "prioritize")]
+        deprioritize: bool,
+        /// Back to normal priority
+        #[arg(long)]
+        prioritize: bool,
     },
     /// What every task in the goal does first (its handoff shows it): {task} {n} {wave} {goal} are filled in; none clears it
     Setup { goal: String, text: String },
@@ -496,8 +518,58 @@ enum BacklogCmd {
         title: Option<String>,
         #[arg(long)]
         detail: Option<String>,
-    },    /// Move a backlog issue to another goal (G2), or out of its goal (none)
+    },
+    /// Move a backlog issue to another goal (G2), or out of its goal (none)
     Move { issue: String, goal: String },
+    /// Make a backlog issue into a task: planned in its goal, or with --board queued on the board
+    Task {
+        issue: String,
+        #[arg(long)]
+        board: bool,
+    },
+    /// Ask Jira for a ticket for a backlog issue
+    Ticket { issue: String },
+    /// Close a backlog issue as won't do (only when the owner says so)
+    Drop {
+        issue: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Open a closed backlog issue again
+    Reopen { issue: String },
+}
+
+#[derive(Subcommand)]
+enum AlertCmd {
+    /// Raise an alert: tb alert raise "main is red on web" --urgent --key main:web
+    Raise {
+        text: String,
+        /// It repeats outside the work hours too, shows first and can't be dismissed until it's cleared
+        #[arg(long)]
+        urgent: bool,
+        /// Name it so raising it again changes nothing and `tb alert clear <key>` takes it away
+        #[arg(long)]
+        key: Option<String>,
+        /// The task it's about (its banner gets an Open button; it clears once the task moves on)
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        goal: Option<String>,
+    },
+    /// Clear an alert by its id or key
+    Clear { id: String },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// A project's PR flow and git remote (every project with no name)
+    Show { name: Option<String> },
+    /// Change a project: --pr-flow auto (by its git remote), on or off
+    Set {
+        name: String,
+        #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
+        pr_flow: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1247,7 +1319,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -1277,11 +1349,22 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = worktrees {
                     b["worktree_base"] = json!(x);
                 }
-                if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                if deprioritize || prioritize {
+                    b["deprioritized"] = json!(deprioritize);
+                }
+                let empty = b.as_object().map(|o| o.is_empty()).unwrap_or(true);
+                if empty && !run {
                     return Err("say what to change, for example: tb goal set G3 --paused on".into());
                 }
-                let v = c.call("POST", &format!("/goals/{g}"), Some(b))?;
-                out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
+                if !empty {
+                    let v = c.call("POST", &format!("/goals/{g}"), Some(b))?;
+                    out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
+                }
+                if run {
+                    let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
+                    let n = v["queued_now"].as_i64().unwrap_or(0);
+                    out(&format!("{g} runs: queued {n} planned task{}.", if n == 1 { "" } else { "s" }));
+                }
                 Ok(0)
             }
             GoalCmd::Setup { goal, text } => {
@@ -1557,6 +1640,54 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Backlog { action: BacklogCmd::Task { issue, board } } => {
+            let r = issue_ref(&issue)?;
+            let v = c.call("POST", &format!("/backlog/{r}/promote"), Some(json!({"where": if board { "board" } else { "goal" }})))?;
+            let t = &v["task"];
+            let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
+                (Some("planned"), Some(g)) => format!("a planned task in {g}"),
+                _ => "a queued task".to_string(),
+            };
+            out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Ticket { issue } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/ticket"), Some(json!({})))?;
+            out(&format!("Asked Jira for a ticket for {r}."));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Drop { issue, reason } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/drop"), Some(json!({"reason": reason.unwrap_or_default()})))?;
+            out(&format!("Closed {r} as won't do."));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Reopen { issue } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/reopen"), Some(json!({})))?;
+            out(&format!("Opened {r} again."));
+            Ok(0)
+        }
+        Cmd::Project { action } => project_cmd(c, action),
+        Cmd::Alert { action: AlertCmd::Raise { text, urgent, key, task, goal } } => {
+            let task = task.map(|t| task_ref(&t)).transpose()?;
+            let goal = goal.map(|g| goal_ref(&g)).transpose()?;
+            let v = c.call("POST", "/alerts", Some(json!({"text": text, "urgent": urgent, "key": key, "task": task, "goal": goal})))?;
+            let a = &v["alert"];
+            out(&format!(
+                "Raised {}alert {}{}.",
+                if a["urgent"] == true { "an urgent " } else { "an " },
+                a["id"].as_str().unwrap_or(""),
+                a["key"].as_str().map(|k| format!(" ({k})")).unwrap_or_default()
+            ));
+            Ok(0)
+        }
+        Cmd::Alert { action: AlertCmd::Clear { id } } => {
+            c.call("POST", &format!("/alerts/{id}/clear"), Some(json!({})))?;
+            out(&format!("Cleared {id}."));
+            Ok(0)
+        }
         Cmd::Unattach { url, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let needs = goal.is_none();
@@ -1576,7 +1707,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
-        Cmd::Hours { on, off, start, end, days, today_until } => {
+        Cmd::Hours { on, off, start, end, days, today_until, alert_every } => {
             let mut b = json!({});
             if on {
                 b["on"] = json!(true);
@@ -1596,8 +1727,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = today_until {
                 b["today_until"] = json!(x);
             }
+            if let Some(x) = alert_every {
+                b["alert_every_mins"] = json!(x);
+            }
             let v = if b.as_object().map(|o| o.is_empty()).unwrap_or(true) { c.call("GET", "/hours", None)? } else { c.call("POST", "/hours", Some(b))? };
             out(v["line"].as_str().unwrap_or(""));
+            if alert_every.is_some() {
+                out(v["alerts_line"].as_str().unwrap_or(""));
+            }
             Ok(0)
         }
         Cmd::KeepAwake { on, off, mode, day, min_battery, linger, today } => {
@@ -1728,6 +1865,48 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Hook { event } => Ok(hook::run(event.as_deref())),
         Cmd::GitCredential { op } => Ok(crate::gitcred::run(&op)),
         Cmd::Statusline { pass } => Ok(hook::statusline(pass)),
+    }
+}
+
+fn project_line(p: &Value) -> String {
+    let remote = match p["remote"].as_bool() {
+        Some(true) => "git remote",
+        Some(false) => "no git remote",
+        None => "no folder",
+    };
+    format!(
+        "{} · PR flow {} · {} · {remote}",
+        p["name"].as_str().unwrap_or(""),
+        p["pr_flow"].as_str().unwrap_or("auto"),
+        if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
+    )
+}
+
+fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
+    match action {
+        ProjectCmd::Show { name } => {
+            let v = c.call("GET", "/projects", None)?;
+            let list = v["projects"].as_array().cloned().unwrap_or_default();
+            let shown: Vec<&Value> = list.iter().filter(|p| name.as_deref().is_none_or(|n| p["name"].as_str() == Some(n))).collect();
+            if shown.is_empty() {
+                return Err(match name {
+                    Some(n) => format!("There's no project called {n}."),
+                    None => "There are no projects yet.".into(),
+                });
+            }
+            for p in shown {
+                out(&project_line(p));
+            }
+            Ok(0)
+        }
+        ProjectCmd::Set { name, pr_flow } => {
+            let Some(flow) = pr_flow else {
+                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off"));
+            };
+            let v = c.call("POST", &format!("/projects/{name}"), Some(json!({"pr_flow": flow})))?;
+            out(&format!("Changed {}.", project_line(&v)));
+            Ok(0)
+        }
     }
 }
 
@@ -1904,6 +2083,19 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "setup", "G1", "Run make bootstrap in {task}'s worktree"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--run"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--deprioritize", "--prioritize"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "project", "show"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "set", "web", "--pr-flow", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--board"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "ticket", "B3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B3", "--reason", "dupe"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "alert", "clear", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());

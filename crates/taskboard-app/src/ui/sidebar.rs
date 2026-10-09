@@ -1215,7 +1215,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .cursor_pointer()
                 .child(kit::icon(kit::Icon::Board, 22., t.accent))
                 .tooltip(kit::tip("Task board"))
-                .on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))),
+                .on_click(cx.listener(|m, _, _, cx| m.go_home(cx))),
         )
         .child(div().flex_1().whitespace_nowrap().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"));
     let nav = div()

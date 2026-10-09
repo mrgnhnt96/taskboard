@@ -691,7 +691,7 @@ pub fn issue_from_line(b: &Row) -> String {
             format!("Found by {by} · {who} · {t}")
         }
         Some("answer") => format!("From an answer · {t}"),
-        Some("review") => format!("From a review · {t}"),
+        Some("review" | "review_log") => format!("From the Review log · {t}"),
         _ => format!("Added by you · {t}"),
     }
 }

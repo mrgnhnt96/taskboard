@@ -26,6 +26,14 @@ pub struct State {
     pub err: Option<String>,
     /// The select whose option list is open.
     pub open: Option<&'static str>,
+    /// The day the week starts on (`work_hours.week_days[0]`, config.toml's `first_weekday`).
+    pub first_day: String,
+}
+
+/// The day buttons in week order, starting on `first` (`sun` when it isn't a day).
+pub fn week_order(first: &str) -> Vec<(&'static str, &'static str)> {
+    let k = DAYS.iter().position(|(d, _)| *d == first).unwrap_or(0);
+    (0..7).map(|i| DAYS[(k + i) % 7]).collect()
 }
 
 impl State {
@@ -39,6 +47,7 @@ impl State {
             today: s(h, "today_until").into(),
             err: None,
             open: None,
+            first_day: arr(h, "week_days").first().and_then(|d| d.as_str()).unwrap_or("sun").into(),
         }
     }
 
@@ -266,7 +275,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
         }));
     // `.seg.sm`: 3px padding, radius 9; buttons 30px, radius 7, 13px semibold.
     let mut days = div().flex().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
-    for (d, l) in DAYS {
+    for (d, l) in week_order(&st.first_day) {
         let sel = st.days.iter().any(|x| x == d);
         let mut item = div()
             .id(SharedString::from(format!("hours-day-{d}")))
@@ -319,7 +328,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
 
 #[cfg(test)]
 mod tests {
-    use super::{DAYS, State, hour_options, pill_view, save, today_options};
+    use super::{DAYS, State, hour_options, pill_view, save, today_options, week_order};
     use crate::fmt::{self, arr, b, s};
     use crate::parity::golden;
     use serde_json::json;
@@ -344,6 +353,7 @@ mod tests {
                 today: s(m, "today").into(),
                 err: fmt::opt_s(m, "err").map(str::to_string),
                 open: None,
+                first_day: "sun".into(),
             };
             let sel = |opts: Vec<(String, String)>, cur: &str| {
                 json!({"disabled": !st.on, "options": opts.iter().map(|(v, l)| json!([v, l])).collect::<Vec<_>>(),
@@ -375,6 +385,7 @@ mod tests {
                 today: s(m, "today").into(),
                 err: None,
                 open: None,
+                first_day: "sun".into(),
             };
             json!([["/hours", st.body(i["today_until"].as_str().unwrap_or(""))]])
         });
@@ -382,6 +393,17 @@ mod tests {
             let st = State::from_hours(&i["hours"]);
             json!({"on": st.on, "start": st.start, "end": st.end, "days": st.days, "today": st.today})
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn days_follow_the_first_weekday() {
+        let order = |f: &str| week_order(f).iter().map(|(d, _)| *d).collect::<Vec<_>>();
+        assert_eq!(order("sun"), DAYS.iter().map(|(d, _)| *d).collect::<Vec<_>>());
+        assert_eq!(order("mon"), vec!["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+        assert_eq!(order("nope")[0], "sun");
+        let st = State::from_hours(&json!({"on": true, "days": ["mon"], "week_days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}));
+        assert_eq!(st.first_day, "mon");
+        assert_eq!(State::from_hours(&json!({"on": true})).first_day, "sun");
     }
 
     #[::core::prelude::v1::test]
