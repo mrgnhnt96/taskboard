@@ -403,3 +403,41 @@ fn a_failed_fetch_shows_all_of_gits_error() {
     assert!(e.starts_with("git fetch origin main failed:\n"), "{e}");
     assert!(e.lines().count() > 2, "every line git said: {e}");
 }
+
+// ------------------------------------------------------------------ #57 the PR bar
+
+#[test]
+fn the_review_step_is_on_the_card_before_the_pr_opens() {
+    let b = new_board_with(REVIEW, |_| {});
+    let id = b.task("Add login", json!({}));
+    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["wd"], Value::Null, "no round yet");
+    b.take(id);
+    round(&b, &"c".repeat(40), false, json!({"verdict": "fail", "findings": [{"id": "F1", "title": "Typo"}]}), "");
+    let card = board::task_card(&b.app, &b.row(id)).unwrap();
+    assert_eq!(card["pr"], Value::Null);
+    assert_eq!(card["wd"]["bar"], "WD", "{card}");
+    assert_eq!(card["wd"]["headline"], "1 open finding");
+    b.link(id, 21, "feat/login");
+    let card = board::task_card(&b.app, &b.row(id)).unwrap();
+    assert_eq!(card["wd"], Value::Null, "once the PR is open it's in the PR bar");
+    assert_eq!(card["pr"]["bar"]["wd"]["bar"], "WD");
+}
+
+#[test]
+fn new_comments_link_to_the_first_unread_thread() {
+    let b = new_board();
+    let id = b.task("Add login", json!({}));
+    b.link(id, 21, "feat/login");
+    let th = |id: &str, at: &str, url: &str| {
+        json!({"id": id, "kind": "review", "resolvable": true, "resolved": false, "author": "rev", "author_name": "Rev",
+               "last_author": "rev", "last_id": format!("c{id}"), "last_at": at, "text": "Why?", "url": url})
+    };
+    let mut rec = b.flow(id)["rec"].clone();
+    rec["author"] = json!("me");
+    rec["threads"] = json!([th("2", "2026-10-08T10:00:00", "https://github.com/acme/webapp/pull/21#discussion_r2"),
+                            th("1", "2026-10-08T09:00:00", "https://github.com/acme/webapp/pull/21#discussion_r1")]);
+    prflow::merge_flow(&b.app, id, vec![("rec", rec)]).unwrap();
+    let bar = board::task_card(&b.app, &b.row(id)).unwrap()["pr"]["bar"].clone();
+    assert_eq!(bar["new_comments"], 2, "{bar}");
+    assert_eq!(bar["comments_url"], "https://github.com/acme/webapp/pull/21#discussion_r1", "{bar}");
+}

@@ -447,7 +447,27 @@ fn checks_say_when_they_arent_needed_or_this_prs() {
     let text = panel_text(with_bar(json!({"checks": "not_ours", "you": "reviewed"}), Value::Null, "approved"), json!({}));
     assert!(text.contains("Checks Not this PR's") && text.contains("You Reviewed") && text.contains("Review Approved"), "{text}");
     let text = panel_text(with_bar(json!({"new_comments": 2}), json!({"phase": "review"}), "none"), json!({}));
-    assert!(text.contains("Review New comments"), "{text}");
+    assert!(text.contains("Review 2 new comments"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn new_comments_link_to_the_first_unread_thread() {
+    let thread = "https://github.com/acme/webapp/pull/13#discussion_r9";
+    let tree = tree(&json!({"task": with_bar(json!({"new_comments": 1, "comments_url": thread}), json!({"phase": "comments"}), "none"), "state": {}, "ui": {}}));
+    assert!(view::text(&tree).contains("Review 1 new comment"), "{}", view::text(&tree));
+    assert!(format!("{tree:?}").contains(thread), "the link goes to the thread");
+}
+
+#[::core::prelude::v1::test]
+fn the_review_step_shows_before_the_pr_opens() {
+    let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
+                      "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});
+    let text = panel_text(task, json!({}));
+    assert!(text.contains("Ends in a PR No PR yet.") && text.contains("WD 2 open findings"), "{text}");
+    // From the detail's step results too.
+    let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp",
+                      "step_results": [{"name": "Author review", "bar": "WD", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
+    assert!(panel_text(task, json!({})).contains("WD No findings"));
 }
 
 #[::core::prelude::v1::test]

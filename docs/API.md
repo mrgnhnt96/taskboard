@@ -451,7 +451,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "ships_pr_set": bool|null,      // its own setting (`tb task set --pr yes|no`); null = the project's default
   "no_pr": str|null,              // why it finished without its PR (`tb done --no-pr`): "PR canceled: <why>"
   "no_evidence": str|null,        // why it finished without evidence (`tb done --no-evidence`)
-  "stack_on": stack_on|null       // the task whose PR this one's builds on (`--stack-on`)
+  "stack_on": stack_on|null,      // the task whose PR this one's builds on (`--stack-on`)
+  "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`)
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
@@ -488,11 +489,12 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
     "approvals": int, "reviewers": int,           // "1 of 2": approvals of (approvals + reviewers still asked)
     "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
+    "comments_url": str|null,   // where "N new comments" goes: the unread thread waiting longest, else the PR
     "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
-    "wd": step_result|null,      // the author-side review step (a step with `bar`), on GET /tasks/:id only
+    "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int}]
                                  // one pill per reviewer still on the PR, from the host's reviewer states
   }
