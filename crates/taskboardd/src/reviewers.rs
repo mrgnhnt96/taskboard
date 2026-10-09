@@ -118,6 +118,9 @@ pub struct ReviewersConfig {
     pub bot_run_gap_mins: f64,
     /// A timed bot's owner is asked only when it runs within this many minutes.
     pub bot_due_mins: f64,
+    /// Replace a reviewer who hasn't reviewed within `swap_after_mins` work minutes (through the host).
+    pub swap: bool,
+    pub swap_after_mins: f64,
 }
 
 impl Default for ReviewersConfig {
@@ -144,6 +147,8 @@ impl Default for ReviewersConfig {
             bot_window_hours: 12.0,
             bot_run_gap_mins: 30.0,
             bot_due_mins: 45.0,
+            swap: false,
+            swap_after_mins: 90.0,
         }
     }
 }

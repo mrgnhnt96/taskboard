@@ -398,6 +398,95 @@ fn a_reviewer_with_a_timed_bot_is_asked_just_before_it_runs() {
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs", vec![]).unwrap(), 0);
 }
 
+fn crew(b: &Board) {
+    for (n, u) in [("Ana", "{ana}"), ("Bo", "{bo}"), ("Cy", "{cy}"), ("Dee", "{dee}")] {
+        b.add(n, json!({"user": u}));
+    }
+}
+
+/// Makes every open ask on the board look `mins` minutes old.
+fn age_asks(b: &Board, mins: f64) {
+    let at = taskboardd::util::iso(taskboardd::util::now_ts() - mins * 60.0);
+    b.app.db.x("UPDATE review_asks SET asked_at = ? WHERE state = 'open'", vec![json!(at)]).unwrap();
+}
+
+fn states(b: &Board, id: i64) -> Vec<(String, String)> {
+    b.asks(id).iter().map(|a| (a.st("name"), a.st("state"))).collect()
+}
+
+#[test]
+fn a_slow_reviewer_is_swapped_and_comes_back() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    age_asks(&b, 30.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "not timed out yet");
+
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open")]);
+    assert!(h.calls().contains(&"remove {ana}".to_string()), "{:?}", h.calls());
+    assert_eq!(b.flow(id)["swapped_off"], json!(["{ana}"]));
+    assert_eq!(b.asks(id)[1].st("why"), "swap");
+    let rows = &taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap()["reviewer_rows"];
+    let bo = rows.as_array().unwrap().iter().find(|r| r["user"] == "{bo}").unwrap();
+    assert_eq!(bo["swaps"], 1, "{rows}");
+    assert!(bo["asked_at"].is_string());
+
+    // Ana approves anyway: she counts again and Bo, who hasn't looked, is taken off.
+    set_state(&h, "{ana}", "approved");
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "came_back"), pair("Bo", "dropped")]);
+    assert!(h.calls().contains(&"remove {bo}".to_string()));
+    assert_eq!(b.flow(id)["swapped_off"], json!(["{bo}"]));
+}
+
+#[test]
+fn a_swapped_off_request_for_changes_is_waived_and_someone_else_asked() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    age_asks(&b, 100.0);
+    poll(&b);
+    set_state(&h, "{ana}", "changes");
+    h.rec.lock().review_decision = "CHANGES_REQUESTED".into();
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "her request doesn't hold");
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open"), pair("Cy", "open")]);
+    assert_eq!(b.asks(id)[2].st("why"), "fill_in");
+    poll(&b);
+    assert_eq!(b.asks(id).len(), 3, "once");
+}
+
+#[test]
+fn nobody_is_swapped_unless_swapping_is_on_and_the_hours_are_open() {
+    let b = board_with(|_| {});
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    age_asks(&b, 500.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "[reviewers] swap is off");
+
+    let b = board_with(|c| c.reviewers.swap = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    // Work hours that are never open now: a day of the week that isn't today.
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap().format("%a").to_string().to_lowercase();
+    b.post("/hours", json!({"on": true, "start": "00:00", "end": "23:59", "days": tomorrow}));
+    age_asks(&b, 3.0 * 24.0 * 60.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "outside work hours");
+}
+
 pub fn local_ts(y: i32, m: u32, d: u32, h: u32, min: u32) -> f64 {
     use chrono::TimeZone;
     chrono::Local.with_ymd_and_hms(y, m, d, h, min, 0).single().unwrap().timestamp() as f64

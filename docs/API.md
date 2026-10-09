@@ -487,7 +487,8 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged (or "failed: …")
     "wd": step_result|null,      // the author-side review step (a step with `bar`), on GET /tasks/:id only
-    "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int}]
+    "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
+                                 // swaps: how many swaps led to this reviewer (the ask ledger); asked_at: when the board or tb asked them
                                  // one pill per reviewer still on the PR, from the host's reviewer states
   }
 }
@@ -821,6 +822,15 @@ board looks for comments by them that carry `mark` (case-insensitive) on the PRs
 `bot_window_hours`, and records each run in `reviewer_bot_runs` (comments within `bot_run_gap_mins` are one run).
 With a run seen within two intervals the bot is timed: its next run is the last + `every_h`, the picker asks that
 person only when it's at most `bot_due_mins` away, and their pace is the fastest in `speed_by_minutes`.
+
+**The sweep** (`asks.rs`, after each poll) applies the stand-in rules to asks swapped off an open PR (by a swap or
+`tb pr reviewers --replace`): someone swapped off who reviews anyway is `came_back` (their review counts again: they
+leave `pr_flow.swapped_off`), and a stand-in who hasn't reviewed yet is taken off the PR (`dropped`). Someone swapped
+off who asks for changes doesn't block the PR (`prflow::review_of` waives anyone in `swapped_off`), and one more
+reviewer is asked (`fill_in`, once per ask). With `[reviewers] swap = true`, an ask still open after
+`swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
+by the picker's choice (`swap`): only inside work hours and never while `asks::feed_holding` (the event feed's
+health gate) says to hold. Each change is logged on the task and the PR is read again.
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 

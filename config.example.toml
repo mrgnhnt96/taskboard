@@ -228,6 +228,11 @@ cache_mins = 10.0
 bot_window_hours = 12.0               # marked comments this recent count
 bot_run_gap_mins = 30.0               # marked comments this close together are one run
 bot_due_mins = 45.0
+# Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the
+# PR host by the picker's choice (only inside work hours). Someone swapped off who reviews anyway counts
+# again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is asked.
+swap = false
+swap_after_mins = 90.0
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a

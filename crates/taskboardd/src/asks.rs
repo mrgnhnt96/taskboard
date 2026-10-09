@@ -266,12 +266,21 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
     })
 }
 
-/// After each poll: brings the ledger up to date with what the PRs say. An ask is answered when its
-/// reviewer has reviewed (their speed is the work minutes it took), and closed when the PR merged
-/// or closed first.
+/// After each poll: brings the ledger up to date with what the PRs say, then applies the stand-in
+/// rules and swaps reviewers who took too long.
+///
+/// - An ask is answered when its reviewer has reviewed (their speed is the work minutes it took),
+///   and closed when the PR merged or closed first.
+/// - Came back: someone swapped off who reviews anyway counts again, and their stand-in, if they
+///   haven't reviewed yet, is taken off.
+/// - Fill-in: someone swapped off who asks for changes doesn't block (they stay in `swapped_off`),
+///   and one more reviewer is asked, once.
+/// - Swap (`[reviewers] swap`): an ask still unanswered after `swap_after_mins` work minutes is
+///   replaced through the host by the picker's choice. Only inside work hours, and never while the
+///   event feed is holding ([`feed_holding`]).
 pub fn sweep(app: &App) -> Result<()> {
     app.db.tx(|| crate::botrun::note_runs(app))?;
-    let tasks = app.db.q("SELECT DISTINCT t.* FROM tasks t JOIN review_asks a ON a.task_id = t.id WHERE a.state = 'open'", vec![])?;
+    let tasks = app.db.q("SELECT DISTINCT t.* FROM tasks t JOIN review_asks a ON a.task_id = t.id WHERE a.state IN ('open', 'swapped')", vec![])?;
     for t in tasks {
         let f = flow(&t);
         let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { continue };
@@ -279,15 +288,137 @@ pub fn sweep(app: &App) -> Result<()> {
         app.db.tx(|| {
             for a in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'open'", crate::p![t.id()])? {
                 if let Some(ans) = answer_of(&rec, &a.st("host_user")) {
-                    let at = a.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
-                    let mins = crate::picker::work_minutes(app, at, now_ts());
-                    app.db.update("review_asks", &json!(a.id()), fields!["state" => "answered", "answer" => ans, "answered_at" => now_iso(), "work_mins" => (mins * 10.0).round() / 10.0])?;
+                    answered(app, &a, "answered", &ans)?;
                 } else if finished {
                     reviewers::close_ask(app, a.id(), "closed")?;
                 }
             }
             Ok(())
         })?;
+        if finished || t.s("status") != Some("done") {
+            continue;
+        }
+        let mut changed = false;
+        match stand_ins(app, &t, &rec) {
+            Ok(c) => changed |= c,
+            Err(e) => app.info(format!("reviewers: stand-in rules on {}: {}", rf("task", t.id()), e.message)),
+        }
+        match swap_slow(app, &t, &rec) {
+            Ok(c) => changed |= c,
+            Err(e) => app.info(format!("reviewers: swapping on {}: {}", rf("task", t.id()), e.message)),
+        }
+        if changed {
+            // The reviewers changed on the host: read the PR again so the board shows them.
+            let _ = prflow::refresh_task(app, t.id())?;
+        }
     }
     Ok(())
+}
+
+fn answered(app: &App, a: &Row, state: &str, ans: &str) -> Result<()> {
+    let at = a.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
+    let mins = crate::picker::work_minutes(app, at, now_ts());
+    app.db.update("review_asks", &json!(a.id()), fields!["state" => state, "answer" => ans, "answered_at" => now_iso(), "work_mins" => (mins * 10.0).round() / 10.0])
+}
+
+/// Came back and fill-in, for the asks swapped off this task's PR.
+fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
+    let pr = pr_of(t)?;
+    let num = pr.num;
+    let mut changed = false;
+    for old in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'swapped'", crate::p![t.id()])? {
+        let user = old.st("host_user");
+        let Some(ans) = answer_of(rec, &user) else { continue };
+        let stand: Vec<Row> = app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND replaces = ? AND state = 'open'", crate::p![t.id(), old.id()])?;
+        if ans == "changes" {
+            if old.b("filled") {
+                continue;
+            }
+            let t = board::get_task(app, t.id())?;
+            let pick = pick(app, &t, rec, 1, &[])?.into_iter().next();
+            if let Some((w, _)) = &pick {
+                host(app, &pr)?.request_reviews(&pr, std::slice::from_ref(&w.user)).map_err(|e| ApiError::new(502, e))?;
+            }
+            changed = true;
+            app.db.tx(|| {
+                app.db.update("review_asks", &json!(old.id()), fields!["filled" => 1])?;
+                let text = match &pick {
+                    Some((w, _)) => {
+                        reviewers::record_ask(app, &t, &w.user, &w.name, "fill_in", board::BOARD, Some(old.id()))?;
+                        format!("{} asked for changes on PR #{num} after being swapped off, so it doesn't hold; asked {} to look too", old.st("name"), w.name)
+                    }
+                    None => format!("{} asked for changes on PR #{num} after being swapped off, so it doesn't hold; nobody else could be asked", old.st("name")),
+                };
+                reviewers::note(app, &t, board::BOARD, &text)
+            })?;
+            continue;
+        }
+        // They reviewed after all: their review counts, and a stand-in who hasn't looked yet goes.
+        let gone: Vec<String> = stand.iter().map(|s| s.st("host_user")).filter(|u| answer_of(rec, u).is_none()).collect();
+        if !gone.is_empty() {
+            host(app, &pr)?.remove_reviewers(&pr, &gone).map_err(|e| ApiError::new(502, e))?;
+        }
+        changed = true;
+        app.db.tx(|| {
+            answered(app, &old, "came_back", &ans)?;
+            swap_on(app, t.id(), &user)?;
+            for s in stand.iter().filter(|s| gone.contains(&s.st("host_user"))) {
+                reviewers::close_ask(app, s.id(), "dropped")?;
+                swap_off(app, t.id(), &s.st("host_user"))?;
+            }
+            let names: Vec<String> = stand.iter().filter(|s| gone.contains(&s.st("host_user"))).map(|s| s.st("name")).collect();
+            let tail = if names.is_empty() { String::new() } else { format!("; took {} off", names.join(", ")) };
+            reviewers::note(app, t, board::BOARD, &format!("{} reviewed PR #{num} after being swapped off{tail}", old.st("name")))
+        })?;
+    }
+    Ok(changed)
+}
+
+/// Swaps each reviewer who hasn't answered within `swap_after_mins` work minutes.
+fn swap_slow(app: &App, t: &Row, rec: &Value) -> Result<bool> {
+    let cfg = &app.cfg.reviewers;
+    if !cfg.swap || feed_holding(app) || !crate::hours::is_open(app) || !matches!(t.s("pr_phase"), Some("review") | Some("rereview")) {
+        return Ok(false);
+    }
+    let pr = pr_of(t)?;
+    let mut changed = false;
+    for a in app.db.q("SELECT * FROM review_asks WHERE task_id = ? AND state = 'open'", crate::p![t.id()])? {
+        let at = a.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
+        if crate::picker::work_minutes(app, at, now_ts()) < cfg.swap_after_mins {
+            continue;
+        }
+        let t = board::get_task(app, t.id())?;
+        let old = a.st("host_user");
+        let Some((new, _)) = pick(app, &t, rec, 1, std::slice::from_ref(&old))?.into_iter().next() else { continue };
+        host(app, &pr)?.replace_reviewer(&pr, &old, &new.user).map_err(|e| ApiError::new(502, e))?;
+        changed = true;
+        app.db.tx(|| {
+            reviewers::close_ask(app, a.id(), "swapped")?;
+            swap_off(app, t.id(), &old)?;
+            reviewers::record_ask(app, &t, &new.user, &new.name, "swap", board::BOARD, Some(a.id()))?;
+            let mins = cfg.swap_after_mins.round() as i64;
+            reviewers::note(app, &t, board::BOARD, &format!("{} hadn't reviewed PR #{} after {} work minutes; asked {} instead", a.st("name"), pr.num, mins, new.name))
+        })?;
+    }
+    Ok(changed)
+}
+
+/// How many swaps led to each reviewer's current ask on this task (by host id, lowercased), and when
+/// they were asked: for the PR bar's reviewer pills.
+pub fn pill_info(app: &App, task_id: i64) -> Result<std::collections::HashMap<String, (i64, Value)>> {
+    let asks = reviewers::asks_of(app, task_id)?;
+    let mut out = std::collections::HashMap::new();
+    for a in asks.iter().filter(|a| matches!(a.s("state"), Some("open") | Some("answered") | Some("came_back"))) {
+        let mut swaps = 0;
+        let mut cur = a.i("replaces");
+        while let Some(id) = cur {
+            swaps += 1;
+            cur = asks.iter().find(|x| x.id() == id).and_then(|x| x.i("replaces"));
+            if swaps > 50 {
+                break;
+            }
+        }
+        out.insert(a.st("host_user").to_lowercase(), (swaps, a.v("asked_at")));
+    }
+    Ok(out)
 }
