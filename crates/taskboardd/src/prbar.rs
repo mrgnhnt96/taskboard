@@ -8,17 +8,17 @@ use crate::app::App;
 use crate::util::*;
 use crate::{prflow, stack};
 
-/// The link of the check to look at: the first failed one, else the first with a link.
-pub fn build_url(rec: &Value) -> Value {
+/// Where the Checks step links: the first failed check, else the PR's own list of checks (GitHub's
+/// Checks tab; elsewhere the PR), not whichever check happened to post first.
+pub fn build_url(rec: &Value, pr_url: Option<&str>) -> Value {
     let checks = rec["checks"].as_array().cloned().unwrap_or_default();
     let link = |c: &Value| c["url"].as_str().filter(|u| u.starts_with("http")).map(|u| u.to_string());
-    checks
-        .iter()
-        .filter(|c| c["state"] == "failed")
-        .find_map(link)
-        .or_else(|| checks.iter().find_map(link))
-        .map(Value::String)
-        .unwrap_or(Value::Null)
+    let failed = checks.iter().filter(|c| c["state"] == "failed").find_map(link);
+    let all = pr_url.filter(|u| u.starts_with("http")).map(|u| {
+        let u = u.trim_end_matches('/');
+        if u.starts_with("https://github.com/") { format!("{u}/checks") } else { u.to_string() }
+    });
+    failed.or(all).map(Value::String).unwrap_or(Value::Null)
 }
 
 /// `pr.bar` on a task card with a PR.
@@ -63,6 +63,16 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     }
     // "x of N": the host's reviewer list when it has one, else approvals plus the reviewers still asked.
     let reviewers = if rec["reviewers"].is_array() { rows.len() as i64 } else { approvals + rec["requested"].as_i64().unwrap_or(0) };
+    // The Review step: "off" when the project has none, "setup" when nobody's on the PR and the
+    // board has no one it could ask (`tb reviewers add`, or `tb project set --review off`).
+    let project = t.st("project");
+    let review_step = if !crate::reviewers::review_on(app, Some(&project)) {
+        "off"
+    } else if reviewers == 0 && !crate::reviewers::any_askable(app, &project)? {
+        "setup"
+    } else {
+        ""
+    };
     let open = if rec["threads"].is_array() { prflow::open_threads(&f, &rec) } else { vec![] };
     let new_comments = if rec["threads"].is_array() { open.len() as i64 } else { (rec["comments"].as_i64().unwrap_or(0) - f.i0("comments_seen")).max(0) };
     // "N new comments" links to the first unread thread (the one waiting longest), else the PR.
@@ -73,7 +83,8 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         .and_then(|th| th["url"].as_str().map(|u| u.to_string()))
         .or_else(|| t.s("pr_url").filter(|u| u.starts_with("http") && new_comments > 0).map(|u| u.to_string()));
     Ok(json!({
-        "build_url": build_url(&rec),
+        "build_url": build_url(&rec, t.s("pr_url")),
+        "review": if review_step.is_empty() { Value::Null } else { json!(review_step) },
         "checks": if checks.is_empty() { Value::Null } else { json!(checks) },
         "checks_why": skipped,
         "you": if you.is_empty() { Value::Null } else { json!(you) },

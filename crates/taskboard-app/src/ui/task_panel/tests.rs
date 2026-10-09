@@ -462,6 +462,18 @@ fn checks_say_when_they_arent_needed_or_this_prs() {
 }
 
 #[::core::prelude::v1::test]
+fn review_says_when_it_needs_setup_or_is_off_and_not_asked_links_nowhere() {
+    let tree = tree(&json!({"task": with_bar(json!({}), Value::Null, "none"), "state": {}, "ui": {}}));
+    assert!(view::text(&tree).contains("Review Not asked"), "{}", view::text(&tree));
+    let dbg = format!("{tree:?}");
+    assert!(dbg.contains("\"Not asked\"") && !dbg.contains("Link { s: \"Not asked\""), "Not asked has no link: {dbg}");
+    let text = panel_text(with_bar(json!({"review": "setup"}), Value::Null, "none"), json!({}));
+    assert!(text.contains("Review Needs setup"), "{text}");
+    let text = panel_text(with_bar(json!({"review": "off"}), Value::Null, "none"), json!({}));
+    assert!(text.contains("Review Off"), "{text}");
+}
+
+#[::core::prelude::v1::test]
 fn new_comments_link_to_the_first_unread_thread() {
     let thread = "https://github.com/acme/webapp/pull/13#discussion_r9";
     let tree = tree(&json!({"task": with_bar(json!({"new_comments": 1, "comments_url": thread}), json!({"phase": "comments"}), "none"), "state": {}, "ui": {}}));
