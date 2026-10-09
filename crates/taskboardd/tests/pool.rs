@@ -341,9 +341,10 @@ fn a_goal_keeps_its_own_devices() {
     let pool = b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8", "reserved": true}));
     assert_eq!(pool["devices"][0]["reserved"], true);
     b.post(&format!("goals/G{g3}/devices"), json!({"device": "rig", "purpose": "measure"}));
-    let (code, msg) = b.post_err(&format!("goals/G{g4}/devices"), json!({"device": "pixel-8", "reserved": true}));
-    assert_eq!(code, 409, "{msg}");
-    assert!(msg.contains(&format!("reserved for G{g3}")), "{msg}");
+    // Two goals may reserve one device, as on the Python board: they share it.
+    b.post(&format!("goals/G{g4}/devices"), json!({"device": "pixel-8", "reserved": true}));
+    assert_eq!(b.get("devices/pixel-8")["reserved_for"], format!("G{g3} and G{g4}"));
+    b.post(&format!("goals/G{g4}/devices/pixel-8/remove"), json!({}));
     let (code, _) = b.post_err(&format!("goals/G{g3}/devices"), json!({"device": "rig", "purpose": "Not A Tag!"}));
     assert_eq!(code, 400);
 
@@ -380,4 +381,49 @@ fn a_goal_keeps_its_own_devices() {
     assert!(b.get("devices/pixel-8")["reserved_for"].is_null());
     let (code, _) = b.post_err(&format!("goals/G{g3}/devices/pixel-8/remove"), json!({}));
     assert_eq!(code, 404);
+}
+
+/// The Python board's pool rules (#84): a goal with devices of its own lends only those, a purpose
+/// can be a comma list, and an archived goal holds nothing back.
+#[test]
+fn a_goals_pool_lends_only_its_own_and_an_archived_goal_lets_go() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices", json!({"name": "pixel-8", "tags": "android"}));
+    let g3 = b.goal();
+    let g4 = b.goal();
+    let pool = b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8", "purpose": "measure, demo", "reserved": true}));
+    assert_eq!(pool["devices"][0]["purpose"], "measure,demo");
+
+    // G3's tasks get only G3's devices, each purpose a tag.
+    let two = b.task("Two", json!({"goal_id": g3, "devices": "android:2"}));
+    b.post(&format!("goals/G{g3}/run"), json!({}));
+    assert_eq!(b.waiting(two), format!("Needs 2 android devices, and G{g3}'s own devices have 1"));
+    b.post(&format!("tasks/T{two}"), json!({"devices": "demo"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{two}"))["devices"]["lent"], json!(["pixel-8"]));
+    b.set(two, "done");
+
+    // Archived, G3 reserves nothing: G4's task can have pixel-8, and the device says nothing of G3.
+    let other = b.task("Other", json!({"goal_id": g4, "devices": "android:2"}));
+    b.post(&format!("goals/G{g4}/run"), json!({}));
+    assert!(b.waiting(other).as_str().unwrap_or("").contains(&format!("reserved for G{g3}")));
+    b.post(&format!("goals/G{g3}"), json!({"archived": true}));
+    assert!(b.get("devices/pixel-8")["reserved_for"].is_null());
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{other}"))["devices"]["lent"], json!(["pixel-7", "pixel-8"]));
+    assert_eq!(b.get(&format!("goals/G{g3}/devices"))["devices"][0]["name"], "pixel-8", "its page still lists its own");
+}
+
+#[test]
+fn with_goal_pool_only_off_a_goal_borrows_from_the_rest() {
+    let b = board_with(|c| c.devices.goal_pool_only = false);
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices", json!({"name": "pixel-8", "tags": "android"}));
+    let g3 = b.goal();
+    b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8"}));
+    let two = b.task("Two", json!({"goal_id": g3, "devices": "android:2"}));
+    b.post(&format!("goals/G{g3}/run"), json!({}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{two}"))["devices"]["lent"], json!(["pixel-8", "pixel-7"]), "its own first");
 }

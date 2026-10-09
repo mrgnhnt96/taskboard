@@ -49,25 +49,29 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
           last_asked TEXT, asks INTEGER DEFAULT 0, swaps INTEGER DEFAULT 0);
         CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INTEGER, email TEXT, asked_at TEXT,
           state TEXT DEFAULT 'open', answered_at TEXT);
-        CREATE TABLE master_breaks(id INTEGER PRIMARY KEY, sha TEXT, url TEXT, build_id TEXT, pipeline TEXT, title TEXT,
+        CREATE TABLE master_breaks(id INTEGER PRIMARY KEY, sha TEXT, url TEXT, build_id INT, pipeline TEXT, title TEXT,
           state TEXT DEFAULT 'open', verdict TEXT, reason TEXT, opened_at TEXT, closed_at TEXT);
         -- The Python board's migrations.
         ALTER TABLE reviewers ADD COLUMN bb_name TEXT;
         ALTER TABLE reviewers ADD COLUMN bot_every INTEGER;
         ALTER TABLE reviewers ADD COLUMN bot_ran_at TEXT;
         ALTER TABLE reviewers ADD COLUMN automated TEXT;
-        ALTER TABLE review_asks ADD COLUMN replaces TEXT;
+        ALTER TABLE reviewers ADD COLUMN slack_id TEXT;
+        ALTER TABLE review_asks ADD COLUMN replaces INT;
         ALTER TABLE review_asks ADD COLUMN filled_at TEXT;
         ALTER TABLE review_asks ADD COLUMN tries INTEGER DEFAULT 0;
-        ALTER TABLE review_asks ADD COLUMN busy INTEGER DEFAULT 0;
+        ALTER TABLE review_asks ADD COLUMN busy TEXT;
+        ALTER TABLE review_asks ADD COLUMN swapped_at TEXT;
+        ALTER TABLE review_asks ADD COLUMN reply TEXT;
+        ALTER TABLE review_asks ADD COLUMN reply_said TEXT;
         ALTER TABLE master_breaks ADD COLUMN proof TEXT;
         ALTER TABLE master_breaks ADD COLUMN fix TEXT;
         ALTER TABLE master_breaks ADD COLUMN error TEXT;
         ALTER TABLE master_breaks ADD COLUMN base TEXT;
         CREATE TABLE photos(id INTEGER PRIMARY KEY, url TEXT);
-        CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, kind TEXT, tags TEXT, focus_cmd TEXT, disabled INT DEFAULT 0);
+        CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, tags TEXT, blocked TEXT, removed_at TEXT);
         CREATE TABLE device_loans(id INTEGER PRIMARY KEY, device_id TEXT, task_id INT, lent_at TEXT, returned_at TEXT);
-        CREATE TABLE goal_devices(goal_id INT, tag TEXT, count INT);
+        CREATE TABLE goal_devices(goal_id INT, device_id TEXT, purpose TEXT, reserved INT);
         CREATE TABLE bits(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, project TEXT, made_at TEXT, goal_id INT);
 
         INSERT INTO goals VALUES (3, 'Checkout v2', 'Pay with one click', 'web', '2026-09-01T10:00:00Z', 0, 'Run make seed first');
@@ -108,19 +112,29 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         INSERT INTO settings VALUES ('review_log_health', '{"ok":true}');
         INSERT INTO settings VALUES ('saggar_projects', '[{"name":"web"}]');
         INSERT INTO jobs VALUES (1, 'agent', 'pending');
-        INSERT INTO reviewers VALUES (1, 'web', 'ana.old@acme.dev', 'Ana B', '["ana@acme.dev","anab"]', 6, 1, 0, '2026-09-01T09:00:00Z', 3, 1, NULL, NULL, NULL, NULL);
-        INSERT INTO reviewers VALUES (2, 'web', 'ana@acme.dev', 'Ana', NULL, 579, 0, 1, '2026-09-03T09:00:00Z', 12, 2, 'Ana Lima', NULL, NULL, 'high');
-        INSERT INTO reviewers VALUES (3, 'web', 'bo@acme.dev', 'Bo', NULL, 40, 1, 0, NULL, 0, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO reviewers VALUES (4, 'web', 'bot@acme.dev', 'Reviewbot', NULL, 10, 0, 0, NULL, 0, 0, 'Review Bot', 180, '2026-09-03T08:00:00Z', 'low');
-        INSERT INTO reviewers VALUES (5, NULL, 'cy@acme.dev', 'Cy', NULL, 3, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO reviewers VALUES (6, NULL, 'nobody@acme.dev', 'Nobody', NULL, 0, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL);
-        INSERT INTO review_asks VALUES (1, 7, 'ana@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, 0);
-        INSERT INTO review_asks VALUES (2, 7, 'bo@acme.dev', '2026-09-03T09:00:00Z', 'swapped', NULL, NULL, '2026-09-03T13:00:00Z', 2, 1);
-        INSERT INTO review_asks VALUES (3, 7, 'bot@acme.dev', '2026-09-03T11:00:00Z', 'answered', '2026-09-03T12:00:00Z', 'bo@acme.dev', NULL, 1, 0);
-        INSERT INTO review_asks VALUES (4, 12, 'ana.old@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, 0);
-        INSERT INTO review_asks VALUES (5, 14, 'cy@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, 0);
-        INSERT INTO review_asks VALUES (6, 99, 'zed@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, 0);
-        INSERT INTO review_asks VALUES (7, 13, 'anab', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, 0);
+        INSERT INTO reviewers VALUES (1, 'web', 'ana.old@acme.dev', 'Ana B', '["ana@acme.dev","anab"]', 6, 1, 0, '2026-09-01T09:00:00Z', 3, 1, NULL, NULL, NULL, NULL, NULL);
+        INSERT INTO reviewers VALUES (2, 'web', 'ana@acme.dev', 'Ana', NULL, 579, 0, 1, '2026-09-03T09:00:00Z', 12, 2, 'Ana Lima', NULL, NULL, 'yes', NULL);
+        INSERT INTO reviewers VALUES (3, 'web', 'bo@acme.dev', 'Bo', NULL, 40, 1, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL);
+        INSERT INTO reviewers VALUES (4, 'web', 'bot@acme.dev', 'Reviewbot', NULL, 10, 0, 0, NULL, 0, 0, 'Review Bot', 180, '2026-09-03T08:00:00Z', 'sometimes', NULL);
+        INSERT INTO reviewers VALUES (5, NULL, 'cy@acme.dev', 'Cy', NULL, 3, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 'no', NULL);
+        INSERT INTO reviewers VALUES (6, NULL, 'nobody@acme.dev', 'Nobody', NULL, 0, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL);
+        -- Dee: an active row with fewer commits than her removed one; she stays active.
+        INSERT INTO reviewers VALUES (7, 'web', 'dee.old@acme.dev', 'Dee O', '["dee@acme.dev"]', 500, 1, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL);
+        INSERT INTO reviewers VALUES (8, 'web', 'dee@acme.dev', 'Dee', NULL, 50, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 'some', NULL);
+        -- Eve: two rows that share only a Slack id.
+        INSERT INTO reviewers VALUES (9, 'web', 'eve@acme.dev', 'Eve', NULL, 20, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, 'U0EVE');
+        INSERT INTO reviewers VALUES (10, 'web', 'eve@home.dev', 'Eve H', NULL, 2, 0, 0, NULL, 0, 0, NULL, NULL, NULL, NULL, 'U0EVE');
+        INSERT INTO review_asks VALUES (1, 7, 'ana@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (2, 7, 'bo@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, '2026-09-03T13:00:00Z', 2, 'in a meeting', '2026-09-03T11:00:00Z', NULL, NULL);
+        INSERT INTO review_asks VALUES (3, 7, 'bot@acme.dev', '2026-09-03T11:00:00Z', 'answered', '2026-09-03T12:00:00Z', 2, NULL, 1, NULL, NULL, 'approved', NULL);
+        INSERT INTO review_asks VALUES (4, 12, 'ana.old@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (5, 14, 'cy@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (6, 99, 'zed@acme.dev', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        INSERT INTO review_asks VALUES (7, 13, 'anab', '2026-09-03T09:00:00Z', 'open', NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL);
+        -- Answered, then swapped off: not a reviewer on the PR any more.
+        INSERT INTO review_asks VALUES (8, 12, 'bo@acme.dev', '2026-09-03T09:00:00Z', 'answered', '2026-09-03T10:00:00Z', NULL, NULL, 0, NULL, '2026-09-03T11:00:00Z', NULL, 'Needs changes to the totals');
+        -- Swapped off, then answered anyway, in words of its own.
+        INSERT INTO review_asks VALUES (9, 12, 'bot@acme.dev', '2026-09-03T09:00:00Z', 'open', '2026-09-03T12:00:00Z', NULL, NULL, 0, NULL, '2026-09-03T11:00:00Z', 'Left two notes', NULL);
         INSERT INTO master_breaks VALUES (1, 'abc1', 'https://bitbucket.org/acme/api/pipelines/results/41', '41', 'Pipeline', 'Build fails on master',
           'fixed', 'yours', 'My commit broke the build', '2026-09-03T09:00:00Z', '2026-09-03T10:00:00Z', NULL, 'T12', 'error: x
           at y', 'master');
@@ -128,15 +142,18 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
           'open', 'not_yours', 'Not our files', '2026-09-04T09:00:00Z', NULL, 'https://bitbucket.org/acme/api/pipelines/results/40 failed the same', NULL, NULL, 'master');
         INSERT INTO master_breaks VALUES (4, 'fed4', NULL, NULL, NULL, 'Flaky?', 'open', 'unsure', 'Flaky?', '2026-09-04T10:00:00Z', NULL, NULL, NULL, NULL, 'release');
         INSERT INTO photos VALUES (1, 'x.png');
-        INSERT INTO devices VALUES ('pixel', 'Pixel 9', 'android', 'phone', 'open -a Pixel', 0);
-        INSERT INTO devices VALUES ('emu', 'emu-1', 'android', NULL, NULL, 0);
-        INSERT INTO devices VALUES ('iphone', 'iPhone 15', 'ios', '["phone","usb"]', NULL, 1);
-        INSERT INTO devices VALUES ('dup', 'pixel 9', 'android', NULL, NULL, 0);
+        INSERT INTO goals VALUES (4, 'Wallet', 'Pay later', 'web', '2026-09-01T10:00:00Z', 0, NULL);
+        INSERT INTO devices VALUES ('pixel', 'Pixel 9', 'android,phone', NULL, NULL);
+        INSERT INTO devices VALUES ('emu', 'emu-1', 'android', NULL, NULL);
+        INSERT INTO devices VALUES ('iphone', 'iPhone 15', '["ios","phone","usb"]', 'the demo', NULL);
+        INSERT INTO devices VALUES ('dup', 'pixel 9', 'android', NULL, NULL);
         INSERT INTO device_loans VALUES (1, 'pixel', 7, '2026-09-03T09:00:00Z', NULL);
         INSERT INTO device_loans VALUES (2, 'gone-device', 7, '2026-09-03T09:00:00Z', NULL);
         INSERT INTO device_loans VALUES (3, 'emu', 12, '2026-09-03T09:00:00Z', NULL);
-        INSERT INTO goal_devices VALUES (3, 'android', 1);
-        INSERT INTO goal_devices VALUES (3, 'iphone', 1);
+        -- Purposes as a comma list; two goals reserve the pixel.
+        INSERT INTO goal_devices VALUES (3, 'pixel', 'measure,Demo day', 1);
+        INSERT INTO goal_devices VALUES (4, 'pixel', NULL, 1);
+        INSERT INTO goal_devices VALUES (3, 'iphone', NULL, 0);
         INSERT INTO bits VALUES (2, 'checkout.v2', 'backend', 'web', NULL, 3);
         INSERT INTO bits VALUES (4, 'receipts.email', 'local', 'web', NULL, NULL);
         "#
@@ -199,13 +216,12 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert!(rep.skipped.iter().any(|s| s.starts_with("T15 PR #3")));
 
     // Devices, their loans, and what tasks and goals ask for.
-    let devs = app.db.q("SELECT name, tags, focus, off FROM devices ORDER BY name", vec![]).unwrap();
+    let devs = app.db.q("SELECT name, tags, note, off FROM devices ORDER BY name", vec![]).unwrap();
     let names: Vec<String> = devs.iter().map(|d| d.st("name")).collect();
     assert_eq!(names, vec!["emu-1", "iphone-15", "pixel-9"]);
     let pixel = &devs[2];
-    assert_eq!(serde_json::from_str::<Value>(&pixel.st("tags")).unwrap(), json!(["phone", "android"]));
-    assert_eq!(pixel.s("focus"), Some("open -a Pixel"));
-    assert_eq!(devs[1].i("off"), Some(1), "a disabled device comes over off");
+    assert_eq!(serde_json::from_str::<Value>(&pixel.st("tags")).unwrap(), json!(["android", "phone"]));
+    assert_eq!((devs[1].i("off"), devs[1].s("note")), (Some(1), Some("Kept for the demo")), "a blocked device comes over off");
     assert!(rep.skipped.iter().any(|s| s.contains("devices pixel-9")), "two devices with one name: the second is listed");
     assert_eq!(taskboardd::devices::lent(&app, 7).unwrap(), vec!["pixel-9"]);
     assert!(rep.skipped.iter().any(|s| s.starts_with("device_loans 2")));
@@ -213,8 +229,13 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!(app.db.val("SELECT released_at FROM device_loans WHERE task_id = 12", vec![]).unwrap(), json!("2026-09-04T09:00:00Z"));
     let needs = |owner: &str| app.db.val("SELECT needs FROM device_needs WHERE owner = ?", vec![json!(owner)]).unwrap();
     assert_eq!(serde_json::from_str::<Value>(needs("T7").as_str().unwrap()).unwrap(), json!([{"tag": "android", "n": 2}, {"tag": "ios", "n": 1}]));
-    assert_eq!(serde_json::from_str::<Value>(needs("G3").as_str().unwrap()).unwrap(), json!([{"tag": "android", "n": 1}, {"tag": "iphone-15", "n": 1}]));
+    assert!(needs("G3").is_null(), "the goal's devices are its pool, not needs");
     assert!(needs("T12").is_null());
+    // The goals' pools: a comma list of purposes, each a tag; both goals' reservations of the pixel.
+    let pool = |g: &str| get(&app, &format!("goals/{g}/devices"))["devices"].as_array().unwrap().iter().map(|d| (d["name"].as_str().unwrap().to_string(), d["purpose"].clone(), d["reserved"] == true)).collect::<Vec<_>>();
+    assert_eq!(pool("G3"), vec![("iphone-15".into(), Value::Null, false), ("pixel-9".into(), json!("measure,demo-day"), true)]);
+    assert_eq!(pool("G4"), vec![("pixel-9".into(), Value::Null, true)]);
+    assert_eq!(get(&app, "devices/pixel-9")["reserved_for"], "G3 and G4");
     assert_eq!(
         serde_json::from_str::<Value>(needs("T14").as_str().unwrap()).unwrap(),
         json!([{"tag": "pixel-9", "n": 1}, {"tag": "usb", "n": 1}]),
@@ -254,7 +275,7 @@ fn an_old_board_comes_over_with_its_numbers() {
 
     // The reviewer roster: one row per person and project, with what the old board knew of them.
     let rv = |name: &str| app.db.q1("SELECT * FROM reviewers WHERE name = ?", vec![json!(name)]).unwrap().unwrap();
-    assert_eq!(app.db.count("SELECT COUNT(*) FROM reviewers", vec![]).unwrap(), 4, "Ana B is Ana (an alias is her email); Nobody has no project");
+    assert_eq!(app.db.count("SELECT COUNT(*) FROM reviewers", vec![]).unwrap(), 6, "Ana B is Ana (an alias is her email), Dee O is Dee, Eve H is Eve; Nobody has no project");
     let ana = rv("Ana");
     assert_eq!((ana.st("project"), ana.st("source")), ("web".into(), "import".into()));
     assert!(ana.s("removed_at").is_none(), "folding in a removed alias row leaves Ana as she was");
@@ -264,20 +285,27 @@ fn an_old_board_comes_over_with_its_numbers() {
     for a in ["Ana Lima", "Ana B", "anab"] {
         assert!(aliases.iter().any(|x| x == a), "{a} names Ana: {aliases:?}");
     }
-    assert_eq!((ana.i("pinned"), ana.f("automation")), (Some(1), Some(2.0)), "automated = high");
+    assert_eq!((ana.i("pinned"), ana.f("automation")), (Some(1), Some(6.67)), "automated = yes: 1.0 against no's 0.15");
     let ana_d = taskboardd::reviewers::dict(&app, &ana).unwrap();
     assert_eq!((ana_d["asks"].as_i64(), ana_d["swaps"].as_i64(), ana_d["last_asked"].as_str()), (Some(15), Some(3), Some("2026-09-03T09:00:00Z")), "the old counts carry on");
     assert_eq!(taskboardd::reviewers::ask_count(&app, &ana).unwrap(), 15);
     let bo = rv("Bo");
     assert!(bo.s("removed_at").is_some(), "removed: never asked again");
     let bot = rv("Reviewbot");
-    assert_eq!((bot.f("bot_every_h"), bot.f("automation")), (Some(3.0), Some(0.5)), "bot_every is minutes; automated = low");
+    assert_eq!((bot.f("bot_every_h"), bot.f("automation")), (Some(3.0), Some(2.33)), "bot_every is minutes; automated = sometimes");
     assert!(bot.st("aliases").contains("Review Bot"), "bb_name is an alias");
     assert_eq!(app.db.val("SELECT at FROM reviewer_bot_runs WHERE reviewer_id = ?", vec![json!(bot.id())]).unwrap(), json!("2026-09-03T08:00:00Z"), "bot_ran_at is its last run");
     assert!(rep.copied.iter().any(|(t, n)| t == "reviewer_bot_runs" && *n == 1));
     assert_eq!(rv("Cy").st("project"), "api", "no project of its own: the one it was asked on");
+    assert_eq!(rv("Cy").f("automation"), Some(1.0), "automated = no is the board's normal");
     assert!(rep.skipped.iter().any(|s| s == "reviewers Nobody: no project"));
-    assert!(rep.copied.iter().any(|(t, n)| t == "reviewers" && *n == 4));
+    assert!(rep.copied.iter().any(|(t, n)| t == "reviewers" && *n == 6));
+    let dee = rv("Dee");
+    assert!(dee.s("removed_at").is_none(), "her active row stays, though the removed one has more commits");
+    assert_eq!((dee.i("commits"), dee.f("automation")), (Some(550), Some(4.0)), "automated = some");
+    let eve = rv("Eve");
+    assert_eq!(serde_json::from_str::<Value>(&eve.st("emails")).unwrap(), json!(["eve@acme.dev", "eve@home.dev"]), "one Slack id, one person");
+    assert_eq!((eve.st("slack"), eve.i("commits")), ("U0EVE".into(), Some(22)));
 
     // Each ask, matched by email or alias, with its state and stand-in; an open ask closes only
     // when its PR is merged or closed, not because its task is done.
@@ -286,17 +314,25 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!((a1.i("reviewer_id"), a1.st("state"), a1.st("why"), a1.st("name")), (Some(ana.id()), "open".into(), "pick".into(), "Ana".into()));
     assert_eq!((a1.st("pr_host"), a1.st("pr_repo"), a1.i("pr_num")), ("github".into(), "acme/web".into(), Some(41)), "the PR comes from the task");
     let a2 = ask(2);
-    assert_eq!((a2.st("state"), a2.i("reviewer_id"), a2.i("filled")), ("swapped".into(), Some(bo.id()), Some(1)), "filled_at: its fill-in was asked");
+    assert_eq!((a2.st("state"), a2.i("reviewer_id"), a2.i("filled")), ("swapped".into(), Some(bo.id()), Some(1)), "swapped_at: swapped; filled_at: its fill-in was asked");
+    assert_eq!(a2.s("closed_at"), Some("2026-09-03T11:00:00Z"));
     let a3 = ask(3);
-    assert_eq!((a3.st("state"), a3.i("reviewer_id"), a3.i("replaces"), a3.st("why")), ("answered".into(), Some(bot.id()), Some(2), "swap".into()), "replaces names Bo: his ask");
+    assert_eq!((a3.st("state"), a3.i("reviewer_id"), a3.i("replaces"), a3.st("why")), ("answered".into(), Some(bot.id()), Some(2), "swap".into()), "replaces is Bo's ask");
+    assert_eq!(a3.s("answer"), Some("approved"), "reply is the answer");
+    let a8 = ask(8);
+    assert_eq!((a8.st("state"), a8.s("answer"), a8.s("answered_at")), ("swapped".into(), Some("changes"), Some("2026-09-03T10:00:00Z")), "answered, then swapped off");
+    let a9 = ask(9);
+    assert_eq!((a9.st("state"), a9.s("answer")), ("came_back".into(), Some("Left two notes")), "swapped off, then answered: the old words kept");
+    let live: Vec<String> = taskboardd::asks::pill_info(&app, 12).unwrap().into_keys().collect();
+    assert!(!live.iter().any(|u| u.contains("bo")), "Bo was swapped off T12's PR: {live:?}");
     assert_eq!((ask(4).st("state"), ask(4).i("reviewer_id")), ("open".into(), Some(ana.id())), "T12 is done but its PR is still open; Ana B's email is Ana's");
     assert_eq!((ask(7).st("state"), ask(7).i("reviewer_id")), ("closed".into(), Some(ana.id())), "T13's PR merged; anab is Ana");
     assert_eq!(ask(5).st("name"), "Cy");
     assert!(rep.skipped.iter().any(|s| s.starts_with("review_asks 6")));
-    assert_eq!(rep.copied.iter().find(|(t, _)| t == "review_asks").map(|(_, n)| *n), Some(6));
+    assert_eq!(rep.copied.iter().find(|(t, _)| t == "review_asks").map(|(_, n)| *n), Some(8));
     let extra: Value = serde_json::from_str(&app.db.get_setting("import.review_asks.unmapped").unwrap().unwrap()).unwrap();
     assert_eq!(extra["columns"], json!(["tries", "busy"]), "what the board has no place for is kept");
-    assert!(extra["rows"].as_array().unwrap().contains(&json!({"id": 2, "tries": 2, "busy": 1})));
+    assert!(extra["rows"].as_array().unwrap().contains(&json!({"id": 2, "tries": 2, "busy": "in a meeting"})));
 
     // Master breaks keep their numbers and verdicts, on the one project the old board watched.
     let br = |id: i64| app.db.q1("SELECT * FROM breaks WHERE id = ?", vec![json!(id)]).unwrap().unwrap();
@@ -325,7 +361,7 @@ fn an_old_board_comes_over_with_its_numbers() {
     let kept: Value = serde_json::from_str(&app.db.get_setting("import.photos").unwrap().unwrap()).unwrap();
     assert_eq!(kept["rows"][0]["url"], "x.png");
     assert!(rep.kept.iter().any(|(t, n)| t == "photos" && *n == 1));
-    assert!(rep.lines().iter().any(|l| l.contains("T15") && l.contains("G3") && l.contains("B5")));
+    assert!(rep.lines().iter().any(|l| l.contains("T15") && l.contains("G4") && l.contains("B5")));
 
     // New work carries on after the old numbers.
     let new = api::dispatch(&app, "POST", "tasks", &Default::default(), &json!({"title": "Next", "project": "web", "detail": "x"})).unwrap();
@@ -374,6 +410,35 @@ fn a_goals_device_pool_comes_over_as_its_own_with_blocked_and_removed_devices() 
     assert_eq!((rig["off"].clone(), rig["note"].clone()), (json!(true), json!("Kept for the demo")));
     assert_eq!(api::dispatch(&app, "GET", "devices/old-tab", &Default::default(), &json!({})).unwrap_err().status, 404, "a removed device stays out");
     assert!(rep.skipped.iter().any(|s| s.contains("old-tab: removed")), "{:?}", rep.skipped);
+}
+
+/// An older devices shape: a kind, a focus command, a disabled flag, and goal needs by tag and count.
+#[test]
+fn older_device_columns_and_goal_needs_come_over() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let old_path = old_dir.path().join("tasks.db");
+    Connection::open(&old_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE goals(id INTEGER PRIMARY KEY, name TEXT, project TEXT);
+             CREATE TABLE devices(id TEXT PRIMARY KEY, name TEXT, kind TEXT, tags TEXT, focus_cmd TEXT, disabled INT DEFAULT 0);
+             CREATE TABLE goal_devices(goal_id INT, tag TEXT, count INT);
+             INSERT INTO goals VALUES (3, 'Checkout v2', 'web');
+             INSERT INTO devices VALUES ('pixel', 'Pixel 9', 'android', 'phone', 'open -a Pixel', 0);
+             INSERT INTO devices VALUES ('iphone', 'iPhone 15', 'ios', NULL, NULL, 1);
+             INSERT INTO goal_devices VALUES (3, 'android', 1);
+             INSERT INTO goal_devices VALUES (3, 'iphone', 1);",
+        )
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    import::import(&app, &old_path).unwrap();
+    let devs = app.db.q("SELECT name, tags, focus, off FROM devices ORDER BY name", vec![]).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&devs[1].st("tags")).unwrap(), json!(["phone", "android"]));
+    assert_eq!(devs[1].s("focus"), Some("open -a Pixel"));
+    assert_eq!(devs[0].i("off"), Some(1), "a disabled device comes over off");
+    let needs = app.db.val("SELECT needs FROM device_needs WHERE owner = 'G3'", vec![]).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(needs.as_str().unwrap()).unwrap(), json!([{"tag": "android", "n": 1}, {"tag": "iphone-15", "n": 1}]));
 }
 
 /// The Python board's breaks name no project: they're on `--master-project`, else skipped and listed.

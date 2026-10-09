@@ -859,14 +859,17 @@ them), and takes them back once the task isn't active
 device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"). A task started
 without all it asks for (by hand, or with nothing free) logs "<why>; it started without".
 
-A goal can keep devices of its own (`tb goal devices`): its tasks are lent those before the rest of the pool, a
-device it reserves is never lent to another goal's tasks (nor to tasks in no goal), and the purpose it gives a device
-counts as one of that device's tags for the goal's tasks (a device for `measure` answers a `measure` need there). A
-device is reserved by one goal at a time. The goal detail's `devices` aside lists the goal's own devices first,
-each with `in_pool`, `purpose` and `reserved`, and `pool` (how many it has).
+A goal can keep devices of its own (`tb goal devices`): its tasks are lent only those, as on the Python board
+(`[devices] goal_pool_only = false`: those first, then the rest of the pool; a task short of them waits with "Needs
+2 android devices, and G3's own devices have 1"), a device it reserves is never lent to other goals' tasks (nor to
+tasks in no goal), and the purposes it gives a device count as that device's tags for the goal's tasks (a device for
+`measure` answers a `measure` need there; `measure,demo` is two). More than one goal may reserve a device: their
+tasks share it. An archived goal reserves nothing and its pool lends nothing; its page still lists its devices.
+The goal detail's `devices` aside lists the goal's own devices first, each with `in_pool`, `purpose` and
+`reserved`, and `pool` (how many it has).
 
 `device`: `{id, name, tags: [str], note, off: bool, focus: str|null, can_focus: bool, held_by: {ref, title, goal}|null,
-goals: [{goal, purpose, reserved}], reserved_for: "G3"|null}`.
+goals: [{goal, purpose, reserved}], reserved_for: "G3"|"G3 and G4"|null}` (`goals` and `reserved_for`: goals not archived).
 
 | Request | Body | What |
 |---|---|---|
@@ -877,7 +880,7 @@ goals: [{goal, purpose, reserved}], reserved_for: "G3"|null}`.
 | `POST /devices/:name/remove` | | Take it out of the pool (409 while it's lent). |
 | `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name). 409 when there's neither. |
 | `GET /goals/:id/devices` | | `tb goal devices G3`. `{goal, devices: [device + {purpose, reserved}]}`: the goal's own devices. |
-| `POST /goals/:id/devices` | `{device, purpose?, reserved?}` | `tb goal devices G3 --add rig [--purpose measure] [--reserve\|--unreserve]`. Put a device in the goal's pool, or change its purpose (a tag word; `none` drops it) or `reserved` (unchanged when left out). 409 when another goal reserves it. Same response as GET. |
+| `POST /goals/:id/devices` | `{device, purpose?, reserved?}` | `tb goal devices G3 --add rig [--purpose measure] [--reserve\|--unreserve]`. Put a device in the goal's pool, or change its purpose (a tag word, or a comma list of them, stored as `measure,demo`; `none` drops it) or `reserved` (unchanged when left out; other goals may reserve it too). Same response as GET. |
 | `POST /goals/:id/devices/:name/remove` | | `tb goal devices G3 --remove rig`. 404 when it isn't one of the goal's. |
 
 ## Bits (feature flags)

@@ -48,19 +48,27 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
   that one device and `tag:x` tag `x`; a task's `none` stays its own "needs none"; a loan a
   finished task still held comes back. Old `goal_devices` rows with a purpose or a reserved flag
   are a goal's own pool: they become the goal's own devices (`tb goal devices`), the purpose made a
-  tag word (`Payments on Android` → `payments-on-android`), rather than needs. A blocked device
+  tag word (`Payments on Android` → `payments-on-android`; a comma list `a,b` stays two), rather
+  than needs, and every goal's reservation of a device is kept (they share it). A blocked device
   (`devices.blocked`) comes over switched off, its note saying what it's kept for; a removed one
   (`devices.removed_at`) doesn't come over, and is listed;
 - maps the reviewer roster (`reviewers`: one row per person and project, `source` = `import`).
-  Rows that are one person fold into one: the most active row stays, with its own removed mark,
-  and the commits, asks and swaps add up. The host display name (`bb_name`) becomes an alias;
-  removed, pinned, the automation level (`automated`) and the bot schedule (`bot_every`, in
-  minutes) are kept; the old asks, swaps and last ask (`asks`, `swaps`, `last_asked`) count
-  toward each reviewer's next turn;
+  Rows that are one person (a shared email, alias, host id or Slack id) fold into one: as the old
+  board's `ORDER BY removed, commits DESC, id`, an active row stays over a removed one, else the
+  most active, with its own removed mark, and the commits, asks and swaps add up. The host display
+  name (`bb_name`) becomes an alias; removed, pinned, the automation level and the bot schedule
+  (`bot_every`, in minutes) are kept; the old asks, swaps and last ask (`asks`, `swaps`,
+  `last_asked`) count toward each reviewer's next turn. The old levels (`automated`: yes 1.0, some
+  0.6, sometimes 0.35, no 0.15, unset meaning no) are scaled so `no` is the board's normal 1: yes
+  6.67, some 4, sometimes 2.33, no 1, so each reviewer comes up as often next to the others;
 - maps every review ask (`review_asks`): who was asked by their `email` (matched against the
   reviewers' emails and aliases), its state, answer and stand-in (`replaces`), and whether its
-  fill-in was asked (`filled_at`). An ask still open on a PR that has merged or closed (`pr_state`)
-  comes over closed; one on a done task whose PR is still open stays open;
+  fill-in was asked (`filled_at`). Its times say its state: `swapped_at` is swapped (came back,
+  when it answered after), a close is closed, and only then `answered_at` is answered, so someone
+  who answered and was later swapped off isn't a current reviewer. The answer is the verdict word
+  in `reply` / `reply_said` (approved, changes, commented), else their text. An ask still open on
+  a PR that has merged or closed (`pr_state`) comes over closed; one on a done task whose PR is
+  still open stays open;
 - takes each reviewer's last bot run from `reviewers.bot_ran_at` (or an old runs table);
 - maps the master breaks (`master_breaks`), keeping each `M<n>` number and its verdict (the old
   yours / not yours / unsure). The old board watched one project, so its breaks name none: they

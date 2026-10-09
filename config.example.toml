@@ -252,6 +252,7 @@ branch = ""                          # example: "{type}/{key}-{slug}"
 [devices]
 focus = ""                           # example: "open -a Simulator"
 focus_timeout_secs = 15.0
+goal_pool_only = true                # a goal with devices of its own (tb goal devices) lends its tasks only those; false: those first, then the rest
 
 # Bits (feature flags, `tb bit add newCheckout --backend --task T4`). Tasks build behind a flag whether or
 # not it's made; a goal whose tasks are done waits until its backend bits are made in the flag tool
