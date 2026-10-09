@@ -377,3 +377,65 @@ fn a_hand_opened_pr_matches_by_its_short_repo_name() {
     let v = b.post("/prs/event", json!({"kind": "build", "state": "started", "repo": "acme/webapp", "branch": "hand3", "head": "z1", "provider": "azure"}));
     assert_eq!(v["builds"]["pr"], 21, "{v}");
 }
+
+/// #91: a build event finds a board task's PR by its short repo name in any case, among the board's
+/// repos, so two orgs' repos with one name don't clash.
+#[test]
+fn a_board_task_s_pr_matches_by_its_short_repo_name_in_any_case() {
+    let b = board_with(|_, _| {});
+    let id = b.pr_task(GH);
+    let task_of = |repo: &str| b.post("/prs/event", json!({"kind": "build", "state": "started", "repo": repo, "num": 9, "head": "h9"}))["task"].clone();
+    assert_eq!(task_of("acme/webapp"), format!("T{id}"));
+    assert_eq!(task_of("webapp"), format!("T{id}"));
+    assert_eq!(task_of("ACME/webapp"), format!("T{id}"));
+    assert_eq!(task_of("acme/other"), Value::Null);
+    assert_eq!(task_of("globex/webapp"), Value::Null, "another org's webapp isn't acme's");
+
+    // Another org's webapp #9 on the board: the short name no longer picks one, the full name does.
+    let other = b.post("/tasks", json!({"title": "Other org", "detail": "Do it.", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE tasks SET pr_host = 'github', pr_repo = 'globex/webapp', pr_num = 9 WHERE id = ?", vec![json!(other)]).unwrap();
+    assert_eq!(task_of("webapp"), Value::Null, "two orgs' webapp #9: the short name is ambiguous");
+    assert_eq!(task_of("Acme/WebApp"), format!("T{id}"));
+    assert_eq!(task_of("globex/webapp"), format!("T{other}"));
+    let on = |host: &str| b.post("/prs/event", json!({"kind": "build", "state": "started", "host": host, "repo": "globex/webapp", "num": 9}))["task"].clone();
+    assert_eq!(on("bitbucket"), Value::Null, "only the board's PRs on the event's host");
+    assert_eq!(on("GitHub"), format!("T{other}"));
+}
+
+/// #91: the owner's hand-opened PRs in two orgs' repos of one name stay apart.
+#[test]
+fn hand_opened_prs_in_two_orgs_repos_of_one_name_stay_apart() {
+    let b = board_with(|c, _| c.owner_emails = vec!["sam@acme.dev".into()]);
+    b.post("/pr-builds", json!({"stopped": true}));
+    for repo in ["acme/webapp", "globex/webapp"] {
+        b.post("/prs/event", json!({"kind": "pr", "host": "github", "repo": repo, "num": 5, "mine": true, "branch": format!("{repo}-b")}));
+    }
+    let noted = || -> Vec<String> {
+        let v: Value = serde_json::from_str(&b.app.db.get_setting("pr_builds_owner_prs").unwrap().unwrap()).unwrap();
+        v["prs"].as_array().unwrap().iter().map(|p| p["repo"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(noted(), vec!["acme/webapp", "globex/webapp"]);
+    let build = |repo: &str| b.post("/prs/event", json!({"kind": "build", "state": "started", "host": "github", "repo": repo, "num": 5, "head": "q1"}))["builds"].clone();
+    assert_eq!(build("Globex/webapp")["pr"], 5);
+    assert_eq!(build("webapp")["owners"], false, "the short name names neither");
+    b.post("/prs/event", json!({"kind": "pr", "host": "github", "repo": "GLOBEX/webapp", "num": 5, "mine": true, "state": "merged"}));
+    assert_eq!(noted(), vec!["acme/webapp"], "only globex's PR closed");
+}
+
+/// #91: a cancel command that writes an empty $TB_CANCELLED stopped nothing, so even its first round
+/// records nothing, as on the Python board; the push still isn't cancelled again on a poll.
+#[test]
+fn a_cancel_command_that_stopped_nothing_records_nothing() {
+    let b = board_with(|c, _| {
+        c.pr_builds.cancel.insert("azure".into(), ": > \"$TB_CANCELLED\"".into());
+    });
+    let id = b.pr_task(GH);
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h7", "provider": "azure"}));
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(b.get("/pr-builds")["recent"], json!([]));
+    let logged = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE 'PR builds are stopped: cancelled%'", vec![json!(id)]).unwrap();
+    assert_eq!(logged, 0);
+    assert!(b.flow(id)["builds_cancelled"]["h7"].is_string());
+    assert_eq!(b.queue()[0]["round"], 1, "still followed up");
+}

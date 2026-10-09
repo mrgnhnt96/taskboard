@@ -228,10 +228,12 @@ fn owner_pr_on(app: &App, repo: &str, branch: &str) -> Result<Option<Row>> {
         "SELECT * FROM tasks WHERE pr_num IS NOT NULL AND pr_repo IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
         p![],
     )?;
-    Ok(tasks.into_iter().find(|t| {
-        (repo.is_empty() || t.s("pr_repo").is_some_and(|r| repo_is(r, repo)))
-            && flow(t).get("rec").and_then(|r| r["branch"].as_str()) == Some(branch)
-    }))
+    let on: Vec<Row> = tasks.into_iter().filter(|t| flow(t).get("rec").and_then(|r| r["branch"].as_str()) == Some(branch)).collect();
+    if repo.is_empty() {
+        return Ok(on.into_iter().next());
+    }
+    let Some(r) = pick_repo(on.iter().filter_map(|t| t.s("pr_repo")), repo) else { return Ok(None) };
+    Ok(on.into_iter().find(|t| t.s("pr_repo").is_some_and(|x| x.eq_ignore_ascii_case(&r))))
 }
 
 /// The owner's open PRs off the board (opened by hand), as last read or heard of.
@@ -250,23 +252,66 @@ fn repo_is(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b) || (!short(a).is_empty() && short(a) == short(b))
 }
 
-fn same_repo(p: &Value, repo: &str) -> bool {
-    p["repo"].as_str().is_some_and(|r| repo_is(r, repo))
+/// The one of the board's repos (`tracked`) that `wanted` names: the same name in any case, else the
+/// only one with its short name when one of the two gives no org (`webapp` for `acme/webapp`). Two
+/// orgs' repos never clash: `globex/webapp` isn't `acme/webapp`, and when the board has both, `webapp`
+/// names neither.
+pub fn pick_repo<'a>(tracked: impl IntoIterator<Item = &'a str>, wanted: &str) -> Option<String> {
+    let wanted = wanted.trim().trim_end_matches('/');
+    if wanted.is_empty() {
+        return None;
+    }
+    let no_org = |s: &str| !s.trim().trim_end_matches('/').contains('/');
+    let mut alike: Vec<&str> = Vec::new();
+    for r in tracked {
+        if r.eq_ignore_ascii_case(wanted) {
+            return Some(r.to_string());
+        }
+        if (no_org(r) || no_org(wanted)) && repo_is(r, wanted) && !alike.iter().any(|a| a.eq_ignore_ascii_case(r)) {
+            alike.push(r);
+        }
+    }
+    match alike[..] {
+        [one] => Some(one.to_string()),
+        _ => None,
+    }
 }
 
-/// One of the owner's open PRs off the board: by its number in `repo`, else by its branch (in `repo`,
-/// or any repo when it's not given).
-fn hand_pr_on(app: &App, repo: &str, num: i64, branch: &str) -> Option<Value> {
-    let prs = owner_prs(app);
+/// Whether one of the owner's PRs off the board (`p`) is in `repo`, a name `pick_repo` chose.
+fn same_repo(p: &Value, repo: &str) -> bool {
+    p["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo))
+}
+
+/// Whether one of the owner's PRs off the board is on `host`, when that's known.
+fn on_host(p: &Value, host: &str) -> bool {
+    host.is_empty() || p["host"].as_str().is_none_or(|h| h.is_empty() || h.eq_ignore_ascii_case(host))
+}
+
+/// The repo, of the owner's PRs off the board (`prs`, on `host` and numbered `num` when they're known),
+/// that `repo` names.
+fn owner_repo(prs: &[Value], host: &str, num: Option<i64>, repo: &str) -> Option<String> {
+    let on = prs.iter().filter(|p| on_host(p, host) && num.is_none_or(|n| p["num"].as_i64() == Some(n)));
+    pick_repo(on.filter_map(|p| p["repo"].as_str()), repo)
+}
+
+/// One of the owner's open PRs off the board (on `host`, when it's known): by its number in `repo`,
+/// else by its branch (in `repo`, or any repo when it's not given).
+fn hand_pr_on(app: &App, host: &str, repo: &str, num: i64, branch: &str) -> Option<Value> {
+    let prs: Vec<Value> = owner_prs(app).into_iter().filter(|p| on_host(p, host)).collect();
     if num > 0 && !repo.is_empty() {
-        if let Some(p) = prs.iter().find(|p| same_repo(p, repo) && p["num"].as_i64() == Some(num)) {
-            return Some(p.clone());
+        if let Some(r) = owner_repo(&prs, host, Some(num), repo) {
+            return prs.iter().find(|p| same_repo(p, &r) && p["num"].as_i64() == Some(num)).cloned();
         }
     }
     if branch.is_empty() {
         return None;
     }
-    prs.into_iter().find(|p| (repo.is_empty() || same_repo(p, repo)) && p["branch"].as_str() == Some(branch))
+    let on: Vec<Value> = prs.into_iter().filter(|p| p["branch"].as_str() == Some(branch)).collect();
+    if repo.is_empty() {
+        return on.into_iter().next();
+    }
+    let r = owner_repo(&on, host, None, repo)?;
+    on.into_iter().find(|p| same_repo(p, &r))
 }
 
 fn owner_email(app: &App, email: &str) -> bool {
@@ -291,8 +336,11 @@ pub fn on_pr_event(app: &App, body: &Value) -> Result<Value> {
     }
     let open = !matches!(body_str(body, "state").to_lowercase().as_str(), "merged" | "declined" | "closed" | "superseded");
     let mut prs = owner_prs(app);
-    let was = prs.iter().find(|p| same_repo(p, &repo) && p["num"].as_i64() == Some(num)).cloned();
-    prs.retain(|p| !(same_repo(p, &repo) && p["num"].as_i64() == Some(num)));
+    // The entry it updates: the one this event's repo picks out, else one under the name it gives.
+    let known = owner_repo(&prs, &host, Some(num), &repo).unwrap_or_else(|| repo.clone());
+    let is_it = |p: &Value| on_host(p, &host) && same_repo(p, &known) && p["num"].as_i64() == Some(num);
+    let was = prs.iter().find(|p| is_it(p)).cloned();
+    prs.retain(|p| !is_it(p));
     if open {
         let branch = { let b = body_str(body, "branch"); if b.is_empty() { was.as_ref().and_then(|w| w["branch"].as_str()).unwrap_or("").to_string() } else { b } };
         let url = { let u = body_str(body, "url"); if u.is_empty() { was.as_ref().and_then(|w| w["url"].as_str()).unwrap_or("").to_string() } else { u } };
@@ -319,12 +367,18 @@ pub fn read_owner_prs(app: &App) -> Result<()> {
         p![],
     )?;
     let mut prs = owner_prs(app);
+    let tracked: Vec<(String, String)> = repos.iter().map(|r| (r.st("pr_host"), r.st("pr_repo"))).collect();
     for r in repos {
         let (host, repo) = (r.st("pr_host"), r.st("pr_repo"));
+        // The PRs noted in this repo: the ones whose name picks it out of the repos read on this host.
+        let in_repo = |p: &Value| {
+            let on_this_host = tracked.iter().filter(|(h, _)| *h == host).map(|(_, r)| r.as_str());
+            p["host"].as_str() == Some(host.as_str()) && p["repo"].as_str().and_then(|n| pick_repo(on_this_host, n)).as_deref() == Some(repo.as_str())
+        };
         match prhost::host_for(app, &host).and_then(|h| h.my_open_prs(&repo)) {
             Ok(list) => {
                 // The host's list is the whole of them: ones the feed noted that aren't on it have closed.
-                prs.retain(|p| !(p["host"].as_str() == Some(host.as_str()) && same_repo(p, &repo)));
+                prs.retain(|p| !in_repo(p));
                 prs.extend(list.into_iter().map(|o| json!({"host": host, "repo": repo, "num": o.num, "branch": o.branch, "url": o.url, "from": "host"})));
             }
             Err(e) => app.info(format!("pr-builds: couldn't read the owner's open PRs in {repo}: {e}")),
@@ -344,7 +398,7 @@ pub fn on_push_build(app: &App, body: &Value) -> Result<Value> {
     let (host, repo, num) = event_pr(body);
     let by_owner = owner_email(app, &body_str(body, "author").to_lowercase());
     let pr = if by_owner { None } else { owner_pr_on(app, &repo, &branch)? };
-    let hand = if pr.is_none() { hand_pr_on(app, &repo, num, &branch) } else { None };
+    let hand = if pr.is_none() { hand_pr_on(app, &host, &repo, num, &branch) } else { None };
     let mine = by_owner || pr.is_some() || hand.is_some();
     if !is_running(&state) || !stopped(app) || !mine {
         return Ok(json!({"state": state, "owners": mine}));
@@ -431,11 +485,18 @@ pub fn tick(app: &App) -> Result<()> {
                     q.push(next);
                 }
                 save_queue(app, &q)?;
-                // A follow-up is told, and kept in the recent list, only when it stopped something (a
-                // cancel command that doesn't report what it stopped, in $TB_CANCELLED, stopped nothing
-                // anyone knows of).
-                if round == 0 || builds.as_ref().is_some_and(|b| !b.is_empty()) {
+                // A cancel is told, and kept in the recent list, only when it stopped something: a
+                // cancel command that reported none (an empty $TB_CANCELLED) stopped nothing, as on the
+                // Python board, and a follow-up that doesn't report what it stopped stopped nothing
+                // anyone knows of. The push is still marked cancelled, so a poll doesn't cancel it again.
+                let stopped_some = match &builds {
+                    Some(b) => !b.is_empty(),
+                    None => round == 0,
+                };
+                if stopped_some {
                     cancelled(app, &item, &what, round, builds.as_deref().unwrap_or(&[]))?;
+                } else if round == 0 {
+                    mark_cancelled(app, &item)?;
                 }
             }
             Err((why, retry)) => {
@@ -504,7 +565,8 @@ fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)>
     let h = prhost::host_for(app, &host).map_err(|e| (e, true))?;
     let pr = PrRef { host: host.clone(), repo: s("repo"), num: item["num"].as_i64().unwrap_or(0), url: s("url") };
     match h.cancel_builds(&pr, &s("head")) {
-        Ok(Cancelled::Stopped(b)) => Ok((format!("stopped {}", plural(b.len() as i64, "build")), Some(b))),
+        // The host's own cancel is told on its first round whatever it stopped.
+        Ok(Cancelled::Stopped(b)) => Ok((format!("stopped {}", plural(b.len() as i64, "build")), Some(b).filter(|b| !b.is_empty()))),
         Ok(Cancelled::Unsupported(why)) => Err((why, false)),
         Err(e) => Err((e, true)),
     }
@@ -543,13 +605,21 @@ fn cancelled(app: &App, item: &Value, what: &str, round: usize, builds: &[String
         app.info(format!("pr-builds: cancelled the builds of {}{pr} {}{again}: {what}", item["repo"].as_str().unwrap_or(""), short_head(item)));
         return Ok(());
     };
-    let t = board::get_task(app, tid)?;
     if round == 0 {
-        let mut done = flow(&t).get("builds_cancelled").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-        done.insert(item["head"].as_str().unwrap_or("").to_string(), json!(now_iso()));
-        prflow::merge_flow(app, tid, vec![("builds_cancelled", Value::Object(done))])?;
+        mark_cancelled(app, item)?;
     }
+    let t = board::get_task(app, tid)?;
     board::log_event(app, tid, board::BOARD, "status", &format!("PR builds are stopped: cancelled the builds of PR #{} at {}{again} ({what})", t.i0("pr_num"), short_head(item)))?;
+    Ok(())
+}
+
+/// Notes a board task's push as cancelled (`pr_flow.builds_cancelled`), so a poll doesn't cancel it again.
+fn mark_cancelled(app: &App, item: &Value) -> Result<()> {
+    let Some(tid) = item["task_id"].as_i64() else { return Ok(()) };
+    let t = board::get_task(app, tid)?;
+    let mut done = flow(&t).get("builds_cancelled").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    done.insert(item["head"].as_str().unwrap_or("").to_string(), json!(now_iso()));
+    prflow::merge_flow(app, tid, vec![("builds_cancelled", Value::Object(done))])?;
     Ok(())
 }
 

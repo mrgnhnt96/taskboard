@@ -126,7 +126,8 @@ owner_prs_secs = 120.0               # while stopped, read your open PRs on each
 # The command that cancels builds, by CI provider (github, bitbucket, azure, or the `provider` a
 # build event names). Run with `sh -c` and TB_PROVIDER, TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD,
 # TB_BRANCH, TB_BUILD_URL, TB_BUILD_ID; exit 0 once they're cancelled, and write the builds it
-# stopped (one name per line) to "$TB_CANCELLED" so follow-ups show in `tb pr-builds`. Unset for github and
+# stopped (one name per line) to "$TB_CANCELLED" so follow-ups show in `tb pr-builds` (left empty: it stopped nothing,
+# and nothing is recorded). Unset for github and
 # bitbucket: the PR host's own (gh run cancel, Pipelines' stopPipeline).
 [pr_builds.cancel]
 # azure = "az pipelines runs cancel --id \"$TB_BUILD_ID\""   # example

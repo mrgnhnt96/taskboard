@@ -428,6 +428,21 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(first) = short.first() else { return Ok(None) };
     let have = all.iter().filter(|d| !d.b("off") && answers(d, &first.tag)).count() as i64;
     let want = needs.iter().find(|x| x.tag == first.tag).map(|x| x.n).unwrap_or(first.n);
+    // A device asked for by name, or a name the pool has no device or tag for, before the goal's own
+    // pool: a named device is lent whatever the pool (as on the Python board).
+    let pools = goal_pools(app)?;
+    let everyone = pool(app)?;
+    if let Some(d) = everyone.iter().find(|d| d.s("name") == Some(first.tag.as_str())) {
+        let name = &first.tag;
+        if let Some(gs) = reserved(&pools).get(name).filter(|gs| !gs.iter().any(|g| Some(*g) == t.i("goal_id"))) {
+            return Ok(Some(format!("Waiting for a free {name} ({name} is reserved for {})", goals_text(gs))));
+        }
+        if d.b("off") {
+            return Ok(Some(format!("Waiting for {name} (it's off)")));
+        }
+    } else if !everyone.iter().any(|d| tags_of(d).contains(&first.tag)) && !pools.iter().any(|r| purposes(r).contains(&first.tag)) {
+        return Ok(Some(format!("No {} yet (tb device add)", first.tag)));
+    }
     if have < want && app.cfg.devices.goal_pool_only && !ours.is_empty() {
         // Lent only from its goal's own devices.
         let g = rf("goal", t.i0("goal_id"));
@@ -439,8 +454,8 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     }
     if have < want {
         // Devices that would answer it but are reserved for other goals.
-        let res = reserved(&goal_pools(app)?);
-        let mut kept: Vec<String> = pool(app)?
+        let res = reserved(&pools);
+        let mut kept: Vec<String> = everyone
             .iter()
             .filter(|d| !d.b("off") && answers(d, &first.tag))
             .filter_map(|d| {
