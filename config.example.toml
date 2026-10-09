@@ -159,7 +159,7 @@ fix_ticket = true                    # make a new Jira ticket for the fix task (
 # starts. 0 turns one off.
 [limits]
 compact_window = 150000              # tokens: Claude compacts a board terminal's conversation here (--settings autoCompactWindow)
-cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed
+cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed or sent anything
 warm_tokens = 60000                  # a task or PR conversation resumes only under this many tokens…
 warm_idle_mins = 60                  # …and idle under this long; otherwise it starts fresh from the handoff
 # Generated files, marked `-diff` in a block the board keeps in each active project's (and

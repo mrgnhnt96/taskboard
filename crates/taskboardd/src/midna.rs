@@ -186,11 +186,36 @@ pub fn opens_in_background(app: &App, j: &Row) -> bool {
     j.s("purpose").is_some_and(|p| app.cfg.terminals.background.iter().any(|b| b.trim() == p))
 }
 
-/// A live terminal whose conversation has gone cold: `/compact` goes in ahead of the prompt.
-fn compact_first(app: &App, sid: &str) -> bool {
-    let Ok(Some(s)) = board::get_session(app, Some(sid)) else { return false };
-    let Some(cid) = s.s("claude_session_id").filter(|c| !c.is_empty()) else { return false };
-    limits::is_cold(app, &limits::conversation(app, s.s("project_path").unwrap_or(""), cid, s.s("last_activity")))
+/// A live terminal whose conversation has gone cold, with its size and idle minutes.
+fn cold_open(app: &App, sid: &str) -> Option<limits::Conversation> {
+    let Ok(Some(s)) = board::get_session(app, Some(sid)) else { return None };
+    let cid = s.s("claude_session_id").filter(|c| !c.is_empty())?;
+    let c = limits::conversation(app, s.s("project_path").unwrap_or(""), cid, s.s("last_activity"));
+    limits::is_cold(app, &c).then_some(c)
+}
+
+/// The task event for compacting an open terminal before sending it anything.
+pub fn compact_open_text(c: &limits::Conversation) -> String {
+    let mins = c.idle_mins.unwrap_or(0.0) as i64;
+    let size = c.tokens.map(|n| format!(" ({} tokens)", limits::tokens_text(n))).unwrap_or_default();
+    format!("Its conversation has been idle {mins} min{size}, so the board compacts it before sending it anything.")
+}
+
+/// A cold open terminal gets `/compact` ahead of whatever the job sends it, logged on the job's task.
+/// The job's target remembers it, so a job retried after Midna went down doesn't compact twice.
+fn compact_first(app: &App, j: &Row, sid: &str) -> MResult<()> {
+    if board::job_target(j).get("compacted").is_some() {
+        return Ok(());
+    }
+    let Some(c) = cold_open(app, sid) else { return Ok(()) };
+    send(app, sid, "/compact")?;
+    set_target(app, j.id(), "compacted", json!(sid))?;
+    let what = compact_open_text(&c);
+    app.info(format!("job {}: {what}", rf("job", j.id())));
+    if let Some(tid) = j.i("task_id") {
+        let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "midna", &what).map(|_| ()));
+    }
+    Ok(())
 }
 
 /// A conversation resumed in a new terminal after going cold is compacted first, headless.
@@ -210,9 +235,7 @@ fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) {
 
 fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     if let Some(sid) = send_target(app, a) {
-        if compact_first(app, &sid) {
-            send(app, &sid, "/compact")?;
-        }
+        compact_first(app, j, &sid)?;
         send(app, &sid, &a.st("prompt"))?;
         return Ok(format!("Queued in {sid}"));
     }
@@ -258,6 +281,7 @@ fn run_handler(app: &App, j: &Row) -> MResult<String> {
             if !has(a.s("to")) || !has(a.s("text")) {
                 return Err(MidnaError::Refused("a message job needs to and text".into()));
             }
+            compact_first(app, j, &a.st("to"))?;
             send(app, &a.st("to"), &a.st("text"))?;
             Ok(format!("Queued in {}", a.st("to")))
         }
