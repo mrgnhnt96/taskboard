@@ -206,8 +206,8 @@ fn a_push_is_swept_again_on_the_follow_up_schedule() {
     let log = std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap();
     assert_eq!(log.lines().count(), 3);
     let recent = b.get("/pr-builds")["recent"].as_array().cloned().unwrap();
-    assert_eq!(recent.len(), 3);
-    assert_eq!((recent[0]["follow_up"].as_bool(), recent[2]["follow_up"].as_bool()), (Some(true), Some(false)));
+    assert_eq!(recent.len(), 1, "the follow-ups reported nothing stopped");
+    assert_eq!(recent[0]["follow_up"].as_bool(), Some(false));
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn a_cancel_command_s_follow_ups_are_not_logged_on_the_task() {
     });
     let id = b.pr_task(GH);
     b.post("/pr-builds", json!({"stopped": true}));
-    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h5", "provider": "azure"}));
+    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h5", "provider": "azure", "definition": {"name": "webapp-ci"}}));
     prbuilds::tick(&b.app).unwrap();
     for _ in 0..4 {
         b.due_now();
@@ -335,5 +335,45 @@ fn a_cancel_command_s_follow_ups_are_not_logged_on_the_task() {
     assert_eq!(std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap().lines().count(), 5, "the first cancel and four follow-ups ran");
     let logged = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE 'PR builds are stopped: cancelled%'", vec![json!(id)]).unwrap();
     assert_eq!(logged, 1, "only the first cancel is told on the task");
-    assert_eq!(b.get("/pr-builds")["recent"].as_array().unwrap().len(), 5, "each one is in the recent list");
+    let recent = b.get("/pr-builds")["recent"].as_array().cloned().unwrap();
+    assert_eq!(recent.len(), 1, "follow-ups that report nothing stay out of the recent list (#86)");
+    assert_eq!(recent[0]["build"], "webapp-ci", "named by the build event's pipeline");
+}
+
+/// #86: a cancel command reports the builds it stopped in $TB_CANCELLED; a follow-up that stopped
+/// some is kept, one entry per build.
+#[test]
+fn a_cancel_command_reports_what_it_stopped() {
+    let b = board_with(|c, dir| {
+        let log = dir.join("cancels.log");
+        c.pr_builds.cancel.insert(
+            "azure".into(),
+            format!("echo x >> '{0}'; if [ $(wc -l < '{0}') -eq 2 ]; then echo 'Late #8' > \"$TB_CANCELLED\"; fi", log.display()),
+        );
+    });
+    b.pr_task(GH);
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"url": GH, "kind": "build", "state": "started", "head": "h6", "provider": "azure", "pipeline": "webapp-ci"}));
+    prbuilds::tick(&b.app).unwrap();
+    for _ in 0..4 {
+        b.due_now();
+        prbuilds::tick(&b.app).unwrap();
+    }
+    let recent = b.get("/pr-builds")["recent"].as_array().cloned().unwrap();
+    let builds: Vec<(&str, bool)> = recent.iter().map(|r| (r["build"].as_str().unwrap_or(""), r["follow_up"] == true)).collect();
+    assert_eq!(builds, vec![("Late #8", true), ("webapp-ci", false)]);
+    assert_eq!(recent[0]["what"], "the azure cancel command stopped 1 build");
+}
+
+/// #86: a build event that names the repo `org/repo` still finds a hand-opened PR noted as `repo`.
+#[test]
+fn a_hand_opened_pr_matches_by_its_short_repo_name() {
+    let b = board_with(|c, dir| {
+        c.owner_emails = vec!["sam@acme.dev".into()];
+        c.pr_builds.cancel.insert("azure".into(), format!("echo \"$TB_PR_NUM\" >> '{}'", dir.join("cancels.log").display()));
+    });
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.post("/prs/event", json!({"kind": "pr", "host": "azure", "repo": "webapp", "num": 21, "author": "sam@acme.dev", "branch": "hand3"}));
+    let v = b.post("/prs/event", json!({"kind": "build", "state": "started", "repo": "acme/webapp", "branch": "hand3", "head": "z1", "provider": "azure"}));
+    assert_eq!(v["builds"]["pr"], 21, "{v}");
 }
