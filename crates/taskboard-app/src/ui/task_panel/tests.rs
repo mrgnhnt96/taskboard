@@ -152,8 +152,11 @@ fn answer_sends_text_and_clears_the_draft(cx: &mut gpui_kit::TestAppContext) {
 #[gpui_kit::test]
 fn answer_later_waits_for_work_hours(cx: &mut gpui_kit::TestAppContext) {
     let (w, rec) = parity::window(cx);
-    // Close the work hours so "Send at …" is offered.
-    rec.board().post("hours", json!({"on": true, "start": "00:00", "end": "00:30", "days": []})).unwrap();
+    // Close the work hours so "Send at …" is offered: a half hour twelve hours from now.
+    let start = chrono::Local::now() + chrono::Duration::hours(12);
+    let end = start + chrono::Duration::minutes(30);
+    let hours = json!({"on": true, "start": start.format("%H:%M").to_string(), "end": end.format("%H:%M").to_string(), "days": []});
+    rec.board().post("hours", hours).unwrap();
     w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
     open(cx, &w, "T3");
     typed(cx, &w, "answer:T3", "Tomorrow is fine");
