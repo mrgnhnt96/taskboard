@@ -9,6 +9,11 @@
 # DMG attached. The website's Download button reads that release.
 #
 # A beta is published as a prerelease, which the website skips.
+#
+# set-version.sh also writes the version into the Claude Code plugin's
+# plugin.json, so a plugin change (hooks, skill) reaches installed copies with
+# the release: Claude Code keeps running its cached copy until that version
+# changes (plugin/README.md, "The version").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -46,7 +51,7 @@ if [ -n "$latest" ] && [ "$(./scripts/newest-version.py "${latest#v}" "$version"
 fi
 
 ./scripts/set-version.sh "$version"
-git add Cargo.toml Cargo.lock
+git add Cargo.toml Cargo.lock plugin/task-board/.claude-plugin/plugin.json
 git commit -m "chore: release $tag"
 git tag -a "$tag" -m "Taskboard $version"
 git push origin "$branch" "$tag"
