@@ -4,14 +4,18 @@
 //! The old schema isn't fixed, so nothing here assumes it: the tables and columns are read from the
 //! file itself. Each board table is filled from the old table of the same name (or a known older
 //! name, like `backlog` for `issues`), column by column where the names match (or a known older
-//! name does). Old tables the board has no place for (reviewers, devices, master breaks, …) are
-//! kept whole in `settings` as `import.<table>`, so nothing is lost. Jobs aren't carried over (the
-//! old board's pending work would run again), nor are its alerts.
+//! name does). Old tables and columns whose shape changed (devices and their loans and needs, bits
+//! and their links, the Jira desk's terminal, PR links kept as repo and number) are mapped into the
+//! board's own, reading their columns by any of the names they went by. Old tables the board has
+//! no place for yet (reviewers, master breaks, …) are kept whole in `settings` as
+//! `import.<table>`, so nothing is lost. Jobs aren't carried over (the old board's pending work
+//! would run again), nor are its alerts or its other running state.
 //!
 //! The old file is never opened in place: it's copied (with its `-wal` and `-shm`) to a scratch
 //! folder first, so a running old board's database is only ever read.
 
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::types::ValueRef;
@@ -44,7 +48,32 @@ const TABLES: &[(&str, &[&str])] = &[
 const LEFT: &[&str] = &["jobs", "settings", "sqlite_sequence", "sqlite_stat1"];
 
 /// Settings that describe the old board's running state rather than the owner's choices.
-const LEFT_SETTINGS: &[&str] = &["alerts", "tb_path", "plugin_version", "midna_projects"];
+const LEFT_SETTINGS: &[&str] = &[
+    "alerts",
+    "tb_path",
+    "plugin_version",
+    "midna_projects",
+    "usage_closed_for",
+    "work_hours_today",
+    "history_last_cleanup",
+    "qa_checked_at",
+    "sleeps",
+];
+
+/// Prefixes of running-state settings: the Midna bridge's, and the per-thing marks the old board
+/// left so it wouldn't do a thing twice.
+const LEFT_SETTING_PREFIXES: &[&str] = &["bridge_", "bridge:", "dispatch_seen:", "usage_guard_handled:", "review_round:", "last_"];
+
+/// Whether an old setting is running state, not the owner's choice: a known key or prefix, or a
+/// per-thing mark (`<what>_seen:<id>`, `<what>_handled:<id>`, `<what>_round:<id>`).
+pub fn runtime_setting(key: &str) -> bool {
+    let k = key.to_lowercase();
+    if LEFT_SETTINGS.contains(&k.as_str()) || LEFT_SETTING_PREFIXES.iter().any(|p| k.starts_with(p)) {
+        return true;
+    }
+    let head = k.split(':').next().unwrap_or("");
+    k.contains(':') && ["_seen", "_handled", "_round", "_sent", "_done", "_at", "_lock", "_cursor"].iter().any(|s| head.ends_with(s))
+}
 
 /// Older names a board column may go by in an old table.
 const COLUMNS: &[(&str, &[&str])] = &[
@@ -56,12 +85,20 @@ const COLUMNS: &[(&str, &[&str])] = &[
     ("created_at", &["created"]),
     ("updated_at", &["updated"]),
     ("detail", &["description", "body"]),
+    ("setup", &["task_setup"]),
 ];
+
+/// Old tables mapped by hand below, not by name.
+const MAPPED: &[&str] = &["devices", "device_loans", "goal_devices", "device_needs", "bits", "bit_links", "task_bits", "goal_bits"];
 
 #[derive(Debug, Default)]
 pub struct Report {
-    /// (board table, rows) for every table filled.
+    /// (board table, rows written) for every table filled.
     pub copied: Vec<(String, usize)>,
+    /// Old rows (or values) that didn't come over, each with why.
+    pub skipped: Vec<String>,
+    /// Old settings left behind as the old board's running state.
+    pub left_settings: Vec<String>,
     /// (old table, rows) kept in settings as `import.<table>`.
     pub kept: Vec<(String, usize)>,
     /// Settings carried over.
@@ -79,8 +116,15 @@ impl Report {
         if !self.settings.is_empty() {
             out.push(format!("settings: {}", self.settings.join(", ")));
         }
+        if !self.left_settings.is_empty() {
+            out.push(format!("settings left behind (the old board's running state): {}", self.left_settings.len()));
+        }
         for (t, n) in &self.kept {
             out.push(format!("{t}: {n} rows kept as settings import.{t} (the board has no table for them yet)"));
+        }
+        if !self.skipped.is_empty() {
+            out.push(format!("skipped: {}", self.skipped.len()));
+            out.extend(self.skipped.iter().map(|s| format!("  {s}")));
         }
         let last: Vec<String> = self.last.iter().filter(|(_, n)| *n > 0).map(|(k, n)| format!("{k}{n}")).collect();
         if !last.is_empty() {
@@ -200,7 +244,11 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
         let mut n = 0;
         for r in &rows {
             app.db.x(&sql, map.iter().map(|(_, i)| r[*i].clone()).collect())?;
-            n += 1;
+            if wrote(app)? {
+                n += 1;
+            } else {
+                rep.skipped.push(format!("{src} {}: a row with the same key came first", row_label(table, &map, r)));
+            }
         }
         // The sessions' insert trigger stamps status_at with now; put the old one back.
         if *table == "sessions" {
@@ -218,7 +266,11 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
         if let (Some(k), Some(v)) = (names.iter().position(|n| n == "key"), names.iter().position(|n| n == "value")) {
             for r in rows {
                 let Some(key) = r[k].as_str().map(str::to_string) else { continue };
-                if LEFT_SETTINGS.contains(&key.as_str()) || app.db.get_setting(&key)?.is_some() {
+                if runtime_setting(&key) {
+                    rep.left_settings.push(key);
+                    continue;
+                }
+                if key.starts_with("import.") || app.db.get_setting(&key)?.is_some() {
                     continue;
                 }
                 let val = match &r[v] {
@@ -231,9 +283,13 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
             }
         }
     }
+    devices(app, c, old, &mut rep)?;
+    bits(app, c, old, &mut rep)?;
+    jira_desk(app, c, old, &mut rep)?;
+    pr_links(app, &mut rep)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
-        if used.contains(t) || LEFT.contains(&t.as_str()) || t.starts_with("sqlite_") {
+        if used.contains(t) || LEFT.contains(&t.as_str()) || MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) || t.starts_with("sqlite_") {
             continue;
         }
         let (names, rows) = old_rows(c, t)?;
@@ -248,6 +304,488 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
     Ok(rep)
 }
 
+/// Whether the last insert wrote a row (an `OR IGNORE` that met a clash didn't).
+fn wrote(app: &App) -> Result<bool> {
+    Ok(app.db.count("SELECT changes()", vec![])? > 0)
+}
+
+/// How a skipped row is named in the report: its ref, or its key columns.
+fn row_label(table: &str, map: &[(String, usize)], r: &[Value]) -> String {
+    let at = |c: &str| map.iter().find(|(b, _)| b == c).map(|(_, i)| &r[*i]).filter(|v| !v.is_null());
+    let kind = match table {
+        "tasks" => "task",
+        "goals" => "goal",
+        "issues" => "issue",
+        _ => "",
+    };
+    if let (false, Some(id)) = (kind.is_empty(), at("id").and_then(|v| v.as_i64())) {
+        return rf(kind, id);
+    }
+    let keys: Vec<String> = ["id", "task_id", "goal_id", "session_id", "wave", "comment_id", "date", "project"]
+        .iter()
+        .filter_map(|c| at(c).map(|v| format!("{c}={}", text(v).unwrap_or_default())))
+        .take(2)
+        .collect();
+    if keys.is_empty() { "a row".into() } else { keys.join(" ") }
+}
+
+/// A value as text: a string (trimmed, not empty) or a number.
+fn text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// An old list column: a JSON list, or words split by commas or spaces.
+fn words(v: &Value) -> Vec<Value> {
+    match v {
+        Value::Null => vec![],
+        Value::Array(a) => a.clone(),
+        Value::String(s) => match serde_json::from_str::<Value>(s.trim()) {
+            Ok(Value::Array(a)) => a,
+            Ok(o @ Value::Object(_)) => vec![o],
+            _ => s.replace(',', " ").split_whitespace().map(|w| json!(w)).collect(),
+        },
+        other => vec![other.clone()],
+    }
+}
+
+/// A device name or tag from whatever the old board called it: lowercase, odd characters as dashes.
+fn slug(s: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in s.trim().to_lowercase().chars() {
+        let c = if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':') { c } else { '-' };
+        if !(c == '-' && (out.is_empty() || out.ends_with('-'))) {
+            out.push(c);
+        }
+    }
+    let out: String = out.trim_matches(|c: char| !c.is_ascii_alphanumeric()).chars().take(64).collect();
+    (!out.is_empty()).then_some(out)
+}
+
+/// One old table read whole, its columns looked up by any of the names they went by.
+struct Old {
+    table: String,
+    names: Vec<String>,
+    rows: Vec<Vec<Value>>,
+}
+
+const NULL: Value = Value::Null;
+
+impl Old {
+    fn read(c: &Connection, old: &[String], name: &str, alts: &[&str]) -> Result<Option<Old>> {
+        let Some(t) = find_old(old, name, alts) else { return Ok(None) };
+        let (names, rows) = old_rows(c, t)?;
+        Ok(Some(Old { table: t.clone(), names, rows }))
+    }
+
+    fn has(&self, cols: &[&str]) -> bool {
+        cols.iter().any(|c| self.names.iter().any(|n| n.eq_ignore_ascii_case(c)))
+    }
+
+    /// The first of `cols` the row has a value in.
+    fn get<'a>(&self, r: &'a [Value], cols: &[&str]) -> &'a Value {
+        cols.iter()
+            .filter_map(|c| self.names.iter().position(|n| n.eq_ignore_ascii_case(c)))
+            .map(|i| &r[i])
+            .find(|v| !v.is_null() && v.as_str() != Some(""))
+            .unwrap_or(&NULL)
+    }
+
+    fn text(&self, r: &[Value], cols: &[&str]) -> Option<String> {
+        text(self.get(r, cols))
+    }
+
+    fn id(&self, r: &[Value], cols: &[&str]) -> Option<i64> {
+        match self.get(r, cols) {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) => parse_ref_str(s, "").ok().flatten(),
+            _ => None,
+        }
+    }
+
+    fn truthy(&self, r: &[Value], cols: &[&str]) -> bool {
+        as_bool(Some(self.get(r, cols)), false)
+    }
+}
+
+/// Device needs from old values (`android:2 ios`, a JSON list, `{"tag": …, "n": …}`), as the board
+/// stores them; None when they ask for nothing.
+fn needs_value(items: Vec<Value>) -> Result<Option<String>> {
+    let needs = crate::devices::clean_needs(Some(&Value::Array(items)))?;
+    if needs.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(jdumps(&json!(needs.iter().map(|x| json!({"tag": x.tag, "n": x.n})).collect::<Vec<_>>()))))
+}
+
+fn set_needs(app: &App, owner: &str, needs: &str) -> Result<()> {
+    app.db.x(
+        "INSERT INTO device_needs(owner, needs) VALUES(?, ?) ON CONFLICT(owner) DO UPDATE SET needs = excluded.needs",
+        vec![json!(owner), json!(needs)],
+    )?;
+    Ok(())
+}
+
+/// The device pool, its loans, and what tasks (`tasks.device_need`) and goals (`goal_devices`) ask for.
+fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+    // Old device id or name → the board's name for it.
+    let mut names: HashMap<String, String> = HashMap::new();
+    if let Some(d) = Old::read(c, old, "devices", &[])? {
+        let mut n = 0;
+        for r in &d.rows {
+            let raw = d.text(r, &["name", "label", "id"]);
+            let Some(name) = raw.as_deref().and_then(slug) else {
+                rep.skipped.push(format!("{} {}: no name", d.table, d.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            };
+            let mut tags: Vec<String> = vec![];
+            for v in [d.get(r, &["tags", "tag", "kinds"]), d.get(r, &["kind", "platform", "type", "os"])] {
+                for w in words(v) {
+                    if let Some(t) = text(&w).as_deref().and_then(slug).map(|t| t.replace(':', "-")) {
+                        if t != name && !tags.contains(&t) {
+                            tags.push(t);
+                        }
+                    }
+                }
+            }
+            let off = d.truthy(r, &["off", "disabled", "retired"]) || (d.has(&["enabled"]) && !d.truthy(r, &["enabled"]));
+            app.db.x(
+                "INSERT OR IGNORE INTO devices(name, tags, focus, note, off, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                vec![
+                    json!(name),
+                    json!(jdumps(&json!(tags))),
+                    d.get(r, &["focus", "focus_cmd", "focus_command"]).clone(),
+                    d.get(r, &["note", "notes", "description", "detail"]).clone(),
+                    json!(off as i64),
+                    d.get(r, &["created_at", "created", "added_at"]).clone(),
+                    d.get(r, &["updated_at", "updated"]).clone(),
+                ],
+            )?;
+            if wrote(app)? {
+                n += 1;
+            } else {
+                rep.skipped.push(format!("{} {name}: a device with that name came first", d.table));
+            }
+            for k in [d.text(r, &["id"]), raw].into_iter().flatten() {
+                names.entry(k.to_lowercase()).or_insert_with(|| name.clone());
+            }
+        }
+        rep.copied.push(("devices".into(), n));
+    }
+    let device_of = |v: &Value| -> Option<String> {
+        let k = text(v)?;
+        names.get(&k.to_lowercase()).cloned().or_else(|| slug(&k).filter(|s| names.values().any(|n| n == s)))
+    };
+    if let Some(l) = Old::read(c, old, "device_loans", &["loans"])? {
+        let mut n = 0;
+        for r in &l.rows {
+            let dev = device_of(l.get(r, &["device", "device_name", "device_id", "name"]));
+            let (Some(name), Some(task)) = (dev, l.id(r, &["task_id", "task"])) else {
+                rep.skipped.push(format!("{} {}: its device or task isn't known", l.table, l.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            };
+            app.db.insert(
+                "device_loans",
+                vec![
+                    ("device", json!(name)),
+                    ("task_id", json!(task)),
+                    ("at", l.get(r, &["at", "lent_at", "created_at", "started_at"]).clone()),
+                    ("released_at", l.get(r, &["released_at", "returned_at", "ended_at", "released"]).clone()),
+                ],
+            )?;
+            n += 1;
+        }
+        rep.copied.push(("device_loans".into(), n));
+    }
+    let mut n = 0;
+    // What each task asks for, from its own column.
+    const TASK_NEED: &[&str] = &["device_need", "device_needs", "devices"];
+    if let Some(t) = Old::read(c, old, "tasks", &[])?.filter(|t| t.has(TASK_NEED)) {
+        for r in &t.rows {
+            let Some(id) = t.id(r, &["id"]) else { continue };
+            let v = t.get(r, TASK_NEED);
+            match needs_value(words(v)) {
+                Ok(Some(needs)) => {
+                    set_needs(app, &rf("task", id), &needs)?;
+                    n += 1;
+                }
+                Ok(None) => {}
+                Err(e) => rep.skipped.push(format!("{} device need “{}”: {}", rf("task", id), text(v).unwrap_or_default(), e.message)),
+            }
+        }
+    }
+    // What each goal asks for: a need per row (a tag and a count, a device, or the need as text).
+    const GOAL_NEED: &[&str] = &["need", "needs", "device_need", "spec"];
+    if let Some(g) = Old::read(c, old, "goal_devices", &[])? {
+        let mut per: Vec<(i64, Vec<Value>)> = vec![];
+        for r in &g.rows {
+            let Some(goal) = g.id(r, &["goal_id", "goal"]) else { continue };
+            let items: Vec<Value> = if !g.get(r, GOAL_NEED).is_null() {
+                words(g.get(r, GOAL_NEED))
+            } else {
+                let tag = g.get(r, &["tag", "kind", "platform", "device", "device_id", "device_name", "name"]);
+                let tag = device_of(tag).or_else(|| text(tag).as_deref().and_then(slug));
+                let count = g.id(r, &["n", "count", "qty", "quantity", "num"]).unwrap_or(1);
+                tag.map(|t| vec![json!({"tag": t, "n": count})]).unwrap_or_default()
+            };
+            match per.iter_mut().find(|(x, _)| *x == goal) {
+                Some((_, v)) => v.extend(items),
+                None => per.push((goal, items)),
+            }
+        }
+        for (goal, items) in per {
+            match needs_value(items) {
+                Ok(Some(needs)) => {
+                    set_needs(app, &rf("goal", goal), &needs)?;
+                    n += 1;
+                }
+                Ok(None) => {}
+                Err(e) => rep.skipped.push(format!("{} devices: {}", rf("goal", goal), e.message)),
+            }
+        }
+    }
+    if n > 0 {
+        rep.copied.push(("device_needs".into(), n));
+    }
+    Ok(())
+}
+
+/// A bit to link, by old id or name, to a task or a goal.
+struct BitLink {
+    bit: Value,
+    task: Option<i64>,
+    goal: Option<i64>,
+    at: Option<String>,
+}
+
+/// The bits, and their links: from the old bits rows, link tables, and `tasks.bits` / `goals.bits`.
+fn bits(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+    // Old bit id or name → the board's bit id.
+    let mut ids: HashMap<String, i64> = HashMap::new();
+    let mut links: Vec<BitLink> = vec![];
+    if let Some(b) = Old::read(c, old, "bits", &["flags", "feature_flags"])? {
+        let mut n = 0;
+        for r in &b.rows {
+            let Some(name) = b.text(r, &["name", "key", "flag", "bit"]) else {
+                rep.skipped.push(format!("{} {}: no name", b.table, b.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            };
+            let kind = match b.text(r, &["kind", "type", "where"]).map(|k| k.to_lowercase()) {
+                Some(k) if k == "local" || k == "code" => "local",
+                Some(_) => "backend",
+                None if b.truthy(r, &["local"]) => "local",
+                None if b.has(&["backend", "remote"]) && !b.truthy(r, &["backend", "remote"]) => "local",
+                None => "backend",
+            };
+            let mut made_at = b.get(r, &["made_at", "created_in_tool_at", "made_on", "done_at"]).clone();
+            if made_at.is_null() && b.truthy(r, &["made", "created_in_tool", "done"]) {
+                made_at = b.get(r, &["updated_at", "updated", "created_at"]).clone();
+                if made_at.is_null() {
+                    made_at = json!(now_iso());
+                }
+            }
+            let id = b.id(r, &["id"]);
+            app.db.x(
+                "INSERT OR IGNORE INTO bits(id, name, kind, project, note, made_at, made_by, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                vec![
+                    json!(id),
+                    json!(name),
+                    json!(kind),
+                    b.get(r, &["project"]).clone(),
+                    b.get(r, &["note", "notes", "description", "detail"]).clone(),
+                    made_at,
+                    b.get(r, &["made_by"]).clone(),
+                    b.get(r, &["created_at", "created"]).clone(),
+                    b.get(r, &["updated_at", "updated"]).clone(),
+                ],
+            )?;
+            if !wrote(app)? {
+                rep.skipped.push(format!("{} {name}: a bit with that name or id came first", b.table));
+                continue;
+            }
+            n += 1;
+            let new = app.db.count("SELECT id FROM bits WHERE name = ?", vec![json!(name)])?;
+            ids.insert(name.to_lowercase(), new);
+            if let Some(id) = id {
+                ids.insert(id.to_string(), new);
+            }
+            let at = b.text(r, &["created_at", "created"]);
+            if let Some(x) = b.id(r, &["task_id", "task"]) {
+                links.push(BitLink { bit: json!(new), task: Some(x), goal: None, at: at.clone() });
+            }
+            if let Some(x) = b.id(r, &["goal_id", "goal"]) {
+                links.push(BitLink { bit: json!(new), task: None, goal: Some(x), at: at.clone() });
+            }
+            for w in words(b.get(r, &["tasks"])) {
+                if let Ok(Some(x)) = parse_ref(&w, "task") {
+                    links.push(BitLink { bit: json!(new), task: Some(x), goal: None, at: at.clone() });
+                }
+            }
+            for w in words(b.get(r, &["goals"])) {
+                if let Ok(Some(x)) = parse_ref(&w, "goal") {
+                    links.push(BitLink { bit: json!(new), task: None, goal: Some(x), at: at.clone() });
+                }
+            }
+        }
+        rep.copied.push(("bits".into(), n));
+    }
+    // Link tables: a bit (by id or name) with a task or a goal.
+    for t in ["bit_links", "task_bits", "goal_bits"] {
+        let Some(l) = Old::read(c, old, t, &[])? else { continue };
+        for r in &l.rows {
+            links.push(BitLink {
+                bit: l.get(r, &["bit_id", "bit", "name", "flag", "key"]).clone(),
+                task: l.id(r, &["task_id", "task"]),
+                goal: l.id(r, &["goal_id", "goal"]),
+                at: l.text(r, &["at", "created_at"]),
+            });
+        }
+    }
+    // A task's or a goal's own list of bit names.
+    for (table, kind) in [("tasks", "task"), ("goals", "goal")] {
+        let Some(t) = Old::read(c, old, table, &[])?.filter(|t| t.has(&["bits", "flags"])) else { continue };
+        for r in &t.rows {
+            let Some(id) = t.id(r, &["id"]) else { continue };
+            for w in words(t.get(r, &["bits", "flags"])) {
+                let (task, goal) = if kind == "task" { (Some(id), None) } else { (None, Some(id)) };
+                links.push(BitLink { bit: w, task, goal, at: None });
+            }
+        }
+    }
+    let mut n = 0;
+    for l in links {
+        let Some(key) = text(&l.bit) else { continue };
+        let Some(who) = l.task.map(|x| rf("task", x)).or(l.goal.map(|x| rf("goal", x))) else {
+            rep.skipped.push(format!("bit {key}: linked to no task or goal"));
+            continue;
+        };
+        let id = match ids.get(&key.to_lowercase()) {
+            Some(id) => *id,
+            // A name only the task or goal knew: a bit of its own, local (nothing says it's in the tool).
+            None if key.parse::<i64>().is_err() => {
+                let now = now_iso();
+                app.db.x("INSERT OR IGNORE INTO bits(name, kind, created_at, updated_at) VALUES(?, 'local', ?, ?)", vec![json!(key), json!(now), json!(now)])?;
+                let id = app.db.count("SELECT id FROM bits WHERE name = ?", vec![json!(key)])?;
+                ids.insert(key.to_lowercase(), id);
+                id
+            }
+            None => {
+                rep.skipped.push(format!("{who} bit {key}: no such bit"));
+                continue;
+            }
+        };
+        let have = app.db.count("SELECT COUNT(*) FROM bit_links WHERE bit_id = ? AND task_id IS ? AND goal_id IS ?", vec![json!(id), json!(l.task), json!(l.goal)])?;
+        if have > 0 {
+            continue;
+        }
+        let at = l.at.unwrap_or_else(now_iso);
+        app.db.insert("bit_links", vec![("bit_id", json!(id)), ("task_id", json!(l.task)), ("goal_id", json!(l.goal)), ("at", json!(at))])?;
+        n += 1;
+    }
+    if n > 0 {
+        rep.copied.push(("bit_links".into(), n));
+    }
+    Ok(())
+}
+
+/// The old board's Jira desk terminal (`sessions.jira_desk`), marked the way the board knows its
+/// desk: by the agent job that opened it.
+fn jira_desk(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+    let Some(s) = Old::read(c, old, "sessions", &["terminals"])?.filter(|s| s.has(&["jira_desk", "desk"])) else { return Ok(()) };
+    let mut n = 0;
+    for r in &s.rows {
+        let Some(sid) = s.text(r, &["id"]) else { continue };
+        if !s.truthy(r, &["jira_desk", "desk"]) {
+            continue;
+        }
+        let now = now_iso();
+        app.db.insert(
+            "jobs",
+            vec![
+                ("kind", json!("agent")),
+                ("args", json!(jdumps(&json!({"title": "Jira desk", "imported": true})))),
+                ("state", json!("done")),
+                ("created_at", json!(now)),
+                ("updated_at", json!(now)),
+                ("attempts", json!(0)),
+                ("purpose", json!(crate::jira_desk::PURPOSE)),
+                ("target", json!(jdumps(&json!({"session": sid})))),
+            ],
+        )?;
+        n += 1;
+    }
+    if n > 0 {
+        rep.copied.push(("jira desk terminals".into(), n));
+    }
+    Ok(())
+}
+
+/// The host and repo of a checkout's remote (`[pr_body] remote`), looked up once per path.
+fn remote_of(app: &App, path: &str, cache: &mut HashMap<String, Option<(String, String)>>) -> Option<(String, String)> {
+    cache
+        .entry(path.to_string())
+        .or_insert_with(|| {
+            let git = crate::proc::which("git")?;
+            let args: Vec<String> = vec!["-C".into(), path.into(), "remote".into(), "get-url".into(), app.cfg.pr_body.remote.clone()];
+            let o = crate::proc::run(&git, &args, None, 5.0).ok()?;
+            if o.code != Some(0) {
+                return None;
+            }
+            crate::prhost::repo_of_remote(o.stdout.trim())
+        })
+        .clone()
+}
+
+/// A PR's page on its host.
+pub fn pr_page(host: &str, repo: &str, num: i64) -> Option<String> {
+    match host {
+        "github" => Some(format!("https://github.com/{repo}/pull/{num}")),
+        "bitbucket" => Some(format!("https://bitbucket.org/{repo}/pull-requests/{num}")),
+        _ => None,
+    }
+}
+
+/// The old board kept a PR as `pr_repo` and `pr_num`; the board watches it by `pr_host` and links it
+/// by `pr_url`. Both come from the link when there is one, else the repo, else the project's remote.
+fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
+    let rows = app.db.q(
+        "SELECT id, project, repo_path, pr_host, pr_repo, pr_num, pr_url FROM tasks WHERE pr_num IS NOT NULL \
+         AND (COALESCE(pr_url, '') = '' OR COALESCE(pr_host, '') = '' OR COALESCE(pr_repo, '') = '')",
+        vec![],
+    )?;
+    let mut cache = HashMap::new();
+    let mut n = 0;
+    for t in rows {
+        let num = t.i("pr_num").unwrap_or(0);
+        let repo = t.s("pr_repo").filter(|r| !r.is_empty()).map(str::to_string);
+        let found = t.s("pr_url").and_then(find_pr).map(|l| (l.host, l.repo)).or_else(|| repo.as_deref().and_then(crate::prhost::repo_of_remote));
+        let found = found.or_else(|| {
+            let path = t.s("repo_path").filter(|p| !p.is_empty()).map(str::to_string).or_else(|| crate::projects::project_path(app, t.s("project")).ok().flatten())?;
+            let (host, theirs) = remote_of(app, &path, &mut cache)?;
+            // The old repo when it names one (owner/name), else the remote's.
+            Some((host, repo.clone().filter(|r| r.contains('/')).unwrap_or(theirs)))
+        });
+        let Some((host, repo)) = found else {
+            rep.skipped.push(format!("{} PR #{num}: no link, and its project's remote isn't on GitHub or Bitbucket", rf("task", t.id())));
+            continue;
+        };
+        let host = t.s("pr_host").filter(|h| !h.is_empty()).map(str::to_string).unwrap_or(host);
+        let url = t.s("pr_url").filter(|u| !u.is_empty()).map(str::to_string).or_else(|| pr_page(&host, &repo, num));
+        app.db.x(
+            "UPDATE tasks SET pr_host = ?, pr_repo = COALESCE(NULLIF(pr_repo, ''), ?), pr_url = COALESCE(NULLIF(pr_url, ''), ?) WHERE id = ?",
+            vec![json!(host), json!(repo), json!(url), json!(t.id())],
+        )?;
+        n += 1;
+    }
+    if n > 0 {
+        rep.copied.push(("PR links rebuilt".into(), n));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +796,25 @@ mod tests {
         let old: Vec<String> = ["ID", "title", "conversation_id", "goal", "extra"].iter().map(|s| s.to_string()).collect();
         let m = column_map(&board, &old);
         assert_eq!(m, vec![("id".into(), 0), ("title".into(), 1), ("claude_session_id".into(), 2), ("goal_id".into(), 3)]);
+    }
+
+    #[test]
+    fn running_state_settings_stay_behind() {
+        for k in ["alerts", "bridge_pid", "bridge:cursor", "dispatch_seen:T7", "usage_guard_handled:x", "review_round:T7", "nudge_sent:T3", "last_poll"] {
+            assert!(runtime_setting(k), "{k}");
+        }
+        for k in ["work_hours", "project_pr_flow", "qa_on", "limits", "pr_flow:web"] {
+            assert!(!runtime_setting(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn old_names_become_device_names() {
+        assert_eq!(slug("iPhone 15 Pro"), Some("iphone-15-pro".into()));
+        assert_eq!(slug("  emu:5554 "), Some("emu:5554".into()));
+        assert_eq!(slug("--"), None);
+        assert_eq!(pr_page("bitbucket", "w/r", 3).as_deref(), Some("https://bitbucket.org/w/r/pull-requests/3"));
+        assert_eq!(words(&json!("a, b c")), vec![json!("a"), json!("b"), json!("c")]);
+        assert_eq!(words(&json!(r#"["x"]"#)), vec![json!("x")]);
     }
 }
