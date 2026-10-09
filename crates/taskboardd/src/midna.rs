@@ -367,15 +367,24 @@ fn state_of(s: &str) -> &'static str {
 /// Background work states Midna lists that are over.
 const BACKGROUND_DONE: &[&str] = &["completed", "failed", "killed", "stopped", "cancelled"];
 
+/// Background kinds Midna lists that aren't work the terminal waits on: a monitor (Claude arms one
+/// on every artifact it publishes) watches until it's stopped or expires, it never finishes by itself.
+const NOT_BACKGROUND_WORK: &[&str] = &["monitor"];
+
 /// How much background work Midna lists running in a terminal's `agent_info`, and how much of it is
 /// agents: None when Midna doesn't say (no `background` list and no `background_at`). Midna leaves
-/// an empty list out, so `background_at` alone means nothing's running.
+/// an empty list out, so `background_at` alone means nothing's running. Monitors don't count.
 pub fn live_background(info: &Row) -> Option<(i64, i64)> {
     let list = info.get("background").and_then(|v| v.as_array());
     if list.is_none() && info.get("background_at").is_none_or(|v| v.is_null()) {
         return None;
     }
-    let running: Vec<&Value> = list.into_iter().flatten().filter(|t| !BACKGROUND_DONE.contains(&t["status"].as_str().unwrap_or(""))).collect();
+    let running: Vec<&Value> = list
+        .into_iter()
+        .flatten()
+        .filter(|t| !BACKGROUND_DONE.contains(&t["status"].as_str().unwrap_or("")))
+        .filter(|t| !NOT_BACKGROUND_WORK.contains(&t["kind"].as_str().unwrap_or("")))
+        .collect();
     let agents = running.iter().filter(|t| t["kind"] == "subagent").count();
     Some((running.len() as i64, agents as i64))
 }

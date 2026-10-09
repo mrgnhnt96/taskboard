@@ -210,8 +210,44 @@ fn midna_s_list_counts_agents_and_commands_still_running() {
     );
     let s = b.session();
     assert_eq!(s["status"], "waiting");
-    assert_eq!(s["background"], json!({"agents": 1, "commands": 2}));
+    assert_eq!(s["background"], json!({"agents": 1, "commands": 1}), "the monitor isn't work it waits on");
     assert_eq!(s["can_take"], false);
+}
+
+fn running_monitor(id: &str) -> Value {
+    json!({"id": id, "kind": "monitor", "status": "running", "description": "live updates for artifact"})
+}
+
+#[test]
+fn a_running_monitor_isnt_background_work() {
+    // #139's repro: Claude arms a monitor on every artifact it publishes, and it runs until it expires.
+    let b = new_board();
+    b.midna_lists("idle", json!({"background": [running_monitor("m1")], "background_at": iso(now_ts())}));
+    let s = b.session();
+    assert_eq!(s["status"], "idle");
+    assert_eq!(s["background"], Value::Null);
+    assert_eq!(s["close"], "close");
+}
+
+#[test]
+fn a_done_task_s_terminal_with_only_a_monitor_still_closes() {
+    let b = new_board();
+    b.midna_lists("idle", json!({"background": [running_monitor("m1")], "background_at": iso(now_ts())}));
+    let t = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Zip it", "detail": "Do it.", "project": "webapp", "ships_pr": false}))
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    taskboardd::board::create_job(&b.app, "agent", json!({}), Some(t), "", Some(json!({"session": "s1"}))).unwrap();
+    b.app
+        .db
+        .x(
+            "UPDATE tasks SET status = 'done', session_id = 's1', auto_close = 1, finished_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+            taskboardd::p![t],
+        )
+        .unwrap();
+    b.app.db.x("UPDATE sessions SET status_at = '2000-01-01T00:00:00Z' WHERE id = 's1'", taskboardd::p![]).unwrap();
+    taskboardd::runner::auto_close_done(&b.app).unwrap();
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM jobs WHERE kind = 'close'", taskboardd::p![]).unwrap(), 1);
 }
 
 #[test]
