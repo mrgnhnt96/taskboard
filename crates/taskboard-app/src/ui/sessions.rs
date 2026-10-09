@@ -103,10 +103,11 @@ pub struct State {
 
 // ------------------------------------------------------------------ helpers (sessions.js)
 
-/// `SESS[s.status] ? s.status : 'idle'`, plus the native "offline": its last turn lost the network.
+/// `SESS[s.status] ? s.status : 'idle'`, plus the native "offline" (its last turn lost the network)
+/// and "waiting" (its last turn left background commands or agents running).
 fn display_status(x: &Value) -> &str {
     match s(x, "status") {
-        st @ ("working" | "needs" | "idle" | "gone" | "offline") => st,
+        st @ ("working" | "needs" | "idle" | "gone" | "offline" | "waiting") => st,
         _ => "idle",
     }
 }
@@ -122,8 +123,17 @@ fn sess_label(st: &str) -> &'static str {
         "working" => "Working",
         "needs" => "Needs you",
         "offline" => "No network",
+        "waiting" => "Waiting",
         "gone" => "Gone",
         _ => "Idle",
+    }
+}
+
+/// The status pill's text: "Waiting on 2" while its background work runs, else `sess_label`.
+fn state_label(x: &Value, st: &str) -> String {
+    match i(x, "background") {
+        n if st == "waiting" && n > 0 => format!("Waiting on {n}"),
+        _ => sess_label(st).to_string(),
     }
 }
 
@@ -131,7 +141,7 @@ fn sess_label(st: &str) -> &'static str {
 fn rank(x: &Value) -> u8 {
     match s(x, "status") {
         "needs" | "offline" => 0,
-        "working" => 1,
+        "working" | "waiting" => 1,
         "gone" => 3,
         _ => 2,
     }
@@ -160,6 +170,7 @@ pub fn for_filter(x: &Value, f: &str) -> bool {
         "" | "all" => true,
         "stale" => is_stale(x),
         "needs" => matches!(raw_status(x), "needs" | "offline"),
+        "working" => matches!(raw_status(x), "working" | "waiting"),
         f => raw_status(x) == f,
     }
 }
@@ -219,6 +230,7 @@ pub fn status_line(d: &Value) -> String {
     match st {
         "working" => since(at("prompt")),
         "needs" | "offline" => since(at("waiting")),
+        "waiting" => since(opt_s(d, "status_at").unwrap_or("")),
         _ => format!("for {}", long_ago(idle_ms(d))),
     }
 }
@@ -455,7 +467,7 @@ pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
     } else if opt_s(x, "compacting").is_some() {
         "Compacting".to_string()
     } else {
-        sess_label(&status).to_string()
+        state_label(x, &status)
     };
     let when = if status == "idle" {
         if idle_ms(x) > 60000 { format!("for {}", long_ago(idle_ms(x))) } else { "just now".into() }
@@ -758,7 +770,7 @@ pub struct DetailVm {
     pub id: String,
     pub gone: bool,
     pub status: String,
-    pub pill: &'static str,
+    pub pill: String,
     pub status_line: Option<String>,
     /// "Compacting since 3:05 PM".
     pub compacting: Option<String>,
@@ -793,7 +805,7 @@ impl DetailView {
             DetailView::Message(m) | DetailView::Error(m) => return m.clone(),
             DetailView::Full(d) => d,
         };
-        let mut p: Vec<String> = vec![d.pill.into()];
+        let mut p: Vec<String> = vec![d.pill.clone()];
         p.extend(d.status_line.clone());
         p.extend(d.title.as_ref().map(|t| t.text.clone()));
         p.extend([d.path.clone(), d.branch.clone()]);
@@ -964,11 +976,11 @@ pub fn detail_vm(c: &DetailCtx) -> DetailView {
 
     DetailView::Full(Box::new(DetailVm {
         pill: if closing {
-            "Closing"
+            "Closing".into()
         } else if gone {
-            "Closed"
+            "Closed".into()
         } else {
-            sess_label(&status)
+            state_label(d, &status)
         },
         status_line: (!closing).then(|| status_line(d)),
         compacting: fmt::compacting(d).filter(|_| !closing),
@@ -1544,10 +1556,10 @@ fn pill_el(fg: Hsla, bg: Hsla, label: impl Into<SharedString>, sm: bool) -> Div 
         .child(label.into())
 }
 
-/// `.pill.st-{idle,working,needs,gone}` (plus the native-only `offline`).
-fn sess_pill(t: &Theme, status: &str, label: &'static str) -> Div {
+/// `.pill.st-{idle,working,needs,gone}` (plus the native-only `offline` and `waiting`).
+fn sess_pill(t: &Theme, status: &str, label: String) -> Div {
     let (fg, bg) = match status {
-        "working" => (t.accent_fg, t.accent_soft),
+        "working" | "waiting" => (t.accent_fg, t.accent_soft),
         "needs" => (t.warn_fg, t.warn_soft),
         "offline" => (t.down, t.down_soft),
         "gone" => (t.muted, t.panel_2),
@@ -1912,7 +1924,7 @@ fn name_box(t: &Theme, id: &str, n: &NameVm) -> Stateful<Div> {
 /// `SESS_DOT`, and the 3px ring around a row's dot (`.srow .dot`).
 fn dot_color(t: &Theme, status: &str) -> (Hsla, Hsla) {
     match status {
-        "working" => (t.accent, t.accent_soft),
+        "working" | "waiting" => (t.accent, t.accent_soft),
         "needs" => (t.warn, t.warn_soft),
         "offline" => (t.down, t.down_soft),
         _ => (t.faint, t.col),
@@ -1962,7 +1974,7 @@ fn row(t: &Theme, r: &RowVm, cx: &mut Context<MainWindow>) -> AnyElement {
     };
     let (dot, ring) = dot_color(t, &r.status);
     let state_c = match r.status.as_str() {
-        "working" => t.accent,
+        "working" | "waiting" => t.accent,
         "needs" => t.warn,
         "offline" => t.down,
         _ => t.muted,
@@ -2171,7 +2183,7 @@ fn detail(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<M
     let id = v.id.clone();
 
     // `.pill.st-{status}` and the muted "for 4 min".
-    let status_row = div().flex().items_center().gap(px(8.)).child(sess_pill(t, &v.status, v.pill))
+    let status_row = div().flex().items_center().gap(px(8.)).child(sess_pill(t, &v.status, v.pill.clone()))
         .children(v.compacting.clone().map(|c| pill_el(t.accent_fg, t.accent_soft, c, false)))
         .children(v.status_line.clone().map(|l| div().text_color(t.muted).child(l)));
 
@@ -2510,6 +2522,19 @@ mod tests {
             json!(null)
         });
         assert!(!bulkable(&x), "the desk is never closed in a batch");
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_terminal_waiting_on_background_work_says_so() {
+        let x = json!({"id": "s9", "name": "T35 Release", "status": "waiting", "background": 2, "close": "force"});
+        list_case(&json!({"f": "all"}), |c| {
+            assert_eq!(row_vm(&x, c).state, "Waiting on 2");
+            json!(null)
+        });
+        assert!(for_filter(&x, "working"));
+        assert!(!for_filter(&x, "idle"));
+        assert!(!for_filter(&x, "stale"));
+        assert_eq!(rank(&x), rank(&json!({"status": "working"})));
     }
 
     #[::core::prelude::v1::test]

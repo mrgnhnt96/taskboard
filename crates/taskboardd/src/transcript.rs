@@ -14,7 +14,8 @@ const ENDED: &[&str] = &["turn_duration", "stop_hook_summary"];
 const NEUTRAL_PREFIXES: &[&str] = &["<command-name>", "<command-message>", "<local-command", "<system-reminder>", "[Request interrupted by user"];
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
-const CLAUDE_STOPS_BACKGROUND_AFTER: f64 = 2.0 * 3600.0;
+pub const CLAUDE_STOPS_BACKGROUND_AFTER: f64 = 2.0 * 3600.0;
+const AGENT_LAUNCHED: &[u8] = b"async_launched";
 
 static DASH: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"[^A-Za-z0-9]").unwrap());
 static BG_STARTED: Lazy<Regex> = Lazy::new(|| Regex::new(r#""backgroundTaskId":\s*"([^"]+)""#).unwrap());
@@ -40,7 +41,8 @@ pub fn transcript_file(root: &Path, project_path: &str, claude_id: &str) -> Path
     p
 }
 
-/// How many background commands in this transcript started (under two hours ago) and haven't reported back.
+/// How many background commands and background agents in this transcript started (under two hours
+/// ago) and haven't reported back.
 pub fn background_running(root: &Path, path: Option<&str>) -> Option<usize> {
     let p = std::fs::canonicalize(expand_home(path?)).ok()?;
     let root = std::fs::canonicalize(root).ok()?;
@@ -51,17 +53,33 @@ pub fn background_running(root: &Path, path: Option<&str>) -> Option<usize> {
     let ended: Vec<&[u8]> = BG_ENDED.captures_iter(&data).filter_map(|c| c.get(1).map(|m| m.as_bytes())).collect();
     let mut running = 0;
     for line in data.split(|b| *b == b'\n') {
-        let Some(c) = BG_STARTED.captures(line) else { continue };
-        if ended.contains(&c.get(1).unwrap().as_bytes()) {
+        if !BG_STARTED.is_match(line) && !line.windows(AGENT_LAUNCHED.len()).any(|w| w == AGENT_LAUNCHED) {
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+        let Some(id) = started_in_background(line, &v) else { continue };
+        if ended.contains(&id.as_bytes()) {
+            continue;
+        }
         let Some(at) = v["timestamp"].as_str().and_then(parse_iso) else { continue };
         if crate::clock::awake_since(at) < CLAUDE_STOPS_BACKGROUND_AFTER {
             running += 1;
         }
     }
     Some(running)
+}
+
+/// The id a background command (`backgroundTaskId`) or background agent (an `async_launched` agent's
+/// `agentId`) started on this line goes by; its `<task-notification>` carries the same id.
+fn started_in_background(line: &[u8], v: &Value) -> Option<String> {
+    if let Some(c) = BG_STARTED.captures(line) {
+        return Some(String::from_utf8_lossy(c.get(1)?.as_bytes()).into_owned());
+    }
+    let r = &v["toolUseResult"];
+    if r["status"] != "async_launched" {
+        return None;
+    }
+    r["agentId"].as_str().filter(|id| !id.is_empty()).map(|id| id.to_string())
 }
 
 fn session_path(app: &App, s: &Row) -> Option<PathBuf> {

@@ -155,6 +155,15 @@ impl<'a> Report<'a> {
         Ok(())
     }
 
+    /// Saves how many background commands and agents the turn that just ended left running, so the
+    /// terminal shows it's waiting on them rather than idle.
+    fn note_background(&self, running: usize) -> Result<()> {
+        if let Some(sid) = self.sid() {
+            self.app.db.x("UPDATE sessions SET background = ?, background_at = ? WHERE id = ?", p![running as i64, now_iso(), sid])?;
+        }
+        Ok(())
+    }
+
     fn elsewhere(&self, t: &Row) -> Result<bool> {
         let (Some(cwd), Some(project)) = (&self.cwd, t.s("project").filter(|p| !p.is_empty())) else { return Ok(false) };
         Ok(projects::project_for_path(self.app, Some(cwd))?.as_deref() != Some(project))
@@ -254,10 +263,16 @@ fn store_plugin(r: &Report) -> Result<()> {
     Ok(())
 }
 
+/// SessionStart sources that mean a new Claude process: the old one's background work died with it.
+const NEW_PROCESS_SOURCES: &[&str] = &["startup", "resume"];
+
 fn on_session_start(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
     store_plugin(r)?;
+    if NEW_PROCESS_SOURCES.contains(&r.b("source").as_str()) {
+        r.note_background(0)?;
+    }
     let Some(t) = r.task()? else {
         if crate::jira_desk::is_desk(app, r.sid())? {
             return Ok(ok(None, Some(crate::jira_desk::intro(app))));
@@ -404,6 +419,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
     r.set_session_status("idle")?;
+    r.note_background(r.background)?;
     let Some(t) = r.task()? else {
         if let Some(ask) = changed_with_no_task(r)? {
             r.set_session_status("working")?;
@@ -694,6 +710,7 @@ fn on_attention(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let kind = r.b("notification_type");
     if kind == "idle_prompt" && r.background > 0 {
+        r.note_background(r.background)?;
         r.waiting_on_background = true;
         return Ok(ok(r.task()?.as_ref(), None));
     }
