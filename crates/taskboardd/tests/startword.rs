@@ -224,9 +224,9 @@ fn every_board_marker_is_the_boards_prompt() {
 }
 
 #[test]
-fn an_unnamed_ask_covers_only_the_first_task_made_after_it() {
+fn a_singular_unnamed_ask_covers_only_the_first_task_made_after_it() {
     let b = board();
-    b.said("make two tasks for the login page and queue them");
+    b.said("make two tasks for the login page and queue it");
     let first = b.new_task();
     let second = b.new_task();
     assert_eq!(b.tb_start(second).unwrap_err().0, 403);
@@ -236,6 +236,89 @@ fn an_unnamed_ask_covers_only_the_first_task_made_after_it() {
     b.said("the dev server won't come up; start it");
     let later = b.new_task();
     assert_eq!(b.tb_start(later).unwrap_err().0, 403);
+}
+
+#[test]
+fn a_plural_unnamed_ask_covers_every_task_made_in_reply_to_it() {
+    let b = board();
+    b.said("make tasks for A and B and queue them");
+    let a = b.new_task();
+    let c = b.new_task();
+    assert!(b.tb_start(a).unwrap()["starting"] == true);
+    assert!(b.tb_start(c).unwrap()["starting"] == true);
+
+    // Made before the ask, or by a later prompt's reply: not "them".
+    let before = b.new_task();
+    b.said("make two tasks for the signup page and queue both");
+    let x = b.new_task();
+    let y = b.new_task();
+    assert_eq!(b.tb_start(before).unwrap_err().0, 403);
+    b.said("thanks");
+    let after = b.new_task();
+    for id in [x, y, after] {
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "T{id}");
+    }
+
+    // A task made in reply to the board's prompt isn't made in reply to the owner's.
+    b.said("make tasks for C and D and queue these");
+    b.said("[task-board:G2] Plan the goal.");
+    let planned = b.new_task();
+    assert_eq!(b.tb_start(planned).unwrap_err().0, 403);
+}
+
+#[test]
+fn queue_it_after_the_task_was_made_is_the_word() {
+    let b = board();
+    b.said("make a task for the footer");
+    let id = b.new_task();
+    b.said("queue it");
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+
+    // Plural, for every task the prompt before made.
+    b.said("make tasks for the header and the sidebar");
+    let h = b.new_task();
+    let s = b.new_task();
+    b.said("ok, queue them");
+    assert!(b.tb_start(h).unwrap()["starting"] == true);
+    assert!(b.tb_start(s).unwrap()["starting"] == true);
+}
+
+#[test]
+fn queue_it_after_the_task_was_made_is_no_word_when_it_may_mean_something_else() {
+    let b = board();
+    // Something newer was said in between.
+    b.said("make a task for the footer");
+    let id = b.new_task();
+    b.said("thanks");
+    b.said("queue it");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+
+    // The prompt says more than the ask: "it" may be the dev server.
+    b.said("make a task for the footer");
+    let id = b.new_task();
+    b.said("the dev server won't come up; start it");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+
+    // Two tasks were made: which is "it"?
+    b.said("make tasks for the header and the sidebar");
+    let h = b.new_task();
+    let s = b.new_task();
+    b.said("queue it");
+    assert_eq!(b.tb_start(h).unwrap_err().0, 403);
+    assert_eq!(b.tb_start(s).unwrap_err().0, 403);
+
+    // The agent made it without being asked for a task.
+    b.said("fix the footer");
+    let id = b.new_task();
+    b.said("queue it");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+
+    // Taken back.
+    b.said("make a task for the footer");
+    let id = b.new_task();
+    b.said("queue it");
+    b.said("nope");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
 }
 
 #[test]

@@ -37,8 +37,23 @@ const EDGE: &str = r"(?:^|[:,(]|\b(?:and|then|but|so|also)\b)";
 const LEAD: &str = r"(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|sure|great|cool|perfect|thanks|please|pls|now|then|so|also|just|go|go\s+ahead(?:\s+and)?|you\s+can|you\s+may|can\s+you|could\s+you|would\s+you|will\s+you|i\s+want\s+you\s+to|i[’']?d\s+like\s+you\s+to|let[’']?s|let\s+us|feel\s+free\s+to|time\s+to)\s*,?\s+)*";
 /// The tasks an ask names: "T4", "task T4", "T4, T5 and T6".
 const NAMED: &str = r"(?:task\s+)?[Tt]\d+(?:\s*,?\s*(?:and\s+|&\s*)?(?:task\s+)?[Tt]\d+)*";
-/// The task an ask doesn't name: "it", "this", "the new task", "them".
-const UNNAMED: &str = r"(?:it|this|that|them|these|those|both|(?:the|this|that|these|those|my|your|our)\s+(?:new\s+)?(?:one|ones|task|tasks))";
+/// The task an ask doesn't name: "it", "this", "the new task", "them", "both of them".
+const UNNAMED: &str = concat!(
+    r"(?:(?:both|all|each)\s+of\s+(?:them|these|those|the\s+(?:new\s+)?(?:tasks|ones))|them\s+(?:all|both)|",
+    r"all\s+(?:the\s+|these\s+|those\s+)?(?:new\s+)?(?:tasks|ones)|all\s+(?:two|three|four|five|six)|",
+    r"(?:the|these|those|my|your|our)\s+(?:two|three|four|five|six)\s+(?:new\s+)?(?:tasks|ones)|",
+    r"(?:the|this|that|these|those|my|your|our)\s+(?:new\s+)?(?:one|ones|task|tasks)|it|this|that|them|these|those|both)"
+);
+/// An unnamed ask that means more than one task ("them", "both", "these", "the new tasks").
+static PLURAL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:them|these|those|both|all|ones|tasks)\b").unwrap());
+/// A prompt that's nothing but an unnamed ask ("queue it", "ok, start them", "great, kick it off"): its
+/// "it" can only be what the conversation just made.
+static BARE_ASK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)^(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|yup|sure|great|cool|nice|perfect|awesome|good|thanks|thank\s+you|ty|please|pls|looks\s+good|lgtm|sounds\s+good|go\s+ahead(?:\s+and)?|now|then|so|and|just|you\s+can|can\s+you|could\s+you|let[’']?s|that[’']?s\s+(?:fine|great|good|perfect))[\s,.!]*)*(?:{VERB}\s+(?:{UNNAMED})|kick\s+(?:{UNNAMED})\s+off)(?:\s+(?:up|off|now|please|pls|too|for\s+me|right\s+away|right\s+now|asap))*[\s.!]*(?:(?:thanks|thank\s+you|ty|please|pls)[\s.!]*)?$"
+    ))
+    .unwrap()
+});
 /// What may follow the task in an ask. Anything else ("start T8 failed", "start T8 on Monday", "start
 /// T8 when T7 lands") is no ask; a question mark, a time or a condition is handled by the sentence.
 const TAIL: &str = r"(?:\s*$|\s*[:,)]|\s+(?:and|then|now|please|pls|too|again|up|off|asap|instead|for\s+me|right\s+away|right\s+now)\b)";
@@ -142,11 +157,13 @@ static SAYS_RE: Lazy<Regex> = Lazy::new(|| {
 /// A line that reads as pasted (a log line, a quote, a prompt, a diff, a list).
 static PASTED_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\s|[>$#|\[{<+*\-•]|\d{1,4}[:\-/.)\]])").unwrap());
 
-/// One ask for a start in a prompt: for the tasks it names, or for a task it doesn't ("queue it").
+/// One ask for a start in a prompt: for the tasks it names, for a task it doesn't name ("queue it"),
+/// or for tasks it doesn't name ("queue them").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ask {
     Named(Vec<i64>),
     Unnamed,
+    Them,
 }
 
 /// One thing a prompt says about a start, in the order it says them: an ask, or a take-back.
@@ -231,7 +248,7 @@ fn mention_of<'h>(c: &regex::Captures<'h>) -> Option<(regex::Match<'h>, Ask)> {
     let (named, unnamed) = (c.name("named").or(c.name("named2")), c.name("unnamed").or(c.name("unnamed2")));
     match (named, unnamed) {
         (Some(n), _) => Some((n, Ask::Named(named_tasks(n.as_str())))),
-        (None, Some(u)) => Some((u, Ask::Unnamed)),
+        (None, Some(u)) => Some((u, if PLURAL_RE.is_match(u.as_str()) { Ask::Them } else { Ask::Unnamed })),
         _ => None,
     }
 }
@@ -388,23 +405,56 @@ pub fn named_tasks(text: &str) -> Vec<i64> {
 }
 
 /// One prompt of the conversation, for [`word_in`].
+#[derive(Debug, Clone, Default)]
 pub struct Prompt {
     pub text: String,
-    /// The first task the conversation made after this prompt.
-    pub first_made: Option<i64>,
+    /// The tasks the conversation made in reply to this prompt (after it, before the next one), in order.
+    pub made: Vec<i64>,
     /// Only the start of the prompt reached the board: what it says past that is unknown.
     pub clipped: bool,
+    /// The board sent it (`[task-board:…]`): it's no one's word, and no prompt for "queue it" to follow.
+    pub board: bool,
+}
+
+impl Prompt {
+    pub fn new(text: &str) -> Prompt {
+        Prompt { text: text.to_string(), ..Prompt::default() }
+    }
+    fn boards(&self) -> bool {
+        self.board || MARKER_RE.is_match(&self.text)
+    }
+}
+
+/// The tasks an unnamed ask in the latest prompt, `prompts[0]`, can mean. In a prompt that asks for new
+/// tasks, the ones made in reply to it: "make a task for it and queue it" means the first, "make tasks
+/// for A and B and queue them" every one. In a prompt that's only the ask ("queue it", "ok, start them"),
+/// the ones made in reply to the prompt just before, when that one asked for them: "it" only when there's
+/// one. A prompt with more in it ("the dev server won't come up; start it") may mean something else.
+fn unnamed_tasks(prompts: &[Prompt], r: &Reading, plural: bool) -> Vec<i64> {
+    let Some(p) = prompts.first() else { return vec![] };
+    if r.makes {
+        return if plural { p.made.clone() } else { p.made.first().copied().into_iter().collect() };
+    }
+    let Some(prev) = prompts.get(1) else { return vec![] };
+    if prev.boards() || prev.clipped || !read(&prev.text).makes || !BARE_ASK_RE.is_match(owners_text(&p.text).trim()) {
+        return vec![];
+    }
+    if plural || prev.made.len() == 1 {
+        prev.made.clone()
+    } else {
+        vec![]
+    }
 }
 
 /// Which prompt, newest first, is the word to start task `id`. The latest prompt that speaks of the
 /// task's start decides: if it takes the start back, puts it off or asks about it, there's no word. A
 /// prompt that takes back every start without naming one ("nope", "never mind that", "I changed my
 /// mind") or asks for another start in place of the earlier ones ("start T9 instead") speaks of them all.
-/// An unnamed ask ("make a task for it and queue it") is the word only in the latest prompt, when that
-/// prompt asks for a new task and `id` is the first task the conversation made after it.
+/// An unnamed ask ("queue it", "queue them") is the word only in the latest prompt, for the tasks
+/// [`unnamed_tasks`] says it means.
 pub fn word_in(prompts: &[Prompt], id: i64) -> Option<usize> {
     for (i, p) in prompts.iter().enumerate() {
-        if MARKER_RE.is_match(&p.text) {
+        if p.boards() {
             continue;
         }
         // What we can't read may take it back.
@@ -412,7 +462,8 @@ pub fn word_in(prompts: &[Prompt], id: i64) -> Option<usize> {
             return None;
         }
         let r = read(&p.text);
-        match r.word_for(id, |_| i == 0 && r.makes && p.first_made == Some(id)) {
+        let unnamed = |a: &Ask| i == 0 && unnamed_tasks(prompts, &r, matches!(a, Ask::Them)).contains(&id);
+        match r.word_for(id, unnamed) {
             Some(true) => return Some(i),
             Some(false) => return None,
             None => {}
@@ -421,8 +472,7 @@ pub fn word_in(prompts: &[Prompt], id: i64) -> Option<usize> {
     None
 }
 
-/// Notes on terminal `sid` that its conversation made task `id`: the task an unnamed "queue it" in the
-/// prompt before can mean.
+/// Notes on terminal `sid` that its conversation made task `id`: the task an unnamed "queue it" can mean.
 pub fn note_made(app: &App, sid: &str, id: i64) -> Result<()> {
     crate::board::session_event_with(app, sid, MADE, &format!("Added {}", rf("task", id)), None, Some(&id.to_string()))
 }
@@ -447,27 +497,26 @@ pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
     }
+    // Every prompt (the board's too, so a task made in reply to one isn't put on the prompt before it)
+    // and every task the conversation made, oldest first.
     let rows = app.db.q(
-        "SELECT id, text, full FROM session_events WHERE session_id = ? AND kind = 'prompt' AND COALESCE(data, '') != ?
+        "SELECT id, kind, text, full, data FROM session_events WHERE session_id = ? AND kind IN ('prompt', ?)
            AND id > COALESCE((SELECT MAX(id) FROM session_events WHERE session_id = ? AND kind = 'start'), 0)
-         ORDER BY id DESC",
-        p![sid, BOARD_PROMPT, sid],
+         ORDER BY id",
+        p![sid, MADE, sid],
     )?;
-    let first_made = match rows.first() {
-        Some(latest) => app
-            .db
-            .q1("SELECT data FROM session_events WHERE session_id = ? AND kind = ? AND id > ? ORDER BY id LIMIT 1", p![sid, MADE, latest.id()])?
-            .and_then(|r| r.st("data").parse().ok()),
-        None => None,
-    };
-    let prompts: Vec<Prompt> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let (text, clipped) = typed(r);
-            Prompt { text, first_made: if i == 0 { first_made } else { None }, clipped }
-        })
-        .collect();
+    let mut prompts: Vec<Prompt> = vec![];
+    for r in &rows {
+        if r.st("kind") == MADE {
+            if let (Some(p), Ok(made)) = (prompts.last_mut(), r.st("data").parse()) {
+                p.made.push(made);
+            }
+            continue;
+        }
+        let (text, clipped) = typed(r);
+        prompts.push(Prompt { text, made: vec![], clipped, board: r.s("data") == Some(BOARD_PROMPT) });
+    }
+    prompts.reverse();
     Ok(word_in(&prompts, id).map(|i| prompts[i].text.clone()))
 }
 
@@ -666,8 +715,8 @@ mod tests {
         assert!(!read("how's T8 going").holds(8));
     }
 
-    fn prompts(texts: &[&str], first_made: Option<i64>) -> Vec<Prompt> {
-        texts.iter().enumerate().map(|(i, t)| Prompt { text: t.to_string(), first_made: if i == 0 { first_made } else { None }, clipped: false }).collect()
+    fn prompts(texts: &[&str], made: Option<i64>) -> Vec<Prompt> {
+        texts.iter().enumerate().map(|(i, t)| Prompt { made: if i == 0 { made.into_iter().collect() } else { vec![] }, ..Prompt::new(t) }).collect()
     }
 
     #[test]
@@ -860,9 +909,115 @@ mod tests {
 
     #[test]
     fn a_clipped_prompt_is_no_word() {
-        let p = |text: &str, clipped| Prompt { text: text.into(), first_made: None, clipped };
+        let p = |text: &str, clipped| Prompt { clipped, ..Prompt::new(text) };
         assert_eq!(word_in(&[p("start T8", true)], 8), None);
         assert_eq!(word_in(&[p("thanks", true), p("start T8", false)], 8), None, "its unread end may take the start back");
         assert_eq!(word_in(&[p("start T8", false)], 8), Some(0));
+    }
+
+    /// A conversation, newest first: each prompt with the tasks made in reply to it.
+    fn convo(said: &[(&str, &[i64])]) -> Vec<Prompt> {
+        said.iter().map(|(t, made)| Prompt { made: made.to_vec(), ..Prompt::new(t) }).collect()
+    }
+
+    #[test]
+    fn an_unnamed_ask_for_more_than_one_task_is_plural() {
+        for plural in [
+            "make tasks for A and B and queue them",
+            "queue both",
+            "start both of them",
+            "kick them off",
+            "queue them all",
+            "start all of them",
+            "start all the new tasks",
+            "start the two new tasks",
+            "queue these",
+            "start those",
+            "queue the new ones",
+        ] {
+            assert_eq!(asks(plural), vec![Ask::Them], "{plural}");
+        }
+        for one in ["queue it", "start the new task", "start this one", "kick it off", "queue that"] {
+            assert_eq!(asks(one), vec![Ask::Unnamed], "{one}");
+        }
+        assert_eq!(read("don't queue them").held, vec![Ask::Them]);
+    }
+
+    #[test]
+    fn a_plural_ask_covers_every_task_made_in_reply_to_it() {
+        let c = convo(&[("make tasks for A and B and queue them", &[9, 10])]);
+        assert_eq!(word_in(&c, 9), Some(0));
+        assert_eq!(word_in(&c, 10), Some(0));
+        assert_eq!(word_in(&c, 11), None, "not made in reply to it");
+        let c = convo(&[("make three tasks for the footer, then start all of them", &[4, 5, 6])]);
+        assert!([4, 5, 6].iter().all(|id| word_in(&c, *id) == Some(0)));
+        // "it" is still the first one only.
+        let c = convo(&[("make two tasks and queue it", &[9, 10])]);
+        assert_eq!(word_in(&c, 9), Some(0));
+        assert_eq!(word_in(&c, 10), None);
+        // Not once a later prompt comes in, and not when it's held.
+        assert_eq!(word_in(&convo(&[("thanks", &[]), ("make tasks for A and B and queue them", &[9, 10])]), 10), None);
+        assert_eq!(word_in(&convo(&[("make tasks for A and B and queue them tomorrow", &[9, 10])]), 9), None);
+        assert_eq!(word_in(&convo(&[("make tasks for A and B and queue them. jk", &[9, 10])]), 9), None);
+        assert_eq!(word_in(&convo(&[("make tasks for A and B but don't queue them", &[9, 10])]), 9), None);
+        assert_eq!(word_in(&convo(&[("don't make tasks, just queue them", &[9, 10])]), 9), None, "it asks for no new task");
+    }
+
+    #[test]
+    fn queue_it_covers_the_task_made_just_before_it() {
+        for ask in ["queue it", "start it", "ok, queue it", "great, kick it off", "yes, start it please", "Sounds good. Queue it.", "lgtm, queue it now"] {
+            assert_eq!(word_in(&convo(&[(ask, &[]), ("make a task for the footer", &[9])]), 9), Some(0), "{ask}");
+        }
+        assert_eq!(word_in(&convo(&[("queue it", &[]), ("make a task for the footer but don't start it", &[9])]), 9), Some(0));
+        assert_eq!(word_in(&convo(&[("queue it", &[10]), ("make a task for the footer", &[9])]), 9), Some(0), "it's still the one before");
+        assert_eq!(word_in(&convo(&[("queue it", &[10]), ("make a task for the footer", &[9])]), 10), None);
+        // Plural, for every task made in reply to the prompt before.
+        let c = convo(&[("queue them", &[]), ("make tasks for the footer and the header", &[9, 10])]);
+        assert_eq!((word_in(&c, 9), word_in(&c, 10)), (Some(0), Some(0)));
+    }
+
+    #[test]
+    fn queue_it_is_no_word_when_it_may_mean_something_else() {
+        let footer: &[i64] = &[9];
+        for (ask, before, made) in [
+            // Another prompt in between.
+            ("queue it", "thanks", &[][..]),
+            // The prompt before didn't ask for a task: the agent made it on its own.
+            ("queue it", "fix the footer", footer),
+            // Two tasks: which is "it"?
+            ("queue it", "make tasks for the footer and the header", &[9, 10][..]),
+            // Nothing made.
+            ("queue it", "make a task for the footer", &[][..]),
+            // The prompt says more than the ask: "it" may be what it speaks of.
+            ("the dev server won't come up; start it", "make a task for the footer", footer),
+            ("start it and check the logs", "make a task for the footer", footer),
+            ("the build is red. queue it", "make a task for the footer", footer),
+            // Asked about, put off or taken back.
+            ("queue it?", "make a task for the footer", footer),
+            ("queue it tomorrow", "make a task for the footer", footer),
+            ("don't queue it", "make a task for the footer", footer),
+            ("queue it. jk", "make a task for the footer", footer),
+        ] {
+            let c = convo(&[(ask, &[]), (before, made)]);
+            assert!([9, 10].iter().all(|id| word_in(&c, *id).is_none()), "{ask} after {before}");
+        }
+        // The prompt before was the board's.
+        let c = vec![Prompt::new("queue it"), Prompt { made: vec![9], board: true, ..Prompt::new("Plan the goal: make a task for the footer") }];
+        assert_eq!(word_in(&c, 9), None);
+        // The prompt before was clipped.
+        let c = vec![Prompt::new("queue it"), Prompt { made: vec![9], clipped: true, ..Prompt::new("make a task for the footer") }];
+        assert_eq!(word_in(&c, 9), None);
+        // An older prompt's "queue it" counts only while it's the latest.
+        let c = convo(&[("thanks", &[]), ("queue it", &[]), ("make a task for the footer", &[9])]);
+        assert_eq!(word_in(&c, 9), None);
+    }
+
+    #[test]
+    fn an_unnamed_ask_for_a_task_the_prompt_itself_makes_no_new_task_for_is_refused() {
+        // "the dev server won't come up; start it" and then the agent makes a task: "it" may be the dev
+        // server, so it's no word for the task.
+        assert_eq!(word_in(&convo(&[("the dev server won't come up; start it", &[9])]), 9), None);
+        assert_eq!(word_in(&convo(&[("the dev server won't come up. Start it.", &[9])]), 9), None);
+        assert_eq!(word_in(&convo(&[("start it", &[9])]), 9), None);
     }
 }
