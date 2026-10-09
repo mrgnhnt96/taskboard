@@ -40,6 +40,9 @@ reader just changed doesn't vanish from under them).
   "work_hours": work_hours,
   "usage": usage | null,                        // null when no usage reading is known: the pill is hidden
   "accounts": [{"id", "label", "reason", "reauth": bool}],  // accounts needing the owner (missing scopes or a failed check): the amber status-bar pill
+  "master": [break],                            // open master breaks (GET /master): the "Master is red" banner lines
+  "pr_builds": {"stopped", "by", "at", "reason", …},  // PR builds stopped (GET /pr-builds): the "PR builds stopped" pill
+  "pr_feed": {"on", "healthy", "problem", "why", …},  // the PR feed's health (GET /prs/feed); the app shows a pill while it's unhealthy
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
   "sessions": [session_row],                    // live (not gone) Claude terminals, filtered by ?project
   "session_projects": [str],                    // sorted project names of all live Claude terminals (unfiltered); seeds the goals rail
@@ -574,6 +577,71 @@ grace), `failures_cmd` and `merge_strategy`.
 **`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
 `TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
 line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
+### The PR feed (`tb feed`)
+PR activity can come as events instead of the poll: any listener posts one event per PR change or build, and the
+board reads that one PR again and steps it (`feed.rs` documents the health rules). Events work whether or not
+`[feed] on` is set; with it, the board watches the feed's health.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
+| `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null}`; also `state.pr_feed`. |
+
+While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
+reviewer asks, nudges and swaps (the first ask on a PR still goes out outside the work hours); the PR poll runs (while
+healthy it rests unless `poll_while_healthy`); the board restarts the feed at `restart_mins` (1, 5, 15) after it went
+bad with `restart_cmd` (or by restarting its own `listener`), and raises the `pr-feed` alert if a restart fails or it's
+still bad 5 minutes after the last one. The alert clears when the feed is healthy again.
+
+A request for changes only counts (moves the PR to "Addressing comments", blocks the merge, is asked again by `tb pr
+addressed`) when the reviewer also wrote on the PR: started or spoke on a thread, a review summary included.
+
+### PR builds (`tb pr-builds`)
+A board-wide switch for when CI time is scarce, set only on the owner's word (`prbuilds.rs` documents it).
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int}`; also `state.pr_builds` (the app's "PR builds stopped" pill). |
+| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. **Response:** as `GET`. |
+
+While stopped: a build event (`POST /prs/event` with `kind: build`, a running `state` such as `started`) on one of the
+board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails`, queues a cancel
+(once per push). It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
+bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
+tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
+way to cancel alerts at once. A cancelled push is logged on its task. The PRs' checks count as passed: the build reads
+"Builds stopped" and the PR moves on to review.
+
+A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
+started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
+`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?}` says what happened.
+
+### Master breaks (`tb master`)
+An optional watch on each project's default branch (`[master.projects.<name>]`); `breaks.rs` documents the flow and
+the `breaks` table.
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. |
+| `GET /master/:ref` | | `tb master M3`. **Response:** the break. |
+| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?}` | `tb master M3 ours\|not-ours\|unsure`: the owner's word, never decided again. `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
+| `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
+
+`break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
+checks: [str], evidence: {checks: [{name, url, steps, tests}]}, suspects: [{sha, name, email, message, ours}], verdict:
+"ours"|"not_ours"|"unsure"|null, verdict_label, verdict_by: "commits"|"claude"|"fallback"|<who>, verdict_why,
+verdict_at, task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the open ones: the
+app's "Master is red" banner lines, with Open T<n> for the fix task.
+
+A failed check on the branch's head opens a break; a head whose checks all passed closes it. Suspects are the commits
+since the last green head the board saw (or the head alone), each `ours` when its author's email is in `owner_emails`.
+No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` decides from the evidence (`[master]
+fault_check`), or without it: every suspect the owner's makes it `ours`, else `unsure`. Only `ours` gets a fix task
+(queued, high priority) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
+branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
+again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
+
 ### Projects
 | Path | Body | Notes |
 |---|---|---|

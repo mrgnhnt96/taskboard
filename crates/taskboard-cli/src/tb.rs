@@ -308,6 +308,28 @@ enum Cmd {
         #[command(subcommand)]
         action: PrCmd,
     },
+    /// The PR feed: its health (with no action), or post an event or heartbeat for a listener
+    Feed {
+        #[command(subcommand)]
+        action: Option<FeedCmd>,
+    },
+    /// Stop or resume the board's PR builds, only on the owner's word (no action: whether they're stopped)
+    PrBuilds {
+        #[command(subcommand)]
+        action: Option<PrBuildsCmd>,
+    },
+    /// Red default branches: tb master (the breaks), tb master M3 (or show M3), tb master M3 ours|not-ours|unsure (the owner's word), tb master check
+    Master {
+        /// [M<n>] [show|ours|not-ours|unsure|check], in either order
+        #[arg(num_args = 0..=2)]
+        args: Vec<String>,
+        /// Why (with a verdict)
+        #[arg(long)]
+        why: Option<String>,
+        /// Whose word the verdict is (the owner when left out)
+        #[arg(long)]
+        who: Option<String>,
+    },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
     /// Print an account's token for a script: github, bitbucket or slack
@@ -842,6 +864,64 @@ enum PrCmd {
         /// The failed check to clear (repeat for more; all of this push's failures when left out)
         #[arg(long)]
         check: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+enum FeedCmd {
+    /// One PR changed (or one of its builds did): the board reads it again
+    Event {
+        /// The PR's link (or use --repo and --num, or --task)
+        url: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        num: Option<i64>,
+        #[arg(long)]
+        task: Option<String>,
+        /// pr (the default) or build
+        #[arg(long, value_parser = ["pr", "build"])]
+        kind: Option<String>,
+        /// A build's state: started, running, passed, failed or stopped
+        #[arg(long)]
+        state: Option<String>,
+        /// The commit the build is for
+        #[arg(long)]
+        head: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        /// The build's CI: github, bitbucket, azure, or a name in [pr_builds.cancel]
+        #[arg(long)]
+        provider: Option<String>,
+        /// The build's link
+        #[arg(long = "build-url")]
+        build_url: Option<String>,
+        /// Who pushed (an email): a push build of the owner's is cancelled too while PR builds are stopped
+        #[arg(long)]
+        author: Option<String>,
+        /// Where the event came from (slack, webhook, …)
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// The feed is alive
+    Heartbeat,
+}
+
+#[derive(Subcommand)]
+enum PrBuildsCmd {
+    /// Cancel every build of the owner's PRs and pushes from now on; their checks count as passed
+    Stop {
+        #[arg(long)]
+        reason: Option<String>,
+        /// Whose word it is (the owner when left out)
+        #[arg(long)]
+        who: Option<String>,
+    },
+    /// Let the builds run again
+    Resume {
+        #[arg(long)]
+        who: Option<String>,
     },
 }
 
@@ -1974,6 +2054,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Device { action } => device_cmd(c, action),
+        Cmd::Feed { action } => feed_cmd(c, action),
+        Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
+        Cmd::Master { args, why, who } => master_cmd(c, args, why, who),
         Cmd::Bits { goal, t } => {
             let mut path = "/bits".to_string();
             if let Some(g) = goal {
@@ -2845,6 +2928,175 @@ fn basic(user: &str, secret: &str) -> String {
     taskboardd::jira::base64_lite::encode(format!("{user}:{secret}").as_bytes())
 }
 
+/// "The PR feed is healthy · last event 3:04 PM" for `tb feed`.
+fn feed_line(v: &Value) -> String {
+    if v["on"] != true {
+        return "The PR feed is off ([feed] on in config.toml); PRs are polled.".into();
+    }
+    let mut line = if v["healthy"] == true {
+        "The PR feed is healthy".to_string()
+    } else {
+        format!("The PR feed is {}: {}", v["problem"].as_str().unwrap_or("unhealthy"), v["why"].as_str().unwrap_or(""))
+    };
+    for (k, label) in [("last_event_at", "last event"), ("last_heartbeat_at", "last heartbeat")] {
+        if let Some(t) = v[k].as_str() {
+            line += &format!(" · {label} {}", taskboardd::util::local_clock(Some(t)));
+        }
+    }
+    let restarts = v["restarts"].as_array().map(|a| a.len()).unwrap_or(0);
+    if restarts > 0 {
+        line += &format!(" · restarted {restarts}×");
+    }
+    if let Some(h) = v["holding"].as_str() {
+        line += &format!("\n{h}");
+    }
+    line
+}
+
+fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
+    match action {
+        None => {
+            let v = c.call("GET", "/prs/feed", None)?;
+            out(&feed_line(&v));
+        }
+        Some(FeedCmd::Heartbeat) => {
+            c.call("POST", "/prs/heartbeat", Some(json!({})))?;
+        }
+        Some(FeedCmd::Event { url, repo, num, task, kind, state, head, branch, provider, build_url, author, source }) => {
+            let task = task.map(|t| task_ref(&t)).transpose()?;
+            let body = json!({"url": url, "repo": repo, "num": num, "task": task, "kind": kind, "state": state, "head": head, "branch": branch,
+                              "provider": provider, "build_url": build_url, "author": author, "source": source});
+            let v = c.call("POST", "/prs/event", Some(body))?;
+            match v["task"].as_str() {
+                Some(t) if v["refreshed"] == true => out(&format!("Read {t}'s PR again: {}.", v["phase"].as_str().unwrap_or("no stage"))),
+                Some(t) => out(&format!("Noted for {t}.{}", v["read_error"].as_str().map(|e| format!(" Its PR couldn't be read: {e}")).unwrap_or_default())),
+                None => out("Noted; no task on the board has that PR."),
+            }
+        }
+    }
+    Ok(0)
+}
+
+/// "PR builds are stopped (by Sam at 3:04 PM: CI minutes ran out)" for `tb pr-builds`.
+fn pr_builds_line(v: &Value) -> String {
+    let clock = |k: &str| v[k].as_str().map(|t| format!(" at {}", taskboardd::util::local_clock(Some(t)))).unwrap_or_default();
+    if v["stopped"] != true {
+        return match v["resumed_by"].as_str() {
+            Some(w) => format!("PR builds run (resumed by {w}{}).", clock("resumed_at")),
+            None => "PR builds run.".into(),
+        };
+    }
+    let reason = v["reason"].as_str().map(|r| format!(": {r}")).unwrap_or_default();
+    let mut line = format!("PR builds are stopped (by {}{}{reason}).", v["by"].as_str().unwrap_or("the owner"), clock("at"));
+    if let Some(n) = v["cancelling"].as_i64().filter(|n| *n > 0) {
+        line += &format!(" Cancelling the builds of {n} more.");
+    }
+    line
+}
+
+fn pr_builds_cmd(c: &Ctx, action: Option<PrBuildsCmd>) -> Result<i32, String> {
+    let v = match action {
+        None => c.call("GET", "/pr-builds", None)?,
+        Some(PrBuildsCmd::Stop { reason, who }) => c.call("POST", "/pr-builds", Some(json!({"stopped": true, "reason": reason, "who": who})))?,
+        Some(PrBuildsCmd::Resume { who }) => c.call("POST", "/pr-builds", Some(json!({"stopped": false, "who": who})))?,
+    };
+    out(&pr_builds_line(&v));
+    Ok(0)
+}
+
+fn break_ref(v: &str) -> Option<String> {
+    let s = v.trim();
+    let digits = s.strip_prefix(['M', 'm']).unwrap_or(s);
+    (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| format!("M{digits}"))
+}
+
+/// "M3 · webapp main fails build · yours to fix · T12" for `tb master`.
+fn break_line(m: &Value) -> String {
+    let checks: Vec<&str> = m["checks"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let mut line = format!(
+        "{} · {} {} {} {}",
+        m["ref"].as_str().unwrap_or(""),
+        m["project"].as_str().unwrap_or(""),
+        m["branch"].as_str().unwrap_or(""),
+        if m["state"] == "open" { "fails" } else { "failed" },
+        checks.join(", ")
+    );
+    line += &format!(" · {}", m["verdict_label"].as_str().unwrap_or("not decided yet"));
+    if let Some(t) = m["task"]["ref"].as_str() {
+        line += &format!(" · {t}");
+    }
+    if m["state"] == "closed" {
+        line += &format!(" · green again {}", taskboardd::util::local_clock(m["closed_at"].as_str()));
+    }
+    line
+}
+
+fn break_detail(m: &Value) -> String {
+    let mut lines = vec![break_line(m)];
+    if let Some(w) = m["verdict_why"].as_str() {
+        lines.push(format!("Why: {w} ({})", m["verdict_by"].as_str().unwrap_or("")));
+    }
+    for c in m["evidence"]["checks"].as_array().cloned().unwrap_or_default() {
+        let mut l = format!("  ✗ {}", c["name"].as_str().unwrap_or(""));
+        if let Some(u) = c["url"].as_str() {
+            l += &format!(" {u}");
+        }
+        lines.push(l);
+        for (k, label) in [("steps", "step"), ("tests", "test")] {
+            for x in c[k].as_array().cloned().unwrap_or_default() {
+                lines.push(format!("      {label}: {}", x.as_str().unwrap_or("")));
+            }
+        }
+    }
+    lines.push("Suspects:".into());
+    for s in m["suspects"].as_array().cloned().unwrap_or_default() {
+        lines.push(format!(
+            "  {} {} <{}>{} {}",
+            s["sha"].as_str().unwrap_or("").chars().take(10).collect::<String>(),
+            s["name"].as_str().unwrap_or(""),
+            s["email"].as_str().unwrap_or(""),
+            if s["ours"] == true { " (yours)" } else { "" },
+            s["message"].as_str().unwrap_or("")
+        ));
+    }
+    lines.join("\n")
+}
+
+fn master_cmd(c: &Ctx, args: Vec<String>, why: Option<String>, who: Option<String>) -> Result<i32, String> {
+    let (refs, words): (Vec<String>, Vec<String>) = args.into_iter().partition(|a| break_ref(a).is_some());
+    let r = refs.first().and_then(|r| break_ref(r));
+    let word = words.first().map(|w| w.to_lowercase());
+    match (r, word.as_deref()) {
+        (None, None) => {
+            let v = c.call("GET", "/master", None)?;
+            let open = v["open"].as_array().cloned().unwrap_or_default();
+            if open.is_empty() {
+                out("No default branch is red.");
+            }
+            for m in open.iter().chain(v["closed"].as_array().into_iter().flatten().take(3)) {
+                out(&break_line(m));
+            }
+            for w in v["watched"].as_array().cloned().unwrap_or_default() {
+                if let Some(e) = w["error"].as_str() {
+                    out(&format!("{} {}: couldn't read it: {e}", w["project"].as_str().unwrap_or(""), w["branch"].as_str().unwrap_or("")));
+                }
+            }
+        }
+        (None, Some("check")) => {
+            let v = c.call("POST", "/master/check", Some(json!({})))?;
+            out(&format!("Read every watched branch: {} red.", v["open"].as_array().map(|a| a.len()).unwrap_or(0)));
+        }
+        (Some(r), None | Some("show")) => out(&break_detail(&c.call("GET", &format!("/master/{r}"), None)?)),
+        (Some(r), Some(v @ ("ours" | "not-ours" | "not_ours" | "unsure"))) => {
+            let m = c.call("POST", &format!("/master/{r}"), Some(json!({"verdict": v, "why": why, "who": who})))?;
+            out(&break_line(&m));
+        }
+        (None, Some("show" | "ours" | "not-ours" | "not_ours" | "unsure")) => return Err("name the break, for example: tb master M3 ours".into()),
+        (_, Some(w)) => return Err(format!("{w} isn't a master command: show, ours, not-ours, unsure or check")),
+    }
+    Ok(0)
+}
+
 pub fn main_with(args: Vec<String>) -> i32 {
     if args.get(1).map(|a| a == "hook").unwrap_or(false) {
         return hook::run(args.get(2).map(|s| s.as_str()));
@@ -2901,6 +3153,16 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--name", "API", "--hold"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--hold", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "devices"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr-builds", "stop", "--reason", "CI is out of minutes", "--who", "Sam"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr-builds", "resume"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "master"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "master", "show", "M3"]).is_ok());
+        assert_eq!(break_ref("m4").as_deref(), Some("M4"));
+        assert_eq!(break_ref("ours"), None);
+        assert!(Cli::try_parse_from(["tb", "feed", "heartbeat"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "feed", "event", "https://bitbucket.org/a/b/pull-requests/9", "--kind", "build", "--state", "started", "--head", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "focus", "pixel-7"]).is_ok());

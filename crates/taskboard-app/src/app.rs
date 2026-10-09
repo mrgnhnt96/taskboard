@@ -1065,6 +1065,7 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
     for p in crate::install::in_the_way() {
         out.push(bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)).child(div().flex_1().min_w_0().child(p)).into_any_element());
     }
+    out.extend(ui::prwatch::banner(m, t, cx));
     let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.into_iter().partition(|a| a["urgent"] == true);
     for a in &urgent {
         out.push(alert_row(t, a, cx).into_any_element());
@@ -1181,6 +1182,7 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
     if let Some(u) = st.get("usage").and_then(usage_view) {
         bar = bar.child(usage_pill(t, &u));
     }
+    bar = bar.children(ui::prwatch::pills(&st, t));
     bar = bar.child(div().flex_1());
     if let Some(h) = hooks_item(m, t, cx) {
         bar = bar.child(h);

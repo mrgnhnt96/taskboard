@@ -5,6 +5,7 @@ pub mod api;
 pub mod app;
 pub mod bits;
 pub mod board;
+pub mod breaks;
 pub mod clock;
 pub mod comments;
 pub mod config;
@@ -13,6 +14,7 @@ pub mod db;
 pub mod deliver;
 pub mod devices;
 pub mod dispatch;
+pub mod feed;
 pub mod gitattrs;
 pub mod handoff;
 pub mod hooks;
@@ -31,6 +33,7 @@ pub mod midna;
 pub mod ops;
 pub mod prcmds;
 pub mod prbar;
+pub mod prbuilds;
 pub mod prflow;
 pub mod prhost;
 pub mod proc;
@@ -108,6 +111,8 @@ pub fn start_threads(app: &Arc<App>) {
         std::thread::Builder::new().name("midna-jobs".into()).spawn(move || midna::jobs_loop(a)).ok();
         let a = app.clone();
         std::thread::Builder::new().name("runner".into()).spawn(move || runner::run(a)).ok();
+        let a = app.clone();
+        std::thread::Builder::new().name("feed-listener".into()).spawn(move || feed::listener_loop(a)).ok();
     } else {
         let a = app.clone();
         std::thread::Builder::new()

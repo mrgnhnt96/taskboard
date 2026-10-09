@@ -138,6 +138,10 @@ echo '{"decision": "skip", "reason": "Cancelled the CI builds"}'
 }
 ```
 
+For a PR on a host the board doesn't read (GitLab, …), `pr.checks` and `pr.fix` fire on the build events a feed posts
+(`POST /prs/event` with `kind: build`; see docs/API.md), once per push. To cancel every build board-wide instead,
+`tb pr-builds stop` with a `[pr_builds.cancel]` command per CI.
+
 A skip covers one push; the next push asks `pr.checks` again. From any other hook or by hand, `tb pr skip-checks
 [T12] --reason "…"` does the same for the current push, and `--all` for every push from now on. A check that really
 failed but not because of the PR is cleared with `tb pr not-ours` instead (per check and push, with a reason and proof
