@@ -277,3 +277,31 @@ fn refusals_and_handoffs_fill_head_and_worktree() {
     assert!(h.contains(&want), "{h}");
     assert_eq!(b.steps(&head)["vars"]["head"], json!(head), "tb's hook fills them from GET /steps too");
 }
+
+#[test]
+fn an_owner_question_and_the_handoff_are_filled_from_what_tb_step_ask_resolved() {
+    let b = new_board();
+    std::fs::write(
+        &b.app.cfg.config_path,
+        "[[steps]]\nname = \"Look\"\nprompt = \"Look at {head} on {branch} in {worktree} against {base_ref}\"\nowner = true\n\n\
+         [[steps]]\nname = \"Review\"\nprompt = \"Run review on {head} against {base}\"\ncheck = \"check.sh '{head}' {branch}\"\n",
+    )
+    .unwrap();
+    let id = b.new_task();
+    // No aim and no recorded head: before #107 the question read "Look at  in …".
+    assert_eq!(steps::vars_for(&b.app, &b.row(id))["head"], "");
+    let wt = b.dir.path().join("feat-wt").to_string_lossy().to_string();
+    let head = "d".repeat(40);
+    b.report("tb.step_ask", json!({"name": "Look", "head": head, "branch": "feat", "worktree": wt})).unwrap();
+    let q = b.row(id).st("question");
+    assert!(q.contains(&format!("Look at {head} on feat in {wt} against origin/main")), "{q}");
+    // A later take's handoff fills the same, not blanks.
+    let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
+    assert!(h.contains(&format!("Run review on {head} against main")), "{h}");
+    assert!(h.contains(&format!("check.sh '{head}' feat")), "{h}");
+    // A saved aim still wins over what an ask resolved.
+    b.report("tb.step_aim", json!({"branch": "main"})).unwrap();
+    let main = git(&b.repo(), &["rev-parse", "main"]);
+    let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
+    assert!(h.contains(&format!("check.sh '{main}' main")), "{h}");
+}

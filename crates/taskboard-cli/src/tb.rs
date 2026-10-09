@@ -2255,8 +2255,11 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
     } else if here.is_empty() {
         return Ok(Aimed { dir: None, head: None, branch: None, pinned: false });
     } else {
-        let b = branch_in(&here);
-        (here, b)
+        // The default worktree too: a round on a detached checkout would run on branch "HEAD".
+        let Some(b) = branch_in(&here) else {
+            return Err(format!("{here} isn't on a branch. Say which one with --branch."));
+        };
+        (here, Some(b))
     };
     let checkout = resolve_commit(&dir, "HEAD").ok();
     let head = match given(&a.commit) {
@@ -2355,7 +2358,7 @@ fn step_vars(c: &Ctx, v: &Value, name: &str, at: &Aimed) -> BTreeMap<String, Str
     let mut vars: BTreeMap<String, String> = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
     let branch = at.branch.clone().or_else(|| {
         let dir = at.dir.as_deref().unwrap_or(&c.cwd);
-        client::git_info(dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string())
+        client::git_info(dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty() && *b != "HEAD").map(|b| b.to_string())
     });
     if let Some(b) = branch {
         vars.insert("branch".into(), b);
@@ -2530,7 +2533,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
                 )
             })
         }
-        StepCmd::Ask { name, t } => c.run_report("tb.step_ask", json!({"name": name}), t.task, true, |v| {
+        StepCmd::Ask { name, t } => c.run_report("tb.step_ask", ask_fields(c, &name, t.task.clone())?, t.task, true, |v| {
             if v["already"] == true {
                 return format!("{} is already done; carry on.", v["step"].as_str().unwrap_or("The step"));
             }
@@ -2544,6 +2547,17 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
         }),
     }
+}
+
+/// What `tb step ask` sends: the step, and the head, branch and worktree its question and the take handoff
+/// fill in, resolved as `tb step done` resolves them (else this checkout's head, as an owner step's done records).
+fn ask_fields(c: &Ctx, name: &str, task: Option<String>) -> Result<Value, String> {
+    let v = c.call("GET", &steps_path(c, task)?, None)?;
+    let at = aim(c, &v, &Aim::default()).unwrap_or_else(|_| {
+        let here = home_checkout(c, &v);
+        Aimed { head: local_head(&here), dir: Some(here).filter(|d| !d.is_empty()), branch: None, pinned: false }
+    });
+    Ok(json!({"name": name, "head": at.head, "branch": at.branch, "worktree": at.dir}))
 }
 
 /// `tb step done`: records the step, after its check (on what `aim` names) for agent work with one.
@@ -4311,8 +4325,10 @@ mod tests {
         assert!(e.contains("isn't on main"), "{e}");
         let at = aim(&c, &v, &a(Some("main"), Some(&det), Some(&first))).unwrap();
         assert_eq!((at.head.as_deref(), at.branch.as_deref()), (Some(first.as_str()), Some("main")));
-        // Without a commit, a detached checkout is still looked at as it is.
-        assert_eq!(aim(&c, &v, &Aim::default()).unwrap().head.as_deref(), Some(first.as_str()));
+        // Without a commit or a branch, the detached checkout the round runs from is refused too (#107).
+        assert_eq!(aim(&c, &v, &Aim::default()).err().unwrap(), format!("{det} isn't on a branch. Say which one with --branch."));
+        let at = aim(&c, &v, &a(Some("main"), Some(&det), None)).unwrap();
+        assert_eq!(at.branch.as_deref(), Some("main"));
         let _ = std::fs::remove_dir_all(root);
     }
 
