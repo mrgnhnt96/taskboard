@@ -86,7 +86,7 @@ fn pr_skip_checks(app: &App, id: i64, body: &Value) -> Result<Value> {
         prflow::skip_checks(app, &t, &reason, as_bool(body.get("all"), false), &who)
     })?;
     let t = board::get_task(app, id)?;
-    Ok(json!({"ok": true, "task": rf("task", id), "pr": board::pr_card(&t)}))
+    Ok(json!({"ok": true, "task": rf("task", id), "pr": board::pr_card(app, &t)}))
 }
 
 /// What a hook would read for an event on a task (`tb hooks test`): the task given, else the newest one.
@@ -2301,7 +2301,7 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
         return err(404, format!("{} has no PR linked.", rf("task", id)));
     }
     let f = jloads_obj(t.s("pr_flow"));
-    Ok(json!({"task": rf("task", id), "pr": board::pr_card(&t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
+    Ok(json!({"task": rf("task", id), "pr": board::pr_card(app, &t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
               "agents_merge": crate::prflow::agents_merge_on(app, t.s("project")), "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
 }
 

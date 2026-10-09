@@ -126,7 +126,7 @@ fn a_bitbucket_pr_is_watched_and_its_open_threads_drive_the_stage() {
     let h = fake(&b, rec);
     poll(&b);
     assert_eq!(b.phase(id), "comments", "thread 1 waits on the author; thread 2 had their last word");
-    let card = board::pr_card(&b.task(id));
+    let card = board::pr_card(&b.app, &b.task(id));
     assert_eq!(card["stage"]["open_threads"], 1);
 
     let v = b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "1", "text": "Renamed it", "resolve": true, "who": "The agent"}));
@@ -308,7 +308,7 @@ fn not_ours_clears_only_this_push_s_failed_checks_with_proof() {
     lint["checks"] = json!(["lint"]);
     b.post(&url, lint);
     assert_eq!(b.phase(id), "review");
-    let card = board::pr_card(&b.task(id));
+    let card = board::pr_card(&b.app, &b.task(id));
     assert_eq!(card["checks"], "pass");
     assert_eq!(card["stage"]["not_ours"]["title"], "Flaky login e2e");
     assert_eq!(card["stage"]["not_ours"]["checks"], json!(["e2e", "lint"]));
@@ -316,7 +316,7 @@ fn not_ours_clears_only_this_push_s_failed_checks_with_proof() {
     h.rec.lock().head = "h2".into();
     poll(&b);
     assert_eq!(b.phase(id), "fix");
-    assert!(board::pr_card(&b.task(id))["stage"]["not_ours"].is_null());
+    assert!(board::pr_card(&b.app, &b.task(id))["stage"]["not_ours"].is_null());
 }
 
 #[test]
@@ -460,7 +460,7 @@ fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
     rec.tasks_error = Some("Bitbucket answered 403".into());
     let h = fake(&b, rec);
     poll(&b);
-    let card = board::pr_card(&b.task(id));
+    let card = board::pr_card(&b.app, &b.task(id));
     assert_eq!(card["stage"]["open_threads"], 1, "the board's own account answered 1");
     b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done"}));
     assert_eq!(h.rec.lock().threads[1].last_author, "bot", "a reply is the board's account's");
@@ -496,6 +496,31 @@ fn the_board_s_own_approval_doesn_t_count() {
     h.rec.lock().reviewers.push(reviewer("c", "approved"));
     poll(&b);
     assert_eq!(b.phase(id), "merge");
+}
+
+#[test]
+fn the_card_s_review_is_approved_only_once_it_has_the_approvals_it_needs() {
+    // #146: `pr.review` (what `tb pr status` prints and the panel reads without a bar) goes by the count.
+    for (host, url, decision) in [("bitbucket", BB, ""), ("github", "https://github.com/acme/webapp/pull/9", "APPROVED")] {
+        let b = board_with(|c| c.pr.approvals = 2);
+        let id = b.pr_task(url);
+        let mut rec = green();
+        rec.reviewers = vec![reviewer("a", "approved"), reviewer("c", "waiting")];
+        rec.approvals = 1;
+        rec.review_decision = decision.into();
+        let h = FakeHost::new(host, rec);
+        prhost::install(&b.app, h.clone());
+        poll(&b);
+        let pr = &b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["pr"];
+        assert_eq!(pr["review"], "pending", "{host}: 1 of the 2 it needs");
+        assert_eq!(pr["approvals"], json!({"have": 1, "need": 2}), "{host}");
+        assert_eq!(board::task_card(&b.app, &b.task(id)).unwrap()["pr"]["review"], "pending", "{host}: the panel's card too");
+        h.rec.lock().reviewers[1].state = "approved".into();
+        h.rec.lock().approvals = 2;
+        poll(&b);
+        let pr = board::pr_card(&b.app, &b.task(id));
+        assert_eq!((pr["review"].clone(), pr["approvals"].clone()), (json!("approved"), json!({"have": 2, "need": 2})), "{host}");
+    }
 }
 
 #[test]

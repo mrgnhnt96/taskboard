@@ -132,7 +132,7 @@ fn after(app: &App, id: i64, mut out: Value) -> Result<Value> {
     let _ = prflow::refresh_task(app, id)?;
     let t = board::get_task(app, id)?;
     out["task"] = json!(rf("task", id));
-    out["pr"] = board::pr_card(&t);
+    out["pr"] = board::pr_card(app, &t);
     out["open_threads"] = json!(prflow::open_threads(&flow(&t), &flow(&t).get("rec").cloned().unwrap_or(Value::Null)).len());
     Ok(out)
 }
@@ -278,7 +278,7 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     host(app, &pr)?.merge(&pr, &opts).map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
     app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who_of(body)))?;
     let t = board::get_task(app, id)?;
-    Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(&t)}))
+    Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
 }
 
 /// Open PRs that go into this PR's branch: other tasks' PRs in its repo whose base is that branch, and
@@ -413,7 +413,7 @@ pub fn not_ours(app: &App, id: i64, body: &Value) -> Result<Value> {
         prflow::step(app, &board::get_task(app, id)?, &rec).map(|_| ())
     })?;
     let t = board::get_task(app, id)?;
-    Ok(json!({"task": rf("task", id), "cleared": checks, "head": head, "pr": board::pr_card(&t)}))
+    Ok(json!({"task": rf("task", id), "cleared": checks, "head": head, "pr": board::pr_card(app, &t)}))
 }
 
 fn names_of(v: &Value) -> Vec<String> {

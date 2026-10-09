@@ -460,6 +460,25 @@ fn the_review_step_counts_approvals_against_the_ones_needed() {
     assert_eq!(review(1, 3, json!(2)), ("1 of 2".into(), view::StepSt::Wait));
     assert_eq!(review(1, 2, Value::Null), ("1 of 2".into(), view::StepSt::Wait), "no count: out of the reviewers");
     assert_eq!(review(2, 2, Value::Null).1, view::StepSt::Done);
+    assert_eq!(review(3, 3, json!(2)), ("2 of 2".into(), view::StepSt::Done), "more than it needs never reads 3 of 2");
+}
+
+#[::core::prelude::v1::test]
+fn without_a_bar_the_review_step_waits_short_of_the_approvals_needed() {
+    let review = |review: &str, have: i64, need: Value| {
+        let p = json!({"num": 13, "state": "OPEN", "checks": "pass", "review": review, "approvals": {"have": have, "need": need},
+                       "stage": {"phase": "review", "label": "Awaiting reviews"}});
+        let [_, (_, st, sub), _] = view::pr_steps(&p);
+        (sub.unwrap_or_default(), st)
+    };
+    assert_eq!(review("pending", 1, json!(2)), ("1 of 2".into(), view::StepSt::Wait));
+    assert_eq!(review("approved", 2, json!(2)), ("Approved".into(), view::StepSt::Done));
+    assert_eq!(review("approved", 3, json!(2)), ("Approved".into(), view::StepSt::Done));
+    assert_eq!(review("pending", 0, json!(2)), ("Waiting".into(), view::StepSt::Wait));
+    let mut task = with_bar(Value::Null, json!({"phase": "review", "label": "Awaiting reviews"}), "pending");
+    task["pr"]["approvals"] = json!({"have": 1, "need": 2});
+    let text = panel_text(task, json!({}));
+    assert!(text.contains("Review 1 of 2") && !text.contains("Approved"), "{text}");
 }
 
 #[::core::prelude::v1::test]
