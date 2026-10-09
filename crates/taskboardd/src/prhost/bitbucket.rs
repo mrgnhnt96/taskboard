@@ -247,7 +247,9 @@ impl PrHost for BitbucketHost {
     }
 
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef> {
-        let b = json!({"title": title, "description": body, "source": {"branch": {"name": branch}}, "destination": {"branch": {"name": base}}});
+        // Closes the branch once the PR merges, as the Python board did.
+        let b = json!({"title": title, "description": body, "source": {"branch": {"name": branch}}, "destination": {"branch": {"name": base}},
+                       "close_source_branch": true});
         let v = self.http.call("POST", &format!("{}/pullrequests", self.repo_url(repo)), Some(&b))?;
         let num = v["id"].as_i64().ok_or_else(|| "Bitbucket didn't say which PR it opened".to_string())?;
         let url = v["links"]["html"]["href"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("https://bitbucket.org/{repo}/pull-requests/{num}"));
@@ -257,6 +259,15 @@ impl PrHost for BitbucketHost {
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()> {
         let p = self.get(&self.pr_url(pr))?;
         self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "destination": {"branch": {"name": base}}}))).map(|_| ())
+    }
+
+    fn description(&self, pr: &PrRef) -> HostResult<String> {
+        Ok(self.get(&self.pr_url(pr))?["description"].as_str().unwrap_or("").to_string())
+    }
+
+    fn set_description(&self, pr: &PrRef, body: &str) -> HostResult<()> {
+        let p = self.get(&self.pr_url(pr))?;
+        self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "description": body}))).map(|_| ())
     }
 
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
@@ -603,7 +614,7 @@ pub(crate) mod tests {
         assert_eq!(find("POST", "/pipelines/%7Bp1%7D/stopPipeline").len(), 1);
         assert_eq!(
             find("POST", "/repo/pullrequests"),
-            vec![json!({"title": "Add x", "description": "## Summary", "source": {"branch": {"name": "feat"}}, "destination": {"branch": {"name": "main"}}})]
+            vec![json!({"title": "Add x", "description": "## Summary", "source": {"branch": {"name": "feat"}}, "destination": {"branch": {"name": "main"}}, "close_source_branch": true})]
         );
         assert!(find("POST", "/pipelines/%7Bp0%7D/stopPipeline").is_empty(), "a finished run isn't stopped");
     }

@@ -20,7 +20,8 @@
 //! | [`replace_reviewer`](PrHost::replace_reviewer) | request the new one, then remove the old | the same |
 //! | [`merge`](PrHost::merge) (closing the source branch) | `gh pr merge --<strategy> --delete-branch` | `POST …/merge` with `close_source_branch` |
 //! | [`retarget`](PrHost::retarget) the base | `gh pr edit --base` | `PUT` the PR's `destination` |
-//! | [`open`](PrHost::open) a PR from a pushed branch | `POST repos/{repo}/pulls` | `POST …/pullrequests` |
+//! | [`open`](PrHost::open) a PR from a pushed branch | `POST repos/{repo}/pulls` | `POST …/pullrequests` (with `close_source_branch`) |
+//! | [`description`](PrHost::description) / [`set_description`](PrHost::set_description) | `GET` / `PATCH repos/{repo}/pulls/{n}` | `GET` / `PUT` the PR's `description` |
 //! | [`cancel_builds`](PrHost::cancel_builds) for a head | `gh run cancel` on its Actions runs | `stopPipeline` on its Pipelines runs; other CI: [`Cancelled::Unsupported`] |
 //! | [`base_failures`](PrHost::base_failures): checks failing on the base's last few commits | check runs and statuses of `commits?sha=<base>` | statuses of `commits/<base>` |
 //!
@@ -243,6 +244,14 @@ pub trait PrHost: Send + Sync {
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()>;
     /// Opens a PR in `repo` from the pushed `branch` into `base`; the new PR.
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef>;
+    /// The PR's description, as it is on the host.
+    fn description(&self, _pr: &PrRef) -> HostResult<String> {
+        Err(format!("the board can't read a {} PR's description", self.id()))
+    }
+    /// Replaces the PR's description.
+    fn set_description(&self, _pr: &PrRef, _body: &str) -> HostResult<()> {
+        Err(format!("the board can't change a {} PR's description", self.id()))
+    }
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;

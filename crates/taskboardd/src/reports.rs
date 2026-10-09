@@ -1042,7 +1042,7 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if let Some(m) = human_min {
         board::update_task(r.app, t.id(), fields!["human_min" => m])?;
     }
-    let no_pr = one_line(&r.b("no_pr"), 1000);
+    let no_pr = one_line(&r.b("no_pr"), NO_PR_MAX);
     if !no_pr.is_empty() {
         if !pr_arg.is_empty() || has(t.s("pr_url")) {
             return err(400, format!("{} has a PR, so it can't finish without one.", rf("task", t.id())));
@@ -1067,6 +1067,56 @@ fn on_done(r: &mut Report) -> Result<Value> {
     let at = r.at.clone();
     let t = finish_task(r.app, &t, &r.name(), &summary, false, Some(&at))?;
     Ok(with(ok(Some(&t), None), json!({"pr_url": t.v("pr_url")})))
+}
+
+/// How long `tb done --no-pr`'s reason may be: one short line.
+pub const NO_PR_MAX: usize = 200;
+
+/// What `tb done` refuses before anything opens or finishes: a blank or long `--no-pr`; a task that ends
+/// in a PR, has a remote and has none, finishing without `--pr-body` or `--no-pr`; and a task with a
+/// design attached finishing with no evidence and no `--no-evidence`.
+fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
+    let app = r.app;
+    let Some(t) = t.filter(|t| t.s("status") != Some("done")) else { return Ok(()) };
+    let me = rf("task", t.id());
+    let tb = board::tb_cmd(app);
+    if let Some(raw) = r.body.get("no_pr").filter(|v| !v.is_null()) {
+        let why = one_line(raw.as_str().unwrap_or(""), 100_000);
+        if why.is_empty() {
+            return err(400, format!("Say why {me} finishes without its PR: {tb} done \"<summary>\" --no-pr \"<why>\"."));
+        }
+        if why.chars().count() > NO_PR_MAX {
+            return err(400, format!("Keep the --no-pr reason to one short line ({NO_PR_MAX} characters or fewer); put the rest in the summary."));
+        }
+    }
+    let no_pr = !r.b("no_pr").is_empty();
+    let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
+    let has_pr = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || has(t.s("pr_url")) || !r.b("pr_body").is_empty();
+    if !no_pr && !has_pr && projects::task_ships_pr(app, t)? && projects::has_remote(app, &t.st("project"))? == Some(true) {
+        return err(
+            409,
+            format!(
+                "{me} ends in a PR, and it has none yet. Finish with {tb} done \"<summary>\" --pr-body <file> (the board opens the PR), \
+                 --pr <link> if you opened it, or --no-pr \"<why>\" if it won't have one."
+            ),
+        );
+    }
+    let atts = board::attachments(app, Some(t.id()), None)?;
+    let design = atts.iter().find(|a| a["kind"] == "design");
+    let evidence = atts.iter().any(|a| a["kind"] == "evidence" || a["kind"] == "results");
+    if let Some(d) = design {
+        if !evidence && r.b("no_evidence").is_empty() && !has(t.s("no_evidence")) {
+            return err(
+                409,
+                format!(
+                    "{me} has a design attached ({}), so it finishes with evidence that matches it: {tb} attach <screenshot or link> --kind evidence, \
+                     or {tb} done \"<summary>\" --no-evidence \"<why>\".",
+                    d["title"].as_str().unwrap_or("design")
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `task.finishing`'s hooks, before `tb done` (outside the transaction: a hook may call `tb`). A stop is
@@ -1765,6 +1815,7 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     }
     if r.event == "tb.done" {
         let t = r.task().ok().flatten();
+        done_refusals(&r, t.as_ref())?;
         crate::propen::before_done(app, &mut r.body, t.as_ref())?;
         finishing(&r)?;
     }

@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::config::PrBodyConfig;
 use crate::util::*;
-use crate::{board, stack, steps};
+use crate::{board, p, stack, steps};
 
 static BOARD_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[TGB]\d+\b").unwrap());
 static BOARD_WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\btask[ -]?board\b").unwrap());
@@ -148,13 +148,102 @@ pub fn context_block(app: &App, t: &Row) -> Result<String> {
             _ => {}
         }
     }
-    for a in board::attachments(app, Some(t.id()), None)?.iter().filter(|a| a["kind"] == "evidence" || a["kind"] == "results") {
-        let url = a["url"].as_str().unwrap_or("");
-        if url.starts_with("http://") || url.starts_with("https://") {
-            lines.push(format!("- Evidence: [{}]({url})", a["title"].as_str().unwrap_or("evidence")));
-        }
+    for (title, url) in evidence_links(app, t)? {
+        lines.push(evidence_line(&title, &url));
     }
     Ok(if lines.is_empty() { String::new() } else { format!("## Context\n{}", lines.join("\n")) })
+}
+
+/// The task's evidence and results that a reviewer can open (web links): (title, url).
+pub fn evidence_links(app: &App, t: &Row) -> Result<Vec<(String, String)>> {
+    Ok(board::attachments(app, Some(t.id()), None)?
+        .iter()
+        .filter(|a| a["kind"] == "evidence" || a["kind"] == "results")
+        .filter_map(|a| {
+            let url = a["url"].as_str().unwrap_or("");
+            (url.starts_with("http://") || url.starts_with("https://")).then(|| (a["title"].as_str().unwrap_or("evidence").to_string(), url.to_string()))
+        })
+        .collect())
+}
+
+fn evidence_line(title: &str, url: &str) -> String {
+    format!("- Evidence: [{title}]({url})")
+}
+
+/// A PR description with the evidence links it doesn't have yet, under its `## Context` section (made
+/// at the end when there's none); None when it has them all.
+pub fn with_evidence(body: &str, links: &[(String, String)]) -> Option<String> {
+    let new: Vec<String> = links.iter().filter(|(_, u)| !body.contains(u.as_str())).map(|(t, u)| evidence_line(t, u)).collect();
+    if new.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = body.trim_end().lines().collect();
+    let ctx = lines.iter().position(|l| HEADING_RE.captures(l.trim_end()).map(|c| c[1].eq_ignore_ascii_case("context")).unwrap_or(false));
+    let Some(start) = ctx else {
+        let sep = if body.trim().is_empty() { "" } else { "\n\n" };
+        return Some(format!("{}{sep}## Context\n{}", body.trim_end(), new.join("\n")));
+    };
+    let end = lines[start + 1..].iter().position(|l| HEADING_RE.is_match(l.trim_end())).map(|i| start + 1 + i).unwrap_or(lines.len());
+    let last = lines[start..end].iter().rposition(|l| !l.trim().is_empty()).map(|i| start + i + 1).unwrap_or(start + 1);
+    let mut out: Vec<String> = lines[..last].iter().map(|l| l.to_string()).collect();
+    out.extend(new);
+    out.extend(lines[last..].iter().map(|l| l.to_string()));
+    Some(out.join("\n"))
+}
+
+/// Minutes before trying again to add evidence to a PR whose host said no.
+const EVIDENCE_RETRY_MINS: f64 = 30.0;
+
+/// Adds each open PR's task evidence to its description once the PR is open, as the Python board did
+/// (`pr_flow.evidence_added` keeps the links added; a link already in the description isn't added
+/// again). Outside any transaction (it calls the host). Returns how many PRs changed.
+pub fn add_evidence(app: &App) -> Result<i64> {
+    let rows = app.db.q(
+        "SELECT * FROM tasks WHERE pr_host IN ('github', 'bitbucket') AND pr_num IS NOT NULL \
+         AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))",
+        p![],
+    )?;
+    let mut changed = 0;
+    for t in rows {
+        let f = jloads_obj(t.s("pr_flow"));
+        if f.s("evidence_retry_at").map(|r| r > now_iso().as_str()).unwrap_or(false) {
+            continue;
+        }
+        let done: Vec<String> = f.get("evidence_added").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+        let links: Vec<(String, String)> = evidence_links(app, &t)?.into_iter().filter(|(_, u)| !done.contains(u)).collect();
+        if links.is_empty() {
+            continue;
+        }
+        let Some(pr) = crate::prhost::PrRef::of(&t) else { continue };
+        let res = crate::prhost::host_for(app, &pr.host).and_then(|h| {
+            let body = h.description(&pr)?;
+            match with_evidence(&body, &links) {
+                Some(next) => h.set_description(&pr, &next).map(|_| true),
+                None => Ok(false),
+            }
+        });
+        let all: Vec<String> = done.iter().cloned().chain(links.iter().map(|(_, u)| u.clone())).collect();
+        app.db.tx(|| {
+            match &res {
+                Ok(edited) => {
+                    crate::prflow::merge_flow(app, t.id(), crate::fields!["evidence_added" => all.clone(), "evidence_retry_at" => null])?;
+                    if *edited {
+                        let what = links.iter().map(|(title, _)| title.as_str()).collect::<Vec<_>>().join(", ");
+                        board::log_event(app, t.id(), board::BOARD, "status", &format!("Added the evidence to PR #{}: {what}", pr.num))?;
+                    }
+                }
+                Err(e) => {
+                    crate::prflow::merge_flow(app, t.id(), crate::fields!["evidence_retry_at" => iso(now_ts() + EVIDENCE_RETRY_MINS * 60.0)])?;
+                    app.info(format!("prs: couldn't add evidence to {}: {e}", t.st("pr_url")));
+                }
+            }
+            Ok(())
+        })?;
+        if matches!(res, Ok(true)) {
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// Runs git in `dir`: its exit and trimmed stdout, or why it couldn't run.
@@ -179,11 +268,13 @@ pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::R
     if branch == base {
         return Err(format!("This is {base} itself: the PR needs the task's own branch (git switch -c <branch>)."));
     }
-    let (ok, _, e) = git(dir, &["fetch", remote, base, &branch], 120.0)?;
+    let (ok, _, _) = git(dir, &["fetch", remote, base, &branch], 120.0)?;
     if !ok {
-        let (ok, _, _) = git(dir, &["fetch", remote, base], 120.0)?;
+        let (ok, _, e) = git(dir, &["fetch", remote, base], 120.0)?;
         if !ok {
-            return Err(format!("git fetch {remote} {base} failed: {}", e.lines().last().unwrap_or("")));
+            // All of git's message: its last line alone ("and the repository exists.") says nothing.
+            let e = e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+            return Err(format!("git fetch {remote} {base} failed:\n{}", if e.is_empty() { "git said nothing" } else { &e }));
         }
     }
     let (_, head, _) = git(dir, &["rev-parse", "HEAD"], 10.0)?;

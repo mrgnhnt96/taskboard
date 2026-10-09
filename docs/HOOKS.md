@@ -288,8 +288,13 @@ bar = "WD"            # its name in the app's PR bar
   until T3's merges; then the board points it at T3's base and T4 is told to rebase.
 - `tb task new … --pr|--no-pr`, `tb task set T4 --pr yes|no|auto`: whether the task ends in a PR, whatever its
   project does.
-- `tb done "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open; `--no-evidence "<why>"`
-  likewise for evidence. With `[jira] canceled`, the ticket moves there with the reason as a comment.
+- `tb done "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open (the why is one short line,
+  200 characters at most, and can't be blank); `--no-evidence "<why>"` likewise for evidence. With `[jira] canceled`,
+  the ticket moves there with the reason as a comment. A plain `tb done` on a task that ends in a PR, whose project
+  has a remote, with no PR linked is refused and asks for `--pr-body` or `--no-pr "<why>"` (or `--pr <link>`). A
+  task with a design attached is refused without evidence (`tb attach … --kind evidence`) or `--no-evidence`.
+- Evidence (and results) links on a task are added to its open PR's description under `## Context` (GitHub or
+  Bitbucket), once each, on the board's next PR refresh.
 - `tb done "<summary>" --pr-body FILE [--title "…"]`: the board checks the description (`[pr_body]`), the steps and
   the branch (pushed, rebased on the remote base, no merge commits), then opens the PR itself and finishes.
 

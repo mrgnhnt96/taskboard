@@ -804,8 +804,16 @@ use it instead of the project's default.
 
 **`tb done --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
 canceled: <why>", skips the before-the-PR steps, and with `[jira] canceled` set moves the ticket there with the reason
-as a comment. **`--no-evidence "<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons
-and ticket keys linked to Jira.
+as a comment. The why can't be blank (400) and is one line of at most 200 characters (400 past that). **`--no-evidence
+"<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons and ticket keys linked to Jira; the
+goal row says "PR canceled: <why>" and the wave rail has a "PR canceled" chip.
+
+**`tb done` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), whose project has a
+remote, with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; and a task with a `design` attachment and
+no `evidence`/`results` attachment, without `no_evidence`. **Evidence on the PR**: each PR refresh adds the task's
+evidence and results links (web links) that its open PR's description lacks, under `## Context`, through
+`PrHost::description` / `set_description`; `pr_flow.evidence_added` keeps the ones added, and a host error waits 30
+minutes (`evidence_retry_at`). A failed fetch in `--pr-body`'s branch check shows the whole of the error.
 
 **`tb done "<summary>" --pr-body FILE [--title …]`**: the report carries `pr_body` (and `pr_title`). Before finishing,
 the board checks the description against `[pr_body]` (sections in order, bullet lists, paragraph length, no board
