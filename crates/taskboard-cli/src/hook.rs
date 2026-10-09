@@ -124,6 +124,15 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// Like `clip`, but a cut text ends in "…" so the board knows it was cut (the start word check
+/// takes no word from a prompt whose end it can't see).
+fn clip_marked(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    format!("{}…", clip(s, n - 1))
+}
+
 fn clip_middle(s: &str, n: usize) -> String {
     let c: Vec<char> = s.chars().collect();
     if c.len() <= n {
@@ -266,7 +275,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             extra.insert("reason".into(), json!(reason));
         }
         "UserPromptSubmit" => {
-            extra.insert("prompt".into(), json!(clip(&s("prompt"), MAX_PROMPT)));
+            extra.insert("prompt".into(), json!(clip_marked(&s("prompt"), MAX_PROMPT)));
         }
         "Stop" => {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
@@ -433,5 +442,7 @@ mod tests {
         assert!(PUSH_RE.is_match("git push --force-with-lease"));
         assert!(!PUSH_RE.is_match("git commit -m push"));
         assert_eq!(clip_middle("abcdefghij", 7), "abc\n…\nj");
+        assert_eq!(clip_marked("abcdefghij", 5), "abcd…");
+        assert_eq!(clip_marked("abc", 5), "abc");
     }
 }

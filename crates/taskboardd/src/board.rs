@@ -330,6 +330,9 @@ pub fn note_rename(app: &App, cur: Option<&Row>, name: Option<&str>) -> Result<(
 }
 
 const SESSION_EVENTS_KEEP: i64 = 300;
+/// The most of a typed prompt kept whole in `session_events.full`; a longer one is clipped there (with
+/// "…"), and the start word check reads a clipped prompt as no one's word.
+pub const PROMPT_FULL_KEEP: usize = 20_000;
 
 pub fn session_event(app: &App, sid: &str, kind: &str, text: &str, at: Option<&str>) -> Result<()> {
     session_event_with(app, sid, kind, text, at, None)
@@ -340,11 +343,13 @@ pub fn session_event_with(app: &App, sid: &str, kind: &str, text: &str, at: Opti
     if sid.is_empty() || kind.is_empty() {
         return Ok(());
     }
+    // A prompt shows as one line, but the start word check reads it as typed: its lines, and all of it.
+    let full = (kind == "prompt").then(|| clip(text.trim(), PROMPT_FULL_KEEP));
     let text = if kind == "reply" { clip(text.trim(), 4000) } else { one_line(text, 600) };
     app.db.insert(
         "session_events",
         fields!["session_id" => sid, "at" => at.map(|s| s.to_string()).unwrap_or_else(now_iso), "kind" => kind, "text" => text,
-                "data" => data.map(|d| d.to_string())],
+                "data" => data.map(|d| d.to_string()), "full" => full],
     )?;
     if let Some(cut) = app.db.q1(
         "SELECT id FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?",
