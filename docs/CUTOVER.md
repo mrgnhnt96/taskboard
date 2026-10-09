@@ -28,6 +28,8 @@ or `taskboard-app --uninstall`), then import into the board's data folder while 
 
 ```sh
 /Applications/Taskboard.app/Contents/MacOS/taskboardd import <path to the old tasks.db>
+# the old board's master breaks were on one project: name it unless [master.projects] has just one
+/Applications/Taskboard.app/Contents/MacOS/taskboardd import --master-project <name> <path to the old tasks.db>
 ```
 
 The old file is only read (it's copied first, with its `-wal` and `-shm`). The import:
@@ -47,16 +49,30 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
   finished task still held comes back. Old `goal_devices` rows with a purpose or a reserved flag
   are a goal's own pool, which the board doesn't have: they're kept whole as
   `import.goal_devices` rather than turned into needs;
-- maps the reviewer roster (`reviewers`: one row per person and project, duplicates folded into one
-  with aliases, removed / pinned / automation / bot schedule kept, `source` = `import`), every
-  review ask (`review_asks`, with its state, answer and stand-in; an ask still open on a finished
-  task comes over closed) and the reviewers' bot runs;
+- maps the reviewer roster (`reviewers`: one row per person and project, `source` = `import`).
+  Rows that are one person fold into one: the most active row stays, with its own removed mark,
+  and the commits, asks and swaps add up. The host display name (`bb_name`) becomes an alias;
+  removed, pinned, the automation level (`automated`) and the bot schedule (`bot_every`, in
+  minutes) are kept; the old asks, swaps and last ask (`asks`, `swaps`, `last_asked`) count
+  toward each reviewer's next turn;
+- maps every review ask (`review_asks`): who was asked by their `email` (matched against the
+  reviewers' emails and aliases), its state, answer and stand-in (`replaces`), and whether its
+  fill-in was asked (`filled_at`). An ask still open on a PR that has merged or closed (`pr_state`)
+  comes over closed; one on a done task whose PR is still open stays open;
+- takes each reviewer's last bot run from `reviewers.bot_ran_at` (or an old runs table);
 - maps the master breaks (`master_breaks`), keeping each `M<n>` number and its verdict (the old
-  yours / not yours / unsure); a break still open on a project `[master.projects]` doesn't watch
-  comes over closed, and is listed;
+  yours / not yours / unsure). The old board watched one project, so its breaks name none: they
+  go on `--master-project <name>`, else the only project in `[master.projects]`, else they're
+  listed and skipped. The build (`url`, `build_id`, `pipeline`), `title`, `error` and `fix` go
+  into the evidence; `proof` links are the break's proof; a `fix` naming a task is the fix task
+  (a sha, the fixed head); `base` is the branch (a sha, the last green head). A break still open
+  on a project `[master.projects]` doesn't watch comes over closed, and is listed;
+- keeps any column of those tables the board has no place for (like an ask's `tries` and `busy`)
+  in `settings` as `import.<table>.unmapped`, with each row's id, and lists it;
 - keeps every T, G and B number, and new ones carry on after the highest;
 - leaves out the old board's jobs (its pending work would run again), its alerts, and its other
-  running state (`bridge_*`, `dispatch_seen:*`, `usage_guard_handled:*`, `review_round:*`, health readings and live session ids, …);
+  running state (`bridge_*`, the terminal manager's project lists `midna_projects` and
+  `saggar_projects`, which the bridge fills again, `dispatch_seen:*`, `usage_guard_handled:*`, `review_round:*`, health readings and live session ids, …);
 - keeps any other old table this board has no table for whole in `settings` as `import.<table>`,
   and lists it;
 - counts the rows it actually wrote, and lists every old row it skipped (a clash, an unknown

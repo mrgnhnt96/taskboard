@@ -51,6 +51,9 @@ enum Cmd {
         /// Import into this data folder instead of the configured one
         #[arg(long)]
         data: Option<PathBuf>,
+        /// The project the old board's master breaks were on (it watched one, so they name none); defaults to the only project in [master.projects]
+        #[arg(long)]
+        master_project: Option<String>,
     },
     /// Check for what would get in the way of this board: another board on its port, another tb on the PATH, another task-board plugin
     Check,
@@ -258,11 +261,12 @@ fn main() {
             }
         }
         Cmd::Launchd { label } => launchd(&label),
-        Cmd::Import { old, data } => {
+        Cmd::Import { old, data, master_project } => {
             let mut cfg = load(data, None, false);
             cfg.runner = false;
             let old = expand_home(&old.to_string_lossy());
-            match App::new(cfg, false).and_then(|a| taskboardd::import::import(&a, &old).map(|r| (a, r))) {
+            let opts = taskboardd::import::Options { master_project };
+            match App::new(cfg, false).and_then(|a| taskboardd::import::import_with(&a, &old, &opts).map(|r| (a, r))) {
                 Ok((a, r)) => {
                     println!("Imported {} into {}:", old.display(), a.cfg.data.display());
                     for l in r.lines() {

@@ -893,7 +893,8 @@ ask is a row in the ledger (`review_asks`).
 
 `reviewer`: `{id, project, name, user: str|null (host id), emails, aliases, slack, source: "tb"|"git"|"host"|"import",
 commits, removed, removed_at, removed_why, pinned, automation, bot: {every_h, mark, last_run, next_run}|null,
-median_work_mins, open_asks, asks, last_asked}`.
+median_work_mins, open_asks, asks, swaps, last_asked}`. `asks`, `swaps` and `last_asked` count the old board's too
+when the reviewer came over with `taskboardd import`.
 
 `ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage"|"rereview", by, state:
 "open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces}`.

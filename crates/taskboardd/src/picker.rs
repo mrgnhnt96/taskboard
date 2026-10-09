@@ -255,8 +255,7 @@ impl Pick {
 /// When a reviewer is next due, and their weight.
 pub fn due(app: &App, r: &Row) -> Result<(f64, f64)> {
     let cfg = &app.cfg.reviewers;
-    let last = app.db.val("SELECT MAX(asked_at) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
-    let last = last.as_str().and_then(parse_iso).unwrap_or(0.0);
+    let last = reviewers::last_asked(app, r)?.as_str().and_then(parse_iso).unwrap_or(0.0);
     let open = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ? AND state = 'open'", p![r.id()])? as f64;
     let pace = if crate::botrun::timed(app, r)? { fastest(cfg) } else { speed(cfg, reviewers::median_work_mins(app, r.id())?) };
     let weight = (r.f("automation").unwrap_or(1.0) * pace).max(0.01);
@@ -299,7 +298,7 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
             continue;
         }
         let (due, weight) = due(app, &r)?;
-        let asked = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
+        let asked = reviewers::ask_count(app, &r)?;
         cands.push(Pick { name: r.st("name"), user, why: "turn".into(), due, weight, tier: "unknown".into(), asked, reviewer: r });
     }
     let mains = match repo.as_deref() {

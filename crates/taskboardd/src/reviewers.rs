@@ -27,6 +27,7 @@
 //! | `pinned` | 1: first in line for the main-contributor pick |
 //! | `automation` | how much of their reviewing is automated (`tb reviewers auto`), a weight: 1 is normal |
 //! | `bot_every_h`, `bot_mark` | their review bot runs about every this many hours and marks its comments with this text |
+//! | `carried_asks`, `carried_swaps`, `carried_last_ask` | from the old board (`taskboardd import`): its asks and swaps of them that its ledger didn't keep, and its last ask; counted with the ledger's for their turn |
 //! | `created_at`, `updated_at` | |
 //!
 //! `review_asks`: one row per ask of one reviewer on one PR.
@@ -73,6 +74,30 @@ CREATE INDEX IF NOT EXISTS review_asks_reviewer ON review_asks(reviewer_id);
 CREATE TABLE IF NOT EXISTS reviewer_bot_runs(
   reviewer_id INT NOT NULL, at TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY(reviewer_id, ref));
 "#;
+
+/// Columns added to the reviewer tables since they were made: (table, column, type).
+pub const ADDED: &[(&str, &str, &str)] = &[
+    ("reviewers", "carried_asks", "INT DEFAULT 0"),
+    ("reviewers", "carried_swaps", "INT DEFAULT 0"),
+    ("reviewers", "carried_last_ask", "TEXT"),
+];
+
+/// How many times they've been asked, the old board's asks included.
+pub fn ask_count(app: &App, r: &Row) -> Result<i64> {
+    Ok(app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ?", p![r.id()])? + r.i0("carried_asks"))
+}
+
+/// When they were last asked (ISO), the old board's last ask included.
+pub fn last_asked(app: &App, r: &Row) -> Result<Value> {
+    let ledger = app.db.val("SELECT MAX(asked_at) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
+    let carried = r.v("carried_last_ask");
+    let at = |v: &Value| v.as_str().and_then(parse_iso);
+    Ok(match (at(&ledger), at(&carried)) {
+        (Some(a), Some(b)) if b > a => carried,
+        (None, Some(_)) => carried,
+        _ => ledger,
+    })
+}
 
 /// `[reviewers]` in config.toml: how the picker (`picker.rs`) chooses who to ask.
 #[derive(Debug, Clone, Deserialize)]
@@ -393,7 +418,14 @@ fn merge_rows(app: &App, keep: &Row, other: &Row) -> Result<()> {
     }
     aliases.retain(|a| low(a) != low(&keep.st("name")));
     let mut f = fields!["emails" => jdumps(&json!(emails)), "aliases" => jdumps(&json!(aliases)), "host_user" => host_user,
-                        "pinned" => (keep.b("pinned") || other.b("pinned")) as i64, "updated_at" => now_iso()];
+                        "pinned" => (keep.b("pinned") || other.b("pinned")) as i64, "updated_at" => now_iso(),
+                        "commits" => keep.i0("commits") + other.i0("commits"),
+                        "carried_asks" => keep.i0("carried_asks") + other.i0("carried_asks"),
+                        "carried_swaps" => keep.i0("carried_swaps") + other.i0("carried_swaps")];
+    let later = |a: Option<&str>, b: Option<&str>| a.and_then(parse_iso).unwrap_or(0.0) < b.and_then(parse_iso).unwrap_or(0.0);
+    if later(keep.s("carried_last_ask"), other.s("carried_last_ask")) {
+        f.push(("carried_last_ask", other.v("carried_last_ask")));
+    }
     if keep.f("bot_every_h").is_none() && other.f("bot_every_h").is_some() {
         f.push(("bot_every_h", other.v("bot_every_h")));
         f.push(("bot_mark", other.v("bot_mark")));
@@ -455,8 +487,9 @@ fn median(xs: &[f64]) -> Option<f64> {
 /// A reviewer as the API, `tb reviewers list` and the app show them.
 pub fn dict(app: &App, r: &Row) -> Result<Value> {
     let open = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ? AND state = 'open'", p![r.id()])?;
-    let asks = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
-    let last = app.db.val("SELECT MAX(asked_at) FROM review_asks WHERE reviewer_id = ?", p![r.id()])?;
+    let asks = ask_count(app, r)?;
+    let last = last_asked(app, r)?;
+    let swaps = app.db.count("SELECT COUNT(*) FROM review_asks WHERE reviewer_id = ? AND state IN ('swapped', 'came_back')", p![r.id()])? + r.i0("carried_swaps");
     let last_run = app.db.val("SELECT MAX(at) FROM reviewer_bot_runs WHERE reviewer_id = ?", p![r.id()])?;
     let next_run = crate::botrun::next_run(app, r)?.map(iso);
     Ok(json!({
@@ -466,7 +499,7 @@ pub fn dict(app: &App, r: &Row) -> Result<Value> {
         "removed": r.s("removed_at").is_some(), "removed_at": r.v("removed_at"), "removed_why": r.v("removed_why"),
         "pinned": r.b("pinned"), "automation": r.f("automation").unwrap_or(1.0),
         "bot": if r.f("bot_every_h").is_some() { json!({"every_h": r.v("bot_every_h"), "mark": r.v("bot_mark"), "last_run": last_run, "next_run": next_run}) } else { Value::Null },
-        "median_work_mins": median_work_mins(app, r.id())?, "open_asks": open, "asks": asks, "last_asked": last,
+        "median_work_mins": median_work_mins(app, r.id())?, "open_asks": open, "asks": asks, "swaps": swaps, "last_asked": last,
     }))
 }
 
