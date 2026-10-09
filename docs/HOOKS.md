@@ -241,6 +241,12 @@ prompt = "Sign off the screens this task changes."
   Python's `shlex.quote`; escaped instead inside "…" or '…'), so an empty `{pr}` doesn't shift the arguments after
   it. Refusals (the PR, `tb done`) and the handoff show the steps filled in, `{head}` (the head the gate judges) and
   `{worktree}` (the aim's checkout, else the task's) included, as `tb steps` does.
+- **The untracked-change check.** A Stop with no task is blocked when the turn changed code (`tb task new … --here`).
+  Besides the turn's Edit, Write, MultiEdit and NotebookEdit calls, the plugin's `PreToolUse` hook and its
+  `PostToolUse` / `PostToolUseFailure` hook (`tb hook ToolEnd`) stamp the checkout around each Bash, Agent and Task
+  call, and only what changed while one of those calls ran counts (anywhere in the checkout), so an edit saved
+  between calls, by the owner or another terminal, doesn't block the Stop. A call run in the background counts up
+  to the Stop.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
   comment that starts with a `pragmas` entry passes. An Edit is judged on the whole file: it's applied to the

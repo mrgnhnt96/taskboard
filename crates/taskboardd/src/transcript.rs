@@ -239,6 +239,16 @@ pub fn last_turn(app: &App, s: &Row) -> Option<Turn> {
     turns_of(&lines(&p)).pop()
 }
 
+/// The last turn of the transcript a hook named (its `transcript_path`), when it's one of Claude's.
+pub fn last_turn_at(root: &Path, path: Option<&str>) -> Option<Turn> {
+    let p = std::fs::canonicalize(expand_home(path.filter(|p| !p.is_empty())?)).ok()?;
+    let root = std::fs::canonicalize(root).ok()?;
+    if p.extension().map(|e| e != "jsonl").unwrap_or(true) || !p.starts_with(&root) {
+        return None;
+    }
+    turns_of(&lines(&p)).pop()
+}
+
 pub fn turns(app: &App, s: &Row, limit: usize) -> Value {
     let found = session_path(app, s).map(|p| turns_of(&lines(&p))).unwrap_or_default();
     let mut files: Vec<&String> = found.iter().flat_map(|t| t.files.iter()).collect();
