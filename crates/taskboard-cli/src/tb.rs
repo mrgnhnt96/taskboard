@@ -1637,6 +1637,26 @@ fn device_arg(values: &[String]) -> Value {
 }
 
 /// After `tb done` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
+/// What `tb start T<n>` did, from the task the board sends back: a `task.starting` hook may have
+/// skipped it, so it's only "opening" when the board says it's starting.
+fn start_said(r: &str, queue: bool, v: &Value) -> String {
+    let status = v["status"].as_str().unwrap_or("");
+    let why = v["summary"].as_str().or(v["latest"].as_str()).filter(|s| !s.is_empty());
+    if status == "done" {
+        return match why {
+            Some(w) => format!("{r} didn't start: {}.", w.trim_end_matches('.')),
+            None => format!("{r} didn't start: it's done."),
+        };
+    }
+    if v["starting"] == true || (status == "queued" && queue) {
+        return if queue { format!("{r} starts in a new terminal once its repo is free.") } else { format!("Opening {r} in a new terminal now.") };
+    }
+    match v["who"].as_str().filter(|s| !s.is_empty()) {
+        Some(who) if matches!(status, "working" | "needs") => format!("{r} is on {who}."),
+        _ => format!("{r} is {status}."),
+    }
+}
+
 fn then_next(v: &Value) -> String {
     v["context"].as_str().filter(|c| !c.trim().is_empty()).map(|c| format!("\n\n{c}")).unwrap_or_default()
 }
@@ -2888,6 +2908,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Start { task, queue } => {
             if task.trim().starts_with(['G', 'g']) {
                 let g = goal_ref(&task)?;
+                if queue {
+                    return Err(format!("--queue doesn't apply to a goal: tb start {g} runs it, and the board starts its tasks in their waves."));
+                }
                 let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
                 let n = v["queued_now"].as_i64().unwrap_or(0);
                 out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
@@ -2898,12 +2921,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {r} on the board."));
             }
             let mode = if queue { "queue" } else { "new" };
-            c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
-            out(&if queue {
-                format!("{r} starts in a new terminal once its repo is free.")
-            } else {
-                format!("Opening {r} in a new terminal now.")
-            });
+            let v = c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
+            out(&start_said(&r, queue, &v));
             Ok(0)
         }
         Cmd::Status { t } => {
@@ -4255,6 +4274,15 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_start_says_what_the_board_did() {
+        let skipped = json!({"status": "done", "summary": "Skipped by hook `x.sh`: APP-41 is already fixed", "starting": false});
+        assert_eq!(start_said("T4", false, &skipped), "T4 didn't start: Skipped by hook `x.sh`: APP-41 is already fixed.");
+        assert_eq!(start_said("T4", false, &json!({"status": "queued", "starting": true})), "Opening T4 in a new terminal now.");
+        assert_eq!(start_said("T4", true, &json!({"status": "queued", "starting": false})), "T4 starts in a new terminal once its repo is free.");
+        assert_eq!(start_said("T4", false, &json!({"status": "working", "who": "Term", "starting": false})), "T4 is on Term.");
+    }
 
     fn git(dir: &std::path::Path, args: &[&str]) -> String {
         let o = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();

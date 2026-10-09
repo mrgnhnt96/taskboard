@@ -1051,9 +1051,12 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         }
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
-    // Starting ahead of its wave or its turn is fine; ahead of the work it needs is not.
-    if let Some(b) = crate::waitsfor::blocker(app, &t)? {
-        return err(409, format!("{} can't start yet. {b}.", rf("task", id)));
+    // Starting ahead of its wave or its turn is fine; an agent starting ahead of the work it needs is
+    // not. The owner's Start runs it now anyway ("Start runs it now anyway").
+    if !via.is_empty() {
+        if let Some(b) = crate::waitsfor::blocker(app, &t)? {
+            return err(409, format!("{} can't start yet. {b}.", rf("task", id)));
+        }
     }
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
