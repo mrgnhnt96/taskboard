@@ -49,18 +49,18 @@ All opt-in: a goal that sets none of it runs as before.
 
 ## Devices
 
-The board keeps one pool of devices (emulators, simulators, phones) for every project; `tb devices` lists each one, its tags, who has it and who waits. A task that needs devices asks for them by tag or name, and the runner starts it only once that many are free, lends them to it while it runs, and names them in its handoff.
+The board keeps one pool of devices (emulators, simulators, phones) for every project; `tb devices` lists each one, its tags, who has it and who waits. A task that needs devices asks for them by tag or name, and the runner starts it only once that many are free, lends them to it while it runs (`tb take` lends them too), and names them in its handoff.
 
-- `tb task set T<n> --device android:2` (or `--device ios --device pixel-7`; `--device none` takes its goal's), `--device` on `tb task new`, or for every task in a goal that doesn't ask for its own: `tb goal set G<n> --device ios`.
-- Add a device when the owner says to: `tb device add pixel-7 --tag android --tag phone [--focus "<command that raises its window>"]`. Change it with `tb device set`, switch it off with `--off off`, take it out with `tb device remove`.
+- `tb task set T<n> --device android:2` (or `--device ios --device pixel-7`; `--device none` for none even when its goal asks for some, `--device goal` for its goal's again), `--device` on `tb task new`, or for every task in a goal that doesn't ask for its own: `tb goal set G<n> --device ios`.
+- Add a device when the owner says to: `tb device add pixel-7 --tag android --tag phone [--focus "<command that raises its window>"]`. Change it with `tb device set`, switch it off with `--off` and back on with `--on`, take it out with `tb device remove`.
 - `tb device focus <name>` raises a device's window.
 
 ## Bits (feature flags)
 
 When a goal's work goes behind feature flags, put them on the board: `tb bit add <key> --backend --task T<n>` for a flag that has to exist in the flag tool too, `--local` for one in the code only (`--goal G<n>` for the whole goal). Link more tasks with `tb task set T<n> --bit <key>`.
 
-- A task waits to start until its backend bits are made in the tool, and a goal whose tasks are all done still waits on its unmade backend bits. The goal page lists them with a link to make each one.
-- `tb bit made <key>` records it made, only on the owner's word (`--undo` if it wasn't). `tb bits --goal G<n>` lists a goal's bits.
+- Tasks start and build behind a flag whether or not it's made; only a goal whose tasks are all done waits on its unmade backend bits. The goal page lists them with a link to make each one and the owner's "Mark created".
+- `tb bit made <key>` records a backend bit made, only on the owner's word (`--undo` if it wasn't); a local bit isn't made anywhere. `tb bits --goal G<n>` lists a goal's bits.
 
 ## Work that also finishes another goal
 

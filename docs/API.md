@@ -168,7 +168,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "queued": int,       // status queued
   "starting": int,     // queued with a live start job
   "blocked": int,      // queued and waiting on another task (waits_for)
-  "held": int,         // queued, not blocked, but held back by its waves or order, a lock, a bit or the device pool
+  "held": int,         // queued, not blocked, but held back by its waves or order, a lock or the device pool
                        // (the goal shows Blocked when blocked + held covers every queued task)
   "bits_waiting": int, // its backend bits not made in the flag tool yet; a done goal waits on them ("Waiting on N bits")
   "planned": int,      // status planned
@@ -798,7 +798,7 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 |---|---|---|
 | `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app`); from anyone else it's 403. Answers the goal detail. |
 | `POST /goals/:id/waves/:n/hold` | `{on?: bool (true), who?}` | Hold a wave (`tb goal wave --hold`): its tasks that haven't started don't, nor any later wave, until it's continued. `on: false` lifts it. 409 on a done wave. Answers the goal detail. |
-| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail. |
+| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail, with `let_start: true` when it let a held wave start. |
 | `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |
 
 ## Locks, running alone and worktrees
@@ -826,8 +826,10 @@ context as `plan_files`; its handoff names them, and each wave mate's handoff li
 
 One pool of devices for every project (`tb devices`, `tb device add|set|remove|focus`). A task asks for devices by
 tag or name (`{devices: "android:2 ios"}` on `POST /tasks`, `POST /tasks/:id`, or `POST /goals/:id` for the goal's
-tasks that don't ask for their own; `"none"` clears). The runner starts it only once that many are free, lends them
-when it starts (before the handoff is built, which names them), and takes them back once the task isn't active
+tasks that don't ask for their own; `"none"` clears). On a task, `"none"` (or `[]`) is its own "needs none", over
+its goal's needs, and `"goal"` drops its own so it asks for its goal's again. The runner starts it only once that many
+are free, lends them when it starts or an agent takes it with `tb take` (before the handoff is built, which names
+them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
 device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
 
@@ -844,9 +846,10 @@ device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
 
 ## Bits (feature flags)
 
-A bit is `backend` (it has to be made in the flag tool) or `local` (in the code only), linked to tasks and goals. A
-queued task waits while a backend bit linked to it isn't made ("Waits for the bit newCheckout to be made in
-Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. The handoff lists a task's bits.
+A bit is `backend` (it has to be made in the flag tool) or `local` (in the code only), linked to tasks and goals.
+Tasks start and build behind a flag whether or not it's made; only a goal whose tasks are all done waits on its
+unmade backend bits ("Waiting on 1 bit"). The handoff lists a task's bits, and says an unmade one doesn't hold up
+the work.
 `[bits]` in config.toml names the tool and its "new flag" link.
 
 `bit`: `{id, name, kind, project, note, made: bool, made_at, made_by, waiting: bool, create_url: str|null, tasks: ["T4"], goals: ["G2"], created_at}`.
@@ -857,9 +860,9 @@ Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. T
 | `POST /bits` | `{name, kind: "backend"\|"local", tasks?: ["T4"], goals?: ["G2"], project?, note?, who?}` | Add one (`tb bit add`). The project defaults to its first task's or goal's. |
 | `GET /bits/:name` | | The bit. |
 | `POST /bits/:name` | `{name?, kind?, note?, project?, tasks?, not_tasks?, goals?, not_goals?, who?}` | Change it or its links (`tb bit set`). |
-| `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`). Never from the app. |
+| `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`, or the app's one-click "Mark created" on a backend bit). 409 on a local bit, which isn't made anywhere; changing a bit to local clears its made. |
 | `POST /bits/:name/remove` | `{who?}` | Remove it and its links. |
-| `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). |
+| `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). `tb task new --bit` sends `bits` (and `devices`) with the new task, so an unknown bit adds no task. |
 
 ## Reviewers
 

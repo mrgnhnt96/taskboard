@@ -408,9 +408,12 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
-        /// Off: no task is lent it
-        #[arg(long, value_parser = ["on", "off"])]
-        off: Option<String>,
+        /// Switch it off: no task is lent it
+        #[arg(long, conflicts_with = "on")]
+        off: bool,
+        /// Switch it back on
+        #[arg(long)]
+        on: bool,
     },
     /// Take a device out of the pool
     Remove { name: String },
@@ -757,10 +760,11 @@ enum TaskCmd {
         /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
-        /// Devices from the pool it needs while it runs, by tag or name: android, android:2. Repeat for more
-        #[arg(long = "device", value_name = "TAG[:N]")]
+        /// Devices from the pool it needs while it runs, by tag or name: android, android:2. Repeat for more,
+        /// none for none (even when its goal asks for some)
+        #[arg(long = "device", value_name = "TAG[:N]|none")]
         devices: Vec<String>,
-        /// A bit (feature flag) its work sits behind; it waits until a backend bit is made. Repeat for more
+        /// A bit (feature flag) its work sits behind; it starts whether or not a backend bit is made. Repeat for more
         #[arg(long = "bit", value_name = "NAME")]
         bits: Vec<String>,
         /// Its PR builds on this task's PR (any goal): it starts once that's done, from its branch
@@ -804,8 +808,9 @@ enum TaskCmd {
         /// A Jira key to link, `new` for a new ticket, or `none`
         #[arg(long)]
         jira: Option<String>,
-        /// Devices from the pool it needs while it runs: android, android:2. Repeat for more, none for its goal's
-        #[arg(long = "device", value_name = "TAG[:N]|none")]
+        /// Devices from the pool it needs while it runs: android, android:2. Repeat for more, none for none
+        /// (even when its goal asks for some), goal for its goal's
+        #[arg(long = "device", value_name = "TAG[:N]|none|goal")]
         devices: Vec<String>,
         /// A bit (feature flag) its work sits behind. Repeat for more, none for none
         #[arg(long = "bit", value_name = "NAME|none")]
@@ -1388,6 +1393,15 @@ fn lock_arg(values: &[String]) -> Vec<String> {
     values.iter().flat_map(|v| v.replace(',', " ").split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>()).collect()
 }
 
+/// A task's `--device`: needs, `none` for its own "needs none", or `goal` for its goal's.
+fn device_arg(values: &[String]) -> Value {
+    match values {
+        [one] if one.trim().eq_ignore_ascii_case("goal") => json!("goal"),
+        [one] if one.trim().eq_ignore_ascii_case("none") => json!("none"),
+        _ => json!(lock_arg(values)),
+    }
+}
+
 fn print_warnings(v: &Value) {
     for w in v["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str()) {
         out(&format!("Note: {w}"));
@@ -1518,7 +1532,7 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             let v = c.call("POST", "/devices", Some(json!({"name": name, "tags": lock_arg(&tags), "focus": focus, "note": note})))?;
             out(&format!("Added {}.", device_line(&v)));
         }
-        DeviceCmd::Set { name, rename, tags, focus, note, off } => {
+        DeviceCmd::Set { name, rename, tags, focus, note, off, on } => {
             let mut b = json!({});
             if let Some(x) = rename {
                 b["name"] = json!(x);
@@ -1532,8 +1546,8 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             if let Some(x) = note {
                 b["note"] = json!(x);
             }
-            if let Some(x) = off {
-                b["off"] = json!(x == "off");
+            if off || on {
+                b["off"] = json!(off);
             }
             if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                 return Err("say what to change, for example: tb device set pixel-7 --tag android --tag phone".into());
@@ -2452,8 +2466,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             GoalCmd::Continue { goal, wave } => {
                 let g = goal_ref(&goal)?;
-                c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
-                out(&format!("{g} goes on past wave {wave}."));
+                let v = c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
+                out(&if v["let_start"] == true { format!("Wave {wave} of {g} can start now.") } else { format!("{g} goes on past wave {wave}.") });
                 Ok(0)
             }
             GoalCmd::Delete { goal, keep_tasks, delete_tasks, delete_backlog } => {
@@ -2598,6 +2612,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if pr || no_pr {
                     body["ships_pr"] = json!(pr);
                 }
+                // In the same request, so an unknown bit or device tag adds no task at all.
+                if !devices.is_empty() {
+                    body["devices"] = device_arg(&devices);
+                }
+                if !bits.is_empty() {
+                    body["bits"] = json!(lock_arg(&bits));
+                }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) if here => {
@@ -2606,17 +2627,6 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
-                        // Devices and bits go on with a change, once the task is there.
-                        if !devices.is_empty() || !bits.is_empty() {
-                            let mut more = json!({"who": c.who()});
-                            if !devices.is_empty() {
-                                more["devices"] = json!(lock_arg(&devices));
-                            }
-                            if !bits.is_empty() {
-                                more["bits"] = json!(lock_arg(&bits));
-                            }
-                            c.call("POST", &format!("/tasks/{r}"), Some(more))?;
-                        }
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
@@ -2664,7 +2674,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     b["jira_key"] = json!(x);
                 }
                 if !devices.is_empty() {
-                    b["devices"] = json!(lock_arg(&devices));
+                    b["devices"] = device_arg(&devices);
                 }
                 if !bits.is_empty() {
                     b["bits"] = if bits.len() == 1 && bits[0].eq_ignore_ascii_case("none") { json!("none") } else { json!(lock_arg(&bits)) };
@@ -3423,7 +3433,7 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "feed", "heartbeat"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "feed", "event", "https://bitbucket.org/a/b/pull-requests/9", "--kind", "build", "--state", "started", "--head", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "focus", "pixel-7"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--device", "android:2", "--bit", "newCheckout"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--device", "none", "--not-bit", "a"]).is_ok());
@@ -3509,6 +3519,16 @@ mod tests {
         assert!(e.contains("--detail"), "{e}");
         assert!(short_task_titles(&["Short::".to_string() + &"long detail ".repeat(20)]).is_ok());
         assert!(short_task_titles(&["y".repeat(TITLE_MAX + 1)]).is_err());
+    }
+
+    #[test]
+    fn device_switches_and_needs() {
+        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--on"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--on", "--off"]).is_err());
+        assert_eq!(device_arg(&["none".into()]), json!("none"));
+        assert_eq!(device_arg(&["Goal".into()]), json!("goal"));
+        assert_eq!(device_arg(&["android:2, ios".into()]), json!(["android:2", "ios"]));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Bits: the feature flags a goal's work sits behind. A bit is local (defined in the code only) or
-//! backend (it has to exist in the flag tool too). Bits are linked to tasks and goals; a task waits
-//! to start until its backend bits are made in the tool (`tb bit made`), and a goal whose tasks are
-//! all done still waits on its unmade backend bits. The handoff lists a task's bits. `[bits]` in
-//! config.toml names the tool and its "new flag" link.
+//! backend (it has to exist in the flag tool too). Bits are linked to tasks and goals. Tasks start
+//! and build behind a flag whether or not it's made; only a goal whose tasks are all done waits on
+//! its backend bits until they're made in the tool (`tb bit made`, or the app's "Mark created"). The
+//! handoff lists a task's bits. `[bits]` in config.toml names the tool and its "new flag" link.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -152,16 +152,6 @@ pub fn task_card(app: &App, task_id: i64) -> Result<Vec<Value>> {
         .collect())
 }
 
-/// Why its bits hold this queued task back: a backend bit not made in the flag tool yet.
-pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
-    let open: Vec<String> = of_task(app, t.id())?.iter().filter(|b| waits(b)).map(|b| b.st("name")).collect();
-    Ok(match open.len() {
-        0 => None,
-        1 => Some(format!("Waits for the bit {} to be made in {}", open[0], tool(app))),
-        n => Some(format!("Waits for {n} bits to be made in {}: {}", tool(app), open.join(", "))),
-    })
-}
-
 fn names_from(v: Option<&Value>) -> Vec<String> {
     str_list(v).iter().flat_map(|s| s.replace(',', " ").split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>()).collect()
 }
@@ -306,6 +296,11 @@ fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
     if body_has(body, "kind") {
         let k = clean_kind(&body_str(body, "kind"))?;
         if Some(k.as_str()) != b.s("kind") {
+            // A local bit isn't made anywhere.
+            if k == "local" {
+                f.push(("made_at", Value::Null));
+                f.push(("made_by", Value::Null));
+            }
             f.push(("kind", json!(k)));
         }
     }
@@ -353,6 +348,9 @@ fn made(app: &App, name: &str, body: &Value) -> Result<Value> {
         app.db.update("bits", &json!(b.id()), fields!["made_at" => null, "made_by" => null, "updated_at" => now_iso()])?;
         log_on_tasks(app, &b, &who, &format!("The bit {} isn't made in {} after all", b.st("name"), tool(app)))?;
     } else {
+        if b.s("kind") == Some("local") {
+            return err(409, format!("{} is a local bit: it's in the code only, so there's nothing to make in {}.", b.st("name"), tool(app)));
+        }
         if b.s("made_at").is_some() {
             return dict(app, &b);
         }
@@ -415,11 +413,17 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
             format!("{} ({state})", b.st("name"))
         })
         .collect();
+    let unmade = bits.iter().any(waits);
     Ok(vec![format!(
-        "This task's work sits behind {} {}. Gate the new code on {}. A new flag goes on the board with {} bit add NAME --backend|--local --task {}.",
+        "This task's work sits behind {} {}. Gate the new code on {}.{} A new flag goes on the board with {} bit add NAME --backend|--local --task {}.",
         if bits.len() == 1 { "the bit" } else { "the bits" },
         each.join(", "),
         if bits.len() == 1 { "it" } else { "them" },
+        if unmade {
+            format!(" A bit not made in {tool} yet doesn't hold up your work: build behind the flag anyway, and the goal waits for it to be made once its tasks are done.")
+        } else {
+            String::new()
+        },
         board::tb_cmd(app),
         rf("task", t.id())
     )])
