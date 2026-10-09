@@ -415,6 +415,25 @@ fn a_goals_pool_lends_only_its_own_and_an_archived_goal_lets_go() {
     assert_eq!(b.get(&format!("goals/G{g3}/devices"))["devices"][0]["name"], "pixel-8", "its page still lists its own");
 }
 
+/// Regression (#86): a device asked for by name is lent whatever the goal's pool, as on the Python
+/// board; only tag needs keep to the goal's own devices.
+#[test]
+fn a_named_device_outside_the_goals_pool_is_lent() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices", json!({"name": "pixel-8", "tags": "android"}));
+    let g3 = b.goal();
+    b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8"}));
+    let named = b.task("Named", json!({"goal_id": g3, "devices": "pixel-7"}));
+    b.post(&format!("goals/G{g3}/run"), json!({}));
+    assert!(b.waiting(named).is_null(), "{}", b.waiting(named));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{named}"))["devices"]["lent"], json!(["pixel-7"]));
+    // A tag still keeps to G3's own: pixel-7 doesn't count as an android device for it.
+    let two = b.task("Two", json!({"goal_id": g3, "devices": "android:2"}));
+    assert_eq!(b.waiting(two), format!("Needs 2 android devices, and G{g3}'s own devices have 1"));
+}
+
 #[test]
 fn with_goal_pool_only_off_a_goal_borrows_from_the_rest() {
     let b = board_with(|c| c.devices.goal_pool_only = false);
