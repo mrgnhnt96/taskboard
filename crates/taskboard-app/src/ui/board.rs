@@ -265,7 +265,7 @@ pub struct TaskCardVm {
     pub when_title: String,
     pub title: String,
     pub high: bool,
-    /// Project, Jira key, PR, Failed, Terminal lost (in that order).
+    /// Project, Jira key, PR, Failed, Terminal lost, lent devices, bits (in that order).
     pub chips: Vec<Chip>,
     pub who: Option<String>,
     pub needs: bool,
@@ -334,6 +334,13 @@ pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
     }
     if b(x, "lost") {
         chips.push(Chip { text: "Terminal lost".into(), cls: "bad".into() });
+    }
+    // The devices lent to it, and its bits (⚑, warn while a backend one isn't made).
+    for d in arr(&x["devices"], "lent").iter().filter_map(|d| d.as_str()) {
+        chips.push(Chip { text: d.to_string(), cls: "device".into() });
+    }
+    for bit in arr(x, "bits") {
+        chips.push(Chip { text: format!("⚑ {}", s(bit, "name")), cls: if b(bit, "waiting") { "bit-wait" } else { "bit" }.into() });
     }
     TaskCardVm {
         goal_ref: goal.map(|g| fmt::ref_of(g, "G")),
@@ -1326,6 +1333,9 @@ fn chip_colors(t: &Theme, cls: &str) -> (Hsla, Hsla) {
         "k-follow" | "st-ticket" => (t.accent_fg, t.accent_soft),
         "st-task" => (t.goal, t.goal_soft),
         "st-drop" => (t.muted, t.col),
+        "device" => (t.goal, t.goal_soft),
+        "bit-wait" => (t.warn_fg, t.warn_soft),
+        "bit" => (t.muted, t.panel_2),
         _ => (t.text_2, t.col),
     }
 }

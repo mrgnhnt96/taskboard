@@ -1290,6 +1290,28 @@ fn origin_row(t: &Value) -> Option<Node> {
     Some(el(K::KvRow, vec![txt("From", St::LrowKey), value]))
 }
 
+/// The devices it has (or asks for) and its bits, as Context rows.
+fn pool_rows(t: &Value) -> Vec<Node> {
+    let mut out = vec![];
+    let d = &t["devices"];
+    let lent: Vec<&str> = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
+    let devices = if !lent.is_empty() { Some(lent.join(", ")) } else { opt_s(d, "needs_text").map(|n| format!("Needs {n}")) };
+    if let Some(v) = devices {
+        out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));
+    }
+    let bits: Vec<String> = arr(t, "bits")
+        .iter()
+        .map(|x| {
+            let state = if s(x, "kind") == "local" { "local" } else if b(x, "made") { "created" } else { "not created" };
+            format!("⚑ {} ({state})", s(x, "name"))
+        })
+        .collect();
+    if !bits.is_empty() {
+        out.push(el(K::KvRow, vec![txt("Bits", St::LrowKey), txt(bits.join(", "), St::Plain)]));
+    }
+    out
+}
+
 /// `contextTab(t)`.
 fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
@@ -1319,6 +1341,7 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     }
     let mut kv: Vec<Node> = wh.into_iter().map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)])).collect();
     kv.extend(origin_row(t));
+    kv.extend(pool_rows(t));
     out.push(el(K::Kv, kv));
     for (title, key, glyph, dot) in [("Done so far", "done", "✓", Dot::Up), ("Next", "next", "→", Dot::Accent), ("Decisions", "decisions", "•", Dot::Faint), ("Your answers", "answers", "•", Dot::Warn)] {
         let items = arr(cx, key);

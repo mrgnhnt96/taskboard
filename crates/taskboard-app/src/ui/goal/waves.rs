@@ -1,6 +1,6 @@
 //! The goal page's wave rail (the web's `waves.js`): one node per wave down a line, each wave's header
 //! (its state, counts and review stop), the gate under a wave the goal stopped at ("Continue to wave
-//! 2"), its tasks when open, the tasks with no wave ("Post"), then tasks of other goals that also finish
+//! 2") or that's held, its tasks when open with the owner's "Stop after this wave for my review", the tasks with no wave ("Post"), then tasks of other goals that also finish
 //! this one branching in, and where the goal finishes. Views are pure (`rail_view`) and checked
 //! against the web's own output in `goal::tests::views_match_web` (`waveRail`).
 use super::*;
@@ -29,7 +29,18 @@ pub struct Gate {
 }
 
 pub enum Item {
-    Wave { wave: i64, state: String, open: bool, name: Option<String>, count: Vec<(String, String)>, stop: bool, gate: Option<Gate>, tasks: Vec<WTask> },
+    Wave {
+        wave: i64,
+        state: String,
+        open: bool,
+        name: Option<String>,
+        count: Vec<(String, String)>,
+        stop: bool,
+        gate: Option<Gate>,
+        tasks: Vec<WTask>,
+        /// The owner's "Stop after this wave for my review" checkbox (None once the wave is done or stopped).
+        stop_box: Option<bool>,
+    },
     Post { open: bool, tasks: Vec<WTask> },
     Ref { done: bool, badge: String, home: Option<String>, landed: bool, task: WTask },
     Finish { done: bool, text: String },
@@ -39,9 +50,9 @@ fn opened(open: &HashMap<String, bool>, g: &Value, key: &str, default: bool) -> 
     open.get(&format!("{}:{key}", fmt::ref_of(g, "G"))).copied().unwrap_or(default)
 }
 
-/// `waveOpen(g, w)`: running, stopped and failed waves start open.
+/// `waveOpen(g, w)`: running, stopped, failed and held waves start open.
 fn wave_open(open: &HashMap<String, bool>, g: &Value, w: &Value) -> bool {
-    opened(open, g, &num_text(&w["wave"]), matches!(s(w, "state"), "running" | "stopped" | "failed"))
+    opened(open, g, &num_text(&w["wave"]), matches!(s(w, "state"), "running" | "stopped" | "failed" | "held"))
 }
 
 /// `PR_STAGE_CLS`.
@@ -76,6 +87,7 @@ fn wave_count(w: &Value, tasks: &[&Value]) -> Vec<(String, String)> {
     match s(w, "state") {
         "stopped" => return one("Waiting for your review", "st-needs"),
         "failed" => return one("A task failed", "st-failed"),
+        "held" => return one("Held", "st-needs"),
         st if s(w, "held_by") == "stopped" && st != "done" => return one("Stopped for your review", "st-needs"),
         _ => {}
     }
@@ -169,6 +181,22 @@ pub fn plan_facts(t: &Value) -> Vec<(String, bool)> {
         Some(_) => out.push(("Alone".into(), false)),
         None => {}
     }
+    out.extend(pool_facts(t));
+    out
+}
+
+/// The devices a task has (or asks for) and its bits: "pixel-7", "Needs 2 android", "⚑ newCheckout".
+pub fn pool_facts(t: &Value) -> Vec<(String, bool)> {
+    let mut out = vec![];
+    let lent: Vec<&str> = arr(&t["devices"], "lent").iter().filter_map(|x| x.as_str()).collect();
+    if !lent.is_empty() {
+        out.extend(lent.iter().map(|d| (format!("Has {d}"), false)));
+    } else if let Some(n) = fmt::opt_s(&t["devices"], "needs_text") {
+        out.push((format!("Needs {n}"), false));
+    }
+    for bit in arr(t, "bits") {
+        out.push((format!("⚑ {}", s(bit, "name")), false));
+    }
     out
 }
 
@@ -215,6 +243,9 @@ fn wave_gate(w: &Value, next: Option<&Value>) -> Option<Gate> {
     let on = next.map(|n| format!("wave {}", num_text(&n["wave"]))).unwrap_or_else(|| "the rest of the goal".into());
     let name = format!("Wave {}{}", num_text(&w["wave"]), fmt::opt_s(w, "name").map(|n| format!(" · {n}")).unwrap_or_default());
     let failed: Vec<&str> = arr(w, "failed").iter().filter_map(|x| x.as_str()).collect();
+    if s(w, "state") == "held" || (b(w, "held") && s(w, "state") == "running") {
+        return Some(Gate { cls: "ask", text: format!("{name} is held."), button: Some(("wave-continue", format!("Let wave {} start", num_text(&w["wave"])))), wave });
+    }
     if s(w, "state") == "stopped" {
         return Some(Gate { cls: "ask", text: format!("Stop point. {name} is done. Look it over, then let {on} start."), button: Some(("wave-continue", format!("Continue to {on}"))), wave });
     }
@@ -273,6 +304,7 @@ pub fn rail_view(g: &Value, open: &HashMap<String, bool>) -> Vec<Item> {
             stop: b(w, "stop_after") && fmt::opt_s(w, "released_at").is_none() && s(w, "state") != "stopped",
             gate: wave_gate(w, ws.get(k + 1)),
             tasks: mine.iter().map(|t| wave_task(t, Some(w))).collect(),
+            stop_box: (!matches!(s(w, "state"), "done" | "stopped")).then(|| b(w, "stop_after")),
         });
     }
     if tasks.iter().any(|t| t["wave"].is_null()) {
@@ -308,7 +340,7 @@ fn node(t: &Theme, state: &str) -> impl IntoElement {
     let (color, fill_soft) = match state {
         "done" => (t.up, None),
         "running" => (t.accent, Some(t.accent_soft)),
-        "stopped" => (t.warn, Some(t.warn_soft)),
+        "stopped" | "held" => (t.warn, Some(t.warn_soft)),
         "failed" => (t.down, None),
         _ => (t.border_2, Some(t.card)),
     };
@@ -358,7 +390,7 @@ fn node(t: &Theme, state: &str) -> impl IntoElement {
                     disc(10., 10., r - 1., fill_soft.unwrap_or(card), window);
                     match state.as_str() {
                         "running" => disc(10., 10., 3.5, color, window),
-                        "stopped" => {
+                        "stopped" | "held" => {
                             stroke(&[(8., 6.5), (8., 13.5)], 2., color, window);
                             stroke(&[(12., 6.5), (12., 13.5)], 2., color, window);
                         }
@@ -550,7 +582,7 @@ pub fn rail(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
             .when(!is_ref, |d| d.pt(px(10.)).child(node(t, &node_state)))
             .when(!last, |d| d.child(div().flex_1().min_h(px(8.)).w(px(2.)).rounded(px(1.)).bg(line_color).when(!is_ref, |d| d.mt(px(2.)))));
         let main = match item {
-            Item::Wave { wave, state, open, name, count, stop, gate, tasks } => {
+            Item::Wave { wave, state, open, name, count, stop, gate, tasks, stop_box } => {
                 let key = format!("{gr}:{wave}");
                 let mut head = div()
                     .id(SharedString::from(format!("wv-head-{wave}")))
@@ -587,6 +619,7 @@ pub fn rail(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
                     .child(head)
                     .children(gate.map(|gt| gate_el(m, t, &gr, gt, cx)))
                     .when(open, |d| d.child(task_box(m, t, &tasks, cx)))
+                    .when_some(stop_box.filter(|_| open), |d, on| d.child(stop_box_el(m, t, &gr, wave, on, cx)))
             }
             Item::Post { open, tasks } => {
                 let key = format!("{gr}:none");
@@ -696,4 +729,33 @@ fn gate_el(m: &MainWindow, t: &Theme, gr: &str, g: Gate, cx: &mut Context<MainWi
 /// `wave-continue`: `POST goals/:g/waves/:n/continue`; "The goal goes on" under the gate.
 pub fn continue_wave(m: &mut MainWindow, gr: &str, n: i64, cx: &mut Context<MainWindow>) {
     run(m, format!("wave-continue:{gr}:{n}"), Some(format!("wgate:{gr}")), false, format!("goals/{gr}/waves/{n}/continue"), json!({}), cx, |_, _, _| "The goal goes on".into());
+}
+
+/// The owner's "Stop after this wave for my review" (the Python board's checkbox): their own word,
+/// so the app is the only place it's set. `POST goals/:g/waves/:n {stop_after}`.
+fn stop_box_el(m: &MainWindow, t: &Theme, gr: &str, wave: i64, on: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let gr = gr.to_string();
+    let busy = m.goal_page.busy.contains(&format!("wave-stop:{gr}:{wave}"));
+    div()
+        .id(SharedString::from(format!("wave-stop-{wave}")))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .text_size(px(13.))
+        .text_color(t.text_2)
+        .cursor_pointer()
+        .when(busy, |d| d.opacity(0.6))
+        .child(checkbox(t, on, false))
+        .child("Stop after this wave for my review")
+        .on_click(cx.listener(move |m, _, _, cx| set_stop(m, &gr, wave, !on, cx)))
+}
+
+/// `POST goals/:g/waves/:n {stop_after}` from the checkbox.
+pub fn set_stop(m: &mut MainWindow, gr: &str, n: i64, on: bool, cx: &mut Context<MainWindow>) {
+    if let Some(w) = m.data.goal.as_mut().filter(|g| fmt::ref_of(g, "G") == gr).and_then(|g| g["waves"].as_array_mut()).and_then(|ws| ws.iter_mut().find(|w| i(w, "wave") == n)) {
+        w["stop_after"] = json!(on);
+    }
+    run(m, format!("wave-stop:{gr}:{n}"), Some(format!("wgate:{gr}")), false, format!("goals/{gr}/waves/{n}"), json!({"stop_after": on}), cx, move |_, _, _| {
+        if on { format!("The goal stops after wave {n} for your review") } else { format!("The goal goes on after wave {n}") }
+    });
 }

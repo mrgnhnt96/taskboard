@@ -19,6 +19,7 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
+mod pool;
 mod waves;
 
 const START_MENU: &str = "goal-start";
@@ -234,6 +235,11 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
         if !open.is_empty() {
             return (if open.len() > 1 { format!("{} PRs awaiting merge", open.len()) } else { "Awaiting merge".into() }, "accent");
         }
+        // The Python board's "Waiting on N bits": a backend flag not made yet holds back a finished goal.
+        let bits = i(g, "bits_waiting");
+        if bits > 0 {
+            return (format!("Waiting on {}", fmt::plural(bits, "bit", "bits")), "warn");
+        }
         return ("Done".into(), "up");
     }
     if b(g, "deprioritized") {
@@ -246,6 +252,10 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
         return ("Needs a restart".into(), "down");
     }
     if tasks.iter().any(|t| s(t, "status") == "needs") {
+        return ("Waiting on you".into(), "warn");
+    }
+    // Stopped at a wave for the owner (a review stop or a failed task).
+    if fmt::opt_s(g, "stopped").is_some() {
         return ("Waiting on you".into(), "warn");
     }
     if tasks.iter().any(|t| s(t, "status") == "working") {
@@ -2981,7 +2991,16 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     let right_body = if backlog_view {
         issue_aside(m, &t, cx).map(|a| div().flex().flex_col().child(a))
     } else {
-        Some(div().flex().flex_col().gap(px(16.)).child(attachments(m, &t, &g, cx)).child(notes(m, &t, &g, cx)))
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .child(attachments(m, &t, &g, cx))
+                .children(pool::devices_aside(m, &t, &g, cx))
+                .children(pool::bits_aside(&t, &g, cx))
+                .child(notes(m, &t, &g, cx)),
+        )
     };
     let right = div().flex_1().min_w_0().mt(px(50.)).children(right_body);
     let overlays: Vec<AnyElement> = [start_menu(m, &t, &g, cx), dialog(m, &t, &g, cx)].into_iter().flatten().collect();
@@ -3087,7 +3106,7 @@ mod tests {
                         "when": x.when, "facts": x.facts.iter().map(|(c, t)| json!({"cls": c, "text": t})).collect::<Vec<_>>(),
                         "term": x.term.as_ref().map(|s| format!("#/sessions?s={s}"))});
                     let items: Vec<Value> = waves::rail_view(goal, &open).iter().map(|it| match it {
-                        waves::Item::Wave { wave, state, open, name, count, stop, gate, tasks } => json!({"kind": "wave", "state": state, "open": open,
+                        waves::Item::Wave { wave, state, open, name, count, stop, gate, tasks, .. } => json!({"kind": "wave", "state": state, "open": open,
                             "n": format!("Wave {wave}"), "name": name, "count": count.iter().map(|(c, t)| json!({"cls": c, "text": t})).collect::<Vec<_>>(),
                             "stop": stop, "gate": gate.as_ref().map(|g| json!({"cls": g.cls, "text": g.text, "button": g.button.as_ref().map(|(a, l)| json!({"act": a, "label": l}))})),
                             "tasks": if *open { tasks.iter().map(wt).collect::<Vec<_>>() } else { vec![] }}),
