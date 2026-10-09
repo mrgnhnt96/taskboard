@@ -217,6 +217,36 @@ fn a_turn_that_changed_code_with_no_task_is_asked_to_track_it() {
     assert!(again.get("block").is_none(), "it asks once per turn");
 }
 
+fn tree(b: &Board, head: &str, files: &[(&str, &str)]) -> Value {
+    let files: serde_json::Map<String, Value> = files.iter().map(|(f, s)| (format!("{}/{f}", b.repo()), json!(s))).collect();
+    json!({"root": b.repo(), "head": head, "files": files})
+}
+
+#[test]
+fn a_turn_that_changed_code_through_bash_is_asked_to_track_it() {
+    let b = new_board();
+    b.add_session("s1");
+    b.report("hook.prompt", "s1", json!({"prompt": "This is clipping", "tree": tree(&b, "aaa", &[("src/old.rs", "1:10")])}));
+    let after = tree(&b, "aaa", &[("src/old.rs", "1:10"), ("src/charts.rs", "2:40")]);
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Fixed.", "tree": after}));
+    let block = out["block"].as_str().expect("an edit made by a script still blocks the stop");
+    assert!(block.contains("charts.rs") && !block.contains("old.rs"), "{block}");
+
+    b.report("hook.prompt", "s1", json!({"prompt": "What does this do?", "tree": tree(&b, "aaa", &[("src/charts.rs", "2:40")])}));
+    let read_only = b.report("hook.stop", "s1", json!({"last_message": "It draws bars.", "tree": tree(&b, "aaa", &[("src/charts.rs", "2:40")])}));
+    assert!(read_only.get("block").is_none(), "a turn that changed nothing isn't asked: {read_only}");
+}
+
+#[test]
+fn a_turn_that_only_committed_is_asked_to_track_it() {
+    let b = new_board();
+    b.add_session("s1");
+    b.report("hook.prompt", "s1", json!({"prompt": "Commit", "tree": tree(&b, "aaa", &[])}));
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Committed.", "git": {"commit": "fix(app): rows scroll"}, "tree": tree(&b, "bbb", &[])}));
+    let block = out["block"].as_str().expect("a commit with no task blocks the stop");
+    assert!(block.contains("a commit: fix(app): rows scroll"), "{block}");
+}
+
 #[test]
 fn a_review_alert_stays_until_the_pr_is_reviewed() {
     let b = new_board();
