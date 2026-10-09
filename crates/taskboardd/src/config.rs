@@ -40,6 +40,11 @@ pub struct FileConfig {
     pub devices: crate::devices::DevicesConfig,
     pub bits: crate::bits::BitsConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
+    pub feed: crate::feed::FeedConfig,
+    pub pr_builds: crate::prbuilds::PrBuildsConfig,
+    pub master: crate::breaks::MasterConfig,
+    /// The owner's commit emails: their own pushes (`prbuilds.rs`) and commits on a red default branch.
+    pub owner_emails: Vec<String>,
 }
 
 /// Alerts' desktop notifications.
@@ -311,8 +316,13 @@ pub struct JiraConfig {
     /// the Atlassian connector's tools, for a board with no token).
     pub via: String,
     /// The tools `claude -p` may use for Jira ("claude" via and the desk): the Atlassian connector's.
+    /// A server's name (`mcp__claude_ai_Atlassian_MCP`) allows all its tools.
     pub claude_tools: Vec<String>,
+    /// The model for Jira through Claude: the ops are mechanical, so a small one.
     pub claude_model: String,
+    /// Minutes between QA's checks of Jira for new comments. 0: every 5 minutes through the REST API,
+    /// every 30 through Claude (each check is one `claude -p`).
+    pub qa_poll_mins: u64,
     pub claude_budget_usd: String,
     pub claude_timeout_secs: u64,
     /// Ask for a ticket for every queued or working task in a project that ships PRs; the task
@@ -347,8 +357,9 @@ impl Default for JiraConfig {
             canceled: String::new(),
             products: BTreeMap::new(),
             via: "rest".into(),
-            claude_tools: vec!["mcp__claude_ai_Atlassian".into(), "mcp__atlassian".into()],
-            claude_model: "sonnet".into(),
+            claude_tools: vec!["mcp__claude_ai_Atlassian_MCP".into(), "mcp__atlassian".into()],
+            claude_model: "haiku".into(),
+            qa_poll_mins: 0,
             claude_budget_usd: "0.50".into(),
             claude_timeout_secs: 180,
             auto_ticket: false,
@@ -477,6 +488,10 @@ pub struct Config {
     pub devices: crate::devices::DevicesConfig,
     pub bits: crate::bits::BitsConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
+    pub feed: crate::feed::FeedConfig,
+    pub pr_builds: crate::prbuilds::PrBuildsConfig,
+    pub master: crate::breaks::MasterConfig,
+    pub owner_emails: Vec<String>,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -570,6 +585,10 @@ impl Config {
             devices: f.devices,
             bits: f.bits,
             reviewers: f.reviewers,
+            feed: f.feed,
+            pr_builds: f.pr_builds,
+            master: f.master,
+            owner_emails: f.owner_emails,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }
@@ -617,6 +636,15 @@ impl Config {
     /// Jira goes through headless Claude and the Atlassian connector instead of the REST API.
     pub fn jira_via_claude(&self) -> bool {
         self.jira.via.trim().eq_ignore_ascii_case("claude")
+    }
+    /// How often QA checks Jira for new comments, in seconds (`[jira] qa_poll_mins`).
+    pub fn qa_poll_secs(&self) -> f64 {
+        let mins = match self.jira.qa_poll_mins {
+            0 if self.jira_via_claude() => 30,
+            0 => 5,
+            m => m,
+        };
+        mins as f64 * 60.0
     }
     /// The owner's name with a possessive, for agent-facing text ("Sam's answers").
     pub fn owners(&self) -> String {

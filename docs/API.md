@@ -40,6 +40,9 @@ reader just changed doesn't vanish from under them).
   "work_hours": work_hours,
   "usage": usage | null,                        // null when no usage reading is known: the pill is hidden
   "accounts": [{"id", "label", "reason", "reauth": bool}],  // accounts needing the owner (missing scopes or a failed check): the amber status-bar pill
+  "master": [break],                            // open master breaks (GET /master): the "Master is red" banner lines
+  "pr_builds": {"stopped", "by", "at", "reason", …},  // PR builds stopped (GET /pr-builds): the "PR builds stopped" pill
+  "pr_feed": {"on", "healthy", "problem", "why", …},  // the PR feed's health (GET /prs/feed); the app shows a pill while it's unhealthy
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
   "sessions": [session_row],                    // live (not gone) Claude terminals, filtered by ?project
   "session_projects": [str],                    // sorted project names of all live Claude terminals (unfiltered); seeds the goals rail
@@ -73,12 +76,17 @@ the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an aler
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
 by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
 `POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
-outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on.
+outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on,
+never with the rest of its task's alerts. Raising it leaves the task's other alerts up; while it's up, new plain
+alerts for that task aren't raised (`POST /alerts` answers 409), though a PR-review alert still is. The app shows
+each urgent alert first, in a red row of its own; only the other alerts fold into "N tasks need your attention."
 
 Each alert's desktop notification (Midna `notify.send`) carries the id `taskboard-alert-<alert id>` and the snooze
 buttons from config.toml's `[alerts] snooze_mins` ("Snooze 15 min", "Snooze 30 min", "Snooze 1 hour" by default).
-The board waits for the owner's pick (`notify.response`) and a snooze button snoozes the alert; a click opens the
-app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
+The board keeps one waiter per alert on the owner's pick (`notify.response`, 600 s at a time) for as long as the
+alert is up, so a late Snooze still counts; each notification's pick counts once (`answered` on the alert holds the
+`notified_at` it answered), and a repeat moves the same waiter on to the new notification. A snooze button snoozes
+the alert; a click opens the app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
 #### `work_hours` (from `hours.state`)
 ```
@@ -573,6 +581,71 @@ grace), `failures_cmd` and `merge_strategy`.
 **`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
 `TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
 line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
+### The PR feed (`tb feed`)
+PR activity can come as events instead of the poll: any listener posts one event per PR change or build, and the
+board reads that one PR again and steps it (`feed.rs` documents the health rules). Events work whether or not
+`[feed] on` is set; with it, the board watches the feed's health.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
+| `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null}`; also `state.pr_feed`. |
+
+While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
+reviewer asks, nudges and swaps (the first ask on a PR still goes out outside the work hours); the PR poll runs (while
+healthy it rests unless `poll_while_healthy`); the board restarts the feed at `restart_mins` (1, 5, 15) after it went
+bad with `restart_cmd` (or by restarting its own `listener`), and raises the `pr-feed` alert if a restart fails or it's
+still bad 5 minutes after the last one. The alert clears when the feed is healthy again.
+
+A request for changes only counts (moves the PR to "Addressing comments", blocks the merge, is asked again by `tb pr
+addressed`) when the reviewer also wrote on the PR: started or spoke on a thread, a review summary included.
+
+### PR builds (`tb pr-builds`)
+A board-wide switch for when CI time is scarce, set only on the owner's word (`prbuilds.rs` documents it).
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int}`; also `state.pr_builds` (the app's "PR builds stopped" pill). |
+| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. **Response:** as `GET`. |
+
+While stopped: a build event (`POST /prs/event` with `kind: build`, a running `state` such as `started`) on one of the
+board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails`, queues a cancel
+(once per push). It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
+bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
+tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
+way to cancel alerts at once. A cancelled push is logged on its task. The PRs' checks count as passed: the build reads
+"Builds stopped" and the PR moves on to review.
+
+A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
+started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
+`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?}` says what happened.
+
+### Master breaks (`tb master`)
+An optional watch on each project's default branch (`[master.projects.<name>]`); `breaks.rs` documents the flow and
+the `breaks` table.
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. |
+| `GET /master/:ref` | | `tb master M3`. **Response:** the break. |
+| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?}` | `tb master M3 ours\|not-ours\|unsure`: the owner's word, never decided again. `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
+| `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
+
+`break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
+checks: [str], evidence: {checks: [{name, url, steps, tests}]}, suspects: [{sha, name, email, message, ours}], verdict:
+"ours"|"not_ours"|"unsure"|null, verdict_label, verdict_by: "commits"|"claude"|"fallback"|<who>, verdict_why,
+verdict_at, task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the open ones: the
+app's "Master is red" banner lines, with Open T<n> for the fix task.
+
+A failed check on the branch's head opens a break; a head whose checks all passed closes it. Suspects are the commits
+since the last green head the board saw (or the head alone), each `ours` when its author's email is in `owner_emails`.
+No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` decides from the evidence (`[master]
+fault_check`), or without it: every suspect the owner's makes it `ours`, else `unsure`. Only `ours` gets a fix task
+(queued, high priority) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
+branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
+again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
+
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
@@ -592,13 +665,13 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 | Path | Body | Notes |
 |---|---|---|
 | `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?, source?: "answer"\|"review_log"}` | Add an issue (source `you` unless it says `answer` or `review_log`, the external PR feed, which the app shows as "From the Review log"; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
-| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task (`tb backlog task`, `--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
-| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira; `tb backlog ticket`). |
-| `POST /backlog/:id/drop` | `{reason?}` | Won't do (`tb backlog drop --reason`). |
-| `POST /backlog/:id/reopen` | `{}` | Open it again (`tb backlog reopen`). |
+| `POST /backlog/:id/promote` | `{where: "board"\|"goal", who?}` | Make it a task (`--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. Only an open issue: 409 when it's already a task, dropped or otherwise closed. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
+| `POST /backlog/:id/ticket` | `{who?}` | Create a Jira ticket for it (only offered with Jira; only an open issue). |
+| `POST /backlog/:id/drop` | `{reason?, who?}` | Won't do; only an open issue (409 otherwise). |
+| `POST /backlog/:id/reopen` | `{who?}` | Open it again. |
 | `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none (`tb backlog move`; `goal_id` also takes a ref like `"G2"`). |
 | `POST /backlog/:id/note` | `{text}` | Add a note to its history (no app button). |
-| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
+| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3", reason?, who?}` | `tb backlog task\|ticket\|drop\|reopen B4 B5 …` (one or more issues; all change or none do), the Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. `who` (tb sends the terminal) is credited in each issue's history and the new tasks' origin; without it, the owner. **Response read:** `count: int`, `tasks` (the tasks made). |
 | `POST /backlog/plan` | `{ids: ["B1", …]}` | Plan waves for these open issues (Backlog page). With Claude it answers `state: "planning"` at once and plans on its own thread; poll `GET /backlog/plan`. **Response read:** the plan (below). |
 | `POST /backlog/goal` | `{name, waves: [{why, items: [{ref: "B1", after: ["B2"]}]}]}` | A new goal from a plan: one project's open issues, none in a goal yet. Each becomes a planned task in its wave (`tasks.wave`); `after` becomes the task's wait-for; the waves go in a pinned goal note. The goal doesn't run in order: a wave starts once every task in the waves before it is done. **Response read:** the goal detail. |
 
@@ -613,7 +686,7 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
-| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
+| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. **Response read:** `{alert}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
 | `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
@@ -661,7 +734,9 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 
 ## QA comments (optional)
 
-Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
+Off until Settings ▸ QA switches it on; needs Jira. Every `[jira] qa_poll_mins` (0: 5 minutes over REST, 30 through
+Claude) the board makes one search, `key in (<its tickets>) AND updated >= -<N>m`, and reads the new comments of the
+tickets it finds; with `via = "claude"` that whole check is one `claude -p`, told the current UTC time. `qa_comment`:
 ```
 {"id": int, "ref": "Q3", "jira_key": "PROJ-7", "comment_id": str, "url": str, "author": str|null,
  "verdict": "task"|"flag"|"none"|null,   // null: still being read
@@ -687,9 +762,14 @@ Optional: off while `[jira] site` or `project` is empty. Jobs (`J<n>`) run throu
 time. A new ticket is always searched for first: an open ticket of the type that already covers the work is linked
 instead of making another. With `auto_ticket`, every queued or working task in a project that ships PRs asks for a
 ticket and waits (`waiting`: "Waits for its Jira ticket…") until it has one, it says `--jira none`, or the ticket is
-linked by hand; a failed ask waits for `tb task set T<n> --jira new`. With `desk`, new tickets go to the Jira desk:
-one Claude terminal the board opens in Midna's Background group (an `agent` job, purpose `jira_desk`) and never
-closes. It gets one job at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
+linked by hand; a failed ask waits for `tb task set T<n> --jira new` (try again) or `--jira KEY` (link one), which its
+`waiting` line says, and raises an alert that says it too. A goal with no epic first takes an open epic that already
+covers its work (over REST: the open epic sharing the most of its name's words, stopwords aside, when they're at least
+half of either's; through Claude or the desk, the one it judges covers it), and only gets a new one when none fits.
+With `desk`, new tickets go to the Jira desk: one Claude terminal the board opens in Midna's Background group (an
+`agent` job, purpose `jira_desk`) and never closes. Its `--allowedTools` are `claude_tools` plus `Bash(tb jira:*)` and
+`Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
+at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
 
 | Request | Body | What |
 |---|---|---|
@@ -732,7 +812,11 @@ runs nothing else in its scope starts ("Waits while T13 runs alone").
 | `POST /goals/:id` | `{worktree_base: "origin/main"\|"off"}` | Each task starts in `<repo>/.claude/worktrees/T<n>`, made with `git fetch` and `git worktree add --detach` at the base. Once the task is finished (failed, or no open PR) and its terminal is gone, the board removes the worktree, or keeps one with uncommitted changes. |
 
 `tb propose` and `--task` items take a fourth `::` field, what the task waits for: `"title::detail::2::#1, T14"`, where
-`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one).
+`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one). A fifth field is the files
+the wave plans for the task, comma-separated: `"title::detail::2::::src/form.rs, src/form.css"` (an object item, and
+`tb.new_task` with a goal, take `files: [str]`; `tb task new --goal G3 --file src/form.rs`). They're kept in the task's
+context as `plan_files`; its handoff names them, and each wave mate's handoff lists them as the files that task owns
+(else the files it has touched). The handoff's wave mates are only the ones still queued or working.
 
 ## Devices
 
@@ -831,8 +915,9 @@ leave `pr_flow.swapped_off`), and a stand-in who hasn't reviewed yet is taken of
 off who asks for changes doesn't block the PR (`prflow::review_of` waives anyone in `swapped_off`), and one more
 reviewer is asked (`fill_in`, once per ask). With `[reviewers] swap = true`, an ask still open after
 `swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
-by the picker's choice (`swap`): only inside work hours and never while `asks::feed_holding` (the event feed's
-health gate) says to hold. Each change is logged on the task and the PR is read again.
+by the picker's choice (`swap`): only inside work hours and never while `feed::holding` (the event feed's
+health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
+except a PR's first ask outside work hours. Each change is logged on the task and the PR is read again.
 
 **The `ask` stage** (`[reviewers] ask_stage`, off by default). Once the owner has marked a green PR reviewed
 (`POST /tasks/:id/pr/reviewed`, "I reviewed it"), its phase is `ask` until reviewers are asked (`pr_flow.asked`).

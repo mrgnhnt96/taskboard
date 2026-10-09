@@ -202,7 +202,7 @@ pub fn due(app: &App, r: &Row) -> Result<(f64, f64)> {
 
 /// Who the PR's author is, in every form the board knows: never asked to review their own PR.
 fn selves(app: &App, repo: Option<&str>, rec: &Value) -> Vec<String> {
-    let mut out: Vec<String> = app.cfg.reviewers.me.iter().map(|s| s.to_lowercase()).collect();
+    let mut out: Vec<String> = app.cfg.reviewers.me.iter().chain(app.cfg.owner_emails.iter()).map(|s| s.to_lowercase()).collect();
     if let Some(a) = rec["author"].as_str().filter(|a| !a.is_empty()) {
         out.push(a.to_lowercase());
     }

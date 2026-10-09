@@ -445,7 +445,7 @@ fn setup_block(t: &Row, g: Option<&Row>) -> Vec<String> {
     vec![format!("Set up (every task in this goal does this):\n{}", clip(fill_setup(text, t).trim(), 1500))]
 }
 
-/// The task's wave: where it sits, who runs beside it (and the files each has touched), whether the
+/// The task's wave: where it sits, who still runs beside it (and the files each owns or has touched), whether the
 /// goal stops after it, and what comes next.
 fn wave_section(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> {
     let (Some(g), Some(n)) = (g, t.i("wave")) else { return Ok(vec![]) };
@@ -455,14 +455,29 @@ fn wave_section(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> {
     let w = &wl[pos];
     let name = w["name"].as_str().filter(|s| !s.is_empty()).map(|s| format!(" ({s})")).unwrap_or_default();
     let mut lines = vec![format!("This task is in wave {} of {}{name}.", pos + 1, wl.len())];
-    let mates: Vec<&Row> = tasks.iter().filter(|m| m.i("wave") == Some(n) && m.id() != t.id()).collect();
+    let own = str_list(board::task_context(t).get("plan_files"));
+    if !own.is_empty() {
+        lines.push(format!("The wave plans these files for this task: {}.", own.iter().take(10).cloned().collect::<Vec<_>>().join(", ")));
+    }
+    // Only the mates still to run or running; a done one has nothing left to collide with.
+    let mates: Vec<&Row> = tasks
+        .iter()
+        .filter(|m| m.i("wave") == Some(n) && m.id() != t.id() && matches!(m.s("status"), Some("queued" | "working" | "needs")))
+        .collect();
     if mates.is_empty() {
         lines.push("Nothing else runs in this wave.".into());
     } else {
         lines.push("These run side by side with it, so keep to this task's files and leave theirs alone:".into());
         for m in mates.iter().take(8) {
-            let files: Vec<String> = str_list(board::task_context(m).get("files")).into_iter().rev().take(5).collect();
-            let owns = if files.is_empty() { String::new() } else { format!(", has touched {}", files.join(", ")) };
+            // The files the wave planned for the mate, else the ones it has touched so far.
+            let ctx = board::task_context(m);
+            let plan: Vec<String> = str_list(ctx.get("plan_files")).into_iter().take(5).collect();
+            let owns = if !plan.is_empty() {
+                format!(", owns {}", plan.join(", "))
+            } else {
+                let files: Vec<String> = str_list(ctx.get("files")).into_iter().rev().take(5).collect();
+                if files.is_empty() { String::new() } else { format!(", has touched {}", files.join(", ")) }
+            };
             lines.push(format!("- {} “{}” ({}{owns})", rf("task", m.id()), short(&m.st("title"), 60), m.st("status")));
         }
     }

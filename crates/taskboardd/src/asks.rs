@@ -282,6 +282,11 @@ fn stage_one(app: &App, t: &Row) -> Result<bool> {
     if agent_asks(app, t)? {
         return Ok(false);
     }
+    let first = app.db.count("SELECT COUNT(*) FROM review_asks WHERE task_id = ?", crate::p![t.id()])? == 0;
+    if let Some(why) = crate::feed::holding(app, first) {
+        app.info(format!("reviewers: not asking for {} yet: {why}", rf("task", t.id())));
+        return Ok(false);
+    }
     let f = flow(t);
     if f.s("ask_retry_at").is_some_and(|r| r > now_iso().as_str()) {
         return Ok(false);
@@ -361,12 +366,6 @@ pub fn after_reviewed(app: &App, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// The event feed (#3) says the PR reads can't be trusted right now: the sweep then swaps nobody.
-/// False until the feed's health gate is wired in here.
-pub fn feed_holding(_app: &App) -> bool {
-    false
-}
-
 /// What a reviewer's host state says about an ask: their answer, if they've reviewed.
 fn answer_of(rec: &Value, user: &str) -> Option<String> {
     rec["reviewers"].as_array()?.iter().find(|r| r["user"].as_str().is_some_and(|u| u.eq_ignore_ascii_case(user))).and_then(|r| {
@@ -386,7 +385,8 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
 ///   and one more reviewer is asked, once.
 /// - Swap (`[reviewers] swap`): an ask still unanswered after `swap_after_mins` work minutes is
 ///   replaced through the host by the picker's choice. Only inside work hours, and never while the
-///   event feed is holding ([`feed_holding`]).
+///   event feed is holding (`feed::holding`; the stand-in rules and the board's own later asks wait
+///   for it too, while the first ask of a PR still goes out outside work hours).
 pub fn sweep(app: &App) -> Result<()> {
     app.db.tx(|| crate::botrun::note_runs(app))?;
     stage(app)?;
@@ -433,6 +433,9 @@ fn answered(app: &App, a: &Row, state: &str, ans: &str) -> Result<()> {
 
 /// Came back and fill-in, for the asks swapped off this task's PR.
 fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
+    if crate::feed::holding(app, false).is_some() {
+        return Ok(false);
+    }
     let pr = pr_of(t)?;
     let num = pr.num;
     let mut changed = false;
@@ -487,7 +490,7 @@ fn stand_ins(app: &App, t: &Row, rec: &Value) -> Result<bool> {
 /// Swaps each reviewer who hasn't answered within `swap_after_mins` work minutes.
 fn swap_slow(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     let cfg = &app.cfg.reviewers;
-    if !cfg.swap || feed_holding(app) || !crate::hours::is_open(app) || !matches!(t.s("pr_phase"), Some("review") | Some("rereview")) {
+    if !cfg.swap || crate::feed::holding(app, false).is_some() || !crate::hours::is_open(app) || !matches!(t.s("pr_phase"), Some("review") | Some("rereview")) {
         return Ok(false);
     }
     let pr = pr_of(t)?;

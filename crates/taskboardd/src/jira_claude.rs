@@ -48,11 +48,13 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
         "comment" => format!("Add this comment to {key}, as it is:\n{}", s("comment")),
         "create" => format!("{}\n\nAnswer key: the ticket's key, status: its status's name, found: true when it was already there, product: the product you picked (if you picked one).", s("brief")),
         "comments" => format!(
-            "For each of these tickets: {}, list its comments made in the last {} minutes (none is fine). Answer comments: one \
+            "Make exactly one JQL search, with this query as it is: {}\nThen, for each ticket it finds, read its comments and keep \
+             the ones created at or after {} (it's {} UTC now; none is fine). Don't read any other ticket. Answer comments: one \
              each, with key, id (the comment's id), created (its ISO time), author (display name), author_account_id, \
              author_email (when shown) and text (the comment as plain text).",
-            s("keys"),
-            input["minutes"].as_i64().unwrap_or(15)
+            s("jql"),
+            s("after"),
+            s("now")
         ),
         "comment_get" => format!(
             "Read comment {} on {key}. Answer author (display name), author_account_id, author_email (when shown) and text \

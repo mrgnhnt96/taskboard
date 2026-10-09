@@ -24,6 +24,10 @@ claude_projects = "~/.claude/projects"
 # directory and off for any other (so a test board never opens terminals). env TASKBOARD_RUNNER=1|0
 # runner = true
 
+# Your commit emails: a push of yours is cancelled while PR builds are stopped (`tb pr-builds stop`),
+# and a red default branch ([master]) is yours when your commits are among its suspects.
+# owner_emails = ["alex@acme.dev"]     # example
+
 [intervals]
 runner = 5.0
 spool = 10.0
@@ -87,6 +91,55 @@ azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, 
 # expected_wait_mins = 90             # how long to wait for them
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
+
+# PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
+# relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
+# the board reads that PR again. Events refresh their PR whether or not this is on. With `on`, the
+# board watches the feed's health: stuck (heartbeats stopped) or silent (nothing at all inside the
+# work hours) holds reviewer asks, nudges and swaps, brings back the poll, restarts the feed at
+# restart_mins and raises the `pr-feed` alert when that doesn't help. See docs/API.md ("The PR feed").
+[feed]
+on = false
+listener = ""                        # a command the board runs and keeps running (gets TASKBOARD_URL, TB_EVENT_URL)
+restart_cmd = ""                     # example: "launchctl kickstart -k gui/501/com.me.pr-listener" (empty: restart the listener)
+stuck_secs = 180.0                   # no heartbeat (POST /prs/heartbeat) this long, once the feed has sent one
+silent_secs = 3600.0                 # no event or heartbeat this long inside the work hours
+restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the board restarts it
+poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
+
+# PR builds stopped (`tb pr-builds stop`, on your word): every build of your PRs and your pushes is
+# cancelled when the board hears of it (a build event on the feed, or a running check on a poll), and
+# the PRs' checks count as passed. A cancel that fails is tried again after each of retry_secs, then
+# alerts. See docs/API.md ("PR builds").
+[pr_builds]
+retry_secs = [0.0, 10.0, 30.0, 60.0, 120.0]
+timeout_secs = 30.0
+
+# The command that cancels builds, by CI provider (github, bitbucket, azure, or the `provider` a
+# build event names). Run with `sh -c` and TB_PROVIDER, TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD,
+# TB_BRANCH, TB_BUILD_URL, TB_BUILD_ID; exit 0 once they're cancelled. Unset for github and
+# bitbucket: the PR host's own (gh run cancel, Pipelines' stopPipeline).
+[pr_builds.cancel]
+# azure = "az pipelines runs cancel --id \"$TB_BUILD_ID\""   # example
+
+# Master breaks: watch each listed project's default branch. A failed check on its head opens a
+# break (M<n>, `tb master`); it's yours when your commits (owner_emails) are among the suspects and
+# a headless Claude agrees. Only yours gets a fix task and an urgent alert; green closes it. The app
+# shows "Master is red". See docs/API.md ("Master breaks").
+[master]
+every_mins = 5.0                     # how often each branch is read
+commits = 10                         # how many of its latest commits are read for suspects
+fault_check = true                   # ask `claude -p` whether one of your commits broke it
+model = "sonnet"
+budget_usd = "0.50"
+timeout_secs = 180
+recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished and it's still red
+
+# One table per watched project, by its name. Every key is optional.
+# [master.projects.webapp]
+# branch = "main"                     # default: main
+# repo = "acme/webapp"                # default: from the project's origin remote
+# host = "github"                     # github or bitbucket; default: from the remote
 
 # Context limits for the board's agents. `tb limits` changes them on the board; these are where it
 # starts. 0 turns one off.
@@ -155,8 +208,10 @@ in_review = "In Review"
 done = ""                            # status for a finished task without a PR; empty = leave it
 merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
 via = "rest"                         # "rest" (the API token) or "claude" (the Atlassian connector through claude -p)
-claude_tools = ["mcp__claude_ai_Atlassian", "mcp__atlassian"]   # the connector's tools, for via = "claude" and the desk
-claude_model = "sonnet"
+claude_tools = ["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian"]   # the connector's tools, for via = "claude" and the desk:
+                                     # the claude.ai Atlassian connector, and a local Atlassian MCP server
+claude_model = "haiku"               # Jira ops are mechanical: a small model
+qa_poll_mins = 0                     # minutes between QA's checks for new comments; 0 = 5 over REST, 30 through Claude
 claude_budget_usd = "0.50"
 claude_timeout_secs = 180
 auto_ticket = false                  # every queued or working task in a project with PRs gets a ticket, and waits for it

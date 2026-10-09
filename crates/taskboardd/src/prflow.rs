@@ -513,6 +513,13 @@ pub struct Review {
     pub requesters: Vec<(String, String)>,
 }
 
+/// A request for changes only counts when it comes with comments: the reviewer started or spoke on
+/// a thread (any, resolved too). A record without threads (older reads) takes every request.
+fn commented(rec: &Value, user: &str) -> bool {
+    let Some(threads) = rec["threads"].as_array() else { return true };
+    !user.is_empty() && threads.iter().any(|t| t["author"].as_str() == Some(user) || t["last_author"].as_str() == Some(user))
+}
+
 pub fn review_of(f: &Row, rec: &Value) -> Review {
     let decision = rec["review_decision"].as_str().unwrap_or("").to_string();
     let Some(list) = rec["reviewers"].as_array() else {
@@ -520,9 +527,12 @@ pub fn review_of(f: &Row, rec: &Value) -> Review {
     };
     let off = swapped_off(f);
     let on: Vec<&Value> = list.iter().filter(|r| !off.iter().any(|o| r["user"].as_str() == Some(o.as_str()))).collect();
-    let requesters: Vec<(String, String)> =
-        on.iter().filter(|r| r["state"] == "changes").map(|r| (r["user"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string())).collect();
-    let changes = !requesters.is_empty() || (decision == "CHANGES_REQUESTED" && list.is_empty());
+    let requesters: Vec<(String, String)> = on
+        .iter()
+        .filter(|r| r["state"] == "changes" && commented(rec, r["user"].as_str().unwrap_or("")))
+        .map(|r| (r["user"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()))
+        .collect();
+    let changes = !requesters.is_empty() || (decision == "CHANGES_REQUESTED" && list.is_empty() && rec["comments"].as_i64().unwrap_or(1) > 0);
     let approvals = on.iter().filter(|r| r["state"] == "approved").count() as i64;
     let decision = match decision.as_str() {
         "CHANGES_REQUESTED" if !changes => String::new(),
@@ -562,7 +572,8 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         _ => {}
     }
     let f = flow(t);
-    let skipped = checks_skipped(&f, rec).is_some();
+    // While the board's PR builds are stopped (`prbuilds.rs`), checks count as passed.
+    let skipped = checks_skipped(&f, rec).is_some() || crate::prbuilds::stopped(app);
     if !skipped && !failing(&f, rec).is_empty() {
         return "fix".into();
     }
@@ -740,7 +751,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     let phase = phase_of(app, &probe(t, &f), rec);
     let old = t.st("pr_phase");
     let phase_changed = phase != old;
-    let build = if checks_skipped(&f, rec).is_some() {
+    let build = if crate::prbuilds::stopped(app) {
+        "Builds stopped"
+    } else if checks_skipped(&f, rec).is_some() {
         "Checks skipped"
     } else if !str_list(&rec["failed"]).is_empty() && failing(&f, rec).is_empty() {
         "Failed, not this PR"

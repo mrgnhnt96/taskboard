@@ -35,10 +35,21 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
 - carries over tasks with their log (handoffs, checkpoints, notes) and conversation ids, goals with
   their notes and waves, the backlog and its history, PR links and stages, attachments, terminals
   and their history, QA comments, and the owner's settings (work hours, PR flows, …);
+- carries each goal's setup (`task_setup`) and each task's PR plan (`ships_pr`, `no_pr`, the
+  stacked-on task `pr_after`);
+- rebuilds each PR's host and link from its link, its repo, or the project's remote
+  (`[pr_body] remote`, GitHub or Bitbucket), so open PRs are watched again; a PR it can't place is
+  listed;
+- maps the device pool (`devices`, `device_loans`, a task's `device_need`, `goal_devices`) and the
+  bits (`bits`, a task's or goal's `bits`, link tables) into the board's own tables, and marks the
+  old Jira desk terminal (`sessions.jira_desk`) as the desk;
 - keeps every T, G and B number, and new ones carry on after the highest;
-- leaves out the old board's jobs (its pending work would run again) and its alerts;
-- keeps old tables this board has no table for (reviewers and review asks, bits, devices, master
-  breaks, …) whole in `settings` as `import.<table>`, and lists them;
+- leaves out the old board's jobs (its pending work would run again), its alerts, and its other
+  running state (`bridge_*`, `dispatch_seen:*`, `usage_guard_handled:*`, `review_round:*`, …);
+- keeps old tables this board has no table for yet (reviewers and review asks, master breaks, …)
+  whole in `settings` as `import.<table>`, and lists them;
+- counts the rows it actually wrote, and lists every old row it skipped (a clash, an unknown
+  device, a device need the board can't take) with why;
 - refuses a board that already has tasks, goals or backlog issues (`--data <empty folder>` imports
   somewhere else).
 

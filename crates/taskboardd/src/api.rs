@@ -319,9 +319,9 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["backlog", id]) => issue_detail(app, iid(id)?),
         ("POST", ["backlog", id]) => app.db.tx(|| patch_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "promote"]) => app.db.tx(|| promote(app, iid(id)?, body)),
-        ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?)),
+        ("POST", ["backlog", id, "ticket"]) => app.db.tx(|| ticket(app, iid(id)?, body)),
         ("POST", ["backlog", id, "drop"]) => app.db.tx(|| drop_issue(app, iid(id)?, body)),
-        ("POST", ["backlog", id, "reopen"]) => app.db.tx(|| reopen_issue(app, iid(id)?)),
+        ("POST", ["backlog", id, "reopen"]) => app.db.tx(|| reopen_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "move"]) => app.db.tx(|| move_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "note"]) => {
             let i = iid(id)?;
@@ -379,6 +379,12 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             }));
             Ok(crate::limits::state(app))
         }
+        ("GET", ["prs", "feed"]) => Ok(crate::feed::health(app)),
+        ("POST", ["prs", "event"]) => crate::feed::intake(app, body),
+        ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app)),
+        (_, ["master", rest @ ..]) => crate::breaks::route(app, method, rest, body),
+        ("GET", ["pr-builds"]) => Ok(crate::prbuilds::status(app)),
+        ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
             Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at}))
@@ -523,6 +529,9 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         "keep_awake": app.shared.lock().midna_keep_awake.clone(),
         "accounts": accounts::attention(&app.cfg),
         "prs_checked_at": app.shared.lock().prs_checked_at,
+        "pr_feed": crate::feed::health(app),
+        "pr_builds": crate::prbuilds::status(app),
+        "master": crate::breaks::banner(app)?,
         "projects": projects::list_projects(app)?, "sessions": sessions, "session_projects": sp, "goals": goals,
         "columns": Value::Object(out_cols), "counts": Value::Object(counts), "planned": planned,
     });
@@ -1926,17 +1935,31 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
     issue_detail(app, id)
 }
 
+/// Who a backlog action is credited to in the history: the terminal or agent tb names in `who`, else the owner.
+fn issue_actor(body: &Value) -> String {
+    let w = one_line(&body_str(body, "who"), 80);
+    if w.is_empty() { OWNER.to_string() } else { w }
+}
+
+/// Refuses an action that only makes sense on an open issue, the same check `/backlog/bulk` makes.
+fn need_open(b: &Row) -> Result<()> {
+    if b.s("state") == Some("open") {
+        return Ok(());
+    }
+    if let (Some("task"), Some(t)) = (b.s("state"), b.i("task_id")) {
+        return err(409, format!("It's already {}.", rf("task", t)));
+    }
+    err(409, format!("{} isn't open any more, so nothing changed.", rf("issue", b.id())))
+}
+
 pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let who = issue_actor(body);
     let where_ = { let w = body_str(body, "where"); if w.is_empty() { "board".to_string() } else { w } };
     if where_ != "board" && where_ != "goal" {
         return err(400, "Make it a task on the board or in its goal.");
     }
     let b = board::get_issue(app, id)?;
-    if b.s("state") == Some("task") {
-        if let Some(t) = b.i("task_id") {
-            return err(409, format!("It's already {}.", rf("task", t)));
-        }
-    }
+    need_open(&b)?;
     let planned = where_ == "goal" && b.i("goal_id").is_some();
     let detail = format!("{}\nSee how it was found before changing anything.", b.s("detail").filter(|d| !d.is_empty()).unwrap_or(&b.st("title")));
     let c = new_task(
@@ -1946,8 +1969,8 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
                 "priority": body.get("priority").cloned().unwrap_or(json!("normal")),
                 "pickup": body.get("pickup").cloned().unwrap_or(json!({"mode": "queue"})),
                 "latest": format!("From the backlog: {}.", board::issue_from_line(&b)),
-                "origin": {"from": format!("Backlog {}: {}", rf("issue", id), b.st("title")), "by": OWNER}}),
-        OWNER,
+                "origin": {"from": format!("Backlog {}: {}", rf("issue", id), b.st("title")), "by": who}}),
+        &who,
         Some(&format!("Added from the backlog ({}){}", rf("issue", id), if planned { " as planned" } else { "" })),
     )?;
     let cref = c["ref"].as_str().unwrap_or("").to_string();
@@ -1960,39 +1983,40 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
             if b.i("goal_id").is_some() { "" } else { " with no goal" }
         )
     };
-    board::add_issue_event(app, id, OWNER, "task", &text, None)?;
+    board::add_issue_event(app, id, &who, "task", &text, None)?;
     Ok(json!({"issue": issue_detail(app, id)?, "task": task_detail(app, c["id"].as_i64().unwrap_or(0))?}))
 }
 
-fn ticket(app: &App, id: i64) -> Result<Value> {
+fn ticket(app: &App, id: i64, body: &Value) -> Result<Value> {
     if !app.cfg.jira_on() {
         return err(409, "Jira isn't set up. Add a [jira] section to the board's config.toml.");
     }
     let b = board::get_issue(app, id)?;
+    need_open(&b)?;
     if let Some(k) = b.s("jira_key").filter(|k| !k.is_empty()) {
         return err(409, format!("It already has {k}."));
     }
     jira::request_create_for_issue(app, &b)?;
     app.db.update("issues", &json!(id), fields!["state" => "ticket", "updated_at" => now_iso()])?;
-    board::add_issue_event(app, id, OWNER, "ticket", "Asked Jira for a ticket", None)?;
+    board::add_issue_event(app, id, &issue_actor(body), "ticket", "Asked Jira for a ticket", None)?;
     issue_detail(app, id)
 }
 
 fn drop_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
-    board::get_issue(app, id)?;
+    need_open(&board::get_issue(app, id)?)?;
     app.db.update("issues", &json!(id), fields!["state" => "drop", "updated_at" => now_iso()])?;
     let reason = one_line(&body_str(body, "reason"), 300);
-    board::add_issue_event(app, id, OWNER, "drop", &format!("Closed as won’t do{}", if reason.is_empty() { String::new() } else { format!(": {reason}") }), None)?;
+    board::add_issue_event(app, id, &issue_actor(body), "drop", &format!("Closed as won’t do{}", if reason.is_empty() { String::new() } else { format!(": {reason}") }), None)?;
     issue_detail(app, id)
 }
 
-fn reopen_issue(app: &App, id: i64) -> Result<Value> {
+fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     let b = board::get_issue(app, id)?;
     if b.s("state") == Some("open") {
         return err(409, "It's already open.");
     }
     app.db.update("issues", &json!(id), fields!["state" => "open", "updated_at" => now_iso()])?;
-    board::add_issue_event(app, id, OWNER, "note", "Opened again", None)?;
+    board::add_issue_event(app, id, &issue_actor(body), "note", "Opened again", None)?;
     issue_detail(app, id)
 }
 
@@ -2042,7 +2066,7 @@ fn move_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     app.db.update("issues", &json!(id), f)?;
     let name = |x: &Option<Row>| x.as_ref().map(|g| g.st("name")).unwrap_or_else(|| "no goal".into());
-    board::add_issue_event(app, id, OWNER, "move", &format!("Moved from {} to {}", name(&old), name(&new)), None)?;
+    board::add_issue_event(app, id, &issue_actor(body), "move", &format!("Moved from {} to {}", name(&old), name(&new)), None)?;
     for x in [&old, &new].into_iter().flatten() {
         app.db.x("UPDATE tasks SET ctx_version = COALESCE(ctx_version, 1) + 1 WHERE goal_id = ? AND status != 'done'", p![x.id()])?;
     }
@@ -2089,7 +2113,7 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
             match action.as_str() {
                 "task" => tasks.push(promote(app, *id, body)?["task"].clone()),
                 "ticket" => {
-                    ticket(app, *id)?;
+                    ticket(app, *id, body)?;
                 }
                 "drop" => {
                     drop_issue(app, *id, body)?;
@@ -2099,25 +2123,25 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
                 }
                 "defer" => {
                     app.db.update("issues", &json!(id), fields!["state" => "defer", "updated_at" => now_iso()])?;
-                    board::add_issue_event(app, *id, OWNER, "note", "Deferred: not for now", None)?;
+                    board::add_issue_event(app, *id, &issue_actor(body), "note", "Deferred: not for now", None)?;
                 }
                 "priority" => {
                     app.db.update("issues", &json!(id), fields!["priority" => priority, "updated_at" => now_iso()])?;
-                    board::add_issue_event(app, *id, OWNER, "note", &format!("Priority set to {}", priority.to_uppercase()), None)?;
+                    board::add_issue_event(app, *id, &issue_actor(body), "note", &format!("Priority set to {}", priority.to_uppercase()), None)?;
                 }
                 "goal" => {
                     move_issue(app, *id, body)?;
                     let gid = opt_goal(body, "goal_id")?.unwrap_or(0);
                     let wave = triage::last_wave(app, gid)?;
                     let high = triage::fields(&b)["priority"] == "p1";
-                    let made = promote(app, *id, &json!({"where": "goal", "priority": if high { "high" } else { "normal" }}))?;
+                    let made = promote(app, *id, &json!({"where": "goal", "priority": if high { "high" } else { "normal" }, "who": body.get("who")}))?;
                     if let (Some(w), Some(tid)) = (wave, made["task"]["id"].as_i64()) {
                         app.db.update("tasks", &json!(tid), fields!["wave" => w])?;
                     }
                     tasks.push(made["task"].clone());
                 }
                 _ => {
-                    reopen_issue(app, *id)?;
+                    reopen_issue(app, *id, body)?;
                 }
             }
             count += 1;

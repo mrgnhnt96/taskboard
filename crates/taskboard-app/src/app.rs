@@ -853,7 +853,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
 /// One banner line (`renderBanner`) or alerts-dialog row: what it says and its buttons.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BannerRow {
-    /// "down" (the board isn't answering) or "alert".
+    /// "down" (the board isn't answering), "urgent" (an urgent alert, red, in a row of its own) or "alert".
     pub kind: &'static str,
     pub text: String,
     /// The small "5m ago" after the text.
@@ -878,12 +878,20 @@ fn alert_buttons(a: &Value) -> Vec<(&'static str, String)> {
     b
 }
 
-/// `renderBanner`: the "isn't answering" line, then either one line per alert or, with more
-/// than one, a single "N tasks need your attention." line with Show all.
+fn alert_kind(a: &Value) -> &'static str {
+    if a["urgent"] == true { "urgent" } else { "alert" }
+}
+
+/// `renderBanner`: the "isn't answering" line, a line for each urgent alert, then either one line per other
+/// alert or, with more than one, a single "N tasks need your attention." line with Show all.
 pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
     let mut out = Vec::new();
     if let Some(e) = down.filter(|e| !e.is_empty()) {
         out.push(BannerRow { kind: "down", text: format!("{e} Trying again every few seconds."), ago: None, buttons: Vec::new() });
+    }
+    let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.iter().cloned().partition(|a| a["urgent"] == true);
+    for a in &urgent {
+        out.push(BannerRow { kind: "urgent", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) });
     }
     if alerts.len() > 1 {
         out.push(BannerRow {
@@ -893,7 +901,7 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
             buttons: vec![("alerts-open", "Show all".into())],
         });
     } else {
-        for a in alerts {
+        for a in &alerts {
             out.push(BannerRow { kind: "alert", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) });
         }
     }
@@ -903,7 +911,7 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
 /// `alertsDialogHtml`: (title, rows); its foot is "Dismiss all" while any alert can be dismissed. (For the dialog in modals.rs.)
 pub fn alerts_dialog_view(alerts: &[Value]) -> (String, Vec<BannerRow>) {
     let title = format!("{} your attention", fmt::plural(alerts.len() as i64, "task needs", "tasks need"));
-    let rows = alerts.iter().map(|a| BannerRow { kind: "alert", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }).collect();
+    let rows = alerts.iter().map(|a| BannerRow { kind: alert_kind(a), text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }).collect();
     (title, rows)
 }
 
@@ -1057,6 +1065,11 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
     for p in crate::install::in_the_way() {
         out.push(bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)).child(div().flex_1().min_w_0().child(p)).into_any_element());
     }
+    out.extend(ui::prwatch::banner(m, t, cx));
+    let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.into_iter().partition(|a| a["urgent"] == true);
+    for a in &urgent {
+        out.push(alert_row(t, a, cx).into_any_element());
+    }
     if alerts.len() > 1 {
         let r = rows.iter().find(|r| r.kind == "alert").cloned();
         if let Some(r) = r {
@@ -1093,10 +1106,12 @@ fn alert_text(t: &Theme, r: &BannerRow) -> Div {
 /// One alert: its text and age, "Open T12" and Dismiss. Also used by the alerts dialog.
 pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
     let id = s(a, "id").to_string();
-    let r = BannerRow { kind: "alert", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) };
+    let r = BannerRow { kind: alert_kind(a), text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) };
     let (task, goal) = (fmt::opt_s(a, "task").map(str::to_string), fmt::opt_s(a, "goal").map(str::to_string));
-    bar(t.down_soft, t.down, t.down_line)
-        .child(kit::dot(t.down, 8.))
+    // An urgent alert is solid red; the others are red on the soft red.
+    let urgent = r.kind == "urgent";
+    let row = if urgent { bar(t.down, t.on_accent, t.down).font_weight(FontWeight::SEMIBOLD) } else { bar(t.down_soft, t.down, t.down_line) };
+    row.child(kit::dot(if urgent { t.on_accent } else { t.down }, 8.))
         .child(alert_text(t, &r))
         .children(r.buttons.iter().filter(|(act, _)| *act == "alert-open").map(|(_, label)| {
             let (task, goal) = (task.clone(), goal.clone());
@@ -1106,7 +1121,9 @@ pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
         }))
         .child({
             let text = r.text.clone();
-            banner_btn(t, SharedString::from(format!("alert-copy-{id}")), "Copy", false).on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx)))
+            banner_btn(t, SharedString::from(format!("alert-copy-{id}")), "Copy", false)
+                .when(urgent, |d| d.text_color(t.on_accent))
+                .on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx)))
         })
         .when(r.buttons.iter().any(|(act, _)| *act == "alert-dismiss"), |d| {
             d.child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
@@ -1165,6 +1182,7 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
     if let Some(u) = st.get("usage").and_then(usage_view) {
         bar = bar.child(usage_pill(t, &u));
     }
+    bar = bar.children(ui::prwatch::pills(&st, t));
     bar = bar.child(div().flex_1());
     if let Some(h) = hooks_item(m, t, cx) {
         bar = bar.child(h);
@@ -1324,9 +1342,23 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn urgent_alerts_get_rows_of_their_own_first() {
+        let a = |id: &str, urgent: bool| json!({"id": id, "text": format!("Alert {id}"), "at": "2026-10-08T10:00:00Z", "urgent": urgent, "task": "T3"});
+        let rows = banner_view(None, &[a("n1", false), a("u1", true), a("n2", false), a("u2", true)]);
+        let kinds: Vec<&str> = rows.iter().map(|r| r.kind).collect();
+        assert_eq!(kinds, vec!["urgent", "urgent", "alert"]);
+        assert_eq!((rows[0].text.as_str(), rows[1].text.as_str()), ("Alert u1", "Alert u2"));
+        assert!(rows[2].text.starts_with("2 tasks need"), "only the other alerts fold: {}", rows[2].text);
+        let rows = banner_view(None, &[a("u1", true), a("n1", false)]);
+        assert_eq!(rows.iter().map(|r| r.kind).collect::<Vec<_>>(), vec!["urgent", "alert"]);
+        assert_eq!(rows[1].text, "Alert n1");
+    }
+
+    #[::core::prelude::v1::test]
     fn urgent_alerts_cant_be_dismissed() {
         let urgent = json!({"id": "a1", "text": "Main is red", "at": "2026-10-08T10:00:00Z", "urgent": true, "task": "T3"});
         let rows = banner_view(None, &[urgent.clone()]);
+        assert_eq!(rows[0].kind, "urgent");
         assert!(rows[0].buttons.iter().all(|(a, _)| *a != "alert-dismiss"));
         assert!(rows[0].buttons.iter().any(|(a, _)| *a == "alert-open"));
         assert!(super::alert_stays(&urgent));
