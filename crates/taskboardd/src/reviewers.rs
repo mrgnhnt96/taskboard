@@ -115,8 +115,10 @@ pub struct ReviewersConfig {
     pub turn_gap_hours: f64,
     /// Speed by median review time: [[work minutes up to, speed], …], fastest first.
     pub speed_by_minutes: Vec<(f64, f64)>,
-    /// The speed of someone slower than the table's last step.
+    /// The speed of someone slower than the table's last step (but under `slow_cap_mins`).
     pub slow_speed: f64,
+    /// The speed of someone whose median is `slow_cap_mins` or more: mostly non-answers.
+    pub too_slow: f64,
     /// The speed of someone who hasn't reviewed yet.
     pub no_speed_yet: f64,
     /// The owner's own names, emails and host ids: never picked (besides the PR's author).
@@ -158,7 +160,7 @@ pub struct ReviewersConfig {
     pub speed_days: f64,
     pub speed_asks: usize,
     /// An ask swapped off for not reviewing counts as this many work minutes, and one still open as
-    /// its time so far, up to this.
+    /// its time so far, up to this. A median this slow is `too_slow`.
     pub slow_cap_mins: f64,
     /// Away on Slack with no post today is quiet only from this time where they are; before it
     /// they're starting their day.
@@ -175,8 +177,9 @@ impl Default for ReviewersConfig {
             history_months: 6,
             min_commits: 5,
             turn_gap_hours: 4.0,
-            speed_by_minutes: vec![(30.0, 3.0), (60.0, 2.0), (120.0, 1.5), (240.0, 1.0), (480.0, 0.75)],
+            speed_by_minutes: vec![(30.0, 3.0), (60.0, 2.0), (120.0, 1.5), (240.0, 1.0)],
             slow_speed: 0.5,
+            too_slow: 0.05,
             no_speed_yet: 1.0,
             me: vec![],
             sync_every_hours: 12.0,
@@ -315,10 +318,12 @@ pub struct Person {
     pub commits: Option<i64>,
 }
 
-/// A login (`ana-gh`, `@ana-gh`) or a Bitbucket `{uuid}`: one word, not an email.
-pub fn looks_like_host_id(s: &str) -> bool {
-    let s = s.trim().trim_start_matches('@');
-    (s.starts_with('{') && s.ends_with('}') && s.len() > 2) || (!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+/// Clearly a host account, not a nickname: `@ana-gh` or a Bitbucket `{uuid}`. A bare word (`ana-gh`,
+/// `Nick`) could be either, so it's only a name.
+pub fn clearly_host_id(s: &str) -> bool {
+    let s = s.trim();
+    let login = |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (s.starts_with('{') && s.ends_with('}') && s.len() > 2) || s.strip_prefix('@').is_some_and(login)
 }
 
 /// Whether a reviewer who shares only a name with `p` is them: the owner adding them by name
@@ -448,7 +453,7 @@ pub fn display(r: &Row) -> String {
 /// The median of a reviewer's recent review times, in work minutes: their last `speed_asks` asks
 /// from the last `speed_days` that say how fast they are. An answered ask counts its time; one
 /// swapped off for not reviewing counts as `slow_cap_mins`; one still open counts its time so far
-/// (up to the cap) once that's slower than the rest would make them.
+/// (up to the cap) once that's slower than the rest would make them, and takes no place until then.
 pub fn median_work_mins(app: &App, id: i64) -> Result<Option<f64>> {
     let cfg = &app.cfg.reviewers;
     let since = iso(now_ts() - cfg.speed_days * 86400.0);
@@ -456,22 +461,26 @@ pub fn median_work_mins(app: &App, id: i64) -> Result<Option<f64>> {
         "SELECT * FROM review_asks WHERE reviewer_id = ? AND asked_at >= ? AND (work_mins IS NOT NULL OR state IN ('swapped', 'open')) ORDER BY id DESC",
         p![id, since],
     )?;
-    let mut done: Vec<f64> = vec![];
-    let mut open: Vec<f64> = vec![];
-    for r in rows.iter().take(cfg.speed_asks.max(1)) {
-        match (r.f("work_mins"), r.st("state").as_str()) {
-            (Some(m), _) => done.push(m),
-            (None, "swapped") => done.push(cfg.slow_cap_mins),
-            (None, _) => {
-                let at = r.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
-                open.push(crate::picker::work_minutes(app, at, now_ts()).min(cfg.slow_cap_mins));
-            }
-        }
-    }
+    let n = cfg.speed_asks.max(1);
+    let settled = |r: &Row| match (r.f("work_mins"), r.st("state").as_str()) {
+        (Some(m), _) => Some(m),
+        (None, "swapped") => Some(cfg.slow_cap_mins),
+        _ => None,
+    };
     // An open ask only ever makes them slower: it counts once it's taken longer than the speed they'd get without it.
-    let pace = crate::picker::speed(cfg, median(&done));
-    done.extend(open.into_iter().filter(|m| crate::picker::speed(cfg, Some(*m)) < pace));
-    Ok(median(&done))
+    let pace = crate::picker::speed(cfg, median(&rows.iter().filter_map(settled).take(n).collect::<Vec<_>>()));
+    let counted: Vec<f64> = rows
+        .iter()
+        .filter_map(|r| {
+            settled(r).or_else(|| {
+                let at = r.s("asked_at").and_then(parse_iso).unwrap_or_else(now_ts);
+                let m = crate::picker::work_minutes(app, at, now_ts()).min(cfg.slow_cap_mins);
+                (crate::picker::speed(cfg, Some(m)) < pace).then_some(m)
+            })
+        })
+        .take(n)
+        .collect();
+    Ok(median(&counted))
 }
 
 fn median(xs: &[f64]) -> Option<f64> {
@@ -609,21 +618,33 @@ fn act(app: &App, action: &str, body: &Value) -> Result<Value> {
             let mut aliases = list_of(&r, "aliases");
             let emails = list_of(&r, "emails");
             let add = strs(body, "aliases");
-            if add.is_empty() {
-                return err(400, "Give at least one alias: another name, email or host account of theirs.");
+            let user = body_str(body, "user").trim().trim_start_matches('@').to_string();
+            if add.is_empty() && user.is_empty() {
+                return err(400, "Give at least one alias (another name, email or host account of theirs), or their host account with --user.");
             }
-            let mut host_user = r.s("host_user").filter(|u| !u.is_empty()).map(|s| s.to_string());
-            for a in &add {
+            for a in add.iter().chain(Some(&user).filter(|u| !u.is_empty())) {
                 if let Some(o) = find(app, &project, a)?.filter(|o| o.id() != r.id()) {
                     return err(409, format!("{a} already names {}. Fold them into one with tb reviewers merge \"{}\" \"{}\".", o.st("name"), r.st("name"), o.st("name")));
                 }
-                // Without a host account yet, a host id becomes theirs.
-                if host_user.is_none() && looks_like_host_id(a) && low(a) != low(&r.st("name")) {
+            }
+            let mut host_user = r.s("host_user").filter(|u| !u.is_empty()).map(|s| s.to_string());
+            // --user is their host account; an old one stays one of their names.
+            if !user.is_empty() {
+                if let Some(old) = host_user.as_deref().filter(|h| low(h) != low(&user)) {
+                    push_unique(&mut aliases, old, &[]);
+                }
+                aliases.retain(|a| low(a) != low(&user));
+                host_user = Some(user.clone());
+            }
+            for a in &add {
+                // Without a host account yet, one that's clearly a host id (`@login`, `{uuid}`) becomes
+                // theirs; a bare word could be a nickname, so it's only a name (--user makes it the account).
+                if host_user.is_none() && clearly_host_id(a) {
                     host_user = Some(a.trim().trim_start_matches('@').to_string());
                 } else if a.contains('@') && !a.starts_with('@') {
                     push_unique(&mut aliases, a, &emails);
                 } else {
-                    push_unique(&mut aliases, a, &[]);
+                    push_unique(&mut aliases, a, host_user.as_slice());
                 }
             }
             set(app, &r, fields!["aliases" => jdumps(&json!(aliases)), "host_user" => host_user])?

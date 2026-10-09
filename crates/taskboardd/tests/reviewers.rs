@@ -644,6 +644,10 @@ fn weight_spaces_reviewers_out_and_non_answers_count_as_slow() {
     ask_row(&b, id, "Ana", 60.0, "swapped", None);
     ask_row(&b, id, "Ana", 20.0 * 24.0 * 60.0, "answered", Some(5.0));
     assert_eq!(median_of(&b, "Ana"), Some(240.0));
+    // Someone who doesn't answer is far slower than someone new.
+    let cfg = &b.app.cfg.reviewers;
+    assert_eq!(taskboardd::picker::speed(cfg, median_of(&b, "Ana")), cfg.too_slow);
+    assert!(cfg.too_slow < cfg.no_speed_yet);
     // An open ask counts once it's slower than the rest; a fresh one doesn't.
     ask_row(&b, id, "Bo", 300.0, "answered", Some(20.0));
     ask_row(&b, id, "Bo", 10.0, "open", None);
@@ -651,6 +655,40 @@ fn weight_spaces_reviewers_out_and_non_answers_count_as_slow() {
     ask_row(&b, id, "Bo", 200.0, "open", None);
     let m = median_of(&b, "Bo").unwrap();
     assert!((105.0..=115.0).contains(&m), "{m}");
+}
+
+#[test]
+fn open_asks_that_dont_count_take_no_place_in_the_speed() {
+    let b = board_with(|c| c.reviewers.speed_asks = 2);
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    ask_row(&b, id, "Bo", 300.0, "answered", Some(20.0));
+    ask_row(&b, id, "Bo", 200.0, "answered", Some(40.0));
+    ask_row(&b, id, "Bo", 10.0, "open", None);
+    ask_row(&b, id, "Bo", 5.0, "open", None);
+    assert_eq!(median_of(&b, "Bo"), Some(30.0), "the two fresh open asks don't push out his reviews");
+}
+
+#[test]
+fn a_pin_rotates_with_the_main_contributors() {
+    let b = board_with(|_| {});
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    let id = b.pr_task(BB);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    // Cy didn't write a.rs, but a pin puts him among the main contributors, first in line.
+    b.act("pin", "Cy Ng", json!({})).unwrap();
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Cy Ng", "pinned")]);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"count": 1}));
+    assert!(h.calls().contains(&"request {cy}".to_string()), "{:?}", h.calls());
+    // Asked already, his turn is later: the next PR's main pick is Ana's.
+    *h.rec.lock() = rec_on(&base, &head);
+    let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Ana Lima", "main")]);
 }
 
 #[test]
@@ -690,9 +728,19 @@ fn an_alias_links_a_host_account_and_a_shared_name_alone_is_not_one_person() {
     let r = b.act("alias", "Dee", json!({"aliases": ["@dee-gh", "Dee D"]})).unwrap();
     assert_eq!(r["user"], "dee-gh");
     assert_eq!(r["aliases"], json!(["Dee D"]));
+    // A bare word for someone without an account is a nickname, not a login; --user makes one theirs.
+    b.add("Eve Stone", json!({}));
+    let r = b.act("alias", "Eve Stone", json!({"aliases": ["Evie"]})).unwrap();
+    assert!(r["user"].is_null(), "{r}");
+    assert_eq!(r["aliases"], json!(["Evie"]));
+    let r = b.act("alias", "Evie", json!({"user": "eve-gh"})).unwrap();
+    assert_eq!(r["user"], "eve-gh");
+    let r = b.act("alias", "Evie", json!({"user": "@eve-2"})).unwrap();
+    assert_eq!(r["user"], "eve-2");
+    assert_eq!(r["aliases"], json!(["Evie", "eve-gh"]), "the old account still names her");
     // Someone else with the same name and their own host account is another reviewer.
     b.add("Dee", json!({"user": "{dee2}"}));
-    assert_eq!(b.roster().len(), 2);
+    assert_eq!(b.roster().iter().filter(|r| r["name"] == "Dee").count(), 2);
 }
 
 #[test]

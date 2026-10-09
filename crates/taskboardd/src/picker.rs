@@ -5,13 +5,15 @@
 //!   `[reviewers] me`), anyone removed, and anyone already on the PR. Commit authors from the last
 //!   `history_months` with at least `min_commits` commits join the roster on a sync (at most every
 //!   `sync_every_hours`, or `tb reviewers sync`), and the host's members give them their account.
-//! - One pick is the main contributor: pinned reviewers first, then the `main_contributors` people
-//!   with the most commits to the changed files. It's skipped when one of them is already on the PR.
+//! - One pick is a main contributor: of the `main_contributors` people made of pinned reviewers
+//!   first, then those with the most commits to the changed files, whoever's turn comes first. It's
+//!   skipped when one of them is already on the PR.
 //! - It's turn-based: a reviewer is due at their last ask + (1 + open asks) × `turn_gap_hours` /
 //!   weight, and the earliest due goes first (ties: the fewest asks, then pinned, then the most
 //!   commits to the changed files, then to the project). Weight is automation level × speed, where
 //!   speed comes from the median time they took to review, in work minutes (`speed_by_minutes`,
-//!   `slow_speed` past the last step, `no_speed_yet` before their first review; see
+//!   `slow_speed` past the last step, `too_slow` at `slow_cap_mins`, where non-answers count,
+//!   `no_speed_yet` before their first review; see
 //!   `reviewers::median_work_mins`). A reviewer whose bot runs on a known schedule (`botrun.rs`) is
 //!   asked only shortly before its next run, at the fastest pace.
 
@@ -41,9 +43,13 @@ pub fn work_minutes(app: &App, a: f64, b: f64) -> f64 {
     (0..mins).filter(|m| hours::within(&h, &(start + Duration::minutes(*m)))).count() as f64
 }
 
-/// Speed from a median review time in work minutes.
+/// Speed from a median review time in work minutes: `too_slow` at `slow_cap_mins` or more (where
+/// non-answers count), else the table.
 pub fn speed(cfg: &crate::reviewers::ReviewersConfig, median: Option<f64>) -> f64 {
     let Some(m) = median else { return cfg.no_speed_yet };
+    if cfg.slow_cap_mins > 0.0 && m >= cfg.slow_cap_mins {
+        return cfg.too_slow;
+    }
     for (upto, s) in &cfg.speed_by_minutes {
         if m <= *upto {
             return *s;
@@ -206,10 +212,10 @@ fn changed_files(repo: &str, rec: &Value) -> Vec<String> {
     out.unwrap_or_default().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).take(200).collect()
 }
 
-/// The roster ids of the people with the most commits to `files` (most first).
+/// The roster ids of everyone with commits to `files` (most first).
 fn main_contributors(app: &App, project: &str, repo: &str, files: &[String]) -> Result<Vec<i64>> {
     let cfg = &app.cfg.reviewers;
-    if files.is_empty() || cfg.main_contributors == 0 {
+    if files.is_empty() {
         return Ok(vec![]);
     }
     let mut args: Vec<String> = vec!["log".into(), format!("--since={} months ago", cfg.history_months), "--format=%ae%x09%an".into(), "--".into()];
@@ -227,7 +233,7 @@ fn main_contributors(app: &App, project: &str, repo: &str, files: &[String]) -> 
         }
     }
     counts.sort_by_key(|c| std::cmp::Reverse(c.1));
-    Ok(counts.into_iter().take(cfg.main_contributors).map(|(id, _)| id).collect())
+    Ok(counts.into_iter().map(|(id, _)| id).collect())
 }
 
 /// One reviewer the picker would ask, and why.
@@ -301,28 +307,38 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
         let asked = reviewers::ask_count(app, &r)?;
         cands.push(Pick { name: r.st("name"), user, why: "turn".into(), due, weight, tier: "unknown".into(), asked, reviewer: r });
     }
-    let mains = match repo.as_deref() {
+    let contributors = match repo.as_deref() {
         Some(r) => main_contributors(app, &project, r, &changed_files(r, rec))?,
         None => vec![],
     };
-    let rank = |c: &Pick| (!c.reviewer.b("pinned"), mains.iter().position(|m| *m == c.reviewer.id()).unwrap_or(usize::MAX), -c.reviewer.i0("commits"), c.reviewer.id());
+    let rank = |c: &Pick| (!c.reviewer.b("pinned"), contributors.iter().position(|m| *m == c.reviewer.id()).unwrap_or(usize::MAX), -c.reviewer.i0("commits"), c.reviewer.id());
     cands.sort_by(|a, b| a.due.partial_cmp(&b.due).unwrap_or(std::cmp::Ordering::Equal).then(a.asked.cmp(&b.asked)).then(rank(a).cmp(&rank(b))));
+    // The main contributors: pinned reviewers first (in turn order), then the most commits to the
+    // changed files, `main_contributors` in all.
+    let mut pins: Vec<Row> = reviewers::roster(app, &project)?.into_iter().filter(|r| r.b("pinned") && r.s("removed_at").is_none()).collect();
+    pins.sort_by_key(|r| cands.iter().position(|c| c.reviewer.id() == r.id()).unwrap_or(usize::MAX));
+    let mut mains: Vec<i64> = vec![];
+    for id in pins.iter().map(|r| r.id()).chain(contributors.iter().copied()) {
+        if !mains.contains(&id) {
+            mains.push(id);
+        }
+    }
+    mains.truncate(app.cfg.reviewers.main_contributors);
     let mut out: Vec<Pick> = vec![];
     let take = |out: &mut Vec<Pick>, cands: &mut Vec<Pick>, i: usize, why: &str| {
         let mut c = cands.remove(i);
         c.why = why.to_string();
         out.push(c);
     };
-    // The main pick: pinned reviewers first, then the changed files' main contributors, each in turn
-    // order. None when one of them is already on the PR.
+    // The main pick: whichever main contributor's turn comes first. None when one of them is
+    // already on the PR.
     let on_pr: Vec<Row> = crate::asks::on_pr(&prflow_of(t), rec)
         .iter()
         .filter_map(|w| reviewers::by_host_user(app, &project, &w.user).ok().flatten())
         .collect();
-    let have_main = on_pr.iter().any(|r| r.b("pinned") || mains.contains(&r.id()));
+    let have_main = on_pr.iter().any(|r| mains.contains(&r.id()));
     if out.len() < n && !have_main {
-        let mut pool: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| c.reviewer.b("pinned")).map(|(i, _)| i).collect();
-        pool.extend(cands.iter().enumerate().filter(|(_, c)| !c.reviewer.b("pinned") && mains.contains(&c.reviewer.id())).map(|(i, _)| i));
+        let pool: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| mains.contains(&c.reviewer.id())).map(|(i, _)| i).collect();
         if let Some(i) = crate::presence::best(app, &mut cands, &pool)? {
             let why = if cands[i].reviewer.b("pinned") { "pinned" } else { "main" };
             take(&mut out, &mut cands, i, why);
@@ -347,7 +363,10 @@ mod tests {
         let cfg = crate::reviewers::ReviewersConfig::default();
         assert_eq!(speed(&cfg, None), cfg.no_speed_yet);
         assert_eq!(speed(&cfg, Some(10.0)), cfg.speed_by_minutes[0].1);
-        assert_eq!(speed(&cfg, Some(100_000.0)), cfg.slow_speed);
+        assert_eq!(speed(&cfg, Some(cfg.slow_cap_mins)), cfg.too_slow, "non-answers count as the cap");
+        assert!(cfg.too_slow < cfg.no_speed_yet);
+        let wide = crate::reviewers::ReviewersConfig { slow_cap_mins: 600.0, ..cfg.clone() };
+        assert_eq!(speed(&wide, Some(300.0)), wide.slow_speed, "past the table, under the cap");
         assert!(fastest(&cfg) >= speed(&cfg, Some(1.0)));
     }
 
