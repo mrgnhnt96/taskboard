@@ -216,7 +216,7 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
             ));
         }
     }
-    if !prflow::review_skipped(&f, rec) {
+    if !prflow::review_skipped(app, t, &f, rec) {
         let review = prflow::review_of(&f, rec);
         if review.changes {
             let who: Vec<String> = review.requesters.iter().map(|(u, n)| if n.is_empty() { u.clone() } else { n.clone() }).collect();

@@ -331,7 +331,41 @@ fn a_rounds_findings_show_on_the_task_and_can_be_triaged() {
     let c = b.card(id);
     assert_eq!(c["pr"]["bar"]["wd"]["bar"], "WD", "{}", c["pr"]["bar"]);
     assert_eq!(c["pr"]["bar"]["reviewers"], 2);
-    assert_eq!(c["pr"]["bar"]["build_url"], "https://ci.example/1");
+    assert_eq!(c["pr"]["bar"]["build_url"], "https://github.com/acme/webapp/pull/21/checks", "passed checks open the PR's Checks tab");
+}
+
+#[test]
+fn the_pr_bar_links_failed_checks_and_says_when_review_needs_setup_or_is_off() {
+    let b = new_board();
+    let id = b.task("Add login", json!({}));
+    b.take(id);
+    b.link(id, 22, "feat/login");
+    let set_rec = |rec: Value| prflow::merge_flow(&b.app, id, vec![("rec", rec)]).unwrap();
+    let head = format!("{:0>40}", 22);
+    set_rec(json!({"state": "OPEN", "head": head, "branch": "feat/login", "base": "main", "failed": ["lint"], "running": 0, "comments": 0,
+                   "checks": [{"name": "GitGuardian", "state": "passed", "url": "https://dashboard.gitguardian.com/x"},
+                              {"name": "lint", "state": "failed", "url": "https://ci.example/lint"}],
+                   "approvals": 0, "review_decision": "", "requested": 0}));
+    let bar = b.card(id)["pr"]["bar"].clone();
+    assert_eq!(bar["build_url"], "https://ci.example/lint", "a failed check opens itself: {bar}");
+    assert_eq!(bar["review"], "setup", "nobody on the PR and nobody to ask: {bar}");
+
+    // Someone asked on the host: it isn't a setup question any more.
+    set_rec(json!({"state": "OPEN", "head": head, "branch": "feat/login", "base": "main", "failed": [], "running": 0, "comments": 0,
+                   "checks": [{"name": "build", "state": "passed"}], "approvals": 0, "review_decision": "", "requested": 1}));
+    assert!(b.card(id)["pr"]["bar"]["review"].is_null());
+
+    // A project without a Review step goes to merge once the checks pass.
+    let rec = json!({"state": "OPEN", "head": head, "branch": "feat/login", "base": "main", "failed": [], "running": 0, "comments": 0,
+                     "checks": [{"name": "build", "state": "passed"}], "approvals": 0, "review_decision": "", "requested": 0});
+    set_rec(rec.clone());
+    let t = b.row(id);
+    assert_eq!(prflow::phase_of(&b.app, &t, &rec), "review");
+    let project = b.row(id).st("project");
+    let v = b.post(&format!("/projects/{project}"), json!({"review": "off"}));
+    assert_eq!(v["pr_rules"]["review"], false, "{v}");
+    assert_eq!(prflow::phase_of(&b.app, &b.row(id), &rec), "merge");
+    assert_eq!(b.card(id)["pr"]["bar"]["review"], "off");
 }
 
 // ------------------------------------------------------------------ #20 tb done --pr-body

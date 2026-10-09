@@ -619,7 +619,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if (review.changes && !answered) || new_comments {
         return "comments".into();
     }
-    let review_skipped = review_skipped(&f, rec);
+    let review_skipped = review_skipped(app, t, &f, rec);
     if review.changes && answered && !review_skipped {
         // The changes are pushed; the reviewer who asked for them hasn't looked again yet.
         return "rereview".into();
@@ -635,8 +635,10 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     "review".into()
 }
 
-pub fn review_skipped(f: &Row, rec: &Value) -> bool {
-    f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false)
+/// The review doesn't hold the merge: skipped for this push (`tb pr skip-review`), or the project has no
+/// Review step (`tb project set --review off`).
+pub fn review_skipped(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
+    !crate::reviewers::review_on(app, t.s("project")) || f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false)
 }
 
 /// The checks are still going: one is running, or (since this push was first seen) the expected

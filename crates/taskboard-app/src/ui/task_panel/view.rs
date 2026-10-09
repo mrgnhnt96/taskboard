@@ -1150,7 +1150,9 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let reviewers = bar["reviewers"].as_i64().unwrap_or(0);
     let new_comments = bar["new_comments"].as_i64().unwrap_or(0);
     let rv = js_lower(&p["review"]);
-    out.push(if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
+    out.push(if s(bar, "review") == "off" {
+        step("Review", StepSt::Done, Some("Off"), None)
+    } else if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
         // "2 new comments", linking to the first unread thread.
         let words = if new_comments > 0 { fmt::plural(new_comments, "new comment", "new comments") } else { "New comments".to_string() };
         let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
@@ -1158,8 +1160,11 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     } else if reviewers > 0 && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
         let st = if approvals >= reviewers { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
         step("Review", st, Some(&format!("{approvals} of {reviewers}")), url)
+    } else if s(bar, "review") == "setup" && review.1 == StepSt::Todo {
+        step("Review", StepSt::Ask, Some("Needs setup"), None)
     } else {
-        step(review.0, review.1, review.2.as_deref(), url)
+        // "Not asked" has nowhere to go.
+        step(review.0, review.1, review.2.as_deref(), if review.1 == StepSt::Todo { None } else { url })
     });
     out.push(if phase == "waits" && pr_open(p) { step("Merge", StepSt::Wait, Some("Waits on base"), None) } else { step(merge.0, merge.1, merge.2.as_deref(), None) });
     out
