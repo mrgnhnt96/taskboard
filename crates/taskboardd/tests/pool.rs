@@ -107,7 +107,7 @@ fn a_goal_asks_for_devices_for_its_tasks_and_the_pool_must_have_them() {
     let g = b.goal();
     b.post(&format!("goals/G{g}"), json!({"devices": "ios"}));
     let t = b.task("Sim test", json!({"goal_id": g}));
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
     assert_eq!(b.waiting(t), "No ios yet (tb device add)");
     runner::start_queued(&b.app).unwrap();
     assert!(b.started().is_empty());
@@ -158,7 +158,7 @@ fn a_task_starts_behind_unmade_bits_and_a_goal_waits_on_them_after_its_tasks() {
     let (code, msg) = b.post_err("bits/beta-banner/made", json!({}));
     assert_eq!(code, 409, "a local bit isn't made anywhere: {msg}");
 
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
     assert!(b.waiting(t).is_null(), "an unmade bit doesn't hold a task back: {}", b.waiting(t));
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.started(), vec![t], "the task starts and builds behind the flag");
@@ -213,7 +213,7 @@ fn a_held_wave_waits_and_so_does_everything_after_it_until_continued() {
     let g = b.goal();
     let one = b.task("One", json!({"goal_id": g, "wave": 1}));
     let two = b.task("Two", json!({"goal_id": g, "wave": 2}));
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
     let d = b.post(&format!("goals/G{g}/waves/1/hold"), json!({"who": "Planner"}));
     assert_eq!(d["waves"][0]["state"], "held");
     assert_eq!(d["waves"][0]["held"], true);
@@ -302,7 +302,7 @@ fn a_task_can_need_no_devices_over_its_goals_needs() {
     assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "ios");
     b.post(&format!("tasks/T{t}"), json!({"devices": "none"}));
     assert!(b.get(&format!("tasks/T{t}"))["devices"].is_null(), "its own none wins over the goal's ios");
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.started(), vec![t], "it needs no device, so the empty pool doesn't hold it");
     b.post(&format!("tasks/T{t}"), json!({"devices": "goal"}));
@@ -350,7 +350,7 @@ fn a_goal_keeps_its_own_devices() {
 
     // Another goal's task, and a task in no goal, never get pixel-8.
     let other = b.task("Other", json!({"goal_id": g4, "devices": "android:2"}));
-    b.post(&format!("goals/G{g4}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g4}/run"), &app_query(), &json!({})).unwrap();
     assert_eq!(b.waiting(other), format!("Needs 2 android devices, and the pool has 1 (pixel-8 is reserved for G{g3})"));
     b.post(&format!("tasks/T{other}"), json!({"devices": "android"}));
     runner::start_queued(&b.app).unwrap();
@@ -364,7 +364,7 @@ fn a_goal_keeps_its_own_devices() {
 
     // G3's task gets its own pool first, and the purpose counts as a tag there only.
     let mine = b.task("Mine", json!({"goal_id": g3, "devices": "android measure"}));
-    b.post(&format!("goals/G{g3}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g3}/run"), &app_query(), &json!({})).unwrap();
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.get(&format!("tasks/T{mine}"))["devices"]["lent"], json!(["pixel-8", "rig"]));
     let h = handoff::build(&b.app, mine).unwrap();
@@ -397,7 +397,7 @@ fn a_goals_pool_lends_only_its_own_and_an_archived_goal_lets_go() {
 
     // G3's tasks get only G3's devices, each purpose a tag.
     let two = b.task("Two", json!({"goal_id": g3, "devices": "android:2"}));
-    b.post(&format!("goals/G{g3}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g3}/run"), &app_query(), &json!({})).unwrap();
     assert_eq!(b.waiting(two), format!("Needs 2 android devices, and G{g3}'s own devices have 1"));
     b.post(&format!("tasks/T{two}"), json!({"devices": "demo"}));
     runner::start_queued(&b.app).unwrap();
@@ -406,7 +406,7 @@ fn a_goals_pool_lends_only_its_own_and_an_archived_goal_lets_go() {
 
     // Archived, G3 reserves nothing: G4's task can have pixel-8, and the device says nothing of G3.
     let other = b.task("Other", json!({"goal_id": g4, "devices": "android:2"}));
-    b.post(&format!("goals/G{g4}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g4}/run"), &app_query(), &json!({})).unwrap();
     assert!(b.waiting(other).as_str().unwrap_or("").contains(&format!("reserved for G{g3}")));
     b.post(&format!("goals/G{g3}"), json!({"archived": true}));
     assert!(b.get("devices/pixel-8")["reserved_for"].is_null());
@@ -425,7 +425,7 @@ fn a_named_device_outside_the_goals_pool_is_lent() {
     let g3 = b.goal();
     b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8"}));
     let named = b.task("Named", json!({"goal_id": g3, "devices": "pixel-7"}));
-    b.post(&format!("goals/G{g3}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g3}/run"), &app_query(), &json!({})).unwrap();
     assert!(b.waiting(named).is_null(), "{}", b.waiting(named));
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.get(&format!("tasks/T{named}"))["devices"]["lent"], json!(["pixel-7"]));
@@ -447,7 +447,7 @@ fn a_reserved_or_missing_named_device_says_why_before_the_goals_pool() {
     b.post(&format!("goals/G{g2}/devices"), json!({"device": "dev-c", "reserved": true}));
     let named = b.task("Named", json!({"goal_id": g1, "devices": "dev-c"}));
     let missing = b.task("Missing", json!({"goal_id": g1, "devices": "dev-zz"}));
-    b.post(&format!("goals/G{g1}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g1}/run"), &app_query(), &json!({})).unwrap();
     assert_eq!(b.waiting(named), format!("Waiting for a free dev-c (dev-c is reserved for G{g2})"));
     assert_eq!(b.waiting(missing), "No dev-zz yet (tb device add)");
     runner::start_queued(&b.app).unwrap();
@@ -458,7 +458,7 @@ fn a_reserved_or_missing_named_device_says_why_before_the_goals_pool() {
     // Switched off, a named device is waited for by name, not as the goal's pool.
     b.post("devices/dev-a", json!({"off": true}));
     let off = b.task("Off", json!({"goal_id": g1, "devices": "dev-a"}));
-    b.post(&format!("goals/G{g1}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g1}/run"), &app_query(), &json!({})).unwrap();
     assert_eq!(b.waiting(off), "Waiting for dev-a (it's off)");
 }
 
@@ -485,7 +485,7 @@ fn with_goal_pool_only_off_a_goal_borrows_from_the_rest() {
     let g3 = b.goal();
     b.post(&format!("goals/G{g3}/devices"), json!({"device": "pixel-8"}));
     let two = b.task("Two", json!({"goal_id": g3, "devices": "android:2"}));
-    b.post(&format!("goals/G{g3}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g3}/run"), &app_query(), &json!({})).unwrap();
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.get(&format!("tasks/T{two}"))["devices"]["lent"], json!(["pixel-8", "pixel-7"]), "its own first");
 }

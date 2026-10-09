@@ -303,12 +303,18 @@ fn queue_it_after_the_task_was_made_is_the_word() {
 #[test]
 fn queue_it_after_the_task_was_made_is_no_word_when_it_may_mean_something_else() {
     let b = board();
-    // Something newer was said in between.
+    // Something newer was asked for in between: "it" may be that.
+    b.said("make a task for the footer");
+    let id = b.new_task();
+    b.said("also fix the typo in the header");
+    b.said("queue it");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    // Only thanks in between (#128) leaves "it" the task.
     b.said("make a task for the footer");
     let id = b.new_task();
     b.said("thanks");
     b.said("queue it");
-    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
 
     // The prompt says more than the ask: "it" may be the dev server.
     b.said("make a task for the footer");
@@ -525,9 +531,143 @@ fn the_boards_run_needs_no_word() {
     let b = board();
     let g = b.goal();
     let id = b.planned(g);
-    let v = api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({})).unwrap();
+    let from_app: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+    let v = api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &from_app, &json!({})).unwrap();
     assert_eq!(v["queued_now"], 1);
     assert_eq!(b.status(id), "queued");
+}
+
+#[test]
+fn a_run_with_no_terminal_is_only_the_apps() {
+    let b = board();
+    let g = b.goal();
+    let id = b.planned(g);
+    // `tb start G1` or `tb goal set G1 --run` with MIDNA_SESSION unset, or a plain curl.
+    for body in [json!({}), json!({"via_session": ""}), json!({"now": true})] {
+        let e = api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &body).unwrap_err();
+        assert_eq!(e.status, 403, "{body}");
+        assert!(e.message.contains(&format!("Only a human can run G{g}")), "{}", e.message);
+    }
+    assert_eq!(b.status(id), "planned");
+}
+
+impl Board {
+    /// What the Stop hook sends at the end of the agent's turn: its message's start and its end.
+    fn replied(&self, message: &str) {
+        let start: String = message.chars().take(2000).collect();
+        let end: String = message.chars().rev().take(startword::REPLY_END_KEEP).collect::<Vec<_>>().into_iter().rev().collect();
+        self.report("hook.stop", json!({"last_message": start, "last_message_end": end}));
+    }
+    /// What `tb goal new … --task` reports: a goal and its planned tasks.
+    fn goal_new(&self) -> i64 {
+        let v = self.report("tb.goal", json!({"name": "Dark mode", "project": "webapp", "tasks": ["Colors::pick them", "Toggle::add it"]}));
+        v["goal"].as_str().unwrap().trim_start_matches('G').parse().unwrap()
+    }
+}
+
+/// Every phrase in #126, both ways, through the hook's path: each case is a fresh conversation, the
+/// steps in order ("say:" a prompt the owner types, "agent:" the message the agent ends its turn on,
+/// "goal new" / "propose" / "task new" what the agent's `tb` reports, "plan" the board opening this
+/// terminal to edit the goal's plan), then `tb start G<n>` on the goal ("G" in the text is its ref).
+#[test]
+fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
+    let runs: Vec<Vec<&str>> = vec![
+        vec!["say:make a goal for dark mode with two tasks", "goal new", "say:looks good, run the goal"],
+        vec!["say:plan the dark mode goal", "propose", "say:great, start the goal"],
+        vec!["plan", "say:run the goal"],
+        vec!["plan", "say:ok, add a task for the toggle", "task new", "say:looks right. run the goal"],
+        vec!["say:make a goal for dark mode and run it", "goal new"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Made G with two tasks. Want me to run it?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Made G with two tasks. Want me to run G?", "say:yep, go ahead"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Done. Should I start the goal now?", "say:sure"],
+        vec!["say:plan the dark mode goal", "propose", "agent:Proposed two tasks for G.\n\nShall I kick it off?", "say:run it"],
+        vec!["say:make a goal for dark mode", "goal new", "say:go ahead and run all the tasks"],
+        vec!["say:make a goal for dark mode", "goal new", "say:thanks", "say:run it"],
+        // Still working.
+        vec!["say:run G"],
+        vec!["say:add a task to the goal", "task new", "say:start the goal"],
+    ];
+    let refused: Vec<Vec<&str>> = vec![
+        vec!["say:run the goal"],
+        vec!["say:run it"],
+        vec!["say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "say:run it tomorrow"],
+        vec!["say:make a goal for dark mode", "goal new", "say:run the tests"],
+        vec!["say:make a goal for dark mode", "goal new", "say:also fix the header", "say:run it"],
+        vec!["say:make a goal for dark mode and run it", "goal new", "say:wait"],
+        vec!["say:make a goal for dark mode", "goal new", "say:looks good, run the goal", "say:actually, don't"],
+        // "Yes" to no question, to another question, or to a question that's no longer the latest.
+        vec!["say:make a goal for dark mode", "goal new", "agent:Made G with two tasks.", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G, or tweak the plan first?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G tomorrow?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G?", "say:no"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G?", "say:thanks", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Should I open a PR?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:I added T1 to G. Want me to start it?", "say:yes"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G?", "say:yes, but not now"],
+        // A plan terminal for another goal.
+        vec!["plan other", "say:run the goal"],
+    ];
+    let b = board();
+    let mut wrong = vec![];
+    for (want, cases) in [(true, &runs), (false, &refused)] {
+        for steps in cases {
+            b.report("hook.session_start", json!({"source": "clear"}));
+            let mut g = b.goal();
+            b.planned(g);
+            for step in steps {
+                let text = |t: &str| goal_refs(t, g);
+                match *step {
+                    "goal new" => {
+                        g = b.goal_new();
+                    }
+                    "propose" => {
+                        b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Colors::pick them"]}));
+                    }
+                    "task new" => {
+                        b.report("tb.new_task", json!({"title": "Toggle", "goal": format!("G{g}")}));
+                    }
+                    "plan" | "plan other" => {
+                        let other = if *step == "plan" { g } else { b.goal() };
+                        api::dispatch(&b.app, "POST", &format!("/goals/G{other}/plan"), &Query::new(), &json!({"mode": "edit"})).unwrap();
+                        // What Midna's job runner records once the terminal opens.
+                        b.app.db.x("UPDATE jobs SET target = json_set(target, '$.session', 's1') WHERE purpose = 'plan'", p![]).unwrap();
+                    }
+                    s if s.starts_with("say:") => b.typed(&text(&s[4..])),
+                    s if s.starts_with("agent:") => b.replied(&text(&s[6..])),
+                    s => panic!("{s}"),
+                }
+            }
+            let got = b.tb_run(g);
+            if got.is_ok() != want {
+                wrong.push(format!("{} G{g}: {steps:?} {:?}", if want { "refused" } else { "ran" }, got.err()));
+            }
+            b.app.db.x("DELETE FROM jobs WHERE purpose = 'plan'", p![]).unwrap();
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// `t` with each "G" that stands alone (a goal's ref) made `G<g>`.
+fn goal_refs(t: &str, g: i64) -> String {
+    regex::Regex::new(r"\bG\b").unwrap().replace_all(t, format!("G{g}").as_str()).to_string()
+}
+
+#[test]
+fn a_yes_needs_the_end_of_the_agents_message() {
+    let b = board();
+    b.said("make a goal for dark mode");
+    let g = b.goal_new();
+    // The hook before this sent only the first 2000 characters: the question at the end never came.
+    let long = format!("{} Want me to run G{g}?", "Here's the plan in detail. ".repeat(100));
+    let start: String = long.chars().take(2000).collect();
+    b.report("hook.stop", json!({"last_message": start}));
+    b.typed("yes");
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+    // Today's hook sends its end too.
+    b.replied(&long);
+    b.typed("yes");
+    assert!(b.tb_run(g).is_ok());
 }
 
 /// A log the owner pasted, `n` characters or more of it.
@@ -539,7 +679,7 @@ fn log_paste(n: usize) -> String {
 impl Board {
     /// What the UserPromptSubmit hook sends for a typed prompt: the same cut, then the report.
     fn typed(&self, prompt: &str) {
-        self.said(&startword::keep_ends(prompt, board::PROMPT_FULL_KEEP));
+        self.report("hook.prompt", startword::hook_prompt(prompt));
     }
 }
 
@@ -631,6 +771,91 @@ fn the_start_word_holds_only_the_start_its_no_time_or_condition_is_about() {
         (vec!["I forbid you: start T8".into()], "T8"),
         (vec!["here's the output.\nstart T8\nexit 1".into()], "T8"),
     ];
+    // #128: the real asks beta.16 still refused, and a hold on another task.
+    let mut starts = starts;
+    for ask in [
+        "go ahead with T8",
+        "go for T8",
+        "do T8",
+        "fire off T8",
+        "put T8 in the queue",
+        "start T8 now rather than later",
+        "start T8, sorry for the wait",
+        "ok - start T8",
+        "start T8, hold off on T9",
+        "start T8 now rather than tomorrow",
+        "start T8. T9 can wait",
+        "start T8. hold off on T9",
+        "start T8 now and T9 tomorrow",
+        "start T8 and T9, but T9 not until T8 merges",
+    ] {
+        starts.push((vec![ask.into()], "T8"));
+    }
+    for said in [
+        vec!["make a task for the footer", "+", "thanks", "queue it"],
+        vec!["make a task for the footer", "+", "looks right", "ok, queue it"],
+        vec!["put the footer fix on the board", "+", "queue it"],
+        vec!["track this as a task", "+", "queue it"],
+    ] {
+        starts.push((said.into_iter().map(String::from).collect(), "M1"));
+    }
+    // A typed prompt of about 8000 characters that ends in "…" is whole: the hook marks its own cut.
+    let near: String = format!("start T8. {typed}{typed}").chars().take(7993).collect::<String>() + "…";
+    assert_eq!(near.chars().count(), 7994);
+    starts.push((vec![near], "T8"));
+    let mut holds = holds;
+    for said in [
+        // A time or a condition after the ask.
+        "start T8, over lunch",
+        "start T8 over lunch",
+        "start T8, but not until T9 is merged",
+        "start T8 but not until T9 is merged",
+        "start T8 in a while",
+        "start T8, in a while",
+        "start T8 at the top of the hour",
+        "start T8, at the top of the hour",
+        "start T8 ASAP once T9 merges",
+        "start T8, ASAP once T9 merges",
+        "start T8 as soon as T9 is in",
+        "start T8, as soon as T9 is in",
+        "start T8 during work hours",
+        "start T8, during work hours",
+        "start T8 in work hours",
+        "start T8, in work hours",
+        "start T8 during business hours",
+        "start T8, during business hours",
+        "start T8, once you've had lunch",
+        "start T8, after I merge T9",
+        "start T8, when I'm back",
+        "start T8 but wait for T9",
+        "start T8 over the weekend",
+        "start T8 around 3",
+        "start T8 after hours",
+        "start T8 in a bit",
+        // Quoted or pasted text.
+        "the ticket reads — start T8 — weird",
+        "copied from CI - start T8",
+        "CI output - start T8",
+        // A no.
+        "I don't want you to, start T8",
+    ] {
+        holds.push((vec![said.into()], "T8"));
+    }
+    for (said, t) in [
+        ("start T8. T9 can wait", "T9"),
+        ("start T8. hold off on T9", "T9"),
+        ("start T8 now and T9 tomorrow", "T9"),
+        ("start T8 and T9, but T9 not until T8 merges", "T9"),
+    ] {
+        holds.push((vec![said.into()], t));
+    }
+    // A take-back on the last line of a paste.
+    for n in [500, 2000, 9000, 25_000] {
+        let log = log_paste(n);
+        for back in ["jk", "never mind"] {
+            holds.push((vec![format!("start T8. here's the log:\n{}\n{back}", log.trim_end())], "T8"));
+        }
+    }
     let b = board();
     let mut wrong = vec![];
     for (want, cases) in [(true, &starts), (false, &holds)] {

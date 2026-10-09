@@ -266,7 +266,7 @@ fn a_task_waits_for_another_and_a_goal_runs_in_order() {
     assert_eq!(code, 409);
     assert!(msg.contains("wait forever"));
 
-    let run = b.post(&format!("/goals/G{gid}/run"), json!({}));
+    let run = api::dispatch(&b.app, "POST", &format!("/goals/G{gid}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
     assert_eq!(run["queued_now"], 2);
     assert!(runner::start_queued(&b.app).unwrap().is_empty(), "T1 is blocked by the tax table and T2 waits for T1");
     let card = b.get(&format!("/tasks/T{t1}"));

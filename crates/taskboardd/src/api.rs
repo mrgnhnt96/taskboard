@@ -282,7 +282,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["goals", id, "notes"]) => goal_note(app, gid(id)?, body),
         ("POST", ["goals", id, "notes", nid]) => goal_note_edit(app, gid(id)?, nid, body),
         ("POST", ["goals", id, "plan"]) => goal_plan(app, gid(id)?, body),
-        ("POST", ["goals", id, "run"]) => run_goal(app, gid(id)?, body),
+        ("POST", ["goals", id, "run"]) => run_goal(app, gid(id)?, query, body),
         ("POST", ["goals", id, "waves", n]) => {
             let (g, n) = (gid(id)?, wave_n(n)?);
             app.db.tx(|| {
@@ -1836,12 +1836,26 @@ fn goal_plan(app: &App, id: i64, body: &Value) -> Result<Value> {
     })
 }
 
-fn run_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
+fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     let now = as_bool(body.get("now"), false);
     // From `tb start G2` or `tb goal set G2 --run` in a terminal: only on a human's word there, as for a
-    // task. The board's Run sends no terminal.
+    // task. The board's Run sends no terminal, and only the app's own request is that; any other caller
+    // with no terminal is no one's word.
     let via = body_str(body, "via_session");
-    if !via.is_empty() {
+    if via.is_empty() {
+        if !from_app(query) {
+            board::get_goal(app, id)?;
+            return err(
+                403,
+                format!(
+                    "Only a human can run {}: {} can press Run on the board, or tell an agent in a terminal to run it (tb start {}).",
+                    rf("goal", id),
+                    app.cfg.owner,
+                    rf("goal", id)
+                ),
+            );
+        }
+    } else {
         board::get_goal(app, id)?;
         if crate::startword::owners_goal_word(app, &via, id)?.is_none() {
             return err(

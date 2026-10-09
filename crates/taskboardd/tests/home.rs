@@ -64,7 +64,7 @@ fn a_planned_goal_stays_off_home() {
 fn a_goal_shows_its_wave_and_what_earlier_waves_left_open() {
     let b = new_board();
     let (g, t) = goal(&b);
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
     let h = b.home();
     let e = &h["goals"][0];
     assert_eq!(e["goal"]["ref"], format!("G{g}"));
@@ -94,7 +94,7 @@ fn a_goal_shows_its_wave_and_what_earlier_waves_left_open() {
 fn a_finished_goal_leaves_home() {
     let b = new_board();
     let (g, t) = goal(&b);
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
     for id in &t {
         b.set(*id, vec![("status", json!("done"))]);
     }
