@@ -433,12 +433,17 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "stopped": {"asked": bool, "message": str} | null
                                  // optional: that terminal stopped before finishing (asked = it asked you a question).
                                  // Shows "Needs you" and an answer box on the done task; the answer goes through POST /tasks/:id/answer.
+    "open_threads": int,         // review threads (and Bitbucket PR tasks) waiting on the PR's author
+    "not_ours": {"checks": [str], "title": str, "reason": str, "proof": [url], "who": str, "at": iso} | null
+                                 // this push's failed checks cleared with `tb pr not-ours`; the task panel's PR bar shows
+                                 // a "Failed, but not because of this PR" box with the title, checks, reason and proof links
   } | null
 }
 ```
+`checks` is `pass` when every failure on the head was cleared as not this PR's.
 The task panel shows three steps (Checks, Review, Merge) from `checks`, `review`, `state` and `stage.phase`. A done
 task whose PR is still OPEN shows "Awaiting merge" (or `stage.label`) instead of Done. The original's `build`,
-`review` free text, `review_log`, reviewer lists, `build_url`, `new_comments`, `not_ours`, `awaiting_you`,
+`review` free text, `review_log`, reviewer lists, `build_url`, `new_comments`, `awaiting_you`,
 `reviewed_at` and `asked` are gone.
 
 ### `attachment` (from `board.attachment_dict`)
@@ -474,6 +479,36 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
+
+### PRs (`tb pr …`)
+The board watches GitHub PRs (through `gh`) and Bitbucket Cloud PRs (REST 2.0, with Taskboard's Bitbucket account);
+`prhost.rs` documents the host interface. Each route below reads the PR from its host first and judges what it says
+now. A host that can't be reached answers 502; a refusal answers 409 with the reasons.
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `failures: [{check, url, steps, tests, source, error?, base_fails, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines or the project's `failures_cmd`; `base_fails` when the base branch's last 5 commits fail that check too), `not_ours`, `expected_missing`, `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open`, `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
+| `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
+| `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
+| `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
+| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open, and a stacked base PR has merged. Then merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
+| `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
+| `POST /tasks/:id/pr/skip-checks` | `{reason?, all?: bool, who?}` | Counts this push's checks (or every push's) as passed: for builds a hook cancelled, not for failures (use `not-ours`). |
+| `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
+| `POST /tasks/:id/pr/merged` | `{who?}` | `tb pr merged`: the PR was merged outside the board. |
+
+`thread = {id, kind: "review"|"comment"|"summary"|"task", resolvable, resolved, author, author_name, last_author, last_id,
+last_at, path?, line?, text, url?, outdated?}`. A thread is open while it's unresolved and someone other than the PR's
+author spoke last (a PR task: until it's resolved), unless it was acknowledged at its last comment.
+
+**Per-project rules** (`[pr.projects.<name>]` in config.toml): `approvals` (needed to be ready to merge; unset = the
+host's verdict or any approval), `expected` (check names that must post on every push; checks count as running until
+they do, for up to `expected_wait_mins`, default 90; `[]` = don't wait at all; unset = the `no_checks_after_mins`
+grace), `failures_cmd` and `merge_strategy`.
+
+**`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
+`TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
+line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
 
 ### Goals
 | Path | Body | Notes |

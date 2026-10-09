@@ -23,13 +23,15 @@ The owner connects GitHub, Bitbucket and Slack in Taskboard ▸ Settings ▸ Acc
 
 Read this when the board brings you back about a done task's PR (`[task-board:T<n>] PR … needs you`): failed checks, review comments, or ready to merge. The task is already done: don't `tb take` it or run `tb done`. Every command takes the task, `T<n>`.
 
-1. `tb pr status T<n>` shows the PR's stage, its checks and its open reviews.
+The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` command works on both.
+
+1. `tb pr status T<n>` reads the PR now: its stage, each check (a failed one with its failed steps and tests where the CI can be read, and `[base fails this too]` when the base branch's latest builds fail it), whether the base moved, the reviewers and their states, the open threads with their ids, and what still stands between it and a merge.
 2. Do the work:
-   - **A check failed**: read its log (on GitHub, `gh pr checks` and `gh run view --log-failed`). Work from the error, never a guess. If the PR's change causes it, fix exactly that. If it fails the same way on the base branch without the change, it isn't ours: say so with `tb note`, and don't fix someone else's failure.
-   - **Comments or changes requested**: fix each one, or put one that can fairly wait in the backlog (`tb backlog add "<title>" --kind follow`). Reply to each thread with what you did.
-   - **Ready to merge**: merge only if the wake prompt says merging is allowed. Then merge with the repo's tools and run `tb pr merged T<n>`.
+   - **A check failed**: work from its failed steps and tests, or its log (on GitHub, `gh pr checks` and `gh run view --log-failed`), never a guess. If the PR's change causes it, fix exactly that. If it fails the same way without the change, it isn't ours: don't fix someone else's failure; clear it with `tb pr not-ours T<n> --check "<check>" --title "<what fails>" --reason "<why it isn't this PR, 20-300 characters>" --proof <link>` (repeat `--proof` and `--check`; a link to the same failure on the base branch, or an issue about it). It clears only checks that failed on this push.
+   - **Open threads or changes requested**: fix each one, or put one that can fairly wait in the backlog (`tb backlog add "<title>" --kind follow`). Push, then answer each thread that asked for something: `tb pr reply T<n> <thread> "<what you did>" --resolve`. A comment that asks for nothing (praise, an FYI, a question already answered) gets `tb pr ack T<n> <thread>`: it's resolved silently, never replied to. When a reviewer asked for changes and every thread is answered, `tb pr addressed T<n>` asks them to look again (it refuses while a thread is open).
+   - **Ready to merge**: merge only if the wake prompt says merging is allowed, with `tb pr merge T<n>`: it checks the PR once more (checks, approvals, threads, PR tasks, a stacked base) and merges it, deleting its branch. Don't merge with the host's own tools.
 3. Push the fixes. If the base branch has moved, rebase onto it first and push with `--force-with-lease`. Don't push only to rebase.
-4. Finish every visit with `tb pr wait T<n>` (or `tb pr merged T<n>` after a merge): the board closes the terminal and keeps watching the PR.
+4. Finish every visit with `tb pr wait T<n>` (or `tb pr addressed` / `tb pr merge`, which finish it too): the board closes the terminal and keeps watching the PR. `tb pr merged T<n>` records a PR someone merged outside the board.
 
 ## The owner wants changes to a done task's PR
 

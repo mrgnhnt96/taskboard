@@ -164,9 +164,11 @@ pub fn pr_card(t: &Row) -> Value {
     if !has(t.s("pr_repo")) || t.i("pr_num").is_none() {
         return Value::Null;
     }
-    let rec = jloads_obj(t.s("pr_flow")).get("rec").cloned();
+    let flow = jloads_obj(t.s("pr_flow"));
+    let rec = flow.get("rec").cloned();
     let checks = rec.as_ref().map(|r| {
-        if r["failed"].as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+        // Failures cleared with `tb pr not-ours` don't count against the PR (the panel's box says why).
+        if !prflow::failing(&flow, r).is_empty() {
             "fail"
         } else if r["running"].as_i64().unwrap_or(0) > 0 {
             "pending"
@@ -176,11 +178,11 @@ pub fn pr_card(t: &Row) -> Value {
             "pass"
         }
     });
-    let review = rec.as_ref().map(|r| match r["review_decision"].as_str().unwrap_or("") {
+    let review = rec.as_ref().map(|r| prflow::review_of(&flow, r)).map(|rv| match rv.decision.as_str() {
         "APPROVED" => "approved",
         "CHANGES_REQUESTED" => "changes",
         "REVIEW_REQUIRED" => "pending",
-        _ if r["approvals"].as_i64().unwrap_or(0) > 0 => "approved",
+        _ if rv.approvals > 0 => "approved",
         _ => "none",
     });
     let state = match t.s("pr_state").unwrap_or("OPEN").to_uppercase().as_str() {

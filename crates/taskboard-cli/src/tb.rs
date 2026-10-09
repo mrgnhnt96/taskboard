@@ -501,6 +501,169 @@ enum PrCmd {
         #[arg(long)]
         all: bool,
     },
+    /// Reply to a review thread: [T<n>] <thread> "<what you did>" (ids from tb pr status)
+    Reply {
+        /// [task] thread text
+        #[arg(num_args = 2..=3, required = true)]
+        args: Vec<String>,
+        /// Resolve the thread too
+        #[arg(long)]
+        resolve: bool,
+    },
+    /// Resolve a thread that asks for nothing, without replying: [T<n>] <thread>
+    Ack {
+        /// [task] thread
+        #[arg(num_args = 1..=2, required = true)]
+        args: Vec<String>,
+    },
+    /// Every thread is answered: ask the reviewers who wanted changes to look again
+    Addressed { task: Option<String> },
+    /// Merge it once it's approved, green and every thread is answered (the board checks first)
+    Merge { task: Option<String> },
+    /// A failed check isn't this PR's fault: clear it for this push, with proof
+    NotOurs {
+        task: Option<String>,
+        /// Why it isn't this PR (20-300 characters)
+        #[arg(long)]
+        reason: String,
+        /// What fails, in a few words (80 characters at most)
+        #[arg(long)]
+        title: String,
+        /// A link showing the same failure without this PR (repeat for more)
+        #[arg(long, required = true)]
+        proof: Vec<String>,
+        /// The failed check to clear (repeat for more; all of this push's failures when left out)
+        #[arg(long)]
+        check: Vec<String>,
+    },
+}
+
+/// Splits `[T<n>] rest…` into the task (if named) and the rest.
+fn task_and(args: Vec<String>, rest: usize) -> (Option<String>, Vec<String>) {
+    if args.len() > rest {
+        let mut it = args.into_iter();
+        let t = it.next();
+        (t, it.collect())
+    } else {
+        (None, args)
+    }
+}
+
+fn mark(state: &str) -> &'static str {
+    match state {
+        "failed" => "✗",
+        "running" => "…",
+        "stopped" => "■",
+        _ => "✓",
+    }
+}
+
+fn print_pr_status(t: &str, v: &Value) {
+    let pr = &v["pr"];
+    let live = &v["live"];
+    out(&format!("{t} · PR #{} · {}", pr["num"], pr["url"].as_str().unwrap_or("")));
+    if let Some(stage) = pr["stage"]["label"].as_str() {
+        out(&format!("Stage: {stage}"));
+    }
+    out(&format!("State: {} · checks: {} · review: {}", pr["state"].as_str().unwrap_or("?"), pr["checks"].as_str().unwrap_or("unknown"), pr["review"].as_str().unwrap_or("unknown")));
+    if let Some(e) = live["read_error"].as_str() {
+        out(&format!("Couldn't read it just now ({e}); this is the last read."));
+    }
+    let rec = &v["record"];
+    if let (Some(b), Some(base)) = (rec["branch"].as_str(), rec["base"].as_str()) {
+        let moved = if live["base_moved"] == true { format!(" · {base} has moved since this push: rebase onto it") } else { String::new() };
+        out(&format!("Branch {b} into {base}{moved}"));
+    }
+    if let Some(n) = live["builds_note"].as_str() {
+        out(n);
+    }
+    let failures = live["failures"].as_array().cloned().unwrap_or_default();
+    if let Some(checks) = rec["checks"].as_array() {
+        if !checks.is_empty() {
+            out("Checks:");
+        }
+        for ch in checks {
+            let name = ch["name"].as_str().unwrap_or("");
+            let f = failures.iter().find(|f| f["check"].as_str() == Some(name));
+            let mut line = format!("  {} {name}", mark(ch["state"].as_str().unwrap_or("")));
+            if let Some(f) = f {
+                if f["base_fails"] == true {
+                    line += " [base fails this too]";
+                }
+                if f["cleared"] == true {
+                    line += " [not this PR's]";
+                }
+            }
+            if let Some(u) = ch["url"].as_str() {
+                line += &format!(" · {u}");
+            }
+            out(&line);
+            if let Some(f) = f {
+                for s in f["steps"].as_array().cloned().unwrap_or_default() {
+                    out(&format!("      step: {}", s.as_str().unwrap_or("")));
+                }
+                for s in f["tests"].as_array().cloned().unwrap_or_default() {
+                    out(&format!("      test: {}", s.as_str().unwrap_or("")));
+                }
+                if let Some(e) = f["error"].as_str() {
+                    out(&format!("      couldn't read its steps: {e}"));
+                }
+            }
+        }
+    }
+    if let Some(e) = live["base_error"].as_str() {
+        out(&format!("Couldn't compare with the base branch: {e}"));
+    }
+    if let Some(m) = live["expected_missing"].as_array().filter(|m| !m.is_empty()) {
+        out(&format!("Expected checks not posted yet: {}", m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    if live["not_ours"].is_object() {
+        let n = &live["not_ours"];
+        out(&format!("Not this PR's: {} — {}", n["title"].as_str().unwrap_or(""), n["reason"].as_str().unwrap_or("")));
+    }
+    let reviewers = live["reviewers"].as_array().cloned().unwrap_or_default();
+    if !reviewers.is_empty() {
+        let need = live["approvals"]["need"].as_i64().map(|n| format!(" · {} of {n} approvals", live["approvals"]["have"])).unwrap_or_default();
+        out(&format!("Reviewers{need}:"));
+        for r in reviewers {
+            let name = r["name"].as_str().filter(|n| !n.is_empty()).or(r["user"].as_str()).unwrap_or("");
+            let state = match r["state"].as_str().unwrap_or("") {
+                "approved" => "approved",
+                "changes" if r["requested"] == true => "asked for changes, asked to look again",
+                "changes" => "asked for changes",
+                "commented" => "commented",
+                _ => "hasn't reviewed yet",
+            };
+            out(&format!("  {name}: {state}{}", if r["swapped_off"] == true { " (swapped off)" } else { "" }));
+        }
+    }
+    let open = live["open_threads"].as_array().cloned().unwrap_or_default();
+    if !open.is_empty() {
+        out(&format!("Open threads ({}):", open.len()));
+        for th in open {
+            let who = th["author_name"].as_str().filter(|n| !n.is_empty()).or(th["author"].as_str()).unwrap_or("");
+            let at = th["path"].as_str().map(|p| format!(" · {p}{}", th["line"].as_i64().map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_default();
+            let kind = if th["kind"] == "task" { " · task" } else { "" };
+            out(&format!("  {} · {who}{kind}{at} · {}", th["id"].as_str().unwrap_or(""), th["text"].as_str().unwrap_or("")));
+        }
+    } else if rec["comments"].as_i64().unwrap_or(0) > 0 && !rec["threads"].is_array() {
+        out(&format!("Review comments from others: {}", rec["comments"]));
+    }
+    if v["watched"] != true {
+        out("The board doesn't watch this PR's host; read it with the host's own tools.");
+    }
+    if let Some(b) = live["blockers"].as_array().filter(|b| !b.is_empty()) {
+        out(&format!("Before it can merge: {}", b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")));
+    }
+    out(&format!("Merging: {}", if v["agents_merge"] == true { "agents may merge once it's approved and green (tb pr merge)" } else { "the owner merges it" }));
+}
+
+fn plural_threads(v: &Value) -> String {
+    match v["open_threads"].as_i64().unwrap_or(0) {
+        0 => "No threads are".to_string(),
+        1 => "1 thread is still".to_string(),
+        n => format!("{n} threads are still"),
+    }
 }
 
 fn out(line: &str) {
@@ -603,6 +766,11 @@ impl Ctx {
             }
         }
         Ok(0)
+    }
+
+    /// Who a PR command is from, for the task's log.
+    fn pr_who(&self) -> &'static str {
+        if self.session.is_empty() { "tb" } else { "The agent" }
     }
 
     /// The task a PR command is about: the one named, or this terminal's (including a PR it's visiting).
@@ -1536,29 +1704,46 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Pr { action } => match action {
             PrCmd::Status { task } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("GET", &format!("/tasks/{t}/pr"), None)?;
-                let pr = &v["pr"];
-                out(&format!("{t} · PR #{} · {}", pr["num"], pr["url"].as_str().unwrap_or("")));
-                if let Some(stage) = pr["stage"]["label"].as_str() {
-                    out(&format!("Stage: {stage}"));
+                let v = c.call("GET", &format!("/tasks/{t}/pr?full=1"), None)?;
+                print_pr_status(&t, &v);
+                Ok(0)
+            }
+            PrCmd::Reply { args, resolve } => {
+                let (task, rest) = task_and(args, 2);
+                let t = c.pr_task(task)?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/reply"), Some(json!({"thread": rest[0], "text": rest[1], "resolve": resolve, "who": c.pr_who()})))?;
+                out(&format!("Replied on thread {}{}. {} open.", rest[0], if v["resolved"] == true { " and resolved it" } else { "" }, plural_threads(&v)));
+                Ok(0)
+            }
+            PrCmd::Ack { args } => {
+                let (task, rest) = task_and(args, 1);
+                let t = c.pr_task(task)?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0], "who": c.pr_who()})))?;
+                out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v)));
+                Ok(0)
+            }
+            PrCmd::Addressed { task } => {
+                let t = c.pr_task(task)?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({"who": c.pr_who()})))?;
+                let asked: Vec<&str> = v["asked"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                if asked.is_empty() {
+                    out(&format!("Recorded {t}'s review as addressed. The board watches the PR and brings this conversation back when it needs you. You can stop here."));
+                } else {
+                    out(&format!("Asked {} to review {t}'s PR again. The board watches it and brings this conversation back when it needs you. You can stop here.", asked.join(", ")));
                 }
-                out(&format!("State: {} · checks: {} · review: {}", pr["state"].as_str().unwrap_or("?"), pr["checks"].as_str().unwrap_or("unknown"), pr["review"].as_str().unwrap_or("unknown")));
-                let rec = &v["record"];
-                if let Some(checks) = rec["checks"].as_array() {
-                    for ch in checks {
-                        out(&format!("  {} {}", if ch["state"] == "failed" { "✗" } else if ch["state"] == "running" { "…" } else { "✓" }, ch["name"].as_str().unwrap_or("")));
-                    }
-                }
-                if rec["comments"].as_i64().unwrap_or(0) > 0 {
-                    out(&format!("Review comments from others: {}", rec["comments"]));
-                }
-                if let (Some(b), Some(base)) = (rec["branch"].as_str(), rec["base"].as_str()) {
-                    out(&format!("Branch {b} into {base}"));
-                }
-                if v["watched"] != true {
-                    out("The board doesn't watch this PR's host; read it with the host's own tools.");
-                }
-                out(&format!("Merging: {}", if v["agents_merge"] == true { "agents may merge once it's approved and green" } else { "the owner merges it" }));
+                Ok(0)
+            }
+            PrCmd::Merge { task } => {
+                let t = c.pr_task(task)?;
+                c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"who": c.pr_who(), "agent": !c.session.is_empty()})))?;
+                out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
+                Ok(0)
+            }
+            PrCmd::NotOurs { task, reason, title, proof, check } => {
+                let t = c.pr_task(task)?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/not-ours"), Some(json!({"reason": reason, "title": title, "proof": proof, "checks": check, "who": c.pr_who()})))?;
+                let cleared: Vec<&str> = v["cleared"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                out(&format!("Cleared {} for this push of {t}'s PR: they failed, but not because of it.", cleared.join(", ")));
                 Ok(0)
             }
             PrCmd::Wait { task } => {

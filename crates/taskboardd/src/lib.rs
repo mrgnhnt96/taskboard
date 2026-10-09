@@ -20,6 +20,7 @@ pub mod locks;
 pub mod mdcopy;
 pub mod midna;
 pub mod ops;
+pub mod prcmds;
 pub mod prflow;
 pub mod prhost;
 pub mod proc;

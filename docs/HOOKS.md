@@ -56,7 +56,7 @@ There are two kinds of event:
 
 An event fires once per change: a task already `working` doesn't fire `task.working` again, and a PR step is asked
 about once per push (and, for `pr.comments`, per new comment). The `pr.*` steps need PR watching (`[pr] watch`,
-GitHub only). When a skip moves a PR on, the step it lands on asks its own hooks straight away.
+GitHub and Bitbucket Cloud). When a skip moves a PR on, the step it lands on asks its own hooks straight away.
 
 ## `hooks.json`
 
@@ -113,7 +113,7 @@ tests are red"), in the task's history and as below:
 | `pr.checks`      | —                                                                        | This push's checks count as passed ("Checks skipped"); the PR moves on. |
 | `pr.fix`         | The agent isn't brought back; you get an alert. The PR stays at "Fixing checks" until the next push. | As `pr.checks`. |
 | `pr.review`      | You aren't told it's ready for review.                                    | This push counts as approved; the PR moves on to `pr.merge`. |
-| `pr.comments`    | The agent isn't brought back; you get an alert.                           | The comments so far count as answered; the PR moves on. |
+| `pr.comments`    | The agent isn't brought back; you get an alert.                           | The comments and open threads so far count as answered (until someone writes on a thread again); the PR moves on. |
 | `pr.merge`       | The agent isn't brought back to merge, and there's no "ready to merge" alert; you get an alert with the reason instead. | — |
 
 ### Skipping checks you cancelled
@@ -139,7 +139,9 @@ echo '{"decision": "skip", "reason": "Cancelled the CI builds"}'
 ```
 
 A skip covers one push; the next push asks `pr.checks` again. From any other hook or by hand, `tb pr skip-checks
-[T12] --reason "…"` does the same for the current push, and `--all` for every push from now on.
+[T12] --reason "…"` does the same for the current push, and `--all` for every push from now on. A check that really
+failed but not because of the PR is cleared with `tb pr not-ours` instead (per check and push, with a reason and proof
+links; see docs/API.md).
 
 ## What a hook gets
 

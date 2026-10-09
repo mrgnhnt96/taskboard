@@ -161,7 +161,19 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"text": handoff::build(app, t)?}))
         }
         ("GET", ["tasks", id, "log"]) => get_log(app, tid(id)?, q(query, "kind", "all")),
-        ("GET", ["tasks", id, "pr"]) => get_pr(app, tid(id)?),
+        ("GET", ["tasks", id, "pr"]) => {
+            let t = tid(id)?;
+            let mut v = get_pr(app, t)?;
+            if matches!(q(query, "full", ""), "1" | "true") {
+                v["live"] = crate::prcmds::status(app, t)?;
+                // The read just now stepped the PR: answer with what it found.
+                let fresh = get_pr(app, t)?;
+                for k in ["pr", "record", "checked_at"] {
+                    v[k] = fresh[k].clone();
+                }
+            }
+            Ok(v)
+        }
         ("POST", ["tasks", id]) => patch_task(app, tid(id)?, body),
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
         ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, body),
@@ -196,6 +208,11 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "reply"]) => crate::prcmds::reply(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "ack"]) => crate::prcmds::ack(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "addressed"]) => crate::prcmds::addressed(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "merge"]) => crate::prcmds::merge(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "not-ours"]) => crate::prcmds::not_ours(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reviewed"]) => {
             let t = tid(id)?;
             app.db.tx(|| {
@@ -2019,7 +2036,7 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
     }
     let f = jloads_obj(t.s("pr_flow"));
     Ok(json!({"task": rf("task", id), "pr": board::pr_card(&t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
-              "agents_merge": app.cfg.pr.agents_merge, "watched": t.s("pr_host") == Some("github") && app.cfg.pr.watch}))
+              "agents_merge": app.cfg.pr.agents_merge, "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {
