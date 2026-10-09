@@ -346,6 +346,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             issue_detail(app, i)
         }
         ("POST", ["report"]) => reports::handle(app, body.clone(), false),
+        ("GET", ["home"]) => crate::home::page(app, q(query, "project", "all")),
         ("GET", ["days"]) => days::page(app, query.get("date").map(|s| s.as_str()), query.get("hide").map(|s| s.as_str())),
         ("GET", ["history"]) => days::history(app),
         ("POST", ["history"]) => days::set_history(app, body),

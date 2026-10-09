@@ -146,6 +146,29 @@ window at 100 % makes goals show "Queued until agents can start".
 ```
 The UI also accepts a missing `renaming`/`rename_error`.
 
+### `GET /home`
+
+Query: `project=<name|all>`. The home page: what needs you, and the goals with work in flight.
+```
+{
+  "needs": [alert + {"card": task_card|null, "goal_name": str|null}],
+          // the alerts (urgent first) with their task's card, then every task that needs you with no alert up
+          // (id null: nothing to dismiss; text is its question or latest update)
+  "goals": [{
+    "goal": goal_summary|null,     // null: the project's tasks outside any goal
+    "project": str,
+    "wave": int|null,              // the wave it's on: the latest with a task in flight, else the first with one queued
+    "waves": int,                  // how many waves it has (0 without waves)
+    "now": [task_card],            // in flight in that wave: working, needs you, starting, or done with its PR still open
+    "left": [task_card],           // earlier waves' tasks still in flight or queued
+    "left_waves": [int],
+    "queued": int                  // queued (not starting) in that wave
+  }]
+}
+```
+In flight or queued only: a goal with nothing of either (planned, finished, archived or deprioritized) isn't
+listed. Ordered by project, then goals that need you, then working ones, newest goal first.
+
 ### `GET /goals`
 
 No query. Returns `{"goals": [goal_summary]}` for every non-archived goal (all projects). The goals rail, goal

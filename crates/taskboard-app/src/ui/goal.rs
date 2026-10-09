@@ -3361,7 +3361,6 @@ mod tests {
     fn review_log_issues_say_so() {
         let from = |src: &str| issue_from(&json!({"source": src, "found_by_name": "Sam", "created_at": ""}), true);
         assert_eq!(from("review_log"), "From the Review log");
-        assert_eq!(crate::ui::board::issue_from(&json!({"source": "review_log", "created_at": ""})), "From the Review log");
         assert_eq!(from("you"), "Added by you");
     }
 

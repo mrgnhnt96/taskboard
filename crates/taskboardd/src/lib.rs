@@ -22,6 +22,7 @@ pub mod feed;
 pub mod gitattrs;
 pub mod handoff;
 pub mod hooks;
+pub mod home;
 pub mod hours;
 pub mod import;
 pub mod cutover;

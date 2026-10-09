@@ -61,6 +61,9 @@ pub struct Data {
     pub session: Option<Value>,
     /// `GET /days` for the Days page.
     pub days: Option<Value>,
+    /// `GET /home` and today's `GET /days` for the home page.
+    pub home: Option<Value>,
+    pub today: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -593,6 +596,8 @@ struct Wants {
     sessions: bool,
     session: Option<String>,
     days_q: Option<Vec<(&'static str, String)>>,
+    /// The board's project filter, for `GET /home`.
+    home: Option<String>,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -608,6 +613,8 @@ struct Got {
     closed: Option<Value>,
     session: Option<(String, Answer)>,
     days: Option<Answer>,
+    home: Option<Value>,
+    today: Option<Value>,
 }
 
 impl Wants {
@@ -630,6 +637,7 @@ impl Wants {
             sessions: m.page == Page::Sessions,
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
+            home: (m.page == Page::Board).then(|| m.filters.project.clone()),
         }
     }
 
@@ -647,6 +655,8 @@ impl Wants {
             closed: if self.sessions { get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok) } else { None },
             session: self.session.and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
             days: self.days_q.and_then(|q| get("days", &q)),
+            today: if self.home.is_some() { get("days", &[]).and_then(Result::ok) } else { None },
+            home: self.home.and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
             state,
         }
     }
@@ -710,6 +720,12 @@ impl Got {
                 land(&mut d.days, &mut d.errs.days, v, |v| v);
             }
         }
+        if self.home.is_some() {
+            d.home = self.home;
+        }
+        if self.today.is_some() {
+            d.today = self.today;
+        }
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
                 // `sessionsLoads`: a failed fetch for another terminal than the one shown clears it.
@@ -760,7 +776,7 @@ impl Render for MainWindow {
         window.set_window_title(&self.title());
 
         let page = match self.page.clone() {
-            Page::Board => ui::board::render(self, window, cx),
+            Page::Board => ui::home::render(self, window, cx),
             Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
@@ -1031,12 +1047,11 @@ fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString
         .child(label.into())
 }
 
-/// The banner lines: the board down, the login item (native), the alerts.
+/// The banner lines: the board down, the login item (native), master and PR-build problems. The
+/// alerts are the home page's Needs you list.
 fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let mut out = Vec::new();
-    // A break's urgent alert is already its "Master is red" line.
-    let alerts: Vec<Value> = arr(m.state(), "alerts").iter().filter(|a| !ui::prwatch::shown_as_master(m.state(), a)).cloned().collect();
-    let rows = banner_view(m.down.as_deref(), &alerts);
+    let rows = banner_view(m.down.as_deref(), &[]);
     for r in rows.iter().filter(|r| r.kind == "down") {
         let text = r.text.clone();
         out.push(
@@ -1067,28 +1082,6 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
         out.push(bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)).child(div().flex_1().min_w_0().child(p)).into_any_element());
     }
     out.extend(ui::prwatch::banner(m, t, cx));
-    let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.into_iter().partition(|a| a["urgent"] == true);
-    for a in &urgent {
-        out.push(alert_row(t, a, cx).into_any_element());
-    }
-    if alerts.len() > 1 {
-        let r = rows.iter().find(|r| r.kind == "alert").cloned();
-        if let Some(r) = r {
-            out.push(
-                bar(t.down_soft, t.down, t.down_line)
-                    .child(kit::dot(t.down, 8.))
-                    .child(alert_text(&r, t.muted))
-                    .child(banner_btn(t, "alerts-open", "Show all", true).on_click(cx.listener(|m, _, window, cx| {
-                        m.set_modal(Some(ui::modals::Modal::Alerts), window, cx);
-                    })))
-                    .into_any_element(),
-            );
-        }
-    } else {
-        for a in &alerts {
-            out.push(alert_row(t, a, cx).into_any_element());
-        }
-    }
     out
 }
 
