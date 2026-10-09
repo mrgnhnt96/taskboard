@@ -474,6 +474,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     close_idle_after_hours(app)?;
     close_pr_tabs(app)?;
     app.db.tx(|| crate::feed::check(app))?;
+    crate::prbuilds::tick(app)?;
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;
@@ -487,6 +488,7 @@ pub fn prs(app: &App) -> Result<()> {
     if crate::feed::poll_due(app) {
         prflow::refresh(app)?;
     }
+    app.db.tx(|| crate::prbuilds::sweep(app))?;
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
     worktrees::clean_up(app).map(|_| ())
 }

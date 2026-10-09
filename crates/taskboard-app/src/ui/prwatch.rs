@@ -1,5 +1,5 @@
-//! The board's PR watch in the window's chrome: the status-bar pill of an unhealthy PR feed
-//! (`state.pr_feed`).
+//! The board's PR watch in the window's chrome: the status-bar pills of an unhealthy PR feed
+//! (`state.pr_feed`) and of stopped PR builds (`state.pr_builds`).
 
 use crate::app::{Pill, pill_shell};
 use crate::fmt::{self, s};
@@ -24,9 +24,27 @@ pub fn feed_pill(f: &Value) -> Option<Pill> {
     Some(Pill { cls: "down", label: format!("PR feed {}", s(f, "problem")), title: title.join("\n") })
 }
 
+/// "PR builds stopped" while the owner has them stopped, with who and when.
+pub fn builds_pill(v: &Value) -> Option<Pill> {
+    if v["stopped"] != true {
+        return None;
+    }
+    let mut title = format!("Stopped by {}", fmt::opt_s(v, "by").unwrap_or("the owner"));
+    if let Some(at) = fmt::opt_s(v, "at") {
+        title += &format!(" at {}", fmt::hhmm(at));
+    }
+    if let Some(r) = fmt::opt_s(v, "reason") {
+        title += &format!(": {r}");
+    }
+    Some(Pill { cls: "hours", label: "PR builds stopped".into(), title })
+}
+
 /// The status-bar pills for the PR watch.
 pub fn pills(st: &Value, t: &Theme) -> Vec<AnyElement> {
     let mut out = vec![];
+    if let Some(p) = st.get("pr_builds").and_then(builds_pill) {
+        out.push(pill_shell(t, "builds-pill", t.warn_fg, t.warn_soft).child(kit::dot(t.warn, 7.)).child(p.label).tooltip(kit::tip(p.title)).into_any_element());
+    }
     if let Some(p) = st.get("pr_feed").and_then(feed_pill) {
         out.push(pill_shell(t, "feed-pill", t.warn_fg, t.warn_soft).child(kit::dot(t.warn, 7.)).child(p.label).tooltip(kit::tip(p.title)).into_any_element());
     }
@@ -48,5 +66,13 @@ mod tests {
         assert_eq!(p.label, "PR feed stuck");
         assert!(p.title.starts_with("The PR feed hasn't sent a heartbeat"));
         assert!(p.title.contains("Holding reviewer asks"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_builds_pill_says_who_stopped_them() {
+        assert_eq!(builds_pill(&json!({"stopped": false})), None);
+        let p = builds_pill(&json!({"stopped": true, "by": "Sam", "reason": "CI minutes ran out"})).unwrap();
+        assert_eq!(p.label, "PR builds stopped");
+        assert_eq!(p.title, "Stopped by Sam: CI minutes ran out");
     }
 }

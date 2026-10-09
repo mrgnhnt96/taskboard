@@ -213,7 +213,15 @@ pub fn intake(app: &App, body: &Value) -> Result<Value> {
     );
     save(app, &st)?;
     let mut out = json!({"ok": true, "kind": kind, "task": t.as_ref().map(|t| rf("task", t.id()))});
-    let Some(t) = t else { return Ok(out) };
+    let Some(t) = t else {
+        if kind == "build" {
+            out["builds"] = crate::prbuilds::on_push_build(app, body)?;
+        }
+        return Ok(out);
+    };
+    if kind == "build" {
+        out["builds"] = crate::prbuilds::on_build_event(app, &t, body)?;
+    }
     if crate::prhost::watched(t.s("pr_host")) && t.i("pr_num").is_some() && !matches!(t.s("pr_phase"), Some("merged" | "declined")) {
         match prflow::refresh_task(app, t.id())? {
             Ok(_) => {

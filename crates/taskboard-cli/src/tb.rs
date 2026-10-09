@@ -312,6 +312,11 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<FeedCmd>,
     },
+    /// Stop or resume the board's PR builds, only on the owner's word (no action: whether they're stopped)
+    PrBuilds {
+        #[command(subcommand)]
+        action: Option<PrBuildsCmd>,
+    },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
     /// Print an account's token for a script: github, bitbucket or slack
@@ -875,6 +880,23 @@ enum FeedCmd {
     },
     /// The feed is alive
     Heartbeat,
+}
+
+#[derive(Subcommand)]
+enum PrBuildsCmd {
+    /// Cancel every build of the owner's PRs and pushes from now on; their checks count as passed
+    Stop {
+        #[arg(long)]
+        reason: Option<String>,
+        /// Whose word it is (the owner when left out)
+        #[arg(long)]
+        who: Option<String>,
+    },
+    /// Let the builds run again
+    Resume {
+        #[arg(long)]
+        who: Option<String>,
+    },
 }
 
 /// Splits `[T<n>] rest…` into the task (if named) and the rest.
@@ -1978,6 +2000,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Device { action } => device_cmd(c, action),
         Cmd::Feed { action } => feed_cmd(c, action),
+        Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
         Cmd::Bits { goal, t } => {
             let mut path = "/bits".to_string();
             if let Some(g) = goal {
@@ -2894,6 +2917,33 @@ fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
     Ok(0)
 }
 
+/// "PR builds are stopped (by Sam at 3:04 PM: CI minutes ran out)" for `tb pr-builds`.
+fn pr_builds_line(v: &Value) -> String {
+    let clock = |k: &str| v[k].as_str().map(|t| format!(" at {}", taskboardd::util::local_clock(Some(t)))).unwrap_or_default();
+    if v["stopped"] != true {
+        return match v["resumed_by"].as_str() {
+            Some(w) => format!("PR builds run (resumed by {w}{}).", clock("resumed_at")),
+            None => "PR builds run.".into(),
+        };
+    }
+    let reason = v["reason"].as_str().map(|r| format!(": {r}")).unwrap_or_default();
+    let mut line = format!("PR builds are stopped (by {}{}{reason}).", v["by"].as_str().unwrap_or("the owner"), clock("at"));
+    if let Some(n) = v["cancelling"].as_i64().filter(|n| *n > 0) {
+        line += &format!(" Cancelling the builds of {n} more.");
+    }
+    line
+}
+
+fn pr_builds_cmd(c: &Ctx, action: Option<PrBuildsCmd>) -> Result<i32, String> {
+    let v = match action {
+        None => c.call("GET", "/pr-builds", None)?,
+        Some(PrBuildsCmd::Stop { reason, who }) => c.call("POST", "/pr-builds", Some(json!({"stopped": true, "reason": reason, "who": who})))?,
+        Some(PrBuildsCmd::Resume { who }) => c.call("POST", "/pr-builds", Some(json!({"stopped": false, "who": who})))?,
+    };
+    out(&pr_builds_line(&v));
+    Ok(0)
+}
+
 pub fn main_with(args: Vec<String>) -> i32 {
     if args.get(1).map(|a| a == "hook").unwrap_or(false) {
         return hook::run(args.get(2).map(|s| s.as_str()));
@@ -2951,6 +3001,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "goal", "wave", "G1", "2", "--hold", "off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "devices"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "feed"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr-builds", "stop", "--reason", "CI is out of minutes", "--who", "Sam"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "pr-builds", "resume"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "feed", "heartbeat"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "feed", "event", "https://bitbucket.org/a/b/pull-requests/9", "--kind", "build", "--state", "started", "--head", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());

@@ -558,7 +558,8 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         _ => {}
     }
     let f = flow(t);
-    let skipped = checks_skipped(&f, rec).is_some();
+    // While the board's PR builds are stopped (`prbuilds.rs`), checks count as passed.
+    let skipped = checks_skipped(&f, rec).is_some() || crate::prbuilds::stopped(app);
     if !skipped && !failing(&f, rec).is_empty() {
         return "fix".into();
     }
@@ -733,7 +734,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     let phase = phase_of(app, &probe(t, &f), rec);
     let old = t.st("pr_phase");
     let phase_changed = phase != old;
-    let build = if checks_skipped(&f, rec).is_some() {
+    let build = if crate::prbuilds::stopped(app) {
+        "Builds stopped"
+    } else if checks_skipped(&f, rec).is_some() {
         "Checks skipped"
     } else if !str_list(&rec["failed"]).is_empty() && failing(&f, rec).is_empty() {
         "Failed, not this PR"

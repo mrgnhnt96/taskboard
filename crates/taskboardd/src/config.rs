@@ -40,6 +40,9 @@ pub struct FileConfig {
     pub devices: crate::devices::DevicesConfig,
     pub bits: crate::bits::BitsConfig,
     pub feed: crate::feed::FeedConfig,
+    pub pr_builds: crate::prbuilds::PrBuildsConfig,
+    /// The owner's commit emails: their own pushes (`prbuilds.rs`) and commits on a red default branch.
+    pub owner_emails: Vec<String>,
 }
 
 /// Alerts' desktop notifications.
@@ -477,6 +480,8 @@ pub struct Config {
     pub devices: crate::devices::DevicesConfig,
     pub bits: crate::bits::BitsConfig,
     pub feed: crate::feed::FeedConfig,
+    pub pr_builds: crate::prbuilds::PrBuildsConfig,
+    pub owner_emails: Vec<String>,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -570,6 +575,8 @@ impl Config {
             devices: f.devices,
             bits: f.bits,
             feed: f.feed,
+            pr_builds: f.pr_builds,
+            owner_emails: f.owner_emails,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }

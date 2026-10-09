@@ -40,6 +40,7 @@ reader just changed doesn't vanish from under them).
   "work_hours": work_hours,
   "usage": usage | null,                        // null when no usage reading is known: the pill is hidden
   "accounts": [{"id", "label", "reason", "reauth": bool}],  // accounts needing the owner (missing scopes or a failed check): the amber status-bar pill
+  "pr_builds": {"stopped", "by", "at", "reason", …},  // PR builds stopped (GET /pr-builds): the "PR builds stopped" pill
   "pr_feed": {"on", "healthy", "problem", "why", …},  // the PR feed's health (GET /prs/feed); the app shows a pill while it's unhealthy
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
   "sessions": [session_row],                    // live (not gone) Claude terminals, filtered by ?project
@@ -589,6 +590,26 @@ still bad 5 minutes after the last one. The alert clears when the feed is health
 
 A request for changes only counts (moves the PR to "Addressing comments", blocks the merge, is asked again by `tb pr
 addressed`) when the reviewer also wrote on the PR: started or spoke on a thread, a review summary included.
+
+### PR builds (`tb pr-builds`)
+A board-wide switch for when CI time is scarce, set only on the owner's word (`prbuilds.rs` documents it).
+
+| Path | Body | Notes |
+|---|---|---|
+| `GET /pr-builds` | | `tb pr-builds`. **Response:** `{stopped, by, at, reason, resumed_by, resumed_at, cancelling: int}`; also `state.pr_builds` (the app's "PR builds stopped" pill). |
+| `POST /pr-builds` | `{stopped: bool, who?, reason?}` | `tb pr-builds stop [--reason] [--who]` / `resume`. `who` defaults to the owner. Stopping cancels what's running now; resuming drops the cancels still waiting. **Response:** as `GET`. |
+
+While stopped: a build event (`POST /prs/event` with `kind: build`, a running `state` such as `started`) on one of the
+board's PRs, a running check seen on a poll, or a push build whose `author` is in `owner_emails`, queues a cancel
+(once per push). It runs `[pr_builds.cancel].<provider>` (the event's `provider`, else read from `build_url`: github,
+bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`, `stopPipeline`). A failed cancel is
+tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
+way to cancel alerts at once. A cancelled push is logged on its task. The PRs' checks count as passed: the build reads
+"Builds stopped" and the PR moves on to review.
+
+A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
+started) or `pr.fix` hooks (a build failed), once per push; a skip counts that push's checks as passed. The response's
+`builds: {state, cancel?: "queued"|"waiting", hook?: "go"|"skip"|"block", owners?}` says what happened.
 
 ### Projects
 | Path | Body | Notes |
