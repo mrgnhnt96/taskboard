@@ -1003,14 +1003,6 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     if !["new", "queue", "attach"].contains(&mode.as_str()) {
         return err(400, "Start mode must be new, queue or attach.");
     }
-    let t = board::get_task(app, id)?;
-    if let (Some(line), Some("queued")) = (t.s("line_session"), t.s("status")) {
-        let name = board::session_name(app, Some(line), None);
-        return err(
-            409,
-            format!("{} waits in {name}'s line and starts there by itself. To run it elsewhere, take it out first: tb line drop {}.", rf("task", id), rf("task", id)),
-        );
-    }
     // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's,
     // and only the app's own request is that; any other caller with no terminal is no one's word.
     let via = body_str(body, "via_session");
@@ -1055,6 +1047,12 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         }
         if board::live_start_job(app, &t)?.map(|j| matches!(j.s("state"), Some("pending") | Some("running"))).unwrap_or(false) {
             return err(409, "It's already starting in Midna.");
+        }
+        // The owner's Start takes it out of a terminal's line it waits in and runs it as asked.
+        if let (Some(line), Some("queued")) = (t.s("line_session"), t.s("status")) {
+            let name = board::session_name(app, Some(line), None);
+            crate::lines::leave(app, &t)?;
+            board::log_event(app, id, board::OWNER, "status", &format!("Taken out of {name}'s line"))?;
         }
         let sid = body["session_id"].as_str().map(|s| s.to_string());
         board::update_task(

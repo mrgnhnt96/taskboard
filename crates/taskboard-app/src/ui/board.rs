@@ -315,9 +315,10 @@ pub fn checks_of(pr: &Value) -> (&'static str, &'static str) {
     }
 }
 
-/// `startsByHand`.
+/// `startsByHand`. A task waiting in a terminal's line starts by hand too, goal or not: Start takes it
+/// out of the line.
 pub fn starts_by_hand(x: &Value) -> bool {
-    matches!(s(x, "status"), "queued" | "planned") && obj(x, "goal").is_none() && !b(x, "starting") && x["line"].is_null()
+    matches!(s(x, "status"), "queued" | "planned") && (obj(x, "goal").is_none() || !x["line"].is_null()) && !b(x, "starting")
 }
 
 pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
@@ -1513,15 +1514,17 @@ mod tests {
     }
 
     #[test]
-    fn a_task_in_a_terminals_line_says_where_and_has_no_start() {
+    fn a_task_in_a_terminals_line_says_where_and_still_has_start() {
         let x = json!({"id": 14, "ref": "T14", "title": "Footer", "project": "webapp", "status": "queued",
                        "line": {"session": "s1", "name": "Term 3", "kind": "resume", "pos": 1, "label": "To resume in Term 3", "after": "T12"}});
         let card = task_card_vm(&x, None);
         assert!(card.chips.iter().any(|c| c.text == "To resume in Term 3" && c.cls == "line"));
-        assert!(!starts_by_hand(&x));
-        let mut free = x.clone();
-        free["line"] = Value::Null;
-        assert!(starts_by_hand(&free));
+        assert!(starts_by_hand(&x), "Start takes it out of the line");
+        let mut in_goal = x.clone();
+        in_goal["goal"] = json!({"id": 3, "title": "Launch"});
+        assert!(starts_by_hand(&in_goal), "a goal task bumped into a line can be started elsewhere");
+        in_goal["line"] = Value::Null;
+        assert!(!starts_by_hand(&in_goal));
     }
 
     #[test]

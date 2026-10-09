@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::util::*;
 use crate::board::MIDNA;
-use crate::{board, deliver, devices, fields, handoff, locks, p, waitsfor};
+use crate::{board, deliver, devices, fields, handoff, hours, locks, p, waitsfor};
 
 pub const ADDED: &[(&str, &str, &str)] = &[("tasks", "line_session", "TEXT"), ("tasks", "line_pos", "INT")];
 pub const SCHEMA: &str = "CREATE INDEX IF NOT EXISTS tasks_line ON tasks(line_session);";
@@ -119,9 +119,20 @@ pub fn drop(app: &App, t: &Row, who: &str, why: &str) -> Result<()> {
     Ok(())
 }
 
-/// The first task in terminal `sid`'s line that nothing holds back (what it waits for, a lock, devices).
+/// Whether the clock holds `t` back in its line, the same as any other start: outside the work hours
+/// (unless its goal was started now until they open) or with the 5-hour usage used up. It's delivered
+/// once they open or the usage resets; the owner's Start still runs it now.
+pub fn held_by_clock(app: &App, t: &Row) -> Result<bool> {
+    Ok(!hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()))
+}
+
+/// The first task in terminal `sid`'s line that nothing holds back (the clock, what it waits for, a
+/// lock, devices).
 fn next_ready(app: &App, sid: &str) -> Result<Option<Row>> {
     for t in of(app, sid)? {
+        if held_by_clock(app, &t)? {
+            continue;
+        }
         if waitsfor::blocker(app, &t)?.is_none() && locks::blocker(app, &t)?.is_none() && devices::blocker(app, &t)?.is_none() {
             return Ok(Some(t));
         }
