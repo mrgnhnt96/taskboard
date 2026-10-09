@@ -198,7 +198,7 @@ enum Cmd {
         #[arg(long = "today-until")]
         today_until: Option<String>,
     },
-    /// Show or change when Midna keeps the Mac awake for agents (its hours, days, battery floor)
+    /// Show or change how Midna keeps the Mac awake for agents in the work hours (`tb hours` sets when)
     KeepAwake {
         #[arg(long)]
         on: bool,
@@ -207,14 +207,7 @@ enum Cmd {
         /// with-work (only while agents have work) or always (the whole window)
         #[arg(long, value_parser = ["with-work", "always"])]
         mode: Option<String>,
-        #[arg(long)]
-        start: Option<String>,
-        #[arg(long)]
-        end: Option<String>,
-        /// weekdays, weekends, daily, mon-fri, mon,wed,fri
-        #[arg(long)]
-        days: Option<String>,
-        /// One day's own hours: fri=9am-3pm, sat=off, sun=all day, fri=default (repeatable)
+        /// One day's own keep-awake hours inside the work hours: fri=9am-3pm, sat=off, fri=default (repeatable)
         #[arg(long = "day")]
         day: Vec<String>,
         /// Let the Mac sleep on battery below this percent (0 = no limit)
@@ -223,8 +216,8 @@ enum Cmd {
         /// Minutes to stay awake after the work runs out
         #[arg(long)]
         linger: Option<i64>,
-        /// The rest of today: off, on, "until 5pm", or clear
-        #[arg(long)]
+        /// off: let the Mac sleep for the rest of today; clear: back to the work hours
+        #[arg(long, value_parser = ["off", "clear"])]
         today: Option<String>,
     },
     /// A done task's pull request
@@ -1496,7 +1489,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
-        Cmd::KeepAwake { on, off, mode, start, end, days, day, min_battery, linger, today } => {
+        Cmd::KeepAwake { on, off, mode, day, min_battery, linger, today } => {
             let mut b = json!({});
             if on || off {
                 b["enabled"] = json!(on);
@@ -1504,10 +1497,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = mode {
                 b["mode"] = json!(x.replace('-', "_"));
             }
-            for (k, x) in [("start", start), ("end", end), ("days", days), ("today", today)] {
-                if let Some(x) = x {
-                    b[k] = json!(x);
-                }
+            if let Some(x) = today {
+                b["today"] = json!(x);
             }
             if !day.is_empty() {
                 let mut hours = serde_json::Map::new();
