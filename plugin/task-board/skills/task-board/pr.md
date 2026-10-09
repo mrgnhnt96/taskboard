@@ -33,7 +33,7 @@ Set a PR's reviewers with `tb pr reviewers T<n>` (GitHub and Bitbucket alike), n
 - `--replace <name>` (`--with <name>`, else the board's pick): take one off and ask another in their place. `--drop <name>`: take one off.
 - It refuses while the PR feed is down, stale or just back (`tb feed` says why), and, with the project's ask stage on, before the owner has reviewed the PR. Wait; don't ask on the host instead.
 
-The roster is the project's (`tb reviewers`, run in the project's folder or with `--project`): `list`, `sync` (commit authors join it), `add "<name>" --user <host id> --email <commit email> --alias <other name>`, `alias`, `merge <keep> <other>` (two rows that are one person), `remove <name> --reason "…"` (never ask them; only on the owner's word), `back`, `pin`/`unpin` (asked on every PR), `bot <name> --every <hours> --mark "<text its comments carry>"`, `auto <name> low|normal|high`.
+The roster is the project's (`tb reviewers`, run in the project's folder or with `--project`): `list`, `sync` (commit authors join it), `add "<name>" --user <host id> --email <commit email> --alias <other name>`, `alias`, `merge <keep> <other>` (two rows that are one person), `remove <name> --reason "…"` (never ask them; only on the owner's word), `back`, `pin`/`unpin` (asked on every PR), `bot <name> --every <hours> --mark "<text its comments carry>"` (not asked until the board has seen a run), `auto <name> low|normal|high`.
 
 ## After the PR opens
 

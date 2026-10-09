@@ -413,7 +413,7 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
 ///   event feed is holding (`feed::holding`; the stand-in rules and the board's own later asks wait
 ///   for it too, while the first ask of a PR still goes out outside work hours).
 pub fn sweep(app: &App) -> Result<()> {
-    app.db.tx(|| crate::botrun::note_runs(app))?;
+    crate::botrun::note_runs(app)?;
     stage(app)?;
     let tasks = app.db.q("SELECT DISTINCT t.* FROM tasks t JOIN review_asks a ON a.task_id = t.id WHERE a.state IN ('open', 'swapped')", vec![])?;
     for t in tasks {

@@ -883,7 +883,7 @@ host accounts and spellings fold into one, and any of them names the reviewer. A
 ask is a row in the ledger (`review_asks`).
 
 `reviewer`: `{id, project, name, user: str|null (host id), emails, aliases, slack, source: "tb"|"git"|"host"|"import",
-commits, removed, removed_at, removed_why, pinned, automation, bot: {every_h, mark, last_run}|null,
+commits, removed, removed_at, removed_why, pinned, automation, bot: {every_h, mark, last_run, next_run}|null,
 median_work_mins, open_asks, asks, last_asked}`.
 
 `ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage", by, state:
@@ -923,10 +923,13 @@ hours, or without a provider, nobody is checked. The client only calls `users.lo
 `users.getPresence` and `search.messages`: the board never messages anyone.
 
 **Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. Each review sweep the
-board looks for comments by them that carry `mark` (case-insensitive) on the PRs it watches, from the last
-`bot_window_hours`, and records each run in `reviewer_bot_runs` (comments within `bot_run_gap_mins` are one run).
-With a run seen within two intervals the bot is timed: its next run is the last + `every_h`, the picker asks that
-person only when it's at most `bot_due_mins` away, and their pace is the fastest in `speed_by_minutes`.
+board reads every comment (whole: a marker in a footer counts) on the repo's `bot_scan_prs` (20) most recently updated
+PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10), and records each comment of
+theirs that carries `mark` (case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`, at the
+comment's own time (comments within `bot_run_gap_mins` are one run). Until a run is seen, that person isn't asked.
+Then the bot is timed: its next run is the last + `every_h`, rolled forward by `every_h` until it's in the future
+(the reviewer's `bot.next_run`); the picker asks that person only when it's at most `bot_due_mins` away, and their
+pace is the fastest in `speed_by_minutes`.
 
 **The sweep** (`asks.rs`, every `[intervals] reviews` seconds) applies the stand-in rules to asks swapped off an open PR (by a swap or
 `tb pr reviewers --replace`): someone swapped off who reviews anyway is `came_back` (their review counts again: they

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::{gist, Cancelled, Check, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// Runs `gh` with these arguments and answers its stdout.
 pub trait Gh: Send + Sync {
@@ -37,6 +37,7 @@ pub struct GithubHost {
 const VIEW_FIELDS: &str = "number,state,title,author,headRefOid,headRefName,baseRefName,baseRefOid,reviewDecision,statusCheckRollup,comments,reviews,latestReviews,reviewRequests,mergeable";
 
 const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){pullRequest(number:$num){reviewThreads(first:100){nodes{id isResolved isOutdated path line first:comments(first:1){nodes{id author{login} body createdAt url}} last:comments(last:1){nodes{id author{login} body createdAt url}} replies:comments(first:30){nodes{id author{login} body createdAt}}}}}}}";
+const RECENT_COMMENTS_QUERY: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequests(first:$n,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number comments(last:50){nodes{id author{login} body createdAt}} reviews(last:50){nodes{id author{login} body submittedAt comments(first:30){nodes{id author{login} body createdAt}}}}}}}}";
 const REPLY_MUTATION: &str = "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}";
 const RESOLVE_MUTATION: &str = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
 
@@ -223,6 +224,12 @@ impl PrHost for GithubHost {
             .collect())
     }
 
+    fn recent_comments(&self, repo: &str, prs: usize) -> HostResult<Vec<Comment>> {
+        let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+        let v = self.graphql(RECENT_COMMENTS_QUERY, &[("owner", owner.to_string()), ("name", name.to_string())], &[("n", prs.min(100).to_string())])?;
+        Ok(recent_comments(&v))
+    }
+
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         let list = self.api("GET", &format!("repos/{}/commits?sha={base}&per_page={commits}", pr.repo), &[])?;
         let mut out: Vec<String> = vec![];
@@ -296,6 +303,34 @@ fn login(v: &Value) -> String {
 }
 
 /// `gh pr view --json …` and the review threads' GraphQL answer, as one record.
+/// The comments of `RECENT_COMMENTS_QUERY`'s answer: plain comments, review summaries and review
+/// comments, each with its own time.
+pub fn recent_comments(v: &Value) -> Vec<Comment> {
+    let mut out = vec![];
+    let nodes = |x: &Value| x["nodes"].as_array().cloned().unwrap_or_default();
+    let mut add = |pr: i64, c: &Value, at: &str| {
+        let text = c["body"].as_str().unwrap_or("");
+        if text.trim().is_empty() {
+            return;
+        }
+        let who = login(c);
+        out.push(Comment { pr, id: c["id"].as_str().unwrap_or("").to_string(), author: who.clone(), author_name: who, at: c[at].as_str().unwrap_or("").to_string(), text: text.to_string() });
+    };
+    for p in nodes(&v["data"]["repository"]["pullRequests"]) {
+        let pr = p["number"].as_i64().unwrap_or(0);
+        for c in nodes(&p["comments"]) {
+            add(pr, &c, "createdAt");
+        }
+        for r in nodes(&p["reviews"]) {
+            add(pr, &r, "submittedAt");
+            for c in nodes(&r["comments"]) {
+                add(pr, &c, "createdAt");
+            }
+        }
+    }
+    out
+}
+
 pub fn summarize(d: &Value, threads: &Value) -> Record {
     let author = d["author"]["login"].as_str().unwrap_or("").to_string();
     let checks: Vec<Check> = d["statusCheckRollup"]
@@ -596,6 +631,22 @@ pub(crate) mod tests {
         assert!(!has(&["run", "cancel", "6"]));
         assert!(has(&["--base", "develop"]));
         assert!(has(&["POST", "repos/acme/webapp/pulls", "head=feat", "base=main", "title=Add x"]));
+    }
+
+    #[test]
+    fn lists_a_repo_s_recent_comments_whole_with_their_own_times() {
+        let answer = json!({"data": {"repository": {"pullRequests": {"nodes": [
+            {"number": 12, "comments": {"nodes": [{"id": "IC_1", "author": {"login": "ana"}, "body": "Looks fine\n\n<sub>AI review</sub>", "createdAt": "2026-10-08T09:00:00Z"}]},
+             "reviews": {"nodes": [{"id": "PRR_1", "author": {"login": "ana"}, "body": "", "submittedAt": "2026-10-08T09:01:00Z",
+                                    "comments": {"nodes": [{"id": "RC_1", "author": {"login": "ana"}, "body": "Rename", "createdAt": "2026-10-08T09:02:00Z"}]}}]}}
+        ]}}}});
+        let calls = Arc::new(Mutex::new(vec![]));
+        let h = GithubHost::new(Box::new(FakeGh { answers: vec![("pullRequests(first:$n", answer.to_string())], calls: calls.clone() }));
+        let got = h.recent_comments("acme/webapp", 20).unwrap();
+        assert_eq!(got.iter().map(|c| (c.pr, c.id.as_str(), c.at.as_str())).collect::<Vec<_>>(),
+                   vec![(12, "IC_1", "2026-10-08T09:00:00Z"), (12, "RC_1", "2026-10-08T09:02:00Z")], "an empty review summary isn't a comment");
+        assert!(got[0].text.ends_with("<sub>AI review</sub>"), "the whole comment, footer too");
+        assert!(calls.lock()[0].iter().any(|a| a == "n=20"));
     }
 
     #[test]

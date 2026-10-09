@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{gist, Cancelled, Check, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
+use super::{gist, Cancelled, Check, Comment, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// One HTTP call: method, full URL and JSON body; answers the JSON reply (Null when it's empty). An
 /// error starts with "Bitbucket answered <code>" when Bitbucket answered.
@@ -320,6 +320,21 @@ impl PrHost for BitbucketHost {
             .collect())
     }
 
+    fn recent_comments(&self, repo: &str, prs: usize) -> HostResult<Vec<Comment>> {
+        let list = self.get(&format!(
+            "{}/pullrequests?state=OPEN&state=MERGED&state=DECLINED&sort=-updated_on&pagelen={}",
+            self.repo_url(repo),
+            prs.clamp(1, 50)
+        ))?;
+        let mut out = vec![];
+        for p in list["values"].as_array().cloned().unwrap_or_default().into_iter().take(prs) {
+            let Some(num) = p["id"].as_i64() else { continue };
+            let comments = self.get(&format!("{}/pullrequests/{num}/comments?pagelen=100&sort=-created_on", self.repo_url(repo)))?;
+            out.extend(comments["values"].as_array().cloned().unwrap_or_default().iter().filter_map(|c| comment_of(num, c)));
+        }
+        Ok(out)
+    }
+
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>> {
         let list = self.get(&format!("{}/commits/{base}?pagelen={commits}", self.repo_url(&pr.repo)))?;
         let mut out: Vec<String> = vec![];
@@ -364,6 +379,22 @@ fn check_state(s: &str) -> &'static str {
 }
 
 /// A PR, its comments, its tasks and its head's build statuses, as one record.
+/// One of a PR's comments, whole (none for a deleted, draft or empty one).
+fn comment_of(pr: i64, c: &Value) -> Option<Comment> {
+    let text = c["content"]["raw"].as_str().unwrap_or("");
+    if c["deleted"] == true || c["pending"] == true || text.trim().is_empty() {
+        return None;
+    }
+    Some(Comment {
+        pr,
+        id: c["id"].as_i64().map(|i| i.to_string()).unwrap_or_default(),
+        author: uid(&c["user"]),
+        author_name: c["user"]["display_name"].as_str().unwrap_or("").to_string(),
+        at: c["created_on"].as_str().unwrap_or("").to_string(),
+        text: text.to_string(),
+    })
+}
+
 pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Value]) -> Record {
     let author = uid(&p["author"]);
     let checks: Vec<Check> = statuses
@@ -725,5 +756,28 @@ pub(crate) mod tests {
     fn finds_a_pipelines_build_number() {
         assert_eq!(pipeline_build("https://bitbucket.org/ws/repo/pipelines/results/41"), Some(41));
         assert_eq!(pipeline_build("https://ci.example.com/41"), None);
+    }
+
+    #[test]
+    fn lists_a_repo_s_recent_comments_whole() {
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let http = FakeHttp {
+            answers: vec![
+                ("GET https://api/repositories/ws/repo/pullrequests?", json!({"values": [{"id": 30}, {"id": 28}]})),
+                ("GET https://api/repositories/ws/repo/pullrequests/30/comments", json!({"values": [
+                    {"id": 1, "user": {"uuid": REV, "display_name": "Rev"}, "content": {"raw": "Two findings\n\n_AI review_"}, "created_on": "2026-10-08T09:00:00Z"},
+                    {"id": 2, "user": {"uuid": REV}, "content": {"raw": "gone"}, "created_on": "t", "deleted": true}
+                ]})),
+                ("GET https://api/repositories/ws/repo/pullrequests/28/comments", json!({"values": [
+                    {"id": 7, "user": {"uuid": ME}, "content": {"raw": "Thanks"}, "created_on": "2026-10-08T08:00:00Z"}
+                ]})),
+            ],
+            calls: calls.clone(),
+        };
+        let h = BitbucketHost::new(Box::new(http), "https://api/");
+        let got = h.recent_comments("ws/repo", 20).unwrap();
+        assert_eq!(got.iter().map(|c| (c.pr, c.id.as_str(), c.author.as_str())).collect::<Vec<_>>(), vec![(30, "1", REV), (28, "7", ME)]);
+        assert_eq!((got[0].text.as_str(), got[0].at.as_str()), ("Two findings\n\n_AI review_", "2026-10-08T09:00:00Z"));
+        assert!(calls.lock()[0].1.contains("sort=-updated_on&pagelen=20"), "{:?}", calls.lock()[0]);
     }
 }

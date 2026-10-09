@@ -351,24 +351,21 @@ fn availability_tiers_steer_the_picker_and_the_out_are_never_picked() {
     assert_eq!((bo["removed"].clone(), bo["removed_why"].clone()), (json!(true), json!("canned")), "not on Slack: off the roster");
 }
 
-fn bot_comment(id: &str, mins_ago: f64) -> taskboardd::prhost::Thread {
-    taskboardd::prhost::Thread {
+/// A comment of Ana's on PR `pr` of the repo (anyone's PR), `mins_ago` minutes ago, its marker in a footer.
+fn bot_comment(pr: i64, id: &str, mins_ago: f64) -> taskboardd::prhost::Comment {
+    taskboardd::prhost::Comment {
+        pr,
         id: id.into(),
-        kind: "summary".into(),
         author: "{ana}".into(),
         author_name: "Ana".into(),
-        last_author: "{ana}".into(),
-        last_id: format!("{id}-c"),
-        last_at: taskboardd::util::iso(taskboardd::util::now_ts() - mins_ago * 60.0),
-        text: "🤖 AI review: 2 findings".into(),
-        resolved: true,
-        ..Default::default()
+        at: taskboardd::util::iso(taskboardd::util::now_ts() - mins_ago * 60.0),
+        text: "2 findings: see below.\n\nRename `x`.\n\n---\n🤖 AI Review".into(),
     }
 }
 
 #[test]
 fn a_reviewer_with_a_timed_bot_is_asked_just_before_it_runs() {
-    let b = board_with(|_| {});
+    let b = board_with(|c| c.reviewers.bot_scan_mins = 0.0);
     let h = fake(&b, green());
     let id = b.pr_task(BB);
     for (n, u) in [("Ana", "{ana}"), ("Bo", "{bo}"), ("Cy", "{cy}")] {
@@ -376,26 +373,44 @@ fn a_reviewer_with_a_timed_bot_is_asked_just_before_it_runs() {
     }
     b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
     let names = |v: &Value| -> Vec<String> { picks(v).into_iter().map(|(n, _)| n).collect() };
-    // No run seen yet: Ana is a reviewer like any other.
-    assert!(names(&b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}))).contains(&"Ana".to_string()));
+    let dry = || b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}));
+    // No run seen yet: she isn't asked until one is.
+    assert!(!names(&dry()).contains(&"Ana".to_string()));
 
-    // Her bot ran an hour ago (two comments of one run): the next run is 3 hours off, so she waits.
-    h.rec.lock().threads = vec![bot_comment("t1", 60.0), bot_comment("t2", 50.0)];
+    // Her bot ran an hour ago on someone else's PRs (two comments of one run, the marker in a
+    // footer): the next run is 3 hours off, so she waits.
+    *h.comments.lock() = vec![bot_comment(31, "c1", 60.0), bot_comment(32, "c2", 50.0)];
     poll(&b);
+    assert!(h.calls().contains(&"comments acme/webapp 20".to_string()), "the repo's recent PRs: {:?}", h.calls());
     assert_eq!(b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap(), 1, "one run");
-    assert!(!names(&b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}))).contains(&"Ana".to_string()));
+    let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
+    assert!((taskboardd::util::now_ts() - at - 3600.0).abs() < 60.0, "the bot comment's own time");
+    assert!(!names(&dry()).contains(&"Ana".to_string()));
     assert!(b.roster()[0]["bot"]["last_run"].is_string());
+    assert!(b.roster()[0]["bot"]["next_run"].is_string());
 
     // A run 3h40m ago: the next is 20 minutes off, so she's asked, and first (the fastest pace).
     b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
-    h.rec.lock().threads = vec![bot_comment("t3", 220.0)];
+    *h.comments.lock() = vec![bot_comment(31, "c3", 220.0)];
     poll(&b);
-    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 3}));
+    let v = dry();
     assert_eq!(names(&v).len(), 3);
     assert!(names(&v).contains(&"Ana".to_string()));
+
+    // Overdue (a run 7h50m ago, the one at 4h missed): the next is rolled forward to 10 minutes off.
+    b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
+    *h.comments.lock() = vec![bot_comment(31, "c5", 470.0)];
+    poll(&b);
+    assert!(names(&dry()).contains(&"Ana".to_string()));
+    // Overdue by a little more than an hour: the rolled-forward run is hours off, so she waits.
+    b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
+    *h.comments.lock() = vec![bot_comment(31, "c6", 5.0 * 60.0 + 10.0)];
+    poll(&b);
+    assert!(!names(&dry()).contains(&"Ana".to_string()), "not asked at any time just because a run is overdue");
+
     // An old comment outside the window isn't a run.
     b.app.db.x("DELETE FROM reviewer_bot_runs", vec![]).unwrap();
-    h.rec.lock().threads = vec![bot_comment("t4", 13.0 * 60.0)];
+    *h.comments.lock() = vec![bot_comment(31, "c4", 13.0 * 60.0)];
     poll(&b);
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM reviewer_bot_runs", vec![]).unwrap(), 0);
 }
