@@ -46,6 +46,7 @@
 //! | `answer` | approved, changes or commented (an ask from the old board may keep its answer's own words) |
 //! | `work_mins` | work minutes from the ask to the review: the reviewer's speed |
 //! | `filled` | 1: a swapped-off reviewer's request for changes already got a fill-in |
+//! | `nudged_at`, `replied_at`, `reply` | from the old board: when the reviewer was nudged, and their reply to it (not a review) |
 //!
 //! `reviewer_bot_runs`: runs of a reviewer's bot spotted in PR comments (`reviewer_id`, `at`, and
 //! `ref`, the comment that showed it; unique per reviewer).
@@ -80,6 +81,9 @@ pub const ADDED: &[(&str, &str, &str)] = &[
     ("reviewers", "carried_asks", "INT DEFAULT 0"),
     ("reviewers", "carried_swaps", "INT DEFAULT 0"),
     ("reviewers", "carried_last_ask", "TEXT"),
+    ("review_asks", "nudged_at", "TEXT"),
+    ("review_asks", "replied_at", "TEXT"),
+    ("review_asks", "reply", "TEXT"),
 ];
 
 /// How many times they've been asked, the old board's asks included.
@@ -722,7 +726,7 @@ pub fn close_ask(app: &App, id: i64, state: &str) -> Result<()> {
 pub fn ask_dict(a: &Row) -> Value {
     json!({"id": a.id(), "user": a.v("host_user"), "name": a.v("name"), "why": a.v("why"), "by": a.v("asked_by"), "state": a.v("state"),
            "asked_at": a.v("asked_at"), "answered_at": a.v("answered_at"), "answer": a.v("answer"), "work_mins": a.v("work_mins"),
-           "replaces": a.v("replaces")})
+           "replaces": a.v("replaces"), "nudged_at": a.v("nudged_at"), "replied_at": a.v("replied_at"), "reply": a.v("reply")})
 }
 
 /// Notes a board event about the task's reviewers (outside any host call).

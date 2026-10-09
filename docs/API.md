@@ -924,7 +924,8 @@ median_work_mins, open_asks, asks, swaps, last_asked}`. `asks`, `swaps` and `las
 when the reviewer came over with `taskboardd import`.
 
 `ask`: `{id, user, name, why: "pick"|"ask"|"replace"|"swap"|"fill_in"|"stage"|"rereview", by, state:
-"open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces}`.
+"open"|"answered"|"swapped"|"came_back"|"dropped"|"closed", asked_at, answered_at, answer, work_mins, replaces, nudged_at,
+replied_at, reply}` (the last three from an imported ask: when it was nudged and the reviewer's reply to the nudge).
 
 Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (any name of theirs), plus `who`.
 

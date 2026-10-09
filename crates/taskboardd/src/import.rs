@@ -571,7 +571,12 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         for r in &l.rows {
             let dev = device_of(l.get(r, &["device", "device_name", "device_id", "name"]));
             let (Some(name), Some(task)) = (dev, l.id(r, &["task_id", "task"])) else {
-                rep.skipped.push(format!("{} {}: its device or task isn't known", l.table, l.text(r, &["id"]).unwrap_or_default()));
+                // The Python board's loans have no id: a task's slot is the key.
+                let which = l.text(r, &["id"]).unwrap_or_else(|| {
+                    let task = l.id(r, &["task_id", "task"]).map(|t| rf("task", t)).unwrap_or_default();
+                    l.text(r, &["slot"]).map(|s| format!("{task} slot {s}")).unwrap_or(task)
+                });
+                rep.skipped.push(format!("{} {which}: its device or task isn't known", l.table));
                 continue;
             };
             // A loan the old board never took back from a finished task is over.
@@ -1335,11 +1340,18 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             let swapped_at = a.get(r, &["swapped_at"]).clone();
             let closed_at = Some(a.get(r, &["closed_at", "ended_at", "dropped_at"]).clone()).filter(|v| !v.is_null()).unwrap_or_else(|| swapped_at.clone());
             // The answer: a verdict word from any of its columns, else the old answer text as it was.
-            let said: Vec<String> = [a.text(r, &["answer", "verdict", "review", "result"]), a.text(r, &["reply"]), a.text(r, &["reply_said"])]
-                .into_iter()
-                .flatten()
-                .filter(|s| parse_iso(s).is_none())
-                .collect();
+            // The Python board's `reply` / `reply_said` is the reviewer's reply to a nudge, not a
+            // review: it's kept as the ask's `reply`.
+            let said: Vec<String> = [a.text(r, &["answer", "verdict", "review", "result"])].into_iter().flatten().filter(|s| parse_iso(s).is_none()).collect();
+            let reply = {
+                let mut words: Vec<String> = vec![];
+                for s in [a.text(r, &["reply"]), a.text(r, &["reply_said"])].into_iter().flatten().filter(|s| parse_iso(s).is_none()) {
+                    if !words.iter().any(|w| w.eq_ignore_ascii_case(&s)) {
+                        words.push(s);
+                    }
+                }
+                (!words.is_empty()).then(|| one_line(&words.join(" · "), 500))
+            };
             let answer: Option<String> = said.iter().find_map(|s| ask_answer(Some(s))).map(str::to_string).or_else(|| {
                 let mut text: Vec<&str> = vec![];
                 for s in &said {
@@ -1383,7 +1395,8 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
             let filled = a.truthy(r, &["filled", "filled_in"]) || !a.get(r, &["filled_at"]).is_null();
             let new_id = app.db.x(
                 "INSERT OR IGNORE INTO review_asks(id, task_id, project, pr_host, pr_repo, pr_num, reviewer_id, host_user, name, why, asked_by, replaces, \
-                 state, asked_at, answered_at, closed_at, answer, work_mins, filled) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 state, asked_at, answered_at, closed_at, answer, work_mins, filled, nudged_at, replied_at, reply) \
+                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 vec![
                     json!(a.id(r, &["id"])),
                     json!(task.as_ref().map(|t| t.id())),
@@ -1404,6 +1417,9 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
                     json!(answer),
                     a.get(r, &["work_mins", "mins", "minutes"]).clone(),
                     json!(filled as i64),
+                    a.get(r, &["nudged_at", "nudged"]).clone(),
+                    a.get(r, &["replied_at"]).clone(),
+                    json!(reply),
                 ],
             )?;
             if !wrote(app)? {
