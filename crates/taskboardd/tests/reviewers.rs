@@ -1075,3 +1075,26 @@ fn a_bot_run_starts_at_its_earliest_comment_and_a_failed_read_is_tried_again() {
     let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
     assert!((at - earlier).abs() < 1.0);
 }
+
+#[test]
+fn a_slow_bot_run_chains_comment_to_comment_and_a_bridge_joins_two_runs() {
+    let b = board_with(|c| c.reviewers.bot_run_gap_mins = 30.0);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.act("bot", "Ana", json!({"every_h": 4, "mark": "ai review"})).unwrap();
+    let ana = b.app.db.q1("SELECT * FROM reviewers WHERE name = 'Ana'", vec![]).unwrap().unwrap();
+    let t0 = taskboardd::util::now_ts() - 5.0 * 3600.0;
+    let runs = || b.app.db.count("SELECT COUNT(DISTINCT at) FROM reviewer_bot_runs", vec![]).unwrap();
+    // Every 20 minutes for an hour: each within the gap of the one before, though not of the first.
+    assert!(taskboardd::botrun::note_run(&b.app, &ana, t0, "r#1:a").unwrap());
+    for (i, m) in [20.0, 40.0, 60.0].iter().enumerate() {
+        assert!(!taskboardd::botrun::note_run(&b.app, &ana, t0 + m * 60.0, &format!("r#1:b{i}")).unwrap(), "{m}");
+    }
+    assert_eq!(runs(), 1, "one slow run");
+    // A run well apart is another, and a comment between the two makes them one, at the earlier start.
+    assert!(taskboardd::botrun::note_run(&b.app, &ana, t0 + 110.0 * 60.0, "r#2:a").unwrap());
+    assert_eq!(runs(), 2);
+    assert!(!taskboardd::botrun::note_run(&b.app, &ana, t0 + 85.0 * 60.0, "r#2:b").unwrap());
+    assert_eq!(runs(), 1);
+    let at = b.app.db.val("SELECT at FROM reviewer_bot_runs", vec![]).unwrap().as_str().and_then(taskboardd::util::parse_iso).unwrap();
+    assert!((at - t0).abs() < 1.0);
+}

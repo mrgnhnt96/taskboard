@@ -47,8 +47,9 @@
 //! | `work_mins` | work minutes from the ask to the review: the reviewer's speed |
 //! | `filled` | 1: a swapped-off reviewer's request for changes already got a fill-in |
 //!
-//! `reviewer_bot_runs`: runs of a reviewer's bot spotted in PR comments (`reviewer_id`, `at`, and
-//! `ref`, the comment that showed it; unique per reviewer).
+//! `reviewer_bot_runs`: runs of a reviewer's bot spotted in PR comments (`reviewer_id`, `at` (the
+//! run's start), `ref`, the comment that showed it, unique per reviewer, and `comment_at`, that
+//! comment's own time).
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -80,6 +81,8 @@ pub const ADDED: &[(&str, &str, &str)] = &[
     ("reviewers", "carried_asks", "INT DEFAULT 0"),
     ("reviewers", "carried_swaps", "INT DEFAULT 0"),
     ("reviewers", "carried_last_ask", "TEXT"),
+    // The comment's own time (`at` is its run's start), so a run chains comment to comment.
+    ("reviewer_bot_runs", "comment_at", "TEXT"),
 ];
 
 /// How many times they've been asked, the old board's asks included.

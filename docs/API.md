@@ -971,9 +971,10 @@ messages anyone.
 board reads every comment (whole: a marker in a footer counts) on the repo's `bot_scan_prs` (20) most recently updated
 PRs, whoever opened them (`PrHost::recent_comments`, at most every `bot_scan_mins`, 10, counted from the last read
 that worked: a failed read is tried again on the next sweep), and records each comment of theirs that carries `mark`
-(case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`. Comments within
-`bot_run_gap_mins` are one run, at its earliest comment's time, whatever order the host lists them in (Bitbucket
-lists the newest first). Until a run is seen, that person isn't asked.
+(case-insensitive) from the last `bot_window_hours` as a run in `reviewer_bot_runs`. A comment within
+`bot_run_gap_mins` of another comment of a run is part of it (they chain gap to gap, so a slow run that keeps
+commenting stays one run, and a comment between two runs joins them); a run is at its earliest comment's time,
+whatever order the host lists them in (Bitbucket lists the newest first). Until a run is seen, that person isn't asked.
 Then the bot is timed: its next run is the last + `every_h`, rolled forward by `every_h` until it's in the future
 (the reviewer's `bot.next_run`); the picker asks that person only when it's at most `bot_due_mins` away, and their
 pace is the fastest in `speed_by_minutes`.
