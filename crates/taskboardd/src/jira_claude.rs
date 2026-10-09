@@ -17,14 +17,31 @@ fn schema() -> Value {
             "key": s, "id": s, "created": s, "author": s, "author_account_id": s, "author_email": s, "text": s}}}}})
 }
 
+/// The `cloudId` the connector's tools take: `[jira] cloud_id`, else the site's host name.
+pub fn cloud_id(app: &App) -> String {
+    let j = &app.cfg.jira;
+    if j.cloud_id.trim().is_empty() {
+        format!("the cloud id of {} (the site's host name works as one)", j.site.trim())
+    } else {
+        j.cloud_id.trim().to_string()
+    }
+}
+
+/// How to read one ticket's comments: `getJiraIssue` doesn't return them.
+fn comments_read(app: &App, key: &str) -> String {
+    format!("executeRead: operation listJiraIssueComments, cloudId {}, inputs {{\"issueIdOrKey\": \"{key}\"}}", cloud_id(app))
+}
+
 fn intro(app: &App) -> String {
     let j = &app.cfg.jira;
     format!(
-        "You work Jira for a task board through the Atlassian connector's tools (site {}, project {}). Do exactly the one \
-         thing below, then answer in the JSON asked for. Never create, edit or delete anything else. Never ask anyone \
-         anything. If it can't be done, answer ok false with the reason in error, in one plain sentence.",
+        "You work Jira for a task board through the Atlassian connector's tools (site {}, project {}; pass cloudId {} to \
+         the tools that take one). Do exactly the one thing below, then answer in the JSON asked for. Never create, edit \
+         or delete anything else. Never ask anyone anything. If it can't be done, answer ok false with the reason in \
+         error, in one plain sentence.",
         j.site.trim(),
-        j.project.trim()
+        j.project.trim(),
+        cloud_id(app)
     )
 }
 
@@ -37,12 +54,12 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
         "transition" => {
             let mut t = format!(
                 "Move {key} to the status “{status}”. List its transitions with executeRead: operation listJiraIssueTransitions, \
-                 cloudId the cloud id of {site} (the site's host name works as one), inputs {{\"issueIdOrKey\": \"{key}\"}}. Pick \
+                 cloudId {cloud}, inputs {{\"issueIdOrKey\": \"{key}\"}}. Pick \
                  the transition whose target status (its `to`) is “{status}”, not one that's only named like it, and pass that \
                  transition's id to transitionJiraIssue. If it's already there, leave it. If no transition gets there, answer ok \
                  false and say which statuses it can go to.",
                 status = s("status"),
-                site = app.cfg.jira.site.trim()
+                cloud = cloud_id(app)
             );
             if !s("comment").is_empty() {
                 t += &format!(" Then add this comment to it:\n{}\n", s("comment"));
@@ -52,18 +69,20 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
         "comment" => format!("Add this comment to {key}, as it is:\n{}", s("comment")),
         "create" => format!("{}\n\nAnswer key: the ticket's key, status: its status's name, found: true when it was already there, product: the product you picked (if you picked one).", s("brief")),
         "comments" => format!(
-            "Make exactly one JQL search, with this query as it is: {}\nThen, for each ticket it finds, read its comments and keep \
-             the ones created at or after {} (it's {} UTC now; none is fine). Don't read any other ticket. Answer comments: one \
-             each, with key, id (the comment's id), created (its ISO time), author (display name), author_account_id, \
-             author_email (when shown) and text (the comment as plain text).",
+            "Make exactly one JQL search, with this query as it is: {}\nThen, for each ticket it finds, read its comments with {} \
+             (getJiraIssue doesn't return them), and keep the ones created at or after {} (it's {} UTC now; none is fine). Don't \
+             read any other ticket. Answer comments: one each, with key, id (the comment's id), created (its ISO time), author \
+             (display name), author_account_id, author_email (when shown) and text (the comment as plain text).",
             s("jql"),
+            comments_read(app, "<its key>"),
             s("after"),
             s("now")
         ),
         "comment_get" => format!(
-            "Read comment {} on {key}. Answer author (display name), author_account_id, author_email (when shown) and text \
-             (the comment as plain text).",
-            s("id")
+            "Read comment {id} on {key}: list its comments with {} (getJiraIssue doesn't return them) and take the one whose id is \
+             {id}. Answer author (display name), author_account_id, author_email (when shown) and text (the comment as plain text).",
+            comments_read(app, &key),
+            id = s("id")
         ),
         other => format!("Do the Jira op {other} on {key}."),
     };
@@ -88,6 +107,15 @@ pub fn parse(stdout: &str) -> std::result::Result<Value, String> {
 
 const SERVER: &str = "mcp__claude_ai_Atlassian_MCP";
 
+/// The connector's tool `name`, by its full name.
+pub fn tool(name: &str) -> String {
+    format!("{SERVER}__{name}")
+}
+
+/// The reads the desk gets beyond a new ticket's tools: it works on its own, so it may look up the
+/// site's cloud id and an operation's inputs without stopping on a prompt.
+pub const DESK_READS: [&str; 2] = ["getAccessibleAtlassianResources", "discover"];
+
 /// The connector's tools one op needs, by exact name: reads, plus only the writes the op makes, so a
 /// status read or a comment job can't create, edit or delete. The Jira desk gets `create`'s.
 pub fn default_tools(op: &str, input: &Value) -> Vec<String> {
@@ -104,7 +132,7 @@ pub fn default_tools(op: &str, input: &Value) -> Vec<String> {
         "create" => t.extend(["searchJiraIssuesUsingJql", "createJiraIssue"]),
         _ => {}
     }
-    t.into_iter().map(|n| format!("{SERVER}__{n}")).collect()
+    t.into_iter().map(tool).collect()
 }
 
 /// The tools one op may use: the owner's `[jira] claude_tools` when set, else `default_tools`.
@@ -126,7 +154,16 @@ pub fn tool_flags(app: &App, op: &str, input: &Value) -> Vec<String> {
 pub fn run(app: &App, op: &str, input: &Value) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let j = &app.cfg.jira;
-    let mut args: Vec<String> = vec!["-p".into(), prompt(app, op, input), "--model".into(), j.claude_model.clone(), "--no-session-persistence".into()];
+    // No user or project settings: their allow rules would widen the op's tools.
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        prompt(app, op, input),
+        "--model".into(),
+        j.claude_model.clone(),
+        "--setting-sources".into(),
+        "".into(),
+        "--no-session-persistence".into(),
+    ];
     args.extend(tool_flags(app, op, input));
     args.extend([
         "--max-budget-usd".into(),
@@ -191,5 +228,30 @@ mod tests {
         assert!(p.contains("target status (its `to`) is “In Review”"), "{p}");
         assert!(p.contains("id to transitionJiraIssue"), "{p}");
         assert!(p.contains("Never create, edit or delete anything else."), "{p}");
+    }
+
+    #[test]
+    fn comment_reads_name_the_comments_operation_and_the_cloud_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.jira.site = "acme.atlassian.net".into();
+        cfg.jira.project = "PROJ".into();
+        let app = App::for_tests(cfg.clone());
+        let p = prompt(&app, "comment_get", &json!({"key": "PROJ-4", "id": "10021"}));
+        assert!(p.contains("executeRead: operation listJiraIssueComments"), "{p}");
+        assert!(p.contains(r#"inputs {"issueIdOrKey": "PROJ-4"}"#), "{p}");
+        assert!(p.contains("the one whose id is 10021"), "{p}");
+        let p = prompt(&app, "comments", &json!({"jql": "project = PROJ", "after": "2026-10-01T00:00:00Z", "now": "x"}));
+        assert!(p.contains("read its comments with executeRead: operation listJiraIssueComments"), "{p}");
+        assert!(p.contains("pass cloudId the cloud id of acme.atlassian.net (the site's host name works as one)"), "{p}");
+
+        // A set cloud id goes to every prompt as it is.
+        cfg.jira.cloud_id = "1a2b-3c".into();
+        let app = App::for_tests(cfg);
+        for op in ["status", "transition", "comment_get"] {
+            let p = prompt(&app, op, &json!({"key": "PROJ-4", "status": "Done", "id": "1"}));
+            assert!(p.contains("cloudId 1a2b-3c"), "{op}: {p}");
+            assert!(!p.contains("host name works"), "{op}: {p}");
+        }
     }
 }

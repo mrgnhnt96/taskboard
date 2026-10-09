@@ -223,7 +223,8 @@ remote = "origin"
 # each Jira op then runs through a headless `claude -p` that may use only the Atlassian connector's tools.
 [jira]
 site = ""                            # example: "acme.atlassian.net"
-project = ""                         # example: "PROJ"
+cloud_id = ""                        # the site's cloud id for the connector's tools (via = "claude", the desk); empty = the site's host name
+project = ""                       # example: "PROJ"
 email = ""
 token = ""
 keychain_item = "taskboard-jira"
@@ -241,7 +242,8 @@ claude_tools = []                    # the tools for via = "claude" and the desk
                                      # Atlassian connector's tools it needs, by exact name (getJiraIssue and executeRead,
                                      # plus transitionJiraIssue, addOrEditJiraIssueComment, searchJiraIssuesUsingJql or
                                      # createJiraIssue for the ops that use them). Set, every op gets this list as it is;
-                                     # example: ["mcp__atlassian"] for a local Atlassian MCP server (a server's name allows all its tools)
+                                     # example: ["mcp__atlassian"] for a local Atlassian MCP server (a server's name allows all its tools).
+                                     # An older init's ["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian"] line is reset to [] on load
 claude_model = "haiku"               # Jira ops are mechanical: a small model
 qa_poll_mins = 0                     # minutes between QA's checks for new comments; 0 = 5 over REST, 30 through Claude
 claude_budget_usd = "0.50"

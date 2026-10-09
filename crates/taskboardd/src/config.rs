@@ -324,6 +324,9 @@ pub struct JiraProduct {
 pub struct JiraConfig {
     /// e.g. "acme.atlassian.net". Jira is off while this is empty.
     pub site: String,
+    /// The site's Atlassian cloud id, for the connector's tools (`cloudId`). Empty: the site's host
+    /// name, which the tools take as one.
+    pub cloud_id: String,
     pub project: String,
     pub email: String,
     pub token: String,
@@ -372,6 +375,7 @@ impl Default for JiraConfig {
     fn default() -> Self {
         JiraConfig {
             site: String::new(),
+            cloud_id: String::new(),
             project: String::new(),
             email: String::new(),
             token: String::new(),
@@ -568,12 +572,44 @@ fn env(name: &str) -> Option<String> {
 const OLD_INIT_BACKGROUND: &str = r#"background = []                      # example: ["plan"]"#;
 const INIT_BACKGROUND: &str = r#"background = ["jira_desk"]           # example: ["jira_desk", "plan"]"#;
 
+/// The `[jira] claude_tools` values `init` wrote before each Jira op got its own exact tools: whole
+/// servers, which let a status read or a comment job create, edit or delete. Only the line `init`
+/// wrote (its comment starts with `OLD_INIT_TOOLS_NOTE`) becomes `INIT_TOOLS`; the owner's own list stays.
+const OLD_INIT_TOOLS: [&str; 2] = [r#"["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian"]"#, r#"["mcp__claude_ai_Atlassian", "mcp__atlassian"]"#];
+const OLD_INIT_TOOLS_NOTE: &str = r#"# the connector's tools, for via = "claude" and the desk"#;
+/// The comment line `init` wrote under the old `claude_tools`; it goes with it.
+const OLD_INIT_TOOLS_MORE: &str = "# the claude.ai Atlassian connector, and a local Atlassian MCP server";
+const INIT_TOOLS: &str = "claude_tools = []                    # empty: each Jira op gets only the connector's tools it needs";
+
+fn old_init_tools(line: &str) -> bool {
+    let Some(rest) = line.trim().strip_prefix("claude_tools") else { return false };
+    let Some(rest) = rest.trim_start().strip_prefix('=') else { return false };
+    let Some((value, note)) = rest.split_once('#') else { return false };
+    OLD_INIT_TOOLS.contains(&value.trim()) && format!("#{note}").starts_with(OLD_INIT_TOOLS_NOTE)
+}
+
 /// An old `init`'s config.toml brought up to date, or None when there's nothing to change.
 pub fn migrate_text(text: &str) -> Option<String> {
-    if !text.lines().any(|l| l.trim_end() == OLD_INIT_BACKGROUND) {
+    if !text.lines().any(|l| l.trim_end() == OLD_INIT_BACKGROUND || old_init_tools(l)) {
         return None;
     }
-    let mut out = text.lines().map(|l| if l.trim_end() == OLD_INIT_BACKGROUND { INIT_BACKGROUND } else { l }).collect::<Vec<_>>().join("\n");
+    let mut lines: Vec<&str> = Vec::new();
+    let mut after_tools = false;
+    for l in text.lines() {
+        if after_tools && l.trim() == OLD_INIT_TOOLS_MORE {
+            after_tools = false;
+            continue;
+        }
+        after_tools = old_init_tools(l);
+        lines.push(if l.trim_end() == OLD_INIT_BACKGROUND {
+            INIT_BACKGROUND
+        } else if after_tools {
+            INIT_TOOLS
+        } else {
+            l
+        });
+    }
+    let mut out = lines.join("\n");
     if text.ends_with('\n') {
         out.push('\n');
     }
@@ -796,6 +832,31 @@ mod tests {
         assert_eq!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).terminals.background, vec!["jira_desk"]);
         assert_eq!(migrate_text("[terminals]\nbackground = []\n"), None, "the owner's own empty list stays");
         assert_eq!(migrate_text(EXAMPLE), None, "today's init has nothing to change");
+    }
+
+    #[test]
+    fn an_old_init_s_whole_connector_gives_way_to_each_op_s_tools() {
+        let beta16 = concat!(
+            "[jira]\nvia = \"claude\"\n",
+            "claude_tools = [\"mcp__claude_ai_Atlassian_MCP\", \"mcp__atlassian\"]   # the connector's tools, for via = \"claude\" and the desk:\n",
+            "                                     # the claude.ai Atlassian connector, and a local Atlassian MCP server\n",
+            "claude_model = \"haiku\"\n"
+        );
+        let new = migrate_text(beta16).unwrap();
+        assert_eq!(new, format!("[jira]\nvia = \"claude\"\n{INIT_TOOLS}\nclaude_model = \"haiku\"\n"));
+        let f: FileConfig = toml::from_str(&new).unwrap();
+        assert!(Config::from_file(f, PathBuf::from("/tmp/x.toml")).jira.claude_tools.is_empty());
+
+        let older = "[jira]\nclaude_tools = [\"mcp__claude_ai_Atlassian\", \"mcp__atlassian\"]   # the connector's tools, for via = \"claude\" and the desk\nclaude_model = \"sonnet\"\n";
+        assert_eq!(migrate_text(older).unwrap(), format!("[jira]\n{INIT_TOOLS}\nclaude_model = \"sonnet\"\n"));
+
+        for own in [
+            "[jira]\nclaude_tools = [\"mcp__claude_ai_Atlassian_MCP\", \"mcp__atlassian\"]\n",
+            "[jira]\nclaude_tools = [\"mcp__atlassian\"]   # the connector's tools, for via = \"claude\" and the desk\n",
+            "[jira]\nclaude_tools = [\"mcp__claude_ai_Atlassian_MCP\", \"mcp__atlassian\"]   # mine\n",
+        ] {
+            assert_eq!(migrate_text(own), None, "the owner's own list stays: {own}");
+        }
     }
 
     #[test]

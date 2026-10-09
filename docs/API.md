@@ -867,10 +867,14 @@ Optional: off while `[jira] site` or `project` is empty. Jobs (`J<n>`) run throu
 `getJiraIssue` and `executeRead` for every op, plus `transitionJiraIssue` for a move (and `addOrEditJiraIssueComment`
 when it carries a comment), `addOrEditJiraIssueComment` for a comment, `searchJiraIssuesUsingJql` for QA's comment
 search, and `searchJiraIssuesUsingJql` and `createJiraIssue` for a new ticket; never `executeWrite`,
-`executeDestructive` or `editJiraIssue`. A set `claude_tools` is used for every op as it is. Every prompt says never to
-create, edit or delete anything else, and a move lists the ticket's transitions with `executeRead` (operation
-`listJiraIssueTransitions`, `cloudId` the site's, inputs `{"issueIdOrKey": "<key>"}`) and passes the id of the one whose
-target status matches to `transitionJiraIssue`. A new ticket is always searched for first: an open ticket of the type that already covers the work is linked
+`executeDestructive` or `editJiraIssue`. A set `claude_tools` is used for every op as it is (an older `init`'s
+`claude_tools = ["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian"]` line, or the earlier `mcp__claude_ai_Atlassian` one,
+with init's comment is rewritten to `[]` on load). Each call passes `--setting-sources ""`, so no user or project allow
+rule widens the list. Every prompt says never to create, edit or delete anything else and gives the `cloudId` to pass
+(`[jira] cloud_id`, else the site's host name, which the tools take as one). A move lists the ticket's transitions with
+`executeRead` (operation `listJiraIssueTransitions`, inputs `{"issueIdOrKey": "<key>"}`) and passes the id of the one
+whose target status matches to `transitionJiraIssue`; QA's comment reads list a ticket's comments with `executeRead`
+(operation `listJiraIssueComments`), since `getJiraIssue` doesn't return them. A new ticket is always searched for first: an open ticket of the type that already covers the work is linked
 instead of making another. With `auto_ticket`, every queued or working task in a project that ships PRs asks for a
 ticket and waits (`waiting`: "Waits for its Jira ticket…") until it has one, it says `--jira none`, or the ticket is
 linked by hand; a failed ask waits for `tb task set T<n> --jira new` (try again) or `--jira KEY` (link one), which its
@@ -880,7 +884,8 @@ half of either's; through Claude or the desk, the one it judges covers it), and 
 With `desk`, new tickets go to the Jira desk: one Claude terminal the board opens in Midna's Background group (an
 `agent` job, purpose `jira_desk`; take `jira_desk` out of `[terminals] background` to open it with the project tabs; an
 older `init`'s `background = []                      # example: ["plan"]` line is rewritten to `["jira_desk"]` on load)
-and never closes. Its `--allowedTools` are a new ticket's tools (or `claude_tools` when set) plus `Bash(tb jira:*)` and
+and never closes. Its intro names the site, project and `cloudId`. Its `--allowedTools` are a new ticket's tools plus
+`getAccessibleAtlassianResources` and `discover` (or `claude_tools` as it is, when set) plus `Bash(tb jira:*)` and
 `Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
 at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
 

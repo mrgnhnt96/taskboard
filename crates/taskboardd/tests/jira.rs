@@ -93,6 +93,7 @@ fn claude_runs_jira_ops_with_the_connector_tools() {
     assert!(args.contains("Read the status of PROJ-7"), "{args}");
     assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP__getJiraIssue,mcp__claude_ai_Atlassian_MCP__executeRead\n"), "{args}");
     assert!(args.contains("--model\nhaiku"), "{args}");
+    assert!(args.contains("--setting-sources\n\n"), "no user or project allow rules: {args}");
     assert!(args.contains("Never create, edit or delete anything else."), "{args}");
 
     // A move it can't make fails the job with Claude's reason.
@@ -368,8 +369,22 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     let rules: Vec<&str> = args[1].split(',').collect();
     let server = |n: &str| format!("mcp__claude_ai_Atlassian_MCP__{n}");
     let (desk_tb, desk_path) = ("Bash(tb jira:*)".to_string(), format!("Bash({tb} jira:*)"));
-    let want = [server("getJiraIssue"), server("executeRead"), server("searchJiraIssuesUsingJql"), server("createJiraIssue"), desk_tb, desk_path];
+    let want = [
+        server("getJiraIssue"),
+        server("executeRead"),
+        server("searchJiraIssuesUsingJql"),
+        server("createJiraIssue"),
+        server("getAccessibleAtlassianResources"),
+        server("discover"),
+        desk_tb,
+        desk_path,
+    ];
     assert_eq!(rules, want.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(
+        a.st("prompt").contains("Jira: site acme.atlassian.net, project PROJ; pass cloudId the cloud id of acme.atlassian.net (the site's host name works as one)"),
+        "{}",
+        a.st("prompt")
+    );
 
     // Every report it's told to run starts with a command an allow rule covers.
     let prefixes: Vec<&str> = rules.iter().filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(":*)")).collect();
@@ -389,6 +404,15 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     // A path the rule can't hold falls back to plain tb.
     b.app.db.set_setting("tb_path", Some("/odd(path)/tb")).unwrap();
     assert_eq!(jira_desk::allowed_tools(&b.app).last().unwrap(), "Bash(tb jira:*)");
+
+    // The owner's own list is the desk's as it is.
+    let b = board_with(|c, _| {
+        c.jira.desk = true;
+        c.jira.claude_tools = vec!["mcp__atlassian".into()];
+    });
+    let tools = jira_desk::allowed_tools(&b.app);
+    assert_eq!(tools[0], "mcp__atlassian");
+    assert!(tools[1..].iter().all(|t| t.starts_with("Bash(")), "{tools:?}");
 }
 
 #[test]
