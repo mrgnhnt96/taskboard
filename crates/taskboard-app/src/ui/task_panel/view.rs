@@ -1152,7 +1152,18 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
             let name = opt_s(r, "name")?;
             let mut kids = vec![txt(name, St::Plain)];
             if let Some(st) = opt_s(r, "state") {
-                kids.push(pill(st, Tone::Neutral));
+                let (label, tone) = match st {
+                    "approved" => ("Approved", Tone::Done),
+                    "changes" => ("Changes asked", Tone::Needs),
+                    "rereview" => ("Re-review waiting", Tone::Review),
+                    "waiting" => ("Waiting", Tone::Queued),
+                    "commented" => ("Commented", Tone::Neutral),
+                    other => (other, Tone::Neutral),
+                };
+                kids.push(pill(label, tone));
+            }
+            if let Some(n) = r["swaps"].as_i64().filter(|n| *n > 0) {
+                kids.push(txt(format!("Swapped {}", if n == 1 { "once".to_string() } else { format!("{n} times") }), St::Small));
             }
             if let Some(u) = opt_s(r, "url").filter(|u| is_web(u)) {
                 kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });

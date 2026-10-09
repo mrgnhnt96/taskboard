@@ -776,7 +776,7 @@ Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. T
 `origin/<parent branch>`, the handoff says to cut its branch from there and open the PR into it, `{base}` is the
 parent's branch, and once its PR is approved and green its phase is `waits` ("Waits on base") instead of `merge`.
 When the parent's PR merges (the watcher sees it, or `POST /tasks/:id/pr/merged`), the board points each open stacked
-PR at the parent's base (`gh pr edit --base`) once, logs it, and alerts if it couldn't; the stacked task is told to
+PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucket) once, logs it, and alerts if it couldn't; the stacked task is told to
 rebase as for any `waits_for`.
 
 **The PR plan** (`tasks.ships_pr`): `tb task new --pr|--no-pr`, `tb task set --pr yes|no|auto`. The handoff and steps
@@ -792,7 +792,7 @@ the board checks the description against `[pr_body]` (sections in order, bullet 
 refs, `forbid` patterns), the before-the-PR and before-done steps, and the branch (pushed as it is, rebased on
 `<remote>/<base>`, no merge commits, a ticket if `require_ticket`), then opens the PR into the real base with the
 title after the ticket key and a `## Context` section, links it and finishes. Errors come back as 400/409 with what
-to fix; nothing is spooled. GitHub only for now (`gh pr create`); `propen::host` is the one place that talks to the
+to fix; nothing is spooled. It opens on GitHub or Bitbucket Cloud by the checkout's remote, through the `prhost` interface (`propen::host`; a remote naming neither falls back to `gh pr create`); `propen::host` is the one place that talks to the
 host. `tb pr body-check FILE` runs the description check alone.
 
 **Steps with rounds** (`[[steps]]`): `per_head = true` passes only for the head commit it ran on (`GET

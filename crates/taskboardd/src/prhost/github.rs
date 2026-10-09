@@ -164,6 +164,13 @@ impl PrHost for GithubHost {
         self.gh(args).map(|_| ())
     }
 
+    fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef> {
+        let v = self.api("POST", &format!("repos/{repo}/pulls"), &[("title", title), ("head", branch), ("base", base), ("body", body)])?;
+        let num = v["number"].as_i64().ok_or_else(|| "GitHub didn't say which PR it opened".to_string())?;
+        let url = v["html_url"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("https://github.com/{repo}/pull/{num}"));
+        Ok(PrRef { host: "github".into(), repo: repo.to_string(), num, url })
+    }
+
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()> {
         self.gh(s(&["pr", "edit", &pr.num.to_string(), "-R", &pr.repo, "--base", base])).map(|_| ())
     }
@@ -480,6 +487,7 @@ pub(crate) mod tests {
                 ("run list", json!([{"databaseId": 5, "status": "in_progress"}, {"databaseId": 6, "status": "completed"}]).to_string()),
                 ("run cancel", String::new()),
                 ("pr edit", String::new()),
+                ("repos/acme/webapp/pulls -f", json!({"number": 30, "html_url": "https://github.com/acme/webapp/pull/30"}).to_string()),
             ],
             calls: calls.clone(),
         };
@@ -495,6 +503,8 @@ pub(crate) mod tests {
         h.re_request_reviews(&pr(), &["rev".into()]).unwrap();
         assert_eq!(h.cancel_builds(&pr(), "abc").unwrap(), Cancelled::Stopped(1));
         h.retarget(&pr(), "develop").unwrap();
+        let opened = h.open("acme/webapp", "main", "feat", "Add x", "## Summary").unwrap();
+        assert_eq!((opened.num, opened.url.as_str()), (30, "https://github.com/acme/webapp/pull/30"));
         let calls = calls.lock().clone();
         let has = |want: &[&str]| calls.iter().any(|c| want.iter().all(|w| c.iter().any(|a| a.contains(w))));
         assert!(has(&["pr", "merge", "--squash", "--delete-branch"]), "merges with the repo's default and closes the branch");
@@ -503,6 +513,7 @@ pub(crate) mod tests {
         assert!(has(&["run", "cancel", "5"]));
         assert!(!has(&["run", "cancel", "6"]));
         assert!(has(&["--base", "develop"]));
+        assert!(has(&["POST", "repos/acme/webapp/pulls", "head=feat", "base=main", "title=Add x"]));
     }
 
     #[test]

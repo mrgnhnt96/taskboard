@@ -20,6 +20,7 @@
 //! | [`replace_reviewer`](PrHost::replace_reviewer) | request the new one, then remove the old | the same |
 //! | [`merge`](PrHost::merge) (closing the source branch) | `gh pr merge --<strategy> --delete-branch` | `POST …/merge` with `close_source_branch` |
 //! | [`retarget`](PrHost::retarget) the base | `gh pr edit --base` | `PUT` the PR's `destination` |
+//! | [`open`](PrHost::open) a PR from a pushed branch | `POST repos/{repo}/pulls` | `POST …/pullrequests` |
 //! | [`cancel_builds`](PrHost::cancel_builds) for a head | `gh run cancel` on its Actions runs | `stopPipeline` on its Pipelines runs; other CI: [`Cancelled::Unsupported`] |
 //! | [`base_failures`](PrHost::base_failures): checks failing on the base's last few commits | check runs and statuses of `commits?sha=<base>` | statuses of `commits/<base>` |
 //!
@@ -240,6 +241,8 @@ pub trait PrHost: Send + Sync {
     }
     fn merge(&self, pr: &PrRef, opts: &MergeOpts) -> HostResult<()>;
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()>;
+    /// Opens a PR in `repo` from the pushed `branch` into `base`; the new PR.
+    fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef>;
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;
@@ -268,6 +271,14 @@ pub fn host_for(app: &App, host: &str) -> HostResult<Arc<dyn PrHost>> {
 /// Uses `host` for every PR on its host id on this board (tests).
 pub fn install(app: &App, host: Arc<dyn PrHost>) {
     app.shared.lock().pr_hosts.insert(host.id().to_string(), host);
+}
+
+/// The host and repo a git remote's URL points at (`git@github.com:o/r.git`, `https://bitbucket.org/w/r`).
+pub fn repo_of_remote(url: &str) -> Option<(String, String)> {
+    let re = regex::Regex::new(r"(github\.com|bitbucket\.org)[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$").unwrap();
+    let c = re.captures(url.trim())?;
+    let host = if &c[1] == "github.com" { "github" } else { "bitbucket" };
+    Some((host.to_string(), c[2].to_string()))
 }
 
 pub fn watched(host: Option<&str>) -> bool {
@@ -344,6 +355,18 @@ impl PrHost for FakeHost {
         self.rec.lock().state = "MERGED".into();
         Ok(())
     }
+    fn open(&self, repo: &str, base: &str, branch: &str, title: &str, _body: &str) -> HostResult<PrRef> {
+        self.log(format!("open {repo} {branch} into {base}: {title}"));
+        let mut r = self.rec.lock();
+        r.base = base.to_string();
+        r.branch = branch.to_string();
+        r.title = title.to_string();
+        let url = match self.host {
+            "bitbucket" => format!("https://bitbucket.org/{repo}/pull-requests/21"),
+            _ => format!("https://github.com/{repo}/pull/21"),
+        };
+        Ok(PrRef { host: self.host.to_string(), repo: repo.to_string(), num: 21, url })
+    }
     fn retarget(&self, _pr: &PrRef, base: &str) -> HostResult<()> {
         self.log(format!("retarget {base}"));
         self.rec.lock().base = base.to_string();
@@ -378,6 +401,15 @@ mod tests {
         assert!(t.waiting_on("me"), "a task waits until it's resolved");
         t.resolved = true;
         assert!(!t.waiting_on("me"));
+    }
+
+    #[test]
+    fn reads_the_host_and_repo_from_a_remote() {
+        let r = |u: &str| repo_of_remote(u).map(|(h, r)| format!("{h} {r}"));
+        assert_eq!(r("git@github.com:acme/webapp.git").as_deref(), Some("github acme/webapp"));
+        assert_eq!(r("https://github.com/acme/web.app").as_deref(), Some("github acme/web.app"));
+        assert_eq!(r("https://me@bitbucket.org/ws/repo.git").as_deref(), Some("bitbucket ws/repo"));
+        assert_eq!(r("https://gitlab.com/a/b"), None);
     }
 
     #[test]

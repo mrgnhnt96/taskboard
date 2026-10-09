@@ -1,8 +1,8 @@
 //! `tb done --pr-body FILE`: the board checks the PR description (`[pr_body]` in config.toml) and the
 //! branch (pushed, rebased on the remote base, no merge commits), then opens the PR itself: the title
 //! starts with the task's ticket key, a `## Context` section is added, and the PR goes into the real
-//! base (a stacked task's parent branch). Only GitHub for now, through `gh`; every call to the host is
-//! in `host`, so another host can be put behind it.
+//! base (a stacked task's parent branch). The PR is opened on GitHub or Bitbucket Cloud through `prhost`
+//! (`host` here picks it from the checkout's remote).
 
 use std::path::Path;
 
@@ -272,46 +272,48 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     Ok(())
 }
 
-/// The PR host. GitHub through `gh` (`[pr] gh`) for now.
+/// The PR host, through `prhost`: GitHub or Bitbucket Cloud, by the checkout's remote.
 pub mod host {
     use super::*;
 
-    fn gh(app: &App, args: &[String], cwd: Option<&str>, input: Option<&[u8]>) -> std::result::Result<String, String> {
+    /// The host and repo of the checkout's remote (`[pr_body] remote`).
+    fn remote(app: &App, dir: &str) -> std::result::Result<(String, String), String> {
+        let r = &app.cfg.pr_body.remote;
+        let (ok, url, _) = git(dir, &["remote", "get-url", r], 10.0)?;
+        if !ok {
+            return Err(format!("this checkout has no {r} remote"));
+        }
+        crate::prhost::repo_of_remote(&url).ok_or_else(|| {
+            format!("{r} ({url}) isn't on GitHub or Bitbucket; open the PR with the host's tools and pass its link to tb done --pr")
+        })
+    }
+
+    /// Opens a PR from `branch` into `base`; its link. A remote that names neither host (a mirror, an
+    /// SSH alias) is left to `gh pr create` in the checkout, which knows the repo from its own config.
+    pub fn open(app: &App, dir: &str, base: &str, branch: &str, title: &str, body: &str) -> std::result::Result<PrLink, String> {
+        let (host, repo) = match remote(app, dir) {
+            Ok(r) => r,
+            Err(why) => return gh_create(app, dir, base, branch, title, body).map_err(|e| format!("{e} ({why})")),
+        };
+        let pr = crate::prhost::host_for(app, &host)?.open(&repo, base, branch, title, body)?;
+        Ok(PrLink { host: pr.host, repo: pr.repo, num: pr.num, url: pr.url })
+    }
+
+    fn gh_create(app: &App, dir: &str, base: &str, branch: &str, title: &str, body: &str) -> std::result::Result<PrLink, String> {
         let gh = crate::proc::which(&app.cfg.pr.gh).ok_or_else(|| "the gh command isn't installed".to_string())?;
-        let o = crate::proc::run_with(&gh, args, cwd.map(Path::new), 60.0, &crate::accounts::gh_env(&app.cfg), input)
+        let args: Vec<String> = ["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", "-"].iter().map(|s| s.to_string()).collect();
+        let o = crate::proc::run_with(&gh, &args, Some(Path::new(dir)), 60.0, &crate::accounts::gh_env(&app.cfg), Some(body.as_bytes()))
             .map_err(|_| "gh didn't answer in 60 seconds".to_string())?;
         if o.code != Some(0) {
-            let e = o.stderr.trim();
-            return Err(e.lines().last().filter(|l| !l.is_empty()).unwrap_or("gh failed").to_string());
+            return Err(o.stderr.trim().lines().last().filter(|l| !l.is_empty()).unwrap_or("gh failed").to_string());
         }
-        Ok(o.stdout)
-    }
-
-    /// Is the checkout's remote on GitHub?
-    fn on_github(app: &App, dir: &str) -> bool {
-        git(dir, &["remote", "get-url", &app.cfg.pr_body.remote], 10.0).map(|(ok, url, _)| ok && url.contains("github.com")).unwrap_or(false)
-    }
-
-    /// Opens a PR from `branch` into `base`; its link.
-    pub fn open(app: &App, dir: &str, base: &str, branch: &str, title: &str, body: &str) -> std::result::Result<PrLink, String> {
-        let args: Vec<String> = ["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", "-"].iter().map(|s| s.to_string()).collect();
-        let out = gh(app, &args, Some(dir), Some(body.as_bytes())).map_err(|e| {
-            if on_github(app, dir) {
-                e
-            } else {
-                format!("{e} (the board opens PRs on GitHub only for now; open it with the host's tools and pass its link to tb done --pr)")
-            }
-        })?;
-        find_pr(&out).ok_or_else(|| format!("gh didn't say where the PR is: {}", one_line(&out, 200)))
+        find_pr(&o.stdout).ok_or_else(|| format!("gh didn't say where the PR is: {}", one_line(&o.stdout, 200)))
     }
 
     /// Points an open PR at another base branch.
     pub fn retarget(app: &App, t: &Row, base: &str) -> std::result::Result<(), String> {
-        if t.s("pr_host") != Some("github") {
-            return Err("only GitHub PRs can be moved for now; change its base on the host".into());
-        }
-        let args: Vec<String> = ["pr", "edit", &t.st("pr_url"), "--base", base].iter().map(|s| s.to_string()).collect();
-        gh(app, &args, None, None).map(|_| ())
+        let pr = crate::prhost::PrRef::of(t).ok_or_else(|| "the task has no PR".to_string())?;
+        crate::prhost::host_for(app, &pr.host)?.retarget(&pr, base)
     }
 }
 

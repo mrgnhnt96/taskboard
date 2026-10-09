@@ -246,6 +246,14 @@ impl PrHost for BitbucketHost {
         self.http.call("POST", &format!("{}/merge", self.pr_url(pr)), Some(&b)).map(|_| ())
     }
 
+    fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef> {
+        let b = json!({"title": title, "description": body, "source": {"branch": {"name": branch}}, "destination": {"branch": {"name": base}}});
+        let v = self.http.call("POST", &format!("{}/pullrequests", self.repo_url(repo)), Some(&b))?;
+        let num = v["id"].as_i64().ok_or_else(|| "Bitbucket didn't say which PR it opened".to_string())?;
+        let url = v["links"]["html"]["href"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("https://bitbucket.org/{repo}/pull-requests/{num}"));
+        Ok(PrRef { host: "bitbucket".into(), repo: repo.to_string(), num, url })
+    }
+
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()> {
         let p = self.get(&self.pr_url(pr))?;
         self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "destination": {"branch": {"name": base}}}))).map(|_| ())
@@ -522,6 +530,7 @@ pub(crate) mod tests {
                     {"uuid": "{p0}", "build_number": 40, "state": {"name": "COMPLETED"}, "target": {"commit": {"hash": "abc123def"}}}
                 ]})),
                 ("POST https://api/repositories/ws/repo/pipelines/", Value::Null),
+                ("POST https://api/repositories/ws/repo/pullrequests", json!({"id": 31, "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/31"}}})),
                 ("GET https://api/repositories/ws/repo/commits/main", json!({"values": [{"hash": "m1"}, {"hash": "m2"}]})),
                 ("GET https://api/repositories/ws/repo/commit/m1/statuses", json!({"values": [{"key": "test", "name": "Tests", "state": "FAILED"}]})),
                 ("GET https://api/repositories/ws/repo/commit/m2/statuses", json!({"values": [{"key": "build", "name": "Build", "state": "SUCCESSFUL"}]})),
@@ -575,6 +584,8 @@ pub(crate) mod tests {
         h.retarget(&pr(), "develop").unwrap();
         assert_eq!(h.cancel_builds(&pr(), "abc123").unwrap(), Cancelled::Stopped(1));
         assert_eq!(h.base_failures(&pr(), "main", 5).unwrap(), vec!["Tests".to_string()]);
+        let opened = h.open("ws/repo", "main", "feat", "Add x", "## Summary").unwrap();
+        assert_eq!((opened.num, opened.url.as_str()), (31, "https://bitbucket.org/ws/repo/pull-requests/31"));
         let calls = calls.lock().clone();
         let find = |m: &str, u: &str| calls.iter().filter(|(cm, cu, _)| cm == m && cu.ends_with(u)).map(|(_, _, b)| b.clone().unwrap_or(Value::Null)).collect::<Vec<_>>();
         let replies = find("POST", "/pullrequests/7/comments");
@@ -590,6 +601,10 @@ pub(crate) mod tests {
         assert!(puts.iter().all(|p| p["title"] == "Add x"), "Bitbucket wants the title with every update");
         assert_eq!(find("POST", "/pullrequests/7/merge"), vec![json!({"type": "pullrequest", "close_source_branch": true, "merge_strategy": "squash"})]);
         assert_eq!(find("POST", "/pipelines/%7Bp1%7D/stopPipeline").len(), 1);
+        assert_eq!(
+            find("POST", "/repo/pullrequests"),
+            vec![json!({"title": "Add x", "description": "## Summary", "source": {"branch": {"name": "feat"}}, "destination": {"branch": {"name": "main"}}})]
+        );
         assert!(find("POST", "/pipelines/%7Bp0%7D/stopPipeline").is_empty(), "a finished run isn't stopped");
     }
 

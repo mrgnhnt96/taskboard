@@ -481,3 +481,16 @@ fn a_steps_findings_fold_under_its_headline() {
     assert!(text.contains("Author review 1 open finding Moved since"), "{text}");
     assert!(text.contains("F2 open high SQL injection api.rs:12") && text.contains("F1 fixed Typo"), "{text}");
 }
+
+#[::core::prelude::v1::test]
+fn reviewer_pills_show_each_reviewers_state() {
+    let rows = json!([{"name": "Ana", "user": "ana", "state": "approved", "swaps": 0},
+                      {"name": "Bo", "user": "bo", "state": "changes", "swaps": 0},
+                      {"name": "Cy", "user": "cy", "state": "rereview", "swaps": 0},
+                      {"name": "Di", "user": "di", "state": "waiting", "swaps": 2}]);
+    let bar = json!({"approvals": 1, "reviewers": 4, "new_comments": 0, "reviewer_rows": rows});
+    let text = panel_text(with_bar(bar, json!({"phase": "rereview"}), "changes"), json!({}));
+    for want in ["Ana Approved", "Bo Changes asked", "Cy Re-review waiting", "Di Waiting Swapped 2 times"] {
+        assert!(text.contains(want), "{want:?} in {text}");
+    }
+}

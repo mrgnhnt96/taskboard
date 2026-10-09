@@ -357,3 +357,35 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
     assert_eq!(blockers, vec!["checks failed: e2e", "R asked for changes", "1 thread open"]);
     assert_eq!(v["watched"], true);
 }
+
+#[test]
+fn the_pr_bar_has_a_pill_per_reviewer_from_the_host() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.review_decision = "CHANGES_REQUESTED".into();
+    rec.changes_at = Some("t1".into());
+    rec.reviewers = vec![reviewer("ok", "approved"), reviewer("rev", "changes"), reviewer("new", "pending"), reviewer("gone", "changes")];
+    fake(&b, rec);
+    prflow::merge_flow(&b.app, id, vec![("swapped_off", json!(["gone"]))]).unwrap();
+    poll(&b);
+    let pills = |b: &Board| -> Vec<(String, String)> {
+        let card = board::task_card(&b.app, &b.task(id)).unwrap();
+        card["pr"]["bar"]["reviewer_rows"].as_array().unwrap().iter().map(|r| (r["user"].as_str().unwrap().to_string(), r["state"].as_str().unwrap().to_string())).collect()
+    };
+    let s = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+    assert_eq!(pills(&b), s(&[("ok", "approved"), ("rev", "changes"), ("new", "waiting")]), "the swapped-off reviewer has no pill");
+    let card = board::task_card(&b.app, &b.task(id)).unwrap();
+    assert_eq!((card["pr"]["bar"]["approvals"].as_i64(), card["pr"]["bar"]["reviewers"].as_i64()), (Some(1), Some(3)));
+    b.post(&format!("/tasks/T{id}/pr/addressed"), json!({}));
+    assert_eq!(pills(&b), s(&[("ok", "approved"), ("rev", "rereview"), ("new", "waiting")]));
+}
+
+#[test]
+fn a_stacked_pr_is_retargeted_through_its_host() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    taskboardd::propen::host::retarget(&b.app, &b.task(id), "develop").unwrap();
+    assert!(h.calls().contains(&"retarget develop".to_string()), "a Bitbucket PR moves too");
+}

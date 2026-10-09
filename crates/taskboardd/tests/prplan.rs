@@ -178,7 +178,7 @@ fn a_stacked_pr_waits_on_its_base_then_is_pointed_at_main() {
     // The parent merges: the child's PR goes into main and may merge.
     b.post(&format!("/tasks/T{parent}/pr/merged"), json!({}));
     let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap();
-    assert!(log.contains("pr edit https://github.com/acme/webapp/pull/13 --base main"), "{log}");
+    assert!(log.contains("pr edit 13 -R acme/webapp --base main"), "{log}");
     let t = b.row(child);
     assert_eq!(prflow::phase_of(&b.app, &t, &jrec(&t)), "merge");
     let c = b.card(child);

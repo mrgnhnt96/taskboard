@@ -122,7 +122,7 @@ languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kot
 # pragmas = ["!/", "noqa", "type:", "pragma", "pylint:", "eslint-", "@ts-", "prettier-ignore", "ignore:", "ignore_for_file:", "nolint", "go:", "swiftlint:", …]
 
 # `tb done "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
-# (GitHub, with gh) into the real base: a stacked task's parent branch, else the default branch.
+# (GitHub or Bitbucket, by the remote) into the real base: a stacked task's parent branch, else the default branch.
 # `tb pr body-check FILE` runs the description check alone.
 [pr_body]
 sections = ["Summary", "Changes", "Testing"]   # `## <name>` sections it needs, in this order

@@ -168,7 +168,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
             app,
             id,
             fields!["answered_changes" => rec["changes_at"].clone(),
-                    "addressed" => json!({"at": now_iso(), "head": rec["head"], "asked": asked})],
+                    "addressed" => json!({"at": now_iso(), "head": rec["head"], "asked": asked, "asked_ids": users})],
         )?;
         let text = if asked.is_empty() {
             format!("Addressed the review on PR #{}", pr.num)
