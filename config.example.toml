@@ -145,7 +145,7 @@ fault_check = true                   # ask `claude -p` whether one of your commi
 model = "sonnet"
 budget_usd = "0.50"
 timeout_secs = 180
-recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished and it's still red
+recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished without a fix PR, nothing else covers it, and it's still red
 start_fix = true                     # start the fix task at once in a new terminal (false: it waits in the queue)
 fix_ticket = true                    # make a new Jira ticket for the fix task (when Jira is on)
 
