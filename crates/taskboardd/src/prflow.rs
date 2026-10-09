@@ -436,10 +436,15 @@ fn str_list(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default()
 }
 
-/// The threads waiting on the PR's author: unresolved, someone else spoke last, and not acknowledged on
-/// the board since. Empty for a record without threads (older reads).
+/// Who a thread waits on: the board's own account on the host (`viewer`), else the PR's author.
+pub fn us(rec: &Value) -> &str {
+    rec["viewer"].as_str().filter(|v| !v.is_empty()).or(rec["author"].as_str()).unwrap_or("")
+}
+
+/// The threads waiting on us (`us`): unresolved, someone else spoke last, and not acknowledged on the
+/// board since. Empty for a record without threads (older reads).
 pub fn open_threads(f: &Row, rec: &Value) -> Vec<Value> {
-    let author = rec["author"].as_str().unwrap_or("");
+    let author = us(rec);
     let acks = f.get("threads_acked").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     rec["threads"]
         .as_array()

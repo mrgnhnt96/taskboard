@@ -389,3 +389,31 @@ fn a_stacked_pr_is_retargeted_through_its_host() {
     taskboardd::propen::host::retarget(&b.app, &b.task(id), "develop").unwrap();
     assert!(h.calls().contains(&"retarget develop".to_string()), "a Bitbucket PR moves too");
 }
+
+#[test]
+fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
+    // #49: the board posts as "bot", not as the PR's author "me".
+    let b = board_with(|c| c.pr.agents_merge = true);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.viewer = "bot".into();
+    rec.threads = vec![thread("1", "bot"), thread("2", "rev")];
+    rec.reviewers = vec![reviewer("a", "approved"), reviewer("c", "approved")];
+    rec.approvals = 2;
+    rec.tasks_error = Some("Bitbucket answered 403".into());
+    let h = fake(&b, rec);
+    poll(&b);
+    let card = board::pr_card(&b.task(id));
+    assert_eq!(card["stage"]["open_threads"], 1, "the board's own account answered 1");
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done"}));
+    assert_eq!(h.rec.lock().threads[1].last_author, "bot", "a reply is the board's account's");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("couldn't read its PR tasks (Bitbucket answered 403)"), "{e}");
+    assert!(!e.contains("thread"), "{e}");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert!(live["tasks_open"].is_null(), "unknown, not 0");
+    assert_eq!(live["tasks_error"], "Bitbucket answered 403");
+    h.rec.lock().tasks_error = None;
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}

@@ -228,6 +228,9 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
     if tasks > 0 {
         out.push(format!("{} open", plural(tasks, "PR task")));
     }
+    if let Some(e) = rec["tasks_error"].as_str() {
+        out.push(format!("couldn't read its PR tasks ({e})"));
+    }
     if let Some(b) = stacked_base(app, t, rec)? {
         out.push(b);
     }
@@ -409,6 +412,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     live["approvals"] = json!({"have": review.approvals, "need": prflow::approvals_needed(app, &t)});
     live["open_threads"] = json!(prflow::open_threads(&f, &rec));
     live["tasks_open"] = rec["tasks_open"].clone();
+    live["tasks_error"] = rec["tasks_error"].clone();
     live["blockers"] = json!(merge_blockers(app, &t, &rec)?);
     Ok(live)
 }

@@ -959,6 +959,9 @@ fn print_pr_status(t: &str, v: &Value) {
     } else if rec["comments"].as_i64().unwrap_or(0) > 0 && !rec["threads"].is_array() {
         out(&format!("Review comments from others: {}", rec["comments"]));
     }
+    if let Some(e) = live["tasks_error"].as_str() {
+        out(&format!("PR tasks: couldn't read tasks ({e})"));
+    }
     if v["watched"] != true {
         out("The board doesn't watch this PR's host; read it with the host's own tools.");
     }

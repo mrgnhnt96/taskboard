@@ -33,8 +33,10 @@
 //! `pr_flow.rec` and steps on (`prflow::phase_of`): `state`, `head`, `branch`, `base`, `base_head`,
 //! `checks` (`name`, `state` = passed / failed / running / stopped, `url`), `failed`, `running`,
 //! `comments` (comments from others), `approvals`, `review_decision`, `changes_at`, `reviewers`,
-//! `threads`, `tasks_open`. A thread ([`Thread`]) is open while it's unresolved and someone else had
-//! the last word; a PR task (Bitbucket) is open until it's resolved. The flow adds its own per-thread
+//! `threads`, `tasks_open`, `tasks_error`, `viewer`. A thread ([`Thread`]) is open while it's unresolved
+//! and someone other than the board's own account (`viewer`, the account it posts as; the PR's author
+//! when that isn't known) had the last word; a PR task (Bitbucket) is open until it's resolved. When the
+//! tasks couldn't be read, `tasks_error` says why and `tasks_open` is null: unknown, not none. The flow adds its own per-thread
 //! state on top (threads acknowledged with `tb pr ack`), see `prflow::open_threads`.
 //!
 //! # CI
@@ -141,12 +143,13 @@ pub struct Thread {
 }
 
 impl Thread {
-    /// Waiting on the PR's author: unresolved, and someone else spoke last. A task waits until resolved.
-    pub fn waiting_on(&self, pr_author: &str) -> bool {
+    /// Waiting on us (the board's account, see [`Record::us`]): unresolved, and someone else spoke last.
+    /// A task waits until resolved.
+    pub fn waiting_on(&self, us: &str) -> bool {
         if self.resolved {
             return false;
         }
-        self.kind == "task" || self.last_author != pr_author
+        self.kind == "task" || self.last_author != us
     }
 }
 
@@ -174,10 +177,24 @@ pub struct Record {
     pub reviewers: Vec<Reviewer>,
     pub threads: Vec<Thread>,
     pub tasks_open: i64,
+    /// Why the PR's tasks couldn't be read (Bitbucket): then `tasks_open` is unknown.
+    pub tasks_error: Option<String>,
+    /// The account the board reads and posts as, in the host's ids like [`Thread::last_author`]; empty
+    /// when the host couldn't say.
+    pub viewer: String,
     pub mergeable: Value,
 }
 
 impl Record {
+    /// Who "us" is for a thread: the board's own account, else (not known) the PR's author.
+    pub fn us(&self) -> &str {
+        if self.viewer.is_empty() {
+            &self.author
+        } else {
+            &self.viewer
+        }
+    }
+
     pub fn failed(&self) -> Vec<String> {
         self.checks.iter().filter(|c| c.state == "failed").map(|c| c.name.clone()).collect()
     }
@@ -191,7 +208,8 @@ impl Record {
             "running": self.checks.iter().filter(|c| c.state == "running").count(),
             "comments": self.comments, "approvals": self.approvals, "mergeable": self.mergeable,
             "changes_at": self.changes_at, "reviewers": self.reviewers, "threads": self.threads,
-            "tasks_open": self.tasks_open,
+            "tasks_open": if self.tasks_error.is_some() { Value::Null } else { json!(self.tasks_open) },
+            "tasks_error": self.tasks_error, "viewer": self.viewer,
             // Reviewers asked who haven't reviewed yet (the PR bar's "x of N").
             "requested": self.reviewers.iter().filter(|r| r.requested && r.state == "pending").count(),
         })
@@ -256,12 +274,15 @@ pub fn host_for(app: &App, host: &str) -> HostResult<Arc<dyn PrHost>> {
     match host {
         "github" => {
             let gh = crate::proc::which(&app.cfg.pr.gh).ok_or_else(|| "the gh command isn't installed".to_string())?;
-            Ok(Arc::new(github::GithubHost::new(Box::new(github::GhCli { bin: gh, env: crate::accounts::gh_env(&app.cfg) }))))
+            let env = crate::accounts::gh_env(&app.cfg);
+            let key = account_key("github", &env.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>());
+            Ok(Arc::new(github::GithubHost::new(Box::new(github::GhCli { bin: gh, env })).with_account(&key)))
         }
         "bitbucket" => {
             let (email, token) = crate::accounts::board_credentials(app, crate::accounts::Provider::Bitbucket)
                 .ok_or_else(|| "Bitbucket isn't connected: connect it in Taskboard ▸ Settings ▸ Accounts".to_string())?;
-            Ok(Arc::new(bitbucket::BitbucketHost::new(Box::new(bitbucket::BasicHttp::new(&email, &token)), &app.cfg.pr.bitbucket_api)))
+            let key = account_key("bitbucket", &[&app.cfg.pr.bitbucket_api, &email, &token]);
+            Ok(Arc::new(bitbucket::BitbucketHost::new(Box::new(bitbucket::BasicHttp::new(&email, &token)), &app.cfg.pr.bitbucket_api).with_account(&key)))
         }
         "" => Err("this PR's host isn't known".into()),
         other => Err(format!("the board doesn't work with {other} PRs")),
@@ -317,9 +338,9 @@ impl PrHost for FakeHost {
     fn reply(&self, _pr: &PrRef, thread: &Thread, body: &str) -> HostResult<()> {
         self.log(format!("reply {} {body}", thread.id));
         let mut r = self.rec.lock();
-        let author = r.author.clone();
+        let us = r.us().to_string();
         if let Some(t) = r.threads.iter_mut().find(|t| t.id == thread.id) {
-            t.last_author = author;
+            t.last_author = us;
             t.last_id = format!("{}-reply", t.last_id);
         }
         Ok(())
@@ -382,6 +403,35 @@ impl PrHost for FakeHost {
     }
 }
 
+/// The board's account on a host, looked up once per account (`key`) for the daemon's life. A failed
+/// lookup isn't kept, so the next read asks again; it answers "" meanwhile.
+pub(crate) fn viewer_cached(key: &str, look_up: impl FnOnce() -> HostResult<String>) -> String {
+    static SEEN: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> = std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if !key.is_empty() {
+        if let Some(v) = seen.lock().get(key) {
+            return v.clone();
+        }
+    }
+    match look_up() {
+        Ok(v) if !v.is_empty() => {
+            if !key.is_empty() {
+                seen.lock().insert(key.to_string(), v.clone());
+            }
+            v
+        }
+        _ => String::new(),
+    }
+}
+
+/// A cache key for an account that doesn't keep its secret: a hash of it.
+pub(crate) fn account_key(host: &str, parts: &[&str]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    parts.hash(&mut h);
+    format!("{host}:{:x}", h.finish())
+}
+
 /// The first line of a comment, clipped for a list.
 pub(crate) fn gist(text: &str) -> String {
     one_line(text.lines().find(|l| !l.trim().is_empty()).unwrap_or(""), 140)
@@ -401,6 +451,24 @@ mod tests {
         assert!(t.waiting_on("me"), "a task waits until it's resolved");
         t.resolved = true;
         assert!(!t.waiting_on("me"));
+    }
+
+    #[test]
+    fn us_is_the_board_s_account_else_the_pr_s_author() {
+        let mut r = Record { author: "me".into(), ..Default::default() };
+        assert_eq!(r.us(), "me");
+        r.viewer = "bot".into();
+        assert_eq!(r.us(), "bot");
+        let t = Thread { kind: "review".into(), last_author: "bot".into(), ..Default::default() };
+        assert!(!t.waiting_on(r.us()), "the board's account answered last, though it isn't the PR's author");
+    }
+
+    #[test]
+    fn tasks_that_couldn_t_be_read_are_unknown() {
+        let r = Record { tasks_open: 0, tasks_error: Some("Bitbucket answered 403".into()), ..Default::default() };
+        let v = r.to_value();
+        assert!(v["tasks_open"].is_null());
+        assert_eq!(v["tasks_error"], "Bitbucket answered 403");
     }
 
     #[test]

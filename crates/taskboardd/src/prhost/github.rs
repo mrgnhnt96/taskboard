@@ -30,6 +30,8 @@ impl Gh for GhCli {
 
 pub struct GithubHost {
     gh: Box<dyn Gh>,
+    /// Which account `gh` signs in as, for caching who it is (`prhost::account_key`); empty: ask each read.
+    account: String,
 }
 
 const VIEW_FIELDS: &str = "number,state,title,author,headRefOid,headRefName,baseRefName,baseRefOid,reviewDecision,statusCheckRollup,comments,reviews,latestReviews,reviewRequests,mergeable";
@@ -48,7 +50,18 @@ fn parse(text: &str) -> HostResult<Value> {
 
 impl GithubHost {
     pub fn new(gh: Box<dyn Gh>) -> GithubHost {
-        GithubHost { gh }
+        GithubHost { gh, account: String::new() }
+    }
+
+    /// Names the account `gh` signs in as, so who it is is asked once.
+    pub fn with_account(mut self, key: &str) -> GithubHost {
+        self.account = key.to_string();
+        self
+    }
+
+    /// The board's own GitHub login (`gh api user`).
+    fn viewer(&self) -> String {
+        super::viewer_cached(&self.account, || Ok(self.api("GET", "user", &[])?["login"].as_str().unwrap_or("").to_string()))
     }
 
     fn gh(&self, args: Vec<String>) -> HostResult<String> {
@@ -106,7 +119,9 @@ impl PrHost for GithubHost {
         let view = parse(&self.gh(s(&["pr", "view", &pr.num.to_string(), "-R", &pr.repo, "--json", VIEW_FIELDS]))?)?;
         let (owner, name) = Self::owner_name(pr);
         let threads = self.graphql(THREADS_QUERY, &[("owner", owner), ("name", name)], &[("num", pr.num.to_string())])?;
-        Ok(summarize(&view, &threads))
+        let mut r = summarize(&view, &threads);
+        r.viewer = self.viewer();
+        Ok(r)
     }
 
     fn reply(&self, pr: &PrRef, thread: &Thread, body: &str) -> HostResult<()> {
@@ -356,6 +371,8 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
         reviewers,
         threads: list,
         tasks_open: 0,
+        tasks_error: None,
+        viewer: String::new(),
         mergeable: d["mergeable"].clone(),
     }
 }

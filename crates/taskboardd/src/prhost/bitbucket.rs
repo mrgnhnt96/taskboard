@@ -69,6 +69,8 @@ impl Http for BasicHttp {
 pub struct BitbucketHost {
     http: Box<dyn Http>,
     api: String,
+    /// Which account `http` signs in as, for caching who it is (`prhost::account_key`); empty: ask each read.
+    account: String,
 }
 
 /// A Bitbucket id in a URL path (`{uuid}` braces escaped).
@@ -95,7 +97,18 @@ fn same_user(u: &Value, id: &str) -> bool {
 
 impl BitbucketHost {
     pub fn new(http: Box<dyn Http>, api: &str) -> BitbucketHost {
-        BitbucketHost { http, api: api.trim_end_matches('/').to_string() }
+        BitbucketHost { http, api: api.trim_end_matches('/').to_string(), account: String::new() }
+    }
+
+    /// Names the account `http` signs in as, so who it is is asked once.
+    pub fn with_account(mut self, key: &str) -> BitbucketHost {
+        self.account = key.to_string();
+        self
+    }
+
+    /// The board's own Bitbucket account (`GET /user`): its `{uuid}`, as comments name their authors.
+    fn viewer(&self) -> String {
+        super::viewer_cached(&self.account, || Ok(uid(&self.get(&format!("{}/user", self.api))?)))
     }
 
     fn repo_url(&self, repo: &str) -> String {
@@ -175,11 +188,15 @@ impl PrHost for BitbucketHost {
     fn read(&self, pr: &PrRef) -> HostResult<Record> {
         let p = self.get(&self.pr_url(pr))?;
         let comments = self.get_all(&format!("{}/comments?pagelen=100", self.pr_url(pr)), 5)?;
-        // PR tasks need a newer token scope on some workspaces; a PR without them reads as none.
-        let tasks = self.get_all(&format!("{}/tasks?pagelen=100", self.pr_url(pr)), 3).unwrap_or_default();
+        // PR tasks need a newer token scope on some workspaces. Tasks that can't be read are unknown, not
+        // none: the merge waits on them (`prcmds::merge_blockers`).
+        let tasks = self.get_all(&format!("{}/tasks?pagelen=100", self.pr_url(pr)), 3);
         let head = p["source"]["commit"]["hash"].as_str().unwrap_or("");
         let statuses = if head.is_empty() { vec![] } else { self.statuses(&pr.repo, head)? };
-        Ok(summarize(&p, &comments, &tasks, &statuses))
+        let mut r = summarize(&p, &comments, tasks.as_deref().unwrap_or(&[]), &statuses);
+        r.tasks_error = tasks.err();
+        r.viewer = self.viewer();
+        Ok(r)
     }
 
     fn reply(&self, pr: &PrRef, thread: &Thread, body: &str) -> HostResult<()> {
@@ -446,6 +463,8 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
         reviewers,
         threads,
         tasks_open,
+        tasks_error: None,
+        viewer: String::new(),
         mergeable: Value::Null,
     }
 }
@@ -475,7 +494,12 @@ pub(crate) mod tests {
         fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
             self.calls.lock().push((method.into(), url.into(), body.cloned()));
             let key = format!("{method} {url}");
-            self.answers.iter().find(|(k, _)| key.contains(k)).map(|(_, v)| v.clone()).ok_or_else(|| format!("Bitbucket answered 404: no answer for {key}"))
+            let v = self.answers.iter().find(|(k, _)| key.contains(k)).map(|(_, v)| v.clone()).ok_or_else(|| format!("Bitbucket answered 404: no answer for {key}"))?;
+            // A canned `{"error": "…"}` is a failed call.
+            match v["error"].as_str() {
+                Some(e) => Err(e.to_string()),
+                None => Ok(v),
+            }
         }
     }
 
@@ -538,6 +562,38 @@ pub(crate) mod tests {
             calls,
         };
         BitbucketHost::new(Box::new(http), "https://api/")
+    }
+
+    #[test]
+    fn a_thread_the_board_s_own_account_answered_isn_t_waiting() {
+        // The board posts as a bot account, not as the PR's author.
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let mut c = comments();
+        c["values"] = json!([
+            {"id": 1, "user": {"uuid": REV}, "content": {"raw": "Rename this"}, "created_on": "t1"},
+            {"id": 2, "parent": {"id": 1}, "user": {"uuid": "{bot}"}, "content": {"raw": "Done"}, "created_on": "t2"},
+            {"id": 3, "user": {"uuid": REV}, "content": {"raw": "Why?"}, "created_on": "t3"}
+        ]);
+        c["next"] = Value::Null;
+        let http = FakeHttp {
+            answers: vec![
+                ("GET https://api/user", json!({"uuid": "{bot}", "account_id": "557058:bot"})),
+                ("/pullrequests/7/tasks", json!({"error": "Bitbucket answered 403"})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7/comments", c),
+                ("GET https://api/repositories/ws/repo/commit/abc123/statuses", json!({"values": []})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7", pr_json()),
+            ],
+            calls: calls.clone(),
+        };
+        let h = BitbucketHost::new(Box::new(http), "https://api/").with_account("bitbucket:test-bot");
+        let r = h.read(&pr()).unwrap();
+        assert_eq!(r.viewer, "{bot}");
+        let open: Vec<&str> = r.threads.iter().filter(|t| t.waiting_on(r.us())).map(|t| t.id.as_str()).collect();
+        assert_eq!(open, vec!["3"], "the bot had the last word on 1");
+        assert_eq!(r.tasks_error.as_deref(), Some("Bitbucket answered 403"), "tasks that can't be read are unknown");
+        assert!(r.to_value()["tasks_open"].is_null());
+        h.read(&pr()).unwrap();
+        assert_eq!(calls.lock().iter().filter(|(_, u, _)| u == "https://api/user").count(), 1, "who the account is is asked once");
     }
 
     fn pr() -> PrRef {
