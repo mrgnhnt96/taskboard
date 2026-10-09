@@ -51,12 +51,14 @@ pub fn from_env() -> Arc<dyn Backend> {
 pub struct Daemon {
     base: String,
     agent: ureq::Agent,
+    /// Where the running daemon keeps this launch's app token (`taskboardd::apptoken`).
+    token: Option<std::path::PathBuf>,
 }
 
 impl Daemon {
     #[cfg(test)]
     pub fn at(base: &str) -> Daemon {
-        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build() }
+        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build(), token: None }
     }
 
     pub fn new() -> Daemon {
@@ -67,6 +69,7 @@ impl Daemon {
         Daemon {
             base: base.unwrap_or_else(|| format!("http://{host}:{port}")),
             agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(2)).timeout(Duration::from_secs(20)).build(),
+            token: cfg.as_ref().map(taskboardd::apptoken::path),
         }
     }
 
@@ -98,9 +101,13 @@ impl Backend for Daemon {
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
-        // `X-Task-Board-From: app`: the owner's own click, which the board takes for what only
-        // the owner may set (a wave's review stop).
-        let req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
+        // `X-Task-Board-From: app` with this launch's app token: the owner's own click, which the
+        // board takes for what only the owner may do (Start, a wave's review stop). The token is read
+        // each time, so a restarted daemon's new one is picked up.
+        let mut req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
+        if let Some(token) = self.token.as_deref().and_then(taskboardd::apptoken::read) {
+            req = req.set("X-Task-Board-Token", &token);
+        }
         self.answer(req.send_json(body))
     }
 }

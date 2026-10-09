@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod api;
 pub mod app;
+pub mod apptoken;
 pub mod asks;
 pub mod bits;
 pub mod board;
