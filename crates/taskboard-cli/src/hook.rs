@@ -87,7 +87,8 @@ fn pre_tool_use(payload: &Value, session: &str) -> i32 {
 /// is what makes a request the owner's click in the app.
 fn token_refused(payload: &Value) -> bool {
     let tool = payload["tool_name"].as_str().unwrap_or("");
-    if !taskboardd::apptoken::tool_reaches(tool, &payload["tool_input"], &client::config().data) {
+    let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(std::path::Path::new);
+    if !taskboardd::apptoken::tool_reaches(tool, &payload["tool_input"], &client::config().data, cwd) {
         return false;
     }
     deny(&taskboardd::apptoken::refusal());

@@ -95,6 +95,8 @@ pub struct App {
     pub inline_deferred: bool,
     /// This launch's app token (`apptoken`): what makes a request the app's own.
     pub app_token: String,
+    /// Who this launch takes for the app (`apporigin`); set by `serve`, else the unsigned default.
+    pub app_origin: once_cell::sync::OnceCell<crate::apporigin::Trust>,
 }
 
 impl App {
@@ -135,7 +137,13 @@ impl App {
             ai_signal: Signal::new(),
             inline_deferred: inline,
             app_token: crate::apptoken::fresh(),
+            app_origin: once_cell::sync::OnceCell::new(),
         }
+    }
+
+    /// Who this launch takes for the app (`apporigin::Trust`).
+    pub fn trust(&self) -> &crate::apporigin::Trust {
+        self.app_origin.get_or_init(|| crate::apporigin::Trust::unsigned(self.cfg.app_origin.token))
     }
 
     pub fn info(&self, msg: impl AsRef<str>) {

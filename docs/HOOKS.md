@@ -248,9 +248,15 @@ prompt = "Sign off the screens this task changes."
   names the file's line. Opening a PR, `tb pr wait` and `tb done` are refused while
   the branch (committed or not, against origin's default branch) adds one, and the handoff tells the agent the rule.
 - **The app token guard.** The plugin's `PreToolUse` hook (also on Read, Grep and Glob, and in every terminal,
-  Midna's or not) refuses a tool call that reads the daemon's `app-token` file (see API.md, "The app token"): one
-  that names it, or reaches into the board's data folder with a glob, a search, a listing or a program that could
-  print it. It errs on the side of refusing; an agent has no reason to look in that folder.
+  Midna's or not) refuses a tool call that reads the daemon's `app-token` file (see API.md, "The app's own
+  requests"; only a daemon without a team signature writes it): one that names it, quoted in pieces or not
+  (`app-to''ken`) or by a glob that matches it and not every token (`app-*`); one that reaches into the board's data
+  folder with a glob, a search, a listing or a program that could print it, spelled any way that resolves there
+  (`$TASKBOARD_DATA`, `$HOME`, `~`, `./`, `..`, `/tmp` for `/private/tmp`, a symlink, a path from the call's working
+  folder); one that walks a folder above it (`find ~`, `grep -r … ~`, Grep or Glob from `~`); or one that mentions
+  `TASKBOARD_DATA` unexpanded (a script reading it from the environment). It errs on the side of refusing; an agent
+  has no reason to look in that folder. It reads what a call says, so it can't be complete: a program that builds
+  the path at run time gets past it. The signed app doesn't use the file at all.
 - **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
   create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do

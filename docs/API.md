@@ -548,7 +548,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | `tb task new`. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the caller shows it. |
 | `POST /tasks/:id` | `{status: "queued"}` | "Queue it now" on a planned task (planned → queued only). |
 | `POST /tasks/:id` | `{jira_key: "PROJ-1"\|"new"\|"none"}` | `tb task set --jira`: link a ticket, ask for one (again, after a failure), or no ticket (a PR task then stops waiting for one). |
-| `POST /tasks/:id/start` | `{mode: "new"\|"queue", via_session?}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. Without `via_session` it is the app's Start only (the `X-Task-Board-From: app` header with this launch's app token, see below); any other caller gets 403. With `via_session` (`tb start T<n>`) it starts only when a prompt the owner typed in that terminal, since its conversation began, asks for it now: a clause that asks for the start ("start T4", "queue T4", "kick off T4") and names the task, or, in the latest prompt only, an unnamed ask in a prompt that asks for a new task ("make a task and queue it") for the first task that terminal made with `tb task new` after it. The latest prompt that speaks of the task's start decides, so a later "don't start T4", "hold off on T4" or "wait" takes an earlier ask back. No ask: a no anywhere before the ask in its sentence ("never, ever, start T4"), any time or condition in the prompt ("start T4 on Monday", "wait until 6am, then start T4", "start T4 when T3 lands"), a question ("start T4?"), quoted or pasted text (quotes, code, the rest of a line after "says:", the lines after a line ending in ":", indented or log-like lines), prompts with any `[task-board:…]` marker, and reports ("T4 started"); 403 otherwise. |
+| `POST /tasks/:id/start` | `{mode: "new"\|"queue", via_session?}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. Without `via_session` it is the app's Start only (the `X-Task-Board-From: app` header, see "The app's own requests" below); any other caller gets 403. With `via_session` (`tb start T<n>`) it starts only when a prompt the owner typed in that terminal, since its conversation began, asks for it now: a clause that asks for the start ("start T4", "queue T4", "kick off T4") and names the task, or, in the latest prompt only, an unnamed ask in a prompt that asks for a new task ("make a task and queue it") for the first task that terminal made with `tb task new` after it. The latest prompt that speaks of the task's start decides, so a later "don't start T4", "hold off on T4" or "wait" takes an earlier ask back. No ask: a no anywhere before the ask in its sentence ("never, ever, start T4"), any time or condition in the prompt ("start T4 on Monday", "wait until 6am, then start T4", "start T4 when T3 lands"), a question ("start T4?"), quoted or pasted text (quotes, code, the rest of a line after "says:", the lines after a line ending in ":", indented or log-like lines), prompts with any `[task-board:…]` marker, and reports ("T4 started"); 403 otherwise. |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
@@ -562,12 +562,32 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
-**The app token.** `X-Task-Board-From: app` marks a request as the owner's own click in Taskboard.app (Start, a
-wave's review stop). The daemon makes a fresh random token at each launch and writes it to `app-token` in its data
-folder (mode 0600); the app reads it and sends it as `X-Task-Board-Token`. A request with `X-Task-Board-From: app`
-and no token, or the wrong one, is refused with 403 before it reaches the API. The plugin's `PreToolUse` hook refuses
-an agent's tool call that reads the file. Agents run as the same macOS user as the app, so this keeps honest agents
-and casual forgeries out, not a determined process on the same account.
+**The app's own requests.** `X-Task-Board-From: app` marks a request as the owner's own click in Taskboard.app
+(Start, a wave's review stop). The header alone is anyone's say-so: a request with it that the board can't tie to the
+app is refused with 403 before it reaches the API. How it ties a request to the app is decided at each launch from
+the daemon's own code signature (the board log's first lines say which, `crates/taskboardd/src/apporigin.rs`):
+
+- **A signed daemon** (a release, or `packaging/build-app.sh` with a Developer ID): besides its port, the daemon
+  listens on a unix socket, `app.sock` in its data folder (mode 0600), and the app sends its posts there. For each
+  connection the kernel hands the daemon the peer's audit token (`LOCAL_PEERTOKEN`, taken at `connect`), and
+  Security.framework checks that running process against
+  `anchor apple generic and identifier "<bundle id>" and certificate leaf[subject.OU] = "<team>"`, the bundle id
+  being the daemon's own signing identifier without `.daemon` and the team its own. The process also has to be
+  validly signed right now with the hardened runtime on and no debugger attached. Only such a request is the app's;
+  the port never is, and there is no token. config.toml can't loosen this.
+- **An ad-hoc or unsigned daemon** (`cargo run`, `scripts/dev-app.sh`, tests): there's no signature to check, so the
+  daemon writes a fresh random token at each launch to `app-token` in its data folder (mode 0600); the app reads it
+  and sends it as `X-Task-Board-Token`, on the socket or the port. `[app_origin] token = false` turns that off (then
+  no request is the app's).
+
+What the signature check stops: any other program on the account saying it's the app (curl, a script, `tb`, a copy
+of the app built or re-signed by someone else, the real app binary started under a debugger or with injected
+libraries, a process that connected and then `exec`'d the app, a reused pid). What it doesn't: a process that can
+drive the real app's window (Accessibility or AppleScript UI scripting, which macOS gates behind the Accessibility
+permission), root, or anyone who can sign code as the owner's team. Agents can still change the board's data
+directly (its SQLite file, config.toml) as the same user; the board's rules for agents live in the API. In an
+unsigned build the token is a file the same user can read; the hook guard (HOOKS.md) catches the plain ways an agent
+would, not every way.
 
 ### PRs (`tb pr …`)
 The board watches GitHub PRs (through `gh`) and Bitbucket Cloud PRs (REST 2.0, with Taskboard's Bitbucket account);
@@ -851,7 +871,7 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 
 | Request | Body | What |
 |---|---|---|
-| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app` with the app token); from anyone else it's 403. Answers the goal detail. |
+| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app`, see "The app's own requests"); from anyone else it's 403. Answers the goal detail. |
 | `POST /goals/:id/waves/:n/hold` | `{on?: bool (true), who?}` | Hold a wave (`tb goal wave --hold`): its tasks that haven't started don't, nor any later wave, until it's continued. `on: false` lifts it. 409 on a done wave. Answers the goal detail. |
 | `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail, with `let_start: true` when it let a held wave start. |
 | `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |

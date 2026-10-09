@@ -188,6 +188,14 @@ guard = false
 languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kotlin", "go", "java", "c", "cpp", "csharp", "ruby", "shell"]
 # pragmas = ["!/", "noqa", "type:", "pragma", "pylint:", "eslint-", "@ts-", "prettier-ignore", "ignore:", "ignore_for_file:", "nolint", "go:", "swiftlint:", …]
 
+# Which requests are the owner's own clicks in Taskboard.app (Start, a wave's review stop). A daemon signed
+# with a team's certificate (a release) takes them only from the app signed by the same team, on the app
+# socket (app.sock in the data folder), checked by its code signature; nothing here changes that. A daemon
+# with no team signature (cargo run, scripts/dev-app.sh) has nothing to check, so it writes a per-launch
+# token to app-token and takes requests that carry it. See docs/API.md ("The app's own requests").
+[app_origin]
+token = true                         # false: an unsigned daemon takes no request as the app's
+
 # `tb done "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
 # (GitHub or Bitbucket, by the remote) into the real base: a stacked task's parent branch, else the default branch.
 # `tb pr body-check FILE` runs the description check alone.

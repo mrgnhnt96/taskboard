@@ -65,6 +65,7 @@ async fn handle(
     uri: Uri,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
+    extensions: axum::http::Extensions,
     body: Bytes,
 ) -> Response {
     let path = uri.path().to_string();
@@ -94,13 +95,27 @@ async fn handle(
                 Err(_) => return error(400, "The request body isn't valid JSON."),
             }
         };
-        // Only the app's header with this launch's app token says a request is the owner's own click
-        // (`api::FROM`, `apptoken`); the header alone is anyone's say-so.
+        // Only the app's header from the signed app on the app socket (or, in a build with no team
+        // signature, with this launch's app token) says a request is the owner's own click
+        // (`api::FROM`, `apporigin`); the header alone is anyone's say-so.
         let mut query = query;
         query.remove(api::FROM);
         if headers.get("x-task-board-from").and_then(|v| v.to_str().ok()) == Some("app") {
-            if !crate::apptoken::matches(headers.get(crate::apptoken::HEADER).and_then(|v| v.to_str().ok()), &app.app_token) {
-                return error(403, "That request says it's from the app, but it doesn't carry the app's token.");
+            let peer = extensions.get::<axum::extract::ConnectInfo<crate::apporigin::Peer>>().map(|c| c.0.clone());
+            let given = headers.get(crate::apptoken::HEADER).and_then(|v| v.to_str().ok()).map(str::to_string);
+            let a = app.clone();
+            let ok = tokio::task::spawn_blocking(move || crate::apporigin::is_app(a.trust(), peer.as_ref(), given.as_deref(), &a.app_token))
+                .await
+                .unwrap_or(false);
+            if !ok {
+                return error(
+                    403,
+                    if app.trust().token {
+                        "That request says it's from the app, but it doesn't carry the app's token."
+                    } else {
+                        "That request says it's from the app, but it isn't from Taskboard.app."
+                    },
+                );
             }
             query.insert(api::FROM.to_string(), "app".to_string());
         }
@@ -254,6 +269,76 @@ mod tests {
         let (s, v) = call(r, req).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert!(log(&app, id).contains(&"Started in the UI".to_string()), "{:?}", log(&app, id));
+    }
+
+    /// Serves `app`'s router on an app socket in `dir`, as `serve` does.
+    async fn on_socket(app: &Arc<App>, dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join(crate::apporigin::SOCKET);
+        let unix = crate::apporigin::bind(&path).unwrap();
+        let svc = router(app.clone()).into_make_service_with_connect_info::<crate::apporigin::Peer>();
+        tokio::spawn(async move { axum::serve(unix, svc).await });
+        path
+    }
+
+    async fn post_socket(sock: &std::path::Path, path: &str, headers: &[(&'static str, String)]) -> (u16, Value) {
+        let (sock, path, headers) = (sock.to_path_buf(), path.to_string(), headers.to_vec());
+        tokio::task::spawn_blocking(move || {
+            let mut h: Vec<(&str, &str)> = vec![("X-Task-Board", "1")];
+            h.extend(headers.iter().map(|(k, v)| (*k, v.as_str())));
+            let (s, body) = crate::apporigin::post(&sock, &path, &h, br#"{"mode": "queue"}"#, std::time::Duration::from_secs(10)).unwrap();
+            (s, serde_json::from_slice(&body).unwrap_or(Value::Null))
+        })
+        .await
+        .unwrap()
+    }
+
+    /// A signed daemon: the app is whoever on the app socket meets the requirement (this test process,
+    /// here), and the token counts for nothing.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_signed_board_takes_the_signed_peer_on_its_socket() {
+        let (_r, app, id, dir) = board_with_task();
+        let me = crate::apporigin::own_identifier().unwrap();
+        app.app_origin.set(crate::apporigin::Trust { requirement: Some(format!("identifier \"{me}\"")), runtime: false, token: false }).unwrap();
+        let sock = on_socket(&app, dir.path()).await;
+        let (s, v) = post_socket(&sock, &format!("tasks/T{id}/start"), &[("X-Task-Board-From", "app".into())]).await;
+        assert_eq!(s, 200, "{v}");
+        assert!(log(&app, id).contains(&"Started in the UI".to_string()), "{:?}", log(&app, id));
+        // Over TCP the token doesn't make it the app.
+        let r = router(app.clone());
+        let (s, v) = call(r, post("/tasks/api/goals/G1/waves/1", &[("x-task-board-from", "app"), (apptoken::HEADER, &app.app_token)], json!({}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        assert!(v["error"].as_str().unwrap().contains("isn't from Taskboard.app"), "{v}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_that_isnt_the_app_is_refused_even_with_the_token() {
+        let (_r, app, id, dir) = board_with_task();
+        let requirement = crate::apporigin::requirement("com.mrgnhnt.taskboard", "U2G2XV3688");
+        app.app_origin.set(crate::apporigin::Trust { requirement: Some(requirement), runtime: true, token: false }).unwrap();
+        let sock = on_socket(&app, dir.path()).await;
+        let token = app.app_token.clone();
+        let (s, v) = post_socket(&sock, &format!("tasks/T{id}/start"), &[("X-Task-Board-From", "app".into()), ("X-Task-Board-Token", token)]).await;
+        assert_eq!(s, 403, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("isn't from Taskboard.app"), "{v}");
+        assert!(!log(&app, id).iter().any(|l| l.starts_with("Started")));
+        // Not saying it's the app is fine: the socket is the board's API like the port.
+        let (s, v) = post_socket(&sock, &format!("tasks/T{id}/start"), &[]).await;
+        assert_eq!(s, 403);
+        assert!(v["error"].as_str().unwrap().contains("Only a human can start"), "{v}");
+    }
+
+    /// An unsigned (dev) board on its socket still goes by the token.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unsigned_board_takes_the_token_on_its_socket() {
+        let (_r, app, id, dir) = board_with_task();
+        let sock = on_socket(&app, dir.path()).await;
+        let (s, _) = post_socket(&sock, &format!("tasks/T{id}/start"), &[("X-Task-Board-From", "app".into())]).await;
+        assert_eq!(s, 403);
+        let token = app.app_token.clone();
+        let (s, v) = post_socket(&sock, &format!("tasks/T{id}/start"), &[("X-Task-Board-From", "app".into()), ("X-Task-Board-Token", token)]).await;
+        assert_eq!(s, 200, "{v}");
     }
 
     #[test]
