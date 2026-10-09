@@ -41,6 +41,8 @@ pub fn start_task(
         None => task_cwd(app, t)?,
     };
     let title = short(&t.st("title"), 40);
+    // Lent before the handoff is built, so it names them.
+    crate::devices::lend(app, t)?;
     let prompt = match prompt {
         Some(p) => p,
         None => handoff::build(app, t.id())?,
@@ -198,6 +200,9 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             }
         }
         if jira::ticket_blocker(app, &t)? || waitsfor::blocker(app, &t)?.is_some() || locks::blocker(app, &t)?.is_some() {
+            continue;
+        }
+        if crate::bits::blocker(app, &t)?.is_some() || crate::devices::blocker(app, &t)?.is_some() {
             continue;
         }
         let tid = t.id();
@@ -447,6 +452,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::qa::tick(app)?;
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
+    app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
     close_pr_tabs(app)?;

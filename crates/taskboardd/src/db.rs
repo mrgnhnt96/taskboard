@@ -179,6 +179,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "locks", "TEXT"),
     ("tasks", "alone", "TEXT"),
     ("goals", "worktree_base", "TEXT"),
+    ("goal_waves", "held_at", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
@@ -251,6 +252,8 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
         add_columns(&conn)?;
+        conn.execute_batch(crate::devices::SCHEMA)?;
+        conn.execute_batch(crate::bits::SCHEMA)?;
         conn.execute_batch(BACKFILL_STATES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }

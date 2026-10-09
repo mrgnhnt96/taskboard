@@ -40,6 +40,15 @@ fn task_goal_match(app: &App, t: &Row, want: &str) -> Result<bool> {
     Ok(parse_ref_str(want, "goal")?.map(|g| shared::goal_ids(app, t.id()).map(|ids| ids.contains(&g))).transpose()?.unwrap_or(false))
 }
 
+/// The request came from Taskboard.app (the owner's own click), not from `tb` or an agent. The
+/// server sets `_from` from the app's `X-Task-Board-From: app` header; the in-process sample board
+/// passes it in the query.
+pub const FROM: &str = "_from";
+
+fn from_app(query: &Query) -> bool {
+    query.get(FROM).map(|s| s.as_str()) == Some("app")
+}
+
 fn wave_n(s: &str) -> Result<i64> {
     s.parse::<i64>().ok().filter(|n| *n >= 0).ok_or_else(|| ApiError::new(404, "There's no such wave."))
 }
@@ -247,10 +256,20 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                     f.push(("name", if name.is_empty() { Value::Null } else { json!(name) }));
                 }
                 if body.get("stop_after").is_some() {
+                    // A review stop is the owner's word: only the app's checkbox sets it.
+                    if !from_app(query) {
+                        return err(403, "Only the owner sets a review stop, from the goal page in the app. Hold a wave with tb goal wave --hold instead.");
+                    }
                     f.push(("stop_after", json!(as_bool(body.get("stop_after"), false) as i64)));
                 }
                 crate::waves::set_wave(app, g, n, f)
             })?;
+            goal_detail(app, g)
+        }
+        ("POST", ["goals", id, "waves", n, "hold"]) => {
+            let (g, n) = (gid(id)?, wave_n(n)?);
+            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            app.db.tx(|| crate::waves::hold(app, g, n, as_bool(body.get("on"), true), &who))?;
             goal_detail(app, g)
         }
         ("POST", ["goals", id, "waves", n, "continue"]) => {
@@ -259,6 +278,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             app.db.tx(|| crate::waves::release(app, g, n, &who))?;
             goal_detail(app, g)
         }
+        (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
+        (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
         ("POST", ["attachments", id, "remove"]) => remove_attachment(app, id),
         ("GET", ["backlog"]) => list_backlog(app, query),
@@ -626,6 +647,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mut warnings: Vec<String> = vec![];
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
+        let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+        crate::devices::take_needs(app, "task", id, body, &who)?;
+        crate::bits::take_task_bits(app, id, body, &who)?;
         let mut f: Vec<(&str, Value)> = vec![];
         let mut bump = false;
         let has_key = |k: &str| body.get(k).is_some();
@@ -1270,6 +1294,7 @@ fn close_done_terminals(app: &App, body: &Value, query: &Query) -> Result<Value>
 fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
     app.db.tx(|| {
         let g = board::get_goal(app, id)?;
+        crate::devices::take_needs(app, "goal", id, body, OWNER)?;
         let mut f: Vec<(&str, Value)> = vec![];
         let hk = |k: &str| body.get(k).is_some();
         if hk("name") {

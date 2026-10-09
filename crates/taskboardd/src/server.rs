@@ -94,6 +94,12 @@ async fn handle(
                 Err(_) => return error(400, "The request body isn't valid JSON."),
             }
         };
+        // Only the app's header says a request is the owner's own click (`api::FROM`).
+        let mut query = query;
+        query.remove(api::FROM);
+        if headers.get("x-task-board-from").and_then(|v| v.to_str().ok()) == Some("app") {
+            query.insert(api::FROM.to_string(), "app".to_string());
+        }
         let m = method.as_str().to_string();
         let p = api_path.to_string();
         let a = app.clone();

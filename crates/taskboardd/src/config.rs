@@ -29,6 +29,8 @@ pub struct FileConfig {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub devices: crate::devices::DevicesConfig,
+    pub bits: crate::bits::BitsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -223,6 +225,8 @@ pub struct Config {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub devices: crate::devices::DevicesConfig,
+    pub bits: crate::bits::BitsConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -305,6 +309,8 @@ impl Config {
             backlog: f.backlog,
             pr: f.pr,
             jira,
+            devices: f.devices,
+            bits: f.bits,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }

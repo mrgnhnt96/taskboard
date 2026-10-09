@@ -3,12 +3,14 @@
 pub mod accounts;
 pub mod api;
 pub mod app;
+pub mod bits;
 pub mod board;
 pub mod clock;
 pub mod config;
 pub mod days;
 pub mod db;
 pub mod deliver;
+pub mod devices;
 pub mod dispatch;
 pub mod handoff;
 pub mod hooks;
