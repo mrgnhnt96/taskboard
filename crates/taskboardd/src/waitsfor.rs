@@ -49,14 +49,19 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>
         }
         let other = board::get_task(app, n)?;
         if let Some(t) = t {
-            if other.s("project") != t.s("project") {
+            if !crate::projects::may_wait_on(app, &t.st("project"), &other.st("project")) {
                 return err(
                     409,
                     format!(
-                        "{} is in {}, not {}, so its work can't be brought into this task.",
+                        "{} is in {}, not {}, so its work can't be brought into this task. \
+                         To let {}'s tasks wait for {}'s: tb project set {} --waits-on {}",
                         rf("task", n),
                         other.st("project"),
-                        t.st("project")
+                        t.st("project"),
+                        t.st("project"),
+                        other.st("project"),
+                        t.st("project"),
+                        other.st("project")
                     ),
                 );
             }
@@ -306,18 +311,49 @@ fn where_it_is(app: &App, other: &Row) -> Result<String> {
     Ok(bits.join(" "))
 }
 
+/// Where another project's task's work is, for a task that waits for it.
+fn elsewhere(app: &App, other: &Row) -> Result<String> {
+    let mut line = format!("{} “{}” in {}", label(app, other)?, short(&other.st("title"), 60), other.st("project"));
+    if other.st("pr_state").eq_ignore_ascii_case("MERGED") {
+        line += &format!(" is merged (PR #{} {})", other.i0("pr_num"), other.st("pr_url"));
+    } else if other.i("pr_num").is_some() {
+        line += &format!(" is in PR #{} ({}), not merged yet", other.i0("pr_num"), other.st("pr_url"));
+    } else {
+        line += " is done";
+    }
+    if let Some(s) = other.s("summary").filter(|s| !s.is_empty()) {
+        line += &format!(": {}", short(s, 400));
+    }
+    Ok(line)
+}
+
 pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
-    let mut lines = vec![];
+    let (mut lines, mut away) = (vec![], vec![]);
     for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
         if ready_for(app, t, n, other.as_ref())? {
-            lines.push(format!("- {}", where_it_is(app, other.as_ref().unwrap())?));
+            let o = other.as_ref().unwrap();
+            if o.s("project") == t.s("project") {
+                lines.push(format!("- {}", where_it_is(app, o)?));
+            } else {
+                away.push(format!("- {}", elsewhere(app, o)?));
+            }
         }
     }
-    if lines.is_empty() {
-        return Ok(String::new());
+    let mut out = vec![];
+    if !away.is_empty() {
+        out.push("This task needs work from another project, and it's ready:".to_string());
+        out.extend(away);
+        out.push(
+            "It lives in that project's repo, not this one, so there's nothing to rebase: pick it up the way this \
+             project uses that one (update the dependency, rebuild or reinstall it), then build on it."
+                .to_string(),
+        );
     }
-    let mut out = vec!["This task needs work from another task, and it's ready:".to_string()];
+    if lines.is_empty() {
+        return Ok(out.join("\n"));
+    }
+    out.push("This task needs work from another task, and it's ready:".to_string());
     out.extend(lines);
     out.push(format!(
         "Bring it in with git, not by asking {}: git fetch origin, then rebase this task's branch so it sits on top \
