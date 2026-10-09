@@ -29,10 +29,10 @@ fn board_with(f: impl FnOnce(&mut Config, &std::path::Path)) -> Board {
     Board { app, dir }
 }
 
-/// A `claude` that answers whatever `answer.json` holds and keeps its arguments in `args.txt`.
+/// A `claude` that answers whatever `answer.json` holds and keeps its arguments in `args.txt` (every call's in `all-args.txt`).
 fn fake_claude(cfg: &mut Config, dir: &std::path::Path) {
     let path = dir.join("fake-claude");
-    std::fs::write(&path, "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$d/args.txt\"\ncat \"$d/answer.json\"\n").unwrap();
+    std::fs::write(&path, "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$d/args.txt\"\ncat \"$d/args.txt\" >> \"$d/all-args.txt\"\ncat \"$d/answer.json\"\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     cfg.claude = path.to_string_lossy().to_string();
@@ -91,7 +91,8 @@ fn claude_runs_jira_ops_with_the_connector_tools() {
     assert_eq!(b.task(t).st("jira_status"), "In Review");
     let args = b.claude_args();
     assert!(args.contains("Read the status of PROJ-7"), "{args}");
-    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian,mcp__atlassian"), "{args}");
+    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP,mcp__atlassian"), "{args}");
+    assert!(args.contains("--model\nhaiku"), "{args}");
 
     // A move it can't make fails the job with Claude's reason.
     jira::request(&b.app, "transition", t, "PROJ-7", Some("Done"), None).unwrap();
@@ -123,6 +124,37 @@ fn claude_finds_or_makes_a_ticket_and_picks_the_product() {
     assert_eq!(board::get_goal(&b.app, g).unwrap().st("product"), "ios", "the goal takes the product picked for it");
     let log = b.get(&format!("/tasks/T{t}/log"));
     assert!(log.to_string().contains("Linked PROJ-9 (To Do), which already covers it"), "{log}");
+}
+
+#[test]
+fn qa_checks_jira_through_claude_with_one_batched_search() {
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        fake_claude(c, d);
+    });
+    assert_eq!(b.app.cfg.qa_poll_secs(), 30.0 * 60.0, "through Claude, every 30 minutes");
+    let t = b.new_task(json!({}));
+    board::update_task(&b.app, t, fields!["jira_key" => "PROJ-7"]).unwrap();
+    b.app.db.set_setting("qa_on", Some("1")).unwrap();
+    b.app.db.set_setting("qa_since", Some(&taskboardd::util::iso(taskboardd::util::now_ts() - 3600.0))).unwrap();
+    let recent = taskboardd::util::iso(taskboardd::util::now_ts() - 60.0);
+    let old = taskboardd::util::iso(taskboardd::util::now_ts() - 5.0 * 3600.0);
+    b.answer(json!({"ok": true, "comments": [
+        {"key": "PROJ-7", "id": "501", "created": recent, "author": "Sam QA", "text": "The button is still grey"},
+        {"key": "PROJ-7", "id": "502", "created": old, "author": "Sam QA", "text": "Old"},
+        {"key": "PROJ-99", "id": "503", "created": recent, "author": "Sam QA", "text": "Not ours"},
+    ]}));
+    assert_eq!(taskboardd::qa::poll(&b.app).unwrap(), 1);
+    let args = std::fs::read_to_string(b.dir.path().join("all-args.txt")).unwrap();
+    assert_eq!(args.matches("Make exactly one JQL search").count(), 1, "one Jira call per check: {args}");
+    assert!(args.contains("Make exactly one JQL search, with this query as it is: key in (PROJ-7) AND updated >= -65m"), "{args}");
+    assert!(args.contains("UTC now"), "{args}");
+    assert!(args.contains("--model\nhaiku"), "{args}");
+
+    let rest = board_with(|_, _| {});
+    assert_eq!(rest.app.cfg.qa_poll_secs(), 5.0 * 60.0);
+    let mins = board_with(|c, _| c.jira.qa_poll_mins = 12);
+    assert_eq!(mins.app.cfg.qa_poll_secs(), 12.0 * 60.0);
 }
 
 #[test]
@@ -254,13 +286,94 @@ fn the_desk_finds_or_makes_tickets_and_stays_open() {
 
 #[test]
 fn the_desk_fails_a_job_with_its_reason() {
-    let b = board_with(|c, _| c.jira.desk = true);
+    let b = board_with(|c, _| {
+        c.jira.desk = true;
+        c.jira.auto_ticket = true;
+    });
     let t = b.new_task(json!({"jira": "create"}));
     let jid = b.jobs("kind = 'jira'")[0].id();
     assert_eq!(b.post_err(&format!("/jira/jobs/J{jid}"), json!({"ok": false})).0, 400);
     b.post(&format!("/jira/jobs/J{jid}"), json!({"ok": false, "message": "PROJ needs a team"}));
     let log = b.get(&format!("/tasks/T{t}/log")).to_string();
     assert!(log.contains("Couldn't make the ticket: PROJ needs a team"), "{log}");
+
+    // What waits says how to go on, and the failure raises an alert that says it too.
+    let wait = jira::ticket_wait(&b.app, &b.task(t)).unwrap().unwrap();
+    assert_eq!(
+        wait,
+        format!("Waits for its Jira ticket. Couldn't make it: PROJ needs a team. Try again with tb task set T{t} --jira new, or link one with tb task set T{t} --jira KEY.")
+    );
+    let alerts = taskboardd::dispatch::alerts(&b.app);
+    let a = alerts.iter().find(|a| a["task_id"] == t).expect("an alert");
+    let text = a["text"].as_str().unwrap();
+    assert!(text.starts_with(&format!("Couldn't make the Jira ticket for T{t} “Add login”: PROJ needs a team.")), "{text}");
+    assert!(text.contains(&format!("tb task set T{t} --jira new")) && text.contains("--jira KEY"), "{text}");
+}
+
+#[test]
+fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
+    let tb = "/Applications/Taskboard.app/Contents/MacOS/tb";
+    let b = board_with(|c, _| c.jira.desk = true);
+    b.app.db.set_setting("tb_path", Some(tb)).unwrap();
+    b.new_task(json!({"jira": "create"}));
+    b.tick();
+    let opened = b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
+    let a = board::job_args(&opened[0]);
+    let (args, _) = midna::claude_args(&a).unwrap();
+    assert_eq!(args[0], "--allowedTools");
+    let rules: Vec<&str> = args[1].split(',').collect();
+    assert_eq!(rules, vec!["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian", "Bash(tb jira:*)", &format!("Bash({tb} jira:*)")]);
+
+    // Every report it's told to run starts with a command an allow rule covers.
+    let prefixes: Vec<&str> = rules.iter().filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(":*)")).collect();
+    let intro = a.st("prompt");
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s9"}).to_string(), opened[0].id()]).unwrap();
+    midna::sync(&b.app, &[json!({"id": "s9", "name": "TB Jira desk", "agent": "claude", "cwd": b.dir.path().to_string_lossy(), "status": {"state": "idle"}})], &[]).unwrap();
+    b.tick();
+    let job = board::job_args(&b.jobs("kind = 'message' AND purpose = 'jira_desk'")[0]).st("text");
+    for text in [intro.as_str(), job.as_str()] {
+        let runs: Vec<&str> = text.match_indices(tb).map(|(i, _)| &text[i..]).collect();
+        assert!(!runs.is_empty(), "{text}");
+        for r in runs {
+            assert!(prefixes.iter().any(|p| r.starts_with(p)), "{r}");
+        }
+    }
+
+    // A path the rule can't hold falls back to plain tb.
+    b.app.db.set_setting("tb_path", Some("/odd(path)/tb")).unwrap();
+    assert_eq!(jira_desk::allowed_tools(&b.app).last().unwrap(), "Bash(tb jira:*)");
+}
+
+#[test]
+fn a_goal_with_no_epic_picks_an_open_one_that_covers_it() {
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        fake_claude(c, d);
+    });
+    let g = b.post("/goals", json!({"name": "Checkout redesign", "outcome": "a faster checkout", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.new_task(json!({"goal_id": g, "jira": "create", "title": "New pay button"}));
+    b.answer(json!({"ok": true, "key": "PROJ-2", "status": "In Progress", "found": true}));
+    b.tick();
+    let args = b.claude_args();
+    assert!(args.contains("First pick an open epic (not done) in PROJ that already covers this work"), "{args}");
+    assert!(args.contains("Only if none fits, make a Epic"), "{args}");
+    assert_eq!(board::get_goal(&b.app, g).unwrap().st("epic_key"), "PROJ-2");
+
+    let epics = |v: &[(&str, &str)]| v.iter().map(|(k, s)| (k.to_string(), s.to_string())).collect::<Vec<_>>();
+    let open = epics(&[("PROJ-9", "Search filters"), ("PROJ-5", "Redesign of the checkout flow"), ("PROJ-3", "Checkout")]);
+    assert_eq!(jira::covering_epic("Checkout redesign", &open).as_deref(), Some("PROJ-5"));
+    assert_eq!(jira::covering_epic("checkout", &open).as_deref(), Some("PROJ-3"), "the same summary first");
+    assert_eq!(jira::covering_epic("Login with SSO", &open), None);
+    assert_eq!(jira::covering_epic("The new and the old", &epics(&[("PROJ-1", "The and the new")])), None, "stopwords match nothing");
+}
+
+#[test]
+fn product_picking_ignores_stopwords() {
+    let mut ps = std::collections::BTreeMap::new();
+    ps.insert("web".to_string(), JiraProduct { what: "the customer-facing web app and the checkout".into(), ..Default::default() });
+    ps.insert("ios".to_string(), JiraProduct { what: "iPhone".into(), ..Default::default() });
+    assert_eq!(jira::pick_product(&ps, "Make the thing and the other thing faster"), None);
+    assert_eq!(jira::pick_product(&ps, "The checkout and the cart"), Some("web".into()));
 }
 
 // --- the handoff ---

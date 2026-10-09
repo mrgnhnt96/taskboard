@@ -657,7 +657,9 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 
 ## QA comments (optional)
 
-Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
+Off until Settings ▸ QA switches it on; needs Jira. Every `[jira] qa_poll_mins` (0: 5 minutes over REST, 30 through
+Claude) the board makes one search, `key in (<its tickets>) AND updated >= -<N>m`, and reads the new comments of the
+tickets it finds; with `via = "claude"` that whole check is one `claude -p`, told the current UTC time. `qa_comment`:
 ```
 {"id": int, "ref": "Q3", "jira_key": "PROJ-7", "comment_id": str, "url": str, "author": str|null,
  "verdict": "task"|"flag"|"none"|null,   // null: still being read
@@ -683,9 +685,14 @@ Optional: off while `[jira] site` or `project` is empty. Jobs (`J<n>`) run throu
 time. A new ticket is always searched for first: an open ticket of the type that already covers the work is linked
 instead of making another. With `auto_ticket`, every queued or working task in a project that ships PRs asks for a
 ticket and waits (`waiting`: "Waits for its Jira ticket…") until it has one, it says `--jira none`, or the ticket is
-linked by hand; a failed ask waits for `tb task set T<n> --jira new`. With `desk`, new tickets go to the Jira desk:
-one Claude terminal the board opens in Midna's Background group (an `agent` job, purpose `jira_desk`) and never
-closes. It gets one job at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
+linked by hand; a failed ask waits for `tb task set T<n> --jira new` (try again) or `--jira KEY` (link one), which its
+`waiting` line says, and raises an alert that says it too. A goal with no epic first takes an open epic that already
+covers its work (over REST: the open epic sharing the most of its name's words, stopwords aside, when they're at least
+half of either's; through Claude or the desk, the one it judges covers it), and only gets a new one when none fits.
+With `desk`, new tickets go to the Jira desk: one Claude terminal the board opens in Midna's Background group (an
+`agent` job, purpose `jira_desk`) and never closes. Its `--allowedTools` are `claude_tools` plus `Bash(tb jira:*)` and
+`Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
+at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
 
 | Request | Body | What |
 |---|---|---|

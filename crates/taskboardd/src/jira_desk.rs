@@ -89,11 +89,21 @@ pub fn job_text(app: &App, j: &Row) -> Result<String> {
     ))
 }
 
-fn open(app: &App) -> Result<i64> {
-    let dir = if app.cfg.jira.desk_dir.trim().is_empty() { app.cfg.data.clone() } else { expand_home(app.cfg.jira.desk_dir.trim()) };
+/// What the desk may use without asking: the connector's tools, and `tb jira` both as plain `tb` and
+/// by the path it's told to run it by (`board::tb_cmd`), so its reports never wait on a prompt.
+pub fn allowed_tools(app: &App) -> Vec<String> {
     let mut tools = app.cfg.jira.claude_tools.clone();
     tools.push("Bash(tb jira:*)".into());
-    let flags = format!("--allowedTools '{}'", tools.join(","));
+    let tb = board::tb_cmd(app);
+    if tb != "tb" && !tb.contains(['\'', ',', '(', ')']) {
+        tools.push(format!("Bash({tb} jira:*)"));
+    }
+    tools
+}
+
+fn open(app: &App) -> Result<i64> {
+    let dir = if app.cfg.jira.desk_dir.trim().is_empty() { app.cfg.data.clone() } else { expand_home(app.cfg.jira.desk_dir.trim()) };
+    let flags = format!("--allowedTools '{}'", allowed_tools(app).join(","));
     let id = board::create_job(
         app,
         "agent",

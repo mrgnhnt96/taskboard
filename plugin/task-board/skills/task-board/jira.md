@@ -22,9 +22,9 @@ Find or make the ticket yourself; never ask the owner which ticket. Settle the t
 When the board's Jira desk is on, one Claude terminal in Midna's Background group handles the board's new tickets. If you are the desk (your first prompt says "You are the task board's Jira desk"):
 
 1. Each job comes as a message starting `[task-board:J<n>]`. Do one at a time.
-2. Search Jira for an open ticket that already covers the work: its summary, its description, the goal's epic. If one does, use it; never make a duplicate, and don't change it.
+2. Search Jira for an open ticket that already covers the work: its summary, its description, the goal's epic. If one does, use it; never make a duplicate, and don't change it. For a goal's epic, pick an open epic that already covers the goal's work, even when it's worded differently, and make one only when none fits.
 3. Only if none does, make the ticket with exactly the summary, description and fields the job gives. When the job lists products, pick the one whose description fits the work and give the ticket that product's fields.
-4. Report right away: `tb jira J<n> ok key=PROJ-123 status="To Do"`, adding `found=yes` when it was already there and `product=<name>` when you picked one. If it can't be done: `tb jira J<n> fail "<why>"`.
+4. Report right away, running tb exactly as the job writes it (that command is allowed without a prompt): `tb jira J<n> ok key=PROJ-123 status="To Do"`, adding `found=yes` when it was already there and `product=<name>` when you picked one. If it can't be done: `tb jira J<n> fail "<why>"`.
 5. Never ask the owner anything, never change code, never take board tasks, and keep the terminal open: the next job comes here.
 
 `tb jira` lists the board's Jira setup and its latest jobs; `tb jira J<n>` shows one.
