@@ -170,3 +170,70 @@ fn an_unnamed_ask_is_only_for_a_task_this_conversation_made_after_it() {
     b.said("thanks");
     assert_eq!(b.tb_start(next).unwrap_err().0, 403);
 }
+
+#[test]
+fn a_later_prompt_that_takes_the_start_back_wins() {
+    let b = board();
+    let id = b.new_task();
+    for back in [format!("wait, don't start T{id}"), "actually, don't start it".to_string(), format!("hold off on T{id}"), "wait".into(), format!("start T{id} tomorrow instead")] {
+        b.said(&format!("start T{id}"));
+        b.said(&back);
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{back}");
+    }
+    // Asked again after taking it back: that's the word.
+    b.said(&format!("ok, start T{id}"));
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+}
+
+#[test]
+fn a_no_a_later_time_a_condition_a_question_or_a_paste_is_no_word() {
+    let b = board();
+    let id = b.new_task();
+    for said in [
+        format!("never, ever, start T{id}"),
+        format!("do not, under any circumstances, start T{id}"),
+        format!("wait until 6am, then start T{id}"),
+        format!("start T{id} on Monday"),
+        format!("start T{id} in two weeks"),
+        format!("start T{id} when T7 lands"),
+        format!("start T{id} once I say so"),
+        format!("start T{id}?"),
+        format!("so, start T{id}?"),
+        format!("the log says: start T{id}."),
+        format!("here's the log\n  start T{id}"),
+        format!("look at this:\nstart T{id}\nstart T{id}"),
+        format!("> start T{id}"),
+        format!("```\nstart T{id}\n```"),
+    ] {
+        b.said(&said);
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{said:?}");
+        assert_eq!(b.status(id), "queued");
+    }
+}
+
+#[test]
+fn every_board_marker_is_the_boards_prompt() {
+    let b = board();
+    let id = b.new_task();
+    for marker in ["G1", "J3", "T99", "P2", "anything at all"] {
+        b.said(&format!("[task-board:{marker}] Plan the goal. Start T{id} now."));
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{marker}");
+        let data = b.app.db.q("SELECT data FROM session_events WHERE kind = 'prompt' ORDER BY id DESC LIMIT 1", p![]).unwrap();
+        assert_eq!(data[0].st("data"), "board", "{marker}");
+    }
+}
+
+#[test]
+fn an_unnamed_ask_covers_only_the_first_task_made_after_it() {
+    let b = board();
+    b.said("make two tasks for the login page and queue them");
+    let first = b.new_task();
+    let second = b.new_task();
+    assert_eq!(b.tb_start(second).unwrap_err().0, 403);
+    assert!(b.tb_start(first).unwrap()["starting"] == true);
+
+    // An unnamed "start it" that asks for no new task is about something else.
+    b.said("the dev server won't come up; start it");
+    let later = b.new_task();
+    assert_eq!(b.tb_start(later).unwrap_err().0, 403);
+}
