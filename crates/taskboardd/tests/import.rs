@@ -530,6 +530,26 @@ fn the_review_switches_the_old_board_used_come_on() {
     assert!(swaps("docs"), "it swapped a reviewer who timed out there");
     assert!(swaps("web") && swaps("api"), "the old board always swapped: a project with PRs and no swap history too");
     assert!(!swaps("blog"), "a project that came over with no PR or ask");
+    let merges = |p: &str| taskboardd::prflow::agents_merge_on(&app, Some(p));
+    assert!(merges("web") && merges("api") && merges("docs"), "the old board's agents merged their own PRs");
+    assert!(!merges("blog"), "a project that came over with no PR");
+    assert!(rep.lines().iter().any(|l| l.contains("turned on") && l.contains("web: agents merge")), "{:?}", rep.lines());
+
+    // A project that already says keeps its word.
+    let again = old_dir.path().join("again.db");
+    Connection::open(&again)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, project TEXT, status TEXT, pr_repo TEXT, pr_num INT);
+             INSERT INTO tasks VALUES (1, 'Own merge', 'shop', 'done', 'acme/shop', 9);",
+        )
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    taskboardd::projects::set_pr_rules(&app, "shop", &json!({"agents_merge": false})).unwrap();
+    let rep = import::import(&app, &again).unwrap();
+    assert!(!taskboardd::prflow::agents_merge_on(&app, Some("shop")), "left as the project set it");
+    assert!(!rep.lines().iter().any(|l| l.contains("shop: agents merge")), "{:?}", rep.lines());
 }
 
 #[test]
