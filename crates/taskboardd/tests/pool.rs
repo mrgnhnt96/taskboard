@@ -462,6 +462,21 @@ fn a_reserved_or_missing_named_device_says_why_before_the_goals_pool() {
     assert_eq!(b.waiting(off), "Waiting for dev-a (it's off)");
 }
 
+/// #98: a named device another task has is waited for by name, as on the Python board.
+#[test]
+fn a_named_device_another_task_has_says_who_has_it() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "android"}));
+    let holder = b.task("Holder", json!({"devices": "dev-a"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![holder]);
+    let named = b.task("Named", json!({"devices": "dev-a"}));
+    assert_eq!(b.waiting(named), format!("Waiting for a free dev-a (dev-a is with T{holder})"));
+    // The tag still reads as a tag.
+    let tagged = b.task("Tagged", json!({"devices": "android"}));
+    assert_eq!(b.waiting(tagged), format!("Waits for a android device (T{holder} has them)"));
+}
+
 #[test]
 fn with_goal_pool_only_off_a_goal_borrows_from_the_rest() {
     let b = board_with(|c| c.devices.goal_pool_only = false);

@@ -448,6 +448,9 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
         if d.b("off") {
             return Ok(Some(format!("Waiting for {name} (it's off)")));
         }
+        if let Some(by) = held(app)?.get(name).filter(|x| **x != t.id()) {
+            return Ok(Some(format!("Waiting for a free {name} ({name} is with {})", rf("task", *by))));
+        }
     } else if !everyone.iter().any(|d| tags_of(d).contains(&first.tag)) && !pools.iter().any(|r| purposes(r).contains(&first.tag)) {
         return Ok(Some(format!("No {} yet (tb device add)", first.tag)));
     }
