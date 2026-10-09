@@ -113,7 +113,7 @@ pub fn after_result(app: &App, j: &Row, ok: bool, res: &Value) -> Result<()> {
                 } else if a.st("flags").contains("--resume") {
                     "Reopened the old conversation in a new Midna terminal".into()
                 } else if as_bool(a.get("queue"), false) {
-                    "Started in a new Midna terminal once the project's busy terminals settled".into()
+                    "Started in a new Midna terminal once its project had a free terminal".into()
                 } else {
                     "Started in a new Midna terminal".into()
                 };

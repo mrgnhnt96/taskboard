@@ -456,11 +456,16 @@ impl Default for AttachmentsConfig {
 pub struct TerminalsConfig {
     /// Job purposes (start, pr, plan, reopen, jira_desk) whose terminals open in Midna's Background group.
     pub background: Vec<String>,
+    /// A queued task opens its terminal only while fewer than this many of its project's terminals are busy
+    /// (`tb project set <name> --max-terminals` changes it for one project).
+    pub project_max: i64,
 }
+
+pub const PROJECT_MAX_TERMINALS: i64 = 5;
 
 impl Default for TerminalsConfig {
     fn default() -> Self {
-        TerminalsConfig { background: vec![crate::jira_desk::PURPOSE.into()] }
+        TerminalsConfig { background: vec![crate::jira_desk::PURPOSE.into()], project_max: PROJECT_MAX_TERMINALS }
     }
 }
 

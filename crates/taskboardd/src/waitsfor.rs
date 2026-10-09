@@ -183,7 +183,12 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
 /// The line a queued card shows when something holds it back.
 pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
     if t.i("start_job").is_some() {
-        return Ok(Value::Null);
+        let pending = board::live_start_job(app, t)?.filter(|j| j.s("state") == Some("pending"));
+        let hold = match pending {
+            Some(j) => crate::dispatch::start_hold(app, &j)?,
+            None => None,
+        };
+        return Ok(hold.map(Value::String).unwrap_or(Value::Null));
     }
     if let Some(b) = blocker(app, t)? {
         return Ok(json!(b));

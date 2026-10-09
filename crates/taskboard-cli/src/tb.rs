@@ -129,7 +129,7 @@ enum Cmd {
     Start {
         /// T<n>, or G<n> for a goal
         task: String,
-        /// Queue the task to start when its repo is free, instead of now in a new terminal
+        /// Queue the task to start once its project has a free terminal (tb project set --max-terminals), instead of now in a new terminal
         #[arg(long)]
         queue: bool,
     },
@@ -1074,6 +1074,7 @@ enum CiTokenCmd {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
@@ -1103,6 +1104,9 @@ enum ProjectCmd {
         /// Agents merge its PRs once they're approved and green (tb pr merge) (default: config.toml's pr.agents_merge)
         #[arg(long = "agents-merge", value_parser = ["on", "off", "default"])]
         agents_merge: Option<String>,
+        /// Busy terminals the project may have before its queued tasks wait for one to free up (default: config.toml's [terminals] project_max)
+        #[arg(long = "max-terminals")]
+        max_terminals: Option<String>,
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
@@ -1667,7 +1671,7 @@ fn start_said(r: &str, queue: bool, v: &Value) -> String {
         };
     }
     if v["starting"] == true || (status == "queued" && queue) {
-        return if queue { format!("{r} starts in a new terminal once its repo is free.") } else { format!("Opening {r} in a new terminal now.") };
+        return if queue { format!("{r} starts in a new terminal once its project has a free terminal.") } else { format!("Opening {r} in a new terminal now.") };
     }
     match v["who"].as_str().filter(|s| !s.is_empty()) {
         Some(who) if matches!(status, "working" | "needs") => format!("{r} is on {who}."),
@@ -3880,8 +3884,9 @@ fn project_line(p: &Value) -> String {
         .iter()
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
+    let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{approvals}{expected}{switches}",
+        "{} · PR flow {} · {} · {remote}{terminals}{approvals}{expected}{switches}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -3939,8 +3944,16 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, max_terminals } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
+            if let Some(m) = max_terminals {
+                let v = if m.trim().eq_ignore_ascii_case("default") {
+                    Value::Null
+                } else {
+                    json!(m.trim().parse::<i64>().map_err(|_| format!("--max-terminals takes a count or default, not “{m}”"))?)
+                };
+                body.insert("max_terminals".into(), v);
+            }
             project_switch(&mut body, "ask_stage", ask_stage);
             project_switch(&mut body, "swap", swap);
             project_switch(&mut body, "review", review);
@@ -4333,7 +4346,7 @@ mod tests {
         let skipped = json!({"status": "done", "summary": "Skipped by hook `x.sh`: APP-41 is already fixed", "starting": false});
         assert_eq!(start_said("T4", false, &skipped), "T4 didn't start: Skipped by hook `x.sh`: APP-41 is already fixed.");
         assert_eq!(start_said("T4", false, &json!({"status": "queued", "starting": true})), "Opening T4 in a new terminal now.");
-        assert_eq!(start_said("T4", true, &json!({"status": "queued", "starting": false})), "T4 starts in a new terminal once its repo is free.");
+        assert_eq!(start_said("T4", true, &json!({"status": "queued", "starting": false})), "T4 starts in a new terminal once its project has a free terminal.");
         assert_eq!(start_said("T4", false, &json!({"status": "working", "who": "Term", "starting": false})), "T4 is on Term.");
     }
 
