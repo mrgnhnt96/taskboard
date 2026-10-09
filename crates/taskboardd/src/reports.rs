@@ -1413,7 +1413,7 @@ fn on_step_ask(r: &mut Report) -> Result<Value> {
     if steps::recorded(app, t.id())?.contains(&steps::key(&step.name)) {
         return Ok(with(ok(Some(&t), None), json!({"step": step.name, "already": true})));
     }
-    let s = step.filled(&steps::vars(&t));
+    let s = step.filled(&steps::vars_at(app, &t, None));
     let mut q = format!("Step “{}”", s.name);
     if !s.prompt.trim().is_empty() {
         q += &format!(": {}", s.prompt.trim().trim_end_matches('.'));

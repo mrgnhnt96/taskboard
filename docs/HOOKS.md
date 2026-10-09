@@ -309,8 +309,8 @@ bar = "WD"            # its name in the app's PR bar
   `tb step aim --clear` drops it. A pinned `--commit` keeps the branch's tip at the time; once the branch gets a
   new commit the pin no longer counts (the aim follows the branch, and `tb steps` says "The pin at <sha> was
   dropped: <branch> has moved on since."), and the next round drops it from the task, so `tb done` can't pass on
-  a commit that's no longer the branch's tip. `--commit` from a detached checkout is refused ("<dir> isn't on a
-  branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
+  a commit that's no longer the branch's tip. `--worktree` at a detached checkout without `--branch` is refused, and so is
+  `--commit` from one ("<dir> isn't on a branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
 - **Republishing.** A step with `publish` (a script, with the placeholders, `{head}`, and the round's
   `step_result` as `$TASKBOARD_RESULT`) is republished with `tb step publish "<step>"` once it has passed on the
   head (the aim's, else this checkout's) and the task has a PR (it's refused before one opens), with the round that passed on that head (not a later one on another
