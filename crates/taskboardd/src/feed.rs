@@ -295,18 +295,26 @@ fn note_connect(app: &App) {
     let _ = save(app, &st);
 }
 
-/// The task a PR event is about: `task`, else the PR's link (`url`), else `repo` and `num`.
+/// The task a PR event is about: `task`, else the PR's link (`url`), else `repo` and `num` (and `host`).
+/// The repo matches a board task's by its short name in any case (`webapp` or `ACME/webapp` for
+/// `acme/webapp`), as the Python board matched them, among the board's PRs with that number on that
+/// host (`prbuilds::pick_repo`): two orgs' repos of one name don't clash.
 pub fn task_of_event(app: &App, body: &Value) -> Result<Option<Row>> {
     if let Some(v) = body.get("task").filter(|v| !v.is_null() && v.as_str() != Some("")) {
         return Ok(Some(board::get_task(app, need_ref(v, "task")?)?));
     }
     let url = body_str(body, "url");
-    let (repo, num) = match find_pr(&url) {
-        Some(l) => (l.repo, l.num),
-        None => (body_str(body, "repo"), body["num"].as_i64().or_else(|| body_str(body, "num").parse().ok()).unwrap_or(0)),
+    let (host, repo, num) = match find_pr(&url) {
+        Some(l) => (l.host, l.repo, l.num),
+        None => (body_str(body, "host"), body_str(body, "repo"), body["num"].as_i64().or_else(|| body_str(body, "num").parse().ok()).unwrap_or(0)),
     };
     if !repo.is_empty() && num > 0 {
-        return app.db.q1("SELECT * FROM tasks WHERE pr_repo = ? AND pr_num = ? ORDER BY id DESC LIMIT 1", p![repo, num]);
+        let tasks = app.db.q(
+            "SELECT * FROM tasks WHERE pr_num = ? AND pr_repo IS NOT NULL AND (? = '' OR pr_host IS NULL OR pr_host = '' OR LOWER(pr_host) = LOWER(?)) ORDER BY id DESC",
+            p![num, host, host],
+        )?;
+        let Some(r) = crate::prbuilds::pick_repo(tasks.iter().filter_map(|t| t.s("pr_repo")), &repo) else { return Ok(None) };
+        return Ok(tasks.into_iter().find(|t| t.s("pr_repo").is_some_and(|x| x.eq_ignore_ascii_case(&r))));
     }
     if !url.is_empty() {
         return app.db.q1("SELECT * FROM tasks WHERE pr_url = ? ORDER BY id DESC LIMIT 1", p![url.trim_end_matches('/')]);

@@ -634,9 +634,12 @@ bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
 way to cancel alerts at once. A cancel command may write the builds it stopped, one name per line, to the file named by
 `$TB_CANCELLED`. A cancelled push is logged on its task and kept in `recent`; a follow-up only when it stopped a build (a
-cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both). An entry with no builds of its
-own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build matches a PR by the
-repo's short name (after the last `/`), so `org/repo` and `repo` are one. The PRs' checks count as passed: the build
+cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both, and so is any round, the first
+too, that writes it empty: it stopped nothing). An entry with no builds of its
+own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build or PR event matches a
+board task's PR, or one the owner opened by hand, by its repo in any case, or by the repo's short name (after the last
+`/`) when one side gives no org, so `ACME/repo`, `repo` and `acme/repo` are one; only among the board's PRs with that
+number on the event's host, and `globex/repo` is never `acme/repo` (when the board has both, `repo` names neither). The PRs' checks count as passed: the build
 reads "Builds stopped" and the PR moves on to review.
 
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
@@ -864,7 +867,9 @@ its goal's needs, and `"goal"` drops its own so it asks for its goal's again. Th
 are free, lends them when it starts or an agent takes it with `tb take` (before the handoff is built, which names
 them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
-device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"). A task started
+device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"); a device asked for by
+name says so first, whatever the goal's pool ("Waiting for a free dev-c (dev-c is reserved for G2)", "Waiting for dev-c
+(it's off)"), and a need no device has as its name or tag says "No dev-zz yet (tb device add)". A task started
 without all it asks for (by hand, or with nothing free) logs "<why>; it started without".
 
 A goal can keep devices of its own (`tb goal devices`): its tasks are lent only those, as on the Python board
