@@ -347,7 +347,7 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         let mut row = json!({
             "id": sid, "name": s.s("name").filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("Terminal {}", sid.chars().take(8).collect::<String>())),
             "project": s.v("project"), "project_path": s.v("project_path"), "status": board::shown_status(&s),
-            "api_error": s.v("api_error"), "idle_secs": idle_secs(&s),
+            "api_error": s.v("api_error"), "idle_secs": idle_secs(&s), "compacting": board::compacting_since(&s),
             "task_ref": t.map(|t| json!(rf("task", t.id()))).unwrap_or(Value::Null),
             "task_title": t.map(|t| t.v("title")).unwrap_or(Value::Null),
             "task_id": t.map(|t| json!(t.id())).unwrap_or(Value::Null),
@@ -494,6 +494,7 @@ pub fn session_detail(app: &App, sid: &str) -> Result<Value> {
         "last_activity": s.v("last_activity"), "seen_at": s.v("seen_at"), "branch": s.v("branch"), "dirty": s.v("dirty"),
         "gone_at": s.v("gone_at"), "claude_session_id": s.v("claude_session_id"), "status_at": s.v("status_at"),
         "status": board::shown_status(&s), "api_error": s.v("api_error"), "idle_secs": idle_secs(&s),
+        "compacting": board::compacting_since(&s),
         "close": board::close_rule(Some(&s)), "closing": jobs::closing(app, sid)?, "renaming": null, "rename_error": null,
         "task": match &t { Some(t) => board::task_card(app, t)?, None => Value::Null },
         "last_task": last.map(|l| json!({"ref": rf("task", l.id()), "title": l.v("title"), "status": l.v("status")})).unwrap_or(Value::Null),

@@ -312,6 +312,16 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["keep-awake"]) => keep_awake::call(app, None),
         ("POST", ["keep-awake"]) => keep_awake::call(app, Some(body)),
         ("GET", ["usage"]) => Ok(usage::state(app)),
+        ("GET", ["limits"]) => Ok(crate::limits::state(app)),
+        ("POST", ["limits"]) => {
+            crate::limits::set(app, body)?;
+            app.defer(Box::new(|a: &App| {
+                if let Err(e) = crate::gitattrs::sync(a) {
+                    a.info(format!("attributes: {e}"));
+                }
+            }));
+            Ok(crate::limits::state(app))
+        }
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
             Ok(json!({"ok": true, "changed": changed, "checked_at": app.shared.lock().prs_checked_at}))
@@ -332,7 +342,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"alert": a}))
         }
         _ => {
-            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "usage", "prs", "alerts"];
+            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "limits", "usage", "prs", "alerts"];
             if segs.first().map(|s| known.contains(s)).unwrap_or(false) && (method == "GET" || method == "POST") {
                 return err(404, "There's nothing at that address.");
             }
@@ -2023,6 +2033,12 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    if t.i("pr_num").is_some() {
+        if let Some(why) = crate::comments::task_refusal(app, &t, None, "handing the PR back for review")? {
+            return err(409, why);
+        }
+    }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         if t.i("pr_num").is_none() {

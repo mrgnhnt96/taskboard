@@ -49,7 +49,9 @@ screen = false
 model = "claude-haiku-5-5"
 budget_usd = "0.30"
 timeout_secs = 75
-rules = []                           # example: ["~/.claude/CLAUDE.md"]
+# Rule files the screener reads: a file, a folder (its MEMORY.md, then every other .md in it, so a
+# new memory note counts at once) or a glob (`*`, `?`, `[…]`, `**` for any depth of folders).
+rules = []                           # example: ["~/.claude/CLAUDE.md", "~/.claude/projects/-Users-alex-code-web/memory", "~/.claude/projects/*/memory/*.md"]
 
 # Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
 # impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
@@ -69,6 +71,39 @@ wake = true                          # bring a done task back when its PR has fa
 agents_merge = false                 # let agents merge an approved, green PR
 gh = "gh"
 no_checks_after_mins = 15.0
+
+# Context limits for the board's agents. `tb limits` changes them on the board; these are where it
+# starts. 0 turns one off.
+[limits]
+compact_window = 150000              # tokens: Claude compacts a board terminal's conversation here (--settings autoCompactWindow)
+cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed
+warm_tokens = 60000                  # a task or PR conversation resumes only under this many tokens…
+warm_idle_mins = 60                  # …and idle under this long; otherwise it starts fresh from the handoff
+# Generated files, marked `-diff` in a block the board keeps in each active project's (and
+# worktree's) .git/info/attributes, so agents' diffs skip them. `tb limits --generated` changes them.
+generated = []                       # example: ["*.g.dart", "*.freezed.dart", "Cargo.lock"]
+# [limits.project_generated]
+# webapp = ["dist/**", "*.min.js"]   # example: one project's own, on top of `generated`
+
+# Files `tb attach` refuses (writing goes up as a brief artifact, not a loose file). `{ext}` in the
+# message is the refused extension. Links (https://…) are never refused.
+[attachments]
+refuse = [".md", ".txt", ".rst", ".html"]
+refuse_message = "The board doesn't take {ext} files as attachments: publish it as a brief artifact and attach that link."
+
+# Terminals the board opens in Midna. `background`: the job purposes whose terminals open in Midna's
+# Background group instead of their project's tabs: start (a task), pr (a PR visit), plan (planning a
+# goal), reopen (a closed terminal reopened).
+[terminals]
+background = []                      # example: ["plan"]
+
+# The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
+# MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`
+# while the branch adds any. A comment whose text starts with a pragma is fine.
+[comments]
+guard = false
+languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kotlin", "go", "java", "c", "cpp", "csharp", "ruby", "shell"]
+# pragmas = ["!/", "noqa", "type:", "pragma", "pylint:", "eslint-", "@ts-", "prettier-ignore", "ignore:", "ignore_for_file:", "nolint", "go:", "swiftlint:", …]
 
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
 # env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email).

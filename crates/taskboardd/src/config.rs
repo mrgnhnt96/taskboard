@@ -29,6 +29,10 @@ pub struct FileConfig {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub limits: LimitsConfig,
+    pub attachments: AttachmentsConfig,
+    pub terminals: TerminalsConfig,
+    pub comments: CommentsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +206,91 @@ impl Default for JiraConfig {
     }
 }
 
+/// How big an agent's conversation may get, and when one is too old or too big to resume. `tb limits`
+/// changes these on the board; these are where it starts. 0 turns a limit off.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LimitsConfig {
+    /// Tokens at which Claude compacts a board agent's conversation (`--settings` autoCompactWindow).
+    pub compact_window: i64,
+    /// Minutes idle after which a conversation is compacted before it's resumed.
+    pub cold_idle_mins: i64,
+    /// A task or PR conversation resumes only under this many tokens; a bigger one starts fresh from the handoff.
+    pub warm_tokens: i64,
+    /// …and only when it's been idle under this many minutes.
+    pub warm_idle_mins: i64,
+    /// Generated-file globs marked `-diff` in every active project's `.git/info/attributes`.
+    pub generated: Vec<String>,
+    /// More globs for one project, by its name.
+    pub project_generated: BTreeMap<String, Vec<String>>,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        LimitsConfig {
+            compact_window: 150_000,
+            cold_idle_mins: 60,
+            warm_tokens: 60_000,
+            warm_idle_mins: 60,
+            generated: vec![],
+            project_generated: BTreeMap::new(),
+        }
+    }
+}
+
+/// Files `tb attach` refuses, by extension: writing goes up as a brief artifact, not a loose file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AttachmentsConfig {
+    pub refuse: Vec<String>,
+    /// What the agent is told; `{ext}` is the refused extension.
+    pub refuse_message: String,
+}
+
+impl Default for AttachmentsConfig {
+    fn default() -> Self {
+        AttachmentsConfig {
+            refuse: [".md", ".txt", ".rst", ".html"].iter().map(|s| s.to_string()).collect(),
+            refuse_message: "The board doesn't take {ext} files as attachments: publish it as a brief artifact and attach that link.".into(),
+        }
+    }
+}
+
+/// How the board's terminals open in Midna.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct TerminalsConfig {
+    /// Job purposes (start, pr, plan, reopen) whose terminals open in Midna's Background group.
+    pub background: Vec<String>,
+}
+
+/// The comment guard: agents may not add code comments, pragmas aside.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CommentsConfig {
+    pub guard: bool,
+    /// The languages it watches (rust, dart, python, typescript, javascript, swift, kotlin, go, …).
+    pub languages: Vec<String>,
+    /// A comment whose text starts with one of these is a pragma, and allowed.
+    pub pragmas: Vec<String>,
+}
+
+impl Default for CommentsConfig {
+    fn default() -> Self {
+        let langs = ["rust", "dart", "python", "typescript", "javascript", "swift", "kotlin", "go", "java", "c", "cpp", "csharp", "ruby", "shell"];
+        let pragmas = [
+            "!/", "noqa", "type:", "pragma", "pylint:", "mypy:", "fmt:", "isort:", "-*-", "eslint-", "@ts-", "prettier-ignore", "istanbul ", "c8 ",
+            "biome-ignore", "ignore:", "ignore_for_file:", "coverage:", "nolint", "NOLINT", "go:", "+build", "swiftlint:", "swift-format-ignore",
+            "rubocop:", "frozen_string_literal:", "shellcheck ", "clang-format ", "@formatter:", "region", "endregion",
+        ];
+        CommentsConfig {
+            guard: false,
+            languages: langs.iter().map(|s| s.to_string()).collect(),
+            pragmas: pragmas.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub owner: String,
@@ -223,6 +312,10 @@ pub struct Config {
     pub backlog: BacklogAi,
     pub pr: PrConfig,
     pub jira: JiraConfig,
+    pub limits: LimitsConfig,
+    pub attachments: AttachmentsConfig,
+    pub terminals: TerminalsConfig,
+    pub comments: CommentsConfig,
     /// Accounts in memory instead of the Keychain, `gh` and git (tests, the sample board).
     pub accounts_sandbox: bool,
     pub config_path: PathBuf,
@@ -305,6 +398,10 @@ impl Config {
             backlog: f.backlog,
             pr: f.pr,
             jira,
+            limits: f.limits,
+            attachments: f.attachments,
+            terminals: f.terminals,
+            comments: f.comments,
             accounts_sandbox: env("TASKBOARD_ACCOUNTS").as_deref() == Some("sandbox"),
             config_path,
         }

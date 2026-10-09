@@ -179,6 +179,28 @@ pub fn turns(app: &App, s: &Row, limit: usize) -> Value {
     json!({"turns": list, "count": found.len(), "files": files.len()})
 }
 
+/// How big a conversation's context was at its last reply, and when it last wrote anything.
+pub struct Size {
+    pub tokens: Option<i64>,
+    pub last_at: Option<String>,
+}
+
+fn size_of(events: &[Value]) -> Size {
+    let last_at = events.iter().rev().find_map(|e| e["timestamp"].as_str().map(|s| s.to_string()));
+    let tokens = events.iter().rev().filter(|e| e["type"] == "assistant" && e["isSidechain"] != true).find_map(|e| {
+        let u = e["message"].get("usage")?;
+        let n = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().map(|k| u[*k].as_i64().unwrap_or(0)).sum::<i64>();
+        (n > 0).then_some(n)
+    });
+    Size { tokens, last_at }
+}
+
+/// The size of the conversation `claude_id` (run in `project_path`), if its transcript is found.
+pub fn conversation_size(root: &Path, project_path: &str, claude_id: &str) -> Option<Size> {
+    let p = transcript_file(root, project_path, claude_id);
+    p.is_file().then(|| size_of(&lines(&p)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +223,18 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].files, vec!["/a.rs"]);
         assert!(t[0].closed);
+    }
+
+    #[test]
+    fn reads_the_last_context_size() {
+        let ev = vec![
+            json!({"type": "assistant", "message": {"usage": {"input_tokens": 5, "cache_read_input_tokens": 1000}}, "timestamp": "2026-10-01T10:00:00Z"}),
+            json!({"type": "assistant", "isSidechain": true, "message": {"usage": {"input_tokens": 99999}}, "timestamp": "2026-10-01T10:01:00Z"}),
+            json!({"type": "assistant", "message": {"usage": {"input_tokens": 10, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 3000, "output_tokens": 40}}, "timestamp": "2026-10-01T10:02:00Z"}),
+            json!({"type": "system", "subtype": "turn_duration", "timestamp": "2026-10-01T10:03:00Z"}),
+        ];
+        let s = size_of(&ev);
+        assert_eq!(s.tokens, Some(3250));
+        assert_eq!(s.last_at.as_deref(), Some("2026-10-01T10:03:00Z"));
     }
 }

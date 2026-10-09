@@ -418,6 +418,7 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     }
     parts.extend(other_tasks(app, &t)?);
     parts.extend(worktree_and_lock_lines(&t, &ctx));
+    parts.extend(crate::comments::rule_line(&app.cfg));
     let tail = vec![pr_block(app, &t, &tb)?, report_block(app, &tb), CLOSING.to_string()];
     Ok(fit_to_limit(parts, tail))
 }

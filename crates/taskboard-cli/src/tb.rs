@@ -220,6 +220,31 @@ enum Cmd {
         #[arg(long, value_parser = ["off", "clear"])]
         today: Option<String>,
     },
+    /// Show or change the context limits: the compact window, when a cold conversation is compacted,
+    /// how big and how fresh a conversation must be to resume, and the generated-file globs
+    Limits {
+        /// Tokens at which Claude compacts a board terminal's conversation (0 = off)
+        #[arg(long = "compact-window")]
+        compact_window: Option<i64>,
+        /// Minutes idle after which a conversation is compacted before it resumes (0 = off)
+        #[arg(long = "cold-idle-mins")]
+        cold_idle_mins: Option<i64>,
+        /// A task or PR conversation resumes only under this many tokens, else starts fresh (0 = off)
+        #[arg(long = "warm-tokens")]
+        warm_tokens: Option<i64>,
+        /// …and only when idle under this many minutes (0 = off)
+        #[arg(long = "warm-idle-mins")]
+        warm_idle_mins: Option<i64>,
+        /// Generated-file globs kept as `-diff` in .git/info/attributes, comma-separated (none clears them)
+        #[arg(long)]
+        generated: Option<String>,
+        /// With --generated: that project's own globs, on top of everyone's
+        #[arg(long)]
+        project: Option<String>,
+        /// Forget every change and go back to config.toml's [limits]
+        #[arg(long)]
+        reset: bool,
+    },
     /// A done task's pull request
     Pr {
         #[command(subcommand)]
@@ -1531,6 +1556,28 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 };
                 out(&format!("{} · {floor}", if st["mode"] == "always" { "Always during the hours" } else { "Only while agents have work" }));
             }
+            Ok(0)
+        }
+        Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, reset } => {
+            let mut b = json!({});
+            for (k, v) in [("compact_window", compact_window), ("cold_idle_mins", cold_idle_mins), ("warm_tokens", warm_tokens), ("warm_idle_mins", warm_idle_mins)] {
+                if let Some(n) = v {
+                    b[k] = json!(n);
+                }
+            }
+            if let Some(g) = generated {
+                b["generated"] = json!(if g.trim().eq_ignore_ascii_case("none") { String::new() } else { g });
+                if let Some(p) = project {
+                    b["project"] = json!(p);
+                }
+            } else if project.is_some() {
+                return Err("--project goes with --generated".to_string());
+            }
+            if reset {
+                b["reset"] = json!(true);
+            }
+            let v = if b.as_object().map(|o| o.is_empty()).unwrap_or(true) { c.call("GET", "/limits", None)? } else { c.call("POST", "/limits", Some(b))? };
+            out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
         Cmd::Pr { action } => match action {

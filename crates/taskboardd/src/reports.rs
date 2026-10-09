@@ -524,6 +524,9 @@ fn stalled(r: &Report, t: &Row) -> Result<bool> {
 
 fn on_pre_compact(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
+    if let Some(sid) = r.sid() {
+        r.app.db.x("UPDATE sessions SET compacting_at = ? WHERE id = ?", p![r.at, sid])?;
+    }
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
     let ctx = r.update_where(&t, false)?;
     r.log(t.id(), "checkpoint", "Saved before compacting", Some(json!({"context": ctx})))?;
@@ -1056,6 +1059,10 @@ fn finishing(r: &Report) -> Result<()> {
             app.db.tx(|| crate::dispatch::add_alert(app, &line, Some(t.id()), t.i("goal_id"), None, None).map(|_| ()))?;
         }
         return err(409, steps::refusal(&board::tb_cmd(app), "finishing", &left));
+    }
+    let here = if r.away(&t)? { None } else { r.cwd.as_deref() };
+    if let Some(why) = crate::comments::task_refusal(app, &t, here, "finishing")? {
+        return err(409, why);
     }
     let done = json!({"summary": summary, "pr": r.b("pr")});
     let d = hooks::gate(app, "task.finishing", &t, json!({"by": r.name(), "done": done}));
@@ -1635,6 +1642,10 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         }
         if API_BACK_EVENTS.contains(&r.event.as_str()) {
             app.db.x("UPDATE sessions SET api_error_at = NULL, api_error_tries = 0 WHERE id = ?", p![r.sid()])?;
+        }
+        if r.event.starts_with("hook.") && r.event != "hook.pre_compact" && r.event != "hook.delivered" {
+            // Any other word from the terminal means its compaction is over; SessionStart "compact" ends it.
+            app.db.x("UPDATE sessions SET compacting_at = NULL WHERE id = ? AND compacting_at IS NOT NULL", p![r.sid()])?;
         }
         let mut out = f(&mut r)?;
         if let Some(sid) = r.sid.clone() {

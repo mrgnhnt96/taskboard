@@ -9,6 +9,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::client::{self, CallError};
+use taskboardd::comments;
 use taskboardd::config::Config;
 use taskboardd::steps::{from_listing, Before, Step};
 
@@ -42,22 +43,40 @@ fn opens_pr(tool: &str, input: &Value) -> bool {
 /// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
 /// (config.toml's `[[steps]]`) aren't recorded. Anything else, no task, or no board: carry on.
 fn pre_tool_use(payload: &Value, session: &str) -> i32 {
-    if !opens_pr(payload["tool_name"].as_str().unwrap_or(""), &payload["tool_input"]) {
+    let tool = payload["tool_name"].as_str().unwrap_or("");
+    if EDIT_TOOLS.contains(&tool) {
+        // The comment guard (config.toml's [comments]): read locally, no board needed.
+        if let Some(reason) = comments::edit_refusal(&client::config(), tool, &payload["tool_input"]) {
+            deny(&reason);
+        }
+        return 0;
+    }
+    if !opens_pr(tool, &payload["tool_input"]) {
         return 0;
     }
     let cfg = client::config();
+    let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string()).or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
+    if let Some(reason) = cwd.and_then(|d| comments::branch_refusal(&cfg, &d, "opening the PR")) {
+        deny(&reason);
+        return 0;
+    }
     let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return 0 };
     let vars = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
     let left: Vec<Step> = from_listing(&v).into_iter().filter(|(s, done)| s.before == Before::Pr && !done).map(|(s, _)| s.filled(&vars)).collect();
     if left.is_empty() {
         return 0;
     }
-    let reason = taskboardd::steps::refusal(&tb_path(), "opening the PR", &left);
+    deny(&taskboardd::steps::refusal(&tb_path(), "opening the PR", &left));
+    0
+}
+
+const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+fn deny(reason: &str) {
     let o = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}});
     let mut so = std::io::stdout();
     let _ = so.write_all(o.to_string().as_bytes());
     let _ = so.flush();
-    0
 }
 
 static GIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(commit|push)\b").unwrap());

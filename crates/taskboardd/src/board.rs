@@ -256,6 +256,11 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "waiting": waiting,
         "blocked": is_blocked(app, t)?,
         "step": crate::steps::waiting_card(app, t),
+        "compacting": if matches!(status.as_str(), "working" | "needs") {
+            get_session(app, t.s("session_id"))?.map(|s| compacting_since(&s)).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
     }))
 }
 
@@ -342,6 +347,18 @@ pub fn shown_status(s: &Row) -> &str {
         "offline"
     } else {
         "needs"
+    }
+}
+
+/// How long a compaction may go without word from its terminal before the board stops showing it.
+const COMPACTING_SHOWN_SECS: f64 = 30.0 * 60.0;
+
+/// When the terminal started compacting its conversation, while it still is: from PreCompact until
+/// the next word from it (SessionStart "compact" at the end).
+pub fn compacting_since(s: &Row) -> Value {
+    match s.s("compacting_at").filter(|_| s.s("status") != Some("gone")) {
+        Some(at) if wall_age_secs(Some(at)).is_some_and(|a| a < COMPACTING_SHOWN_SECS) => json!(at),
+        _ => Value::Null,
     }
 }
 
@@ -591,6 +608,20 @@ pub fn attachment_dict(a: &Row) -> Value {
 
 static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^https?://\S+$").unwrap());
 
+/// The refused extension (as configured) a file path ends with. Links aren't files, so they pass.
+pub fn refused_extension(refuse: &[String], url: &str) -> Option<String> {
+    if URL_RE.is_match(url) {
+        return None;
+    }
+    let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or(url).to_lowercase();
+    refuse
+        .iter()
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty())
+        .map(|e| if e.starts_with('.') { e } else { format!(".{e}") })
+        .find(|e| name.ends_with(e.as_str()) && name.len() > e.len())
+}
+
 pub fn add_attachment(
     app: &App,
     who: &str,
@@ -603,6 +634,9 @@ pub fn add_attachment(
     let url = url.trim();
     if !(URL_RE.is_match(url) || url.starts_with('/') || url.starts_with("~/")) {
         return err(400, "Attach a link that starts with https:// or a full file path.");
+    }
+    if let Some(ext) = refused_extension(&app.cfg.attachments.refuse, url) {
+        return err(400, app.cfg.attachments.refuse_message.replace("{ext}", &ext));
     }
     let kind = if ATTACH_KINDS.contains(&kind) { kind } else { "other" };
     let title = attachment_title(title, url);

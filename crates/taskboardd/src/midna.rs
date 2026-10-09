@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, jobs, keep_awake, p, proc};
+use crate::{board, jobs, keep_awake, limits, p, proc};
 
 const DOWN_EXIT: i32 = 3;
 const OPEN_EVERY: Duration = Duration::from_secs(30);
@@ -181,8 +181,38 @@ pub fn claude_args(a: &Row) -> MResult<(Vec<String>, Option<String>)> {
     Ok((parts, resume))
 }
 
+/// Whether this job's terminal opens in Midna's Background group (config.toml's `[terminals]`).
+pub fn opens_in_background(app: &App, j: &Row) -> bool {
+    j.s("purpose").is_some_and(|p| app.cfg.terminals.background.iter().any(|b| b.trim() == p))
+}
+
+/// A live terminal whose conversation has gone cold: `/compact` goes in ahead of the prompt.
+fn compact_first(app: &App, sid: &str) -> bool {
+    let Ok(Some(s)) = board::get_session(app, Some(sid)) else { return false };
+    let Some(cid) = s.s("claude_session_id").filter(|c| !c.is_empty()) else { return false };
+    limits::is_cold(app, &limits::conversation(app, s.s("project_path").unwrap_or(""), cid, s.s("last_activity")))
+}
+
+/// A conversation resumed in a new terminal after going cold is compacted first, headless.
+fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) {
+    if !limits::is_cold(app, &limits::conversation(app, cwd, cid, None)) {
+        return;
+    }
+    let what = match limits::compact(app, cwd, cid) {
+        Ok(()) => "Compacted its cold conversation before resuming it".to_string(),
+        Err(e) => format!("Couldn't compact its cold conversation before resuming it ({e}); resuming it as it is"),
+    };
+    app.info(format!("job {}: {what}", rf("job", j.id())));
+    if let Some(tid) = j.i("task_id") {
+        let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "handoff", &what).map(|_| ()));
+    }
+}
+
 fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     if let Some(sid) = send_target(app, a) {
+        if compact_first(app, &sid) {
+            send(app, &sid, "/compact")?;
+        }
         send(app, &sid, &a.st("prompt"))?;
         return Ok(format!("Queued in {sid}"));
     }
@@ -193,10 +223,19 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     if !Path::new(&cwd).is_dir() {
         return Err(MidnaError::Refused(format!("the folder {cwd} doesn't exist")));
     }
-    let (agent_args, resume) = claude_args(a)?;
+    let mut a = a.clone();
+    if !has(a.s("settings")) {
+        if let Some(s) = limits::settings_arg(app) {
+            a.insert("settings".into(), json!(s));
+        }
+    }
+    let (agent_args, resume) = claude_args(&a)?;
+    if let Some(cid) = &resume {
+        compact_before_resume(app, j, &cwd, cid);
+    }
     let mut params = json!({"kind": "agent", "agent": "claude", "cwd": cwd,
                             "name": tab_title(a.s("title").unwrap_or("Claude"), j.i("task_id")),
-                            "background": false, "close_on_exit": true, "agent_args": agent_args});
+                            "background": opens_in_background(app, j), "close_on_exit": true, "agent_args": agent_args});
     if let Some(r) = resume {
         params["resume"] = json!(r);
     }
