@@ -1180,6 +1180,10 @@ fn breaks(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result
             rep.skipped.push(format!("{} {label}: a break with that number came first", b.table));
         }
     }
+    // The branch each project's watch was on (its newest break's), unless config.toml sets one.
+    for r in app.db.q("SELECT project, branch FROM breaks WHERE branch IS NOT NULL AND branch != '' ORDER BY id DESC", vec![])? {
+        crate::breaks::carry_branch(app, &r.st("project"), &r.st("branch"))?;
+    }
     rep.copied.push(("breaks".into(), n));
     Ok(())
 }

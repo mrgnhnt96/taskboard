@@ -137,10 +137,12 @@ model = "sonnet"
 budget_usd = "0.50"
 timeout_secs = 180
 recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished and it's still red
+start_fix = true                     # start the fix task at once in a new terminal (false: it waits in the queue)
+fix_ticket = true                    # make a new Jira ticket for the fix task (when Jira is on)
 
 # One table per watched project, by its name. Every key is optional.
 # [master.projects.webapp]
-# branch = "main"                     # default: main
+# branch = "main"                     # default: the repo's default branch (from the host)
 # repo = "acme/webapp"                # default: from the project's origin remote
 # host = "github"                     # github or bitbucket; default: from the remote
 

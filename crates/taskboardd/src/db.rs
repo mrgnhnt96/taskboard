@@ -192,8 +192,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "no_evidence", "TEXT"),
 ];
 
-fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, col, ty) in ADDED {
+fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
+    for (table, col, ty) in added {
         let have: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -261,11 +261,12 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
-        add_columns(&conn)?;
+        add_columns(&conn, ADDED)?;
         conn.execute_batch(crate::devices::SCHEMA)?;
         conn.execute_batch(crate::bits::SCHEMA)?;
         conn.execute_batch(crate::reviewers::SCHEMA)?;
         conn.execute_batch(crate::breaks::SCHEMA)?;
+        add_columns(&conn, crate::breaks::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }

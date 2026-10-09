@@ -634,22 +634,26 @@ the `breaks` table.
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. |
+| `GET /master` | | `tb master`. **Response:** `{open: [break], closed: [break] (the last 10), watched: [{project, branch, checked_at, green_head, error}]}`. `branch` is `[master.projects.<name>] branch`, else the one the import carried over (the old board's), else the repo's default branch read from the host (else the clone's `origin/HEAD`); null before the first read. |
 | `GET /master/:ref` | | `tb master M3`. **Response:** the break. |
-| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?}` | `tb master M3 ours\|not-ours\|unsure`: the owner's word, never decided again. `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
+| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?, proof?: [url]}` | `tb master M3 ours\|not-ours\|unsure [--proof <url>]…`: the owner's word, never decided again. `not-ours` needs at least one http(s) `proof` link (a build or an issue that shows it; 400 without). `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
 | `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
 
 `break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
 checks: [str], evidence: {checks: [{name, url, steps, tests}]}, suspects: [{sha, name, email, message, ours}], verdict:
 "ours"|"not_ours"|"unsure"|null, verdict_label, verdict_by: "commits"|"claude"|"fallback"|<who>, verdict_why,
-verdict_at, task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the open ones: the
-app's "Master is red" banner lines, with Open T<n> for the fix task.
+verdict_at, proof: [url], task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the
+open ones that are `ours`: the app's one "Master is red" banner line each, with Open T<n> for the fix task (the app
+doesn't show the break's urgent alert as a row of its own beside it).
 
 A failed check on the branch's head opens a break; a head whose checks all passed closes it. Suspects are the commits
-since the last green head the board saw (or the head alone), each `ours` when its author's email is in `owner_emails`.
+since the last green head the board saw: the whole `green..head` range from the host (GitHub's compare, Bitbucket's
+`commits?exclude=`) when it's further back than the `commits` read, every commit read when the board never saw it
+green; each `ours` when its author's email is in `owner_emails`.
 No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` decides from the evidence (`[master]
 fault_check`), or without it: every suspect the owner's makes it `ours`, else `unsure`. Only `ours` gets a fix task
-(queued, high priority) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
+(high priority, with a new Jira ticket when Jira is on (`[master] fix_ticket`), started at once in a new terminal
+(`[master] start_fix`; when it can't start it waits in the queue)) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
 branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
 again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
 

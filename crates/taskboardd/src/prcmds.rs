@@ -346,7 +346,7 @@ pub fn proof_label(url: &str) -> String {
     cap(r"^https?://(?:www\.)?([^/?#]+)").unwrap_or_else(|| url.to_string())
 }
 
-fn is_link(s: &str) -> bool {
+pub(crate) fn is_link(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     (l.starts_with("http://") || l.starts_with("https://")) && !s.contains(char::is_whitespace) && s.len() > 10
 }

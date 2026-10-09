@@ -334,6 +334,9 @@ enum Cmd {
         /// Whose word the verdict is (the owner when left out)
         #[arg(long)]
         who: Option<String>,
+        /// A link that shows it isn't yours (a build, an issue); not-ours needs one. Repeat for more.
+        #[arg(long)]
+        proof: Vec<String>,
     },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
@@ -2479,7 +2482,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Device { action } => device_cmd(c, action),
         Cmd::Feed { action } => feed_cmd(c, action),
         Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
-        Cmd::Master { args, why, who } => master_cmd(c, args, why, who),
+        Cmd::Master { args, why, who, proof } => master_cmd(c, args, why, who, proof),
         Cmd::Bits { goal, t } => {
             let mut path = "/bits".to_string();
             if let Some(g) = goal {
@@ -3564,6 +3567,9 @@ fn break_detail(m: &Value) -> String {
     if let Some(w) = m["verdict_why"].as_str() {
         lines.push(format!("Why: {w} ({})", m["verdict_by"].as_str().unwrap_or("")));
     }
+    for u in m["proof"].as_array().cloned().unwrap_or_default() {
+        lines.push(format!("Proof: {}", u.as_str().unwrap_or("")));
+    }
     for c in m["evidence"]["checks"].as_array().cloned().unwrap_or_default() {
         let mut l = format!("  ✗ {}", c["name"].as_str().unwrap_or(""));
         if let Some(u) = c["url"].as_str() {
@@ -3590,7 +3596,7 @@ fn break_detail(m: &Value) -> String {
     lines.join("\n")
 }
 
-fn master_cmd(c: &Ctx, args: Vec<String>, why: Option<String>, who: Option<String>) -> Result<i32, String> {
+fn master_cmd(c: &Ctx, args: Vec<String>, why: Option<String>, who: Option<String>, proof: Vec<String>) -> Result<i32, String> {
     let (refs, words): (Vec<String>, Vec<String>) = args.into_iter().partition(|a| break_ref(a).is_some());
     let r = refs.first().and_then(|r| break_ref(r));
     let word = words.first().map(|w| w.to_lowercase());
@@ -3616,7 +3622,7 @@ fn master_cmd(c: &Ctx, args: Vec<String>, why: Option<String>, who: Option<Strin
         }
         (Some(r), None | Some("show")) => out(&break_detail(&c.call("GET", &format!("/master/{r}"), None)?)),
         (Some(r), Some(v @ ("ours" | "not-ours" | "not_ours" | "unsure"))) => {
-            let m = c.call("POST", &format!("/master/{r}"), Some(json!({"verdict": v, "why": why, "who": who})))?;
+            let m = c.call("POST", &format!("/master/{r}"), Some(json!({"verdict": v, "why": why, "who": who, "proof": proof})))?;
             out(&break_line(&m));
         }
         (None, Some("show" | "ours" | "not-ours" | "not_ours" | "unsure")) => return Err("name the break, for example: tb master M3 ours".into()),
@@ -3690,7 +3696,7 @@ mod tests {
         let line = pr_builds_recent_line(&json!({"ok": false, "what": "no command", "repo": "acme/web", "branch": "wip", "num": 0}));
         assert!(line.ends_with("acme/web wip: gave up: no command"), "{line}");
         assert!(Cli::try_parse_from(["tb", "master"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky", "--proof", "https://ci/1", "--proof", "https://ci/2"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "show", "M3"]).is_ok());
         assert_eq!(break_ref("m4").as_deref(), Some("M4"));
         assert_eq!(break_ref("ours"), None);
