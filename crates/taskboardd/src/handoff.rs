@@ -433,14 +433,16 @@ pub fn fill_branch(tpl: &str, kind: &str, key: &str, title: &str, id: i64) -> St
     b.trim_matches(|c| c == '-' || c == '_' || c == '/').to_string()
 }
 
-/// The goal's setup text (`tb goal setup`) with {task} {n} {wave} {goal} filled for this task, and the
-/// devices lent to it: {device} {target} for the first, {device2} {target2} for the second…
+/// The goal's setup text (`tb goal setup`) with {task} {n} {wave} {goal} filled for this task, {jira}
+/// with its ticket key (its ref when it has none, as device commands fill it), and the devices lent to
+/// it: {device} {target} for the first, {device2} {target2} for the second…
 pub fn fill_setup(app: &App, text: &str, t: &Row) -> Result<String> {
     let mut out = text
         .replace("{task}", &rf("task", t.id()))
         .replace("{n}", &t.id().to_string())
         .replace("{wave}", &t.i("wave").map(|w| w.to_string()).unwrap_or_default())
-        .replace("{goal}", &t.i("goal_id").map(|g| rf("goal", g)).unwrap_or_default());
+        .replace("{goal}", &t.i("goal_id").map(|g| rf("goal", g)).unwrap_or_default())
+        .replace("{jira}", &t.s("jira_key").map(str::trim).filter(|k| !k.is_empty()).map(str::to_string).unwrap_or_else(|| rf("task", t.id())));
     for (k, v) in crate::devices::setup_vars(app, t)? {
         out = out.replace(&format!("{{{k}}}"), &v);
     }

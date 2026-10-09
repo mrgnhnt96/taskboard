@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{handoff, p, runner};
+use taskboardd::{board, fields, handoff, p, runner};
 
 struct Board {
     app: Arc<App>,
@@ -180,8 +180,8 @@ fn one_device_goes_back_and_the_others_in_use_are_named() {
     let theirs = taskboardd::devices::lent(&b.app, c).unwrap();
     let h = handoff::build(&b.app, a).unwrap();
     assert!(h.contains("use only that one, since other tasks have the rest of the pool. It goes back when the task is done."), "{h}");
-    assert!(h.contains(&format!("Other devices in use, don't touch them: {} (T{c}).", theirs[0])), "{h}");
-    assert!(!h.contains(&format!("{} (T{a})", mine[0])), "its own device isn't listed as another's: {h}");
+    assert!(h.contains(&format!("Other devices in use, don't touch them: {} (with T{c}).", theirs[0])), "{h}");
+    assert!(!h.contains(&format!("{} (with", mine[0])),"its own device isn't listed as another's: {h}");
 
     // Nobody else has one: no such line.
     let solo = new_board();
@@ -189,4 +189,79 @@ fn one_device_goes_back_and_the_others_in_use_are_named() {
     let s = solo.task("Solo", "android");
     runner::start_queued(&solo.app).unwrap();
     assert!(!handoff::build(&solo.app, s).unwrap().contains("Other devices in use"));
+}
+
+// --- #105 ---
+
+#[test]
+fn goal_setup_fills_jira_with_the_ticket_or_the_task_ref() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Branches", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("/goals/G{g}"), json!({"setup": "make-tree ../wt-{jira} -b feature/{jira}"}));
+    let keyed = b.post("/tasks", json!({"title": "Keyed", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    let bare = b.post("/tasks", json!({"title": "Bare", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    board::update_task(&b.app, keyed, fields!["jira_key" => "PROJ-42"]).unwrap();
+    let h = handoff::build(&b.app, keyed).unwrap();
+    assert!(h.contains("make-tree ../wt-PROJ-42 -b feature/PROJ-42"), "{h}");
+    let h = handoff::build(&b.app, bare).unwrap();
+    assert!(h.contains(&format!("make-tree ../wt-T{bare} -b feature/T{bare}")), "no ticket: the task's ref: {h}");
+    assert!(!h.contains("{jira}"), "{h}");
+}
+
+// --- #106 ---
+
+#[test]
+fn other_devices_name_their_target_and_why_and_stay_short() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "android", "target": "emulator-5554"}));
+    b.post("devices", json!({"name": "dev-b", "tags": "android", "target": "emulator-5556"}));
+    b.post("devices", json!({"name": "res-1", "tags": "android", "target": "R1"}));
+    b.post("devices", json!({"name": "off-1", "tags": "android"}));
+    b.post("devices", json!({"name": "off-2", "tags": "android"}));
+    b.post("devices", json!({"name": "spare", "tags": "ios"}));
+    b.post("devices/off-1", json!({"off": true, "note": "Kept for the demo"}));
+    b.post("devices/off-2", json!({"off": true}));
+    let other = b.post("/goals", json!({"name": "Other", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("goals/G{other}/devices"), json!({"device": "res-1", "reserved": true}));
+    let a = b.task("A", "android");
+    let c = b.task("C", "android");
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![a, c]);
+    let mine = taskboardd::devices::lent(&b.app, a).unwrap();
+    let theirs = taskboardd::devices::lent(&b.app, c).unwrap();
+    let target = |n: &str| if n == "dev-a" { "emulator-5554" } else { "emulator-5556" };
+    let h = handoff::build(&b.app, a).unwrap();
+    let mut want = [
+        format!("{} {} (with T{c})", theirs[0], target(&theirs[0])),
+        "off-1 (kept for the demo)".to_string(),
+        "off-2 (kept back)".to_string(),
+        format!("res-1 R1 (reserved for G{other})"),
+    ];
+    want.sort();
+    assert!(h.contains(&format!("Other devices in use, don't touch them: {}.", want.join("; "))), "{h}");
+    assert!(!h.contains(&format!("{} {} (with", mine[0], target(&mine[0]))) && !h.contains("spare"), "{h}");
+
+    // A long list is clipped to 500.
+    for i in 0..30 {
+        b.post("devices", json!({"name": format!("kept-{i:02}"), "tags": "tv"}));
+        b.post(&format!("devices/kept-{i:02}"), json!({"off": true, "note": format!("Kept for {}", "a long demo booth story ".repeat(4))}));
+    }
+    let h = handoff::build(&b.app, a).unwrap();
+    let line = h.lines().find(|l| l.starts_with("Other devices in use")).unwrap();
+    let list = line.trim_start_matches("Other devices in use, don't touch them: ").trim_end_matches('.');
+    assert!(list.chars().count() <= 500 && list.ends_with('…'), "{}: {line}", list.chars().count());
+}
+
+#[test]
+fn a_lent_devices_note_is_clipped_to_300() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "android"}));
+    let long = "word ".repeat(120);
+    b.app.db.x("UPDATE devices SET note = ? WHERE name = 'dev-a'", p![long.trim()]).unwrap();
+    let a = b.task("A", "android");
+    runner::start_queued(&b.app).unwrap();
+    let h = handoff::build(&b.app, a).unwrap();
+    let start = h.find("dev-a (android, ").unwrap() + "dev-a (android, ".len();
+    let note: String = h[start..].chars().take_while(|c| *c != ')').collect();
+    assert!(note.chars().count() <= 300 && note.ends_with('…'), "{}: {note}", note.chars().count());
 }

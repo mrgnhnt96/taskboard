@@ -1435,7 +1435,7 @@ fn goal_ref(v: &str) -> Result<String, String> {
 /// in bold, which keeps the braces apart from it until the styling is drawn (or stripped).
 fn setup_about() -> String {
     let b = clap::builder::styling::Style::new().bold();
-    let names: Vec<String> = ["task", "n", "wave", "goal"].iter().map(|n| format!("{{{b}{n}{b:#}}}")).collect();
+    let names: Vec<String> = ["task", "n", "wave", "goal", "jira", "device", "target", "device2", "target2"].iter().map(|n| format!("{{{b}{n}{b:#}}}")).collect();
     format!("What every task in the goal does first (its handoff shows it): {} are filled in; none clears it", names.join(" "))
 }
 
@@ -4569,7 +4569,7 @@ mod tests {
         let mut cmd = Cli::command();
         let setup = cmd.find_subcommand_mut("goal").unwrap().find_subcommand_mut("setup").unwrap();
         let help = setup.render_help().to_string();
-        assert!(help.contains("{task} {n} {wave} {goal}"), "{help}");
+        assert!(help.contains("{task} {n} {wave} {goal} {jira} {device} {target} {device2} {target2}"), "{help}");
         assert!(Cli::try_parse_from(["tb", "task", "new", "Form", "--goal", "G3", "--wave", "1", "--file", "src/a.rs", "--file", "src/b.rs"]).is_ok());
     }
 

@@ -896,12 +896,13 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
         .zip(&rows)
         .map(|(n, d)| match d {
             Some(d) => {
-                // What it is (kind, target), else its tags; then its note.
+                // What it is (kind, target), else its tags; then its note, clipped to 300 as the
+                // Python board did (imported notes can run past the 200 a new one may have).
                 let mut parts: Vec<String> = match what(d) {
                     w if w.is_empty() => tags_of(d),
                     w => vec![w],
                 };
-                parts.extend(d.s("note").filter(|x| !x.is_empty()).map(str::to_string));
+                parts.extend(d.s("note").filter(|x| !x.is_empty()).map(|x| clip(x, 300)));
                 if parts.is_empty() { n.clone() } else { format!("{n} ({})", parts.join(", ")) }
             }
             None => n.clone(),
@@ -927,14 +928,50 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
             text += &format!("\n{n}:\n{}", cmds.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"));
         }
     }
-    // The devices other active tasks have now, so it leaves them be.
-    let mut others: Vec<(String, i64)> = held(app)?.into_iter().filter(|(_, tid)| *tid != t.id()).collect();
-    others.sort();
+    let others = others_text(app, t, &names)?;
     if !others.is_empty() {
-        let list: Vec<String> = others.iter().map(|(d, tid)| format!("{d} ({})", rf("task", *tid))).collect();
-        text += &format!("\nOther devices in use, don't touch them: {}.", list.join(", "));
+        text += &format!("\nOther devices in use, don't touch them: {others}.");
     }
     Ok(vec![text])
+}
+
+/// Every device this task must leave alone, as the Python board listed them: each with its target
+/// and why (`with T5`, `reserved for G3`, `kept for …`), joined with "; " and clipped to 500.
+fn others_text(app: &App, t: &Row, mine: &[String]) -> Result<String> {
+    let holders = held(app)?;
+    let res = reserved(&goal_pools(app)?);
+    let mut list = vec![];
+    for d in pool(app)? {
+        let name = d.st("name");
+        if mine.contains(&name) {
+            continue;
+        }
+        let mut why = vec![];
+        if let Some(tid) = holders.get(&name).filter(|tid| **tid != t.id()) {
+            why.push(format!("with {}", rf("task", *tid)));
+        }
+        if let Some(gs) = res.get(&name).filter(|gs| !gs.iter().any(|g| Some(*g) == t.i("goal_id"))) {
+            why.push(format!("reserved for {}", goals_text(gs)));
+        }
+        if d.b("off") {
+            why.push(kept_for(&d));
+        }
+        if why.is_empty() {
+            continue;
+        }
+        let target = d.s("target").map(str::trim).filter(|x| !x.is_empty()).map(|x| format!(" {x}")).unwrap_or_default();
+        list.push(format!("{name}{target} ({})", why.join(", ")));
+    }
+    Ok(clip(&list.join("; "), 500))
+}
+
+/// Why a device is kept back: its note's "Kept for …" (as imported from the Python board), else just that.
+fn kept_for(d: &Row) -> String {
+    static KEPT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bkept for ([^;]+)").unwrap());
+    match d.s("note").and_then(|n| KEPT.captures(n)) {
+        Some(c) => format!("kept for {}", short(c[1].trim(), 80)),
+        None => "kept back".into(),
+    }
 }
 
 #[cfg(test)]
