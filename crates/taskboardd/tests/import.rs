@@ -227,7 +227,7 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!(emu["tags"], json!([]), "the kind is a label, not a tag");
     assert_eq!((emu["kind"].clone(), emu["target"].clone()), (json!("android"), json!("emulator-5554")));
     assert_eq!((emu["start_cmd"].clone(), emu["stop_cmd"].clone()), (json!("emulator -avd emu1"), json!("adb emu kill")));
-    assert_eq!(emu["label"], "emu-1 (Android phone, emulator-5554)");
+    assert_eq!(emu["label"], "emu-1 (Android emulator, emulator-5554)");
     let extra: Value = serde_json::from_str(&app.db.get_setting("import.devices.unmapped").unwrap().unwrap()).unwrap();
     assert_eq!(extra["columns"], json!(["project"]), "a devices column the board has no place for is kept");
     assert!(extra["rows"].as_array().unwrap().contains(&json!({"id": 1, "project": "web"})));

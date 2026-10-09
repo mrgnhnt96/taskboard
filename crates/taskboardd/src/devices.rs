@@ -6,8 +6,8 @@
 //! simulator, the device hub), run from `tb device focus` or the app.
 //!
 //! A device may also say what it is (`kind`, a label like phone or simulator, never matched against
-//! needs; `target`, like Android 14 or an iOS 17 runtime), shown with its name ("dev-a (Android phone,
-//! Android 14)"), and how to boot it and shut it down (`start_cmd`, `stop_cmd`): the handoff tells the
+//! needs; `target`, the emulator's serial or the simulator's UDID, which its commands use as
+//! `{target}`), shown with its name ("dev-a (Android emulator, emulator-5554)"), and how to boot it and shut it down (`start_cmd`, `stop_cmd`): the handoff tells the
 //! task that's lent it "Start it: …" and "Stop it when you're done: …", filled like step commands.
 //!
 //! A goal can hold devices of its own (`tb goal devices`): its tasks are lent only those (or those
@@ -48,14 +48,18 @@ CREATE TABLE IF NOT EXISTS goal_devices(
 /// and shut it down.
 pub const ADDED: &[(&str, &str, &str)] = &[("devices", "kind", "TEXT"), ("devices", "target", "TEXT"), ("devices", "start_cmd", "TEXT"), ("devices", "stop_cmd", "TEXT")];
 
-/// Kinds the board names in words ("android" → "Android phone"); any other kind shows as it was given.
+/// Kinds the board names in words ("android" → "Android emulator"); any other kind shows as it was
+/// given. The first four are the Python board's kinds, named as it named them: `android`, `ios`,
+/// `device` (a real phone or tablet) and `other`.
 const KINDS: &[(&[&str], &str)] = &[
-    (&["android", "android_phone", "android-phone", "android phone"], "Android phone"),
+    (&["android", "android_emulator", "android-emulator", "android emulator", "emulator", "android_emu", "avd"], "Android emulator"),
+    (&["ios", "ios_simulator", "ios-simulator", "ios simulator", "simulator", "ios_sim", "sim"], "iOS simulator"),
+    (&["device"], "Phone or tablet"),
+    (&["other"], "Device"),
+    (&["android_phone", "android-phone", "android phone"], "Android phone"),
     (&["android_tablet", "android-tablet", "android tablet"], "Android tablet"),
-    (&["android_emulator", "android-emulator", "android emulator", "emulator", "android_emu", "avd"], "Android emulator"),
-    (&["ios", "iphone", "ios_phone", "ios-phone"], "iPhone"),
+    (&["iphone", "ios_phone", "ios-phone"], "iPhone"),
     (&["ipad", "ios_tablet", "ios-tablet"], "iPad"),
-    (&["ios_simulator", "ios-simulator", "ios simulator", "simulator", "ios_sim", "sim"], "iOS simulator"),
     (&["phone"], "Phone"),
     (&["tablet"], "Tablet"),
     (&["watch"], "Watch"),
@@ -64,14 +68,18 @@ const KINDS: &[(&[&str], &str)] = &[
     (&["browser", "web"], "Browser"),
 ];
 
-/// A device's kind in words: one the board knows by name, else as given.
+/// A device's kind in words: one the board knows by name, else as given ("Device" when it has none).
 pub fn kind_label(kind: &str) -> String {
     let k = kind.trim();
+    if k.is_empty() {
+        return "Device".into();
+    }
     let low = k.to_lowercase();
     KINDS.iter().find(|(keys, _)| keys.contains(&low.as_str())).map(|(_, l)| l.to_string()).unwrap_or_else(|| k.to_string())
 }
 
-/// "Android phone, Android 14": a device's kind and target, empty when it has neither.
+/// "Android emulator, emulator-5554": a device's kind and target, empty when it has neither (a
+/// device with no kind isn't called "Device" here: that says nothing next to its name).
 pub fn what(d: &Row) -> String {
     let mut parts: Vec<String> = vec![];
     if let Some(k) = d.s("kind").filter(|k| !k.trim().is_empty()) {
@@ -83,7 +91,7 @@ pub fn what(d: &Row) -> String {
     parts.join(", ")
 }
 
-/// "dev-a (Android phone, Android 14)": the name, with its kind and target when it has them.
+/// "dev-a (Android emulator, emulator-5554)": the name, with its kind and target when it has them.
 pub fn label(d: &Row) -> String {
     match what(d) {
         w if w.is_empty() => d.st("name"),
@@ -557,7 +565,7 @@ fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value>
     let by: Vec<i64> = pools.iter().filter(|r| r.b("reserved")).map(|r| r.i0("goal_id")).collect();
     let reserved_for = (!by.is_empty()).then(|| goals_text(&by));
     let goals: Vec<Value> = pools.iter().map(|r| json!({"goal": rf("goal", r.i0("goal_id")), "purpose": r.v("purpose"), "reserved": r.b("reserved")})).collect();
-    let kind = d.s("kind").map(kind_label);
+    let kind = kind_label(d.s("kind").unwrap_or(""));
     Ok(json!({"id": d.id(), "name": d.v("name"), "label": label(d), "kind": d.v("kind"), "kind_label": kind, "target": d.v("target"),
               "tags": tags_of(d), "note": d.v("note"), "off": d.b("off"), "focus": d.v("focus"), "can_focus": focus,
               "start_cmd": d.v("start_cmd"), "stop_cmd": d.v("stop_cmd"), "held_by": holder, "goals": goals, "reserved_for": reserved_for}))
@@ -813,10 +821,36 @@ pub fn route(app: &App, method: &str, rest: &[&str], body: &Value) -> Result<Val
     }
 }
 
+/// The devices lent to a task as goal setup placeholders: `{device}` and `{target}` for the first,
+/// `{device2}` and `{target2}` for the second, and so on. Empty when it has none, so a setup that names
+/// them still reads.
+pub fn setup_vars(app: &App, t: &Row) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut v = std::collections::BTreeMap::new();
+    v.insert("device".to_string(), String::new());
+    v.insert("target".to_string(), String::new());
+    v.insert("device2".to_string(), String::new());
+    v.insert("target2".to_string(), String::new());
+    let names = lent(app, t.id())?;
+    for (i, n) in names.iter().enumerate() {
+        let sfx = if i == 0 { String::new() } else { (i + 1).to_string() };
+        let target = app.db.q1("SELECT target FROM devices WHERE name = ?", p![n])?.and_then(|r| r.s("target").map(str::to_string)).unwrap_or_default();
+        v.insert(format!("device{sfx}"), n.clone());
+        v.insert(format!("target{sfx}"), target);
+    }
+    Ok(v)
+}
+
 /// What fills a device's start and stop commands: the task's step placeholders (`{task}`, `{branch}`,
-/// …), and the device's `{device}` (also `{name}`), `{kind}` and `{target}`.
+/// …, with `{jira}` falling back to the task's ref when it has no ticket), its `{n}`, `{wave}` and
+/// `{goal}`, and the device's `{device}` (also `{name}`), `{kind}` and `{target}`.
 pub fn cmd_vars(app: &App, t: &Row, d: &Row) -> std::collections::BTreeMap<String, String> {
     let mut v = crate::steps::vars_for(app, t);
+    if v.get("jira").is_none_or(|j| j.trim().is_empty()) {
+        v.insert("jira".into(), rf("task", t.id()));
+    }
+    v.insert("n".into(), t.id().to_string());
+    v.insert("wave".into(), t.i("wave").map(|w| w.to_string()).unwrap_or_default());
+    v.insert("goal".into(), t.i("goal_id").map(|g| rf("goal", g)).unwrap_or_default());
     v.insert("device".into(), d.st("name"));
     v.insert("name".into(), d.st("name"));
     v.insert("kind".into(), d.st("kind"));
@@ -837,7 +871,8 @@ fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<String> {
     out
 }
 
-/// The handoff's line about the devices lent to the task, and how to start and stop each.
+/// The handoff's line about the devices lent to the task, how to start and stop each, and which
+/// devices other tasks have.
 pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
     let names = lent(app, t.id())?;
     if names.is_empty() {
@@ -869,11 +904,13 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
             None => n.clone(),
         })
         .collect();
+    let one = names.len() == 1;
     let mut text = format!(
-        "The board lent this task {} {}: use only {}, since other tasks have the rest of the pool. They go back when the task is done.",
-        if names.len() == 1 { "the device" } else { "the devices" },
+        "The board lent this task {} {}: use only {}, since other tasks have the rest of the pool. {} when the task is done.",
+        if one { "the device" } else { "the devices" },
         described.join(", "),
-        if names.len() == 1 { "that one" } else { "these" }
+        if one { "that one" } else { "these" },
+        if one { "It goes back" } else { "They go back" }
     );
     for (n, d) in names.iter().zip(&rows) {
         let Some(d) = d else { continue };
@@ -886,6 +923,13 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
         } else {
             text += &format!("\n{n}:\n{}", cmds.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"));
         }
+    }
+    // The devices other active tasks have now, so it leaves them be.
+    let mut others: Vec<(String, i64)> = held(app)?.into_iter().filter(|(_, tid)| *tid != t.id()).collect();
+    others.sort();
+    if !others.is_empty() {
+        let list: Vec<String> = others.iter().map(|(d, tid)| format!("{d} ({})", rf("task", *tid))).collect();
+        text += &format!("\nOther devices in use, don't touch them: {}.", list.join(", "));
     }
     Ok(vec![text])
 }

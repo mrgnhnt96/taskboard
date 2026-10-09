@@ -416,10 +416,10 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
-        /// What it is, shown with its name: phone, tablet, simulator, android… A label, not a tag
+        /// What it is, shown with its name: android (an emulator), ios (a simulator), device (a phone or tablet), other… A label, not a tag
         #[arg(long)]
         kind: Option<String>,
-        /// What it runs, shown with its name: Android 14, an iOS 17 runtime…
+        /// The device's serial or UDID (emulator-5554, a simulator's UDID): {target} in its start and stop commands
         #[arg(long)]
         target: Option<String>,
         /// How to boot it, told to the task that's lent it ({device} {task} {branch}… filled in)
@@ -445,7 +445,7 @@ enum DeviceCmd {
         /// What it is (a label, not a tag), or none
         #[arg(long)]
         kind: Option<String>,
-        /// What it runs, or none
+        /// Its serial or UDID, or none
         #[arg(long)]
         target: Option<String>,
         /// Its start command, or none
@@ -1712,7 +1712,7 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
     Ok(0)
 }
 
-/// "dev-a (Android phone, Android 14) · android, phone · lent to T4" for `tb devices`.
+/// "dev-a (Android emulator, emulator-5554) · android · lent to T4" for `tb devices`.
 fn device_line(d: &Value) -> String {
     let tags: Vec<&str> = d["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let mut line = d["label"].as_str().or(d["name"].as_str()).unwrap_or("").to_string();
