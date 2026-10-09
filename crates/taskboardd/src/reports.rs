@@ -1744,6 +1744,7 @@ fn on_propose(r: &mut Report) -> Result<Value> {
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
     let mut warnings = vec![];
     let created = planned(r, &g, &tasks, &mut warnings)?;
+    note_made(r, &created)?;
     Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "warnings": warnings})))
 }
 
@@ -1757,7 +1758,12 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     let gid = g["id"].as_i64().unwrap_or(0);
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
     let mut warnings = vec![];
+    // This conversation made the goal and its tasks: "run the goal" and "run it" here can mean it.
+    if let Some(sid) = r.sid() {
+        crate::startword::note_made_goal(r.app, sid, gid)?;
+    }
     let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, &mut warnings)?;
+    note_made(r, &created)?;
     Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created, "warnings": warnings})))
 }
 
@@ -2167,7 +2173,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 let sent = r.event == "hook.prompt" && crate::startword::MARKER_RE.is_match(r.body["prompt"].as_str().unwrap_or(""));
                 let kept = r.event == "hook.prompt" && r.b("prompt_cut") == crate::startword::KEPT_ENDS;
                 let data = if sent { Some(crate::startword::BOARD_PROMPT) } else { kept.then_some(crate::startword::KEPT_ENDS) };
-                board::session_event_with(app, &sid, kind, &text, Some(&r.at), data)?;
+                // The end of the agent's message, which the hook sends apart from its start.
+                let end = (r.event == "hook.stop" && kind == "reply").then(|| r.b("last_message_end")).filter(|e| !e.trim().is_empty());
+                board::session_event_full(app, &sid, kind, &text, Some(&r.at), data, end.as_deref())?;
             }
         }
         if !spooled {

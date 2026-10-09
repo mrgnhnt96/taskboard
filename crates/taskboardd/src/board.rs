@@ -340,11 +340,17 @@ pub fn session_event(app: &App, sid: &str, kind: &str, text: &str, at: Option<&s
 
 /// [`session_event`] with its `data`: `board` on a prompt the board sent, not one a human typed.
 pub fn session_event_with(app: &App, sid: &str, kind: &str, text: &str, at: Option<&str>, data: Option<&str>) -> Result<()> {
+    session_event_full(app, sid, kind, text, at, data, None)
+}
+
+/// [`session_event_with`], keeping `full` too: for a reply, the end of the agent's message the start
+/// word check reads (the agent asking whether to run a goal).
+pub fn session_event_full(app: &App, sid: &str, kind: &str, text: &str, at: Option<&str>, data: Option<&str>, full: Option<&str>) -> Result<()> {
     if sid.is_empty() || kind.is_empty() {
         return Ok(());
     }
     // A prompt shows as one line, but the start word check reads it as typed: its lines, and all of it.
-    let full = (kind == "prompt").then(|| crate::startword::keep_ends(text.trim(), PROMPT_FULL_KEEP));
+    let full = if kind == "prompt" { Some(crate::startword::keep_ends(text.trim(), PROMPT_FULL_KEEP)) } else { full.map(|f| f.trim().to_string()) };
     let text = if kind == "reply" { clip(text.trim(), 4000) } else { one_line(text, 600) };
     app.db.insert(
         "session_events",

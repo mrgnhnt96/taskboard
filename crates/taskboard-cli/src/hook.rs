@@ -126,6 +126,12 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// The last `n` characters of `s`.
+fn clip_end(s: &str, n: usize) -> String {
+    let c: Vec<char> = s.chars().collect();
+    c[c.len().saturating_sub(n)..].iter().collect()
+}
+
 fn clip_middle(s: &str, n: usize) -> String {
     let c: Vec<char> = s.chars().collect();
     if c.len() <= n {
@@ -275,6 +281,8 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         }
         "Stop" => {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
+            // Its end too, where the agent asks whether to go on ("Want me to run G4?").
+            extra.insert("last_message_end".into(), json!(clip_end(&s("last_assistant_message"), taskboardd::startword::REPLY_END_KEEP)));
             extra.insert("transcript_path".into(), json!(s("transcript_path")));
             extra.insert("stop_hook_active".into(), json!(payload["stop_hook_active"] == true));
         }

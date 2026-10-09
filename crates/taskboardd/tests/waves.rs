@@ -51,7 +51,7 @@ fn planned(b: &Board) -> (i64, Vec<i64>) {
     let r = reports::handle(&b.app, json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"),
         "tasks": ["Model::add it::1", "Form::build it::1", "Wire::connect them::2", "Docs::write them"]}), false).unwrap();
     let ids: Vec<i64> = r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect();
-    b.post(&format!("goals/G{g}/run"), json!({}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
     (g, ids)
 }
 

@@ -38,6 +38,13 @@ const OLD_HOOK_KEEP: usize = 8000;
 /// came whole or with both ends, so a "…" at its end is the owner's, not the old hook's cut.
 pub const KEPT_ENDS: &str = "ends";
 
+/// How much of the end of the agent's last message the Stop hook sends (`last_message_end`), for
+/// [`asks_to_run`].
+pub const REPLY_END_KEEP: usize = 1000;
+/// The hook before this kept only the first 2000 characters of the agent's message: one that long may
+/// have lost its end.
+const OLD_HOOK_REPLY_KEEP: usize = 2000;
+
 /// What the UserPromptSubmit hook reports of a typed prompt: the prompt, whole up to what the board
 /// keeps or cut with [`keep_ends`], and that it was cut only that way.
 pub fn hook_prompt(prompt: &str) -> serde_json::Value {
@@ -104,8 +111,11 @@ const QUEUE_TO: &str = r"(?:in(?:to)?|on(?:to)?|to)\s+(?:the\s+)?queue";
 
 /// The goals an ask names: "G2", "goal G2", "the goal G2", "G2 and G3".
 const NAMED_GOAL: &str = r"(?:the\s+)?(?:goal\s+)?[Gg]\d+(?:\s*,?\s*(?:and\s+|&\s*)?(?:goal\s+)?[Gg]\d+)*";
-/// The goal an ask doesn't name: "the goal", "this goal", "the whole goal".
-const UNNAMED_GOAL: &str = r"(?:(?:the|this|that|my|your|our|its)\s+(?:whole\s+|new\s+)?goal)";
+/// The goal an ask doesn't name: "the goal", "this goal", "the whole goal", "all the tasks", or "it"
+/// ([`Ask::It`]), which is the goal only where [`GoalPrompt::it`] says so.
+const UNNAMED_GOAL: &str = r"(?:(?:the|this|that|my|your|our|its)\s+(?:whole\s+|new\s+)?goal|all\s+(?:of\s+)?(?:the\s+|its\s+|these\s+|those\s+|your\s+|my\s+)?tasks|every\s+task|it|this|that|them)";
+/// An unnamed goal ask that says only "it" ("run it", "kick it off").
+static IT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:it|this|that|them)$").unwrap());
 /// The start words for a goal, which also runs.
 const GOAL_VERB: &str = r"(?:start|queue|begin|launch|kick\s+off|run)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on)?";
 
@@ -117,9 +127,11 @@ pub struct Kind {
     mention: Regex,
     /// One named, with its number.
     ids: Regex,
+    /// Goals: an unnamed "it" is [`Ask::It`].
+    goal: bool,
 }
 
-fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &str) -> Kind {
+fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &str, goal: bool) -> Kind {
     let mut on = format!(
         r"(?:\b{verb}\s+(?:{LISTED}(?P<named>{named})|(?P<unnamed>{unnamed}))|\bkick\s+(?:(?P<named2>{named})|(?P<unnamed2>{unnamed}))\s+off"
     );
@@ -128,13 +140,13 @@ fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &
     }
     on.push_str(&format!(r"|\b{QUEUE_PUT}\s+(?:{LISTED}(?P<named4>{named})|(?P<unnamed4>{unnamed}))\s+{QUEUE_TO}"));
     on.push(')');
-    Kind { ask: Regex::new(&format!(r"(?i){EDGE}\s*{LEAD}{on}{TAIL}")).unwrap(), mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(ids).unwrap() }
+    Kind { ask: Regex::new(&format!(r"(?i){EDGE}\s*{LEAD}{on}{TAIL}")).unwrap(), mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(ids).unwrap(), goal }
 }
 
 /// Starts of tasks.
-pub static TASKS: Lazy<Kind> = Lazy::new(|| kind(NAMED, UNNAMED, VERB, Some(NAMED_VERB), r"\b[Tt](\d+)\b"));
+pub static TASKS: Lazy<Kind> = Lazy::new(|| kind(NAMED, UNNAMED, VERB, Some(NAMED_VERB), r"\b[Tt](\d+)\b", false));
 /// Runs of goals.
-pub static GOALS: Lazy<Kind> = Lazy::new(|| kind(NAMED_GOAL, UNNAMED_GOAL, GOAL_VERB, None, r"\b[Gg](\d+)\b"));
+pub static GOALS: Lazy<Kind> = Lazy::new(|| kind(NAMED_GOAL, UNNAMED_GOAL, GOAL_VERB, None, r"\b[Gg](\d+)\b", true));
 /// A sentence and what ends it.
 static SENTENCE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?P<s>[^.!?;\n…]*)(?P<end>[.!?;\n…]*)").unwrap());
 /// Dotted words whose dots end no sentence ("6 a.m.", "e.g.").
@@ -301,6 +313,8 @@ pub enum Ask {
     Unnamed,
     Them,
     First,
+    /// A goal ask that says only "it" ("run it"): what it means depends on what came before.
+    It,
 }
 
 /// One thing a prompt says about a start, in the order it says them: an ask, or a take-back.
@@ -438,7 +452,13 @@ fn mention_of(k: &Kind, c: &regex::Captures<'_>) -> Option<Mention> {
         return Some(Mention { verb, span: (n.start(), n.end()), ask: Ask::Named(ids_in(k, n.as_str())), soft: soft.is_some() });
     }
     let u = c.name("unnamed").or(c.name("unnamed2")).or(c.name("unnamed4"))?;
-    let ask = if FIRST_RE.is_match(u.as_str()) {
+    let ask = if k.goal {
+        if IT_RE.is_match(u.as_str()) {
+            Ask::It
+        } else {
+            Ask::Unnamed
+        }
+    } else if FIRST_RE.is_match(u.as_str()) {
         Ask::First
     } else if PLURAL_RE.is_match(u.as_str()) {
         Ask::Them
@@ -866,18 +886,96 @@ pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     Ok(word_in(&prompts, id).map(|i| prompts[i].text.clone()))
 }
 
-/// Which prompt, newest first, is the word to run goal `id`, each with whether "the goal" in it means
-/// `id` (the conversation's goal then). Read like [`word_in`]: the latest prompt that speaks of the run
-/// decides, and a prompt whose end never reached the board is no word.
-pub fn goal_word_in(prompts: &[(Prompt, bool)], id: i64) -> Option<usize> {
-    for (i, (p, ours)) in prompts.iter().enumerate() {
+/// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
+/// "the goal" can mean.
+pub fn note_made_goal(app: &App, sid: &str, id: i64) -> Result<()> {
+    crate::board::session_event_with(app, sid, MADE, &format!("Added {}", rf("goal", id)), None, Some(&rf("goal", id)))
+}
+
+/// The words that say yes ("yes", "sure", "go ahead", "do it").
+const YES: &str = r"(?:yes|yeah|yep|yup|ya|sure|ok(?:ay)?|alright|all\s+right|please\s+do|do\s+it|go\s+ahead|go\s+for\s+it|ship\s+it|let[’']?s\s+(?:do\s+it|go)|absolutely|definitely|of\s+course|for\s+sure|sounds\s+good|lgtm|looks\s+good|yes\s+please)";
+/// Words around a yes that add nothing ("thanks", "great", "now").
+const YES_FILL: &str = r"(?:thanks|thank\s+you|ty|great|perfect|cool|nice|awesome|please|pls|now|then|so|go|run\s+it)";
+/// A prompt that's only a yes ("yes", "sure, go ahead", "yep, thanks"): the answer to the agent's question.
+static SHORT_YES_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(r"(?i)^(?:{YES_FILL}[\s,.!]*)*{YES}(?:[\s,.!]+(?:{YES}|{YES_FILL}))*[\s,.!]*$")).unwrap()
+});
+/// A prompt that's only an unnamed ask for a goal's run ("run it", "ok, kick it off").
+static GOAL_BARE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)^(?:(?:{YES}|{YES_FILL})[\s,.!]*)*(?:(?:start|queue|begin|launch|run)\s+(?:it|this|that|them)|kick\s+(?:it|this|that|them)\s+off)(?:\s+(?:off|up|now|please|pls|right\s+away|right\s+now))*[\s,.!]*(?:(?:thanks|thank\s+you|ty|please|pls)[\s.!]*)?$"
+    ))
+    .unwrap()
+});
+/// The prompt asks for a new goal ("make a goal for dark mode").
+static MAKE_GOAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:make|create|add|set\s+up|draft|write\s+up|put\s+together|plan\s+out|a\s+new)\b[^.!?;\n]*\bgoal\b").unwrap()
+});
+/// Words in the agent's question that make "yes" no answer to one thing ("run it, or tweak the plan?").
+static OR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(?:or|either|instead|rather)\b").unwrap());
+/// A task or goal named.
+static REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([TtGg])(\d+)\b").unwrap());
+
+/// Whether the agent's message `reply` ends on asking whether to run goal `id` now: its last sentence
+/// is a question with one start word for the goal in it, named ("Want me to run G4?"), as "the goal"
+/// when it's the conversation's (`ours`), or as "it" when the message names G4 before it and no other
+/// goal or task ("I added T1 to G4. Want me to start it?" may mean T1). A no, a time, a condition or a choice in the question ("or tweak it first?") makes a "yes"
+/// no word.
+pub fn asks_to_run(reply: &str, id: i64, ours: bool) -> bool {
+    let reply = CODE_RE.replace_all(reply, "\n");
+    let Some(c) = SENTENCE_RE.captures_iter(&reply).filter(|c| c.name("s").is_some_and(|s| !s.as_str().trim().is_empty())).last() else {
+        return false;
+    };
+    let (q, at) = (c.name("s").map(|m| m.as_str()).unwrap_or(""), c.name("s").map(|m| m.start()).unwrap_or(0));
+    if !c.name("end").is_some_and(|e| e.as_str().contains('?')) || !defers_in(q).is_empty() || OR_RE.is_match(q) {
+        return false;
+    }
+    let ms: Vec<Mention> = GOALS.mention.captures_iter(q).filter_map(|c| mention_of(&GOALS, &c)).collect();
+    let [m] = ms.as_slice() else { return false };
+    if !negs_in(&q[..m.verb]).is_empty() {
+        return false;
+    }
+    match &m.ask {
+        Ask::Named(ids) => ids == &[id],
+        Ask::It => {
+            let refs: Vec<(bool, i64)> = REF_RE.captures_iter(&reply[..at]).filter_map(|r| Some((r[1].eq_ignore_ascii_case("g"), r[2].parse().ok()?))).collect();
+            !refs.is_empty() && refs.iter().all(|r| *r == (true, id))
+        }
+        _ => ours,
+    }
+}
+
+/// One prompt of the conversation, for [`goal_word_in`]: the prompt, and what an unnamed ask in it
+/// means.
+#[derive(Debug, Clone, Default)]
+pub struct GoalPrompt {
+    pub prompt: Prompt,
+    /// "The goal" or "all the tasks" in it means this goal: it's the conversation's goal.
+    pub ours: bool,
+    /// "Run it" in it means this goal (only the latest prompt's counts): the agent just asked whether to
+    /// run it, the prompt asked for a goal and the conversation made this one in reply, or the prompt is
+    /// only the ask and the prompt before asked for the goal the conversation then made.
+    pub it: bool,
+    /// The agent's message just before it asks whether to run this goal ([`asks_to_run`]): a bare "yes"
+    /// in the latest prompt is the word.
+    pub asked: bool,
+}
+
+/// Which prompt, newest first, is the word to run goal `id`. Read like [`word_in`]: the latest prompt
+/// that speaks of the run decides, and a prompt whose end never reached the board is no word. The latest
+/// prompt is also the word when it's only a yes to the agent's question about running it.
+pub fn goal_word_in(prompts: &[GoalPrompt], id: i64) -> Option<usize> {
+    for (i, g) in prompts.iter().enumerate() {
+        let p = &g.prompt;
         if p.boards() {
             continue;
         }
-        match read_of(&GOALS, &p.text).word_for(id, |_| *ours) {
+        let r = read_of(&GOALS, &p.text);
+        match r.word_for(id, |a| if *a == Ask::It { i == 0 && g.it } else { g.ours }) {
             Some(true) if p.clipped => {}
             Some(true) => return Some(i),
             Some(false) => return None,
+            None if i == 0 && g.asked && !p.clipped && r.steps.is_empty() && SHORT_YES_RE.is_match(owners_text(&p.text).trim()) => return Some(0),
             None => {}
         }
     }
@@ -886,40 +984,91 @@ pub fn goal_word_in(prompts: &[(Prompt, bool)], id: i64) -> Option<usize> {
 
 /// The prompt a human typed in terminal `sid`, since its Claude conversation began, that asks for goal
 /// `id` to run, if there's one and no later prompt takes it back. "Run the goal" means `id` when it's the
-/// conversation's goal: the terminal's task is in it, the conversation made a task in it, or (for the
-/// prompts after it) the board handed it the goal.
+/// conversation's goal: the terminal's task is in it, the conversation made it or a task in it (`tb goal
+/// new`, `tb propose`, `tb task new --goal`), the board opened the terminal to plan it, or (for the
+/// prompts after it) the board handed it the goal. "Run it" and a bare "yes" are read as
+/// [`GoalPrompt`] says.
 pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
     }
     let since = "COALESCE((SELECT MAX(id) FROM session_events WHERE session_id = ? AND kind = 'start'), 0)";
+    // Every prompt, every task and goal the conversation made and every message the agent ended a turn
+    // on, oldest first.
     let rows = app.db.q(
-        &format!("SELECT id, text, full, data FROM session_events WHERE session_id = ? AND kind = 'prompt' AND id > {since} ORDER BY id DESC"),
-        p![sid, sid],
+        &format!("SELECT id, kind, text, full, data FROM session_events WHERE session_id = ? AND kind IN ('prompt', 'reply', ?) AND id > {since} ORDER BY id"),
+        p![sid, MADE, sid],
     )?;
-    let board = |r: &Row| r.s("data") == Some(BOARD_PROMPT);
-    // Newest first: the prompts after the board's handoff, if any, come before it in `rows`.
-    let handed = rows.iter().position(|r| board(r) && MARKER_RE.find_iter(&typed(r).0).any(|m| ids_in(&GOALS, m.as_str()).contains(&id)));
+    let goal = rf("goal", id);
     let on_task = crate::board::task_for_session(app, Some(sid))?.and_then(|t| t.i("goal_id")) == Some(id);
     let made = app
         .db
         .q1(
             &format!(
-                "SELECT 1 FROM session_events e JOIN tasks t ON t.id = CAST(e.data AS INTEGER)
-                  WHERE e.session_id = ? AND e.kind = ? AND e.id > {since} AND t.goal_id = ? LIMIT 1"
+                "SELECT 1 FROM session_events e LEFT JOIN tasks t ON t.id = CAST(e.data AS INTEGER)
+                  WHERE e.session_id = ? AND e.kind = ? AND e.id > {since} AND (t.goal_id = ? OR e.data = ?) LIMIT 1"
             ),
-            p![sid, MADE, sid, id],
+            p![sid, MADE, sid, id, goal],
         )?
         .is_some();
-    let prompts: Vec<(Prompt, bool)> = rows
+    // The board opened this terminal to plan the goal ("Plan in Claude"): its system prompt is the goal.
+    let planning = app
+        .db
+        .q1(
+            "SELECT 1 FROM jobs WHERE kind = 'agent' AND purpose = 'plan' AND json_extract(target, '$.goal') = ? AND json_extract(target, '$.session') = ? LIMIT 1",
+            p![id, sid],
+        )?
+        .is_some();
+    let ours = on_task || made || planning;
+    // Oldest first: (prompt, goals made in reply to it, the agent's message before it).
+    let mut said: Vec<(Prompt, Vec<i64>, Option<String>)> = vec![];
+    let mut reply: Option<String> = None;
+    for r in &rows {
+        match r.st("kind").as_str() {
+            "reply" => reply = reply_end(r),
+            k if k == MADE => {
+                if let (Some(p), Some(g)) = (said.last_mut(), r.st("data").strip_prefix(['G', 'g']).and_then(|n| n.parse().ok())) {
+                    p.1.push(g);
+                }
+            }
+            _ => {
+                let (text, clipped) = typed(r);
+                said.push((Prompt { text, made: vec![], clipped, board: r.s("data") == Some(BOARD_PROMPT) }, vec![], reply.take()));
+            }
+        }
+    }
+    said.reverse();
+    // The prompts after the board's handoff, if any, come before it here.
+    let handed = said.iter().position(|(p, ..)| p.board && MARKER_RE.find_iter(&p.text).any(|m| ids_in(&GOALS, m.as_str()).contains(&id)));
+    let prompts: Vec<GoalPrompt> = said
         .iter()
         .enumerate()
-        .map(|(i, r)| {
-            let (text, clipped) = typed(r);
-            (Prompt { text, made: vec![], clipped, board: board(r) }, on_task || made || handed.is_some_and(|h| i < h))
+        .map(|(i, (p, made_here, before))| {
+            let ours = ours || handed.is_some_and(|h| i < h);
+            let (mut it, mut asked) = (false, false);
+            if i == 0 {
+                asked = before.as_deref().is_some_and(|b| asks_to_run(b, id, ours));
+                let asked_for = |p: &Prompt, made: &[i64]| !p.boards() && !p.clipped && made == [id] && MAKE_GOAL_RE.is_match(&owners_text(&p.text));
+                let bare = GOAL_BARE_RE.is_match(owners_text(&p.text).trim());
+                let before = said.iter().skip(1).take(UNNAMED_REACH).position(|(_, m, _)| !m.is_empty()).map(|b| 1 + b);
+                let quiet = |q: &Prompt| !q.boards() && !q.clipped && ACK_RE.is_match(owners_text(&q.text).trim());
+                let earlier = before.is_some_and(|b| said[1..b].iter().all(|(q, ..)| quiet(q)) && asked_for(&said[b].0, &said[b].1));
+                it = asked || asked_for(p, made_here) || (bare && earlier);
+            }
+            GoalPrompt { prompt: p.clone(), ours, it, asked }
         })
         .collect();
-    Ok(goal_word_in(&prompts, id).map(|i| prompts[i].0.text.clone()))
+    Ok(goal_word_in(&prompts, id).map(|i| prompts[i].prompt.text.clone()))
+}
+
+/// The end of the agent's message on a `reply` row, if the board has it: what the hook sent of its end
+/// (`session_events.full`), or the message as it shows when it's shorter than the old hook's cut.
+fn reply_end(row: &Row) -> Option<String> {
+    if let Some(end) = row.s("full") {
+        return Some(end.to_string());
+    }
+    let text = row.st("text");
+    (text.chars().count() < OLD_HOOK_REPLY_KEEP && !text.ends_with('…')).then_some(text)
 }
 
 #[cfg(test)]
@@ -1445,13 +1594,22 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_asking_to_run_the_goal_is_read_from_its_last_question() {
+        for yes in ["Proposed two tasks for G4.\n\nShall I kick it off?", "Want me to run G4?", "Made G4. Want me to run it?", "Should I start the goal now?"] {
+            assert!(asks_to_run(yes, 4, true), "{yes}");
+        }
+        for no in ["Want me to run G4, or tweak it?", "Want me to run G4 tomorrow?", "I added T1 to G4. Want me to start it?", "Want me to run G5?", "Should I open a PR?", "Run G4?\n\nDone."] {
+            assert!(!asks_to_run(no, 4, true), "{no}");
+        }
+    }
+
+    #[test]
     fn a_goal_run_is_asked_for_by_name_or_as_the_goal() {
         let goal = |t: &str| read_of(&GOALS, t);
         for yes in ["start G1", "run G1", "ok, run the goal", "start the goal", "kick off G1", "please queue goal G1", "run the goal G1 now", "You can start the goal"] {
             assert!(!goal(yes).asks.is_empty(), "{yes}");
         }
         for no in [
-            "run it",
             "run the tests",
             "start T1",
             "did you start G1?",
@@ -1467,6 +1625,9 @@ mod tests {
         }
         assert_eq!(goal("run G1 and G2").asks, vec![Ask::Named(vec![1, 2])]);
         assert_eq!(goal("start the goal G3").asks, vec![Ask::Named(vec![3])]);
+        // "It" is the goal only where the conversation says so (`GoalPrompt::it`).
+        assert_eq!(goal("run it").asks, vec![Ask::It]);
+        assert_eq!(goal("go ahead and run all the tasks").asks, vec![Ask::Unnamed]);
         // A goal ask is no word for a task, and the other way around.
         assert!(!says_start("start G1"));
         assert!(!says_start("start the goal"));
@@ -1474,7 +1635,9 @@ mod tests {
 
     #[test]
     fn the_latest_prompt_on_a_goal_run_decides() {
-        let word = |ps: &[(&str, bool)], id| goal_word_in(&ps.iter().map(|(t, o)| (Prompt::new(t), *o)).collect::<Vec<_>>(), id);
+        let word = |ps: &[(&str, bool)], id| {
+            goal_word_in(&ps.iter().map(|(t, o)| GoalPrompt { prompt: Prompt::new(t), ours: *o, ..GoalPrompt::default() }).collect::<Vec<_>>(), id)
+        };
         assert_eq!(word(&[("start G1", false)], 1), Some(0));
         assert_eq!(word(&[("start G1", false)], 2), None);
         assert_eq!(word(&[("thanks", false), ("run G1", false)], 1), Some(1));
@@ -1485,6 +1648,14 @@ mod tests {
         assert_eq!(word(&[("start the goal", true)], 1), Some(0));
         assert_eq!(word(&[("[task-board:G1] Plan the goal. Run G1.", true)], 1), None);
         let clipped = Prompt { clipped: true, ..Prompt::new("run G1 …") };
-        assert_eq!(goal_word_in(&[(clipped, false)], 1), None, "its unread end may take it back");
+        assert_eq!(goal_word_in(&[GoalPrompt { prompt: clipped, ..GoalPrompt::default() }], 1), None, "its unread end may take it back");
+        // "Run it" and a bare yes, only where the conversation says they mean the goal, and only latest.
+        let g = |t: &str, it, asked| GoalPrompt { prompt: Prompt::new(t), it, asked, ..GoalPrompt::default() };
+        assert_eq!(goal_word_in(&[g("run it", true, false)], 1), Some(0));
+        assert_eq!(goal_word_in(&[g("run it", false, false)], 1), None);
+        assert_eq!(goal_word_in(&[g("yes", false, true)], 1), Some(0));
+        assert_eq!(goal_word_in(&[g("yes", false, false)], 1), None);
+        assert_eq!(goal_word_in(&[g("thanks", false, false), g("yes", false, true)], 1), None, "an older yes");
+        assert_eq!(goal_word_in(&[g("thanks", false, true)], 1), None, "thanks is no yes");
     }
 }
