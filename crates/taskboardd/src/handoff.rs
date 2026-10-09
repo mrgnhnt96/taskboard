@@ -459,11 +459,9 @@ fn wave_section(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> {
     if !own.is_empty() {
         lines.push(format!("The wave plans these files for this task: {}.", own.iter().take(10).cloned().collect::<Vec<_>>().join(", ")));
     }
-    // Only the mates still to run or running; a done one has nothing left to collide with.
-    let mates: Vec<&Row> = tasks
-        .iter()
-        .filter(|m| m.i("wave") == Some(n) && m.id() != t.id() && matches!(m.s("status"), Some("queued" | "working" | "needs")))
-        .collect();
+    // Every mate that isn't done (planned ones too: before the goal runs, they all are); a done one
+    // has nothing left to collide with.
+    let mates: Vec<&Row> = tasks.iter().filter(|m| m.i("wave") == Some(n) && m.id() != t.id() && m.s("status") != Some("done")).collect();
     if mates.is_empty() {
         lines.push("Nothing else runs in this wave.".into());
     } else {

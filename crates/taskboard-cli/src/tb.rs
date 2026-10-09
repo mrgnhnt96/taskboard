@@ -678,8 +678,9 @@ enum GoalCmd {
         project: Option<String>,
         #[arg(long)]
         product: Option<String>,
-        /// A planned task: "title::detail", "title::detail::<wave>" or "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS]")]
+        /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
+        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
         tasks: Vec<String>,
     },
     /// The goal, its tasks and why each queued one waits
@@ -874,8 +875,14 @@ enum BacklogCmd {
         #[arg(long)]
         detail: Option<String>,
     },
-    /// Move a backlog issue to another goal (G2), or out of its goal (none)
-    Move { issue: String, goal: String },
+    /// Move backlog issues to another goal (G2), or out of their goal (none), all or none:
+    /// tb backlog move B4 B5 G2
+    #[command(override_usage = "tb backlog move <ISSUE>... <GOAL>")]
+    Move {
+        /// The issues, then the goal (G2 or none) last
+        #[arg(required = true, num_args = 2.., value_name = "ISSUE")]
+        args: Vec<String>,
+    },
     /// Make backlog issues into tasks: planned in their goal, or with --board queued on the board.
     /// Several issues (tb backlog task B4 B5) change together or not at all.
     Task {
@@ -2898,14 +2905,24 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&format!("Changed {r} “{}”.", v["title"].as_str().unwrap_or("")));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Move { issue, goal } } => {
-            let r = issue_ref(&issue)?;
+        Cmd::Backlog { action: BacklogCmd::Move { mut args } } => {
+            let goal = args.pop().unwrap_or_default();
             let to = if goal.trim().eq_ignore_ascii_case("none") { Value::Null } else { json!(goal_ref(&goal)?) };
-            let v = c.call("POST", &format!("/backlog/{r}/move"), Some(json!({"goal_id": to, "who": c.who()})))?;
-            let issue = v.get("issue").filter(|x| x.is_object()).unwrap_or(&v);
-            match issue["goal"]["ref"].as_str().or(to.as_str()) {
-                Some(g) => out(&format!("Moved {r} to {g}.")),
-                None => out(&format!("Moved {r} out of its goal.")),
+            if let [issue] = args.as_slice() {
+                let r = issue_ref(issue)?;
+                let v = c.call("POST", &format!("/backlog/{r}/move"), Some(json!({"goal_id": to, "who": c.who()})))?;
+                let issue = v.get("issue").filter(|x| x.is_object()).unwrap_or(&v);
+                match issue["goal"]["ref"].as_str().or(to.as_str()) {
+                    Some(g) => out(&format!("Moved {r} to {g}.")),
+                    None => out(&format!("Moved {r} out of its goal.")),
+                }
+                return Ok(0);
+            }
+            backlog_bulk(c, "move", &args, json!({"goal_id": to}))?;
+            let refs = issue_refs(&args)?.join(", ");
+            match to.as_str() {
+                Some(g) => out(&format!("Moved {refs} to {g}.")),
+                None => out(&format!("Moved {refs} out of their goals.")),
             }
             Ok(0)
         }

@@ -161,7 +161,7 @@ impl Default for ReviewersConfig {
 }
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
-const LEVELS: [(&str, f64); 4] = [("off", 0.25), ("low", 0.5), ("normal", 1.0), ("high", 2.0)];
+pub const LEVELS: [(&str, f64); 4] = [("off", 0.25), ("low", 0.5), ("normal", 1.0), ("high", 2.0)];
 
 fn list_of(r: &Row, k: &str) -> Vec<String> {
     jloads_arr(r.s(k)).into_iter().filter_map(|v| v.as_str().map(|s| s.to_string())).filter(|s| !s.trim().is_empty()).collect()

@@ -5,9 +5,9 @@
 //! file itself. Each board table is filled from the old table of the same name (or a known older
 //! name, like `backlog` for `issues`), column by column where the names match (or a known older
 //! name does). Old tables and columns whose shape changed (devices and their loans and needs, bits
-//! and their links, the Jira desk's terminal, PR links kept as repo and number) are mapped into the
-//! board's own, reading their columns by any of the names they went by. Old tables the board has
-//! no place for yet (reviewers, master breaks, …) are kept whole in `settings` as
+//! and their links, the Jira desk's terminal, PR links kept as repo and number, reviewers and their
+//! asks, master breaks) are mapped into the board's own, reading their columns by any of the names
+//! they went by. Old tables the board has no place for are kept whole in `settings` as
 //! `import.<table>`, so nothing is lost. Jobs aren't carried over (the old board's pending work
 //! would run again), nor are its alerts or its other running state.
 //!
@@ -64,14 +64,18 @@ const LEFT_SETTINGS: &[&str] = &[
 /// left so it wouldn't do a thing twice.
 const LEFT_SETTING_PREFIXES: &[&str] = &["bridge_", "bridge:", "dispatch_seen:", "usage_guard_handled:", "review_round:", "last_"];
 
-/// Whether an old setting is running state, not the owner's choice: a known key or prefix, or a
-/// per-thing mark (`<what>_seen:<id>`, `<what>_handled:<id>`, `<what>_round:<id>`).
+/// Whether an old setting is running state, not the owner's choice: a known key or prefix, a
+/// per-thing mark (`<what>_seen:<id>`, `<what>_handled:<id>`, `<what>_round:<id>`), a health
+/// reading (`review_log_health`) or a live session or process (`jira_desk_session`, `…_pid`).
 pub fn runtime_setting(key: &str) -> bool {
     let k = key.to_lowercase();
     if LEFT_SETTINGS.contains(&k.as_str()) || LEFT_SETTING_PREFIXES.iter().any(|p| k.starts_with(p)) {
         return true;
     }
     let head = k.split(':').next().unwrap_or("");
+    if ["_health", "_session", "_session_id", "_pid"].iter().any(|s| k.ends_with(s)) {
+        return true;
+    }
     k.contains(':') && ["_seen", "_handled", "_round", "_sent", "_done", "_at", "_lock", "_cursor"].iter().any(|s| head.ends_with(s))
 }
 
@@ -89,7 +93,11 @@ const COLUMNS: &[(&str, &[&str])] = &[
 ];
 
 /// Old tables mapped by hand below, not by name.
-const MAPPED: &[&str] = &["devices", "device_loans", "goal_devices", "device_needs", "bits", "bit_links", "task_bits", "goal_bits"];
+const MAPPED: &[&str] = &[
+    "devices", "device_loans", "goal_devices", "device_needs", "bits", "bit_links", "task_bits", "goal_bits",
+    "reviewers", "reviewer_roster", "roster", "review_asks", "reviewer_asks", "asks", "reviewer_bot_runs", "bot_runs",
+    "master_breaks", "breaks",
+];
 
 #[derive(Debug, Default)]
 pub struct Report {
@@ -283,13 +291,16 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
             }
         }
     }
-    devices(app, c, old, &mut rep)?;
+    let goal_pool = devices(app, c, old, &mut rep)?;
     bits(app, c, old, &mut rep)?;
     jira_desk(app, c, old, &mut rep)?;
     pr_links(app, &mut rep)?;
+    reviewers(app, c, old, &mut rep)?;
+    breaks(app, c, old, &mut rep)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
-        if used.contains(t) || LEFT.contains(&t.as_str()) || MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) || t.starts_with("sqlite_") {
+        let mapped = MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) && !(goal_pool && t.eq_ignore_ascii_case("goal_devices"));
+        if used.contains(t) || LEFT.contains(&t.as_str()) || mapped || t.starts_with("sqlite_") {
             continue;
         }
         let (names, rows) = old_rows(c, t)?;
@@ -411,6 +422,28 @@ impl Old {
     }
 }
 
+/// One old need word as the board's: `device:<id>` is that one device (by its board name), `tag:x`
+/// (or `tag:x:2`) is tag `x`; anything else is already a tag or name with an optional count.
+fn old_need(w: &Value, device_of: &dyn Fn(&Value) -> Option<String>) -> Value {
+    let Some(s) = w.as_str().map(str::trim) else { return w.clone() };
+    let (head, rest) = match s.split_once(':') {
+        Some((h, r)) => (h.to_lowercase(), r),
+        None => return w.clone(),
+    };
+    match head.as_str() {
+        "device" | "dev" => {
+            let (id, n) = match rest.rsplit_once(':') {
+                Some((id, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => (id, n.parse().unwrap_or(1)),
+                _ => (rest, 1),
+            };
+            let name = device_of(&json!(id)).or_else(|| slug(id)).unwrap_or_else(|| id.to_string());
+            json!({"tag": name, "n": n})
+        }
+        "tag" | "kind" => json!(rest),
+        _ => w.clone(),
+    }
+}
+
 /// Device needs from old values (`android:2 ios`, a JSON list, `{"tag": …, "n": …}`), as the board
 /// stores them; None when they ask for nothing.
 fn needs_value(items: Vec<Value>) -> Result<Option<String>> {
@@ -430,7 +463,8 @@ fn set_needs(app: &App, owner: &str, needs: &str) -> Result<()> {
 }
 
 /// The device pool, its loans, and what tasks (`tasks.device_need`) and goals (`goal_devices`) ask for.
-fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+/// True when `goal_devices` is a goal's pool, to be kept whole rather than mapped.
+fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<bool> {
     // Old device id or name → the board's name for it.
     let mut names: HashMap<String, String> = HashMap::new();
     if let Some(d) = Old::read(c, old, "devices", &[])? {
@@ -487,13 +521,20 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 rep.skipped.push(format!("{} {}: its device or task isn't known", l.table, l.text(r, &["id"]).unwrap_or_default()));
                 continue;
             };
+            // A loan the old board never took back from a finished task is over.
+            let mut released = l.get(r, &["released_at", "returned_at", "ended_at", "released"]).clone();
+            if released.is_null() {
+                if let Some(t) = task_of(app, Some(task))?.filter(|t| t.s("status") == Some("done")) {
+                    released = [t.v("finished_at"), t.v("updated_at")].into_iter().find(|v| !v.is_null()).unwrap_or_else(|| json!(now_iso()));
+                }
+            }
             app.db.insert(
                 "device_loans",
                 vec![
                     ("device", json!(name)),
                     ("task_id", json!(task)),
                     ("at", l.get(r, &["at", "lent_at", "created_at", "started_at"]).clone()),
-                    ("released_at", l.get(r, &["released_at", "returned_at", "ended_at", "released"]).clone()),
+                    ("released_at", released),
                 ],
             )?;
             n += 1;
@@ -507,7 +548,13 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         for r in &t.rows {
             let Some(id) = t.id(r, &["id"]) else { continue };
             let v = t.get(r, TASK_NEED);
-            match needs_value(words(v)) {
+            // An explicit "no devices" is the task's own "needs none", over its goal's needs.
+            if text(v).map(|s| matches!(s.to_lowercase().as_str(), "none" | "[]" | "no" | "-")).unwrap_or(false) {
+                set_needs(app, &rf("task", id), "[]")?;
+                n += 1;
+                continue;
+            }
+            match needs_value(words(v).into_iter().map(|w| old_need(&w, &device_of)).collect()) {
                 Ok(Some(needs)) => {
                     set_needs(app, &rf("task", id), &needs)?;
                     n += 1;
@@ -518,8 +565,14 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         }
     }
     // What each goal asks for: a need per row (a tag and a count, a device, or the need as text).
+    // Rows with a purpose or a reserved flag are a goal's own device pool, not a need for one of
+    // each: the board has no goal pools, so they're kept whole (`import.goal_devices`) instead.
     const GOAL_NEED: &[&str] = &["need", "needs", "device_need", "spec"];
-    if let Some(g) = Old::read(c, old, "goal_devices", &[])? {
+    let mut goal_pool = false;
+    if let Some(g) = Old::read(c, old, "goal_devices", &[])?.filter(|g| {
+        goal_pool = g.has(&["purpose", "reserved"]) && !g.has(GOAL_NEED);
+        !goal_pool
+    }) {
         let mut per: Vec<(i64, Vec<Value>)> = vec![];
         for r in &g.rows {
             let Some(goal) = g.id(r, &["goal_id", "goal"]) else { continue };
@@ -550,7 +603,7 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
     if n > 0 {
         rep.copied.push(("device_needs".into(), n));
     }
-    Ok(())
+    Ok(goal_pool)
 }
 
 /// A bit to link, by old id or name, to a task or a goal.
@@ -749,18 +802,19 @@ pub fn pr_page(host: &str, repo: &str, num: i64) -> Option<String> {
 }
 
 /// The old board kept a PR as `pr_repo` and `pr_num`; the board watches it by `pr_host` and links it
-/// by `pr_url`. Both come from the link when there is one, else the repo, else the project's remote.
+/// by `pr_url`, and reads it through `pr_repo` as `owner/name`. All three come from the link when
+/// there is one, else the repo, else the project's remote; an old bare repo name (no owner) gives way.
 fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
     let rows = app.db.q(
         "SELECT id, project, repo_path, pr_host, pr_repo, pr_num, pr_url FROM tasks WHERE pr_num IS NOT NULL \
-         AND (COALESCE(pr_url, '') = '' OR COALESCE(pr_host, '') = '' OR COALESCE(pr_repo, '') = '')",
+         AND (COALESCE(pr_url, '') = '' OR COALESCE(pr_host, '') = '' OR instr(COALESCE(pr_repo, ''), '/') = 0)",
         vec![],
     )?;
     let mut cache = HashMap::new();
     let mut n = 0;
     for t in rows {
         let num = t.i("pr_num").unwrap_or(0);
-        let repo = t.s("pr_repo").filter(|r| !r.is_empty()).map(str::to_string);
+        let repo = t.s("pr_repo").filter(|r| r.contains('/')).map(str::to_string);
         let found = t.s("pr_url").and_then(find_pr).map(|l| (l.host, l.repo)).or_else(|| repo.as_deref().and_then(crate::prhost::repo_of_remote));
         let found = found.or_else(|| {
             let path = t.s("repo_path").filter(|p| !p.is_empty()).map(str::to_string).or_else(|| crate::projects::project_path(app, t.s("project")).ok().flatten())?;
@@ -775,7 +829,7 @@ fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
         let host = t.s("pr_host").filter(|h| !h.is_empty()).map(str::to_string).unwrap_or(host);
         let url = t.s("pr_url").filter(|u| !u.is_empty()).map(str::to_string).or_else(|| pr_page(&host, &repo, num));
         app.db.x(
-            "UPDATE tasks SET pr_host = ?, pr_repo = COALESCE(NULLIF(pr_repo, ''), ?), pr_url = COALESCE(NULLIF(pr_url, ''), ?) WHERE id = ?",
+            "UPDATE tasks SET pr_host = ?, pr_repo = ?, pr_url = COALESCE(NULLIF(pr_url, ''), ?) WHERE id = ?",
             vec![json!(host), json!(repo), json!(url), json!(t.id())],
         )?;
         n += 1;
@@ -783,6 +837,350 @@ fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
     if n > 0 {
         rep.copied.push(("PR links rebuilt".into(), n));
     }
+    Ok(())
+}
+
+/// The project a task was in (on the board, already imported), with its PR.
+fn task_of(app: &App, id: Option<i64>) -> Result<Option<Row>> {
+    match id {
+        Some(id) => app.db.q1("SELECT id, project, pr_host, pr_repo, pr_num, status, finished_at, updated_at FROM tasks WHERE id = ?", vec![json!(id)]),
+        None => Ok(None),
+    }
+}
+
+/// An old list column as the board's JSON list of strings.
+fn str_words(v: &Value) -> Vec<String> {
+    words(v).iter().filter_map(text).collect()
+}
+
+/// An old JSON column (kept as text) as JSON text; plain text is kept as `{"text": …}`.
+fn json_text(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::Null,
+        Value::String(s) => match serde_json::from_str::<Value>(s.trim()) {
+            Ok(j) => json!(jdumps(&j)),
+            Err(_) => json!(jdumps(&json!({"text": s}))),
+        },
+        other => json!(jdumps(other)),
+    }
+}
+
+/// An ask's old state, as the board says it.
+fn ask_state(raw: Option<&str>) -> Option<&'static str> {
+    Some(match raw?.to_lowercase().replace(['-', ' '], "_").as_str() {
+        "open" | "pending" | "asked" | "waiting" | "requested" => "open",
+        "answered" | "reviewed" | "approved" | "done" | "changes" | "commented" => "answered",
+        "swapped" | "replaced" | "timed_out" | "timeout" | "swapped_off" => "swapped",
+        "came_back" | "back" => "came_back",
+        "dropped" | "removed" | "unassigned" => "dropped",
+        "closed" | "merged" | "declined" | "canceled" | "cancelled" => "closed",
+        _ => return None,
+    })
+}
+
+/// A review's old answer: approved, changes or commented.
+fn ask_answer(raw: Option<&str>) -> Option<&'static str> {
+    let r = raw?.to_lowercase();
+    Some(if r.starts_with("approv") {
+        "approved"
+    } else if r.contains("change") || r.contains("needs_work") || r.contains("needs work") || r == "rejected" {
+        "changes"
+    } else if r.starts_with("comment") {
+        "commented"
+    } else {
+        return None;
+    })
+}
+
+/// Why an ask was made, in the board's words.
+fn ask_why(raw: Option<&str>, replaces: bool) -> &'static str {
+    match raw.map(|r| r.to_lowercase().replace(['-', ' '], "_")).as_deref() {
+        Some("ask" | "manual" | "named" | "agent") => "ask",
+        Some("replace" | "replaced") => "replace",
+        Some("swap" | "swapped" | "timeout" | "timed_out" | "nudge") => "swap",
+        Some("fill_in" | "fillin" | "fill") => "fill_in",
+        Some("stage") => "stage",
+        Some("pick" | "auto" | "picker" | "picked") => "pick",
+        _ if replaces => "swap",
+        _ => "pick",
+    }
+}
+
+/// The roster (`reviewers`), each ask of one of them (`review_asks`), and their bots' runs. People
+/// the old board kept twice on one project fold into one reviewer, as `tb reviewers` would.
+fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+    // Old reviewer id → the board's reviewer row id.
+    let mut ids: HashMap<String, i64> = HashMap::new();
+    let asks = Old::read(c, old, "review_asks", &["reviewer_asks", "asks"])?;
+    if let Some(rv) = Old::read(c, old, "reviewers", &["reviewer_roster", "roster"])? {
+        let before = app.db.count("SELECT COUNT(*) FROM reviewers", vec![])?;
+        let mut folded = 0;
+        for r in &rv.rows {
+            let old_id = rv.text(r, &["id"]);
+            let host_user = rv.text(r, &["host_user", "account_id", "uuid", "github", "login", "username", "user", "bitbucket", "account"]);
+            let emails = str_words(rv.get(r, &["emails", "email"]));
+            let Some(name) = rv.text(r, &["name", "display_name", "display", "person"]).or_else(|| host_user.clone()).or_else(|| emails.first().cloned()) else {
+                rep.skipped.push(format!("{} {}: no name", rv.table, old_id.unwrap_or_default()));
+                continue;
+            };
+            // Its project, else the project of a task it was asked on.
+            let mut project = rv.text(r, &["project", "repo", "repo_name"]);
+            if project.is_none() {
+                if let (Some(a), Some(oid)) = (&asks, &old_id) {
+                    let task = a.rows.iter().find(|x| a.text(x, &["reviewer_id", "reviewer"]).as_deref() == Some(oid.as_str())).and_then(|x| a.id(x, &["task_id", "task"]));
+                    project = task_of(app, task)?.and_then(|t| t.s("project").map(str::to_string));
+                }
+            }
+            let Some(project) = project else {
+                rep.skipped.push(format!("{} {name}: no project", rv.table));
+                continue;
+            };
+            let person = crate::reviewers::Person {
+                name: name.clone(),
+                host_user: host_user.filter(|u| u != &name),
+                emails,
+                aliases: str_words(rv.get(r, &["aliases", "alias", "other_names", "names"])),
+                slack: rv.text(r, &["slack", "slack_id", "slack_user"]),
+                source: "import".into(),
+                commits: rv.id(r, &["commits"]),
+            };
+            let had = app.db.count("SELECT COUNT(*) FROM reviewers", vec![])?;
+            let row = crate::reviewers::fold(app, &project, &person)?;
+            if app.db.count("SELECT COUNT(*) FROM reviewers", vec![])? == had {
+                folded += 1;
+            }
+            let mut f: Vec<(&str, Value)> = vec![];
+            let removed = rv.get(r, &["removed_at"]).clone();
+            if !removed.is_null() || rv.truthy(r, &["removed", "never", "never_assign", "excluded", "blocked"]) {
+                let at = if removed.is_null() || removed.is_number() { rv.get(r, &["updated_at", "updated"]).clone() } else { removed };
+                f.push(("removed_at", if at.is_null() { json!(now_iso()) } else { at }));
+                f.push(("removed_why", rv.get(r, &["removed_why", "removed_reason", "why", "reason"]).clone()));
+            }
+            if rv.truthy(r, &["pinned", "pin"]) {
+                f.push(("pinned", json!(1)));
+            }
+            let auto = rv.get(r, &["automation", "auto", "level", "automation_level"]);
+            let level = match auto {
+                Value::Number(n) => n.as_f64(),
+                Value::String(s) => crate::reviewers::LEVELS.iter().find(|(n, _)| n.eq_ignore_ascii_case(s.trim())).map(|(_, v)| *v).or_else(|| s.trim().parse().ok()),
+                _ => None,
+            };
+            if let Some(v) = level.filter(|v| (0.1..=10.0).contains(v)) {
+                f.push(("automation", json!(v)));
+            }
+            if let Some(h) = match rv.get(r, &["bot_every_h", "bot_hours", "bot_every_hours", "bot_every"]) {
+                Value::Number(n) => n.as_f64(),
+                Value::String(s) => s.trim().trim_end_matches('h').parse().ok(),
+                _ => None,
+            } {
+                f.push(("bot_every_h", json!(h)));
+                f.push(("bot_mark", rv.get(r, &["bot_mark", "bot_marker", "mark"]).clone()));
+            }
+            for (k, alts) in [("created_at", &["created_at", "created", "added_at"][..]), ("updated_at", &["updated_at", "updated"][..])] {
+                let v = rv.get(r, alts);
+                if !v.is_null() {
+                    f.push((k, v.clone()));
+                }
+            }
+            if !f.is_empty() {
+                app.db.update("reviewers", &json!(row.id()), f)?;
+            }
+            if let Some(oid) = old_id {
+                ids.insert(oid.to_lowercase(), row.id());
+            }
+            ids.entry(name.to_lowercase()).or_insert(row.id());
+        }
+        rep.copied.push(("reviewers".into(), (app.db.count("SELECT COUNT(*) FROM reviewers", vec![])? - before) as usize));
+        if folded > 0 {
+            rep.skipped.push(format!("{}: {folded} rows were the same person as another on the project, folded into one reviewer", rv.table));
+        }
+    }
+    if let Some(a) = asks {
+        let mut n = 0;
+        let mut stand_ins: Vec<(i64, i64)> = vec![];
+        for r in &a.rows {
+            let task = task_of(app, a.id(r, &["task_id", "task"]))?;
+            let who_raw = a.get(r, &["reviewer_id", "reviewer"]);
+            let mut reviewer = text(who_raw).and_then(|k| ids.get(&k.to_lowercase()).copied());
+            let project = a.text(r, &["project"]).or_else(|| task.as_ref().and_then(|t| t.s("project").map(str::to_string)));
+            let host_user = a.text(r, &["host_user", "account_id", "uuid", "user", "login", "username", "github"]);
+            if reviewer.is_none() {
+                if let (Some(p), Some(k)) = (&project, host_user.clone().or_else(|| text(who_raw))) {
+                    reviewer = crate::reviewers::find(app, p, &k)?.map(|x| x.id());
+                }
+            }
+            let rrow = match reviewer {
+                Some(id) => Some(crate::reviewers::get(app, id)?),
+                None => None,
+            };
+            let name = a.text(r, &["name", "reviewer_name", "display_name"]).or_else(|| rrow.as_ref().map(|x| x.st("name"))).or_else(|| host_user.clone());
+            let host_user = host_user.or_else(|| rrow.as_ref().and_then(|x| x.s("host_user").map(str::to_string)));
+            if task.is_none() && project.is_none() {
+                rep.skipped.push(format!("{} {}: its task isn't known", a.table, a.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            }
+            if name.is_none() && host_user.is_none() {
+                rep.skipped.push(format!("{} {}: who was asked isn't known", a.table, a.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            }
+            let replaces = a.id(r, &["replaces", "replaced", "stands_in_for", "for_ask"]);
+            let answered_at = a.get(r, &["answered_at", "reviewed_at"]).clone();
+            let closed_at = a.get(r, &["closed_at", "swapped_at", "ended_at", "dropped_at"]).clone();
+            let answer = ask_answer(a.text(r, &["answer", "verdict", "review", "result"]).as_deref());
+            let state = ask_state(a.text(r, &["state", "status"]).as_deref()).unwrap_or(if !answered_at.is_null() || answer.is_some() {
+                "answered"
+            } else if a.truthy(r, &["swapped"]) {
+                "swapped"
+            } else if !closed_at.is_null() {
+                "closed"
+            } else {
+                "open"
+            });
+            // An ask still open on a task that's finished: its PR is done with.
+            let done = task.as_ref().map(|t| t.s("status") == Some("done")).unwrap_or(false);
+            let (state, closed_at) = match state {
+                "open" if done => ("closed", task.as_ref().map(|t| t.v("finished_at")).filter(|v| !v.is_null()).unwrap_or_else(|| json!(now_iso()))),
+                s => (s, closed_at),
+            };
+            let pr = |col: &str, alts: &[&str]| -> Value {
+                let mine = a.get(r, alts);
+                if !mine.is_null() {
+                    return mine.clone();
+                }
+                task.as_ref().map(|t| t.v(col)).unwrap_or(Value::Null)
+            };
+            let new_id = app.db.x(
+                "INSERT OR IGNORE INTO review_asks(id, task_id, project, pr_host, pr_repo, pr_num, reviewer_id, host_user, name, why, asked_by, replaces, \
+                 state, asked_at, answered_at, closed_at, answer, work_mins, filled) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                vec![
+                    json!(a.id(r, &["id"])),
+                    json!(task.as_ref().map(|t| t.id())),
+                    json!(project),
+                    pr("pr_host", &["pr_host", "host"]),
+                    pr("pr_repo", &["pr_repo", "repo"]),
+                    pr("pr_num", &["pr_num", "pr", "pr_number"]),
+                    json!(reviewer),
+                    json!(host_user),
+                    json!(name),
+                    json!(ask_why(a.text(r, &["why", "reason", "kind"]).as_deref(), replaces.is_some())),
+                    json!(a.text(r, &["asked_by", "by", "who"]).unwrap_or_else(|| "import".into())),
+                    json!(replaces),
+                    json!(state),
+                    a.get(r, &["asked_at", "at", "created_at", "created"]).clone(),
+                    answered_at,
+                    closed_at,
+                    json!(answer),
+                    a.get(r, &["work_mins", "mins", "minutes"]).clone(),
+                    json!(a.truthy(r, &["filled", "filled_in"]) as i64),
+                ],
+            )?;
+            if !wrote(app)? {
+                rep.skipped.push(format!("{} {}: an ask with that id came first", a.table, a.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            }
+            n += 1;
+            if let Some(by) = a.id(r, &["replaced_by", "stand_in"]) {
+                stand_ins.push((new_id, by));
+            }
+        }
+        // An ask that names the one standing in for it (which may come later).
+        for (id, by) in stand_ins {
+            app.db.x("UPDATE review_asks SET replaces = COALESCE(replaces, ?) WHERE id = ?", vec![json!(id), json!(by)])?;
+        }
+        rep.copied.push(("review_asks".into(), n));
+    }
+    if let Some(b) = Old::read(c, old, "reviewer_bot_runs", &["bot_runs"])? {
+        let mut n = 0;
+        for r in &b.rows {
+            let rid = b.text(r, &["reviewer_id", "reviewer"]).and_then(|k| ids.get(&k.to_lowercase()).copied());
+            let (Some(rid), Some(at), Some(rf)) = (rid, b.text(r, &["at", "seen_at", "created_at"]), b.text(r, &["ref", "comment", "comment_id", "url"])) else {
+                rep.skipped.push(format!("{} {}: its reviewer, time or comment isn't known", b.table, b.text(r, &["id"]).unwrap_or_default()));
+                continue;
+            };
+            app.db.x("INSERT OR IGNORE INTO reviewer_bot_runs(reviewer_id, at, ref) VALUES(?, ?, ?)", vec![json!(rid), json!(at), json!(rf)])?;
+            if wrote(app)? {
+                n += 1;
+            }
+        }
+        rep.copied.push(("reviewer_bot_runs".into(), n));
+    }
+    Ok(())
+}
+
+/// A break's old verdict: the old board said yours / not yours / unsure.
+fn break_verdict(raw: Option<&str>) -> Option<&'static str> {
+    Some(match raw?.to_lowercase().replace(['-', ' '], "_").as_str() {
+        "ours" | "yours" | "mine" | "owner" | "owners" => "ours",
+        "not_ours" | "not_yours" | "not_mine" | "theirs" | "others" => "not_ours",
+        "unsure" | "unknown" | "maybe" => "unsure",
+        _ => return None,
+    })
+}
+
+/// The old board's master breaks (`M<n>`), numbers kept. One still open on a project the board
+/// doesn't watch (`[master.projects]`) comes over closed: nothing would ever close it.
+fn breaks(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+    let Some(b) = Old::read(c, old, "master_breaks", &["breaks"])? else { return Ok(()) };
+    let mut n = 0;
+    for r in &b.rows {
+        let id = b.id(r, &["id", "num", "number"]);
+        let label = id.map(crate::breaks::bref).unwrap_or_else(|| "a break".into());
+        let Some(project) = b.text(r, &["project"]) else {
+            rep.skipped.push(format!("{} {label}: no project", b.table));
+            continue;
+        };
+        let closed_at = b.get(r, &["closed_at", "resolved_at", "fixed_at", "green_at"]).clone();
+        let mut state = match b.text(r, &["state", "status"]).map(|s| s.to_lowercase()).as_deref() {
+            Some("open" | "red" | "active" | "broken" | "investigating" | "failing") => "open",
+            Some(_) => "closed",
+            None if closed_at.is_null() => "open",
+            None => "closed",
+        };
+        let watched = app.cfg.master.projects.contains_key(&project);
+        if state == "open" && !watched {
+            state = "closed";
+            rep.skipped.push(format!("{label}: open on the old board, but [master.projects] doesn't watch {project}, so it comes over closed"));
+        }
+        let head = b.get(r, &["head", "sha", "head_sha", "red_sha", "commit"]).clone();
+        let last = b.get(r, &["last_head", "latest_sha", "last_sha"]).clone();
+        let checks = b.get(r, &["checks", "failed_checks", "failing", "failing_checks"]);
+        let checks = if checks.is_null() { Value::Null } else { json!(jdumps(&json!(str_words(checks)))) };
+        app.db.x(
+            "INSERT OR IGNORE INTO breaks(id, project, host, repo, branch, state, head, last_head, green_head, fixed_head, checks, evidence, suspects, \
+             verdict, verdict_by, verdict_why, verdict_at, task_id, escalated_at, opened_at, closed_at, checked_at) \
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                json!(id),
+                json!(project),
+                b.get(r, &["host", "pr_host"]).clone(),
+                b.get(r, &["repo", "pr_repo"]).clone(),
+                b.get(r, &["branch", "default_branch"]).clone(),
+                json!(state),
+                head.clone(),
+                if last.is_null() { head } else { last },
+                b.get(r, &["green_head", "green_sha", "last_green"]).clone(),
+                b.get(r, &["fixed_head", "fixed_sha", "fixed_by"]).clone(),
+                checks,
+                json_text(b.get(r, &["evidence", "ci", "ci_evidence"])),
+                json_text(b.get(r, &["suspects", "commits"])),
+                json!(break_verdict(b.text(r, &["verdict", "fault", "decision", "owner"]).as_deref())),
+                b.get(r, &["verdict_by", "decided_by"]).clone(),
+                b.get(r, &["verdict_why", "reason", "why"]).clone(),
+                b.get(r, &["verdict_at", "decided_at"]).clone(),
+                json!(b.id(r, &["task_id", "fix_task", "task"])),
+                b.get(r, &["escalated_at"]).clone(),
+                b.get(r, &["opened_at", "at", "created_at", "started_at"]).clone(),
+                if closed_at.is_null() && state == "closed" { json!(now_iso()) } else { closed_at },
+                b.get(r, &["checked_at", "updated_at"]).clone(),
+            ],
+        )?;
+        if wrote(app)? {
+            n += 1;
+        } else {
+            rep.skipped.push(format!("{} {label}: a break with that number came first", b.table));
+        }
+    }
+    rep.copied.push(("breaks".into(), n));
     Ok(())
 }
 

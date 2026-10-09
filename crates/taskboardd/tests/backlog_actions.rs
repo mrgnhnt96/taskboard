@@ -90,6 +90,17 @@ fn several_issues_change_together_or_not_at_all() {
     let (code, _) = b.post_err("backlog/bulk", json!({"action": "reopen", "ids": [format!("B{z}"), format!("B{x}"), "B999"]}));
     assert_eq!(code, 404);
     assert_eq!(b.state(z), "drop");
+
+    // Reopening one that's already open names it.
+    let w = b.issue("Four");
+    let (code, msg) = b.post_err("backlog/bulk", json!({"action": "reopen", "ids": [format!("B{z}"), format!("B{w}")]}));
+    assert_eq!((code, msg), (409, format!("B{w} is already open, so nothing changed.")));
+    assert_eq!(b.state(z), "drop");
+
+    // Several move together.
+    let g = b.post("goals", json!({"name": "Later", "project": "web"}))["id"].as_i64().unwrap();
+    let r = b.post("backlog/bulk", json!({"action": "move", "ids": [format!("B{z}"), format!("B{w}")], "goal_id": format!("G{g}")}));
+    assert_eq!(r["count"], 2);
 }
 
 #[test]
