@@ -1101,6 +1101,9 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         steps.push(el(K::Step(st), kids));
     }
     let mut body = vec![el(K::PrHead, vec![head, txt(repo, St::Small)]), el(K::Steps, steps)];
+    if let Some(n) = not_ours_box(p) {
+        body.push(n);
+    }
     // `prBar`
     if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge")) {
         let stopped = obj(stage, "stopped").is_some();
@@ -1125,6 +1128,30 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         body.extend(c.note(&grp));
     }
     lrow("Pull request", body)
+}
+
+/// The "Failed, but not because of this PR" box: this push's checks cleared with `tb pr not-ours`,
+/// with the reason and the proof links.
+fn not_ours_box(p: &Value) -> Option<Node> {
+    let n = obj(p, "stage").and_then(|st| obj(st, "not_ours"))?;
+    if !pr_open(p) {
+        return None;
+    }
+    let mut kids = vec![txt("Failed, but not because of this PR", St::BoxLabel)];
+    if let Some(t) = opt_s(n, "title").filter(|t| !t.is_empty()) {
+        kids.push(txt(t, St::Strong));
+    }
+    let checks: Vec<&str> = arr(n, "checks").iter().filter_map(|c| c.as_str()).collect();
+    if !checks.is_empty() {
+        kids.push(txt(checks.join(", "), St::Small));
+    }
+    if let Some(r) = opt_s(n, "reason").filter(|r| !r.is_empty()) {
+        kids.push(txt(r, St::Plain));
+    }
+    for u in arr(n, "proof").iter().filter_map(|u| u.as_str()).filter(|u| is_web(u)) {
+        kids.push(Node::Link { s: u.to_string(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Plain });
+    }
+    Some(el(K::Box(BoxTone::Info), kids))
 }
 
 fn is_web(u: &str) -> bool {

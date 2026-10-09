@@ -397,3 +397,16 @@ fn reviewed_button_tells_the_board(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(rec.last("tasks/T1/pr/reviewed"), Some(json!({})));
     assert_eq!(note("pr:T1"), Some(("Marked reviewed".into(), false)));
 }
+
+#[::core::prelude::v1::test]
+fn a_failure_cleared_as_not_ours_shows_its_reason_and_proof() {
+    let mut task = awaiting_review(false);
+    task["pr"]["stage"]["not_ours"] = json!({"title": "Flaky login e2e", "reason": "The base branch fails it on its last five builds.",
+                                             "checks": ["e2e"], "proof": ["https://ci.example.com/b/1"]});
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {}})));
+    for want in ["Failed, but not because of this PR", "Flaky login e2e", "The base branch fails it on its last five builds.", "e2e", "https://ci.example.com/b/1"] {
+        assert!(text.contains(want), "{want} in {text}");
+    }
+    task["pr"]["stage"]["not_ours"] = Value::Null;
+    assert!(!view::text(&tree(&json!({"task": task, "state": {}, "ui": {}}))).contains("not because of this PR"));
+}
