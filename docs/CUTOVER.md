@@ -51,7 +51,10 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
   tag word (`Payments on Android` → `payments-on-android`; a comma list `a,b` stays two), rather
   than needs, and every goal's reservation of a device is kept (they share it). A blocked device
   (`devices.blocked`) comes over switched off, its note saying what it's kept for; a removed one
-  (`devices.removed_at`) doesn't come over, and is listed;
+  (`devices.removed_at`) doesn't come over, and is listed. A device's `kind` comes over as its
+  kind (a label shown with its name, not a tag, so needs match what they did before), and its
+  `target`, `start_cmd` and `stop_cmd` as its own; any other devices column is kept in
+  `import.devices.unmapped`;
 - maps the reviewer roster (`reviewers`: one row per person and project, `source` = `import`).
   Rows that are one person (a shared email, alias, host id or Slack id) fold into one: as the old
   board's `ORDER BY removed, commits DESC, id`, an active row stays over a removed one, else the

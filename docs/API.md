@@ -876,15 +876,24 @@ tasks share it. An archived goal reserves nothing and its pool lends nothing; it
 The goal detail's `devices` aside lists the goal's own devices first, each with `in_pool`, `purpose` and
 `reserved`, and `pool` (how many it has).
 
-`device`: `{id, name, tags: [str], note, off: bool, focus: str|null, can_focus: bool, held_by: {ref, title, goal}|null,
+A device can say what it is: `kind` (phone, tablet, simulator, android…; a label, never matched against needs) and
+`target` (Android 14, an iOS 17 runtime…), shown with its name as `label` ("dev-a (Android phone, Android 14)";
+known kinds are named in words, others show as given). Its `start_cmd` and `stop_cmd` go in the handoff of the task
+that's lent it, as "Start it: …" and "Stop it when you're done: …" (under the device's name when it has more than
+one), filled like step commands: the task's `{task}`, `{title}`, `{branch}`, `{base}`, `{repo}`, `{pr}`… and the
+device's `{device}` (also `{name}`), `{kind}` and `{target}`. A task card's `devices` has `lent` (names) and
+`lent_labels` (each `label`).
+
+`device`: `{id, name, label, kind: str|null, kind_label: str|null, target: str|null, tags: [str], note, off: bool,
+focus: str|null, can_focus: bool, start_cmd: str|null, stop_cmd: str|null, held_by: {ref, title, goal}|null,
 goals: [{goal, purpose, reserved}], reserved_for: "G3"|"G3 and G4"|null}` (`goals` and `reserved_for`: goals not archived).
 
 | Request | Body | What |
 |---|---|---|
 | `GET /devices` | | `{devices: [device], waiting: [{ref, title, goal, needs, why}]}`. |
-| `POST /devices` | `{name, tags?, focus?, note?}` | Add one. Names and tags are lowercase letters, digits, `.`, `_`, `-` (names also `:`). 409 when the name is taken. |
+| `POST /devices` | `{name, tags?, kind?, target?, start_cmd?, stop_cmd?, focus?, note?}` | Add one. Names and tags are lowercase letters, digits, `.`, `_`, `-` (names also `:`). 409 when the name is taken. |
 | `GET /devices/:name` | | The device. |
-| `POST /devices/:name` | `{name?, tags?, focus?, note?, off?}` | Change it; `off` keeps it from being lent. |
+| `POST /devices/:name` | `{name?, tags?, kind?, target?, start_cmd?, stop_cmd?, focus?, note?, off?}` | Change it; `off` keeps it from being lent; `none` (or empty) clears `kind`, `target`, `start_cmd`, `stop_cmd` and `focus`. |
 | `POST /devices/:name/remove` | | Take it out of the pool (409 while it's lent). |
 | `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name). 409 when there's neither. |
 | `GET /goals/:id/devices` | | `tb goal devices G3`. `{goal, devices: [device + {purpose, reserved}]}`: the goal's own devices. |

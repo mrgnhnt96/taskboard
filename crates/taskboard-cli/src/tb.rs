@@ -402,6 +402,18 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
+        /// What it is, shown with its name: phone, tablet, simulator, android… A label, not a tag
+        #[arg(long)]
+        kind: Option<String>,
+        /// What it runs, shown with its name: Android 14, an iOS 17 runtime…
+        #[arg(long)]
+        target: Option<String>,
+        /// How to boot it, told to the task that's lent it ({device} {task} {branch}… filled in)
+        #[arg(long = "start", alias = "start-cmd")]
+        start: Option<String>,
+        /// How to shut it down when the task is done with it ({device} {task}… filled in)
+        #[arg(long = "stop", alias = "stop-cmd")]
+        stop: Option<String>,
     },
     /// Change a device
     Set {
@@ -416,6 +428,18 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
+        /// What it is (a label, not a tag), or none
+        #[arg(long)]
+        kind: Option<String>,
+        /// What it runs, or none
+        #[arg(long)]
+        target: Option<String>,
+        /// Its start command, or none
+        #[arg(long = "start", alias = "start-cmd")]
+        start: Option<String>,
+        /// Its stop command, or none
+        #[arg(long = "stop", alias = "stop-cmd")]
+        stop: Option<String>,
         /// Switch it off: no task is lent it
         #[arg(long, conflicts_with = "on")]
         off: bool,
@@ -1645,10 +1669,10 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
     Ok(0)
 }
 
-/// "pixel-7 · android, phone · lent to T4" for `tb devices`.
+/// "dev-a (Android phone, Android 14) · android, phone · lent to T4" for `tb devices`.
 fn device_line(d: &Value) -> String {
     let tags: Vec<&str> = d["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-    let mut line = d["name"].as_str().unwrap_or("").to_string();
+    let mut line = d["label"].as_str().or(d["name"].as_str()).unwrap_or("").to_string();
     if !tags.is_empty() {
         line += &format!(" · {}", tags.join(", "));
     }
@@ -1668,12 +1692,18 @@ fn device_line(d: &Value) -> String {
     if d["can_focus"] == true {
         line += " · can focus";
     }
+    if let Some(x) = d["start_cmd"].as_str() {
+        line += &format!(" · start: {x}");
+    }
+    if let Some(x) = d["stop_cmd"].as_str() {
+        line += &format!(" · stop: {x}");
+    }
     line
 }
 
 /// "pixel-7 · for measure · reserved · android · lent to T4" for `tb goal devices`.
 fn goal_device_line(d: &Value) -> String {
-    let mut line = d["name"].as_str().unwrap_or("").to_string();
+    let mut line = d["label"].as_str().or(d["name"].as_str()).unwrap_or("").to_string();
     if let Some(p) = d["purpose"].as_str() {
         line += &format!(" · for {p}");
     }
@@ -1705,11 +1735,15 @@ fn bit_line(b: &Value, tool: &str) -> String {
 
 fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
     match action {
-        DeviceCmd::Add { name, tags, focus, note } => {
-            let v = c.call("POST", "/devices", Some(json!({"name": name, "tags": lock_arg(&tags), "focus": focus, "note": note})))?;
+        DeviceCmd::Add { name, tags, focus, note, kind, target, start, stop } => {
+            let v = c.call(
+                "POST",
+                "/devices",
+                Some(json!({"name": name, "tags": lock_arg(&tags), "focus": focus, "note": note, "kind": kind, "target": target, "start_cmd": start, "stop_cmd": stop})),
+            )?;
             out(&format!("Added {}.", device_line(&v)));
         }
-        DeviceCmd::Set { name, rename, tags, focus, note, off, on } => {
+        DeviceCmd::Set { name, rename, tags, focus, note, kind, target, start, stop, off, on } => {
             let mut b = json!({});
             if let Some(x) = rename {
                 b["name"] = json!(x);
@@ -1722,6 +1756,11 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             }
             if let Some(x) = note {
                 b["note"] = json!(x);
+            }
+            for (k, v) in [("kind", kind), ("target", target), ("start_cmd", start), ("stop_cmd", stop)] {
+                if let Some(x) = v {
+                    b[k] = json!(x);
+                }
             }
             if off || on {
                 b["off"] = json!(off);
