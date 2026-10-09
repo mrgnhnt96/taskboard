@@ -198,6 +198,65 @@ fn switch_and_drop_work_on_this_terminals_line_only() {
     assert!(listed["context"].as_str().unwrap().contains(&format!("{t1} “Fix the header” to resume")));
 }
 
+/// Work hours that aren't open now: only tomorrow.
+fn closed_hours(b: &Board) {
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap().format("%a").to_string().to_lowercase();
+    b.post("hours", json!({"on": true, "start": "00:00", "end": "23:59", "days": tomorrow}));
+}
+
+#[test]
+fn outside_work_hours_the_next_task_waits_in_its_line_until_they_open() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    let t2 = b.split("s1", "Make the footer sticky", "next")["created"][0].as_str().unwrap().to_string();
+    closed_hours(&b);
+
+    let out = b.report("tb.done", "s1", json!({"summary": "Fixed it.", "no_pr": "Test"}));
+    assert_eq!(out["task"], t1);
+    assert!(out["context"].is_null(), "no new work starts outside the hours");
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1"), None);
+    let card = b.task(&t2);
+    assert_eq!(card["line"]["session"], "s1", "it stays queued in the line");
+    assert!(card["waiting"].as_str().unwrap().starts_with("Waits for work hours"), "{}", card["waiting"]);
+
+    // An owner's `--here --now` still switches to new work now.
+    let t3 = b.split("s1", "Fix the login crash", "now")["created"][0].as_str().unwrap().to_string();
+    assert_eq!(b.on("s1").as_deref(), Some(t3.as_str()));
+    let out = b.report("tb.done", "s1", json!({"summary": "Fixed.", "no_pr": "Test"}));
+    assert!(out["context"].is_null());
+
+    b.post("hours", json!({"on": false}));
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()), "once the hours open it's delivered");
+    let out = b.report("hook.stop", "s1", json!({"last_message": "ok"}));
+    assert!(out["deliver"]["text"].as_str().unwrap().contains(&format!("[task-board:{t2}]")));
+}
+
+#[test]
+fn with_the_usage_used_up_the_next_task_waits_until_it_resets_and_start_still_runs_it() {
+    let b = new_board();
+    b.on_task("s1", "Fix the header");
+    let t2 = b.split("s1", "Make the footer sticky", "next")["created"][0].as_str().unwrap().to_string();
+    let t3 = b.split("s1", "Tidy the nav", "next")["created"][0].as_str().unwrap().to_string();
+    let resets = taskboardd::util::iso(taskboardd::util::now_ts() + 3600.0);
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 100, "resets_at": resets}}));
+
+    let out = b.report("tb.done", "s1", json!({"summary": "Fixed it.", "no_pr": "Test"}));
+    assert!(out["context"].is_null(), "no new work starts with the usage used up");
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1"), None);
+    assert!(b.task(&t2)["waiting"].as_str().unwrap().starts_with("Waits for the 5-hour usage to reset"));
+
+    // The owner's Start bypasses the hold.
+    let card = api::dispatch(&b.app, "POST", &format!("tasks/{t3}/start"), &from_app(), &json!({"mode": "new"})).unwrap();
+    assert_eq!(card["starting"], true);
+
+    b.app.shared.lock().midna_usage = None;
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()), "once the usage resets it's delivered");
+}
+
 fn from_app() -> Query {
     let mut q = Query::new();
     q.insert(api::FROM.into(), "app".into());

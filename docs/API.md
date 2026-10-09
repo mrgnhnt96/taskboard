@@ -442,7 +442,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "starting": bool,               // queued and a start job is pending/running ("Starting")
   "line": {"session": str, "name": str, "kind": "queued"|"resume", "pos": int, "label": str, "after": "T12"|null} | null,
                                   // queued in a terminal's line (`tb task new --here --next`, or switched away from): it starts
-                                  // there by itself, after `after`; label "Queued in Term 3" / "To resume in Term 3" (resume = started before)
+                                  // there by itself, after `after`; label "Queued in Term 3" / "To resume in Term 3" (resume = started before).
+                                  // Like any start it waits for work hours and the 5-hour usage (then `waiting` says so); Start runs it now
   "waiting": str|null,            // queued only: why it isn't starting yet, one plain line
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"

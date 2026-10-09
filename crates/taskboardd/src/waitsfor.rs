@@ -125,6 +125,9 @@ pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
     if let Some(why) = crate::jira::ticket_wait(app, t)? {
         return Ok(json!(why));
     }
+    if has(t.s("line_session")) && crate::lines::held_by_clock(app, t)? {
+        return Ok(json!(hours::blocker(app)));
+    }
     if t.s("pickup") == Some("manual") {
         return Ok(json!("Waits for you to press Start"));
     }

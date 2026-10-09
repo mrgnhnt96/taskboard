@@ -8,7 +8,7 @@ use crate::{board, dispatch, hours, p, prflow, runner};
 
 pub const KIND: &str = "deliver";
 pub const SEND: &str = "deliver_send";
-const BOARD_PURPOSES: &[&str] = &["follow"];
+const BOARD_PURPOSES: &[&str] = &["follow", "line_next"];
 pub const DELIVER_EVENTS: &[&str] = &["hook.session_start", "hook.prompt", "hook.stop"];
 const RESEND_AFTER_SECS: f64 = 30.0;
 const DELIVERY_WAIT_SECS: f64 = 90.0;
