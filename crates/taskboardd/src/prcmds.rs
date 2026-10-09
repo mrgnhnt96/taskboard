@@ -261,8 +261,8 @@ fn stacked_base(app: &App, t: &Row, rec: &Value) -> Result<Option<String>> {
 
 /// `tb pr merge`: checks the PR once more through its host, then merges it and deletes its branch.
 pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
-    if as_bool(body.get("agent"), false) && !app.cfg.pr.agents_merge {
-        return err(403, format!("{} merges PRs on this board (pr.agents_merge is off). Run tb pr wait and leave it to them.", app.cfg.owner));
+    if as_bool(body.get("agent"), false) && !prflow::agents_merge_on(app, board::get_task(app, id)?.s("project")) {
+        return err(403, format!("{} merges this project's PRs (agents_merge is off). Run tb pr wait and leave it to them.", app.cfg.owner));
     }
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;

@@ -2220,7 +2220,7 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
     }
     let f = jloads_obj(t.s("pr_flow"));
     Ok(json!({"task": rf("task", id), "pr": board::pr_card(&t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
-              "agents_merge": app.cfg.pr.agents_merge, "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
+              "agents_merge": crate::prflow::agents_merge_on(app, t.s("project")), "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {

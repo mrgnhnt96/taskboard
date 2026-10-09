@@ -236,6 +236,8 @@ pub struct PrProject {
     pub ask_stage: Option<bool>,
     /// The Review step: off skips it, so a PR goes to merge without reviewers. Unset: on.
     pub review: Option<bool>,
+    /// Agents may merge this project's PRs once they're approved and green. Unset: `pr.agents_merge`.
+    pub agents_merge: Option<bool>,
 }
 
 /// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).

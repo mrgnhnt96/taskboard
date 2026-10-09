@@ -1077,6 +1077,9 @@ enum ProjectCmd {
         /// The Review step: off, its PRs go to merge without reviewers (default: on)
         #[arg(long, value_parser = ["on", "off", "default"])]
         review: Option<String>,
+        /// Agents merge its PRs once they're approved and green (tb pr merge) (default: config.toml's pr.agents_merge)
+        #[arg(long = "agents-merge", value_parser = ["on", "off", "default"])]
+        agents_merge: Option<String>,
     },
 }
 
@@ -3763,7 +3766,7 @@ fn project_line(p: &Value) -> String {
         ),
         None => String::new(),
     };
-    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review")]
+    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review"), ("agents_merge", "agents merge")]
         .iter()
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
@@ -3826,11 +3829,12 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             project_switch(&mut body, "ask_stage", ask_stage);
             project_switch(&mut body, "swap", swap);
             project_switch(&mut body, "review", review);
+            project_switch(&mut body, "agents_merge", agents_merge);
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }

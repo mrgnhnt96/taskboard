@@ -221,8 +221,27 @@ fn an_agent_can_t_merge_when_the_owner_merges() {
     let id = b.pr_task(BB);
     let h = fake(&b, green());
     let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
-    assert!(e.contains("merges PRs on this board"), "{e}");
+    assert!(e.contains("merges this project's PRs"), "{e}");
     assert!(h.calls().is_empty());
+}
+
+#[test]
+fn a_project_with_no_review_step_and_agents_merge_on_merges_without_anyone() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    let v = b.post("/projects/webapp", json!({"review": "off", "agents_merge": "on"}));
+    assert_eq!((v["pr_rules"]["review"].clone(), v["pr_rules"]["agents_merge"].clone()), (json!(false), json!(true)));
+    poll(&b);
+    assert_eq!(b.phase(id), "merge", "no reviewers to wait for");
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], true);
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "merged");
+    let v = b.post("/projects/webapp", json!({"agents_merge": null}));
+    assert_eq!(v["pr_rules"]["agents_merge"], false, "back to pr.agents_merge");
 }
 
 #[test]
