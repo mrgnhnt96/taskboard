@@ -9,7 +9,7 @@ use crate::app::App;
 use crate::board::OWNER;
 use crate::ops::{goal_detail, issue_detail, new_goal, new_task, opt_goal, task_detail};
 use crate::util::*;
-use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, midna, ops, p, prflow, projects, qa, reports, runner, shared, steps, triage, usage};
+use crate::{accounts, board, days, deliver, dispatch as alerts, fields, handoff, hooks, hours, jira, keep_awake, midna, ops, p, prflow, projects, qa, reports, runner, shared, steps, triage, usage};
 
 pub type Query = HashMap<String, String>;
 
@@ -309,6 +309,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("GET", ["hours"]) => Ok(hours::state(app)),
         ("POST", ["hours"]) => set_hours(app, body),
+        ("GET", ["keep-awake"]) => keep_awake::call(app, None),
+        ("POST", ["keep-awake"]) => keep_awake::call(app, Some(body)),
         ("GET", ["usage"]) => Ok(usage::state(app)),
         ("POST", ["prs", "refresh"]) => {
             let changed = prflow::refresh(app)?;
@@ -330,7 +332,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"alert": a}))
         }
         _ => {
-            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "usage", "prs", "alerts"];
+            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "usage", "prs", "alerts"];
             if segs.first().map(|s| known.contains(s)).unwrap_or(false) && (method == "GET" || method == "POST") {
                 return err(404, "There's nothing at that address.");
             }
@@ -430,6 +432,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         "now": now_iso(), "midna": midna::status(app), "jira": {"enabled": app.cfg.jira_on(), "site": app.cfg.jira.site},
         "owner": app.cfg.owner,
         "alerts": alerts::alerts(app), "work_hours": hours::state(app), "usage": usage::state(app),
+        "keep_awake": app.shared.lock().midna_keep_awake.clone(),
         "accounts": accounts::attention(&app.cfg),
         "prs_checked_at": app.shared.lock().prs_checked_at,
         "projects": projects::list_projects(app)?, "sessions": sessions, "session_projects": sp, "goals": goals,
@@ -2004,6 +2007,8 @@ fn set_hours(app: &App, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    let today = body.get("today_until").map(|_| hours::today_until(app, &hours::now_local()));
+    keep_awake::follow_hours(app, today);
     Ok(hours::state(app))
 }
 

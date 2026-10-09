@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, jobs, p, proc};
+use crate::{board, jobs, keep_awake, p, proc};
 
 const DOWN_EXIT: i32 = 3;
 const OPEN_EVERY: Duration = Duration::from_secs(30);
@@ -423,6 +423,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     let (_, to_close) = sync(app, sessions.as_array().unwrap_or(&empty), projects.as_array().unwrap_or(&empty))?;
     let usage = call_timeout(app, "usage.get", json!({}), 10.0).ok();
     app.shared.lock().midna_usage = usage.and_then(|u| u.get("claude").cloned()).filter(|v| v.is_object());
+    keep_awake::sync(app);
     read_settings(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         if let Err(e) = call(app, "session.close", json!({"id": sid})) {

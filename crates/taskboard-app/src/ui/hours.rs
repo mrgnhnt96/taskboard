@@ -201,6 +201,34 @@ fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, Strin
     col
 }
 
+/// Midna's keep-awake, read-only (changed with `tb keep-awake`): whether the Mac is held awake now,
+/// and its schedule when it's on.
+pub struct KeepAwake {
+    pub held: bool,
+    pub line: String,
+    pub schedule: Option<String>,
+}
+
+pub fn keep_awake_view(k: &Value) -> Option<KeepAwake> {
+    let line = fmt::opt_s(k, "line")?.to_string();
+    let schedule = if b(&k["settings"], "enabled") { fmt::opt_s(k, "schedule").map(str::to_string) } else { None };
+    Some(KeepAwake { held: b(k, "held"), line, schedule })
+}
+
+fn keep_awake(t: &Theme, k: KeepAwake) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .pt(px(10.))
+        .px(px(4.))
+        .border_t_1()
+        .border_color(t.border)
+        .text_size(px(12.5))
+        .child(div().flex().items_center().gap(px(6.)).child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.)).child(k.line))
+        .children(k.schedule.map(|s| div().pl(px(14.)).text_color(t.muted).child(s)))
+}
+
 pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let at = m.menu_open(MENU)?;
     let t = cx.global::<Theme>().clone();
@@ -283,7 +311,8 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
         )
         .child(days)
         .child(row().items_start().child(div().pt(px(10.)).child("Today until")).child(select(&t, SELECTS[2], &today, &today_o, on, open == Some("today"), cx)))
-        .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)));
+        .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)))
+        .children(m.state().get("keep_awake").and_then(keep_awake_view).map(|k| keep_awake(&t, k)));
     // Opens upward from the pill.
     Some(deferred(anchored().anchor(Anchor::BottomLeft).position(at).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
 }
@@ -353,6 +382,17 @@ mod tests {
             let st = State::from_hours(&i["hours"]);
             json!({"on": st.on, "start": st.start, "end": st.end, "days": st.days, "today": st.today})
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn keep_awake_shows_midnas_line() {
+        let k = super::keep_awake_view(&json!({"held": true, "line": "Keeping awake until 6 PM: 1 agent working",
+            "schedule": "9 AM–6 PM weekdays", "settings": {"enabled": true}})).unwrap();
+        assert!(k.held);
+        assert_eq!(k.schedule.as_deref(), Some("9 AM–6 PM weekdays"));
+        let off = super::keep_awake_view(&json!({"held": false, "line": "Keep-awake is off", "schedule": "9 AM–6 PM weekdays", "settings": {"enabled": false}})).unwrap();
+        assert_eq!(off.schedule, None, "no schedule while it's off");
+        assert!(super::keep_awake_view(&json!(null)).is_none());
     }
 
     #[gpui_kit::test]
