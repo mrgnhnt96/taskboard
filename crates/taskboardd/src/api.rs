@@ -1828,6 +1828,22 @@ fn goal_plan(app: &App, id: i64, body: &Value) -> Result<Value> {
 
 fn run_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
     let now = as_bool(body.get("now"), false);
+    // From `tb start G2` or `tb goal set G2 --run` in a terminal: only on a human's word there, as for a
+    // task. The board's Run sends no terminal.
+    let via = body_str(body, "via_session");
+    if !via.is_empty() {
+        board::get_goal(app, id)?;
+        if crate::startword::owners_goal_word(app, &via, id)?.is_none() {
+            return err(
+                403,
+                format!(
+                    "Only a human can run {}: nobody asked for it in this terminal's conversation. {} can press Run on the board, or tell you to start it.",
+                    rf("goal", id),
+                    app.cfg.owner
+                ),
+            );
+        }
+    }
     let n = app.db.tx(|| {
         let g = board::get_goal(app, id)?;
         let until = if now { hours::until_open(app) } else { None };
