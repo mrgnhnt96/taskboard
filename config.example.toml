@@ -15,6 +15,7 @@ midna = "~/.local/bin/midna"         # env TASKBOARD_MIDNA
 midna_bundle = "com.mrgnhnt.midna"   # opened with `open -g -b` when Midna isn't running
 open_midna = true
 notify = true                        # desktop notifications through Midna
+first_weekday = "sun"                # the day weeks start on: the Days page's week and the hours menu's days
 
 claude = "claude"                    # env TASKBOARD_CLAUDE; used for question screening
 claude_projects = "~/.claude/projects"

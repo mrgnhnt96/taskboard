@@ -84,7 +84,9 @@ are gone.)
   "line": str,            // one plain sentence, used as the pill's tooltip, e.g. "Work hours 6am–3pm: agents start until 3pm"
   "next_open": str|null,  // when the hours next open, null while open. LOCAL time WITHOUT a zone, "2026-10-08T06:00",
                           // because the browser parses it as local time (Python: isoformat(timespec="minutes") of a naive local datetime)
-  "today_until": "HH:MM"|null  // today's end overridden by "Today until", null when not set or not today
+  "today_until": "HH:MM"|null, // today's end overridden by "Today until", null when not set or not today
+  "week_days": ["sun", …]      // all seven days in week order, from config.toml's first_weekday (Sunday by default);
+                               // the hours menu lays its day buttons out in this order
 }
 ```
 The pill reads "Work hours until 4pm today" (open + today_until), "Work hours 6am–3pm" (open), "Agents off until
@@ -355,7 +357,8 @@ the backlog, and kept in `day_stats` (one row per project), so it outlives the c
               "marks": [{"at": iso, "kind": "commit"|"question"|"pr"|"done"|"found", "task": int, "ref": str, "text": str}]}],
    "waits": [{"task": int, "ref": str, "at": iso, "min": float, "open": bool, "reason": str, "text": str, "title": str, "project": str}],
    "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}]},
- "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, Monday first
+ "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, from config.toml's first_weekday (Sunday by default)
+ "first_weekday": "sun"|"mon"|…,
  "last_week": [same],
  "week_tasks": [{"task", "ref", "title", "project", "work_min", "wait_min", "state", "date"}],   // ≤ 12, longest first
  "week_task_median": float,                 // minutes, finished tasks of the week
