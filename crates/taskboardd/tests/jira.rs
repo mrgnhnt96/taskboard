@@ -421,6 +421,44 @@ fn handoff_has_the_setup_waves_branch_and_footer() {
 }
 
 #[test]
+fn wave_mates_are_the_ones_still_to_run_with_their_planned_files() {
+    let b = board_with(|_, _| {});
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    let r = taskboardd::reports::handle(
+        &b.app,
+        json!({"event": "tb.propose", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "goal": format!("G{g}"),
+               "tasks": ["Sign-in form::Build it::1::::src/form.rs, src/form.css", "Session cookie::Bake it::1", "Old work::Done already::1"]}),
+        false,
+    )
+    .unwrap();
+    let ids: Vec<i64> = r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect();
+    let (t1, t2, t3) = (ids[0], ids[1], ids[2]);
+    assert_eq!(b.task(t1).st("detail"), "Build it");
+    for t in [t1, t2] {
+        board::update_task(&b.app, t, fields!["status" => "queued"]).unwrap();
+    }
+    board::update_task(&b.app, t3, fields!["status" => "done"]).unwrap();
+    let mut ctx = board::task_context(&b.task(t2));
+    ctx.insert("files".into(), json!(["src/cookie.rs"]));
+    board::save_context(&b.app, t2, &ctx, false).unwrap();
+
+    let h = handoff::build(&b.app, t2).unwrap();
+    assert!(h.contains(&format!("- T{t1} “Sign-in form” (queued, owns src/form.rs, src/form.css)")), "{h}");
+    assert!(!h.contains(&format!("T{t3} “Old work”")), "a done mate isn't listed: {h}");
+    let h1 = handoff::build(&b.app, t1).unwrap();
+    assert!(h1.contains("The wave plans these files for this task: src/form.rs, src/form.css."), "{h1}");
+    assert!(h1.contains(&format!("- T{t2} “Session cookie” (queued, has touched src/cookie.rs)")), "{h1}");
+
+    // With every mate done, nothing else runs beside it.
+    board::update_task(&b.app, t2, fields!["status" => "done"]).unwrap();
+    board::update_task(&b.app, t1, fields!["status" => "done"]).unwrap();
+    board::update_task(&b.app, t3, fields!["status" => "queued"]).unwrap();
+    assert!(handoff::build(&b.app, t3).unwrap().contains("Nothing else runs in this wave."));
+}
+
+#[test]
 fn handoff_jira_lines_when_jira_is_on() {
     let b = board_with(|c, _| c.jira.auto_ticket = true);
     let t = b.new_task(json!({}));

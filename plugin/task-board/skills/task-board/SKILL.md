@@ -59,14 +59,14 @@ Planning a goal? Read `planning.md` first.
 
 1. Reuse an open goal that fits (`tb goals`; `--project <name>` narrows it).
 2. Pick the smallest thing that fits:
-   - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`.
+   - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`. Tasks that run side by side in a wave can name the files each will edit, so its wave mates leave them alone: `--task "title::detail::<wave>::::src/a.rs, src/b.rs"` (or `tb task new --goal G<n> --wave 2 --file src/a.rs`).
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
    - Another goal's task does it: `tb task set T<n> --also G<n>`.
    - Waves, waits, locks, running alone, worktrees, devices and bits (feature flags): `planning.md`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.
-   - On the owner's word, act on an issue: `tb backlog task B<n>` (a planned task in its goal; `--board` queues it on the board), `tb backlog ticket B<n>` (a Jira ticket), `tb backlog drop B<n> --reason "..."` (won't do), `tb backlog reopen B<n>`.
+   - On the owner's word, act on an issue: `tb backlog task B<n>` (a planned task in its goal; `--board` queues it on the board), `tb backlog ticket B<n>` (a Jira ticket), `tb backlog drop B<n> --reason "..."` (won't do), `tb backlog reopen B<n>`. Each takes several issues at once (`tb backlog task B4 B5`): all change or none do.
    - Run, hold back or bring back a goal when the owner says so: `tb goal set G<n> --run` (queues its planned tasks), `--deprioritize`, `--prioritize`, `--paused on|off`.
    - Something the owner must see that isn't a question on your task (a watcher or script you were asked to set up finds main red): `tb alert raise "<what>" --key <name> [--urgent] [--task T<n>]`, and `tb alert clear <name>` once it's fixed. `--urgent` only for what can't wait: it repeats outside the work hours and can't be dismissed.
    - Whether a project's work ends in PRs: `tb project show [<name>]`; the owner can override it with `tb project set <name> --pr-flow auto|on|off`.

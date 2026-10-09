@@ -73,12 +73,17 @@ the "Open T12" button. Dismissed with `POST /alerts/:id/dismiss`, except an aler
 for your review): it can't be dismissed (409), still snoozes, isn't replaced by other alerts for its task or pushed out
 by the 20-alert cap, and clears once the PR is reviewed ("I reviewed it"). An `"urgent": true` alert (raised with
 `POST /alerts`, `tb alert raise --urgent`) stays the same way, comes first in `state.alerts`, and keeps repeating
-outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on.
+outside the work hours; it clears when what raised it clears it (`POST /alerts/:key/clear`) or its task moves on,
+never with the rest of its task's alerts. Raising it leaves the task's other alerts up; while it's up, new plain
+alerts for that task aren't raised (`POST /alerts` answers 409), though a PR-review alert still is. The app shows
+each urgent alert first, in a red row of its own; only the other alerts fold into "N tasks need your attention."
 
 Each alert's desktop notification (Midna `notify.send`) carries the id `taskboard-alert-<alert id>` and the snooze
 buttons from config.toml's `[alerts] snooze_mins` ("Snooze 15 min", "Snooze 30 min", "Snooze 1 hour" by default).
-The board waits for the owner's pick (`notify.response`) and a snooze button snoozes the alert; a click opens the
-app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
+The board keeps one waiter per alert on the owner's pick (`notify.response`, 600 s at a time) for as long as the
+alert is up, so a late Snooze still counts; each notification's pick counts once (`answered` on the alert holds the
+`notified_at` it answered), and a repeat moves the same waiter on to the new notification. A snooze button snoozes
+the alert; a click opens the app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
 #### `work_hours` (from `hours.state`)
 ```
@@ -588,13 +593,13 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 | Path | Body | Notes |
 |---|---|---|
 | `POST /backlog` | `{title, kind, goal_id: int\|null, project, said?, detail?, source?: "answer"\|"review_log"}` | Add an issue (source `you` unless it says `answer` or `review_log`, the external PR feed, which the app shows as "From the Review log"; no app form, `tb backlog add`). **Response read:** the issue (`ref`, or `{issue: {...}}`). |
-| `POST /backlog/:id/promote` | `{where: "board"\|"goal"}` | Make it a task (`tb backlog task`, `--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
-| `POST /backlog/:id/ticket` | `{}` | Create a Jira ticket for it (only offered with Jira; `tb backlog ticket`). |
-| `POST /backlog/:id/drop` | `{reason?}` | Won't do (`tb backlog drop --reason`). |
-| `POST /backlog/:id/reopen` | `{}` | Open it again (`tb backlog reopen`). |
+| `POST /backlog/:id/promote` | `{where: "board"\|"goal", who?}` | Make it a task (`--board` for `board`): `board` = queued task; `goal` = planned task at the end of its goal. Only an open issue: 409 when it's already a task, dropped or otherwise closed. **Response read:** `{task: {ref\|id}}` (or `task_id`) so the board opens the new task. |
+| `POST /backlog/:id/ticket` | `{who?}` | Create a Jira ticket for it (only offered with Jira; only an open issue). |
+| `POST /backlog/:id/drop` | `{reason?, who?}` | Won't do; only an open issue (409 otherwise). |
+| `POST /backlog/:id/reopen` | `{who?}` | Open it again. |
 | `POST /backlog/:id/move` | `{goal_id: int\|null}` | Move to another goal or none (`tb backlog move`; `goal_id` also takes a ref like `"G2"`). |
 | `POST /backlog/:id/note` | `{text}` | Add a note to its history (no app button). |
-| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3"}` | Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. **Response read:** `count: int`. |
+| `POST /backlog/bulk` | `{ids: ["B1", …], action: "task"\|"ticket"\|"drop"\|"move"\|"reopen"\|"defer"\|"priority"\|"goal", where?: "goal", goal_id?: int\|null, priority?: "p1"\|"p2"\|"p3", reason?, who?}` | `tb backlog task\|ticket\|drop\|reopen B4 B5 …` (one or more issues; all change or none do), the Goal page bulk bar (Make tasks, Create tickets, Won't do) and the Backlog page's selection bar. `task` sends `where: "goal"`; `move` (no app button) sends `goal_id`. `defer` sets state `defer` (not for now; triaged). `priority` sets the issues' priority. `goal` puts them in that goal as planned tasks, in its last wave. `who` (tb sends the terminal) is credited in each issue's history and the new tasks' origin; without it, the owner. **Response read:** `count: int`, `tasks` (the tasks made). |
 | `POST /backlog/plan` | `{ids: ["B1", …]}` | Plan waves for these open issues (Backlog page). With Claude it answers `state: "planning"` at once and plans on its own thread; poll `GET /backlog/plan`. **Response read:** the plan (below). |
 | `POST /backlog/goal` | `{name, waves: [{why, items: [{ref: "B1", after: ["B2"]}]}]}` | A new goal from a plan: one project's open issues, none in a goal yet. Each becomes a planned task in its wave (`tasks.wave`); `after` becomes the task's wait-for; the waves go in a pinned goal note. The goal doesn't run in order: a wave starts once every task in the waves before it is done. **Response read:** the goal detail. |
 
@@ -609,7 +614,7 @@ line (`test: <name>` for a failing test). It takes over from the built-in CI rea
 |---|---|---|
 | `POST /hours` | `{on: bool, start: "HH:MM", end: "HH:MM", days: ["mon", …], today_until?: "HH:MM"\|"off", alert_every_mins?: int}` | Sent on every change in the hours menu (and by `tb hours`; `--alert-every` sets `alert_every_mins`, 0 = alerts don't repeat). `today_until` only when it changed (`off` clears it). **Response read:** the new `work_hours` object (replaces `state.work_hours` at once). Errors (e.g. "4pm has already passed today.") show in the menu. |
 | `POST /alerts/:id/dismiss` | `{}` | 409 for a review or urgent alert. |
-| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. **Response read:** `{alert}`. |
+| `POST /alerts` | `{text, urgent?: bool, key?: str, task?: "T12", goal?: "G3"}` | Raise an alert (`tb alert raise`). With a `key`, raising it again while it's up returns the one that's up. 409 for a plain alert on a task that has an urgent one up. **Response read:** `{alert}`. |
 | `POST /alerts/:id/clear` | `{}` | Clear an alert by its id or key, urgent ones too (`tb alert clear`). **Response read:** `{alerts}`. |
 | `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
@@ -735,7 +740,11 @@ runs nothing else in its scope starts ("Waits while T13 runs alone").
 | `POST /goals/:id` | `{worktree_base: "origin/main"\|"off"}` | Each task starts in `<repo>/.claude/worktrees/T<n>`, made with `git fetch` and `git worktree add --detach` at the base. Once the task is finished (failed, or no open PR) and its terminal is gone, the board removes the worktree, or keeps one with uncommitted changes. |
 
 `tb propose` and `--task` items take a fourth `::` field, what the task waits for: `"title::detail::2::#1, T14"`, where
-`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one).
+`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one). A fifth field is the files
+the wave plans for the task, comma-separated: `"title::detail::2::::src/form.rs, src/form.css"` (an object item, and
+`tb.new_task` with a goal, take `files: [str]`; `tb task new --goal G3 --file src/form.rs`). They're kept in the task's
+context as `plan_files`; its handoff names them, and each wave mate's handoff lists them as the files that task owns
+(else the files it has touched). The handoff's wave mates are only the ones still queued or working.
 
 ## Devices
 

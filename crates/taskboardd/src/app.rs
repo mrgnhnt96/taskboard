@@ -45,6 +45,9 @@ pub struct Shared {
     pub pr_hosts: std::collections::HashMap<String, Arc<dyn crate::prhost::PrHost>>,
     /// Alerts' notification responses Midna reported (alert id, `notify.response`), for the next tick.
     pub notify_inbox: Arc<Mutex<Vec<(String, Value)>>>,
+    /// Alerts with a thread waiting on their notification's response: alert id -> the `notified_at` of its
+    /// latest notification (`dispatch::Waiter`).
+    pub alert_waiters: Arc<Mutex<std::collections::HashMap<String, String>>>,
 }
 
 struct Signal {

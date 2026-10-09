@@ -133,8 +133,9 @@ enum Cmd {
     /// Propose planned tasks for a goal: --task "title::what to do"
     Propose {
         goal: String,
-        /// A planned task: "title::detail", "title::detail::<wave>" or "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS]")]
+        /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
+        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
         tasks: Vec<String>,
     },
     /// Named locks, who holds each, and tasks that run alone
@@ -570,7 +571,7 @@ enum GoalCmd {
         #[arg(long = "device", value_name = "TAG[:N]|none")]
         devices: Vec<String>,
     },
-    /// What every task in the goal does first (its handoff shows it): {task} {n} {wave} {goal} are filled in; none clears it
+    #[command(about = setup_about())]
     Setup { goal: String, text: String },
     /// Name a wave, or hold it: none of its tasks start, nor any later wave, until it's continued.
     /// (A review stop after a wave is the owner's own checkbox in the app.)
@@ -612,6 +613,9 @@ enum TaskCmd {
         /// The goal's wave it runs in, side by side with the rest of that wave
         #[arg(long)]
         wave: Option<i64>,
+        /// A file the wave plans for it, so its wave mates leave it alone (needs --goal); repeat for more
+        #[arg(long = "file", value_name = "PATH")]
+        files: Vec<String>,
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
@@ -722,22 +726,31 @@ enum BacklogCmd {
     },
     /// Move a backlog issue to another goal (G2), or out of its goal (none)
     Move { issue: String, goal: String },
-    /// Make a backlog issue into a task: planned in its goal, or with --board queued on the board
+    /// Make backlog issues into tasks: planned in their goal, or with --board queued on the board.
+    /// Several issues (tb backlog task B4 B5) change together or not at all.
     Task {
-        issue: String,
+        #[arg(required = true)]
+        issues: Vec<String>,
         #[arg(long)]
         board: bool,
     },
-    /// Ask Jira for a ticket for a backlog issue
-    Ticket { issue: String },
-    /// Close a backlog issue as won't do (only when the owner says so)
+    /// Ask Jira for a ticket for each backlog issue, all or none
+    Ticket {
+        #[arg(required = true)]
+        issues: Vec<String>,
+    },
+    /// Close backlog issues as won't do, all or none (only when the owner says so)
     Drop {
-        issue: String,
+        #[arg(required = true)]
+        issues: Vec<String>,
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Open a closed backlog issue again
-    Reopen { issue: String },
+    /// Open closed backlog issues again, all or none
+    Reopen {
+        #[arg(required = true)]
+        issues: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -983,6 +996,35 @@ fn goal_ref(v: &str) -> Result<String, String> {
         return Err(format!("expected G<number>, got {v:?}"));
     }
     Ok(format!("G{digits}"))
+}
+
+/// `tb goal setup`'s help. Clap turns every `{n}` in help into a line break, so each placeholder's name is set
+/// in bold, which keeps the braces apart from it until the styling is drawn (or stripped).
+fn setup_about() -> String {
+    let b = clap::builder::styling::Style::new().bold();
+    let names: Vec<String> = ["task", "n", "wave", "goal"].iter().map(|n| format!("{{{b}{n}{b:#}}}")).collect();
+    format!("What every task in the goal does first (its handoff shows it): {} are filled in; none clears it", names.join(" "))
+}
+
+/// Backlog refs in the order given, each once.
+fn issue_refs(v: &[String]) -> Result<Vec<String>, String> {
+    let mut refs: Vec<String> = vec![];
+    for x in v {
+        let r = issue_ref(x)?;
+        if !refs.contains(&r) {
+            refs.push(r);
+        }
+    }
+    Ok(refs)
+}
+
+/// One all-or-nothing backlog action over several issues, through `/backlog/bulk`, credited to this terminal.
+fn backlog_bulk(c: &Ctx, action: &str, issues: &[String], extra: Value) -> Result<Value, String> {
+    let mut b = json!({"action": action, "ids": issue_refs(issues)?, "who": c.who()});
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        b[k] = v.clone();
+    }
+    c.call("POST", "/backlog/bulk", Some(b))
 }
 
 fn issue_ref(v: &str) -> Result<String, String> {
@@ -2179,9 +2221,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
+                }
+                if !files.is_empty() && goal.is_none() {
+                    return Err("--file needs --goal: it tells the task's wave mates which files are its".into());
                 }
                 if here && (goal.is_some() || !also.is_empty()) {
                     return Err("--here makes a standalone task on this terminal; leave out --goal and --also".into());
@@ -2200,6 +2245,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(w) = wave {
                     body["wave"] = json!(w);
+                }
+                if !files.is_empty() {
+                    body["files"] = json!(files);
                 }
                 if !waits_for.is_empty() {
                     body["waits_for"] = json!(waits_for.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?);
@@ -2365,33 +2413,31 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Task { issue, board } } => {
-            let r = issue_ref(&issue)?;
-            let v = c.call("POST", &format!("/backlog/{r}/promote"), Some(json!({"where": if board { "board" } else { "goal" }})))?;
-            let t = &v["task"];
-            let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
-                (Some("planned"), Some(g)) => format!("a planned task in {g}"),
-                _ => "a queued task".to_string(),
-            };
-            out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+        Cmd::Backlog { action: BacklogCmd::Task { issues, board } } => {
+            let v = backlog_bulk(c, "task", &issues, json!({"where": if board { "board" } else { "goal" }}))?;
+            let refs = issue_refs(&issues)?;
+            for (r, t) in refs.iter().zip(v["tasks"].as_array().cloned().unwrap_or_default()) {
+                let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
+                    (Some("planned"), Some(g)) => format!("a planned task in {g}"),
+                    _ => "a queued task".to_string(),
+                };
+                out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
+            }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Ticket { issue } } => {
-            let r = issue_ref(&issue)?;
-            c.call("POST", &format!("/backlog/{r}/ticket"), Some(json!({})))?;
-            out(&format!("Asked Jira for a ticket for {r}."));
+        Cmd::Backlog { action: BacklogCmd::Ticket { issues } } => {
+            backlog_bulk(c, "ticket", &issues, json!({}))?;
+            out(&format!("Asked Jira for a ticket for {}.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Drop { issue, reason } } => {
-            let r = issue_ref(&issue)?;
-            c.call("POST", &format!("/backlog/{r}/drop"), Some(json!({"reason": reason.unwrap_or_default()})))?;
-            out(&format!("Closed {r} as won't do."));
+        Cmd::Backlog { action: BacklogCmd::Drop { issues, reason } } => {
+            backlog_bulk(c, "drop", &issues, json!({"reason": reason.unwrap_or_default()}))?;
+            out(&format!("Closed {} as won't do.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Reopen { issue } } => {
-            let r = issue_ref(&issue)?;
-            c.call("POST", &format!("/backlog/{r}/reopen"), Some(json!({})))?;
-            out(&format!("Opened {r} again."));
+        Cmd::Backlog { action: BacklogCmd::Reopen { issues } } => {
+            backlog_bulk(c, "reopen", &issues, json!({}))?;
+            out(&format!("Opened {} again.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
         Cmd::Project { action } => project_cmd(c, action),
@@ -2879,6 +2925,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "ticket", "B3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B3", "--reason", "dupe"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B4", "B5", "--board"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B4", "B5", "--reason", "dupe"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B4", "B5"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task"]).is_err());
+        assert_eq!(issue_refs(&["b4".into(), "B5".into(), "B4".into()]).unwrap(), vec!["B4", "B5"]);
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "alert", "clear", "main:web"]).is_ok());
@@ -2910,6 +2961,16 @@ mod tests {
         assert_eq!(lock_arg(&["local-core,emulator-5554".into()]), vec!["local-core", "emulator-5554"]);
         assert_eq!(lock_arg(&["a".into(), "b c".into()]), vec!["a", "b", "c"]);
         assert!(lock_arg(&["none".into()]).is_empty());
+    }
+
+    #[test]
+    fn goal_setup_help_shows_its_placeholders() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let setup = cmd.find_subcommand_mut("goal").unwrap().find_subcommand_mut("setup").unwrap();
+        let help = setup.render_help().to_string();
+        assert!(help.contains("{task} {n} {wave} {goal}"), "{help}");
+        assert!(Cli::try_parse_from(["tb", "task", "new", "Form", "--goal", "G3", "--wave", "1", "--file", "src/a.rs", "--file", "src/b.rs"]).is_ok());
     }
 
     #[test]

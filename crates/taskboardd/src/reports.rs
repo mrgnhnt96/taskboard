@@ -1283,12 +1283,43 @@ fn project_for(r: &Report, given: &str) -> Result<Option<String>> {
     Ok(s.and_then(|s| s.s("project").map(|x| x.to_string())).or_else(|| r.cwd.as_deref().and_then(base_name)))
 }
 
+static PLANNED_WITH_FILES: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)::([^:]*)$").unwrap());
 static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
 static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
 
 /// "title::detail", "title::detail::2" (its wave) or "title::detail::<wave or nothing>::T14 #1" (what it
 /// waits for: a task, or the k-th task in the same command).
+/// A `--task` item's files part ("::src/a.rs, src/b.rs" after the waits), the files the plan gives it.
+fn planned_files(item: &str) -> (String, Value) {
+    let (title, detail) = item.split_once("::").unwrap_or((item, ""));
+    match PLANNED_WITH_FILES.captures(detail) {
+        Some(c) => {
+            let files: Vec<&str> = c[4].split(',').map(str::trim).filter(|f| !f.is_empty()).collect();
+            (format!("{title}::{}::{}::{}", &c[1], &c[2], &c[3]), if files.is_empty() { Value::Null } else { json!(files) })
+        }
+        None => (item.to_string(), Value::Null),
+    }
+}
+
+/// The files a wave plans for a task (`files` on a planned item: a list, or a comma-separated string), kept in its
+/// context as `plan_files` for its wave mates' handoffs.
+fn clean_files(v: Option<&Value>) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let items: Vec<String> = match v {
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(Value::String(s)) => s.split(',').map(str::to_string).collect(),
+        _ => vec![],
+    };
+    for f in items {
+        let f = one_line(f.trim(), 200);
+        if !f.is_empty() && !out.contains(&f) && out.len() < 30 {
+            out.push(f);
+        }
+    }
+    out
+}
+
 fn split_planned(item: &str) -> (String, String, Value, Value) {
     let (title, detail) = item.split_once("::").unwrap_or((item, ""));
     if let Some(c) = PLANNED_WITH_REFS.captures(detail) {
@@ -1329,6 +1360,13 @@ fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
 fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Result<Vec<String>> {
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
+        let (item, files) = match &item {
+            Value::String(s) => {
+                let (rest, files) = planned_files(s);
+                (Value::String(rest), files)
+            }
+            v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null)),
+        };
         let (title, detail, wave, waits) = match &item {
             Value::String(s) => split_planned(s),
             Value::Object(o) => (
@@ -1355,6 +1393,12 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
             Some(&format!("Planned by {}", r.name())),
         )?;
         created.push(c["ref"].as_str().unwrap_or("").to_string());
+        let files = clean_files(Some(&files));
+        if let (false, Some(tid)) = (files.is_empty(), c["id"].as_i64()) {
+            let mut ctx = board::task_context(&board::get_task(r.app, tid)?);
+            ctx.insert("plan_files".into(), json!(files));
+            board::save_context(r.app, tid, &ctx, false)?;
+        }
         for w in c["warnings"].as_array().cloned().unwrap_or_default() {
             if let Some(w) = w.as_str().map(|w| w.to_string()) {
                 if !warnings.contains(&w) {
@@ -1402,7 +1446,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
         let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
-                           "jira": r.body.get("jira"),
+                           "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr")}]);
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
