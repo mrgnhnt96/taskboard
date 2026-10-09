@@ -625,11 +625,13 @@ comma-separated string, or `"none"`) with an optional `project` for that project
 It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes).
 
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
-- `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>`
-  before a new terminal resumes it, or `/compact` queued ahead of the prompt in its live terminal.
+- `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
+  --output-format json --setting-sources ""` (no user settings or hooks; a nonzero exit or `is_error` is a failure, and the
+  resume goes ahead uncompacted) before a new terminal resumes it, or `/compact` queued ahead of the prompt in its live terminal.
 - `warm_tokens`, `warm_idle_mins`: a task (after its wait-for) or a PR visit resumes its conversation only while it's under
   both; otherwise it starts fresh from the handoff and the history says why. A live terminal is always typed into.
-  Size and idle time come from the conversation's transcript (its last reply's context, its last line's time).
+  Size and idle time come from the conversation's transcript (its last reply's context, or the last compact
+  boundary's `postTokens` when that's newer; its last line's time).
 
 ### History
 | Path | Body | Notes |
