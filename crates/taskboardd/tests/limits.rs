@@ -288,3 +288,70 @@ fn the_comment_guard_holds_tb_done_while_the_branch_adds_comments() {
     let id = off.new_task();
     assert!(!handoff::build(&off.app, id).unwrap().contains("No code comments"));
 }
+
+/// A `midna` that logs each call's method and params and answers `{}`.
+fn fake_midna(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let exe = dir.join("midna");
+    std::fs::write(&exe, format!("#!/bin/sh\necho \"$2 $3\" >> '{}'\necho '{{}}'\n", dir.join("calls.log").display())).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+impl Board {
+    /// The text of each `queue.add` the fake Midna got, in order; clears its log.
+    fn typed(&self) -> Vec<String> {
+        let log = self.dir.path().join("calls.log");
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_file(&log);
+        calls
+            .lines()
+            .filter_map(|l| l.strip_prefix("queue.add "))
+            .map(|p| serde_json::from_str::<Value>(p).unwrap()["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+    fn run(&self, jid: i64) {
+        let j = self.app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap();
+        midna::run_job(&self.app, &j);
+    }
+    fn compact_events(&self, id: i64) -> Vec<String> {
+        let rows = self.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE '%compacts it before sending%'", p![id]).unwrap();
+        rows.iter().map(|r| r.st("text")).collect()
+    }
+}
+
+#[test]
+fn a_message_job_compacts_a_cold_open_terminal_first() {
+    let b = board_with(|c| c.midna = fake_midna(&c.data.clone()));
+    let id = b.new_task();
+    let message = || board::create_job(&b.app, "message", json!({"to": "s1", "text": "Hello"}), Some(id), "deliver", None).unwrap();
+
+    b.transcript(10_000, 10);
+    b.run(message());
+    assert_eq!(b.typed(), ["Hello"], "a warm terminal gets only the text");
+    assert!(b.compact_events(id).is_empty());
+
+    b.transcript(61_500, 90);
+    let jid = message();
+    b.run(jid);
+    assert_eq!(b.typed(), ["/compact", "Hello"], "a cold one is compacted first");
+    let events = b.compact_events(id);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(events[0].starts_with("Its conversation has been idle 90 min (61.5k tokens)"), "{}", events[0]);
+
+    b.app.db.x("UPDATE jobs SET state = 'running' WHERE id = ?", p![jid]).unwrap();
+    b.run(jid);
+    assert_eq!(b.typed(), ["Hello"], "a retried job doesn't compact again");
+    assert_eq!(b.compact_events(id).len(), 1, "and logs it once");
+}
+
+#[test]
+fn compacting_an_open_terminal_says_how_cold_it_was() {
+    let c = taskboardd::limits::Conversation { tokens: Some(150_000), idle_mins: Some(72.4) };
+    assert_eq!(
+        midna::compact_open_text(&c),
+        "Its conversation has been idle 72 min (150k tokens), so the board compacts it before sending it anything."
+    );
+    let c = taskboardd::limits::Conversation { tokens: None, idle_mins: Some(61.0) };
+    assert_eq!(midna::compact_open_text(&c), "Its conversation has been idle 61 min, so the board compacts it before sending it anything.");
+}

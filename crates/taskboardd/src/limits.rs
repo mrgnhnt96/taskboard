@@ -156,7 +156,7 @@ pub fn set(app: &App, body: &Value) -> Result<Limits> {
     Ok(get(app))
 }
 
-fn tokens_text(n: i64) -> String {
+pub fn tokens_text(n: i64) -> String {
     if n >= 1000 && n % 1000 == 0 {
         format!("{}k", n / 1000)
     } else if n >= 1000 {

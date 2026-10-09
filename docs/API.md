@@ -754,7 +754,9 @@ by the board's, and once after an upgrade every repo the board has known is swep
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
   --output-format json --setting-sources ""` (no user settings or hooks; a nonzero exit or `is_error` is a failure, and the
-  resume goes ahead uncompacted) before a new terminal resumes it, or `/compact` queued ahead of the prompt in its live terminal.
+  resume goes ahead uncompacted) before a new terminal resumes it, or `/compact` queued ahead of an agent job's prompt or a message job's text in its live terminal
+  (once per job, logged on the job's task: "Its conversation has been idle N min (Xk tokens), so the board compacts it before
+  sending it anything.").
 - `warm_tokens`, `warm_idle_mins`: a task (after its wait-for) or a PR visit resumes its conversation only while it's under
   both; otherwise it starts fresh from the handoff and the history says why. A live terminal is always typed into.
   Size and idle time come from the conversation's transcript (its last reply's context, or the last compact
