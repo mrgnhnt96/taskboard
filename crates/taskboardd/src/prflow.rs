@@ -18,7 +18,7 @@ use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge"];
-pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge"];
+pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -32,6 +32,7 @@ pub fn label(phase: &str) -> &str {
         "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
         "merge" => "Ready to merge",
+        "waits" => "Waits on base",
         "merged" => "Merged",
         "declined" => "Closed",
         other => other,
@@ -567,7 +568,8 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         return "rereview".into();
     }
     if review_skipped || approved(app, t, &review) {
-        return "merge".into();
+        // A stacked PR waits for the PR it builds on to merge first (`stack.rs`).
+        return if crate::stack::holds(app, t).unwrap_or(false) { "waits" } else { "merge" }.into();
     }
     "review".into()
 }
@@ -886,6 +888,7 @@ pub fn refresh(app: &App) -> Result<i64> {
             Err(e) => app.info(format!("prs: couldn't read {}: {e}", t.st("pr_url"))),
         }
     }
+    crate::stack::retarget(app)?;
     let healed: Vec<Row> = app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_num IS NOT NULL", p![])?;
     for t in healed {
         app.db.tx(|| heal(app, &t))?;

@@ -1002,6 +1002,13 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
     }
     if !failed {
         let in_review = prflow::IN_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
+        let canceled = t.s("no_pr").filter(|w| !w.is_empty() && !app.cfg.jira.canceled.is_empty());
+        if let Some(why) = canceled {
+            // `tb done --no-pr`: the ticket is withdrawn, with the reason as its comment.
+            board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.canceled.clone()), Some(&format!("PR canceled: {why}")))?;
+            app.wake_runner();
+            return Ok(t);
+        }
         let target = if in_review {
             Some(app.cfg.jira.in_review.clone())
         } else if t.i("pr_num").is_none() && !app.cfg.jira.done.is_empty() {
@@ -1035,13 +1042,30 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if let Some(m) = human_min {
         board::update_task(r.app, t.id(), fields!["human_min" => m])?;
     }
+    let no_pr = one_line(&r.b("no_pr"), 1000);
+    if !no_pr.is_empty() {
+        if !pr_arg.is_empty() || has(t.s("pr_url")) {
+            return err(400, format!("{} has a PR, so it can't finish without one.", rf("task", t.id())));
+        }
+        if !projects::task_ships_pr(r.app, &t)? {
+            return err(409, format!("{} doesn't end in a PR, so there's none to cancel: finish with tb done \"<summary>\".", rf("task", t.id())));
+        }
+        board::update_task(r.app, t.id(), fields!["no_pr" => no_pr])?;
+        r.log(t.id(), "status", &format!("PR canceled: {no_pr}"), None)?;
+    }
+    let no_evidence = one_line(&r.b("no_evidence"), 1000);
+    if !no_evidence.is_empty() {
+        board::update_task(r.app, t.id(), fields!["no_evidence" => no_evidence])?;
+        r.log(t.id(), "status", &format!("No evidence: {no_evidence}"), None)?;
+    }
+    let pr = if no_pr.is_empty() { pr } else { None };
     if let Some(pr) = pr {
         prflow::link_pr(r.app, &t, &pr, &r.name())?;
     }
     let t = board::get_task(r.app, t.id())?;
     let at = r.at.clone();
     let t = finish_task(r.app, &t, &r.name(), &summary, false, Some(&at))?;
-    Ok(ok(Some(&t), None))
+    Ok(with(ok(Some(&t), None), json!({"pr_url": t.v("pr_url")})))
 }
 
 /// `task.finishing`'s hooks, before `tb done` (outside the transaction: a hook may call `tb`). A stop is
@@ -1053,9 +1077,10 @@ fn finishing(r: &Report) -> Result<()> {
         return Ok(());
     }
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
-    let with_pr = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || board::pr_still_open(&t);
+    let with_pr = (find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || board::pr_still_open(&t)) && r.b("no_pr").trim().is_empty();
     let before: &[steps::Before] = if with_pr { &[steps::Before::Pr, steps::Before::Done] } else { &[steps::Before::Done] };
-    let left = steps::missing(app, &t, before)?;
+    let head = r.git.s("sha").filter(|h| !h.is_empty()).map(|h| h.to_string());
+    let left = steps::missing_at(app, &t, before, head.as_deref())?;
     if !left.is_empty() {
         if r.spooled {
             let line = format!("Not finished: {} waits for {}", rf("task", t.id()), steps::names(&left));
@@ -1109,10 +1134,58 @@ fn on_step(r: &mut Report) -> Result<Value> {
         (true, false) => format!("Step done: {}: {note}", step.name),
         (false, _) => format!("Step didn't pass: {}{}", step.name, if note.is_empty() { String::new() } else { format!(": {note}") }),
     };
-    r.log(t.id(), "step", &text, Some(json!({"name": step.name, "before": step.before.as_str(), "ok": passed, "note": note, "output": output})))?;
+    let mut data = json!({"name": step.name, "before": step.before.as_str(), "ok": passed, "note": note, "output": output});
+    let head = { let h = r.b("head"); if h.is_empty() { r.git.st("sha") } else { h } };
+    if !head.is_empty() {
+        data["head"] = json!(head);
+    }
+    if let Some(res) = steps::clean_result(r.body.get("result")) {
+        data["result"] = res;
+    }
+    r.log(t.id(), "step", &text, Some(data))?;
     board::update_task(app, t.id(), fields!["latest" => one_line(&text, 200)])?;
     let left: Vec<String> = steps::missing(app, &t, &[steps::Before::Pr, steps::Before::Done])?.into_iter().map(|s| s.name).collect();
     Ok(with(ok(Some(&t), None), json!({"step": step.name, "passed": passed, "left": left})))
+}
+
+/// `tb step triage`: an answer to one finding of a step's latest round (fixed, answered, dismissed),
+/// optionally pointing at the commit that deals with it.
+fn on_step_triage(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let step = steps::find(app, &t, &r.b("name"))?;
+    let finding = one_line(&r.b("finding"), 80);
+    let state = r.b("state").to_lowercase();
+    if !steps::TRIAGE_STATES.contains(&state.as_str()) {
+        return err(400, format!("A finding is {}.", steps::TRIAGE_STATES.join(", ")));
+    }
+    let latest = steps::results(app, &t)?.into_iter().find(|x| x["name"] == json!(step.name));
+    let known = latest.as_ref().and_then(|l| l["findings"].as_array().cloned()).unwrap_or_default();
+    if !known.iter().any(|f| f["id"].as_str() == Some(finding.as_str())) {
+        let ids: Vec<String> = known.iter().filter_map(|f| f["id"].as_str().map(|s| s.to_string())).collect();
+        return err(
+            400,
+            if ids.is_empty() {
+                format!("“{}”'s last round has no findings to triage.", step.name)
+            } else {
+                format!("“{finding}” isn't one of “{}”'s findings: {}.", step.name, ids.join(", "))
+            },
+        );
+    }
+    let note = one_line(&r.b("note"), 1000);
+    let commit = one_line(&r.b("commit"), 64);
+    let mut text = format!("{}: {finding} is {state}", step.name);
+    if !commit.is_empty() {
+        text += &format!(" in {}", commit.chars().take(12).collect::<String>());
+    }
+    if !note.is_empty() {
+        text += &format!(": {note}");
+    }
+    r.log(t.id(), "step_triage", &text, Some(json!({"name": step.name, "finding": finding, "state": state, "note": note, "commit": commit})))?;
+    let t = board::get_task(app, t.id())?;
+    let open = steps::results(app, &t)?.into_iter().find(|x| x["name"] == json!(step.name)).map(|x| x["open"].clone()).unwrap_or(json!(0));
+    Ok(with(ok(Some(&t), None), json!({"step": step.name, "finding": finding, "state": state, "open": open})))
 }
 
 /// Puts the task in Needs you for a step, as a question the owner answers or acknowledges.
@@ -1276,6 +1349,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"),
+                    "stack_on": item.get("stack_on"), "ships_pr": item.get("ships_pr"),
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
@@ -1328,7 +1402,8 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
         let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
-                           "jira": r.body.get("jira")}]);
+                           "jira": r.body.get("jira"),
+                           "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr")}]);
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
         return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
@@ -1344,6 +1419,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                 "status": if planned_flag { "planned" } else { "queued" },
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                 "jira": r.body.get("jira"),
+                "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
                 "origin": {"from": "Added by an agent", "by": r.name()}}),
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
@@ -1369,6 +1445,7 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
         app,
         &json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
                 "jira": r.body.get("jira"),
+                "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
                 "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}}),
         &name,
         Some(&format!("Added by {name} for the code it changed with {owner}")),
@@ -1571,6 +1648,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.step" => on_step,
         "tb.step_ask" => on_step_ask,
         "tb.step_fail" => on_step_fail,
+        "tb.step_triage" => on_step_triage,
         "tb.take" => on_take,
         "tb.propose" => on_propose,
         "tb.goal" => on_goal,
@@ -1641,6 +1719,8 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
     }
     if r.event == "tb.done" {
+        let t = r.task().ok().flatten();
+        crate::propen::before_done(app, &mut r.body, t.as_ref())?;
         finishing(&r)?;
     }
     app.db.tx(|| {

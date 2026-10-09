@@ -65,7 +65,7 @@ fn tab_name(tab: TaskTab) -> &'static str {
 }
 
 fn folds() -> HashMap<String, String> {
-    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms]
+    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms, Fold::Findings]
         .iter()
         .filter_map(|f| crate::prefs::get_str(f.key()).map(|v| (f.key().to_string(), v)))
         .collect()
@@ -993,7 +993,7 @@ impl Draw<'_> {
                 div().id(self.id("fold")).flex().items_center().gap(px(8.)).cursor_pointer().child(chevron(open, c)).children(summary)
             }
             // `.tl-more > summary`: 12.5px muted, the browser's disclosure triangle.
-            Fold::Terms => div()
+            Fold::Terms | Fold::Findings => div()
                 .id(self.id("fold"))
                 .flex()
                 .items_center()
@@ -1014,6 +1014,7 @@ impl Draw<'_> {
                 Fold::What => 2.,
                 Fold::Summary => 8.,
                 Fold::Terms => 10.,
+                Fold::Findings => 6.,
             };
             for i in 1..kids.len() {
                 if let Some(e) = self.kid(m, n, i, boxed, cx) {

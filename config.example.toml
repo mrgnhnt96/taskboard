@@ -121,6 +121,21 @@ guard = false
 languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kotlin", "go", "java", "c", "cpp", "csharp", "ruby", "shell"]
 # pragmas = ["!/", "noqa", "type:", "pragma", "pylint:", "eslint-", "@ts-", "prettier-ignore", "ignore:", "ignore_for_file:", "nolint", "go:", "swiftlint:", …]
 
+# `tb done "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
+# (GitHub, with gh) into the real base: a stacked task's parent branch, else the default branch.
+# `tb pr body-check FILE` runs the description check alone.
+[pr_body]
+sections = ["Summary", "Changes", "Testing"]   # `## <name>` sections it needs, in this order
+bullets = ["Changes", "Testing"]               # sections that are bullet lists
+max_paragraph = 400                  # longest paragraph in characters; 0 for no limit
+no_board_refs = true                 # refuse T12 / G3 / B7 and "task board"
+forbid = []                          # more regexes it mustn't match (case-insensitive), e.g. a review tool's name
+rebased = true                       # the branch must sit on <remote>/<base> with no merge commits
+require_ticket = false               # refuse a task with no Jira ticket
+title_prefix = true                  # "ABC-12 Add login"
+context = true                       # add a "## Context" section: ticket, the PR it stacks on, evidence links
+remote = "origin"
+
 # Jira (optional). Off while `site` or `project` is empty. The token comes from `token`,
 # env TASKBOARD_JIRA_TOKEN, or the macOS Keychain item below (account = email). No token? Set via = "claude":
 # each Jira op then runs through a headless `claude -p` that may use only the Atlassian connector's tools.
@@ -149,6 +164,8 @@ desk = false                         # new tickets go to the Jira desk: a Claude
                                      # that searches for an open ticket covering the work before it makes one
 desk_dir = ""                        # the desk's folder; empty = the board's data folder
 default_product = ""                 # a ticket's product when its goal has none and the work's words pick none
+canceled = ""                        # status when a task finishes without its PR (tb done --no-pr), with the
+                                     # reason as a comment, e.g. "Withdrawn"; empty = like any task without a PR
 
 # Products decide the labels, components and extra fields on a goal's tickets (`tb goal set G1 --product web`).
 # A goal with none gets the product its work best matches by `what` (Claude or the desk picks it), or default_product.
@@ -181,13 +198,20 @@ create_url = ""                      # example: "https://flags.example.com/new?k
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
-# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {pr_url} {jira}. The board
-# refuses the PR and `tb done` until they pass. See docs/HOOKS.md ("Steps").
+# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {base_ref} {pr_url} {jira};
+# {base} is the PR's real base (a stacked task's parent branch) and {base_ref} has the remote on it
+# (origin/main). The board refuses the PR and `tb done` until they pass. A step with per_head = true passes
+# once per head commit (every push is checked again, and a push to the open PR waits for it);
+# min_gap_mins keeps its rounds apart; bar = "WD" shows it in the app's PR bar. A check can write its
+# verdict, headline and findings to $TASKBOARD_RESULT. See docs/HOOKS.md ("Steps").
 # [[steps]]
 # name = "Author-side review"
 # projects = "work-app|work-api"
-# prompt = "Run /author-review on {branch} against {base}, and fix what it finds."
-# check = "test -f .review/{branch}.passed"
+# prompt = "Run /author-review on {branch} against {base_ref}, and fix what it finds."
+# check = "author-review --since {base_ref} --result $TASKBOARD_RESULT"
+# per_head = true
+# min_gap_mins = 10
+# bar = "WD"
 #
 # [[steps]]
 # name = "Lint and unit tests"

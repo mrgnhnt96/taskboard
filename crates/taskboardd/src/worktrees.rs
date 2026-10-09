@@ -1,5 +1,5 @@
 //! A git worktree per task. A goal with a `worktree_base` (like `origin/main`) starts each task in
-//! `<repo>/.claude/worktrees/T<n>`, detached at that base.
+//! `<repo>/.claude/worktrees/T<n>`, detached at that base (a stacked task: at its parent's branch).
 //! The worktree is made before the start, outside any transaction; one that can't be made fails the
 //! start with the usual retries. Once the task is finished (failed, no open PR) and its terminal is
 //! gone, the board removes the worktree, or keeps it when it has uncommitted changes.
@@ -97,13 +97,19 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
         record(app, t, &path, None)?;
         return Ok(Some(path));
     }
-    if git(&repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0 {
+    let remote = git(&repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0;
+    if remote {
         let r = git(&repo, &["fetch", "origin"], FETCH_SECS);
         if r.code != 0 {
             return err(409, format!("git fetch failed before making its worktree: {}", last_line(&r.err)));
         }
     }
-    let start = base;
+    // A stacked task starts from its parent's branch while the parent's PR is unmerged.
+    let start = match crate::stack::base_branch(app, t)? {
+        Some(b) if remote => format!("origin/{b}"),
+        Some(b) => b,
+        None => base,
+    };
     let r = git(&repo, &["worktree", "add", "--detach", &path, &start], GIT_SECS);
     if r.code != 0 {
         return err(409, format!("Couldn't make its worktree from {start}: {}", last_line(&r.err)));

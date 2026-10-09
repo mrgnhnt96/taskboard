@@ -228,7 +228,11 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
     };
     let waits: Vec<Value> = waitsfor::ids(t).into_iter().map(|n| json!(rf("task", n))).collect();
     let waiting = if status == "queued" { waitsfor::waiting_line(app, t)? } else { Value::Null };
-    Ok(json!({
+    let mut pr = pr_card(t);
+    if pr.is_object() {
+        pr["bar"] = crate::prbar::bar(app, t)?;
+    }
+    let mut card = json!({
         "id": t.id(), "ref": rf("task", t.id()), "title": t.v("title"), "project": t.v("project"),
         "status": status, "priority": t.s("priority").unwrap_or("normal"),
         "failed": t.b("failed"), "lost": t.b("lost"), "needs_reason": t.v("needs_reason"),
@@ -240,7 +244,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "also": crate::shared::goals_of(app, t.id())?,
         "wave": t.v("wave"),
         "jira": jira_card(app, t)?,
-        "pr": pr_card(t),
+        "pr": pr,
         "position": position,
         "starting": t.i("start_job").is_some() && status == "queued",
         "waits_for": waits,
@@ -257,7 +261,16 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         },
         "devices": crate::devices::card(app, t)?,
         "bits": crate::bits::task_card(app, t.id())?,
-    }))
+    });
+    // The PR plan (#22), a canceled PR (#21) and the PR it stacks on (#13).
+    if let Some(o) = card.as_object_mut() {
+        o.insert("ships_pr".into(), json!(crate::projects::task_ships_pr(app, t)?));
+        o.insert("ships_pr_set".into(), t.i("ships_pr").map(|v| json!(v != 0)).unwrap_or(Value::Null));
+        o.insert("no_pr".into(), t.v("no_pr"));
+        o.insert("no_evidence".into(), t.v("no_evidence"));
+        o.insert("stack_on".into(), crate::stack::card(app, t)?);
+    }
+    Ok(card)
 }
 
 pub fn task_for_session(app: &App, sid: Option<&str>) -> Result<Option<Row>> {
@@ -479,6 +492,14 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         .filter(|r| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r))
         .filter_map(|r| r.i("pr_num"))
         .collect();
+    // The PR plan: tasks that end in a PR, how many have one, and how many finished without (`--no-pr`).
+    let mut prs_planned = 0;
+    for r in &rows {
+        if !has(r.s("no_pr")) && crate::projects::task_ships_pr(app, r)? {
+            prs_planned += 1;
+        }
+    }
+    let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
     let finished_at = if total > 0 && done == total && prs_open.is_empty() && bits_waiting == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
@@ -498,6 +519,8 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         "failed": n(&|r| r.s("status") == Some("done") && r.b("failed")),
         "prs_open": prs_open,
         "prs": n(&|r| r.i("pr_num").is_some()),
+        "prs_planned": prs_planned,
+        "prs_canceled": prs_canceled,
         "finished_at": finished_at,
         "open_issues": app.db.count("SELECT COUNT(*) FROM issues WHERE goal_id = ? AND state = 'open'", p![goal_id])?,
         "closed_count": app.db.count("SELECT COUNT(*) FROM issues WHERE goal_id = ? AND state = 'drop'", p![goal_id])?,

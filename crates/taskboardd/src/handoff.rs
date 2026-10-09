@@ -114,7 +114,7 @@ pub fn report_block(app: &App, tb: &str) -> String {
 }
 
 fn pr_block(app: &App, t: &Row, tb: &str) -> Result<String> {
-    let ships = projects::ships_prs(app, &t.st("project"))?;
+    let ships = projects::task_ships_pr(app, t)?;
     let own = steps::handoff_block(app, t, tb, ships);
     let s = pr_lines(app, t, ships)?;
     Ok(if own.is_empty() { s } else { format!("{s}\n{own}") })
@@ -122,7 +122,11 @@ fn pr_block(app: &App, t: &Row, tb: &str) -> Result<String> {
 
 fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
     if !ships {
-        return Ok("This project has no git remote, so the task ends without a pull request.".into());
+        return Ok(if t.i("ships_pr") == Some(0) {
+            "This task ends without a pull request.".into()
+        } else {
+            "This project has no git remote, so the task ends without a pull request.".into()
+        });
     }
     let mut s = "If this task changes code, it ends in one pull request: finished code that builds, breaks nothing \
                  that works today, and can be merged on its own. Keep it small and easy to review; split anything \
@@ -140,6 +144,9 @@ fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
         let setup = board::find_goal(app, t.i("goal_id"))?.is_some_and(|g| g.s("setup").is_some_and(|x| !x.trim().is_empty()));
         s += &format!(" Name its branch {b}{}.", if setup { " unless the goal's setup says otherwise" } else { "" });
     }
+    s += " Or let the board open it: write the description to a file and finish with tb done \"<summary>\" --pr-body <file> \
+          (it checks the description and that the branch is pushed and rebased, then opens the PR). If it turns out no \
+          PR is needed after all, finish with tb done \"<summary>\" --no-pr \"<why>\".";
     if app.cfg.pr.watch && app.cfg.pr.wake {
         s += " Once it's done, the board watches the PR and brings this conversation back when a check fails or a \
               reviewer comments.";
@@ -340,6 +347,9 @@ fn goal_open_issues(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> 
 
 fn other_tasks(app: &App, t: &Row) -> Result<Vec<String>> {
     let mut out = vec![];
+    if let Some(line) = crate::stack::handoff_line(app, t, &app.cfg.pr_body.remote)? {
+        out.push(line);
+    }
     let text = waitsfor::bring_in_text(app, t)?;
     if !text.is_empty() {
         out.push(text);

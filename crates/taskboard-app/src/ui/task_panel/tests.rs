@@ -410,3 +410,74 @@ fn a_failure_cleared_as_not_ours_shows_its_reason_and_proof() {
     task["pr"]["stage"]["not_ours"] = Value::Null;
     assert!(!view::text(&tree(&json!({"task": task, "state": {}, "ui": {}}))).contains("not because of this PR"));
 }
+
+// ------------------------------------------------------------------ the PR bar, the PR plan, canceled PRs
+
+/// A done task whose PR the board describes with `pr.bar` (the five-step bar).
+fn with_bar(bar: Value, stage: Value, review: &str) -> Value {
+    json!({"ref": "T4", "id": 4, "title": "Use the endpoint", "status": "done", "project": "webapp",
+           "pr": {"num": 13, "repo": "webapp", "url": "https://github.com/acme/webapp/pull/13", "state": "OPEN",
+                  "checks": "pass", "review": review, "stage": stage, "bar": bar}})
+}
+
+fn panel_text(task: Value, state: Value) -> String {
+    view::text(&tree(&json!({"task": task, "state": state, "ui": {}})))
+}
+
+#[::core::prelude::v1::test]
+fn the_pr_bar_has_every_step_once_the_board_sends_it() {
+    let bar = json!({"build_url": "https://ci.example/9", "you": "waiting", "approvals": 1, "reviewers": 2, "new_comments": 0,
+                     "stacks_on": {"ref": "T3", "num": 12, "url": "https://github.com/acme/webapp/pull/12", "merged": false},
+                     "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}, "reviewer_rows": []});
+    let task = with_bar(bar, json!({"phase": "waits", "label": "Waits on base"}), "pending");
+    let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
+    let text = view::text(&tree);
+    for want in ["WD 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Merge Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
+        assert!(text.contains(want), "{want:?} in {text}");
+    }
+    let acts = view::acts(&tree);
+    assert!(acts.iter().any(|a| a == "open-task") && acts.iter().any(|a| a == "pr-reviewed"), "{acts:?}");
+    assert!(!text.contains("I reviewed it"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn checks_say_when_they_arent_needed_or_this_prs() {
+    let text = panel_text(with_bar(json!({"checks": "not_needed"}), Value::Null, "none"), json!({}));
+    assert!(text.contains("Checks Not needed") && text.contains("You Review Not asked"), "{text}");
+    let text = panel_text(with_bar(json!({"checks": "not_ours", "you": "reviewed"}), Value::Null, "approved"), json!({}));
+    assert!(text.contains("Checks Not this PR's") && text.contains("You Reviewed") && text.contains("Review Approved"), "{text}");
+    let text = panel_text(with_bar(json!({"new_comments": 2}), json!({"phase": "review"}), "none"), json!({}));
+    assert!(text.contains("Review New comments"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_canceled_pr_shows_why_with_its_refs_linked() {
+    let task = json!({"ref": "T5", "id": 5, "title": "Fix it", "status": "done", "project": "webapp",
+                      "no_pr": "T3 fixed it in ABC-7.", "ships_pr": true, "no_evidence": "no UI change"});
+    let tree = tree(&json!({"task": task, "state": {"jira": {"enabled": true, "site": "acme.atlassian.net"}}, "ui": {}}));
+    let text = view::text(&tree);
+    assert!(text.contains("PR canceled: T3 fixed it in ABC-7 .") && text.contains("No evidence: no UI change"), "{text}");
+    assert!(view::acts(&tree).iter().any(|a| a == "open-task"), "T3 opens its task");
+    let links = format!("{tree:?}");
+    assert!(links.contains("https://acme.atlassian.net/browse/ABC-7"), "the ticket links to Jira");
+}
+
+#[::core::prelude::v1::test]
+fn the_pr_plan_shows_on_a_task_without_a_pr() {
+    let t = |ships: bool| json!({"ref": "T6", "id": 6, "title": "x", "status": "queued", "project": "webapp", "ships_pr": ships});
+    assert!(panel_text(t(true), json!({})).contains("Ends in a PR No PR yet."));
+    assert!(panel_text(t(false), json!({})).contains("Pull request No PR"));
+}
+
+#[::core::prelude::v1::test]
+fn a_steps_findings_fold_under_its_headline() {
+    let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
+                      "step_results": [{"name": "Author review", "headline": "1 open finding", "open": 1, "stale": true,
+                                        "findings": [{"id": "F2", "title": "SQL injection", "severity": "high", "file": "api.rs", "line": 12},
+                                                     {"id": "F1", "title": "Typo", "state": "fixed"}]}]});
+    let shut = panel_text(task.clone(), json!({}));
+    assert!(shut.contains("1 open finding · Findings ›") && !shut.contains("SQL injection"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.findings": "open"}}})));
+    assert!(text.contains("Author review 1 open finding Moved since"), "{text}");
+    assert!(text.contains("F2 open high SQL injection api.rs:12") && text.contains("F1 fixed Typo"), "{text}");
+}

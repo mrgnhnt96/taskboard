@@ -29,6 +29,7 @@ pub struct FileConfig {
     pub questions: Questions,
     pub backlog: BacklogAi,
     pub pr: PrConfig,
+    pub pr_body: PrBodyConfig,
     pub jira: JiraConfig,
     pub handoff: HandoffConfig,
     pub alerts: AlertsConfig,
@@ -229,6 +230,49 @@ pub struct HandoffConfig {
     pub branch: String,
 }
 
+/// `tb done --pr-body FILE`: what the PR description must look like, and how the board opens the PR.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PrBodyConfig {
+    /// `## <name>` sections the description needs, in this order.
+    pub sections: Vec<String>,
+    /// Sections whose content is a bullet list.
+    pub bullets: Vec<String>,
+    /// Longest paragraph, in characters (0 for no limit).
+    pub max_paragraph: usize,
+    /// Refuse the board's own words: task, goal and backlog refs (T12, G3, B7) and "task board".
+    pub no_board_refs: bool,
+    /// More things the description mustn't say, as regexes (case-insensitive): a review tool's name, …
+    pub forbid: Vec<String>,
+    /// The branch must sit on top of the remote base (rebased), with no merge commits.
+    pub rebased: bool,
+    /// Refuse to open a PR for a task with no Jira ticket.
+    pub require_ticket: bool,
+    /// Start the PR title with the ticket key ("ABC-12 Add login").
+    pub title_prefix: bool,
+    /// Add a `## Context` section: the ticket, the PR it stacks on, the task's evidence.
+    pub context: bool,
+    /// The remote the branch is pushed to and the base is read from.
+    pub remote: String,
+}
+
+impl Default for PrBodyConfig {
+    fn default() -> Self {
+        PrBodyConfig {
+            sections: vec!["Summary".into(), "Changes".into(), "Testing".into()],
+            bullets: vec!["Changes".into(), "Testing".into()],
+            max_paragraph: 400,
+            no_board_refs: true,
+            forbid: vec![],
+            rebased: true,
+            require_ticket: false,
+            title_prefix: true,
+            context: true,
+            remote: "origin".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct JiraProduct {
@@ -258,6 +302,9 @@ pub struct JiraConfig {
     pub in_review: String,
     pub done: String,
     pub merged: String,
+    /// The status a ticket moves to when its task finishes without a PR (`tb done --no-pr`), with the
+    /// reason as a comment. Empty: it goes to `done` like any task without a PR.
+    pub canceled: String,
     pub products: BTreeMap<String, JiraProduct>,
     /// How the board talks to Jira: "rest" (the API token) or "claude" (a headless `claude -p` with
     /// the Atlassian connector's tools, for a board with no token).
@@ -296,6 +343,7 @@ impl Default for JiraConfig {
             in_review: "In Review".into(),
             done: String::new(),
             merged: String::new(),
+            canceled: String::new(),
             products: BTreeMap::new(),
             via: "rest".into(),
             claude_tools: vec!["mcp__claude_ai_Atlassian".into(), "mcp__atlassian".into()],
@@ -417,6 +465,7 @@ pub struct Config {
     pub questions: Questions,
     pub backlog: BacklogAi,
     pub pr: PrConfig,
+    pub pr_body: PrBodyConfig,
     pub jira: JiraConfig,
     pub handoff: HandoffConfig,
     pub alerts: AlertsConfig,
@@ -508,6 +557,7 @@ impl Config {
             questions: f.questions,
             backlog: f.backlog,
             pr: f.pr,
+            pr_body: f.pr_body,
             jira,
             handoff: f.handoff,
             alerts: f.alerts,

@@ -98,6 +98,46 @@ pub fn ships_prs(app: &App, name: &str) -> Result<bool> {
     Ok(has_remote(app, name)? != Some(false))
 }
 
+/// Whether a task ends in a PR: its own setting (`tb task set --pr yes|no`), else its project's.
+pub fn task_ships_pr(app: &App, t: &Row) -> Result<bool> {
+    match t.i("ships_pr") {
+        Some(v) => Ok(v != 0),
+        None => ships_prs(app, &t.st("project")),
+    }
+}
+
+/// A ships-PR setting from a body: yes/no (or true/false), or auto/none for the project's default.
+pub fn clean_ships_pr(v: &Value) -> Result<Option<i64>> {
+    match v {
+        Value::Null => Ok(None),
+        Value::Bool(b) => Ok(Some(*b as i64)),
+        Value::Number(n) => Ok(Some((n.as_i64().unwrap_or(0) != 0) as i64)),
+        Value::String(s) => match s.trim().to_lowercase().as_str() {
+            "yes" | "on" | "true" | "1" | "pr" => Ok(Some(1)),
+            "no" | "off" | "false" | "0" | "no-pr" => Ok(Some(0)),
+            "" | "auto" | "none" | "default" => Ok(None),
+            other => err(400, format!("“{other}” isn't a PR setting: give yes, no or auto.")),
+        },
+        _ => err(400, "Give the PR setting as yes, no or auto."),
+    }
+}
+
+/// Sets a task's ships-PR flag from a body's `ships_pr`, logging the change. False when it didn't change.
+pub fn set_task_ships_pr(app: &App, t: &Row, v: &Value, who: &str) -> Result<bool> {
+    let want = clean_ships_pr(v)?;
+    if want == t.i("ships_pr") {
+        return Ok(false);
+    }
+    crate::board::update_task(app, t.id(), crate::fields!["ships_pr" => want])?;
+    let text = match want {
+        Some(1) => "Ends in a PR".to_string(),
+        Some(_) => "Ends without a PR".to_string(),
+        None => format!("Ends in a PR as its project does ({})", if ships_prs(app, &t.st("project"))? { "yes" } else { "no" }),
+    };
+    crate::board::log_event(app, t.id(), who, "note", &text)?;
+    Ok(true)
+}
+
 pub fn describe(app: &App, p: &Value) -> Result<Value> {
     let name = p["name"].as_str().unwrap_or("");
     let mut d = p.clone();

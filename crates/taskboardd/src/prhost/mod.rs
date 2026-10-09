@@ -191,6 +191,8 @@ impl Record {
             "comments": self.comments, "approvals": self.approvals, "mergeable": self.mergeable,
             "changes_at": self.changes_at, "reviewers": self.reviewers, "threads": self.threads,
             "tasks_open": self.tasks_open,
+            // Reviewers asked who haven't reviewed yet (the PR bar's "x of N").
+            "requested": self.reviewers.iter().filter(|r| r.requested && r.state == "pending").count(),
         })
     }
 }

@@ -210,6 +210,8 @@ pub enum Fold {
     Summary,
     What,
     Terms,
+    /// A step's findings (`step_results`), under its headline.
+    Findings,
 }
 
 impl Fold {
@@ -220,6 +222,7 @@ impl Fold {
             Fold::Summary => "tb.fold.summary",
             Fold::What => "tb.fold.what",
             Fold::Terms => "tb.fold.terms",
+            Fold::Findings => "tb.fold.findings",
         }
     }
 }
@@ -783,7 +786,7 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(manage_box(c, t));
     }
 
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), Some(pr_row(c, t)), Some(attach_row(c, t))].into_iter().flatten().collect();
+    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
     out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
     let what = match opt_s(t, "detail") {
         Some(d) => note_body(d),
@@ -1060,6 +1063,242 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
     [("Checks", checks.0, checks.1), ("Review", review.0, review.1), ("Merge", merge.0, merge.1)]
 }
 
+/// One step of the PR bar: its name, state, the state's words and where they link.
+pub struct PrStep {
+    pub name: String,
+    pub st: StepSt,
+    pub sub: Option<String>,
+    pub link: Option<String>,
+}
+
+fn step(name: impl Into<String>, st: StepSt, sub: Option<&str>, link: Option<String>) -> PrStep {
+    PrStep { name: name.into(), st, sub: sub.map(str::to_string), link }
+}
+
+/// The PR bar's steps when the board sends `pr.bar`: the author-side review step (its `bar` name, like
+/// WD), Checks, You, Review and Merge, with the states the old board showed.
+pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
+    let [checks, review, merge] = pr_steps(p);
+    let stage = &p["stage"];
+    let phase = if stage.is_object() { s(stage, "phase") } else { "" };
+    let mut out = Vec::new();
+    if let Some(wd) = obj(bar, "wd") {
+        let headline = opt_s(wd, "headline").unwrap_or("");
+        let open = wd["open"].as_i64().unwrap_or(0);
+        let (st, sub) = if s(wd, "verdict") == "skip" {
+            (StepSt::Done, headline.to_string())
+        } else if b(wd, "stale") {
+            (StepSt::Wait, "Moved since".to_string())
+        } else if open > 0 {
+            (StepSt::Ask, headline.to_string())
+        } else if b(wd, "passed") {
+            (StepSt::Done, headline.to_string())
+        } else {
+            (StepSt::Fail, headline.to_string())
+        };
+        out.push(step(s(wd, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None));
+    }
+    let build = opt_s(bar, "build_url").filter(|u| is_web(u)).map(str::to_string);
+    out.push(match s(bar, "checks") {
+        "not_ours" => step("Checks", StepSt::Done, Some("Not this PR's"), None),
+        "not_needed" => step("Checks", StepSt::Done, Some("Not needed"), None),
+        _ => step(checks.0, checks.1, checks.2.as_deref(), if checks.1 == StepSt::Todo { None } else { build }),
+    });
+    out.push(match s(bar, "you") {
+        "waiting" => step("You", StepSt::Ask, Some("Waiting on you"), None),
+        "reviewed" => step("You", StepSt::Done, Some("Reviewed"), None),
+        "skipped" => step("You", StepSt::Done, Some("Skipped"), None),
+        _ => step("You", StepSt::Todo, None, None),
+    });
+    let url = opt_s(p, "url").filter(|u| is_web(u)).map(str::to_string);
+    let approvals = bar["approvals"].as_i64().unwrap_or(0);
+    let reviewers = bar["reviewers"].as_i64().unwrap_or(0);
+    let new_comments = bar["new_comments"].as_i64().unwrap_or(0);
+    let rv = js_lower(&p["review"]);
+    out.push(if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
+        step("Review", StepSt::Ask, Some("New comments"), url)
+    } else if reviewers > 0 && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
+        let st = if approvals >= reviewers { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
+        step("Review", st, Some(&format!("{approvals} of {reviewers}")), url)
+    } else {
+        step(review.0, review.1, review.2.as_deref(), url)
+    });
+    out.push(if phase == "waits" && pr_open(p) { step("Merge", StepSt::Wait, Some("Waits on base"), None) } else { step(merge.0, merge.1, merge.2.as_deref(), None) });
+    out
+}
+
+/// "Stacks on T3 · PR #12": the task it builds on opens in the panel, its PR on the host.
+fn stacks_line(c: &Ctx, so: &Value) -> Node {
+    let r = s(so, "ref");
+    let merged = b(so, "merged");
+    let mut kids = vec![txt(if merged { "Stacked on" } else { "Stacks on" }, St::Small), c.btn(r, Act::new("open-task", "", r, ""), Look::Ref, false, Some(&format!("Open {r}")))];
+    if let Some(n) = so.get("num").filter(|n| !n.is_null()) {
+        let label = format!("PR #{}{}", or_empty(n), if merged { " · merged" } else { "" });
+        kids.push(match opt_s(so, "url").filter(|u| is_web(u)) {
+            Some(u) => Node::Link { s: label, go: Go::Url(u.to_string()), tip: Some("Open its pull request".into()), look: LinkLook::Small },
+            None => txt(label, St::Small),
+        });
+    } else if let Some(br) = opt_s(so, "branch") {
+        kids.push(txt(format!("branch {br}"), St::Small));
+    }
+    el(K::Line, kids)
+}
+
+/// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them.
+fn reviewer_rows(bar: &Value) -> Vec<Node> {
+    arr(bar, "reviewer_rows")
+        .iter()
+        .filter_map(|r| {
+            let name = opt_s(r, "name")?;
+            let mut kids = vec![txt(name, St::Plain)];
+            if let Some(st) = opt_s(r, "state") {
+                kids.push(pill(st, Tone::Neutral));
+            }
+            if let Some(u) = opt_s(r, "url").filter(|u| is_web(u)) {
+                kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
+            }
+            Some(el(K::Line, kids))
+        })
+        .collect()
+}
+
+/// A done task's reason, its task refs as buttons that open them and its ticket keys as links.
+pub fn linkify(c: &Ctx, text: &str) -> Vec<Node> {
+    let site = c.state["jira"]["site"].as_str().map(str::trim).filter(|x| !x.is_empty());
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let flush = |buf: &mut String, out: &mut Vec<Node>| {
+        let t = buf.trim();
+        if !t.is_empty() {
+            out.push(txt(t, St::Plain));
+        }
+        buf.clear();
+    };
+    let mut word = String::new();
+    let mut words: Vec<(bool, String)> = Vec::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            word.push(ch);
+        } else {
+            if !word.is_empty() {
+                words.push((true, std::mem::take(&mut word)));
+            }
+            words.push((false, ch.to_string()));
+        }
+    }
+    if !word.is_empty() {
+        words.push((true, word));
+    }
+    for (is_word, w) in words {
+        if is_word && is_task_ref(&w) {
+            flush(&mut buf, &mut out);
+            out.push(c.btn(&w, Act::new("open-task", "", &w, ""), Look::Ref, false, Some(&format!("Open {w}"))));
+        } else if is_word && is_ticket(&w) {
+            flush(&mut buf, &mut out);
+            out.push(match site {
+                Some(site) => Node::Link { s: w.clone(), go: Go::Url(format!("https://{site}/browse/{w}")), tip: Some(format!("Open {w} in Jira")), look: LinkLook::Jkey },
+                None => txt(w, St::Jkey),
+            });
+        } else {
+            buf.push_str(&w);
+        }
+    }
+    flush(&mut buf, &mut out);
+    out
+}
+
+fn is_task_ref(w: &str) -> bool {
+    w.len() > 1 && w.starts_with('T') && w[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// `ABC-12`: a Jira key.
+fn is_ticket(w: &str) -> bool {
+    let Some((key, n)) = w.split_once('-') else { return false };
+    key.len() >= 2
+        && key.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && !n.is_empty()
+        && n.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The PR row of a task with no PR: why it finished without one, or whether it's meant to have one.
+fn no_pr_row(c: &Ctx, t: &Value) -> Node {
+    let mut body = Vec::new();
+    if let Some(why) = opt_s(t, "no_pr") {
+        let mut line = vec![txt("PR canceled:", St::Strong)];
+        line.extend(linkify(c, why));
+        body.push(el(K::Line, line));
+    } else if t["ships_pr"].is_boolean() {
+        body.push(if t["ships_pr"] == true {
+            el(K::Line, vec![pill("Ends in a PR", Tone::Review), txt("No PR yet.", St::Small)])
+        } else {
+            el(K::Line, vec![pill("No PR", Tone::Neutral)])
+        });
+    } else {
+        body.push(txt("No PR yet.", St::Small));
+    }
+    if let Some(so) = obj(t, "stack_on") {
+        body.push(stacks_line(c, so));
+    }
+    if let Some(why) = opt_s(t, "no_evidence") {
+        let mut line = vec![txt("No evidence:", St::Strong)];
+        line.extend(linkify(c, why));
+        body.push(el(K::Line, line));
+    }
+    lrow("Pull request", body)
+}
+
+/// Each step that ran a round (`step_results`): its headline, and its findings in a fold.
+fn steps_row(c: &Ctx, t: &Value) -> Option<Node> {
+    let results = arr(t, "step_results");
+    if results.is_empty() {
+        return None;
+    }
+    let mut body = Vec::new();
+    for r in results {
+        let mut line = vec![txt(s(r, "name"), St::Strong), txt(s(r, "headline"), St::Plain)];
+        if b(r, "stale") {
+            line.push(pill("Moved since", Tone::Needs));
+        }
+        body.push(el(K::Line, line));
+        let findings = arr(r, "findings");
+        if findings.is_empty() {
+            continue;
+        }
+        let open = r["open"].as_i64().unwrap_or(0);
+        let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
+        let items = findings.iter().map(finding_item).collect();
+        body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, items)]));
+    }
+    Some(lrow("Steps", body))
+}
+
+/// One finding: its state, severity, title and where it is.
+fn finding_item(f: &Value) -> Node {
+    let state = opt_s(f, "state").unwrap_or("open");
+    let tone = match state {
+        "fixed" | "resolved" => Tone::Done,
+        "answered" | "replied" => Tone::Review,
+        "dismissed" | "wontfix" | "false-positive" | "ignored" => Tone::Closed,
+        _ => Tone::Needs,
+    };
+    let mut kids = vec![txt(s(f, "id"), St::Mono), pill(state, tone)];
+    if let Some(sev) = opt_s(f, "severity") {
+        kids.push(txt(sev, St::Small));
+    }
+    kids.push(txt(s(f, "title"), St::Plain));
+    if let Some(file) = opt_s(f, "file") {
+        kids.push(txt(match f["line"].as_i64() { Some(l) => format!("{file}:{l}"), None => file.to_string() }, St::Small));
+    }
+    if let Some(n) = opt_s(f, "note") {
+        kids.push(txt(n, St::Small));
+    }
+    if let Some(u) = opt_s(f, "url").filter(|u| is_web(u)) {
+        kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
+    }
+    el(K::Line, kids)
+}
+
 /// `String(x || '').toLowerCase()`.
 fn js_lower(v: &Value) -> String {
     match v {
@@ -1072,7 +1311,7 @@ fn js_lower(v: &Value) -> String {
 /// `prRow(t)` with `prBar`.
 fn pr_row(c: &Ctx, t: &Value) -> Node {
     let Some(p) = pr_of(t) else {
-        return lrow("Pull request", vec![txt("No PR yet.", St::Small)]);
+        return no_pr_row(c, t);
     };
     let key = obj(t, "jira").and_then(|j| opt_s(j, "key"));
     let raw = opt_s(p, "title");
@@ -1094,18 +1333,28 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
     };
     let repo = if title.as_deref().is_some_and(|x| !x.is_empty()) { or_empty(&p["repo"]) } else { String::new() };
     let mut steps = Vec::new();
-    for (k, (name, st, sub)) in pr_steps(p).into_iter().enumerate() {
-        let _ = k;
-        let mut kids = vec![txt(name, St::StepName)];
-        if let Some(x) = sub {
-            kids.push(txt(x, St::StepSub));
+    let bar = obj(p, "bar");
+    let list: Vec<PrStep> = match bar {
+        Some(bar) => pr_steps_full(p, bar),
+        None => pr_steps(p).into_iter().map(|(name, st, sub)| PrStep { name: name.to_string(), st, sub, link: None }).collect(),
+    };
+    for step in list {
+        let mut kids = vec![txt(step.name, St::StepName)];
+        match (step.sub, step.link) {
+            (Some(x), Some(url)) => kids.push(Node::Link { s: x, go: Go::Url(url), tip: None, look: LinkLook::Small }),
+            (Some(x), None) => kids.push(txt(x, St::StepSub)),
+            _ => {}
         }
-        steps.push(el(K::Step(st), kids));
+        steps.push(el(K::Step(step.st), kids));
     }
     let mut body = vec![el(K::PrHead, vec![head, txt(repo, St::Small)]), el(K::Steps, steps)];
     if let Some(n) = not_ours_box(p) {
         body.push(n);
     }
+    if let Some(line) = bar.and_then(|bar| obj(bar, "stacks_on")).map(|so| stacks_line(c, so)) {
+        body.push(line);
+    }
+    body.extend(bar.map(reviewer_rows).unwrap_or_default());
     // `prBar`
     if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge")) {
         let stopped = obj(stage, "stopped").is_some();
@@ -1122,8 +1371,15 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         let _ = go;
         body.push(Node::El { k: K::PrBar { warn: stopped && opt_s(stage, "session").is_some() }, tip: Some(tip.into()), kids });
     }
-    // Native: the owner's one-click "I reviewed it" while a green PR waits for them.
-    if obj(p, "stage").is_some_and(|st| b(st, "awaiting_you")) {
+    // The owner's own look at a green PR (the You step): "Waiting on your review · Mark reviewed ›".
+    if bar.is_some_and(|bar| s(bar, "you") == "waiting") {
+        let r = rf(t, "T");
+        let grp = format!("pr:{r}");
+        let mark = c.btn("Mark reviewed ›", Act::new("pr-reviewed", "", &r, &grp), Look::Link, false, Some("Tell the board you've looked at this PR"));
+        body.push(Node::El { k: K::PrBar { warn: false }, tip: None, kids: vec![Node::Dot(Dot::Accent), txt("Waiting on your review", St::Plain), mark] });
+        body.extend(c.note(&grp));
+    } else if bar.is_none() && obj(p, "stage").is_some_and(|st| b(st, "awaiting_you")) {
+        // Native: the owner's one-click "I reviewed it" while a green PR waits for them.
         let r = rf(t, "T");
         let grp = format!("pr:{r}");
         body.push(el(K::Row, vec![c.btn("I reviewed it", Act::new("pr-reviewed", "", &r, &grp), Look::SoftSmall, false, Some("Tell the board you've looked at this PR"))]));

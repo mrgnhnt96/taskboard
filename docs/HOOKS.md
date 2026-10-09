@@ -226,8 +226,10 @@ prompt = "Sign off the screens this task changes."
   step with **Open** (the `open` link: a URL, an app's URL scheme or a file path) and **Done**, which brings the
   agent back to carry on.
 - **Placeholders** in `prompt`, `run`, `check` and `open`: `{task}`, `{title}`, `{project}`, `{repo}`, `{branch}`,
-  `{base}` (origin's default branch), `{pr_url}`, `{jira}`. Scripts also get them as `TASKBOARD_TASK`,
-  `TASKBOARD_BRANCH`, … and `TASKBOARD_STEP`. One with no value is left as written.
+  `{base}` (the branch the PR goes into: a stacked task's parent branch while that's unmerged, else origin's
+  default branch), `{base_ref}` (`{base}` with the remote, like `origin/main`), `{pr_url}`, `{jira}`. Scripts also
+  get them as `TASKBOARD_TASK`, `TASKBOARD_BRANCH`, … and `TASKBOARD_STEP`, and `TASKBOARD_RESULT` (below). One with
+  no value is left as written.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
   comment that starts with a `pragmas` entry passes. Opening a PR, `tb pr wait` and `tb done` are refused while
@@ -237,9 +239,51 @@ prompt = "Sign off the screens this task changes."
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do
   each. `tb done` is refused while a `before = "done"` step hasn't passed, and also a `before = "pr"` step when the
   task has a PR. Done in the app isn't held: that's your call.
-- A step passes once per task. Steps are read fresh, like hooks.json. A step that can't be done (no name; none of
+- A step passes once per task, unless it has `per_head = true` (below). Steps are read fresh, like hooks.json. A step that can't be done (no name; none of
   `prompt`, `run` or `owner`; an unknown key or `before`; two with one name) turns all steps off, and
   `server.log` says why.
+
+### An author-side review gate (rounds, findings)
+
+A review tool that runs on every push is a step with a check, plus three keys:
+
+```toml
+[[steps]]
+name = "Author-side review"
+prompt = "Run the review on {branch} against {base_ref} and deal with each finding."
+check = "author-review --since {base_ref} --json > $TASKBOARD_RESULT"
+per_head = true       # it passes for the head commit it ran on; every new push needs another round
+min_gap_mins = 10     # at least this long between two rounds (on the same commit or not)
+bar = "WD"            # its name in the app's PR bar
+```
+
+- **Per head.** `tb` sends the checkout's head with each round. With `per_head`, the PR and `tb done` wait for a
+  round that passed on the current head, and once the PR is open the `PreToolUse` hook holds a `git push` until the
+  commit being pushed has passed. A new round may run on the same commit.
+- **The result file.** `check` and `run` get `$TASKBOARD_RESULT`, a file to write JSON to:
+  `{"verdict": "pass"|"fail"|"skip", "headline": "…", "findings": [{"id": "F1", "title": "…", "severity":
+  "high", "state": "open", "file": "src/api.rs", "line": 12, "detail": "…", "url": "…"}]}`. The verdict, when
+  given, decides instead of the exit code; `skip` is for a round that couldn't review or didn't finish, and never
+  blocks. Everything is optional.
+- **On the task.** The app shows each step's latest headline ("2 open findings", "No findings", "Answered, not
+  approved", "Couldn't review this round") with its findings in a fold, open ones first, then by severity, and
+  "Moved since" once the branch has a newer commit. The `bar` step is the PR bar's first step.
+- **The agent's commands.** `tb steps` lists the steps and the latest findings; `tb step triage "Author-side review"
+  F2 --state fixed --commit <sha> --note "…"` (or `answered`, `dismissed`, `open`) answers one; `tb step again
+  "Author-side review"` runs another round. A round sooner than `min_gap_mins` after the last is refused with when
+  the next may start.
+
+## Stacked PRs, the PR plan, and `tb done --pr-body`
+
+- `tb task new … --stack-on T3` / `tb task set T4 --stack-on T3|none`: T4's PR builds on T3's. T4 waits for T3 (in
+  any goal), its worktree starts from T3's branch, its PR goes into T3's branch and waits there ("Waits on base")
+  until T3's merges; then the board points it at T3's base and T4 is told to rebase.
+- `tb task new … --pr|--no-pr`, `tb task set T4 --pr yes|no|auto`: whether the task ends in a PR, whatever its
+  project does.
+- `tb done "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open; `--no-evidence "<why>"`
+  likewise for evidence. With `[jira] canceled`, the ticket moves there with the reason as a comment.
+- `tb done "<summary>" --pr-body FILE [--title "…"]`: the board checks the description (`[pr_body]`), the steps and
+  the branch (pushed, rebased on the remote base, no merge commits), then opens the PR itself and finishes.
 
 ## `tb hooks`
 

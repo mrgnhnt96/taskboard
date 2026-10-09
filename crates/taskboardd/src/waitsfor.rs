@@ -16,6 +16,17 @@ pub fn ids(t: &Row) -> Vec<i64> {
         .collect()
 }
 
+/// Every task this one needs first: what it waits for, and the task it stacks on (`stack.rs`).
+pub fn deps(t: &Row) -> Vec<i64> {
+    let mut all = ids(t);
+    if let Some(p) = crate::stack::parent_id(t) {
+        if !all.contains(&p) {
+            all.push(p);
+        }
+    }
+    all
+}
+
 pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<String>> {
     let items: Vec<String> = match value {
         Value::Null => return Ok(None),
@@ -69,7 +80,7 @@ pub fn reaches(app: &App, start: i64, target: i64, seen: &mut Vec<i64>) -> Resul
     }
     seen.push(start);
     let Some(t) = board::find_task(app, Some(start))? else { return Ok(false) };
-    for n in ids(&t) {
+    for n in deps(&t) {
         if reaches(app, n, target, seen)? {
             return Ok(true);
         }
@@ -87,7 +98,7 @@ pub fn ready(other: Option<&Row>) -> bool {
 }
 
 pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
-    for n in ids(t) {
+    for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
         let Some(other) = other else { continue };
         if ready(Some(&other)) {
@@ -144,7 +155,7 @@ pub fn blocked_by(app: &App, t: &Row) -> Result<Vec<Value>> {
         return Ok(vec![]);
     }
     let mut out = vec![];
-    for n in ids(t) {
+    for n in deps(t) {
         if let Some(o) = board::find_task(app, Some(n))? {
             if !ready(Some(&o)) {
                 out.push(board::task_card(app, &o)?);
@@ -156,9 +167,9 @@ pub fn blocked_by(app: &App, t: &Row) -> Result<Vec<Value>> {
 
 pub fn waiting_on(app: &App, t: &Row) -> Result<Vec<Row>> {
     app.db.q(
-        "SELECT * FROM tasks WHERE status != 'done' AND id != ? AND waits_for IS NOT NULL \
-         AND EXISTS (SELECT 1 FROM json_each(tasks.waits_for) WHERE value = ?) ORDER BY id",
-        p![t.id(), t.id()],
+        "SELECT * FROM tasks WHERE status != 'done' AND id != ? AND (pr_after = ? OR (waits_for IS NOT NULL \
+         AND EXISTS (SELECT 1 FROM json_each(tasks.waits_for) WHERE value = ?))) ORDER BY id",
+        p![t.id(), t.id(), t.id()],
     )
 }
 
@@ -226,7 +237,7 @@ fn where_it_is(app: &App, other: &Row) -> Result<String> {
 
 pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
     let mut lines = vec![];
-    for n in ids(t) {
+    for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
         if ready(other.as_ref()) {
             lines.push(format!("- {}", where_it_is(app, other.as_ref().unwrap())?));
@@ -327,7 +338,7 @@ pub fn to_close(app: &App) -> Result<Vec<(Row, Row, String)>> {
 /// Tells a live task (or wakes a done task's PR) when work it builds on moves or merges.
 pub fn follow_ups(app: &App) -> Result<i64> {
     let mut sent = 0;
-    for t in app.db.q("SELECT * FROM tasks WHERE waits_for IS NOT NULL", p![])? {
+    for t in app.db.q("SELECT * FROM tasks WHERE waits_for IS NOT NULL OR pr_after IS NOT NULL", p![])? {
         let live = matches!(t.s("status"), Some("working") | Some("needs")) && has(t.s("session_id"));
         let pr_open = t.s("status") == Some("done") && board::pr_still_open(&t);
         if !(live || pr_open) {
@@ -337,7 +348,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
         let seen = flow.get(FOLLOW).and_then(|v| v.as_object()).cloned().unwrap_or_default();
         let mut changes = Row::new();
         let mut notes = vec![];
-        for n in ids(&t) {
+        for n in deps(&t) {
             let other = board::find_task(app, Some(n))?;
             if !ready(other.as_ref()) {
                 continue;

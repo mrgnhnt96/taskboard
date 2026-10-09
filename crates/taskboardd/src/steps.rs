@@ -6,8 +6,14 @@
 //!   in Needs you, and the owner's one-click Done (or `tb step done --task T<n>` elsewhere) carries it on.
 //!
 //! Agent work and scripts may have a `check`: a script `tb` runs before it records the step, which must
-//! exit 0. Prompts, scripts and links take placeholders (`{branch}`, `{base}`, `{pr_url}`, …), and
-//! scripts get the same values as `TASKBOARD_*` variables.
+//! exit 0. Prompts, scripts and links take placeholders (`{branch}`, `{base}`, `{base_ref}`, `{pr_url}`,
+//! …), and scripts get the same values as `TASKBOARD_*` variables.
+//!
+//! A check or script may also write a result to the file `$TASKBOARD_RESULT` names: a verdict (`pass`,
+//! `fail`, or `skip` for a round that couldn't review and mustn't block), a headline and findings. The
+//! task shows the latest round's headline and findings, and `tb step triage` answers a finding. A step
+//! with `per_head = true` passes once per head commit, so every push is checked again (an author-side
+//! review gate); `min_gap_mins` keeps its rounds apart; `bar` names it in the app's PR bar.
 //!
 //! The handoff tells the agent the steps, and the board holds the PR (the Claude Code `PreToolUse` hook on
 //! `gh pr create` and the like) and `tb done` until they're recorded. The owner's Done in the app isn't
@@ -71,6 +77,15 @@ pub struct Step {
     /// Where the step happens: a URL, an app's URL scheme or a file path.
     #[serde(default)]
     pub open: String,
+    /// A pass counts only for the head commit it ran on: each new push needs the step again.
+    #[serde(default)]
+    pub per_head: bool,
+    /// Minutes between two rounds of the step (its check or script), on the same commit or not.
+    #[serde(default)]
+    pub min_gap_mins: Option<f64>,
+    /// A short name for the step in the app's PR bar ("WD"); empty keeps it out of the bar.
+    #[serde(default)]
+    pub bar: String,
 }
 
 impl Step {
@@ -86,6 +101,11 @@ impl Step {
 
     pub fn timeout_secs(&self) -> u64 {
         self.timeout.filter(|t| *t > 0).unwrap_or(DEFAULT_TIMEOUT_SECS)
+    }
+
+    /// Seconds between two rounds, if the step keeps them apart.
+    pub fn gap_secs(&self) -> Option<f64> {
+        self.min_gap_mins.filter(|m| *m > 0.0).map(|m| m * 60.0)
     }
 
     /// The step with its placeholders filled.
@@ -189,10 +209,10 @@ pub fn fill(text: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
-/// The branch the repo's PRs go into: origin's default branch, else `main`.
-fn base_branch(repo: &str) -> String {
+/// origin's default branch, if git knows it.
+pub fn default_base(repo: &str) -> Option<String> {
     if repo.is_empty() {
-        return "main".into();
+        return None;
     }
     std::process::Command::new("git")
         .args(["-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
@@ -201,7 +221,20 @@ fn base_branch(repo: &str) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().trim_start_matches("origin/").to_string())
         .filter(|b| !b.is_empty())
-        .unwrap_or_else(|| "main".into())
+}
+
+/// The branch the repo's PRs go into: origin's default branch, else `main`.
+fn base_branch(repo: &str) -> String {
+    default_base(repo).unwrap_or_else(|| "main".into())
+}
+
+/// The branch this task's PR goes into: the branch of the PR it stacks on while that's unmerged, else
+/// the repo's default.
+pub fn real_base(app: &App, t: &Row) -> Result<String> {
+    Ok(match crate::stack::base_branch(app, t)? {
+        Some(b) => b,
+        None => base_branch(&t.st("repo_path")),
+    })
 }
 
 /// What placeholders fill in for a task (`{task}`, `{branch}`, …). Scripts get them as `TASKBOARD_<NAME>`.
@@ -219,7 +252,78 @@ pub fn vars(t: &Row) -> BTreeMap<String, String> {
     v
 }
 
+/// `vars` with the real base: a stacked task's parent branch, and `{base_ref}` with the remote on it.
+pub fn vars_for(app: &App, t: &Row) -> BTreeMap<String, String> {
+    let mut v = vars(t);
+    let base = real_base(app, t).unwrap_or_else(|_| v.get("base").cloned().unwrap_or_default());
+    v.insert("base_ref".into(), format!("{}/{base}", app.cfg.pr_body.remote));
+    v.insert("base".into(), base);
+    v
+}
+
+/// One recorded round of a step (`tb step done` / `tb step run`), oldest first.
+#[derive(Debug, Clone)]
+pub struct Round {
+    pub key: String,
+    pub passed: bool,
+    pub head: Option<String>,
+    pub at: String,
+    pub data: Value,
+}
+
+pub fn rounds(app: &App, task_id: i64) -> Result<Vec<Round>> {
+    let rows = app.db.q("SELECT at, data FROM events WHERE task_id = ? AND kind = 'step' ORDER BY id", p![task_id])?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let d = serde_json::from_str::<Value>(r.s("data")?).ok()?;
+            Some(Round {
+                key: key(d["name"].as_str()?),
+                passed: d["ok"] != false,
+                head: d["head"].as_str().filter(|h| !h.is_empty()).map(|h| h.to_string()),
+                at: r.st("at"),
+                data: d,
+            })
+        })
+        .collect())
+}
+
+/// Two commits are the same when one names the other (a short sha and its full one).
+pub fn same_head(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    a.len() >= 7 && b.len() >= 7 && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// Has the step passed (on `head`, for a per-head step)? A head the board doesn't know takes any pass.
+pub fn passed_on(step: &Step, rounds: &[Round], head: Option<&str>) -> bool {
+    let k = key(&step.name);
+    rounds.iter().filter(|r| r.key == k && r.passed).any(|r| {
+        if !step.per_head {
+            return true;
+        }
+        match (head, r.head.as_deref()) {
+            (Some(h), Some(rh)) => same_head(h, rh),
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    })
+}
+
+/// When the step may run its next round, if it keeps rounds apart and the last was too recent.
+pub fn next_round_at(step: &Step, rounds: &[Round]) -> Option<String> {
+    let gap = step.gap_secs()?;
+    let k = key(&step.name);
+    let last = rounds.iter().filter(|r| r.key == k).filter_map(|r| parse_iso(&r.at)).reduce(f64::max)?;
+    let next = last + gap;
+    if next > now_ts() {
+        Some(iso(next))
+    } else {
+        None
+    }
+}
+
 /// The names of the steps that passed on a task (lowercased). A failed check or script doesn't count.
+/// A per-head step's pass on an older commit still counts here: `missing` and `list` judge the head.
 pub fn recorded(app: &App, task_id: i64) -> Result<HashSet<String>> {
     let rows = app.db.q("SELECT data FROM events WHERE task_id = ? AND kind = 'step'", p![task_id])?;
     Ok(rows
@@ -230,10 +334,16 @@ pub fn recorded(app: &App, task_id: i64) -> Result<HashSet<String>> {
         .collect())
 }
 
-/// The task's steps for `before` that haven't passed yet.
+/// The task's steps for `before` that haven't passed yet (on its current head, for a per-head step).
 pub fn missing(app: &App, t: &Row, before: &[Before]) -> Result<Vec<Step>> {
-    let done = recorded(app, t.id())?;
-    Ok(for_task(app, t).into_iter().filter(|s| before.contains(&s.before) && !done.contains(&key(&s.name))).collect())
+    missing_at(app, t, before, None)
+}
+
+/// `missing`, judging per-head steps on `head` (else the task's head as the board knows it).
+pub fn missing_at(app: &App, t: &Row, before: &[Before], head: Option<&str>) -> Result<Vec<Step>> {
+    let rounds = rounds(app, t.id())?;
+    let known = head.map(|h| h.to_string()).or_else(|| waitsfor::head_of(t));
+    Ok(for_task(app, t).into_iter().filter(|s| before.contains(&s.before) && !passed_on(s, &rounds, known.as_deref())).collect())
 }
 
 /// The task's step by name (any case), or a 400 naming the ones it has.
@@ -263,24 +373,28 @@ pub fn waiting(t: &Row) -> Option<String> {
 /// What the app shows on a task that waits on the owner for a step: its name and where it happens.
 pub fn waiting_card(app: &App, t: &Row) -> Value {
     let Some(name) = waiting(t) else { return Value::Null };
-    let open = for_task(app, t).into_iter().find(|s| key(&s.name) == key(&name)).map(|s| fill(&s.open, &vars(t))).unwrap_or_default();
+    let open = for_task(app, t).into_iter().find(|s| key(&s.name) == key(&name)).map(|s| fill(&s.open, &vars_for(app, t))).unwrap_or_default();
     let failed = board::task_context(t).get("step_failed") == Some(&json!(true));
     json!({"name": name, "open": if open.is_empty() { Value::Null } else { json!(open) }, "failed": failed})
 }
 
-/// `GET /steps`: a task's steps (placeholders as written), which have passed, and the placeholders' values.
-pub fn list(app: &App, t: &Row) -> Result<Value> {
-    let done = recorded(app, t.id())?;
+/// `GET /steps`: a task's steps (placeholders as written), which have passed (on `head`, for a
+/// per-head step), when each may run its next round, and the placeholders' values.
+pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
+    let rounds = rounds(app, t.id())?;
+    let known = head.map(|h| h.to_string()).or_else(|| waitsfor::head_of(t));
     let steps: Vec<Value> = for_task(app, t)
         .iter()
         .map(|s| {
             let mut v = serde_json::to_value(s).unwrap_or_default();
             v["kind"] = json!(s.kind());
-            v["done"] = json!(done.contains(&key(&s.name)));
+            v["done"] = json!(passed_on(s, &rounds, known.as_deref()));
+            v["next_round_at"] = json!(next_round_at(s, &rounds));
             v
         })
         .collect();
-    Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars(t)}))
+    Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_for(app, t),
+              "head": known, "pr_open": t.s("status") == Some("done") && board::pr_still_open(t)}))
 }
 
 /// The steps in a `GET /steps` answer, with whether each has passed.
@@ -295,6 +409,7 @@ pub fn from_listing(v: &Value) -> Vec<(Step, bool)> {
             let o = x.as_object_mut()?;
             o.remove("done");
             o.remove("kind");
+            o.remove("next_round_at");
             serde_json::from_value::<Step>(x).ok().map(|s| (s, done))
         })
         .collect()
@@ -312,7 +427,7 @@ pub fn refusal(tb: &str, what: &str, left: &[Step]) -> String {
 
 /// The handoff's lines about the task's steps, or nothing when it has none.
 pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
-    let v = vars(t);
+    let v = vars_for(app, t);
     let all: Vec<Step> = for_task(app, t).iter().map(|s| s.filled(&v)).collect();
     let mut s = String::new();
     for (before, when) in [(Before::Pr, "Before you open the PR"), (Before::Done, "Before you run tb done")] {
@@ -333,6 +448,160 @@ pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
          give it time. If one can't pass, {tb} step fail \"<name>\" --why \"…\" and end your turn. {tb} steps lists them.",
         s.trim_start()
     )
+}
+
+/// What `tb step triage` may say of a finding.
+pub const TRIAGE_STATES: &[&str] = &["open", "fixed", "answered", "dismissed"];
+
+/// A round's result as `tb` read it from `$TASKBOARD_RESULT`: the verdict, headline and findings kept,
+/// clipped so a chatty tool can't fill the log.
+pub fn clean_result(v: Option<&Value>) -> Option<Value> {
+    let v = v.filter(|v| v.is_object())?;
+    let verdict = v["verdict"].as_str().map(|s| s.to_lowercase()).filter(|s| matches!(s.as_str(), "pass" | "fail" | "skip"));
+    let headline = v["headline"].as_str().map(|h| one_line(h, 200)).filter(|h| !h.is_empty());
+    let text = |f: &Value, k: &str, n: usize| f[k].as_str().map(|s| clip(s.trim(), n)).filter(|s| !s.is_empty()).map(Value::String).unwrap_or(Value::Null);
+    let findings: Vec<Value> = v["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(200)
+        .enumerate()
+        .map(|(i, f)| {
+            if let Some(s) = f.as_str() {
+                return json!({"id": format!("F{}", i + 1), "title": one_line(s, 300)});
+            }
+            let id = match &f["id"] {
+                Value::String(s) if !s.trim().is_empty() => one_line(s, 80),
+                Value::Number(n) => n.to_string(),
+                _ => format!("F{}", i + 1),
+            };
+            let mut o = json!({"id": id, "title": text(f, "title", 300), "severity": text(f, "severity", 20), "state": text(f, "state", 20),
+                               "file": text(f, "file", 300), "detail": text(f, "detail", 1500), "url": text(f, "url", 500)});
+            if let Some(l) = f["line"].as_i64() {
+                o["line"] = json!(l);
+            }
+            o
+        })
+        .collect();
+    if verdict.is_none() && headline.is_none() && findings.is_empty() {
+        return None;
+    }
+    Some(json!({"verdict": verdict, "headline": headline, "findings": findings}))
+}
+
+/// How a finding's state sorts: the ones still to deal with first.
+fn state_rank(state: &str) -> u8 {
+    match state {
+        "" | "open" | "new" => 0,
+        "answered" | "replied" => 1,
+        "fixed" | "resolved" => 2,
+        "dismissed" | "wontfix" | "false-positive" | "ignored" => 3,
+        _ => 4,
+    }
+}
+
+fn severity_rank(sev: &str) -> u8 {
+    match sev {
+        "critical" | "blocker" => 0,
+        "high" | "major" | "error" => 1,
+        "medium" | "warning" => 2,
+        "low" | "minor" => 3,
+        "info" | "nit" => 4,
+        _ => 5,
+    }
+}
+
+/// A finding counts as open until it's answered, fixed or dismissed.
+pub fn finding_open(f: &Value) -> bool {
+    state_rank(&f["state"].as_str().unwrap_or("").to_lowercase()) == 0
+}
+
+/// A round's findings with later triage (`tb step triage`) on them, sorted by state, then severity.
+pub fn findings(round: &Round, triage: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = round.data["result"]["findings"].as_array().cloned().unwrap_or_default();
+    for (i, f) in out.iter_mut().enumerate() {
+        if !f.is_object() {
+            *f = json!({"title": f.as_str().unwrap_or("")});
+        }
+        if f["id"].is_null() {
+            f["id"] = json!(format!("F{}", i + 1));
+        }
+        let id = f["id"].as_str().map(|s| s.to_string()).unwrap_or_else(|| f["id"].to_string());
+        for tr in triage.iter().filter(|t| t["finding"].as_str() == Some(id.as_str()) && t["at"].as_str().unwrap_or("") >= round.at.as_str()) {
+            f["state"] = tr["state"].clone();
+            if tr["note"].as_str().map(|n| !n.is_empty()).unwrap_or(false) {
+                f["note"] = tr["note"].clone();
+            }
+            if tr["commit"].as_str().map(|c| !c.is_empty()).unwrap_or(false) {
+                f["commit"] = tr["commit"].clone();
+            }
+        }
+    }
+    out.sort_by_key(|f| (state_rank(&f["state"].as_str().unwrap_or("").to_lowercase()), severity_rank(&f["severity"].as_str().unwrap_or("").to_lowercase())));
+    out
+}
+
+/// The headline for a round: what its result says, else what came of it.
+pub fn headline(round: &Round, findings: &[Value]) -> String {
+    if let Some(h) = round.data["result"]["headline"].as_str().map(str::trim).filter(|h| !h.is_empty()) {
+        return one_line(h, 200);
+    }
+    let open = findings.iter().filter(|f| finding_open(f)).count() as i64;
+    match round.data["result"]["verdict"].as_str() {
+        Some("skip") => return "Couldn't review this round".into(),
+        _ if round.data["output"].as_str().map(|o| o.contains("stopped after")).unwrap_or(false) => return "Didn't finish".into(),
+        _ => {}
+    }
+    if open > 0 {
+        return plural(open, "open finding");
+    }
+    if !round.passed && !findings.is_empty() {
+        return "Answered, not approved".into();
+    }
+    if !round.passed {
+        return "Didn't pass".into();
+    }
+    if findings.is_empty() {
+        "No findings".into()
+    } else {
+        format!("{}, all answered", plural(findings.len() as i64, "finding"))
+    }
+}
+
+/// What the app shows for each of the task's steps that has run: its latest round's headline and
+/// findings, and whether the head has moved since.
+pub fn results(app: &App, t: &Row) -> Result<Vec<Value>> {
+    let all = rounds(app, t.id())?;
+    if all.is_empty() {
+        return Ok(vec![]);
+    }
+    let triage: Vec<Value> = app
+        .db
+        .q("SELECT at, data FROM events WHERE task_id = ? AND kind = 'step_triage' ORDER BY id", p![t.id()])?
+        .iter()
+        .filter_map(|r| {
+            let mut d = serde_json::from_str::<Value>(r.s("data")?).ok()?;
+            d["at"] = json!(r.st("at"));
+            Some(d)
+        })
+        .collect();
+    let head = waitsfor::head_of(t);
+    let mut out = vec![];
+    for st in for_task(app, t) {
+        let k = key(&st.name);
+        let Some(last) = all.iter().rev().find(|r| r.key == k) else { continue };
+        let mine: Vec<Value> = triage.iter().filter(|x| x["name"].as_str().map(key).as_deref() == Some(k.as_str())).cloned().collect();
+        let fs = findings(last, &mine);
+        let stale = st.per_head && matches!((&head, &last.head), (Some(h), Some(rh)) if !same_head(h, rh));
+        out.push(json!({
+            "name": st.name, "bar": if st.bar.is_empty() { Value::Null } else { json!(st.bar) },
+            "at": last.at, "head": last.head, "passed": last.passed, "stale": stale,
+            "verdict": last.data["result"]["verdict"], "headline": headline(last, &fs),
+            "open": fs.iter().filter(|f| finding_open(f)).count(), "findings": fs,
+            "rounds": all.iter().filter(|r| r.key == k).count(),
+        }));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
