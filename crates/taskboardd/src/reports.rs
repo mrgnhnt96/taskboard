@@ -1171,6 +1171,8 @@ fn on_step(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
     let step = steps::find(app, &t, &r.b("name"))?;
+    drop_stale_pin(r, &t)?;
+    let t = board::get_task(app, t.id())?;
     let tb = board::tb_cmd(app);
     if step.owner && from_agent(r, &t) {
         return err(409, format!("“{}” is {} step: {}.", step.name, app.cfg.owners(), step.how(&tb)));
@@ -1247,11 +1249,23 @@ fn on_step_aim(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
     let mut ctx = board::task_context(&t);
-    let aim: serde_json::Map<String, Value> = ["worktree", "branch", "sha"]
+    let mut aim: serde_json::Map<String, Value> = ["worktree", "branch", "sha", "tip"]
         .iter()
         .filter_map(|k| Some((k.to_string(), json!(one_line(r.body.get(*k)?.as_str()?, 400)))))
         .filter(|(_, v)| v.as_str().is_some_and(|s| !s.is_empty()))
         .collect();
+    // A pin keeps its branch's tip, so it's dropped once the branch moves on (`steps::aim_now`).
+    match (aim.contains_key("sha"), aim.get("branch").and_then(|b| b.as_str()).map(|b| b.to_string())) {
+        (false, _) => {
+            aim.remove("tip");
+        }
+        (true, Some(b)) if !aim.contains_key("tip") => {
+            if let Some(tip) = steps::branch_tip(&t, &Value::Object(aim.clone()), &b) {
+                aim.insert("tip".into(), json!(tip));
+            }
+        }
+        _ => {}
+    }
     let text = if as_bool(r.body.get("clear"), false) || aim.is_empty() {
         if ctx.remove("step_aim").is_none() {
             return Ok(with(ok(Some(&t), None), json!({"aim": null})));
@@ -1274,7 +1288,47 @@ fn on_step_aim(r: &mut Report) -> Result<Value> {
     board::save_context(app, t.id(), &ctx, false)?;
     r.log(t.id(), "status", &text, None)?;
     let t = board::get_task(app, t.id())?;
-    Ok(with(ok(Some(&t), None), json!({"aim": steps::saved_aim(&t), "head": steps::aim_head(&t)})))
+    Ok(with(ok(Some(&t), None), json!({"aim": steps::aim_now(&t), "head": steps::aim_head(&t)})))
+}
+
+/// Drops a saved pin once its branch has moved on (`steps::aim_now`), with a line on the task saying so.
+fn drop_stale_pin(r: &mut Report, t: &Row) -> Result<()> {
+    let now = steps::aim_now(t);
+    let Some(sha) = now["dropped"].as_str() else { return Ok(()) };
+    let mut ctx = board::task_context(t);
+    let mut kept = now.clone();
+    if let Some(o) = kept.as_object_mut() {
+        o.remove("dropped");
+    }
+    let branch = now["branch"].as_str().unwrap_or("its branch").to_string();
+    if kept.as_object().is_some_and(|o| o.is_empty()) {
+        ctx.remove("step_aim");
+    } else {
+        ctx.insert("step_aim".into(), kept);
+    }
+    board::save_context(r.app, t.id(), &ctx, false)?;
+    let short: String = sha.chars().take(12).collect();
+    r.log(t.id(), "status", &format!("Rounds no longer pinned at {short}: {branch} has moved on since"), None)?;
+    Ok(())
+}
+
+/// `tb step publish`: a step's publish script ran for the head it passed on (after a rebase's push, say).
+fn on_step_publish(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    let step = steps::find(app, &t, &r.b("name"))?;
+    if step.publish.trim().is_empty() {
+        return err(400, format!("“{}” has nothing to publish.", step.name));
+    }
+    let passed = as_bool(r.body.get("ok"), true);
+    let head = r.b("head");
+    let short: String = head.chars().take(12).collect();
+    let at = if short.is_empty() { String::new() } else { format!(" for {short}") };
+    let text = if passed { format!("Published {}{at}", step.name) } else { format!("Couldn't publish {}{at}", step.name) };
+    let output = clip(r.b("output").trim(), 4000);
+    r.log(t.id(), "status", &text, Some(json!({"name": step.name, "publish": true, "ok": passed, "head": head, "output": output})))?;
+    Ok(with(ok(Some(&t), None), json!({"step": step.name, "passed": passed, "head": head})))
 }
 
 /// Puts the task in Needs you for a step, as a question the owner answers or acknowledges.
@@ -1788,6 +1842,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.step_fail" => on_step_fail,
         "tb.step_triage" => on_step_triage,
         "tb.step_aim" => on_step_aim,
+        "tb.step_publish" => on_step_publish,
         "tb.take" => on_take,
         "tb.propose" => on_propose,
         "tb.goal" => on_goal,

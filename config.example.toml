@@ -317,17 +317,20 @@ ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when i
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
-# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {base_ref} {pr_url} {jira};
+# Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {base_ref} {pr_url} {pr} {jira};
 # {base} is the PR's real base (a stacked task's parent branch) and {base_ref} has the remote on it
 # (origin/main). The board refuses the PR and `tb done` until they pass. A step with per_head = true passes
 # once per head commit (every push is checked again, and a push to the open PR waits for it);
 # min_gap_mins keeps its rounds apart; bar = "WD" shows it in the app's PR bar. A check can write its
-# verdict, headline and findings to $TASKBOARD_RESULT. See docs/HOOKS.md ("Steps").
+# verdict, headline and findings to $TASKBOARD_RESULT. A per_head step's `publish` script republishes its
+# passing round for the PR (`tb step publish`, listed in the rebase commands after the push); unset, there's
+# nothing to republish. See docs/HOOKS.md ("Steps").
 # [[steps]]
 # name = "Author-side review"
 # projects = "work-app|work-api"
 # prompt = "Run /author-review on {branch} against {base_ref}, and fix what it finds."
 # check = "author-review --since {base_ref} --result $TASKBOARD_RESULT"
+# publish = "wd review publish {repo} {pr}"
 # per_head = true
 # min_gap_mins = 10
 # bar = "WD"
