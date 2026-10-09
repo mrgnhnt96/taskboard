@@ -190,6 +190,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Why a PR-flow task finished without a PR (`tb done --no-pr`), or without evidence (`--no-evidence`).
     ("tasks", "no_pr", "TEXT"),
     ("tasks", "no_evidence", "TEXT"),
+    // A typed prompt as the human typed it (newlines kept, not clipped to the line `text` shows), for
+    // the `tb start` word check.
+    ("session_events", "full", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

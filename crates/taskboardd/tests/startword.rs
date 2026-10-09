@@ -237,3 +237,94 @@ fn an_unnamed_ask_covers_only_the_first_task_made_after_it() {
     let later = b.new_task();
     assert_eq!(b.tb_start(later).unwrap_err().0, 403);
 }
+
+#[test]
+fn the_check_reads_the_prompt_as_typed_not_the_line_it_shows() {
+    let b = board();
+    let id = b.new_task();
+    for said in [
+        format!("paste:\nstart T{id}"),
+        format!("CI failed with:\n\n    start T{id}"),
+        format!("my notes:\n\nstart T{id}"),
+        format!("see the thread:\n\n> start T{id}"),
+        format!("it printed this\n  start T{id}\n  start T{id}"),
+    ] {
+        b.said(&said);
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{said:?}");
+    }
+    // The terminal's history still shows the prompt on one line.
+    let shown = b.app.db.q1("SELECT text, full FROM session_events WHERE kind = 'prompt' ORDER BY id DESC LIMIT 1", p![]).unwrap().unwrap();
+    assert_eq!(shown.st("text"), format!("it printed this start T{id} start T{id}"));
+    assert_eq!(shown.st("full"), format!("it printed this\n  start T{id}\n  start T{id}"));
+
+    // The owner's own line after the paste is the word.
+    b.said(&format!("here's the log:\n  ERROR x\n\nok, start T{id}"));
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+}
+
+#[test]
+fn the_check_reads_past_the_first_600_characters() {
+    let b = board();
+    let id = b.new_task();
+    let filler = "The footer overlaps the cookie banner on small screens and the links wrap badly. ".repeat(9);
+    assert!(filler.len() > 650);
+    b.said(&format!("start T{id}. {filler} Wait until tomorrow though."));
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    b.said(&format!("start T{id}. {filler} jk"));
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    // A long prompt that doesn't take it back is still the word.
+    b.said(&format!("start T{id}. {filler}"));
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+}
+
+#[test]
+fn a_prompt_clipped_on_its_way_in_is_no_word() {
+    let b = board();
+    let id = b.new_task();
+    // What the hook sends for a prompt past its 8000 characters: the start, then "…".
+    let long = format!("start T{id}. {}", "x ".repeat(4100));
+    let clipped: String = long.chars().take(7999).collect::<String>().trim_end().to_string() + "…";
+    b.said(&clipped);
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    // A later prompt that names the task is read on its own.
+    b.said(&format!("ok, start T{id}"));
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+}
+
+#[test]
+fn a_take_back_or_a_deferral_after_the_ask_in_the_same_prompt_wins() {
+    let b = board();
+    let id = b.new_task();
+    for said in [
+        format!("start T{id}. jk"),
+        format!("start T{id}. On second thought, don't."),
+        format!("start T{id}. no."),
+        format!("start T{id}, scratch that"),
+        format!("start T{id}. Not now though."),
+        format!("start T{id}, first thing"),
+        format!("start T{id}, at six"),
+        format!("start T{id}, the moment T7 lands"),
+        format!("don't (like T9), start T{id}"),
+    ] {
+        b.said(&said);
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{said}");
+        assert_eq!(b.status(id), "queued");
+    }
+}
+
+#[test]
+fn a_later_prompt_that_names_no_task_can_take_the_ask_back() {
+    let b = board();
+    let id = b.new_task();
+    for back in ["no, don't", "nope", "never mind that", "forget I said that", "I changed my mind"] {
+        b.said(&format!("start T{id}"));
+        b.said(back);
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{back}");
+    }
+    // "start T9 instead" takes back the start of T8, and is the word for T9.
+    let other = b.new_task();
+    b.said(&format!("start T{id}"));
+    b.said(&format!("start T{other} instead"));
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    assert!(b.tb_start(other).unwrap()["starting"] == true);
+}
