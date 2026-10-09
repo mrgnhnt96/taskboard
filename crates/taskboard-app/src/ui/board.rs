@@ -90,6 +90,7 @@ fn sess_status(status: &str) -> (&'static str, &'static str) {
         "working" => ("working", "Working"),
         "needs" => ("needs", "Needs you"),
         "offline" => ("offline", "No network"),
+        "waiting" => ("waiting", "Waiting"),
         "gone" => ("gone", "Gone"),
         _ => ("idle", "Idle"),
     }
@@ -101,7 +102,7 @@ pub struct SessCardVm {
     pub id: String,
     pub name: NameView,
     pub status: &'static str,
-    pub state_label: &'static str,
+    pub state_label: String,
     pub project: String,
     /// Tooltip on the project: its folder.
     pub project_title: String,
@@ -115,7 +116,7 @@ pub struct SessCardVm {
 #[cfg(test)]
 impl SessCardVm {
     pub fn text(&self) -> String {
-        join([self.name.text.as_str(), self.state_label, &self.project, self.compacting.as_deref().unwrap_or(""), self.sub.as_deref().unwrap_or("")])
+        join([self.name.text.as_str(), &self.state_label, &self.project, self.compacting.as_deref().unwrap_or(""), self.sub.as_deref().unwrap_or("")])
     }
     pub fn acts(&self) -> Vec<&'static str> {
         let mut a = vec!["open-session"];
@@ -156,7 +157,7 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
     }
     let order = |x: &Value| match sess_status(s(x, "status")).0 {
         "needs" | "offline" => 0,
-        "working" => 1,
+        "working" | "waiting" => 1,
         "gone" => 3,
         _ => 2,
     };
@@ -168,7 +169,8 @@ pub fn strip_vm(state: &Value, project: &str, down: bool, flashes: &HashMap<Stri
         .into_iter()
         .take(STRIP_MAX)
         .map(|x| {
-            let (status, state_label) = sess_status(s(x, "status"));
+            let (status, label) = sess_status(s(x, "status"));
+            let state_label = if status == "waiting" { fmt::background_label(&x["background"]) } else { label.to_string() };
             let id = s(x, "id").to_string();
             let sub = opt_s(x, "task_title").map(str::to_string);
             let task_ref = opt_s(x, "task_ref").map(str::to_string);
@@ -315,9 +317,10 @@ pub fn checks_of(pr: &Value) -> (&'static str, &'static str) {
     }
 }
 
-/// `startsByHand`.
+/// `startsByHand`. A task waiting in a terminal's line starts by hand too, goal or not: Start takes it
+/// out of the line.
 pub fn starts_by_hand(x: &Value) -> bool {
-    matches!(s(x, "status"), "queued" | "planned") && obj(x, "goal").is_none() && !b(x, "starting")
+    matches!(s(x, "status"), "queued" | "planned") && (obj(x, "goal").is_none() || !x["line"].is_null()) && !b(x, "starting")
 }
 
 pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
@@ -340,6 +343,10 @@ pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
     }
     if let Some(c) = fmt::compacting(x) {
         chips.push(Chip { text: c, cls: "compact".into() });
+    }
+    // Where it waits its turn: "To resume in Term 3" or "Queued in Term 3".
+    if let Some(l) = opt_s(&x["line"], "label") {
+        chips.push(Chip { text: l.to_string(), cls: "line".into() });
     }
     // The devices lent to it, and its bits (⚑, warn while a backend one isn't made).
     for d in arr(&x["devices"], "lent").iter().filter_map(|d| d.as_str()) {
@@ -935,13 +942,13 @@ fn halo_dot(color: Hsla, halo: Hsla) -> Div {
 
 fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Window, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let (dot, halo) = match c.status {
-        "working" => (t.accent, t.accent_soft),
+        "working" | "waiting" => (t.accent, t.accent_soft),
         "needs" => (t.warn, t.warn_soft),
         "offline" => (t.down, t.down_soft),
         _ => (t.faint, t.col),
     };
     let state_color = match c.status {
-        "working" => t.accent,
+        "working" | "waiting" => t.accent,
         "needs" => t.warn,
         "offline" => t.down,
         _ => t.muted,
@@ -1055,7 +1062,7 @@ fn session_card(m: &mut MainWindow, t: &Theme, c: &SessCardVm, window: &mut Wind
                 .min_w_0()
                 .child(halo_dot(dot, halo))
                 .child(name_el)
-                .child(div().flex_none().ml_auto().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(state_color).child(c.state_label)),
+                .child(div().flex_none().ml_auto().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(state_color).child(c.state_label.clone())),
         )
         .child(
             div()
@@ -1343,7 +1350,7 @@ fn chip_colors(t: &Theme, cls: &str) -> (Hsla, Hsla) {
         "k-follow" | "st-ticket" => (t.accent_fg, t.accent_soft),
         "st-task" => (t.goal, t.goal_soft),
         "st-drop" => (t.muted, t.col),
-        "compact" => (t.accent_fg, t.accent_soft),
+        "compact" | "line" => (t.accent_fg, t.accent_soft),
         "device" => (t.goal, t.goal_soft),
         "bit-wait" => (t.warn_fg, t.warn_soft),
         "bit" => (t.muted, t.panel_2),
@@ -1506,6 +1513,20 @@ mod tests {
 
     fn sel<'a>(route: &'a Value, k: &str) -> Option<&'a str> {
         route["q"][k].as_str()
+    }
+
+    #[test]
+    fn a_task_in_a_terminals_line_says_where_and_still_has_start() {
+        let x = json!({"id": 14, "ref": "T14", "title": "Footer", "project": "webapp", "status": "queued",
+                       "line": {"session": "s1", "name": "Term 3", "kind": "resume", "pos": 1, "label": "To resume in Term 3", "after": "T12"}});
+        let card = task_card_vm(&x, None);
+        assert!(card.chips.iter().any(|c| c.text == "To resume in Term 3" && c.cls == "line"));
+        assert!(starts_by_hand(&x), "Start takes it out of the line");
+        let mut in_goal = x.clone();
+        in_goal["goal"] = json!({"id": 3, "title": "Launch"});
+        assert!(starts_by_hand(&in_goal), "a goal task bumped into a line can be started elsewhere");
+        in_goal["line"] = Value::Null;
+        assert!(!starts_by_hand(&in_goal));
     }
 
     #[test]

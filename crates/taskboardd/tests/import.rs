@@ -222,6 +222,15 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!(names, vec!["emu-1", "iphone-15", "pixel-9"]);
     let pixel = &devs[2];
     assert_eq!(serde_json::from_str::<Value>(&pixel.st("tags")).unwrap(), json!(["android", "phone"]));
+    // Kind, target and the start and stop commands come over as the device's own (#92); kind isn't a tag.
+    let emu = get(&app, "devices/emu-1");
+    assert_eq!(emu["tags"], json!([]), "the kind is a label, not a tag");
+    assert_eq!((emu["kind"].clone(), emu["target"].clone()), (json!("android"), json!("emulator-5554")));
+    assert_eq!((emu["start_cmd"].clone(), emu["stop_cmd"].clone()), (json!("emulator -avd emu1"), json!("adb emu kill")));
+    assert_eq!(emu["label"], "emu-1 (Android emulator, emulator-5554)");
+    let extra: Value = serde_json::from_str(&app.db.get_setting("import.devices.unmapped").unwrap().unwrap()).unwrap();
+    assert_eq!(extra["columns"], json!(["project"]), "a devices column the board has no place for is kept");
+    assert!(extra["rows"].as_array().unwrap().contains(&json!({"id": 1, "project": "web"})));
     assert_eq!((devs[1].i("off"), devs[1].s("note")), (Some(1), Some("Kept for the demo")), "a blocked device comes over off");
     assert!(rep.skipped.iter().any(|s| s.contains("devices pixel-9")), "two devices with one name: the second is listed");
     assert_eq!(taskboardd::devices::lent(&app, 7).unwrap(), vec!["pixel-9"]);
@@ -441,7 +450,10 @@ fn older_device_columns_and_goal_needs_come_over() {
     let app = App::for_tests(Config::for_tests(dir.path()));
     import::import(&app, &old_path).unwrap();
     let devs = app.db.q("SELECT name, tags, focus, off FROM devices ORDER BY name", vec![]).unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&devs[1].st("tags")).unwrap(), json!(["phone", "android"]));
+    assert_eq!(serde_json::from_str::<Value>(&devs[1].st("tags")).unwrap(), json!(["phone"]), "the kind isn't a tag");
+    let kind = app.db.val("SELECT kind FROM devices WHERE name = 'pixel-9'", vec![]).unwrap();
+    assert_eq!(kind, json!("android"));
+    assert!(app.db.get_setting("import.devices.unmapped").unwrap().is_none(), "every column has a place");
     assert_eq!(devs[1].s("focus"), Some("open -a Pixel"));
     assert_eq!(devs[0].i("off"), Some(1), "a disabled device comes over off");
     let needs = app.db.val("SELECT needs FROM device_needs WHERE owner = 'G3'", vec![]).unwrap();
@@ -518,6 +530,40 @@ fn the_review_switches_the_old_board_used_come_on() {
     assert!(swaps("docs"), "it swapped a reviewer who timed out there");
     assert!(swaps("web") && swaps("api"), "the old board always swapped: a project with PRs and no swap history too");
     assert!(!swaps("blog"), "a project that came over with no PR or ask");
+    let merges = |p: &str| taskboardd::prflow::agents_merge_on(&app, Some(p));
+    assert!(merges("web") && merges("api") && merges("docs"), "the old board's agents merged their own PRs");
+    assert!(rep.lines().iter().any(|l| l.contains("turned on") && l.contains("web: agents merge")), "{:?}", rep.lines());
+    assert!(merges("blog") && merges("added-later"), "the board-wide switch: no PR before the import, or a new project");
+    assert_eq!(taskboardd::projects::agents_merge_set(&app), Some(true));
+    assert!(rep.lines().iter().any(|l| l.contains("every other project: agents merge") && l.contains("tb project agents-merge off")), "{:?}", rep.lines());
+    taskboardd::projects::set_pr_rules(&app, "blog", &json!({"agents_merge": false})).unwrap();
+    assert!(!merges("blog"), "a project's own rule still wins");
+    taskboardd::projects::set_agents_merge(&app, None).unwrap();
+    assert!(!merges("added-later"), "default: back to config.toml's pr.agents_merge");
+
+    // A project that already says keeps its word.
+    let again = old_dir.path().join("again.db");
+    Connection::open(&again)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, project TEXT, status TEXT, pr_repo TEXT, pr_num INT);
+             INSERT INTO tasks VALUES (1, 'Own merge', 'shop', 'done', 'acme/shop', 9);",
+        )
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    taskboardd::projects::set_pr_rules(&app, "shop", &json!({"agents_merge": false})).unwrap();
+    let rep = import::import(&app, &again).unwrap();
+    assert!(!taskboardd::prflow::agents_merge_on(&app, Some("shop")), "left as the project set it");
+    assert!(!rep.lines().iter().any(|l| l.contains("shop: agents merge")), "{:?}", rep.lines());
+
+    // The owner already turned the board-wide switch off: the import leaves it.
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    taskboardd::projects::set_agents_merge(&app, Some(false)).unwrap();
+    let rep = import::import(&app, &again).unwrap();
+    assert!(!taskboardd::prflow::agents_merge_on(&app, Some("new")), "left as the owner set it");
+    assert!(!rep.lines().iter().any(|l| l.contains("every other project")), "{:?}", rep.lines());
 }
 
 #[test]

@@ -45,14 +45,14 @@ pub fn start_task(
     crate::devices::lend(app, t)?;
     let prompt = match prompt {
         Some(p) => p,
-        None => handoff::build(app, t.id())?,
+        None => handoff::build_starting(app, t.id())?,
     };
     let jid = if mode == "attach" {
         let s = board::get_session(app, session_id)?;
         let Some(s) = s.filter(|s| s.s("status") != Some("gone")) else {
             return err(409, "That Midna terminal isn't open any more.");
         };
-        if s.s("status") == Some("idle") && board::runs_claude(&s) {
+        if s.s("status") == Some("idle") && !board::waiting_on_background(&s) && board::runs_claude(&s) {
             board::create_job(
                 app,
                 "agent",
@@ -186,7 +186,7 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
     let mut started = vec![];
     let in_hours = hours::may_start(app);
     let queued = app.db.q(
-        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL ORDER BY priority = 'high' DESC, created_at, id",
+        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND line_session IS NULL ORDER BY priority = 'high' DESC, created_at, id",
         p![],
     )?;
     for t in queued {
@@ -291,7 +291,7 @@ fn worth_retrying(tried: &[Row]) -> bool {
 }
 
 fn settled(s: &Row) -> bool {
-    s.s("status") == Some("idle") && !board::offline(s) && age_secs(s.s("status_at")).unwrap_or(0.0) >= AUTO_CLOSE_SETTLE_SECS
+    s.s("status") == Some("idle") && !board::offline(s) && !board::waiting_on_background(s) && age_secs(s.s("status_at")).unwrap_or(0.0) >= AUTO_CLOSE_SETTLE_SECS
 }
 
 pub fn auto_close_done(app: &App) -> Result<()> {
@@ -300,7 +300,7 @@ pub fn auto_close_done(app: &App) -> Result<()> {
         p![],
     )? {
         let Some(s) = board::get_session(app, t.s("session_id"))? else { continue };
-        if !settled(&s) || board::task_for_session(app, s.s("id"))?.is_some() || !board::opened_by_board(app, s.s("id"))? {
+        if !settled(&s) || crate::lines::busy(app, &s.st("id"))? || !board::opened_by_board(app, s.s("id"))? {
             continue;
         }
         let tried = closes_since(app, &s.st("id"), t.s("finished_at").unwrap_or(""))?;
@@ -409,7 +409,7 @@ pub fn close_idle_after_hours(app: &App) -> Result<()> {
         return Ok(());
     }
     for (s, t) in task_terminals(app)? {
-        if s.s("status") != Some("idle") || board::offline(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
+        if s.s("status") != Some("idle") || board::offline(&s) || board::waiting_on_background(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
             continue;
         }
         if hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
@@ -467,6 +467,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| jira::ensure_tickets(app))?;
     jira::run_pending(app)?;
     crate::qa::tick(app)?;
+    app.db.tx(|| crate::lines::tick(app))?;
     auto_close_done(app)?;
     app.db.tx(|| offline_too_long(app))?;
     app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;

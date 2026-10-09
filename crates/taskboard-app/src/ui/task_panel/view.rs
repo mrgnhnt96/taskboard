@@ -398,7 +398,7 @@ fn st_tone(k: &str) -> Tone {
     match k {
         "planned" => Tone::Planned,
         "blocked" => Tone::Blocked,
-        "working" => Tone::Working,
+        "working" | "waiting" => Tone::Working,
         "needs" => Tone::Needs,
         "done" => Tone::Done,
         "failed" => Tone::Failed,
@@ -723,6 +723,14 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         ));
     }
 
+    if let Some(label) = opt_s(&t["line"], "label") {
+        let when = match opt_s(&t["line"], "after") {
+            Some(a) => format!("It starts there by itself once {a} is done."),
+            None => "It starts there by itself next.".to_string(),
+        };
+        out.push(el(K::Box(BoxTone::Info), vec![txt(label, St::BoxLabel), txt(when, St::Plain)]));
+    }
+
     if starts_by_hand(t) {
         let mut st = vec![el(
             K::Row,
@@ -880,20 +888,21 @@ fn goal_row(c: &Ctx, t: &Value) -> Option<Node> {
     Some(lrow("Goal", vec![txt("Not in a goal.", St::Small)]))
 }
 
-/// `SESS`.
-fn sess_label(st: &str) -> &'static str {
+/// `SESS`, with what's running ("2 agents running") while the terminal's background work runs.
+fn sess_label(st: &str, background: &Value) -> String {
     match st {
-        "idle" => "Idle",
-        "working" => "Working",
-        "needs" => "Needs you",
-        _ => "Gone",
+        "idle" => "Idle".into(),
+        "working" => "Working".into(),
+        "waiting" => fmt::background_label(background),
+        "needs" => "Needs you".into(),
+        _ => "Gone".into(),
     }
 }
 
 /// `termItem(x, cur)`.
 fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
     let raw = match s(x, "status") {
-        k @ ("idle" | "working" | "needs" | "gone") => k,
+        k @ ("idle" | "working" | "waiting" | "needs" | "gone") => k,
         _ => "gone",
     };
     let stage = &cur["pr"]["stage"];
@@ -913,11 +922,11 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
     let id = opt_s(x, "id").map(str::to_string);
     let name = opt_s(x, "name").map(str::to_string).unwrap_or_else(|| or_empty(&x["id"]));
     let state = if live {
-        sess_label(st)
+        sess_label(st, &x["background"])
     } else if b(cur, "lost") && js_eq(field(x, "id"), cur.get("session").and_then(|ss| field(ss, "id"))) {
-        "Gone"
+        "Gone".into()
     } else {
-        "Closed"
+        "Closed".into()
     };
     let mut head = Vec::new();
     match &id {
@@ -935,7 +944,7 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
         Dot::None
     } else {
         match st {
-            "working" => Dot::Working,
+            "working" | "waiting" => Dot::Working,
             "needs" => Dot::Needs,
             "idle" => Dot::Idle,
             _ => Dot::Gone,
@@ -1150,7 +1159,9 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let reviewers = bar["reviewers"].as_i64().unwrap_or(0);
     let new_comments = bar["new_comments"].as_i64().unwrap_or(0);
     let rv = js_lower(&p["review"]);
-    out.push(if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
+    out.push(if s(bar, "review") == "off" {
+        step("Review", StepSt::Done, Some("Off"), None)
+    } else if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
         // "2 new comments", linking to the first unread thread.
         let words = if new_comments > 0 { fmt::plural(new_comments, "new comment", "new comments") } else { "New comments".to_string() };
         let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
@@ -1158,8 +1169,11 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     } else if reviewers > 0 && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
         let st = if approvals >= reviewers { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
         step("Review", st, Some(&format!("{approvals} of {reviewers}")), url)
+    } else if s(bar, "review") == "setup" && review.1 == StepSt::Todo {
+        step("Review", StepSt::Ask, Some("Needs setup"), None)
     } else {
-        step(review.0, review.1, review.2.as_deref(), url)
+        // "Not asked" has nowhere to go.
+        step(review.0, review.1, review.2.as_deref(), if review.1 == StepSt::Todo { None } else { url })
     });
     out.push(if phase == "waits" && pr_open(p) { step("Merge", StepSt::Wait, Some("Waits on base"), None) } else { step(merge.0, merge.1, merge.2.as_deref(), None) });
     out
@@ -1657,7 +1671,11 @@ fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let mut out = vec![];
     let d = &t["devices"];
-    let lent: Vec<&str> = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
+    // Each with its kind and target ("dev-a (Android emulator, emulator-5554)") when the board gives them.
+    let mut lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
+    if lent.is_empty() {
+        lent = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
+    }
     let devices = if !lent.is_empty() { Some(lent.join(", ")) } else { opt_s(d, "needs_text").map(|n| format!("Needs {n}")) };
     if let Some(v) = devices {
         out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));

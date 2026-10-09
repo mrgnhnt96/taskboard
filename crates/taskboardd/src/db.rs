@@ -190,6 +190,13 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Why a PR-flow task finished without a PR (`tb done --no-pr`), or without evidence (`--no-evidence`).
     ("tasks", "no_pr", "TEXT"),
     ("tasks", "no_evidence", "TEXT"),
+    // A typed prompt as the human typed it (newlines kept, not clipped to the line `text` shows), for
+    // the `tb start` word check.
+    ("session_events", "full", "TEXT"),
+    // Background commands and agents its last turn left running, and when the board counted them.
+    ("sessions", "background", "INT DEFAULT 0"),
+    ("sessions", "background_agents", "INT DEFAULT 0"),
+    ("sessions", "background_at", "TEXT"),
     // Who closed the terminal, from Midna's `session.closed` event (`human`, `agent`, ...).
     ("sessions", "closed_by", "TEXT"),
 ];
@@ -265,11 +272,14 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         add_columns(&conn, ADDED)?;
         conn.execute_batch(crate::devices::SCHEMA)?;
+        add_columns(&conn, crate::devices::ADDED)?;
         conn.execute_batch(crate::bits::SCHEMA)?;
         conn.execute_batch(crate::reviewers::SCHEMA)?;
         add_columns(&conn, crate::reviewers::ADDED)?;
         conn.execute_batch(crate::breaks::SCHEMA)?;
         add_columns(&conn, crate::breaks::ADDED)?;
+        add_columns(&conn, crate::lines::ADDED)?;
+        conn.execute_batch(crate::lines::SCHEMA)?;
         conn.execute_batch(BACKFILL_STATES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }

@@ -125,6 +125,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
+        ("GET", ["projects", "agents-merge"]) => Ok(projects::describe_agents_merge(app)),
+        ("POST", ["projects", "agents-merge"]) => set_agents_merge(app, body),
         ("POST", ["projects", name]) => patch_project(app, name, body),
         ("GET", ["sessions"]) => Ok(json!({"sessions": ops::session_list(app, q(query, "project", "all"))?})),
         ("GET", ["sessions", "closed"]) => {
@@ -143,6 +145,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let v = if t.is_none() { prflow::visited_by(app, sid)? } else { None };
             Ok(json!({"session": sid,
                       "task": match t { Some(t) => board::task_card(app, &t)?, None => Value::Null },
+                      "line": crate::lines::entries(app, sid)?,
                       "visiting": match v { Some(v) => board::task_card(app, &v)?, None => Value::Null }}))
         }
         ("GET", ["steps"]) => {
@@ -198,7 +201,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["tasks", id]) => patch_task(app, tid(id)?, body),
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
-        ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, body),
+        ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, query, body),
         ("POST", ["tasks", id, "answer"]) => answer(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
@@ -570,6 +573,19 @@ fn get_summary(app: &App) -> Result<Value> {
               "attention": needs > 0, "midna_up": midna::up(app), "goals": goals}))
 }
 
+/// `tb project agents-merge on|off|default`: whether agents merge on projects that don't say.
+fn set_agents_merge(app: &App, body: &Value) -> Result<Value> {
+    let on = match body.get("agents_merge") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) if s == "on" => Some(true),
+        Some(Value::String(s)) if s == "off" => Some(false),
+        Some(Value::Null) => None,
+        _ => return err(400, "agents_merge is true (on), false (off) or null (config.toml's pr.agents_merge)."),
+    };
+    app.db.tx(|| projects::set_agents_merge(app, on))?;
+    Ok(projects::describe_agents_merge(app))
+}
+
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
     let list = projects::list_projects(app)?;
     let Some(p) = list.iter().find(|p| p["name"] == name) else { return err(404, format!("There's no project called {name}.")) };
@@ -628,7 +644,7 @@ fn close_sessions(app: &App, body: &Value) -> Result<Value> {
             let sid = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
             let s = board::get_session(app, Some(&sid))?;
             match s {
-                Some(s) if board::close_rule(Some(&s)) == Some("close") && board::task_for_session(app, Some(&sid))?.is_none() => {
+                Some(s) if board::close_rule(Some(&s)) == Some("close") && !crate::lines::busy(app, &sid)? => {
                     if close_session_inner(app, &s, false, "close the idle terminals you picked")?.is_some() {
                         closing.push(sid);
                     }
@@ -997,10 +1013,47 @@ fn gate(app: &App, id: i64, event: &str, stopped: &str) -> Result<bool> {
     }
 }
 
-fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
+fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     let mode = { let m = body_str(body, "mode"); if m.is_empty() { "new".to_string() } else { m } };
     if !["new", "queue", "attach"].contains(&mode.as_str()) {
         return err(400, "Start mode must be new, queue or attach.");
+    }
+    // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's,
+    // and only the app's own request is that; any other caller with no terminal is no one's word.
+    let t = board::get_task(app, id)?;
+    let via = body_str(body, "via_session");
+    let started = if via.is_empty() {
+        if !from_app(query) {
+            return err(
+                403,
+                format!(
+                    "Only a human can start {}: {} can press Start on the board, or tell an agent in a terminal to start it (tb start).",
+                    rf("task", id),
+                    app.cfg.owner
+                ),
+            );
+        }
+        "Started in the UI".to_string()
+    } else {
+        if crate::startword::owners_word(app, &via, id)?.is_none() {
+            // An ask for the goal ("start the goal") is no word for each of its tasks; the goal runs them.
+            let goal = board::find_goal(app, t.i("goal_id"))?
+                .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
+                .unwrap_or_default();
+            return err(
+                403,
+                format!(
+                    "Only a human can start {}: nobody asked for it in this terminal's conversation. {} can press Start on the board, or tell you to start it.{goal}",
+                    rf("task", id),
+                    app.cfg.owner
+                ),
+            );
+        }
+        format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
+    };
+    // Starting ahead of its wave or its turn is fine; ahead of the work it needs is not.
+    if let Some(b) = crate::waitsfor::blocker(app, &t)? {
+        return err(409, format!("{} can't start yet. {b}.", rf("task", id)));
     }
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
@@ -1019,6 +1072,12 @@ fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
         if board::live_start_job(app, &t)?.map(|j| matches!(j.s("state"), Some("pending") | Some("running"))).unwrap_or(false) {
             return err(409, "It's already starting in Midna.");
         }
+        // The owner's Start takes it out of a terminal's line it waits in and runs it as asked.
+        if let (Some(line), Some("queued")) = (t.s("line_session"), t.s("status")) {
+            let name = board::session_name(app, Some(line), None);
+            crate::lines::leave(app, &t)?;
+            board::log_event(app, id, board::OWNER, "status", &format!("Taken out of {name}'s line"))?;
+        }
         let sid = body["session_id"].as_str().map(|s| s.to_string());
         board::update_task(
             app,
@@ -1026,6 +1085,7 @@ fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
             fields!["pickup" => mode, "pickup_session" => if mode == "attach" { sid.clone() } else { None }, "lost" => 0,
                     "session_id" => if t.b("lost") { None } else { t.s("session_id").map(|s| s.to_string()) }],
         )?;
+        board::log_event(app, id, board::OWNER, "status", &started)?;
         runner::start_task(app, &board::get_task(app, id)?, &mode, sid.as_deref(), None, None, None)?;
         Ok(())
     })?;
@@ -1149,6 +1209,7 @@ fn detach(app: &App, id: i64) -> Result<Value> {
             return err(409, "This task is done.");
         }
         cancel_pending(app, id)?;
+        crate::lines::leave(app, &t)?;
         let pickup = if t.s("pickup") == Some("attach") { "manual".to_string() } else { t.st("pickup") };
         board::update_task(
             app,
@@ -1399,7 +1460,7 @@ fn close_done_terminals(app: &App, body: &Value, query: &Query) -> Result<Value>
             }
             let Some(s) = board::get_session(app, t.s("session_id"))? else { continue };
             let sid = s.st("id");
-            if s.s("status") == Some("gone") || pending.contains(&sid) || board::task_for_session(app, Some(&sid))?.is_some() {
+            if s.s("status") == Some("gone") || pending.contains(&sid) || crate::lines::busy(app, &sid)? {
                 continue;
             }
             board::create_job(app, "close", json!({"session": sid, "force": false}), Some(t.id()), "close", None)?;
@@ -1767,6 +1828,22 @@ fn goal_plan(app: &App, id: i64, body: &Value) -> Result<Value> {
 
 fn run_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
     let now = as_bool(body.get("now"), false);
+    // From `tb start G2` or `tb goal set G2 --run` in a terminal: only on a human's word there, as for a
+    // task. The board's Run sends no terminal.
+    let via = body_str(body, "via_session");
+    if !via.is_empty() {
+        board::get_goal(app, id)?;
+        if crate::startword::owners_goal_word(app, &via, id)?.is_none() {
+            return err(
+                403,
+                format!(
+                    "Only a human can run {}: nobody asked for it in this terminal's conversation. {} can press Run on the board, or tell you to start it.",
+                    rf("goal", id),
+                    app.cfg.owner
+                ),
+            );
+        }
+    }
     let n = app.db.tx(|| {
         let g = board::get_goal(app, id)?;
         let until = if now { hours::until_open(app) } else { None };
@@ -2192,7 +2269,7 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
     }
     let f = jloads_obj(t.s("pr_flow"));
     Ok(json!({"task": rf("task", id), "pr": board::pr_card(&t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
-              "agents_merge": app.cfg.pr.agents_merge, "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
+              "agents_merge": crate::prflow::agents_merge_on(app, t.s("project")), "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {

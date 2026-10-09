@@ -79,7 +79,7 @@ max_terminals = 2                    # how many terminals a goal made from the b
 [pr]
 watch = true
 wake = true                          # bring a done task back when its PR has failed checks or comments
-agents_merge = false                 # let agents merge an approved, green PR
+agents_merge = false                 # let agents merge an approved, green PR (a project can say otherwise; tb project agents-merge sets it on the board, and taskboardd import turns it on)
 gh = "gh"
 no_checks_after_mins = 15.0
 bitbucket_api = "https://api.bitbucket.org/2.0"
@@ -96,6 +96,8 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 # ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
 # swap = true                         # swap slow reviewers on this project (unset: [reviewers] swap; tb project set --swap)
+# review = false                      # no Review step: its PRs go to merge without reviewers (unset: on; tb project set --review)
+# agents_merge = true                 # agents merge its approved, green PRs (unset: pr.agents_merge; tb project set --agents-merge)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
 # relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
@@ -126,7 +128,8 @@ owner_prs_secs = 120.0               # while stopped, read your open PRs on each
 # The command that cancels builds, by CI provider (github, bitbucket, azure, or the `provider` a
 # build event names). Run with `sh -c` and TB_PROVIDER, TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD,
 # TB_BRANCH, TB_BUILD_URL, TB_BUILD_ID; exit 0 once they're cancelled, and write the builds it
-# stopped (one name per line) to "$TB_CANCELLED" so follow-ups show in `tb pr-builds`. Unset for github and
+# stopped (one name per line) to "$TB_CANCELLED" so follow-ups show in `tb pr-builds` (left empty: it stopped nothing,
+# and nothing is recorded). Unset for github and
 # bitbucket: the PR host's own (gh run cancel, Pipelines' stopPipeline).
 [pr_builds.cancel]
 # azure = "az pipelines runs cancel --id \"$TB_BUILD_ID\""   # example
@@ -142,7 +145,7 @@ fault_check = true                   # ask `claude -p` whether one of your commi
 model = "sonnet"
 budget_usd = "0.50"
 timeout_secs = 180
-recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished and it's still red
+recheck_mins = 30.0                  # decide an unsure break again; alert again when the fix task finished without a fix PR, nothing else covers it, and it's still red
 start_fix = true                     # start the fix task at once in a new terminal (false: it waits in the queue)
 fix_ticket = true                    # make a new Jira ticket for the fix task (when Jira is on)
 
@@ -156,7 +159,7 @@ fix_ticket = true                    # make a new Jira ticket for the fix task (
 # starts. 0 turns one off.
 [limits]
 compact_window = 150000              # tokens: Claude compacts a board terminal's conversation here (--settings autoCompactWindow)
-cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed
+cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed or sent anything
 warm_tokens = 60000                  # a task or PR conversation resumes only under this many tokens…
 warm_idle_mins = 60                  # …and idle under this long; otherwise it starts fresh from the handoff
 # Generated files, marked `-diff` in a block the board keeps in each active project's (and
@@ -184,6 +187,14 @@ background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 guard = false
 languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kotlin", "go", "java", "c", "cpp", "csharp", "ruby", "shell"]
 # pragmas = ["!/", "noqa", "type:", "pragma", "pylint:", "eslint-", "@ts-", "prettier-ignore", "ignore:", "ignore_for_file:", "nolint", "go:", "swiftlint:", …]
+
+# Which requests are the owner's own clicks in Taskboard.app (Start, a wave's review stop). A daemon signed
+# with a team's certificate (a release) takes them only from the app signed by the same team, on the app
+# socket (app.sock in the data folder), checked by its code signature; nothing here changes that. A daemon
+# with no team signature (cargo run, scripts/dev-app.sh) has nothing to check, so it writes a per-launch
+# token to app-token and takes requests that carry it. See docs/API.md ("The app's own requests").
+[app_origin]
+token = true                         # false: an unsigned daemon takes no request as the app's
 
 # `tb done "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
 # (GitHub or Bitbucket, by the remote) into the real base: a stacked task's parent branch, else the default branch.
@@ -270,7 +281,7 @@ create_url = ""                      # example: "https://flags.example.com/new?k
 [reviewers]
 count = 2
 main_contributors = 3                 # the main pick comes from this many: pinned reviewers, then top authors of the changed files, then of the project
-not_a_main_below = 0.1                # someone who could be asked at a weight under this isn't one of them
+not_a_main_below = 0.05               # someone who could be asked at a weight under this isn't one of them
 history_months = 6                    # commit history that counts
 min_commits = 5                       # commits in that window to join the roster from the history
 turn_gap_hours = 4.0
@@ -327,8 +338,9 @@ ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when i
 # once per head commit (every push is checked again, and a push to the open PR waits for it);
 # min_gap_mins keeps its rounds apart; bar = "WD" shows it in the app's PR bar. A check can write its
 # verdict, headline and findings to $TASKBOARD_RESULT. A per_head step's `publish` script republishes its
-# passing round for the PR (`tb step publish`, listed in the rebase commands after the push); unset, the
-# rebase commands still say to republish it, in words. Give it {worktree} or {branch}: the main checkout may
+# passing round for the PR (`tb step publish`, listed in the rebase commands after the push); unset, a step
+# with a `bar` is still listed there, in words. Values fill scripts as single shell words ('' when empty, so
+# {pr} keeps its place before the PR opens). Give it {worktree} or {branch}: the main checkout may
 # have another branch checked out. See docs/HOOKS.md ("Steps").
 # [[steps]]
 # name = "Author-side review"

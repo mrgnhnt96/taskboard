@@ -83,6 +83,18 @@ fn pre_tool_use(payload: &Value, session: &str) -> i32 {
     0
 }
 
+/// `PreToolUse`: refuses a tool call that reads the daemon's app token (`taskboardd::apptoken`), which
+/// is what makes a request the owner's click in the app.
+fn token_refused(payload: &Value) -> bool {
+    let tool = payload["tool_name"].as_str().unwrap_or("");
+    let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(std::path::Path::new);
+    if !taskboardd::apptoken::tool_reaches(tool, &payload["tool_input"], &client::config().data, cwd) {
+        return false;
+    }
+    deny(&taskboardd::apptoken::refusal());
+    true
+}
+
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 fn deny(reason: &str) {
@@ -110,6 +122,15 @@ fn board_event(hook: &str) -> Option<&'static str> {
 
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+/// Like `clip`, but a cut text ends in "…" so the board knows it was cut (the start word check
+/// takes no word from a prompt whose end it can't see).
+fn clip_marked(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    format!("{}…", clip(s, n - 1))
 }
 
 fn clip_middle(s: &str, n: usize) -> String {
@@ -198,8 +219,9 @@ fn say_hello(cfg: &Config, base: &Value, version: &str, path: &str, left: f64) {
 
 pub fn run(event_arg: Option<&str>) -> i32 {
     let start = Instant::now();
-    let Ok(session) = std::env::var("MIDNA_SESSION") else { return 0 };
-    if session.is_empty() {
+    let session = std::env::var("MIDNA_SESSION").unwrap_or_default();
+    // The app token guard runs in every terminal, Midna's or not; everything else only in Midna's.
+    if session.is_empty() && event_arg != Some("PreToolUse") {
         return 0;
     }
     let mut raw = String::new();
@@ -207,7 +229,16 @@ pub fn run(event_arg: Option<&str>) -> i32 {
     let payload: Value = serde_json::from_str(&raw).ok().filter(|v: &Value| v.is_object()).unwrap_or(json!({}));
     let hook = event_arg.map(|s| s.to_string()).filter(|s| !s.is_empty()).or_else(|| payload["hook_event_name"].as_str().map(|s| s.to_string())).unwrap_or_default();
     if hook == "PreToolUse" {
+        if token_refused(&payload) {
+            return 0;
+        }
+        if session.is_empty() {
+            return 0;
+        }
         return pre_tool_use(&payload, &session);
+    }
+    if session.is_empty() {
+        return 0;
     }
     let Some(event) = board_event(&hook) else { return 0 };
     let s = |k: &str| payload[k].as_str().unwrap_or("").to_string();
@@ -244,7 +275,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             extra.insert("reason".into(), json!(reason));
         }
         "UserPromptSubmit" => {
-            extra.insert("prompt".into(), json!(clip(&s("prompt"), MAX_PROMPT)));
+            extra.insert("prompt".into(), json!(clip_marked(&s("prompt"), MAX_PROMPT)));
         }
         "Stop" => {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
@@ -411,5 +442,7 @@ mod tests {
         assert!(PUSH_RE.is_match("git push --force-with-lease"));
         assert!(!PUSH_RE.is_match("git commit -m push"));
         assert_eq!(clip_middle("abcdefghij", 7), "abc\n…\nj");
+        assert_eq!(clip_marked("abcdefghij", 5), "abcd…");
+        assert_eq!(clip_marked("abc", 5), "abc");
     }
 }

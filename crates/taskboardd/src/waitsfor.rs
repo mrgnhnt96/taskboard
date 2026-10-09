@@ -97,16 +97,82 @@ pub fn ready(other: Option<&Row>) -> bool {
     other.map(|o| o.s("status") == Some("done") && !o.b("failed")).unwrap_or(false)
 }
 
+/// The tasks this one waits for until their PR merges, not just until they're done (`tb wait-for --merged`).
+pub fn merged_ids(t: &Row) -> Vec<i64> {
+    board::task_context(t)
+        .get("waits_merged")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default()
+}
+
+/// Adds tasks to the ones this one waits for until their PR merges.
+pub fn set_merged(app: &App, t: &Row, wanted: &[i64]) -> Result<()> {
+    let mut ctx = board::task_context(t);
+    let mut all = merged_ids(t);
+    for n in wanted {
+        if !all.contains(n) {
+            all.push(*n);
+        }
+    }
+    ctx.insert("waits_merged".into(), json!(all));
+    board::save_context(app, t.id(), &ctx, false)
+}
+
+/// Forgets every merge wait (`tb wait-for none`).
+pub fn clear_merged(app: &App, t: &Row) -> Result<()> {
+    let mut ctx = board::task_context(t);
+    if ctx.remove("waits_merged").is_some() {
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    Ok(())
+}
+
+fn pr_merged(o: &Row) -> bool {
+    o.st("pr_state").eq_ignore_ascii_case("MERGED") || o.s("pr_phase") == Some("merged")
+}
+
+fn pr_declined(o: &Row) -> bool {
+    matches!(o.st("pr_state").to_uppercase().as_str(), "CLOSED" | "DECLINED" | "SUPERSEDED") || o.s("pr_phase") == Some("declined")
+}
+
+/// Done and not failed, and its work is on the base branch: its PR merged, or it ships no PR.
+pub fn merged(app: &App, other: Option<&Row>) -> Result<bool> {
+    let Some(o) = other.filter(|o| ready(Some(o))) else { return Ok(false) };
+    if pr_merged(o) {
+        return Ok(true);
+    }
+    if o.i("pr_num").is_some() {
+        return Ok(false);
+    }
+    Ok(has(o.s("no_pr")) || !crate::projects::task_ships_pr(app, o)?)
+}
+
+/// Whether `t` can go on with task `n`'s work: done, or merged when `t` waits for its PR to merge.
+pub fn ready_for(app: &App, t: &Row, n: i64, other: Option<&Row>) -> Result<bool> {
+    if merged_ids(t).contains(&n) {
+        merged(app, other)
+    } else {
+        Ok(ready(other))
+    }
+}
+
 pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
         let Some(other) = other else { continue };
-        if ready(Some(&other)) {
+        if ready_for(app, t, n, Some(&other))? {
             continue;
         }
         let who = label(app, &other)?;
+        let pr = other.i("pr_num").map(|p| format!("PR #{p}"));
         return Ok(Some(match other.s("status") {
-            Some("done") => format!("Blocked by {who}, which failed. It starts once {} is done", rf("task", n)),
+            Some("done") if !other.b("failed") => match pr {
+                Some(pr) if pr_declined(&other) => format!("Blocked by {who}, whose {pr} was declined, so its work isn't merged"),
+                Some(pr) => format!("Blocked by {who} until {pr} merges"),
+                None => format!("Blocked by {who} until its PR merges"),
+            },
+            Some("done") =>format!("Blocked by {who}, which failed. It starts once {} is done", rf("task", n)),
             Some("planned") => format!("Blocked by {who}, which isn't queued yet"),
             _ => format!("Blocked by {who}"),
         }));
@@ -124,6 +190,9 @@ pub fn waiting_line(app: &App, t: &Row) -> Result<Value> {
     }
     if let Some(why) = crate::jira::ticket_wait(app, t)? {
         return Ok(json!(why));
+    }
+    if has(t.s("line_session")) && crate::lines::held_by_clock(app, t)? {
+        return Ok(json!(hours::blocker(app)));
     }
     if t.s("pickup") == Some("manual") {
         return Ok(json!("Waits for you to press Start"));
@@ -154,7 +223,7 @@ pub fn blocked_by(app: &App, t: &Row) -> Result<Vec<Value>> {
     let mut out = vec![];
     for n in deps(t) {
         if let Some(o) = board::find_task(app, Some(n))? {
-            if !ready(Some(&o)) {
+            if !ready_for(app, t, n, Some(&o))? {
                 out.push(board::task_card(app, &o)?);
             }
         }
@@ -236,7 +305,7 @@ pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
     let mut lines = vec![];
     for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
-        if ready(other.as_ref()) {
+        if ready_for(app, t, n, other.as_ref())? {
             lines.push(format!("- {}", where_it_is(app, other.as_ref().unwrap())?));
         }
     }
@@ -317,13 +386,13 @@ pub fn started(app: &App, t: &Row) -> Result<()> {
 pub fn to_close(app: &App) -> Result<Vec<(Row, Row, String)>> {
     let mut out = vec![];
     for t in app.db.q(
-        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL \
+        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND line_session IS NULL \
          AND json_extract(context, '$.parked.session') IS NOT NULL",
         p![],
     )? {
         let Some(p) = parked(&t) else { continue };
         let Some(s) = board::get_session(app, p.s("session"))? else { continue };
-        if s.s("status") == Some("gone") || board::task_for_session(app, s.s("id"))?.is_some() {
+        if s.s("status") == Some("gone") || crate::lines::busy(app, &s.st("id"))? {
             continue;
         }
         let at = p.st("at");

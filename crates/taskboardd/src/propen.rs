@@ -381,9 +381,10 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     if !body_str(body, "pr").is_empty() {
         return err(400, "Give either --pr (a PR you opened) or --pr-body (the board opens it), not both.");
     }
-    let left = steps::missing_at(app, t, &[steps::Before::Pr, steps::Before::Done], body["git"]["sha"].as_str().filter(|h| !h.is_empty()))?;
+    let head = body["git"]["sha"].as_str().filter(|h| !h.is_empty());
+    let left = steps::missing_at(app, t, &[steps::Before::Pr, steps::Before::Done], head)?;
     if !left.is_empty() {
-        return err(409, steps::refusal_for(app, t, "opening the PR", &left));
+        return err(409, steps::refusal_at(app, t, "opening the PR", &left, head));
     }
     let pr = open(app, t, &body_str(body, "cwd"), &text, &body_str(body, "pr_title"))?;
     app.db.tx(|| {

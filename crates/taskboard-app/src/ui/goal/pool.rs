@@ -10,6 +10,8 @@ use super::*;
 #[derive(Debug, PartialEq)]
 pub struct DeviceRow {
     pub name: String,
+    /// The name with its kind and target: "dev-a (Android emulator, emulator-5554)".
+    pub label: String,
     pub tags: String,
     /// The task that has it (T4), or None when it's free.
     pub held_by: Option<String>,
@@ -45,6 +47,7 @@ pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
             DeviceRow {
                 pool: pool.join(", "),
                 name: s(d, "name").to_string(),
+                label: fmt::opt_s(d, "label").unwrap_or(s(d, "name")).to_string(),
                 tags: arr(d, "tags").iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
                 ours: held_by.as_ref().is_some_and(|r| ours.contains(r)),
                 held_by,
@@ -165,7 +168,7 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(d.name.clone()))
+                        .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(d.label.clone()))
                         .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone())))
                         .when(!d.pool.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.accent_fg).truncate().child(d.pool.clone()))),
                 )
@@ -272,7 +275,7 @@ mod tests {
         let g = json!({
             "tasks": [{"ref": "T4"}],
             "devices": {"needs_text": "ios", "devices": [
-                {"name": "sim-a", "tags": ["ios"], "held_by": {"ref": "T4", "title": "Sim test"}, "can_focus": true},
+                {"name": "sim-a", "label": "sim-a (iOS simulator, iOS 17.5)", "tags": ["ios"], "held_by": {"ref": "T4", "title": "Sim test"}, "can_focus": true},
                 {"name": "pixel-7", "tags": ["android", "phone"], "held_by": null, "off": true, "can_focus": false, "in_pool": true, "purpose": "measure", "reserved": true},
                 {"name": "pixel-9", "tags": [], "held_by": null, "reserved_for": "G4"},
                 {"name": "pixel-8", "tags": [], "held_by": {"ref": "T9", "title": "Other"}}]},
@@ -282,10 +285,11 @@ mod tests {
                 {"name": "oldCheckout", "kind": "backend", "made": true, "create_url": null, "tasks": [], "goals": []}]},
         });
         let d = device_rows(&g);
-        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true, pool: String::new() });
+        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), label: "sim-a (iOS simulator, iOS 17.5)".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true, pool: String::new() });
         assert_eq!((d[1].state.as_str(), d[1].tags.as_str(), d[1].pool.as_str()), ("Off", "android, phone", "for measure, reserved"));
         assert_eq!(d[2].pool, "reserved for G4");
         assert!(!d[3].ours);
+        assert_eq!(d[3].label, "pixel-8", "no kind or target: just the name");
         let b = bit_rows(&g);
         assert_eq!((b[0].state.as_str(), b[0].create.clone(), b[0].can_mark), ("Local, not in Flagsmith", None, false));
         assert!(b[1].can_mark && !b[2].can_mark, "only a backend bit not made yet can be marked created");

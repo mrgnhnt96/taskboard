@@ -51,12 +51,17 @@ pub fn from_env() -> Arc<dyn Backend> {
 pub struct Daemon {
     base: String,
     agent: ureq::Agent,
+    /// Where the running daemon keeps this launch's app token (`taskboardd::apptoken`).
+    token: Option<std::path::PathBuf>,
+    /// The daemon's app socket (`taskboardd::apporigin`), where the app's posts go: a team-signed
+    /// daemon takes them as the app's from the signed app only. None with `TASKBOARD_URL`.
+    socket: Option<std::path::PathBuf>,
 }
 
 impl Daemon {
     #[cfg(test)]
     pub fn at(base: &str) -> Daemon {
-        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build() }
+        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build(), token: None, socket: None }
     }
 
     pub fn new() -> Daemon {
@@ -65,8 +70,10 @@ impl Daemon {
         let port = cfg.as_ref().map(|c| c.port).unwrap_or(8792);
         let base = std::env::var("TASKBOARD_URL").ok().map(|u| u.trim_end_matches('/').trim_end_matches("/tasks").to_string());
         Daemon {
+            socket: if base.is_some() { None } else { cfg.as_ref().map(taskboardd::apporigin::socket_path) },
             base: base.unwrap_or_else(|| format!("http://{host}:{port}")),
             agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(2)).timeout(Duration::from_secs(20)).build(),
+            token: cfg.as_ref().map(taskboardd::apptoken::path),
         }
     }
 
@@ -98,11 +105,41 @@ impl Backend for Daemon {
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
-        // `X-Task-Board-From: app`: the owner's own click, which the board takes for what only
-        // the owner may set (a wave's review stop).
-        let req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
+        // `X-Task-Board-From: app`: the owner's own click, which the board takes for what only the
+        // owner may do (Start, a wave's review stop) when it comes from this signed app on the app
+        // socket, or, from a daemon with no team signature, with this launch's app token. The token is
+        // read each time, so a restarted daemon's new one is picked up.
+        let token = self.token.as_deref().and_then(taskboardd::apptoken::read);
+        if let Some(sock) = self.socket.as_deref().filter(|s| s.exists()) {
+            let mut headers = vec![("X-Task-Board", "1"), ("X-Task-Board-From", "app")];
+            if let Some(t) = token.as_deref() {
+                headers.push(("X-Task-Board-Token", t));
+            }
+            let bytes = serde_json::to_vec(&body).unwrap_or_default();
+            // A stale socket (nothing listens) falls back to the port; a post that got there doesn't
+            // go twice.
+            match taskboardd::apporigin::post(sock, path, &headers, &bytes, Duration::from_secs(20)) {
+                Ok((status, answer)) => return socket_answer(status, &answer),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {}
+                Err(_) => return Err(CallError { status: 0, message: "Can’t reach the task board server.".into() }),
+            }
+        }
+        let mut req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
+        if let Some(token) = token {
+            req = req.set("X-Task-Board-Token", &token);
+        }
         self.answer(req.send_json(body))
     }
+}
+
+/// An answer from the app socket, read as `Daemon::answer` reads one from the port.
+fn socket_answer(status: u16, body: &[u8]) -> CallResult {
+    let v = serde_json::from_slice::<Value>(body).ok();
+    if (200..300).contains(&status) {
+        return Ok(v.unwrap_or(Value::Null));
+    }
+    let msg = v.and_then(|v| v["error"].as_str().map(str::to_string));
+    Err(CallError { status, message: msg.unwrap_or_else(|| format!("The board answered {status}.")) })
 }
 
 // ------------------------------------------------------------------ fake
@@ -190,5 +227,48 @@ mod tests {
         let e = d.get("state", &[]).unwrap_err();
         assert_eq!(e.message, "Can’t reach the task board server.");
         assert_eq!(e.status, 0);
+    }
+
+    /// Posts go to the app socket when there's one, saying they're the app's and carrying the token
+    /// when the daemon wrote one; the port is the fallback.
+    #[::core::prelude::v1::test]
+    fn posts_go_to_the_app_socket() {
+        use std::io::{Read, Write};
+        let dir = std::env::temp_dir().join(format!("tb-app-sock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("app.sock");
+        let token = dir.join("app-token");
+        std::fs::write(&token, "abc123\n").unwrap();
+        let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut seen = vec![];
+            for answer in ["HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\n{\"ok\":true}", "HTTP/1.1 403 Forbidden\r\ncontent-length: 16\r\n\r\n{\"error\":\"Nope\"}"] {
+                let (mut s, _) = l.accept().unwrap();
+                let mut buf = vec![0u8; 4096];
+                let mut req = vec![];
+                while !String::from_utf8_lossy(&req).contains("{\"mode\"") {
+                    let n = s.read(&mut buf).unwrap();
+                    req.extend_from_slice(&buf[..n]);
+                }
+                seen.push(String::from_utf8_lossy(&req).to_string());
+                s.write_all(answer.as_bytes()).unwrap();
+            }
+            seen
+        });
+        let mut d = Daemon::at("http://127.0.0.1:9");
+        d.socket = Some(sock);
+        d.token = Some(token);
+        assert_eq!(d.post("tasks/T1/start", json!({"mode": "queue"})).unwrap(), json!({"ok": true}));
+        let e = d.post("tasks/T1/start", json!({"mode": "queue"})).unwrap_err();
+        assert_eq!((e.status, e.message.as_str()), (403, "Nope"));
+        let seen = server.join().unwrap();
+        assert!(seen[0].starts_with("POST /tasks/api/tasks/T1/start HTTP/1.1\r\n"), "{}", seen[0]);
+        for h in ["X-Task-Board: 1\r\n", "X-Task-Board-From: app\r\n", "X-Task-Board-Token: abc123\r\n"] {
+            assert!(seen[0].contains(h), "{h} in {}", seen[0]);
+        }
+        // No socket: the port, which isn't there.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(d.post("tasks/T1/start", json!({})).unwrap_err().status, 0);
     }
 }

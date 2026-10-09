@@ -8,17 +8,30 @@ use crate::app::App;
 use crate::util::*;
 use crate::{prflow, stack};
 
-/// The link of the check to look at: the first failed one, else the first with a link.
-pub fn build_url(rec: &Value) -> Value {
+/// Where the Checks step links: the first failed check, else the newest build (by its `at`: a running
+/// one, else any), else the PR's own list of checks (GitHub's Checks tab; elsewhere the PR). Checks
+/// with no time count as older than ones with; among those, the last the host lists is newest.
+pub fn build_url(rec: &Value, pr_url: Option<&str>) -> Value {
     let checks = rec["checks"].as_array().cloned().unwrap_or_default();
     let link = |c: &Value| c["url"].as_str().filter(|u| u.starts_with("http")).map(|u| u.to_string());
-    checks
-        .iter()
-        .filter(|c| c["state"] == "failed")
-        .find_map(link)
-        .or_else(|| checks.iter().find_map(link))
-        .map(Value::String)
-        .unwrap_or(Value::Null)
+    let failed = checks.iter().filter(|c| c["state"] == "failed").find_map(link);
+    let newest = |running: bool| {
+        checks
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !running || c["state"] == "running")
+            .filter_map(|(i, c)| Some((c["at"].as_str().and_then(parse_iso).unwrap_or(f64::NEG_INFINITY), i, link(c)?)))
+            .max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|(_, _, u)| u)
+    };
+    let running = || newest(true);
+    let latest = || newest(false);
+    let failed = failed.or_else(running).or_else(latest);
+    let all = pr_url.filter(|u| u.starts_with("http")).map(|u| {
+        let u = u.trim_end_matches('/');
+        if u.starts_with("https://github.com/") { format!("{u}/checks") } else { u.to_string() }
+    });
+    failed.or(all).map(Value::String).unwrap_or(Value::Null)
 }
 
 /// `pr.bar` on a task card with a PR.
@@ -63,6 +76,16 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     }
     // "x of N": the host's reviewer list when it has one, else approvals plus the reviewers still asked.
     let reviewers = if rec["reviewers"].is_array() { rows.len() as i64 } else { approvals + rec["requested"].as_i64().unwrap_or(0) };
+    // The Review step: "off" when the project has none, "setup" when nobody's on the PR and the
+    // board has no one it could ask (`tb reviewers add`, or `tb project set --review off`).
+    let project = t.st("project");
+    let review_step = if !crate::reviewers::review_on(app, Some(&project)) {
+        "off"
+    } else if reviewers == 0 && !crate::reviewers::any_askable(app, &project)? {
+        "setup"
+    } else {
+        ""
+    };
     let open = if rec["threads"].is_array() { prflow::open_threads(&f, &rec) } else { vec![] };
     let new_comments = if rec["threads"].is_array() { open.len() as i64 } else { (rec["comments"].as_i64().unwrap_or(0) - f.i0("comments_seen")).max(0) };
     // "N new comments" links to the first unread thread (the one waiting longest), else the PR.
@@ -73,7 +96,8 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         .and_then(|th| th["url"].as_str().map(|u| u.to_string()))
         .or_else(|| t.s("pr_url").filter(|u| u.starts_with("http") && new_comments > 0).map(|u| u.to_string()));
     Ok(json!({
-        "build_url": build_url(&rec),
+        "build_url": build_url(&rec, t.s("pr_url")),
+        "review": if review_step.is_empty() { Value::Null } else { json!(review_step) },
         "checks": if checks.is_empty() { Value::Null } else { json!(checks) },
         "checks_why": skipped,
         "you": if you.is_empty() { Value::Null } else { json!(you) },
@@ -121,4 +145,51 @@ pub fn reviewer_rows(f: &Row, rec: &Value) -> Vec<Value> {
 
 fn str_list(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(checks: Value) -> Value {
+        json!({"checks": checks})
+    }
+
+    #[test]
+    fn checks_open_the_failed_build_else_the_latest_else_the_pr() {
+        let bb = Some("https://bitbucket.org/ws/repo/pull-requests/7");
+        let failed = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
+                                {"name": "test", "state": "failed", "url": "https://ci/2"},
+                                {"name": "e2e", "state": "running", "url": "https://ci/3"}]));
+        assert_eq!(build_url(&failed, bb), "https://ci/2", "a failed check opens itself");
+        let running = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
+                                 {"name": "e2e", "state": "running", "url": "https://ci/3"},
+                                 {"name": "lint", "state": "passed", "url": "https://ci/4"}]));
+        assert_eq!(build_url(&running, bb), "https://ci/3", "a running build is the latest");
+        let passed = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
+                                {"name": "lint", "state": "passed", "url": "https://ci/4"},
+                                {"name": "gate", "state": "passed"}]));
+        assert_eq!(build_url(&passed, bb), "https://ci/4", "else the last the host lists with a link");
+        assert_eq!(build_url(&rec(json!([])), bb), bb.unwrap(), "no checks: the PR");
+        assert_eq!(build_url(&rec(json!([{"name": "gate", "state": "passed"}])), bb), bb.unwrap(), "none with a link: the PR");
+        assert_eq!(build_url(&rec(json!([])), Some("https://github.com/acme/web/pull/3/")), "https://github.com/acme/web/pull/3/checks");
+        assert_eq!(build_url(&rec(json!([])), None), Value::Null);
+    }
+
+    #[test]
+    fn checks_open_the_newest_build_by_its_time_not_the_hosts_order() {
+        let bb = Some("https://bitbucket.org/ws/repo/pull-requests/7");
+        // Bitbucket lists statuses unsorted: a re-run can come before the build it replaced.
+        let running = rec(json!([{"name": "e2e #2", "state": "running", "url": "https://ci/new", "at": "2026-09-01T11:00:00.000000+00:00"},
+                                 {"name": "e2e #1", "state": "running", "url": "https://ci/old", "at": "2026-09-01T10:00:00.000000+00:00"},
+                                 {"name": "lint", "state": "passed", "url": "https://ci/lint", "at": "2026-09-01T12:00:00+00:00"}]));
+        assert_eq!(build_url(&running, bb), "https://ci/new", "the newest running build, over a newer finished one");
+        let passed = rec(json!([{"name": "build #9", "state": "passed", "url": "https://ci/9", "at": "2026-09-01T12:00:00Z"},
+                                {"name": "build #8", "state": "stopped", "url": "https://ci/8", "at": "2026-09-01T09:00:00Z"},
+                                {"name": "gate", "state": "passed", "url": "https://ci/gate"}]));
+        assert_eq!(build_url(&passed, bb), "https://ci/9", "the newest build; one with no time counts as older");
+        let failed = rec(json!([{"name": "build #9", "state": "passed", "url": "https://ci/9", "at": "2026-09-01T12:00:00Z"},
+                                {"name": "test", "state": "failed", "url": "https://ci/test", "at": "2026-09-01T08:00:00Z"}]));
+        assert_eq!(build_url(&failed, bb), "https://ci/test", "a failed check still comes first");
+    }
 }

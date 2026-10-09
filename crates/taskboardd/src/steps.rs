@@ -113,14 +113,15 @@ impl Step {
         self.min_gap_mins.filter(|m| *m > 0.0).map(|m| m * 60.0)
     }
 
-    /// The step with its placeholders filled.
+    /// The step with its placeholders filled; its scripts as they run (`fill_shell`), so what's shown is
+    /// what runs.
     pub fn filled(&self, vars: &BTreeMap<String, String>) -> Step {
         Step {
             prompt: fill(&self.prompt, vars),
-            run: fill(&self.run, vars),
-            check: fill(&self.check, vars),
+            run: fill_shell(&self.run, vars),
+            check: fill_shell(&self.check, vars),
             open: fill(&self.open, vars),
-            publish: fill(&self.publish, vars),
+            publish: fill_shell(&self.publish, vars),
             ..self.clone()
         }
     }
@@ -293,6 +294,67 @@ pub fn fill(text: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// `fill` for a script: each value is quoted for where it sits in the shell text, so an empty one (a
+/// task with no PR yet has no `{pr}`) stays an argument of its own and a value with spaces or quotes
+/// stays one word. Bare, it's quoted as Python's `shlex.quote` does (`''` when empty, as is when it's
+/// plain); inside "…" or '…' it's escaped for those quotes. A placeholder the board doesn't know stays
+/// as it is.
+pub fn fill_shell(text: &str, vars: &BTreeMap<String, String>) -> String {
+    #[derive(PartialEq)]
+    enum Q {
+        Bare,
+        Single,
+        Double,
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut q = Q::Bare;
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if c == '{' {
+            if let Some((k, v)) = rest[1..].find('}').map(|end| &rest[1..1 + end]).and_then(|k| vars.get_key_value(k)) {
+                out += &match q {
+                    Q::Bare => shell_quote(v),
+                    Q::Single => v.replace('\'', r"'\''"),
+                    Q::Double => v.chars().fold(String::new(), |mut s, ch| {
+                        if matches!(ch, '"' | '\\' | '$' | '`') {
+                            s.push('\\');
+                        }
+                        s.push(ch);
+                        s
+                    }),
+                };
+                rest = &rest[k.len() + 2..];
+                continue;
+            }
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+        match (c, &q) {
+            ('\'', Q::Bare) => q = Q::Single,
+            ('\'', Q::Single) => q = Q::Bare,
+            ('"', Q::Bare) => q = Q::Double,
+            ('"', Q::Double) => q = Q::Bare,
+            // A backslash outside '…' keeps the next character as it is.
+            ('\\', Q::Bare | Q::Double) => {
+                if let Some(n) = rest.chars().next() {
+                    out.push(n);
+                    rest = &rest[n.len_utf8()..];
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// One shell word for `s`, as Python's `shlex.quote`: as is when it's plain, else in '…'.
+pub fn shell_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c)) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', r#"'"'"'"#))
+}
+
 /// origin's default branch, if git knows it.
 pub fn default_base(repo: &str) -> Option<String> {
     if repo.is_empty() {
@@ -328,7 +390,7 @@ pub fn vars(t: &Row) -> BTreeMap<String, String> {
     v.insert("task".into(), rf("task", t.id()));
     v.insert("title".into(), t.st("title"));
     v.insert("project".into(), t.st("project"));
-    v.insert("branch".into(), aim_branch(t).or_else(|| waitsfor::branch_of(t)).unwrap_or_default());
+    v.insert("branch".into(), aim_branch(t).or_else(|| waitsfor::branch_of(t)).or_else(|| asked_at(t, "branch")).unwrap_or_default());
     v.insert("base".into(), base_branch(&repo));
     v.insert("repo".into(), repo);
     v.insert("pr_url".into(), t.st("pr_url"));
@@ -339,11 +401,35 @@ pub fn vars(t: &Row) -> BTreeMap<String, String> {
 
 /// `vars` with the real base: a stacked task's parent branch, and `{base_ref}` with the remote on it.
 pub fn vars_for(app: &App, t: &Row) -> BTreeMap<String, String> {
+    vars_at(app, t, None)
+}
+
+/// `vars_for` with what the rounds look at, as `tb steps` fills them: `{head}` (the head the gate judges,
+/// `judged_head`) and `{worktree}` (the aim's checkout, else the task's, else its repo).
+pub fn vars_at(app: &App, t: &Row, head: Option<&str>) -> BTreeMap<String, String> {
     let mut v = vars(t);
     let base = real_base(app, t).unwrap_or_else(|_| v.get("base").cloned().unwrap_or_default());
     v.insert("base_ref".into(), format!("{}/{base}", app.cfg.pr_body.remote));
     v.insert("base".into(), base);
+    v.insert("head".into(), judged_head(t, head).or_else(|| asked_at(t, "head")).unwrap_or_default());
+    v.insert("worktree".into(), worktree_of(t));
     v
+}
+
+/// What `tb step ask` last resolved for the task (`head`, `branch`, `worktree`): what its placeholders
+/// fall back to when the board knows nothing better, so the question and the take handoff aren't blank.
+fn asked_at(t: &Row, k: &str) -> Option<String> {
+    board::task_context(t).get("step_asked").and_then(|a| a.get(k)).and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string())
+}
+
+/// The checkout a task's rounds look at: the aim's worktree, else where the task works, else its repo.
+fn worktree_of(t: &Row) -> String {
+    let some = |x: Option<&str>| x.map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string());
+    let ctx = board::task_context(t);
+    some(saved_aim(t)["worktree"].as_str())
+        .or_else(|| some(ctx.get("where").and_then(|w| w.get("worktree")).and_then(|w| w.as_str())))
+        .or_else(|| asked_at(t, "worktree"))
+        .unwrap_or_else(|| t.st("repo_path"))
 }
 
 /// One recorded round of a step (`tb step done` / `tb step run`), oldest first.
@@ -465,8 +551,8 @@ pub fn aim_branch(t: &Row) -> Option<String> {
     git_in(a["worktree"].as_str().map(str::trim)?, &["symbolic-ref", "--short", "-q", "HEAD"])
 }
 
-/// The commit the aim points at now (`aim_now`): its pinned sha, else its worktree's head, else its
-/// branch's tip in the task's repo.
+/// The commit the aim points at now (`aim_now`): its pinned sha, else its branch's tip (in its worktree,
+/// else the task's repo), else its worktree's head.
 pub fn aim_head(t: &Row) -> Option<String> {
     let a = aim_now(t);
     let s = |k: &str| a[k].as_str().filter(|x| !x.trim().is_empty()).map(|x| x.trim().to_string());
@@ -474,7 +560,10 @@ pub fn aim_head(t: &Row) -> Option<String> {
         return Some(sha);
     }
     match (s("worktree"), s("branch")) {
-        (Some(w), _) => rev_in(&w, "HEAD"),
+        // A checkout named with its branch (a detached one) is judged on the branch's tip, as the Python
+        // board judged `refs/heads/<branch>`.
+        (Some(w), Some(b)) => rev_in(&w, &format!("refs/heads/{}", b.trim_start_matches("refs/heads/"))),
+        (Some(w), None) => rev_in(&w, "HEAD"),
         (None, Some(b)) => rev_in(&t.st("repo_path"), &format!("refs/heads/{b}")),
         _ => None,
     }
@@ -570,7 +659,7 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
             v
         })
         .collect();
-    Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_for(app, t),
+    Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_at(app, t, head),
               "head": known, "aim": aim_now(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t),
               "passed_rounds": passed_rounds(app, t, &rounds, known.as_deref())?}))
 }
@@ -615,7 +704,12 @@ pub fn from_listing(v: &Value) -> Vec<(Step, bool)> {
 
 /// `refusal`, with the steps' placeholders filled for the task.
 pub fn refusal_for(app: &App, t: &Row, what: &str, left: &[Step]) -> String {
-    let v = vars_for(app, t);
+    refusal_at(app, t, what, left, None)
+}
+
+/// `refusal_for`, with `{head}` the head the gate judged (`head`, as `missing_at` took it).
+pub fn refusal_at(app: &App, t: &Row, what: &str, left: &[Step], head: Option<&str>) -> String {
+    let v = vars_at(app, t, head);
     refusal(&board::tb_cmd(app), what, &left.iter().map(|s| s.filled(&v)).collect::<Vec<_>>())
 }
 
@@ -842,6 +936,26 @@ pub fn bar_card(app: &App, t: &Row) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripts_get_each_value_as_one_shell_word() {
+        let v: BTreeMap<String, String> =
+            [("worktree", "/tmp/my wt"), ("pr", ""), ("branch", "feat/a"), ("title", "it's \"done\" $x")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        // An empty one keeps its slot, so the branch still arrives third.
+        assert_eq!(fill_shell("wd review publish {worktree} {pr} {branch}", &v), "wd review publish '/tmp/my wt' '' feat/a");
+        assert_eq!(fill_shell("echo {title}", &v), r#"echo 'it'"'"'s "done" $x'"#);
+        // Already in quotes: escaped for them, not quoted again.
+        assert_eq!(fill_shell(r#"echo "{pr}" "{title}""#, &v), r#"echo "" "it's \"done\" \$x""#);
+        assert_eq!(fill_shell("echo '{title}'", &v), r#"echo 'it'\''s "done" $x'"#);
+        assert_eq!(fill_shell(r"echo \'{branch} {nope}", &v), r"echo \'feat/a {nope}", "an escaped quote opens nothing; unknown ones stay");
+        for (text, want) in [("echo {worktree} {pr} {branch}", "/tmp/my wt||feat/a"), (r#"echo "{title}""#, "it's \"done\" $x")] {
+            let o = std::process::Command::new("sh").arg("-c").arg(fill_shell(text, &v).replacen("echo ", "printf '%s|' ", 1)).output().unwrap();
+            let got = String::from_utf8_lossy(&o.stdout).trim_end_matches('|').to_string();
+            assert_eq!(got, want, "{text}");
+        }
+        assert_eq!(shell_quote("a-b_c/1.2"), "a-b_c/1.2");
+        assert_eq!(shell_quote(""), "''");
+    }
 
     #[test]
     fn parses_steps_and_defaults_to_before_the_pr() {

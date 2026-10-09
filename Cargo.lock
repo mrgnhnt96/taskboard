@@ -6899,7 +6899,7 @@ dependencies = [
 
 [[package]]
 name = "taskboard-app"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.15"
 dependencies = [
  "async-channel",
  "chrono",
@@ -6916,7 +6916,7 @@ dependencies = [
 
 [[package]]
 name = "taskboard-cli"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.15"
 dependencies = [
  "chrono",
  "clap",
@@ -6930,18 +6930,21 @@ dependencies = [
 
 [[package]]
 name = "taskboardd"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.15"
 dependencies = [
  "axum",
  "chrono",
  "clap",
+ "core-foundation 0.10.1",
  "dirs",
+ "libc",
  "mime_guess",
  "once_cell",
  "parking_lot",
  "rand 0.8.8",
  "regex",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
  "shlex 1.3.0",

@@ -38,12 +38,31 @@ fn commit(sha: &str, email: &str) -> Commit {
 impl Board {
     /// The branch's head is the first commit, with this check state.
     fn branch(&self, state: &str, commits: Vec<Commit>) {
+        self.branch_queued(state, commits, None);
+    }
+    /// The same, with the failing build queued at `queued`.
+    fn branch_queued(&self, state: &str, commits: Vec<Commit>, queued: Option<f64>) {
         *self.ci.read.lock() = BranchRead {
             head: commits[0].sha.clone(),
-            checks: vec![Check { name: "build".into(), state: state.into(), url: None }],
+            checks: vec![Check { name: "build".into(), state: state.into(), url: None, at: None }],
             commits,
+            queued_at: queued.map(iso),
         };
         breaks::check_project(&self.app, "webapp", &self.app.cfg.master.projects["webapp"]).unwrap();
+    }
+    fn fix_of(&self, m: &str) -> i64 {
+        self.get(&format!("/master/{m}"))["task"]["ref"].as_str().unwrap()[1..].parse().unwrap()
+    }
+    /// The task finished an hour ago, with PR #n in this state (no PR when `n` is None).
+    fn finish(&self, tid: i64, pr: Option<(i64, &str, &str)>) {
+        let (num, state, phase) = pr.map(|(n, s, ph)| (Some(n), Some(s), Some(ph))).unwrap_or((None, None, None));
+        self.app
+            .db
+            .x("UPDATE tasks SET status = 'done', finished_at = ?, pr_num = ?, pr_state = ?, pr_phase = ? WHERE id = ?", p![iso(now_ts() - 3600.0), num, state, phase, tid])
+            .unwrap();
+    }
+    fn log_of(&self, tid: i64) -> Vec<String> {
+        self.app.db.q("SELECT text FROM events WHERE task_id = ?", p![tid]).unwrap().iter().map(|e| e.st("text")).collect()
     }
     fn get(&self, path: &str) -> Value {
         api::dispatch(&self.app, "GET", path, &Query::new(), &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
@@ -227,4 +246,66 @@ fn the_fix_task_starts_at_once() {
     b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
     let tid: i64 = b.get("/master/M1")["task"]["ref"].as_str().unwrap()[1..].parse().unwrap();
     assert!(board::get_task(&b.app, tid).unwrap().i("start_job").is_none());
+}
+
+#[test]
+fn a_failure_while_the_fix_pr_is_open_joins_it() {
+    let (b, _d) = board_with(|c, _| c.master.recheck_mins = 30.0);
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let t1 = b.fix_of("M1");
+    b.finish(t1, Some((5, "OPEN", "review")));
+    dispatch::clear_alert_key(&b.app, "master:M1").unwrap();
+
+    b.branch("failed", vec![commit("c3", "sam@acme.dev"), commit("c2", "sam@acme.dev")]);
+    assert_eq!(b.tasks(), 1, "the open fix PR covers the new failure");
+    assert_eq!(b.fix_of("M1"), t1);
+    assert!(dispatch::alerts(&b.app).iter().all(|a| !a["text"].as_str().unwrap().contains("still")), "no 'still red' while the fix PR is open");
+
+    b.branch("passed", vec![commit("c4", "sam@acme.dev")]);
+    b.branch("failed", vec![commit("c5", "sam@acme.dev"), commit("c4", "sam@acme.dev")]);
+    assert_eq!(b.tasks(), 1, "a new break joins the open fix");
+    assert_eq!(b.fix_of("M2"), t1);
+    assert!(b.log_of(t1).iter().any(|l| l.contains("M2 joins this fix")), "{:?}", b.log_of(t1));
+}
+
+#[test]
+fn a_build_queued_before_the_fix_merged_joins_it_and_a_later_one_starts_a_new_fix() {
+    let (b, _d) = board_with(|_, _| {});
+    let merged = now_ts() - 600.0;
+    b.branch_queued("failed", vec![commit("c2", "sam@acme.dev")], Some(merged - 1200.0));
+    let t1 = b.fix_of("M1");
+    b.finish(t1, Some((5, "MERGED", "merged")));
+    b.app.db.x("INSERT INTO events(task_id, at, who, kind, text) VALUES (?, ?, 'PR', 'status', 'PR #5 was merged')", p![t1, iso(merged)]).unwrap();
+
+    b.branch_queued("failed", vec![commit("c3", "sam@acme.dev"), commit("c2", "sam@acme.dev")], Some(merged - 60.0));
+    assert_eq!(b.tasks(), 1, "that build couldn't hold the fix");
+    assert_eq!(b.fix_of("M1"), t1);
+
+    b.branch_queued("failed", vec![commit("c4", "sam@acme.dev"), commit("c3", "sam@acme.dev")], Some(merged + 60.0));
+    assert_eq!(b.tasks(), 2, "a build queued after the fix merged that still fails gets a new fix");
+    let t2 = b.fix_of("M1");
+    assert_ne!(t2, t1);
+    assert_eq!(board::get_task(&b.app, t2).unwrap().st("status"), "queued");
+}
+
+#[test]
+fn a_fix_that_finished_without_a_pr_hands_its_break_to_the_open_fix_with_no_alert() {
+    let (b, _d) = board_with(|c, _| c.master.recheck_mins = 30.0);
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let t1 = b.fix_of("M1");
+    b.branch("passed", vec![commit("c3", "sam@acme.dev")]);
+    // M2 got its own fix, which found the open fix PR and finished without one.
+    b.branch("failed", vec![commit("c4", "sam@acme.dev"), commit("c3", "sam@acme.dev")]);
+    let card = taskboardd::ops::new_task(&b.app, &json!({"title": "Fix red main", "project": "webapp"}), board::BOARD, None).unwrap();
+    let t2 = card["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE breaks SET task_id = ? WHERE id = 2", p![t2]).unwrap();
+    b.finish(t1, Some((5, "OPEN", "review")));
+    b.finish(t2, None);
+    dispatch::clear_alert_key(&b.app, "master:M2").unwrap();
+
+    b.branch("failed", vec![commit("c4", "sam@acme.dev"), commit("c3", "sam@acme.dev")]);
+    assert_eq!(b.fix_of("M2"), t1, "handed over to the open fix");
+    assert!(b.log_of(t1).iter().any(|l| l.contains("M2 handed over")), "{:?}", b.log_of(t1));
+    assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M2"), "no 'finished without a fix PR' alert");
+    assert_eq!(b.tasks(), 2);
 }

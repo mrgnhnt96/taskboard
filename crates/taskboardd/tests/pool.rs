@@ -108,7 +108,7 @@ fn a_goal_asks_for_devices_for_its_tasks_and_the_pool_must_have_them() {
     b.post(&format!("goals/G{g}"), json!({"devices": "ios"}));
     let t = b.task("Sim test", json!({"goal_id": g}));
     b.post(&format!("goals/G{g}/run"), json!({}));
-    assert_eq!(b.waiting(t), "Needs a ios device, and the pool has none (tb device add)");
+    assert_eq!(b.waiting(t), "No ios yet (tb device add)");
     runner::start_queued(&b.app).unwrap();
     assert!(b.started().is_empty());
     assert!(board::is_held(&b.app, &board::get_task(&b.app, t).unwrap()).unwrap());
@@ -319,7 +319,7 @@ fn a_task_started_by_hand_without_free_devices_says_so() {
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.started(), vec![a]);
     let c = b.task("C", json!({"devices": "android"}));
-    b.post(&format!("tasks/T{c}/start"), json!({"mode": "new"}));
+    api::dispatch(&b.app, "POST", &format!("tasks/T{c}/start"), &app_query(), &json!({"mode": "new"})).unwrap();
     assert_eq!(b.get(&format!("tasks/T{c}"))["devices"]["lent"], json!([]));
     let want = format!("Waits for a android device (T{a} has them); it started without");
     let said = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = ?", p![c, want]).unwrap();
@@ -432,6 +432,49 @@ fn a_named_device_outside_the_goals_pool_is_lent() {
     // A tag still keeps to G3's own: pixel-7 doesn't count as an android device for it.
     let two = b.task("Two", json!({"goal_id": g3, "devices": "android:2"}));
     assert_eq!(b.waiting(two), format!("Needs 2 android devices, and G{g3}'s own devices have 1"));
+}
+
+/// Regression (#91): a named device reserved for another goal, or a name the pool doesn't have, says
+/// so before the goal's own pool does, as on the Python board.
+#[test]
+fn a_reserved_or_missing_named_device_says_why_before_the_goals_pool() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "android"}));
+    b.post("devices", json!({"name": "dev-c", "tags": "android"}));
+    let g1 = b.goal();
+    let g2 = b.goal();
+    b.post(&format!("goals/G{g1}/devices"), json!({"device": "dev-a"}));
+    b.post(&format!("goals/G{g2}/devices"), json!({"device": "dev-c", "reserved": true}));
+    let named = b.task("Named", json!({"goal_id": g1, "devices": "dev-c"}));
+    let missing = b.task("Missing", json!({"goal_id": g1, "devices": "dev-zz"}));
+    b.post(&format!("goals/G{g1}/run"), json!({}));
+    assert_eq!(b.waiting(named), format!("Waiting for a free dev-c (dev-c is reserved for G{g2})"));
+    assert_eq!(b.waiting(missing), "No dev-zz yet (tb device add)");
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.started().is_empty());
+    // A task in no goal gets the same words.
+    let loose = b.task("Loose", json!({"devices": "dev-c"}));
+    assert_eq!(b.waiting(loose), format!("Waiting for a free dev-c (dev-c is reserved for G{g2})"));
+    // Switched off, a named device is waited for by name, not as the goal's pool.
+    b.post("devices/dev-a", json!({"off": true}));
+    let off = b.task("Off", json!({"goal_id": g1, "devices": "dev-a"}));
+    b.post(&format!("goals/G{g1}/run"), json!({}));
+    assert_eq!(b.waiting(off), "Waiting for dev-a (it's off)");
+}
+
+/// #98: a named device another task has is waited for by name, as on the Python board.
+#[test]
+fn a_named_device_another_task_has_says_who_has_it() {
+    let b = new_board();
+    b.post("devices", json!({"name": "dev-a", "tags": "android"}));
+    let holder = b.task("Holder", json!({"devices": "dev-a"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![holder]);
+    let named = b.task("Named", json!({"devices": "dev-a"}));
+    assert_eq!(b.waiting(named), format!("Waiting for a free dev-a (dev-a is with T{holder})"));
+    // The tag still reads as a tag.
+    let tagged = b.task("Tagged", json!({"devices": "android"}));
+    assert_eq!(b.waiting(tagged), format!("Waits for a android device (T{holder} has them)"));
 }
 
 #[test]

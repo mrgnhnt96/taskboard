@@ -102,7 +102,7 @@ pub fn green() -> Record {
         branch: "feat".into(),
         base: "main".into(),
         base_head: "b1".into(),
-        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None }],
+        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None, at: None }],
         ..Default::default()
     }
 }
@@ -1159,9 +1159,70 @@ fn only_people_who_could_be_asked_take_a_main_contributor_place() {
     let id2 = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
     let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
     assert_eq!(picks(&v), vec![pair("Cy Ng", "main")]);
-    // Someone who doesn't answer (a weight under not_a_main_below) isn't one either.
+    // Someone who doesn't answer (too_slow) is still one at the default not_a_main_below: on the PR,
+    // he means no main pick...
     ask_row(&b, id, "Cy Ng", 60.0, "swapped", None);
+    assert_eq!(b.app.cfg.reviewers.not_a_main_below, b.app.cfg.reviewers.too_slow);
+    on_the_pr(&b, &h, &[("{cy}", "Cy Ng")]);
     let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Bo Park", "turn")]);
+    // ...but under it, he isn't one, and Bo is asked as the main contributor.
+    b.act("auto", "Cy Ng", json!({"level": "low"})).unwrap();
+    let v = b.post(&format!("/tasks/{id2}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Bo Park", "main")]);
+}
+
+/// Puts `users` on the PR (requested, pending) and reads it.
+fn on_the_pr(b: &Board, h: &FakeHost, users: &[(&str, &str)]) {
+    h.rec.lock().reviewers = users.iter().map(|(u, n)| Reviewer { user: u.to_string(), name: n.to_string(), state: "pending".into(), requested: true, changes_at: None }).collect();
+    poll(b);
+}
+
+#[test]
+fn someone_on_the_pr_the_board_could_not_ask_takes_no_main_contributor_place() {
+    // The repro from #90: Cy is the only one on the PR, at a weight under not_a_main_below.
+    let b = board_with(|c| c.reviewers.not_a_main_below = 0.1);
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    let id = b.pr_task(BB);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    ask_row(&b, id, "Cy Ng", 60.0, "swapped", None);
+    on_the_pr(&b, &h, &[("{cy}", "Cy Ng")]);
+    let main = |b: &Board| {
+        let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+        picks(&v)
+    };
+    assert_eq!(main(&b), vec![pair("Ana Lima", "main")], "too slow to be a main contributor, so one is still asked");
+    // Removed from the roster, on the PR: the same.
+    b.act("remove", "Cy Ng", json!({})).unwrap();
+    assert_eq!(main(&b), vec![pair("Ana Lima", "main")]);
+    // The board's own account on the PR isn't one either.
+    on_the_pr(&b, &h, &[("{me}", "Me")]);
+    assert_eq!(main(&b), vec![pair("Ana Lima", "main")]);
+    // A removed top contributor on the PR: the main pick is the next one.
+    b.act("remove", "Ana Lima", json!({})).unwrap();
+    on_the_pr(&b, &h, &[("{ana}", "Ana Lima")]);
+    assert_eq!(main(&b), vec![pair("Bo Park", "main")]);
+    // Someone the board could ask, on the PR: no main pick.
+    b.act("back", "Ana Lima", json!({})).unwrap();
+    assert_eq!(main(&b), vec![pair("Bo Park", "turn")]);
+}
+
+#[test]
+fn someone_out_on_slack_takes_no_main_contributor_place() {
+    use taskboardd::presence::Tier;
+    let b = board_with(|c| {
+        c.reviewers.availability = "slack".into();
+        c.reviewers.main_contributors = 1;
+    });
+    let (base, head) = history(&b);
+    let h = fake(&b, rec_on(&base, &head));
+    members(&h);
+    taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Ana", Tier::Out), ("Bo", Tier::Online), ("Cy", Tier::Online)])));
+    let id = b.pr_task(BB);
+    // Ana, the top contributor, is out: the one place is Bo's, not hers.
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
     assert_eq!(picks(&v), vec![pair("Bo Park", "main")]);
 }
 

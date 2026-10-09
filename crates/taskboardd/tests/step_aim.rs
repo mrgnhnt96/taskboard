@@ -237,3 +237,71 @@ fn a_step_report_doesnt_rename_the_terminal() {
     let s = board::get_session(&b.app, Some("s1")).unwrap().unwrap();
     assert_eq!(s.st("name"), "Term");
 }
+
+#[test]
+fn a_detached_checkout_aimed_with_its_branch_is_judged_on_the_branch_tip() {
+    let b = new_board();
+    let id = b.new_task();
+    let repo = b.repo();
+    git(&repo, &["branch", "feat/b"]);
+    let det = b.dir.path().join("det");
+    git(&repo, &["worktree", "add", "-q", "--detach", &det.to_string_lossy(), "feat/b"]);
+    let old = git(&det, &["rev-parse", "HEAD"]);
+    b.report("tb.step_aim", json!({"worktree": det.to_string_lossy(), "branch": "feat/b"})).unwrap();
+    b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": true, "head": old})).unwrap();
+    assert!(steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap().is_empty());
+    // feat/b moves on elsewhere; the detached checkout stays put. The gate judges the branch's tip.
+    git(&repo, &["checkout", "-q", "feat/b"]);
+    std::fs::write(repo.join("more"), "x").unwrap();
+    git(&repo, &["add", "more"]);
+    git(&repo, &["commit", "-q", "-m", "More"]);
+    let moved = git(&repo, &["rev-parse", "feat/b"]);
+    assert_eq!(steps::aim_head(&b.row(id)), Some(moved));
+    assert_eq!(b.steps(&old)["steps"][0]["done"], false, "the old commit's pass doesn't count for the moved branch");
+    assert_eq!(steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap().len(), 1);
+}
+
+#[test]
+fn refusals_and_handoffs_fill_head_and_worktree() {
+    let b = new_board();
+    std::fs::write(&b.app.cfg.config_path, "[[steps]]\nname = \"Review\"\nprompt = \"x\"\ncheck = \"review {worktree} {head}\"\n").unwrap();
+    let id = b.new_task();
+    let repo = b.repo();
+    b.report("tb.step_aim", json!({"worktree": repo.to_string_lossy()})).unwrap();
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let left = steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap();
+    let want = format!("review {} {head}", repo.to_string_lossy());
+    let r = steps::refusal_for(&b.app, &b.row(id), "opening the PR", &left);
+    assert!(r.contains(&want), "{r}");
+    let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
+    assert!(h.contains(&want), "{h}");
+    assert_eq!(b.steps(&head)["vars"]["head"], json!(head), "tb's hook fills them from GET /steps too");
+}
+
+#[test]
+fn an_owner_question_and_the_handoff_are_filled_from_what_tb_step_ask_resolved() {
+    let b = new_board();
+    std::fs::write(
+        &b.app.cfg.config_path,
+        "[[steps]]\nname = \"Look\"\nprompt = \"Look at {head} on {branch} in {worktree} against {base_ref}\"\nowner = true\n\n\
+         [[steps]]\nname = \"Review\"\nprompt = \"Run review on {head} against {base}\"\ncheck = \"check.sh '{head}' {branch}\"\n",
+    )
+    .unwrap();
+    let id = b.new_task();
+    // No aim and no recorded head: before #107 the question read "Look at  in …".
+    assert_eq!(steps::vars_for(&b.app, &b.row(id))["head"], "");
+    let wt = b.dir.path().join("feat-wt").to_string_lossy().to_string();
+    let head = "d".repeat(40);
+    b.report("tb.step_ask", json!({"name": "Look", "head": head, "branch": "feat", "worktree": wt})).unwrap();
+    let q = b.row(id).st("question");
+    assert!(q.contains(&format!("Look at {head} on feat in {wt} against origin/main")), "{q}");
+    // A later take's handoff fills the same, not blanks.
+    let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
+    assert!(h.contains(&format!("Run review on {head} against main")), "{h}");
+    assert!(h.contains(&format!("check.sh '{head}' feat")), "{h}");
+    // A saved aim still wins over what an ask resolved.
+    b.report("tb.step_aim", json!({"branch": "main"})).unwrap();
+    let main = git(&b.repo(), &["rev-parse", "main"]);
+    let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
+    assert!(h.contains(&format!("check.sh '{main}' main")), "{h}");
+}

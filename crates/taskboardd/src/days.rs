@@ -633,7 +633,7 @@ pub fn summary_days(app: &App) -> i64 {
 pub fn history(app: &App) -> Result<Value> {
     let ev = app.db.q1("SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(text) + COALESCE(LENGTH(data), 0) + 48), 0) AS b FROM events", p![])?.unwrap_or_default();
     let st = app.db.q1("SELECT COUNT(*) AS n, COALESCE(SUM(48), 0) AS b FROM task_states", p![])?.unwrap_or_default();
-    let se = app.db.q1("SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(text) + 48), 0) AS b FROM session_events", p![])?.unwrap_or_default();
+    let se = app.db.q1("SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(text) + COALESCE(LENGTH(full), 0) + 48), 0) AS b FROM session_events", p![])?.unwrap_or_default();
     let ds = app.db.q1("SELECT COUNT(DISTINCT date) AS n, COALESCE(SUM(LENGTH(data) + 32), 0) AS b FROM day_stats WHERE project != ''", p![])?.unwrap_or_default();
     Ok(json!({
         "detail_days": detail_days(app),

@@ -117,6 +117,22 @@ enum Cmd {
     },
     /// Take a task in this terminal (prints its handoff)
     Take { task: String },
+    /// Switch this terminal to a task in its line; the one it's on waits here to resume
+    Switch { task: String },
+    /// This terminal's line: the tasks waiting their turn here
+    Line {
+        #[command(subcommand)]
+        action: Option<LineCmd>,
+    },
+    /// Start a task, or run a goal (G<n>), only when the human told you to in this conversation (the board
+    /// checks their prompts for a task). A goal runs its tasks in their waves; never start them one by one.
+    Start {
+        /// T<n>, or G<n> for a goal
+        task: String,
+        /// Queue the task to start when its repo is free, instead of now in a new terminal
+        #[arg(long)]
+        queue: bool,
+    },
     /// This terminal's task
     Status {
         #[command(flatten)]
@@ -127,6 +143,9 @@ enum Cmd {
         tasks: Vec<String>,
         #[arg(long)]
         why: Option<String>,
+        /// Wait until its PR merges, not just until it's done
+        #[arg(long)]
+        merged: bool,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -402,6 +421,18 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
+        /// What it is, shown with its name: android (an emulator), ios (a simulator), device (a phone or tablet), other… A label, not a tag
+        #[arg(long)]
+        kind: Option<String>,
+        /// The device's serial or UDID (emulator-5554, a simulator's UDID): {target} in its start and stop commands
+        #[arg(long)]
+        target: Option<String>,
+        /// How to boot it, told to the task that's lent it ({device} {task} {branch}… filled in)
+        #[arg(long = "start", alias = "start-cmd")]
+        start: Option<String>,
+        /// How to shut it down when the task is done with it ({device} {task}… filled in)
+        #[arg(long = "stop", alias = "stop-cmd")]
+        stop: Option<String>,
     },
     /// Change a device
     Set {
@@ -416,6 +447,18 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
+        /// What it is (a label, not a tag), or none
+        #[arg(long)]
+        kind: Option<String>,
+        /// Its serial or UDID, or none
+        #[arg(long)]
+        target: Option<String>,
+        /// Its start command, or none
+        #[arg(long = "start", alias = "start-cmd")]
+        start: Option<String>,
+        /// Its stop command, or none
+        #[arg(long = "stop", alias = "stop-cmd")]
+        stop: Option<String>,
         /// Switch it off: no task is lent it
         #[arg(long, conflicts_with = "on")]
         off: bool,
@@ -807,6 +850,12 @@ enum GoalCmd {
 }
 
 #[derive(Subcommand)]
+enum LineCmd {
+    /// Take a task out of this terminal's line and back to the board, to wait for Start
+    Drop { task: String },
+}
+
+#[derive(Subcommand)]
 enum TaskCmd {
     /// Add a task: planned in a goal, or on its own
     New {
@@ -831,6 +880,12 @@ enum TaskCmd {
         /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
         #[arg(long)]
         here: bool,
+        /// With --here on a terminal that has a task: queue it in this terminal's line, after that task
+        #[arg(long, requires = "here", conflicts_with = "now")]
+        next: bool,
+        /// With --here on a terminal that has a task: switch to it now; that task waits here to resume
+        #[arg(long, requires = "here")]
+        now: bool,
         /// It starts only once this task (any goal) is done; repeat for more
         #[arg(long = "waits-for", value_name = "T12")]
         waits_for: Vec<String>,
@@ -1004,7 +1059,7 @@ enum CiTokenCmd {
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
-    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks, the ask stage, swaps)
+    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks, the ask stage, swaps, the Review step)
     Set {
         name: String,
         #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
@@ -1024,6 +1079,17 @@ enum ProjectCmd {
         /// Swap a reviewer who hasn't reviewed after [reviewers] swap_after_mins work minutes (default: config.toml's)
         #[arg(long, value_parser = ["on", "off", "default"])]
         swap: Option<String>,
+        /// The Review step: off, its PRs go to merge without reviewers (default: on)
+        #[arg(long, value_parser = ["on", "off", "default"])]
+        review: Option<String>,
+        /// Agents merge its PRs once they're approved and green (tb pr merge) (default: config.toml's pr.agents_merge)
+        #[arg(long = "agents-merge", value_parser = ["on", "off", "default"])]
+        agents_merge: Option<String>,
+    },
+    /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
+    AgentsMerge {
+        #[arg(value_parser = ["on", "off", "default"])]
+        value: Option<String>,
     },
 }
 
@@ -1334,14 +1400,23 @@ fn plural_threads(v: &Value) -> String {
     }
 }
 
-/// Prints a line. When the reader has gone (`tb take | head`), what was asked is done, so tb stops
-/// quietly instead of panicking on the broken pipe.
+/// Set once stdout's reader has gone (`tb take | head`, `tb step again … | true`).
+static STDOUT_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Prints a line. A write that fails (the reader has gone) is ignored, and later lines aren't tried: tb
+/// carries on with the work and its report, cleans up after itself, and exits as it would have, rather
+/// than panicking or stopping before the work is done.
 fn out(line: &str) {
-    use std::io::Write;
-    if let Err(e) = writeln!(std::io::stdout(), "{}", line.trim_end_matches('\n')) {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
-        }
+    out_to(&mut std::io::stdout(), &STDOUT_GONE, line);
+}
+
+fn out_to(w: &mut impl std::io::Write, gone: &std::sync::atomic::AtomicBool, line: &str) {
+    use std::sync::atomic::Ordering;
+    if gone.load(Ordering::Relaxed) {
+        return;
+    }
+    if writeln!(w, "{}", line.trim_end_matches('\n')).and_then(|_| w.flush()).is_err() {
+        gone.store(true, Ordering::Relaxed);
     }
 }
 
@@ -1367,7 +1442,7 @@ fn goal_ref(v: &str) -> Result<String, String> {
 /// in bold, which keeps the braces apart from it until the styling is drawn (or stripped).
 fn setup_about() -> String {
     let b = clap::builder::styling::Style::new().bold();
-    let names: Vec<String> = ["task", "n", "wave", "goal"].iter().map(|n| format!("{{{b}{n}{b:#}}}")).collect();
+    let names: Vec<String> = ["task", "n", "wave", "goal", "jira", "device", "target", "device2", "target2"].iter().map(|n| format!("{{{b}{n}{b:#}}}")).collect();
     format!("What every task in the goal does first (its handoff shows it): {} are filled in; none clears it", names.join(" "))
 }
 
@@ -1561,6 +1636,11 @@ fn device_arg(values: &[String]) -> Value {
     }
 }
 
+/// After `tb done` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
+fn then_next(v: &Value) -> String {
+    v["context"].as_str().filter(|c| !c.trim().is_empty()).map(|c| format!("\n\n{c}")).unwrap_or_default()
+}
+
 fn print_warnings(v: &Value) {
     for w in v["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str()) {
         out(&format!("Note: {w}"));
@@ -1645,10 +1725,10 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
     Ok(0)
 }
 
-/// "pixel-7 · android, phone · lent to T4" for `tb devices`.
+/// "dev-a (Android emulator, emulator-5554) · android · lent to T4" for `tb devices`.
 fn device_line(d: &Value) -> String {
     let tags: Vec<&str> = d["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-    let mut line = d["name"].as_str().unwrap_or("").to_string();
+    let mut line = d["label"].as_str().or(d["name"].as_str()).unwrap_or("").to_string();
     if !tags.is_empty() {
         line += &format!(" · {}", tags.join(", "));
     }
@@ -1668,12 +1748,18 @@ fn device_line(d: &Value) -> String {
     if d["can_focus"] == true {
         line += " · can focus";
     }
+    if let Some(x) = d["start_cmd"].as_str() {
+        line += &format!(" · start: {x}");
+    }
+    if let Some(x) = d["stop_cmd"].as_str() {
+        line += &format!(" · stop: {x}");
+    }
     line
 }
 
 /// "pixel-7 · for measure · reserved · android · lent to T4" for `tb goal devices`.
 fn goal_device_line(d: &Value) -> String {
-    let mut line = d["name"].as_str().unwrap_or("").to_string();
+    let mut line = d["label"].as_str().or(d["name"].as_str()).unwrap_or("").to_string();
     if let Some(p) = d["purpose"].as_str() {
         line += &format!(" · for {p}");
     }
@@ -1705,11 +1791,15 @@ fn bit_line(b: &Value, tool: &str) -> String {
 
 fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
     match action {
-        DeviceCmd::Add { name, tags, focus, note } => {
-            let v = c.call("POST", "/devices", Some(json!({"name": name, "tags": lock_arg(&tags), "focus": focus, "note": note})))?;
+        DeviceCmd::Add { name, tags, focus, note, kind, target, start, stop } => {
+            let v = c.call(
+                "POST",
+                "/devices",
+                Some(json!({"name": name, "tags": lock_arg(&tags), "focus": focus, "note": note, "kind": kind, "target": target, "start_cmd": start, "stop_cmd": stop})),
+            )?;
             out(&format!("Added {}.", device_line(&v)));
         }
-        DeviceCmd::Set { name, rename, tags, focus, note, off, on } => {
+        DeviceCmd::Set { name, rename, tags, focus, note, kind, target, start, stop, off, on } => {
             let mut b = json!({});
             if let Some(x) = rename {
                 b["name"] = json!(x);
@@ -1722,6 +1812,11 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             }
             if let Some(x) = note {
                 b["note"] = json!(x);
+            }
+            for (k, v) in [("kind", kind), ("target", target), ("start_cmd", start), ("stop_cmd", stop)] {
+                if let Some(x) = v {
+                    b[k] = json!(x);
+                }
             }
             if off || on {
                 b["off"] = json!(off);
@@ -2125,13 +2220,14 @@ fn home_checkout(c: &Ctx, v: &Value) -> String {
     }
 }
 
-/// What a round looks at: `--worktree` (that checkout), `--branch` (the worktree that has it checked
+/// What a round looks at: `--worktree` (that checkout; a detached one with `--branch`, that branch's tip), `--branch` (the worktree that has it checked
 /// out), `--commit` (that commit, which must be on the checkout's branch); with none of them, the aim
 /// `tb step aim` saved, else this checkout's head.
 fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
     let a = if a.is_empty() { Aim::saved(v) } else { a.clone() };
     let given = |x: &Option<String>| x.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string());
     let here = home_checkout(c, v);
+    let mut detached_tip = None;
     let (dir, branch) = if let Some(w) = given(&a.worktree) {
         let dir = std::fs::canonicalize(&w).map_err(|_| format!("There's no folder {w}."))?.to_string_lossy().to_string();
         resolve_commit(&dir, "HEAD").map_err(|_| format!("{dir} isn't a git checkout."))?;
@@ -2141,9 +2237,23 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
                 return Err(format!("{dir} has {has} checked out, not {want}. Aim again with tb step aim."));
             }
         }
-        // A detached checkout looks at the branch named with it.
-        let b = has.or_else(|| given(&a.branch).map(|b| b.trim_start_matches("refs/heads/").to_string()));
-        (dir, b)
+        // A detached checkout looks at the branch named with it: the branch's tip, which must exist and
+        // have the checkout's head on it, as the Python board judged `refs/heads/<branch>`.
+        if has.is_none() {
+            if let Some(want) = given(&a.branch) {
+                let b = want.trim_start_matches("refs/heads/").to_string();
+                let tip = resolve_commit(&dir, &format!("refs/heads/{b}")).map_err(|_| format!("{dir} has no branch {b}."))?;
+                if git_out(&dir, &["merge-base", "--is-ancestor", "HEAD", &tip]).is_none() {
+                    return Err(format!("{dir}'s head isn't on {b}. Aim at a checkout of {b}, or name the branch its head is on."));
+                }
+                detached_tip = Some(tip);
+                (dir, Some(b))
+            } else {
+                return Err(format!("{dir} isn't on a branch. Say which one with --branch."));
+            }
+        } else {
+            (dir, has)
+        }
     } else if let Some(b) = given(&a.branch) {
         let b = b.trim_start_matches("refs/heads/").to_string();
         let dir = worktree_with(if here.is_empty() { "." } else { &here }, &b)
@@ -2152,12 +2262,15 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
     } else if here.is_empty() {
         return Ok(Aimed { dir: None, head: None, branch: None, pinned: false });
     } else {
-        let b = branch_in(&here);
-        (here, b)
+        // The default worktree too: a round on a detached checkout would run on branch "HEAD".
+        let Some(b) = branch_in(&here) else {
+            return Err(format!("{here} isn't on a branch. Say which one with --branch."));
+        };
+        (here, Some(b))
     };
-    let tip = resolve_commit(&dir, "HEAD").ok();
+    let checkout = resolve_commit(&dir, "HEAD").ok();
     let head = match given(&a.commit) {
-        None => tip.clone(),
+        None => detached_tip.or_else(|| checkout.clone()),
         Some(r) => {
             let sha = resolve_commit(&dir, &r)?;
             // A commit must be on a branch, so the pin can be dropped once the branch moves on.
@@ -2170,7 +2283,8 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
             Some(sha)
         }
     };
-    let pinned = matches!((&head, &tip), (Some(h), Some(t)) if h != t);
+    // The head isn't what the checkout has: the round runs on a checkout of it.
+    let pinned = matches!((&head, &checkout), (Some(h), Some(t)) if h != t);
     Ok(Aimed { dir: Some(dir), head, branch, pinned })
 }
 
@@ -2234,7 +2348,7 @@ fn run_with_result(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, S
     let _ = std::fs::remove_file(&path);
     let mut vars = vars.clone();
     vars.insert("result".into(), path.to_string_lossy().to_string());
-    let (passed, output) = run_script(c, label, &steps::fill(script, &vars), &vars, timeout);
+    let (passed, output) = run_script(c, label, &steps::fill_shell(script, &vars), &vars, timeout);
     let result = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v.is_object());
     let _ = std::fs::remove_file(&path);
     let passed = match result.as_ref().and_then(|r| r["verdict"].as_str()) {
@@ -2251,7 +2365,7 @@ fn step_vars(c: &Ctx, v: &Value, name: &str, at: &Aimed) -> BTreeMap<String, Str
     let mut vars: BTreeMap<String, String> = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
     let branch = at.branch.clone().or_else(|| {
         let dir = at.dir.as_deref().unwrap_or(&c.cwd);
-        client::git_info(dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty()).map(|b| b.to_string())
+        client::git_info(dir, 0.5)["branch"].as_str().filter(|b| !b.is_empty() && *b != "HEAD").map(|b| b.to_string())
     });
     if let Some(b) = branch {
         vars.insert("branch".into(), b);
@@ -2322,7 +2436,7 @@ fn aim_cmd(c: &Ctx, a: Aim, clear: bool, t: TaskArg) -> Result<i32, String> {
 /// Runs a step's script in the repo (else here), its output shown as it comes; the exit and the
 /// output's tail.
 fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String>, timeout: u64) -> (bool, String) {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let dir = ["worktree", "repo"]
@@ -2346,7 +2460,7 @@ fn run_script(c: &Ctx, label: &str, script: &str, vars: &BTreeMap<String, String
         let mut tail: std::collections::VecDeque<String> = Default::default();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             // A reader that went away (`tb step run … | head`) doesn't stop the script.
-            let _ = writeln!(std::io::stdout(), "{line}");
+            out(&line);
             tail.push_back(line);
             if tail.len() > 200 {
                 tail.pop_front();
@@ -2426,7 +2540,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
                 )
             })
         }
-        StepCmd::Ask { name, t } => c.run_report("tb.step_ask", json!({"name": name}), t.task, true, |v| {
+        StepCmd::Ask { name, t } => c.run_report("tb.step_ask", ask_fields(c, &name, t.task.clone())?, t.task, true, |v| {
             if v["already"] == true {
                 return format!("{} is already done; carry on.", v["step"].as_str().unwrap_or("The step"));
             }
@@ -2440,6 +2554,17 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
         }),
     }
+}
+
+/// What `tb step ask` sends: the step, and the head, branch and worktree its question and the take handoff
+/// fill in, resolved as `tb step done` resolves them (else this checkout's head, as an owner step's done records).
+fn ask_fields(c: &Ctx, name: &str, task: Option<String>) -> Result<Value, String> {
+    let v = c.call("GET", &steps_path(c, task)?, None)?;
+    let at = aim(c, &v, &Aim::default()).unwrap_or_else(|_| {
+        let here = home_checkout(c, &v);
+        Aimed { head: local_head(&here), dir: Some(here).filter(|d| !d.is_empty()), branch: None, pinned: false }
+    });
+    Ok(json!({"name": name, "head": at.head, "branch": at.branch, "worktree": at.dir}))
 }
 
 /// `tb step done`: records the step, after its check (on what `aim` names) for agent work with one.
@@ -2500,6 +2625,14 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
     if step.publish.trim().is_empty() {
         return Err(format!("“{}” has no publish script.", step.name));
     }
+    // With no PR, a publish has nowhere to go, and its script's `{pr}` would be empty.
+    if !has_pr(&v) {
+        return Err(format!(
+            "{} has no PR yet, so there's nothing to publish “{}” on. Open the PR, then publish it.",
+            v["task"].as_str().unwrap_or("The task"),
+            step.name
+        ));
+    }
     let at = aim(c, &v, &Aim::default())?;
     let head = at.head.clone().or_else(|| v["head"].as_str().map(|h| h.to_string()));
     let short = head.as_deref().map(|h| h[..h.len().min(12)].to_string()).unwrap_or_else(|| "this commit".into());
@@ -2517,7 +2650,7 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
             vars.insert("result".into(), path.to_string_lossy().to_string());
         }
     }
-    let (passed, output) = run_script(c, "Publish", &steps::fill(&step.publish, &vars), &vars, step.timeout_secs());
+    let (passed, output) = run_script(c, "Publish", &steps::fill_shell(&step.publish, &vars), &vars, step.timeout_secs());
     let _ = std::fs::remove_file(&path);
     let f = json!({"name": step.name, "head": head, "ok": passed, "output": output});
     let reported = task_id.map(|t| task_ref(&t)).transpose()?;
@@ -2528,6 +2661,11 @@ fn publish_step(c: &Ctx, name: &str, task: Option<String>) -> Result<i32, String
         Some(_) => out(&format!("{} didn't publish (output above). Fix what it reports and run tb step publish \"{}\" again.", step.name, step.name)),
     }
     Ok(if passed { 0 } else { 1 })
+}
+
+/// The task in a `GET /steps` answer has a PR (`{pr}` or `{pr_url}`).
+fn has_pr(v: &Value) -> bool {
+    ["pr", "pr_url"].iter().any(|k| v["vars"][*k].as_str().is_some_and(|x| !x.trim().is_empty()))
 }
 
 /// The step's round that passed on `head` (any passing round, for a step that isn't per head), from
@@ -2692,7 +2830,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence});
             let Some(file) = pr_body else {
-                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")));
+                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(v)));
             };
             let text = read_body(&file)?;
             let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &text);
@@ -2714,11 +2852,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             }
             let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
-            out(&format!("{} is done.{pr}", v["task"].as_str().unwrap_or("")));
+            out(&format!("{} is done.{pr}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
             Ok(0)
         }
         Cmd::Fail { reason, t } => {
-            c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.", v["task"].as_str().unwrap_or("")))
+            c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.{}", v["task"].as_str().unwrap_or(""), then_next(v)))
         }
         Cmd::Take { task } => {
             let r = task_ref(&task)?;
@@ -2726,6 +2864,46 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 None => out(SAVED),
                 Some(v) => out(v["context"].as_str().unwrap_or(&format!("Took {r}."))),
             }
+            Ok(0)
+        }
+        Cmd::Switch { task } => {
+            let r = task_ref(&task)?;
+            match c.report("tb.switch", json!({"to": r}), None, TB_TIMEOUT)? {
+                None => out(SAVED),
+                Some(v) => out(v["context"].as_str().unwrap_or(&format!("Switched to {r}."))),
+            }
+            Ok(0)
+        }
+        Cmd::Line { action } => {
+            let body = match action {
+                Some(LineCmd::Drop { task }) => json!({"drop": task_ref(&task)?}),
+                None => json!({}),
+            };
+            match c.report("tb.line", body, None, TB_TIMEOUT)? {
+                None => out("The board isn't answering."),
+                Some(v) => out(v["context"].as_str().unwrap_or("")),
+            }
+            Ok(0)
+        }
+        Cmd::Start { task, queue } => {
+            if task.trim().starts_with(['G', 'g']) {
+                let g = goal_ref(&task)?;
+                let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
+                let n = v["queued_now"].as_i64().unwrap_or(0);
+                out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
+                return Ok(0);
+            }
+            let r = task_ref(&task)?;
+            if c.session.is_empty() {
+                return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {r} on the board."));
+            }
+            let mode = if queue { "queue" } else { "new" };
+            c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
+            out(&if queue {
+                format!("{r} starts in a new terminal once its repo is free.")
+            } else {
+                format!("Opening {r} in a new terminal now.")
+            });
             Ok(0)
         }
         Cmd::Status { t } => {
@@ -2740,7 +2918,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::WaitFor { tasks, why, t } => {
+        Cmd::WaitFor { tasks, why, merged, t } => {
             if tasks.is_empty() {
                 return Err("say which task this one needs, for example: tb wait-for T14 (or none)".into());
             }
@@ -2749,8 +2927,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             } else {
                 json!(tasks.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?)
             };
-            c.run_report("tb.wait_for", json!({"tasks": list, "why": why}), t.task, true, |v| {
-                if v["parked"] == true {
+            let mut body = json!({"tasks": list, "why": why});
+            if merged {
+                body["merged"] = json!(true);
+            }
+            c.run_report("tb.wait_for", body, t.task, true, |v| {
+                if v["moved_on"] == true {
+                    format!("{} waits now; this terminal moves on.\n\n{}", v["task"].as_str().unwrap_or(""), v["context"].as_str().unwrap_or(""))
+                } else if v["parked"] == true {
                     format!(
                         "{} waits now: {}. End your turn; the board carries this conversation on once it's ready.",
                         v["task"].as_str().unwrap_or(""),
@@ -2928,7 +3112,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
                 }
                 if run {
-                    let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
+                    let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
                     let n = v["queued_now"].as_i64().unwrap_or(0);
                     out(&format!("{g} runs: queued {n} planned task{}.", if n == 1 { "" } else { "s" }));
                 }
@@ -3090,7 +3274,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -3111,6 +3295,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if here {
                     body["here"] = json!(true);
+                }
+                if next || now {
+                    body["line"] = json!(if next { "next" } else { "now" });
                 }
                 if let Some(w) = wave {
                     body["wave"] = json!(w);
@@ -3151,7 +3338,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
-                        let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| " on the board; it waits for the owner to press Start".into());
+                        let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"));
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
                     }
@@ -3617,7 +3804,7 @@ fn project_line(p: &Value) -> String {
         ),
         None => String::new(),
     };
-    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps")]
+    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review"), ("agents_merge", "agents merge")]
         .iter()
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
@@ -3680,10 +3867,12 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             project_switch(&mut body, "ask_stage", ask_stage);
             project_switch(&mut body, "swap", swap);
+            project_switch(&mut body, "review", review);
+            project_switch(&mut body, "agents_merge", agents_merge);
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }
@@ -3692,6 +3881,20 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             let v = c.call("POST", &format!("/projects/{name}"), Some(Value::Object(body)))?;
             out(&format!("Changed {}.", project_line(&v)));
+            Ok(0)
+        }
+        ProjectCmd::AgentsMerge { value } => {
+            let v = match value {
+                None => c.call("GET", "/projects/agents-merge", None)?,
+                Some(s) => {
+                    let mut body = serde_json::Map::new();
+                    project_switch(&mut body, "agents_merge", Some(s));
+                    c.call("POST", "/projects/agents-merge", Some(Value::Object(body)))?
+                }
+            };
+            let on = if v["agents_merge"] == true { "on" } else { "off" };
+            let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.agents_merge" };
+            out(&format!("Agents merge {on} on projects that don't say ({from})."));
             Ok(0)
         }
     }
@@ -4153,9 +4356,82 @@ mod tests {
         assert!(e.contains("isn't on main"), "{e}");
         let at = aim(&c, &v, &a(Some("main"), Some(&det), Some(&first))).unwrap();
         assert_eq!((at.head.as_deref(), at.branch.as_deref()), (Some(first.as_str()), Some("main")));
-        // Without a commit, a detached checkout is still looked at as it is.
-        assert_eq!(aim(&c, &v, &Aim::default()).unwrap().head.as_deref(), Some(first.as_str()));
+        // Without a commit or a branch, the detached checkout the round runs from is refused too (#107).
+        assert_eq!(aim(&c, &v, &Aim::default()).err().unwrap(), format!("{det} isn't on a branch. Say which one with --branch."));
+        let at = aim(&c, &v, &a(Some("main"), Some(&det), None)).unwrap();
+        assert_eq!(at.branch.as_deref(), Some("main"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_detached_checkout_with_its_branch_looks_at_the_branch_tip() {
+        let (root, c, [first, second, feat]) = repo("detached-tip");
+        let det = root.join("det");
+        git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det.to_string_lossy(), &first]);
+        let det = std::fs::canonicalize(det).unwrap().to_string_lossy().to_string();
+        let v = json!({"vars": {"repo": c.cwd}});
+        let a = |branch: &str, worktree: &str| Aim { branch: Some(branch.into()), worktree: Some(worktree.into()), commit: None };
+        // main has moved past the checkout: the round judges main's tip, on a checkout of it.
+        let at = aim(&c, &v, &a("main", &det)).unwrap();
+        assert_eq!((at.head.as_deref(), at.branch.as_deref(), at.pinned), (Some(second.as_str()), Some("main"), true));
+        let e = aim(&c, &v, &a("no-such-branch", &det)).err().unwrap();
+        assert_eq!(e, format!("{det} has no branch no-such-branch."));
+        // Without its branch, a detached checkout is refused, as the Python board did.
+        let bare = Aim { worktree: Some(det.clone()), ..Aim::default() };
+        assert_eq!(aim(&c, &v, &bare).err().unwrap(), format!("{det} isn't on a branch. Say which one with --branch."));
+        // A branch the checkout's head isn't on is refused.
+        let det2 = root.join("det2");
+        git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det2.to_string_lossy(), &feat]);
+        let det2 = std::fs::canonicalize(det2).unwrap().to_string_lossy().to_string();
+        let e = aim(&c, &v, &a("main", &det2)).err().unwrap();
+        assert!(e.contains("head isn't on main"), "{e}");
+        let at = aim(&c, &v, &a("feat", &det2)).unwrap();
+        assert_eq!((at.head.as_deref(), at.pinned), (Some(feat.as_str()), false), "at the tip, it runs in the checkout");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_gone_reader_doesnt_stop_tb() {
+        struct Gone(usize);
+        impl std::io::Write for Gone {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let gone = std::sync::atomic::AtomicBool::new(false);
+        let mut w = Gone(0);
+        out_to(&mut w, &gone, "Checked out abc in /tmp/x for this round.");
+        // Still here: the round carries on, and later lines aren't tried.
+        out_to(&mut w, &gone, "Check: true");
+        assert!(gone.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(w.0, 1);
+        let mut buf = vec![];
+        out_to(&mut buf, &std::sync::atomic::AtomicBool::new(false), "line\n");
+        assert_eq!(buf, b"line\n");
+    }
+
+    #[test]
+    fn publish_needs_a_pr() {
+        assert!(!has_pr(&json!({"vars": {"pr": "", "pr_url": ""}})));
+        assert!(!has_pr(&json!({"vars": {}})));
+        assert!(has_pr(&json!({"vars": {"pr": "12", "pr_url": ""}})));
+        assert!(has_pr(&json!({"vars": {"pr": "", "pr_url": "https://example.com/pr/1"}})));
+    }
+
+    #[test]
+    fn asks_split_into_this_terminals_line() {
+        let ok = |a: &[&str]| Cli::try_parse_from(a).is_ok();
+        assert!(ok(&["tb", "task", "new", "Footer", "--here", "--next"]));
+        assert!(ok(&["tb", "task", "new", "Footer", "--here", "--now"]));
+        assert!(!ok(&["tb", "task", "new", "Footer", "--next"]), "--next needs --here");
+        assert!(!ok(&["tb", "task", "new", "Footer", "--here", "--next", "--now"]));
+        assert!(ok(&["tb", "switch", "T3"]));
+        assert!(ok(&["tb", "line"]));
+        assert!(ok(&["tb", "line", "drop", "T3"]));
     }
 
     #[test]
@@ -4324,7 +4600,7 @@ mod tests {
         let mut cmd = Cli::command();
         let setup = cmd.find_subcommand_mut("goal").unwrap().find_subcommand_mut("setup").unwrap();
         let help = setup.render_help().to_string();
-        assert!(help.contains("{task} {n} {wave} {goal}"), "{help}");
+        assert!(help.contains("{task} {n} {wave} {goal} {jira} {device} {target} {device2} {target2}"), "{help}");
         assert!(Cli::try_parse_from(["tb", "task", "new", "Form", "--goal", "G3", "--wave", "1", "--file", "src/a.rs", "--file", "src/b.rs"]).is_ok());
     }
 

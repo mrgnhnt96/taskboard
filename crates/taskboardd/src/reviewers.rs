@@ -184,7 +184,7 @@ impl Default for ReviewersConfig {
         ReviewersConfig {
             count: 2,
             main_contributors: 3,
-            not_a_main_below: 0.1,
+            not_a_main_below: 0.05,
             history_months: 6,
             min_commits: 5,
             turn_gap_hours: 4.0,
@@ -230,6 +230,18 @@ pub fn ask_stage_on(app: &App, project: Option<&str>) -> bool {
 /// set --swap`, `[pr.projects.<name>] swap`), else `[reviewers] swap`.
 pub fn swap_on(app: &App, project: Option<&str>) -> bool {
     crate::projects::pr_rules(app, project).swap.unwrap_or(app.cfg.reviewers.swap)
+}
+
+/// Whether a project's PRs have a Review step (`tb project set --review`, `[pr.projects.<name>] review`):
+/// off, they go to merge without reviewers. On unless the project says.
+pub fn review_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).review.unwrap_or(true)
+}
+
+/// Whether the board has anyone it could ask on a project's PRs: a roster reviewer, not removed,
+/// whose host id is known.
+pub fn any_askable(app: &App, project: &str) -> Result<bool> {
+    Ok(roster(app, project)?.iter().any(|r| r.s("removed_at").is_none() && has(r.s("host_user"))))
 }
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).

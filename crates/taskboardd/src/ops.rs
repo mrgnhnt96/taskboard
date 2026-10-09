@@ -271,7 +271,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
         .q("SELECT * FROM sessions WHERE status != 'gone' ORDER BY name COLLATE NOCASE", p![])?
         .into_iter()
         .filter(|s| s.s("id") != t.s("session_id") && board::runs_claude(s) && s.s("project") == t.s("project"))
-        .map(|s| json!({"id": s.v("id"), "name": s.s("name").map(|n| n.to_string()).unwrap_or_else(|| s.st("id").chars().take(8).collect()), "status": s.s("status").unwrap_or("idle")}))
+        .map(|s| json!({"id": s.v("id"), "name": s.s("name").map(|n| n.to_string()).unwrap_or_else(|| s.st("id").chars().take(8).collect()), "status": board::terminal_status(Some(&s))}))
         .collect();
     let jobs_now: Vec<Value> = app
         .db
@@ -381,15 +381,17 @@ pub fn session_list(app: &App, project: &str) -> Result<Vec<Value>> {
         let sid = s.st("id");
         let t = tasks.get(&sid);
         let desk = t.is_none() && crate::jira_desk::is_desk(app, Some(&sid))?;
+        let line = crate::lines::entries(app, &sid)?;
         let mut row = json!({
             "id": sid, "name": s.s("name").filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("Terminal {}", sid.chars().take(8).collect::<String>())),
             "project": s.v("project"), "project_path": s.v("project_path"), "status": board::shown_status(&s),
-            "api_error": s.v("api_error"), "idle_secs": idle_secs(&s), "compacting": board::compacting_since(&s),
+            "background": board::background_view(&s), "api_error": s.v("api_error"), "idle_secs": idle_secs(&s), "compacting": board::compacting_since(&s),
             "task_ref": t.map(|t| json!(rf("task", t.id()))).unwrap_or(Value::Null),
             "task_title": t.map(|t| t.v("title")).unwrap_or(Value::Null),
             "task_id": t.map(|t| json!(t.id())).unwrap_or(Value::Null),
             "last_activity": s.v("last_activity"), "seen_at": s.v("seen_at"),
-            "can_take": board::shown_status(&s) == "idle" && t.is_none(),
+            "can_take": board::shown_status(&s) == "idle" && t.is_none() && line.is_empty(),
+            "line": line,
             "closing": jobs::closing(app, &sid)?, "close": board::close_rule(Some(&s)),
             "branch": s.v("branch"), "dirty": s.v("dirty"), "renaming": null, "rename_error": null,
         });
@@ -536,10 +538,11 @@ pub fn session_detail(app: &App, sid: &str) -> Result<Value> {
         "project": s.v("project"), "project_path": s.v("project_path"), "agent": s.v("agent"),
         "last_activity": s.v("last_activity"), "seen_at": s.v("seen_at"), "branch": s.v("branch"), "dirty": s.v("dirty"),
         "gone_at": s.v("gone_at"), "claude_session_id": s.v("claude_session_id"), "status_at": s.v("status_at"),
-        "status": board::shown_status(&s), "api_error": s.v("api_error"), "idle_secs": idle_secs(&s),
+        "status": board::shown_status(&s), "background": board::background_view(&s), "api_error": s.v("api_error"), "idle_secs": idle_secs(&s),
         "compacting": board::compacting_since(&s),
         "close": board::close_rule(Some(&s)), "closing": jobs::closing(app, sid)?, "renaming": null, "rename_error": null,
         "task": match &t { Some(t) => board::task_card(app, t)?, None => Value::Null },
+        "line": crate::lines::of(app, sid)?.iter().map(|x| board::task_card(app, x)).collect::<Result<Vec<_>>>()?,
         "last_task": last.map(|l| json!({"ref": rf("task", l.id()), "title": l.v("title"), "status": l.v("status")})).unwrap_or(Value::Null),
         "prompt": prompt, "reply": latest("reply"),
         "waiting": if matches!(board::shown_status(&s), "needs" | "offline") { latest("wait") } else { None },

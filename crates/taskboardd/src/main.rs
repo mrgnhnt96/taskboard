@@ -138,8 +138,34 @@ fn serve(cfg: Config) -> i32 {
             app.cfg.data.display(),
             if app.cfg.runner { "on" } else { "off" }
         ));
+        // Who counts as Taskboard.app this launch (`apporigin`): the signed app on the app socket, or,
+        // in a build with no team signature, whoever has this launch's token file (`apptoken`).
+        let trust = taskboardd::apporigin::Trust::detect(&app.cfg);
+        app.info(trust.describe());
+        let token_path = taskboardd::apptoken::path(&app.cfg);
+        if trust.token {
+            if let Err(e) = taskboardd::apptoken::write(&token_path, &app.app_token) {
+                app.info(format!("can't write the app token: {e}; the app's Start and review stops won't work"));
+            }
+        } else {
+            let _ = std::fs::remove_file(&token_path);
+        }
+        let _ = app.app_origin.set(trust);
         taskboardd::start_threads(&app);
         let router = taskboardd::server::router(app.clone());
+        let socket = taskboardd::apporigin::socket_path(&app.cfg);
+        match taskboardd::apporigin::bind(&socket) {
+            Ok(unix) => {
+                let svc = router.clone().into_make_service_with_connect_info::<taskboardd::apporigin::Peer>();
+                let log = app.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = axum::serve(unix, svc).await {
+                        log.info(format!("app socket stopped: {e}"));
+                    }
+                });
+            }
+            Err(e) => app.info(format!("can't listen on {}: {e}; the app's Start and review stops won't work", socket.display())),
+        }
         let stop = app.clone();
         let shutdown = async move {
             // ctrl-c in a terminal, SIGTERM from launchd (logout, the app unregistering the agent).
@@ -150,7 +176,9 @@ fn serve(cfg: Config) -> i32 {
             }
             stop.stop();
         };
-        if let Err(e) = axum::serve(listener, router).with_graceful_shutdown(shutdown).await {
+        let served = axum::serve(listener, router).with_graceful_shutdown(shutdown).await;
+        let _ = std::fs::remove_file(&socket);
+        if let Err(e) = served {
             app.info(format!("server stopped: {e}"));
             return 1;
         }

@@ -118,7 +118,8 @@ pub struct Report {
     pub settings: Vec<String>,
     /// The highest T, G and B numbers carried over.
     pub last: Vec<(&'static str, i64)>,
-    /// Review switches turned on for a project because the old board used them ("webapp: ask stage").
+    /// PR switches turned on for a project because the old board used them ("webapp: ask stage",
+    /// "webapp: agents merge").
     pub switched: Vec<String>,
 }
 
@@ -505,6 +506,14 @@ fn set_needs(app: &App, owner: &str, needs: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every old devices column `devices` reads (some only for some rows).
+const DEVICE_COLS: &[&str] = &[
+    "name", "label", "tags", "tag", "kinds", "kind", "platform", "type", "os", "target", "runtime", "os_version", "version",
+    "start_cmd", "start_command", "start", "boot_cmd", "stop_cmd", "stop_command", "stop", "shutdown_cmd", "removed_at", "removed",
+    "blocked", "blocked_for", "kept_for", "blocked_reason", "off", "disabled", "retired", "enabled", "note", "notes", "description",
+    "detail", "focus", "focus_cmd", "focus_command", "created_at", "created", "added_at", "updated_at", "updated",
+];
+
 /// The device pool, its loans, and what tasks (`tasks.device_need`) and goals (`goal_devices`) ask for.
 /// True when `goal_devices` is a goal's own pool (purpose, reserved) rather than its needs.
 fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<bool> {
@@ -519,15 +528,18 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 continue;
             };
             let mut tags: Vec<String> = vec![];
-            for v in [d.get(r, &["tags", "tag", "kinds"]), d.get(r, &["kind", "platform", "type", "os"])] {
-                for w in words(v) {
-                    if let Some(t) = text(&w).as_deref().and_then(slug).map(|t| t.replace(':', "-")) {
-                        if t != name && !tags.contains(&t) {
-                            tags.push(t);
-                        }
+            for w in words(d.get(r, &["tags", "tag", "kinds"])) {
+                if let Some(t) = text(&w).as_deref().and_then(slug).map(|t| t.replace(':', "-")) {
+                    if t != name && !tags.contains(&t) {
+                        tags.push(t);
                     }
                 }
             }
+            // The kind is a label, as on the Python board, not a tag: a need never matched it.
+            let kind = text(d.get(r, &["kind", "platform", "type", "os"])).map(|k| one_line(&k, 80));
+            let target = text(d.get(r, &["target", "runtime", "os_version", "version"])).map(|t| one_line(&t, 80));
+            let start = text(d.get(r, &["start_cmd", "start_command", "start", "boot_cmd"])).map(|c| c.trim().to_string());
+            let stop = text(d.get(r, &["stop_cmd", "stop_command", "stop", "shutdown_cmd"])).map(|c| c.trim().to_string());
             for k in [d.text(r, &["id"]), raw.clone()].into_iter().flatten() {
                 names.entry(k.to_lowercase()).or_insert_with(|| name.clone());
             }
@@ -543,12 +555,17 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 (n, k) => json!(n.or(k)),
             };
             app.db.x(
-                "INSERT OR IGNORE INTO devices(name, tags, focus, note, off, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO devices(name, tags, focus, note, kind, target, start_cmd, stop_cmd, off, created_at, updated_at) \
+                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 vec![
                     json!(name),
                     json!(jdumps(&json!(tags))),
                     d.get(r, &["focus", "focus_cmd", "focus_command"]).clone(),
                     note,
+                    json!(kind),
+                    json!(target),
+                    json!(start),
+                    json!(stop),
                     json!(off as i64),
                     d.get(r, &["created_at", "created", "added_at"]).clone(),
                     d.get(r, &["updated_at", "updated"]).clone(),
@@ -561,6 +578,14 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
             }
         }
         rep.copied.push(("devices".into(), n));
+        // A row skipped early (no name, removed, kept back) doesn't look at every column: mark them all
+        // read, then keep the rest like other tables' extras.
+        if let Some(r) = d.rows.first() {
+            for col in DEVICE_COLS {
+                d.get(r, &[col]);
+            }
+        }
+        park_unread(app, &d, rep)?;
     }
     let device_of = |v: &Value| -> Option<String> {
         let k = text(v)?;
@@ -1471,7 +1496,10 @@ fn reviewers(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Res
 /// - the `ask` stage: a PR waiting at it, a PR whose reviewers it noted asking (`pr_flow.asked`), or
 ///   the board's own ask at that stage;
 /// - swaps: always on there, so every project that came over with a PR or a review ask (with or
-///   without a swap in its history).
+///   without a swap in its history);
+/// - agents merging (`agents_merge`): the old board's agents always merged their own approved, green
+///   PRs, so every project that came over with a PR, and the board-wide switch (`tb project
+///   agents-merge`) for the rest, unless the board already says.
 fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
     let used: &[(&str, &str, &str)] = &[(
         "ask_stage",
@@ -1483,6 +1511,10 @@ fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
         "swaps",
         "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_num IS NOT NULL OR (pr_url IS NOT NULL AND pr_url != '')) \
          UNION SELECT DISTINCT project FROM review_asks WHERE project IS NOT NULL",
+    ), (
+        "agents_merge",
+        "agents merge",
+        "SELECT DISTINCT project FROM tasks WHERE project IS NOT NULL AND (pr_num IS NOT NULL OR (pr_url IS NOT NULL AND pr_url != ''))",
     )];
     for (key, label, sql) in used {
         for r in app.db.q(sql, vec![])? {
@@ -1493,6 +1525,12 @@ fn review_switches(app: &App, rep: &mut Report) -> Result<()> {
             crate::projects::set_pr_rules(app, &project, &json!({ *key: true }))?;
             rep.switched.push(format!("{project}: {label}"));
         }
+    }
+    // The old board's agents merged on every project, so the board-wide switch comes on too: projects
+    // with no PR yet, and ones added later. A project's own rule still wins.
+    if crate::projects::agents_merge_set(app).is_none() && !app.cfg.pr.agents_merge {
+        crate::projects::set_agents_merge(app, Some(true))?;
+        rep.switched.push("every other project: agents merge (pr.agents_merge; tb project agents-merge off to turn it off)".into());
     }
     Ok(())
 }

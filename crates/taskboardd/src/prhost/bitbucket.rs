@@ -385,12 +385,17 @@ impl PrHost for BitbucketHost {
                 let name = s["name"].as_str().filter(|n| !n.is_empty()).or(s["key"].as_str()).unwrap_or("").to_string();
                 let url = s["url"].as_str().filter(|u| !u.is_empty()).map(|u| u.to_string());
                 if !name.is_empty() && !out.iter().any(|o| o.name == name && o.url == url) {
-                    out.push(Check { name, state: "failed".into(), url });
+                    out.push(Check { name, state: "failed".into(), url, at: status_at(&s) });
                 }
             }
         }
         Ok(out)
     }
+}
+
+/// A build status's newest time: updated, else created. Bitbucket lists them unsorted.
+fn status_at(s: &Value) -> Option<String> {
+    ["updated_on", "created_on"].iter().filter_map(|k| s[*k].as_str()).find(|t| !t.is_empty()).map(|t| t.to_string())
 }
 
 fn check_state(s: &str) -> &'static str {
@@ -427,6 +432,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             name: s["name"].as_str().filter(|n| !n.is_empty()).or(s["key"].as_str()).unwrap_or("build").to_string(),
             state: check_state(s["state"].as_str().unwrap_or("")).to_string(),
             url: s["url"].as_str().filter(|u| !u.is_empty()).map(|u| u.to_string()),
+            at: status_at(s),
         })
         .collect();
     let mut reviewers: Vec<Reviewer> = vec![];
@@ -651,8 +657,8 @@ pub(crate) mod tests {
                 ]})),
                 ("GET https://api/repositories/ws/repo/commit/abc123/statuses", json!({"values": [
                     {"key": "build", "name": "Build", "state": "SUCCESSFUL"},
-                    {"key": "test", "name": "Tests", "state": "FAILED", "url": "https://bitbucket.org/ws/repo/pipelines/results/41"},
-                    {"key": "e2e", "name": "", "state": "INPROGRESS"}
+                    {"key": "test", "name": "Tests", "state": "FAILED", "url": "https://bitbucket.org/ws/repo/pipelines/results/41", "created_on": "2026-10-02T08:00:00.000000+00:00", "updated_on": "2026-10-02T08:10:00.000000+00:00"},
+                    {"key": "e2e", "name": "", "state": "INPROGRESS", "created_on": "2026-10-02T08:20:00.000000+00:00"}
                 ]})),
                 ("GET https://api/repositories/ws/repo/pullrequests/7", pr_json()),
                 ("PUT https://api/repositories/ws/repo/pullrequests/7", json!({})),
@@ -717,6 +723,8 @@ pub(crate) mod tests {
         assert_eq!((r.state.as_str(), r.head.as_str(), r.branch.as_str(), r.base.as_str(), r.base_head.as_str()), ("OPEN", "abc123", "feat", "main", "base1"));
         assert_eq!(r.failed(), vec!["Tests".to_string()]);
         assert_eq!(r.checks[2].name, "e2e", "a status without a name goes by its key");
+        let at: Vec<Option<&str>> = r.checks.iter().map(|c| c.at.as_deref()).collect();
+        assert_eq!(at, vec![None, Some("2026-10-02T08:10:00.000000+00:00"), Some("2026-10-02T08:20:00.000000+00:00")], "updated, else created");
         assert_eq!(r.review_decision, "CHANGES_REQUESTED");
         assert_eq!(r.changes_at.as_deref(), Some("2026-10-02T09:00:00Z"));
         assert_eq!(r.approvals, 1);
@@ -756,7 +764,7 @@ pub(crate) mod tests {
         assert_eq!(h.base_failures(&pr(), "main", 5).unwrap(), vec!["Tests".to_string()]);
         assert_eq!(
             h.base_failed_checks(&pr(), "main", 5).unwrap(),
-            vec![Check { name: "Tests".into(), state: "failed".into(), url: Some("https://bitbucket.org/ws/repo/pipelines/results/38".into()) }]
+            vec![Check { name: "Tests".into(), state: "failed".into(), url: Some("https://bitbucket.org/ws/repo/pipelines/results/38".into()), at: None }]
         );
         let opened = h.open("ws/repo", "main", "feat", "Add x", "## Summary").unwrap();
         assert_eq!((opened.num, opened.url.as_str()), (31, "https://bitbucket.org/ws/repo/pull-requests/31"));

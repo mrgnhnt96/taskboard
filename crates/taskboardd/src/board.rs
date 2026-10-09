@@ -250,7 +250,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "waits_for": waits,
         // What it waits for, and the task it stacks on (`stack: true`).
         "waits_for_state": waitsfor::deps(t).into_iter().map(|n| {
-            let mut w = json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref())});
+            let mut w = json!({"ref": rf("task", n), "done": waitsfor::ready_for(app, t, n, find_task(app, Some(n))?.as_ref())?});
             if crate::stack::parent_id(t) == Some(n) {
                 w["stack"] = json!(true);
             }
@@ -258,6 +258,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         }).collect::<Result<Vec<_>>>()?,
         "locks": crate::locks::names(t),
         "alone": t.v("alone"),
+        "line": crate::lines::card(app, t)?,
         "waiting": waiting,
         "blocked": is_blocked(app, t)?,
         "step": crate::steps::waiting_card(app, t),
@@ -329,15 +330,26 @@ pub fn note_rename(app: &App, cur: Option<&Row>, name: Option<&str>) -> Result<(
 }
 
 const SESSION_EVENTS_KEEP: i64 = 300;
+/// The most of a typed prompt kept whole in `session_events.full`; a longer one is clipped there (with
+/// "…"), and the start word check reads a clipped prompt as no one's word.
+pub const PROMPT_FULL_KEEP: usize = 20_000;
 
 pub fn session_event(app: &App, sid: &str, kind: &str, text: &str, at: Option<&str>) -> Result<()> {
+    session_event_with(app, sid, kind, text, at, None)
+}
+
+/// [`session_event`] with its `data`: `board` on a prompt the board sent, not one a human typed.
+pub fn session_event_with(app: &App, sid: &str, kind: &str, text: &str, at: Option<&str>, data: Option<&str>) -> Result<()> {
     if sid.is_empty() || kind.is_empty() {
         return Ok(());
     }
+    // A prompt shows as one line, but the start word check reads it as typed: its lines, and all of it.
+    let full = (kind == "prompt").then(|| clip(text.trim(), PROMPT_FULL_KEEP));
     let text = if kind == "reply" { clip(text.trim(), 4000) } else { one_line(text, 600) };
     app.db.insert(
         "session_events",
-        fields!["session_id" => sid, "at" => at.map(|s| s.to_string()).unwrap_or_else(now_iso), "kind" => kind, "text" => text],
+        fields!["session_id" => sid, "at" => at.map(|s| s.to_string()).unwrap_or_else(now_iso), "kind" => kind, "text" => text,
+                "data" => data.map(|d| d.to_string()), "full" => full],
     )?;
     if let Some(cut) = app.db.q1(
         "SELECT id FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?",
@@ -354,12 +366,40 @@ pub fn offline(s: &Row) -> bool {
     has(s.s("api_error")) && s.s("api_error_kind") == Some("network")
 }
 
+/// How many background commands and agents an idle terminal's last turn left running: 0 once a turn
+/// starts, or once Claude would have stopped them.
+pub fn background(s: &Row) -> i64 {
+    if s.s("status").unwrap_or("idle") != "idle" || age_secs(s.s("background_at")).is_none_or(|a| a >= crate::transcript::CLAUDE_STOPS_BACKGROUND_AFTER) {
+        return 0;
+    }
+    s.i("background").unwrap_or(0).max(0)
+}
+
+/// Idle at its prompt, but its background commands or agents are still running: not free for work.
+pub fn waiting_on_background(s: &Row) -> bool {
+    background(s) > 0
+}
+
+/// What a waiting terminal is waiting on, for the page: `{"agents": 1, "commands": 1}`, or null.
+pub fn background_view(s: &Row) -> Value {
+    let total = background(s);
+    if total == 0 {
+        return Value::Null;
+    }
+    let agents = s.i("background_agents").unwrap_or(0).clamp(0, total);
+    json!({"agents": agents, "commands": total - agents})
+}
+
 /// A session's status for the page. A terminal whose last turn ended on an API error and that hasn't
-/// started another shows it: "offline" when the network went, else "needs".
+/// started another shows it: "offline" when the network went, else "needs". One whose turn ended
+/// with background work still running shows "waiting".
 pub fn shown_status(s: &Row) -> &str {
     let st = s.s("status").unwrap_or("idle");
-    if matches!(st, "working" | "gone") || !has(s.s("api_error")) {
+    if matches!(st, "working" | "gone") {
         return st;
+    }
+    if !has(s.s("api_error")) {
+        return if waiting_on_background(s) { "waiting" } else { st };
     }
     if s.s("api_error_kind") == Some("network") {
         "offline"
@@ -385,7 +425,7 @@ pub fn close_rule(s: Option<&Row>) -> Option<&'static str> {
     if s.s("status") == Some("gone") {
         return None;
     }
-    Some(if s.s("status").unwrap_or("idle") == "idle" { "close" } else { "force" })
+    Some(if s.s("status").unwrap_or("idle") == "idle" && !waiting_on_background(s) { "close" } else { "force" })
 }
 
 /// Did the board open this terminal (an agent job's terminal)? Tabs the owner opened stay open.
@@ -421,9 +461,18 @@ pub fn add_terminal(app: &App, task_id: i64, sid: &str, why: &str) -> Result<()>
     Ok(())
 }
 
+/// A task's terminal's status: its own, but "waiting" while its background work runs.
+pub fn terminal_status(s: Option<&Row>) -> &str {
+    match s {
+        Some(s) if waiting_on_background(s) => "waiting",
+        Some(s) => s.s("status").unwrap_or("gone"),
+        None => "gone",
+    }
+}
+
 pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
     let rows = app.db.q(
-        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status FROM task_terminals tt \
+        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_agents, s.background_at FROM task_terminals tt \
          LEFT JOIN sessions s ON s.id = tt.session_id WHERE tt.task_id = ? ORDER BY tt.rowid DESC",
         p![t.id()],
     )?;
@@ -432,14 +481,14 @@ pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
         .map(|r| {
             let sid = r.st("session_id");
             json!({"id": sid, "name": r.s("name").map(|s| s.to_string()).unwrap_or_else(|| session_name(app, Some(&sid), t.s("session_name"))),
-                   "status": r.s("status").unwrap_or("gone"), "why": r.v("why"), "at": r.v("at")})
+                   "status": terminal_status(Some(r)), "background": background_view(r), "why": r.v("why"), "at": r.v("at")})
         })
         .collect();
     if let Some(sid) = t.s("session_id").filter(|s| !s.is_empty()) {
         if !out.iter().any(|x| x["id"] == sid) {
             let s = get_session(app, Some(sid))?;
             out.push(json!({"id": sid, "name": session_name(app, Some(sid), t.s("session_name")),
-                            "status": s.as_ref().and_then(|s| s.s("status")).unwrap_or("gone"),
+                            "status": terminal_status(s.as_ref()), "background": s.as_ref().map_or(Value::Null, background_view),
                             "why": "Worked on the task", "at": t.v("started_at")}));
         }
     }
@@ -964,14 +1013,14 @@ pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&s
     let name = session_name(app, Some(sid), None);
     if let Some(prev) = task_for_session(app, Some(sid))? {
         if prev.id() != t.id() {
-            update_task(
-                app,
-                prev.id(),
-                fields!["session_id" => null, "status" => "queued", "pickup" => "manual", "start_job" => null],
-            )?;
-            log_event(app, prev.id(), &name, "status", &format!("{name} took {tref} instead, so this went back to the queue"))?;
+            crate::lines::shelve(app, &prev, sid, &name, &format!("{name} switched to {tref}; this waits there to resume"))?;
         }
     }
+    if let Some(from) = t.s("line_session").filter(|f| *f != sid) {
+        log_event(app, t.id(), &name, "status", &format!("Taken out of {}'s line", session_name(app, Some(from), None)))?;
+    }
+    crate::lines::leave(app, t)?;
+    crate::lines::follow(app, t, sid)?;
     let already = t.s("session_id") == Some(sid) && t.s("status") == Some("working");
     let mut f = fields!["session_id" => sid, "session_name" => name, "start_job" => null, "lost" => 0];
     if !already {

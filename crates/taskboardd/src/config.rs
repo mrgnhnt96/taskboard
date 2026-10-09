@@ -38,6 +38,7 @@ pub struct FileConfig {
     pub terminals: TerminalsConfig,
     pub comments: CommentsConfig,
     pub devices: crate::devices::DevicesConfig,
+    pub app_origin: crate::apporigin::AppOriginConfig,
     pub bits: crate::bits::BitsConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
@@ -234,6 +235,10 @@ pub struct PrProject {
     pub swap: Option<bool>,
     /// The `ask` stage after the owner's review. Unset: `[reviewers] ask_stage`.
     pub ask_stage: Option<bool>,
+    /// The Review step: off skips it, so a PR goes to merge without reviewers. Unset: on.
+    pub review: Option<bool>,
+    /// Agents may merge this project's PRs once they're approved and green. Unset: `pr.agents_merge`.
+    pub agents_merge: Option<bool>,
 }
 
 /// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).
@@ -510,6 +515,7 @@ pub struct Config {
     pub terminals: TerminalsConfig,
     pub comments: CommentsConfig,
     pub devices: crate::devices::DevicesConfig,
+    pub app_origin: crate::apporigin::AppOriginConfig,
     pub bits: crate::bits::BitsConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
@@ -633,6 +639,7 @@ impl Config {
             terminals: f.terminals,
             comments: f.comments,
             devices: f.devices,
+            app_origin: f.app_origin,
             bits: f.bits,
             reviewers: f.reviewers,
             feed: f.feed,

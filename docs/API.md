@@ -133,7 +133,8 @@ window at 100 % makes goals show "Queued until agents can start".
   "task_title": str|null,
   "last_activity": iso|null,
   "seen_at": iso|null,         // fallback for idle time when last_activity is null
-  "can_take": bool,            // idle and no task: offered in New task → "In an idle terminal"
+  "can_take": bool,            // idle, no task and nothing in its line: offered in New task → "In an idle terminal"
+  "line": [{"ref": "T14", "id": 14, "title": str, "kind": "queued"|"resume"}],  // tasks waiting their turn in this terminal, first first
   "branch": str|null,          // git branch Midna reports (shown in the Sessions list subline)
   "closing": bool,             // a close job is pending/running for it
   "close": "close"|"force"|null, // how it can be closed: idle → "close", busy → "force" (press-and-hold), gone → null
@@ -160,7 +161,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
   "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
-  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled
+  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled, {jira} with the ticket key (else the task ref), and {device} {target} ({device2} {target2}…) for the devices lent to the task
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
@@ -439,11 +440,15 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "pr": pr | null,
   "position": number|null,        // order in the goal (unused by the UI apart from sorting done server-side)
   "starting": bool,               // queued and a start job is pending/running ("Starting")
+  "line": {"session": str, "name": str, "kind": "queued"|"resume", "pos": int, "label": str, "after": "T12"|null} | null,
+                                  // queued in a terminal's line (`tb task new --here --next`, or switched away from): it starts
+                                  // there by itself, after `after`; label "Queued in Term 3" / "To resume in Term 3" (resume = started before).
+                                  // Like any start it waits for work hours and the 5-hour usage (then `waiting` says so); Start runs it now
   "waiting": str|null,            // queued only: why it isn't starting yet, one plain line
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
   "waits_for": ["T14"],           // tasks it starts after
-  "waits_for_state": [{"ref": "T14", "done": bool, "stack"?: true}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done; the goal page's "Waits for" chip
+  "waits_for_state": [{"ref": "T14", "done": bool, "stack"?: true}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done (for a `tb wait-for --merged` wait: done and its PR merged, or it ships no PR); the goal page's "Waits for" chip
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
   "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
@@ -460,7 +465,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
-The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
+The card is draggable to Working when it's queued/planned, not starting, and not in a goal unless it waits in a terminal's line (drop = start with mode `new`).
+`POST /tasks/T<n>/start` (the owner's Start, or `tb start` on their word) takes a task out of the terminal's line it waits in and runs it as asked.
 
 ### `pr`
 ```
@@ -489,7 +495,7 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
                                  // a "Failed, but not because of this PR" box with the title, checks, reason, the proof links by their labels and "Checked … ago" (`at`)
   } | null,
   "bar": {                       // on cards from this board (absent in the frozen web fixtures)
-    "build_url": str|null,       // the failed check's link, else the first check's
+    "build_url": str|null,       // the first failed check's link, else the newest by its updated/created time (running, else any), else the PR's checks page
     "checks": "not_needed"|"skipped"|"not_ours"|null,   // no checks at all / this push's checks skipped (a hook, tb pr skip-checks) / its failures cleared (`tb pr not-ours`)
     "checks_why": str|null,      // why they were skipped
     "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
@@ -542,7 +548,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks` | `{title, detail, project, priority: "normal"\|"high", goal_id: int\|null, auto_close: bool, pickup: {mode: "queue"\|"new"\|"attach"\|"manual", session_id?}, status?: "planned", jira?: {mode: "create"\|"link"\|"none", key?}}` | `tb task new`. `status: "planned"` only when it has a goal ("Add it to the goal's plan"). `jira` only sent when `state.jira.enabled`. **Response read:** the task (`ref` or `id`), then the caller shows it. |
 | `POST /tasks/:id` | `{status: "queued"}` | "Queue it now" on a planned task (planned → queued only). |
 | `POST /tasks/:id` | `{jira_key: "PROJ-1"\|"new"\|"none"}` | `tb task set --jira`: link a ticket, ask for one (again, after a failure), or no ticket (a PR task then stops waiting for one). |
-| `POST /tasks/:id/start` | `{mode: "new"\|"queue"}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. |
+| `POST /tasks/:id/start` | `{mode: "new"\|"queue", via_session?}` | Start / Start when the repo's free / New Midna terminal / Queue in Midna / drag to Working (`new`). A goal with a `worktree_base` makes the task's worktree first; one that can't be made answers 409. Without `via_session` it is the app's Start only (the `X-Task-Board-From: app` header, see "The app's own requests" below); any other caller gets 403. With `via_session` (`tb start T<n>`) it starts only when a prompt the owner typed in that terminal, since its conversation began, asks for it now: a clause that asks for the start ("start T4", "queue T4", "kick off T4") and names the task, or, in the latest prompt only, an unnamed ask: in a prompt that asks for new tasks, for the tasks that terminal made with `tb task new` in reply to it ("make a task and queue it": the first; "make tasks for A and B and queue them", "both", "these": every one); in a prompt that is only the ask ("queue it", "ok, start them"), for the task the prompt just before asked for and the terminal made in reply ("it" only when it made one). A prompt that says more than the ask ("the dev server won't come up; start it") may mean something else by "it", so it is no word for a task made before or after it. The latest prompt that speaks of the task's start decides, so a later "don't start T4", "hold off on T4" or "wait" takes an earlier ask back, as does a later prompt that names no task but takes back every start ("no, don't", "nope", "never mind that", "forget I said that", "I changed my mind") or asks for another one in its place ("start T5 instead"). Within a prompt the last word on the task decides: a take-back after the ask ("start T4. jk", "start T4. On second thought, don't.", "start T4, scratch that", "start T4. Not now though.") cancels it. The check reads the prompt as typed (newlines kept, up to 20000 characters, stored in `session_events.full`; the history shows it on one line), and a prompt that reached the board clipped ("…" at its end) is no word. No ask: a no anywhere before the ask in its sentence ("never, ever, start T4"), even with an aside between ("don't (like T5), start T4"), any time or condition in the prompt ("start T4 on Monday", "wait until 6am, then start T4", "start T4 when T3 lands", "start T4, first thing", "start T4, at six", "start T4, the moment T3 lands"), a question ("start T4?"), quoted or pasted text (quotes, code, the rest of a line after "says:", the lines after a line ending in ":", indented or log-like lines), prompts with any `[task-board:…]` marker, and reports ("T4 started"); 403 otherwise, naming `tb start G<n>` when the task is in a goal. A task whose dependencies (`waits_for`, a stack parent) aren't done answers 409 from any caller; one ahead of its wave or turn starts. |
 | `POST /tasks/:id/answer` | `{text, when: "now"\|"morning"}` | `morning` = hold it until work hours open ("Send at <when>"). Also answers a stopped PR visit. |
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
@@ -556,6 +562,33 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
+**The app's own requests.** `X-Task-Board-From: app` marks a request as the owner's own click in Taskboard.app
+(Start, a wave's review stop). The header alone is anyone's say-so: a request with it that the board can't tie to the
+app is refused with 403 before it reaches the API. How it ties a request to the app is decided at each launch from
+the daemon's own code signature (the board log's first lines say which, `crates/taskboardd/src/apporigin.rs`):
+
+- **A signed daemon** (a release, or `packaging/build-app.sh` with a Developer ID): besides its port, the daemon
+  listens on a unix socket, `app.sock` in its data folder (mode 0600), and the app sends its posts there. For each
+  connection the kernel hands the daemon the peer's audit token (`LOCAL_PEERTOKEN`, taken at `connect`), and
+  Security.framework checks that running process against
+  `anchor apple generic and identifier "<bundle id>" and certificate leaf[subject.OU] = "<team>"`, the bundle id
+  being the daemon's own signing identifier without `.daemon` and the team its own. The process also has to be
+  validly signed right now with the hardened runtime on and no debugger attached. Only such a request is the app's;
+  the port never is, and there is no token. config.toml can't loosen this.
+- **An ad-hoc or unsigned daemon** (`cargo run`, `scripts/dev-app.sh`, tests): there's no signature to check, so the
+  daemon writes a fresh random token at each launch to `app-token` in its data folder (mode 0600); the app reads it
+  and sends it as `X-Task-Board-Token`, on the socket or the port. `[app_origin] token = false` turns that off (then
+  no request is the app's).
+
+What the signature check stops: any other program on the account saying it's the app (curl, a script, `tb`, a copy
+of the app built or re-signed by someone else, the real app binary started under a debugger or with injected
+libraries, a process that connected and then `exec`'d the app, a reused pid). What it doesn't: a process that can
+drive the real app's window (Accessibility or AppleScript UI scripting, which macOS gates behind the Accessibility
+permission), root, or anyone who can sign code as the owner's team. Agents can still change the board's data
+directly (its SQLite file, config.toml) as the same user; the board's rules for agents live in the API. In an
+unsigned build the token is a file the same user can read; the hook guard (HOOKS.md) catches the plain ways an agent
+would, not every way.
+
 ### PRs (`tb pr …`)
 The board watches GitHub PRs (through `gh`) and Bitbucket Cloud PRs (REST 2.0, with Taskboard's Bitbucket account);
 `prhost.rs` documents the host interface. Each route below reads the PR from its host first and judges what it says
@@ -563,12 +596,12 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 
 | Path | Body | Notes |
 |---|---|---|
-| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `rebase: [str]` (when the base moved: the commands to rebase onto it, test, pass each `per_head` step (the owner's review gate) on the new commit, push the branch to the remote and republish each such step (`tb step publish "<step>"` when it has a `publish` script, else "publish <step>'s round for the pushed head where the PR shows it"), ending "Don't push only to rebase."), `failures: [{check, url, steps, tests, source, error?, base_fails, base_steps, base_tests, base_compared, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines (with the token from `tb ci-token set`, else `$pr.azure_token_env`) or the project's `failures_cmd`; the base branch's last 5 commits' runs of the same check are read too, and `base_steps` / `base_tests` are this PR's failed steps and tests that fail there too; `base_fails` when all of them do; `base_compared`: `steps` (compared one by one), `check` (only the check's name could be compared) or null (the base doesn't fail it)), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
+| `GET /tasks/:id/pr` | `?full=1` | The card, the last read (`record`) and `watched`. `full=1` (`tb pr status`) reads it now and adds `live`: `base_moved`, `builds_note`, `rebase: [str]` (when the base moved: the commands to rebase onto it, test, pass each `per_head` step (the owner's review gate) on the new commit, push the branch to the remote and republish each such step the PR shows (`tb step publish "<step>"` when it has a `publish` script, else, for one with a `bar`, "publish <step>'s round for the pushed head where the PR shows it"), ending "Don't push only to rebase."), `failures: [{check, url, steps, tests, source, error?, base_fails, base_steps, base_tests, base_compared, cleared}]` (failed steps and tests from GitHub Actions, Bitbucket Pipelines, Azure Pipelines (with the token from `tb ci-token set`, else `$pr.azure_token_env`) or the project's `failures_cmd`; the base branch's last 5 commits' runs of the same check are read too, and `base_steps` / `base_tests` are this PR's failed steps and tests that fail there too; `base_fails` when all of them do; `base_compared`: `steps` (compared one by one), `check` (only the check's name could be compared) or null (the base doesn't fail it)), `not_ours`, `expected_missing`, `expected_wait_mins`, `expected_waited_out` (the wait is over: the missing ones no longer hold it), `reviewers: [{user, name, state: approved\|changes\|commented\|pending, requested, swapped_off}]`, `approvals: {have, need}`, `open_threads: [thread]`, `tasks_open` (null when they couldn't be read), `tasks_error` (why; the merge waits until they can be), `blockers: [str]` (why `tb pr merge` would refuse), `read_error`. |
 | `POST /tasks/:id/pr/reply` | `{thread, text, resolve?: bool, who?}` | `tb pr reply`: answers the thread on the host (a GitHub comment that has no thread gets a quoting comment); `resolve` resolves it too. |
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
 | `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, records an ask for each (`why: "rereview"`, unless they have one open, so a slow re-review is swapped like any ask), and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
 | `POST /tasks/:id/pr/reviewers` | `{ask?: [who], replace?: who, with?: who, drop?: who, count?, dry_run?: bool, who?}` | `tb pr reviewers`: sets the PR's reviewers through its host. With none of `ask`, `replace` and `drop`, the picker chooses (`count` more, else enough to have `[reviewers] count` on the PR; `dry_run` answers `{picks: [{user, name, why: "pinned"\|"main"\|"turn"}]}` and asks nobody); 409 when nobody on the roster can review. `replace` without `with` takes the picker's choice. `ask` requests each (a roster name, alias, email or host id; someone on the PR's list by name; else a host id as given); `replace` takes one off and asks `with` in their place; `drop` takes one off (either closes their ask as `dropped`, which says nothing about their speed). 409 for the PR's author or someone removed from the roster. Each ask is recorded (`review_asks`), the people taken off go into `pr_flow.swapped_off` (their requests for changes stop holding), and `pr_flow.asked` notes who was asked. **Response:** `{asked: [{user, name}], dropped, replaced: {old, new}?, asks: [ask], pr}`. |
-| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted, until their `expected_wait_mins` is over; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then points every open PR that goes into its branch at its base (a PR that can't be moved stops the merge: 502), merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
+| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted, until their `expected_wait_mins` is over; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then points every open PR that goes into its branch at its base (a PR that can't be moved stops the merge: 502), merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while agents don't merge the task's project's PRs (its `agents_merge`, else the board's `POST /projects/agents-merge`, else `pr.agents_merge`; `taskboardd import` turns it on for every project that came over with a PR, unless the project already says, and turns the board-wide switch on unless the board already says: the old board's agents always merged their own). |
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
 | `POST /tasks/:id/pr/skip-checks` | `{reason, all?: bool, who?}` | Counts this push's checks (or every push's) that were stopped, are running or never posted as passed: for builds a hook cancelled. 400 without a `reason`; 409 while a check failed on this push (use `not-ours`), and a later push's failure still counts. The card's `pr.bar.checks` is `skipped`. |
 | `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
@@ -634,9 +667,12 @@ bitbucket or azure, else the PR's host), else the PR host's own (`gh run cancel`
 tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an alert keyed `pr-builds:<…>`; a CI with no
 way to cancel alerts at once. A cancel command may write the builds it stopped, one name per line, to the file named by
 `$TB_CANCELLED`. A cancelled push is logged on its task and kept in `recent`; a follow-up only when it stopped a build (a
-cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both). An entry with no builds of its
-own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build matches a PR by the
-repo's short name (after the last `/`), so `org/repo` and `repo` are one. The PRs' checks count as passed: the build
+cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both, and so is any round, the first
+too, that writes it empty, or a host cancel that stops none: it stopped nothing; the push is still marked cancelled). An entry with no builds of its
+own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build or PR event matches a
+board task's PR, or one the owner opened by hand, by its repo in any case, or by the repo's short name (after the last
+`/`) when one side gives no org, so `ACME/repo`, `repo` and `acme/repo` are one; only among the board's PRs with that
+number on the event's host, and `globex/repo` is never `acme/repo` (when the board has both, `repo` names neither). The PRs' checks count as passed: the build
 reads "Builds stopped" and the PR moves on to review.
 
 A build event for a PR on a host the board doesn't read (GitLab, …) asks the owner's `pr.checks` hooks (a build
@@ -671,6 +707,12 @@ fault_check`), or without it: every suspect the owner's makes it `ours`, else `u
 (`[master] start_fix`; when it can't start it waits in the queue)) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
 branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
 again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
+A fix already in flight on the same project and branch covers an `ours` break (its own task first, then the other
+breaks'), so no new fix task starts: the task isn't done, or its PR is still open, or its PR merged after the failing
+build was queued (the failed checks' queue time from the host, else when the board first saw that head red). Only when
+nothing covers it does it get a new fix task, so a build queued after the fix merged that still fails gets one. A fix
+that finished without a PR, or whose PR was declined, hands its break to a covering task (logged on both) and raises no
+alert again.
 
 **CI token** (`tb ci-token`): `GET /ci-token` → `{set, source: "board"|"env"|null, env}` (never the token); `POST /ci-token {token}`
 keeps an Azure DevOps personal access token in the Keychain (`taskboard-azure-devops`), which the board reads Azure
@@ -679,15 +721,17 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
-| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, set: {…what tb project set changed}}` (`tb project show`). |
-| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null, swap?: bool\|"on"\|"off"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`, `--swap on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, review: bool, agents_merge: bool, set: {…what tb project set changed}}` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null, swap?: bool\|"on"\|"off"\|null, review?: bool\|"on"\|"off"\|null, agents_merge?: bool\|"on"\|"off"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`, `--swap on|off`, `--review on|off`, `--agents-merge on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
+| `GET /projects/agents-merge` | | `tb project agents-merge`: `{agents_merge: bool, set: bool\|null, config: bool}`: whether agents merge on projects whose own rules don't say, what the board set (null: nothing), and config.toml's `pr.agents_merge`. |
+| `POST /projects/agents-merge` | `{agents_merge: bool\|"on"\|"off"\|null}` | `tb project agents-merge on\|off\|default`: the board-wide switch, over config.toml's `pr.agents_merge` and under a project's own `agents_merge`; null goes back to config.toml's. `taskboardd import` sets it on unless the board already says. **Response read:** as `GET /projects/agents-merge`. |
 
 ### Goals
 | Path | Body | Notes |
 |---|---|---|
 | `POST /goals` | `{name, tldr, outcome, project, run_in_order: bool, max_terminals: int, auto_close: bool, epic: {mode: "create"\|"link"\|"none", key?}}` | `tb goal new`. `epic.mode` is always `none` without Jira. **Response read:** the goal (`ref`/`id`, or `{goal: {...}}`); the caller shows it. |
 | `POST /goals/:id` | any subset of `{name, tldr, outcome, project, run_in_order, max_terminals, auto_close, epic_key: str\|null, paused: bool, deprioritized: bool, setup: str\|"none"}` | `tb goal set` (`epic_key` only with Jira; `--deprioritize`/`--prioritize` set `deprioritized`), the goal page's "How this goal runs" (`max_terminals`, `run_in_order`, `auto_close`), Pause/Resume, Deprioritize/Bring it back. |
-| `POST /goals/:id/run` | `{}` or `{now: true}` | `tb goal set --run`. Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
+| `POST /goals/:id/run` | `{via_session?}` or `{now: true}` | The board's Run, `tb start G<n>` and `tb goal set --run`. Without `via_session` (the app's Run) it runs as asked. With `via_session` it runs only on the owner's word in that terminal, read as for `POST /tasks/:id/start`: a prompt since the conversation began that asks for the run now ("start G2", "run G2", "kick off goal G2"), or an unnamed "start the goal" / "run the goal" when the goal is that conversation's (the terminal's task is in it, the conversation made a task in it with `tb task new`, or, in prompts after it, a `[task-board:G<n>]` prompt handed it the goal); "it" is never a goal. The latest prompt about the goal's run decides; a no, a time or condition, a question, pasted text and board prompts are no word; 403 otherwise. Queue the planned tasks (and re-queue `start_failed` ones), clear paused/deprioritized. `now: true` outside work hours = let this goal run until the hours next open (`goals.hours_until`). **Response read:** `queued_now: int` (how many planned tasks it queued). |
 | `POST /goals/:id/plan` | `{mode: "edit"}` | "Plan in Claude": open a Claude terminal in Midna on the goal's plan (no prompt; goal context as system prompt). |
 | `POST /goals/:id/notes` | `{kind: "finding"\|"decision"\|"reference", text, source: "you"}` | Add a goal note (no app button; `tb note --goal`). |
 
@@ -732,7 +776,9 @@ by the board's, and once after an upgrade every repo the board has known is swep
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
   --output-format json --setting-sources ""` (no user settings or hooks; a nonzero exit or `is_error` is a failure, and the
-  resume goes ahead uncompacted) before a new terminal resumes it, or `/compact` queued ahead of the prompt in its live terminal.
+  resume goes ahead uncompacted) before a new terminal resumes it, or `/compact` queued ahead of an agent job's prompt or a message job's text in its live terminal
+  (once per job, logged on the job's task: "Its conversation has been idle N min (Xk tokens), so the board compacts it before
+  sending it anything.").
 - `warm_tokens`, `warm_idle_mins`: a task (after its wait-for) or a PR visit resumes its conversation only while it's under
   both; otherwise it starts fresh from the handoff and the history says why. A live terminal is always typed into.
   Size and idle time come from the conversation's transcript (its last reply's context, or the last compact
@@ -829,7 +875,7 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 
 | Request | Body | What |
 |---|---|---|
-| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app`); from anyone else it's 403. Answers the goal detail. |
+| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app`, see "The app's own requests"); from anyone else it's 403. Answers the goal detail. |
 | `POST /goals/:id/waves/:n/hold` | `{on?: bool (true), who?}` | Hold a wave (`tb goal wave --hold`): its tasks that haven't started don't, nor any later wave, until it's continued. `on: false` lifts it. 409 on a done wave. Answers the goal detail. |
 | `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail, with `let_start: true` when it let a held wave start. |
 | `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |
@@ -864,7 +910,9 @@ its goal's needs, and `"goal"` drops its own so it asks for its goal's again. Th
 are free, lends them when it starts or an agent takes it with `tb take` (before the handoff is built, which names
 them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
-device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"). A task started
+device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"); a device asked for by
+name says so first, whatever the goal's pool ("Waiting for a free dev-c (dev-c is reserved for G2)", "Waiting for a free dev-c (dev-c is with T4)", "Waiting for dev-c
+(it's off)"), and a need no device has as its name or tag says "No dev-zz yet (tb device add)". A task started
 without all it asks for (by hand, or with nothing free) logs "<why>; it started without".
 
 A goal can keep devices of its own (`tb goal devices`): its tasks are lent only those, as on the Python board
@@ -876,15 +924,29 @@ tasks share it. An archived goal reserves nothing and its pool lends nothing; it
 The goal detail's `devices` aside lists the goal's own devices first, each with `in_pool`, `purpose` and
 `reserved`, and `pool` (how many it has).
 
-`device`: `{id, name, tags: [str], note, off: bool, focus: str|null, can_focus: bool, held_by: {ref, title, goal}|null,
+A device can say what it is: `kind` (a label, never matched against needs) and `target` (the emulator's serial or
+the simulator's UDID, which its commands use as `{target}`), shown with its name as `label` ("dev-a (Android
+emulator, emulator-5554)"). Known kinds are named in words, as the Python board named them: `android` → "Android
+emulator", `ios` → "iOS simulator", `device` → "Phone or tablet", `other` → "Device" (others show as given; a
+device with no kind has `kind_label` "Device" and no kind in its `label`). Its `start_cmd` and `stop_cmd` go in
+the handoff of the task that's lent it, as "Start it: …" and "Stop it when you're done: …" (under the device's name
+when it has more than one), filled like step commands: the task's `{task}`, `{n}`, `{title}`, `{branch}`, `{base}`,
+`{repo}`, `{pr}`, `{wave}`, `{goal}`, `{jira}` (the task's ref when it has no ticket)… and the device's `{device}`
+(also `{name}`), `{kind}` and `{target}`. That device paragraph comes early in the handoff and is never cut to fit
+its length (a device note in it is clipped to 300), and it ends with "Other devices in use, don't touch them: …":
+every device the task must leave alone, with its target and why (`dev-b emulator-5556 (with T5)`, `reserved for G3`,
+`kept for …` for one turned off), joined with "; " and clipped to 500. A task card's `devices` has `lent` (names) and `lent_labels` (each `label`).
+
+`device`: `{id, name, label, kind: str|null, kind_label: str, target: str|null, tags: [str], note, off: bool,
+focus: str|null, can_focus: bool, start_cmd: str|null, stop_cmd: str|null, held_by: {ref, title, goal}|null,
 goals: [{goal, purpose, reserved}], reserved_for: "G3"|"G3 and G4"|null}` (`goals` and `reserved_for`: goals not archived).
 
 | Request | Body | What |
 |---|---|---|
 | `GET /devices` | | `{devices: [device], waiting: [{ref, title, goal, needs, why}]}`. |
-| `POST /devices` | `{name, tags?, focus?, note?}` | Add one. Names and tags are lowercase letters, digits, `.`, `_`, `-` (names also `:`). 409 when the name is taken. |
+| `POST /devices` | `{name, tags?, kind?, target?, start_cmd?, stop_cmd?, focus?, note?}` | Add one. Names and tags are lowercase letters, digits, `.`, `_`, `-` (names also `:`). 409 when the name is taken. |
 | `GET /devices/:name` | | The device. |
-| `POST /devices/:name` | `{name?, tags?, focus?, note?, off?}` | Change it; `off` keeps it from being lent. |
+| `POST /devices/:name` | `{name?, tags?, kind?, target?, start_cmd?, stop_cmd?, focus?, note?, off?}` | Change it; `off` keeps it from being lent; `none` (or empty) clears `kind`, `target`, `start_cmd`, `stop_cmd` and `focus`. |
 | `POST /devices/:name/remove` | | Take it out of the pool (409 while it's lent). |
 | `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name). 409 when there's neither. |
 | `GET /goals/:id/devices` | | `tb goal devices G3`. `{goal, devices: [device + {purpose, reserved}]}`: the goal's own devices. |
@@ -944,8 +1006,9 @@ Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (an
 
 **The picker** (`picker.rs`, `[reviewers]` in config.toml) asks one main contributor (whoever's turn comes first of
 `main_contributors` people: pinned reviewers first, then those with the most commits to the files the PR changes,
-then to the project; only people it could ask, at a weight of `not_a_main_below` or more, and people already on the
-PR take a place; skipped when one of them is already on the PR), then the rest in turn, `count` in all. It never picks
+then to the project; only people it could ask, on the PR already or not (not removed, not the author, not a bot
+that isn't due), at a weight of `not_a_main_below` (0.05) or more and not out on Slack, take a place; skipped when
+one of them is already on the PR), then the rest in turn, `count` in all. It never picks
 the PR's author (nor `[reviewers] me`, nor the repo's `git config user.email`), anyone removed, anyone without a
 host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + (1 + open
 asks) × `turn_gap_hours` / weight, earliest first (ties: fewest asks, then pinned, then most commits to the changed
@@ -1074,11 +1137,16 @@ checkout's head runs on a throwaway checkout of it). `tb step aim --branch B | -
 as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so do the `tb done` and PR-opening gates. A
 pinned `sha` keeps its branch's `tip` at the time (`tb` sends it; the board reads it when left out): once the branch's tip
 moves, the pin no longer counts (`aim` has no `sha`, and `dropped: <sha>`; the aim follows the branch), and the next
-`tb.step` report drops it from the task with a "Rounds no longer pinned at …" line. `tb` refuses a `--commit` from a
-detached checkout unless `--branch` names its branch (`--worktree` and `--branch` go together), and the commit must be
-on it. A pin with no `tip` (saved before the board kept it) is dropped once the branch's tip isn't its sha. Prompts'
-`{branch}` is the aimed branch; a placeholder with no value yet is empty, and refusals show the steps filled. A step's
-`publish` script (`tb step publish "<step>"`, which needs the step passed on the head; report
+`tb.step` report drops it from the task with a "Rounds no longer pinned at …" line. `tb` refuses a detached
+`--worktree` (and a `--commit` from a detached checkout, and, with no aim, any round from a detached checkout) unless `--branch` names its branch (`--worktree` and `--branch` go together), and the commit must be
+on it. A detached checkout aimed with `--branch` is judged on that branch's tip (refused when the branch is missing
+or doesn't contain the checkout's head). A pin with no `tip` (saved before the board kept it) is dropped once the branch's tip isn't its sha. Prompts'
+`{branch}` is the aimed branch; a placeholder with no value yet is empty (in a script, each value is one shell word,
+`''` when empty, and `tb steps`, refusals and the handoff show `run`, `check` and `publish` quoted that way), and refusals, the handoff and `tb step ask`'s question show the steps filled, `{head}` and `{worktree}` included (`GET /steps`'s
+`vars` carries them too). `tb.step_ask` takes `head`, `branch` and `worktree` (what `tb` resolved, as for `tb.step`): the
+question is filled from them, and they're kept on the task (`context.step_asked`) as the placeholders' fallback when the
+board has no aim, recorded branch or head, so a later take's handoff isn't blank. A step's
+`publish` script (`tb step publish "<step>"`, which needs the step passed on the head and the task's PR; report
 `tb.step_publish` with `name`, `head`, `ok`, `output`, logged as "Published <step> for <sha>" or "Couldn't publish …")
 republishes its passing round for the PR, with that round (the one that passed on the head, from `passed_rounds` in
 `GET /steps`: `{<step name>: step_result}`, each step's latest passing round on the judged head) as `$TASKBOARD_RESULT`.

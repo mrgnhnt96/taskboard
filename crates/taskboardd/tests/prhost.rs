@@ -71,7 +71,7 @@ impl Board {
 const BB: &str = "https://bitbucket.org/acme/webapp/pull-requests/9";
 
 fn check(name: &str, state: &str) -> Check {
-    Check { name: name.into(), state: state.into(), url: None }
+    Check { name: name.into(), state: state.into(), url: None, at: None }
 }
 
 fn reviewer(user: &str, state: &str) -> Reviewer {
@@ -221,8 +221,43 @@ fn an_agent_can_t_merge_when_the_owner_merges() {
     let id = b.pr_task(BB);
     let h = fake(&b, green());
     let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
-    assert!(e.contains("merges PRs on this board"), "{e}");
+    assert!(e.contains("merges this project's PRs"), "{e}");
     assert!(h.calls().is_empty());
+}
+
+#[test]
+fn a_project_with_no_review_step_and_agents_merge_on_merges_without_anyone() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    let v = b.post("/projects/webapp", json!({"review": "off", "agents_merge": "on"}));
+    assert_eq!((v["pr_rules"]["review"].clone(), v["pr_rules"]["agents_merge"].clone()), (json!(false), json!(true)));
+    poll(&b);
+    assert_eq!(b.phase(id), "merge", "no reviewers to wait for");
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], true);
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "merged");
+    let v = b.post("/projects/webapp", json!({"agents_merge": null}));
+    assert_eq!(v["pr_rules"]["agents_merge"], false, "back to pr.agents_merge");
+}
+
+#[test]
+fn the_board_wide_agents_merge_switch_sits_over_config_and_under_a_project() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    assert_eq!(b.get("/projects/agents-merge", &[]), json!({"agents_merge": false, "set": null, "config": false}));
+    let v = b.post("/projects/agents-merge", json!({"agents_merge": "on"}));
+    assert_eq!((v["agents_merge"].clone(), v["set"].clone()), (json!(true), json!(true)));
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], true);
+    b.post("/projects/webapp", json!({"agents_merge": "off"}));
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], false, "the project's own rule wins");
+    b.post("/projects/webapp", json!({"agents_merge": null}));
+    let v = b.post("/projects/agents-merge", json!({"agents_merge": null}));
+    assert_eq!((v["agents_merge"].clone(), v["set"].clone()), (json!(false), json!(null)));
+    assert_eq!(b.get(&format!("/tasks/T{id}/pr"), &[])["agents_merge"], false, "back to config.toml's");
 }
 
 #[test]
@@ -519,7 +554,7 @@ fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied()
     ];
     rec.threads = vec![th];
     let h = fake(&b, rec);
-    *h.base_checks.lock() = vec![Check { name: "e2e".into(), state: "failed".into(), url: Some("https://ci.example.com/base/1".into()) }];
+    *h.base_checks.lock() = vec![Check { name: "e2e".into(), state: "failed".into(), url: Some("https://ci.example.com/base/1".into()), at: None }];
     poll(&b);
     h.rec.lock().base_head = "b2".into();
     let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();

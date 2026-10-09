@@ -50,8 +50,8 @@ fn root_for(app: &App, cwd: &str) -> String {
 }
 
 fn project_busy(app: &App, root: &str) -> Result<bool> {
-    let rows = app.db.q("SELECT project_path FROM sessions WHERE status IN ('working','needs')", p![])?;
-    Ok(rows.iter().any(|r| under(&real(&r.st("project_path")), root)))
+    let rows = app.db.q("SELECT project_path, status, background, background_at FROM sessions WHERE status IN ('working','needs','idle')", p![])?;
+    Ok(rows.iter().filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r)).any(|r| under(&real(&r.st("project_path")), root)))
 }
 
 /// A queued agent job (pickup "queue") waits while another terminal in its project is busy.

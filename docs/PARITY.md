@@ -42,7 +42,7 @@ The task panel keeps its metadata and attachment editing and terminal rename, wh
 
 Brought back from the Python board (past the frozen web copy, so not in its goldens): a wave's "Stop after this
 wave for my review" checkbox, the owner's own word (the API refuses `stop_after` unless the app sends it, with
-`X-Task-Board-From: app`; agents hold a wave with `tb goal wave --hold` instead); the goal page's Devices aside
+`X-Task-Board-From: app` from the signed app on its socket, see API.md "The app's own requests"; agents hold a wave with `tb goal wave --hold` instead); the goal page's Devices aside
 (who has each device, Focus) and Bits aside ("N of M created", Copy, Copy link, "Create in <tool>", "Local, not
 in <tool>", and a one-click "Mark created" on a backend bit not made yet, the owner's signal like "I reviewed it";
 agents record it with `tb bit made`); device and ⚑ bit chips on cards and wave rows; Devices and Bits rows in the
