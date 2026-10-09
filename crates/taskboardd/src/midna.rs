@@ -364,6 +364,22 @@ fn state_of(s: &str) -> &'static str {
     }
 }
 
+/// Background work states Midna lists that are over.
+const BACKGROUND_DONE: &[&str] = &["completed", "failed", "killed", "stopped", "cancelled"];
+
+/// How much background work Midna lists running in a terminal's `agent_info`, and how much of it is
+/// agents: None when Midna doesn't say (no `background` list and no `background_at`). Midna leaves
+/// an empty list out, so `background_at` alone means nothing's running.
+pub fn live_background(info: &Row) -> Option<(i64, i64)> {
+    let list = info.get("background").and_then(|v| v.as_array());
+    if list.is_none() && info.get("background_at").is_none_or(|v| v.is_null()) {
+        return None;
+    }
+    let running: Vec<&Value> = list.into_iter().flatten().filter(|t| !BACKGROUND_DONE.contains(&t["status"].as_str().unwrap_or(""))).collect();
+    let agents = running.iter().filter(|t| t["kind"] == "subagent").count();
+    Some((running.len() as i64, agents as i64))
+}
+
 /// Applies Midna's terminal and project lists to the board.
 pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<String>, Vec<String>)> {
     let mut seen_ids: Vec<String> = vec![];
@@ -424,6 +440,9 @@ pub fn sync(app: &App, sessions: &[Value], projects: &[Value]) -> Result<(Vec<St
             if let Some(c) = info.s("conversation_id").filter(|c| !c.is_empty()) {
                 f.push(("claude_session_id", json!(c)));
             }
+            let (live, live_agents) = live_background(&info).map_or((Value::Null, Value::Null), |(n, a)| (json!(n), json!(a)));
+            f.push(("live_background", live));
+            f.push(("live_background_agents", live_agents));
             if let Some(cur) = &cur {
                 board::note_rename(app, Some(cur), Some(&name))?;
                 app.db.update("sessions", &json!(sid), f)?;

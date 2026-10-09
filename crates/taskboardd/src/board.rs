@@ -366,10 +366,17 @@ pub fn offline(s: &Row) -> bool {
     has(s.s("api_error")) && s.s("api_error_kind") == Some("network")
 }
 
-/// How many background commands and agents an idle terminal's last turn left running: 0 once a turn
+/// How many background commands and agents an idle terminal has running: what Midna lists, for as
+/// long as it lists them. When Midna doesn't say, what its last turn left running: 0 once a turn
 /// starts, or once Claude would have stopped them.
 pub fn background(s: &Row) -> i64 {
-    if s.s("status").unwrap_or("idle") != "idle" || age_secs(s.s("background_at")).is_none_or(|a| a >= crate::transcript::CLAUDE_STOPS_BACKGROUND_AFTER) {
+    if s.s("status").unwrap_or("idle") != "idle" {
+        return 0;
+    }
+    if let Some(live) = s.i("live_background") {
+        return live.max(0);
+    }
+    if age_secs(s.s("background_at")).is_none_or(|a| a >= crate::transcript::CLAUDE_STOPS_BACKGROUND_AFTER) {
         return 0;
     }
     s.i("background").unwrap_or(0).max(0)
@@ -386,7 +393,8 @@ pub fn background_view(s: &Row) -> Value {
     if total == 0 {
         return Value::Null;
     }
-    let agents = s.i("background_agents").unwrap_or(0).clamp(0, total);
+    let agents = if s.i("live_background").is_some() { s.i("live_background_agents") } else { s.i("background_agents") };
+    let agents = agents.unwrap_or(0).clamp(0, total);
     json!({"agents": agents, "commands": total - agents})
 }
 
@@ -472,7 +480,8 @@ pub fn terminal_status(s: Option<&Row>) -> &str {
 
 pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
     let rows = app.db.q(
-        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_agents, s.background_at FROM task_terminals tt \
+        "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_agents, s.background_at, \
+         s.live_background, s.live_background_agents FROM task_terminals tt \
          LEFT JOIN sessions s ON s.id = tt.session_id WHERE tt.task_id = ? ORDER BY tt.rowid DESC",
         p![t.id()],
     )?;

@@ -199,6 +199,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("sessions", "background_at", "TEXT"),
     // Who closed the terminal, from Midna's `session.closed` event (`human`, `agent`, ...).
     ("sessions", "closed_by", "TEXT"),
+    // Background work Midna lists running (`agent_info.background`) as of its last sync: NULL when
+    // Midna doesn't say, and the saved count above stands in.
+    ("sessions", "live_background", "INT"),
+    ("sessions", "live_background_agents", "INT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

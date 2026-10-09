@@ -40,9 +40,17 @@ impl Board {
         reports::handle(&self.app, b, false).unwrap_or_else(|e| panic!("{event}: {}", e.message));
     }
     fn midna_says(&self, state: &str) {
+        self.midna_lists(state, json!({}));
+    }
+    /// Midna's sync, with this `agent_info` on the terminal.
+    fn midna_lists(&self, state: &str, agent_info: Value) {
         let repo = self.dir.path().join("webapp");
-        midna::sync(&self.app, &[json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": state}})], &[])
-            .unwrap();
+        midna::sync(
+            &self.app,
+            &[json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": state}, "agent_info": agent_info})],
+            &[],
+        )
+        .unwrap();
     }
     fn transcript(&self, lines: &[Value]) -> String {
         let dir = self.app.cfg.claude_projects.join("-webapp");
@@ -124,4 +132,100 @@ fn a_new_claude_process_drops_the_old_ones_background_work() {
 
     b.report("hook.session_start", json!({"source": "startup"}));
     assert_eq!(b.session()["status"], "idle");
+}
+
+fn running_shell(id: &str) -> Value {
+    json!({"id": id, "kind": "shell", "status": "running", "description": "build", "command": "make"})
+}
+
+#[test]
+fn an_interrupted_wake_up_doesnt_leave_it_waiting() {
+    // #125's repro: the background shell finishes and wakes it, and that turn ends with no Stop.
+    let b = new_board();
+    b.midna_says("idle");
+    let now = iso(now_ts());
+    let path = b.transcript(&[shell_started("b1", &now)]);
+    b.report("hook.stop", json!({"last_message": "Waiting on the build.", "transcript_path": path}));
+    assert_eq!(b.session()["status"], "waiting");
+
+    b.midna_says("working");
+    b.transcript(&[shell_started("b1", &now), finished("b1", &now)]);
+    b.report("hook.prompt", json!({"prompt": "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"}));
+    b.midna_says("idle");
+    let s = b.session();
+    assert_eq!(s["status"], "idle", "the turn that started cleared the saved count");
+    assert_eq!(s["background"], Value::Null);
+    assert_eq!(s["close"], "close");
+}
+
+#[test]
+fn midna_s_live_list_rules_while_it_says() {
+    let b = new_board();
+    b.midna_says("idle");
+    let now = iso(now_ts());
+    let path = b.transcript(&[shell_started("b1", &now)]);
+    b.report("hook.stop", json!({"last_message": "Waiting on the build.", "transcript_path": path}));
+
+    b.midna_lists("idle", json!({"background": [running_shell("b1")], "background_at": now}));
+    assert_eq!(b.session()["status"], "waiting");
+    assert_eq!(b.session()["background"], json!({"agents": 0, "commands": 1}));
+
+    // The shell finished and the turn it woke was interrupted: no Stop, no prompt hook. Midna leaves
+    // an empty list out, but still says when it last counted.
+    b.midna_lists("idle", json!({"background_at": now}));
+    let s = b.session();
+    assert_eq!(s["status"], "idle", "Midna lists nothing running");
+    assert_eq!(s["background"], Value::Null);
+    assert_eq!(s["close"], "close");
+}
+
+#[test]
+fn long_background_work_holds_it_as_long_as_midna_lists_it() {
+    let b = new_board();
+    b.midna_says("idle");
+    let now = iso(now_ts());
+    let path = b.transcript(&[shell_started("b1", &now)]);
+    b.report("hook.stop", json!({"last_message": "Watching.", "transcript_path": path}));
+    let long_ago = iso(now_ts() - 3.0 * 3600.0);
+    b.app.db.x("UPDATE sessions SET background_at = ? WHERE id = 's1'", taskboardd::p![long_ago]).unwrap();
+    assert_eq!(b.session()["status"], "idle", "with Midna silent, Claude would have stopped it by now");
+
+    b.midna_lists("idle", json!({"background": [running_shell("b1")], "background_at": long_ago}));
+    let s = b.session();
+    assert_eq!(s["status"], "waiting", "Midna still lists it running");
+    assert_eq!(s["close"], "force");
+}
+
+#[test]
+fn midna_s_list_counts_agents_and_commands_still_running() {
+    let b = new_board();
+    b.midna_lists(
+        "idle",
+        json!({"background": [
+            running_shell("b1"),
+            {"id": "a1", "kind": "subagent", "status": "running", "description": "review"},
+            {"id": "m1", "kind": "monitor", "status": "running", "description": "watch"},
+            {"id": "b2", "kind": "shell", "status": "completed", "description": "done"},
+        ]}),
+    );
+    let s = b.session();
+    assert_eq!(s["status"], "waiting");
+    assert_eq!(s["background"], json!({"agents": 1, "commands": 2}));
+    assert_eq!(s["can_take"], false);
+}
+
+#[test]
+fn every_idle_prompt_recounts_its_background_work() {
+    let b = new_board();
+    b.midna_says("idle");
+    let now = iso(now_ts());
+    let path = b.transcript(&[shell_started("b1", &now)]);
+    b.report("hook.stop", json!({"last_message": "Waiting on the build.", "transcript_path": path}));
+    assert_eq!(b.session()["status"], "waiting");
+
+    let path = b.transcript(&[shell_started("b1", &now), finished("b1", &now)]);
+    b.report("hook.attention", json!({"notification_type": "idle_prompt", "message": "Claude is waiting for your input", "transcript_path": path}));
+    let s = b.session();
+    assert_eq!(s["background"], Value::Null, "the idle prompt counted none running");
+    assert_ne!(s["status"], "waiting");
 }
