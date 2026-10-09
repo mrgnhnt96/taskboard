@@ -179,6 +179,7 @@ refuse_message = "The board doesn't take {ext} files as attachments: publish it 
 # goal), reopen (a closed terminal reopened), jira_desk (the Jira desk's terminal).
 [terminals]
 background = ["jira_desk"]           # example: ["jira_desk", "plan"]
+project_max = 5                      # a queued task opens its terminal while fewer of its project's terminals are busy (tb project set --max-terminals)
 
 # Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
 # so many worktree agents don't each cold-build the project with every core at once.

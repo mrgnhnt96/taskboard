@@ -38,6 +38,8 @@ pub struct Report<'a> {
     pub turn_files: Vec<String>,
     /// When that turn started.
     pub turn_at: Option<String>,
+    /// The checkout the turn committed in, when its HEAD moved.
+    pub turn_commit: Option<String>,
 }
 
 fn s_of(v: &Value, k: &str) -> Option<String> {
@@ -67,6 +69,7 @@ impl<'a> Report<'a> {
             background: transcript::Background::default(),
             turn_files: vec![],
             turn_at: None,
+            turn_commit: None,
         }
     }
 
@@ -329,6 +332,10 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
     let m = MARKER_RE.captures(&prompt).and_then(|c| c[1].parse::<i64>().ok());
     if let Some(sid) = r.sid() {
         app.db.x("UPDATE sessions SET board_prompt = ? WHERE id = ?", p![m.is_some() as i64, sid])?;
+        if !r.spooled {
+            let tree = r.body.get("tree").filter(|t| t.is_object()).map(jdumps);
+            app.db.x("UPDATE sessions SET turn_tree = ? WHERE id = ?", p![tree, sid])?;
+        }
     }
     if let Some(n) = m {
         let t = board::find_task(app, Some(n))?;
@@ -462,6 +469,23 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     Ok(ok(Some(&t), None))
 }
 
+/// What changed in a checkout between two of the hook's tree stamps: the files whose stamp is new,
+/// different or gone (committed or reverted, still on disk), and the checkout's root when HEAD moved.
+fn tree_changes(before: &Value, after: &Value) -> (Vec<String>, Option<String>) {
+    let root = after["root"].as_str().unwrap_or("");
+    if root.is_empty() || before["root"].as_str() != Some(root) {
+        return (vec![], None);
+    }
+    let (was, now) = (&before["files"], &after["files"]);
+    let mut files: Vec<String> =
+        now.as_object().map(|n| n.iter().filter(|(f, stamp)| was.get(f.as_str()) != Some(*stamp)).map(|(f, _)| f.clone()).collect()).unwrap_or_default();
+    if let Some(w) = was.as_object() {
+        files.extend(w.keys().filter(|f| now.get(f.as_str()).is_none() && std::path::Path::new(f).exists()).cloned());
+    }
+    let moved = after["head"].as_str().filter(|h| !h.is_empty()).is_some_and(|h| before["head"].as_str() != Some(h));
+    (files, moved.then(|| root.to_string()))
+}
+
 const UNTRACKED_FILES_SHOWN: usize = 3;
 
 /// The turn's edits that fall in a known project or the terminal's own folder.
@@ -515,16 +539,17 @@ fn reopen(r: &Report, t: &Row, sid: &str) -> Result<()> {
 /// tracked. A follow-up on the done task this terminal last finished reopens it instead.
 fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     let Some(sid) = r.sid.clone() else { return Ok(None) };
-    if r.turn_files.is_empty() || prflow::visited_by(r.app, &sid)?.is_some() {
+    if (r.turn_files.is_empty() && r.turn_commit.is_none()) || prflow::visited_by(r.app, &sid)?.is_some() {
         return Ok(None);
     }
     let Some(s) = board::get_session(r.app, Some(&sid))? else { return Ok(None) };
     let files = project_files(r.app, &s, &r.turn_files)?;
-    if files.is_empty() {
+    let committed = !project_files(r.app, &s, r.turn_commit.as_slice())?.is_empty();
+    if files.is_empty() && !committed {
         return Ok(None);
     }
     let tb = board::tb_cmd(r.app);
-    let shown = shown_files(&files);
+    let shown = if files.is_empty() { format!("a commit: {}", r.git.st("commit")) } else { shown_files(&files) };
     let last = board::find_task(r.app, s.i("last_task"))?;
     if let Some(last) = last {
         if last.s("status") == Some("done") && last.st("finished_at") >= r.turn_at.clone().unwrap_or_default() {
@@ -2149,6 +2174,16 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             if let Some(turn) = transcript::last_turn(app, &s) {
                 r.turn_files = turn.files;
                 r.turn_at = turn.at.as_str().map(|s| s.to_string());
+            }
+            let before = s.s("turn_tree").and_then(|t| serde_json::from_str::<Value>(t).ok());
+            if let (Some(before), Some(after)) = (before, r.body.get("tree")) {
+                let (files, commit) = tree_changes(&before, after);
+                for f in files {
+                    if !r.turn_files.contains(&f) {
+                        r.turn_files.push(f);
+                    }
+                }
+                r.turn_commit = commit;
             }
         }
     }

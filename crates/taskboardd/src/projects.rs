@@ -18,6 +18,10 @@ pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 /// `tb project agents-merge on|off`: the board's own word on `pr.agents_merge`, over config.toml's
 /// (`taskboardd import` turns it on: the old board's agents merged on every project).
 const AGENTS_MERGE_SETTING: &str = "pr_agents_merge";
+/// `tb project set --max-terminals`: name → how many of its terminals may be busy before a queued task waits.
+const MAX_TERMINALS_SETTING: &str = "project_max_terminals";
+/// `tb project set --waits-on`: name → the other projects its tasks may wait for (`tb wait-for`), one way only.
+const WAITS_ON_SETTING: &str = "project_waits_on";
 
 /// Whether agents merge PRs on a project that doesn't say: the board's word (`tb project agents-merge`),
 /// else config.toml's `pr.agents_merge`.
@@ -218,6 +222,86 @@ pub fn set_pr_rules(app: &App, name: &str, body: &Value) -> Result<bool> {
     Ok(true)
 }
 
+fn max_terminals_overrides(app: &App) -> Result<Row> {
+    Ok(jloads_obj(app.db.get_setting(MAX_TERMINALS_SETTING)?.as_deref()))
+}
+
+/// What `tb project set --max-terminals` put on a project, if anything.
+pub fn max_terminals_set(app: &App, name: &str) -> Result<Option<i64>> {
+    Ok(max_terminals_overrides(app)?.get(name).and_then(|v| v.as_i64()))
+}
+
+/// How many of a project's terminals may be busy before its queued tasks wait: its own, else `[terminals] project_max`.
+pub fn max_terminals(app: &App, name: Option<&str>) -> i64 {
+    let set = name.filter(|n| !n.is_empty()).and_then(|n| max_terminals_set(app, n).ok().flatten());
+    set.unwrap_or(app.cfg.terminals.project_max).max(1)
+}
+
+/// Sets a project's terminal cap from a body's `max_terminals` (null or "default": back to config.toml's).
+/// False when the body doesn't name it.
+pub fn set_max_terminals(app: &App, name: &str, body: &Value) -> Result<bool> {
+    let Some(v) = body.get("max_terminals") else { return Ok(false) };
+    let n = match v {
+        Value::Null => None,
+        Value::String(s) if s.trim().eq_ignore_ascii_case("default") => None,
+        _ => match v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) {
+            Some(n) if (1..=50).contains(&n) => Some(n),
+            _ => return err(400, "max_terminals is a count from 1 to 50, or default."),
+        },
+    };
+    let mut all = max_terminals_overrides(app)?;
+    match n {
+        Some(n) => all.insert(name.into(), json!(n)),
+        None => all.remove(name),
+    };
+    app.db.set_setting(MAX_TERMINALS_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
+fn waits_on_overrides(app: &App) -> Result<Row> {
+    Ok(jloads_obj(app.db.get_setting(WAITS_ON_SETTING)?.as_deref()))
+}
+
+/// The other projects a project's tasks may wait for (`tb project set <name> --waits-on <other>`). None unless set.
+pub fn waits_on(app: &App, name: &str) -> Vec<String> {
+    let all = waits_on_overrides(app).unwrap_or_default();
+    all.get(name)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default()
+}
+
+/// Whether a task in `name` may wait for a task in `other`: always within a project, else only when `name` lists `other`.
+pub fn may_wait_on(app: &App, name: &str, other: &str) -> bool {
+    name == other || waits_on(app, name).iter().any(|p| p == other)
+}
+
+/// Sets the projects a project's tasks may wait for from a body's `waits_on` (a list of names; null, [] or "none": none).
+/// False when the body doesn't name it.
+pub fn set_waits_on(app: &App, name: &str, body: &Value) -> Result<bool> {
+    let Some(v) = body.get("waits_on") else { return Ok(false) };
+    let mut names: Vec<String> = match v {
+        Value::Null => vec![],
+        Value::String(s) => s.replace(',', " ").split_whitespace().map(|x| x.to_string()).collect(),
+        Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect(),
+        _ => return err(400, "waits_on is a list of project names, or none."),
+    };
+    names.retain(|n| !n.is_empty() && !n.eq_ignore_ascii_case("none") && n != name);
+    names.dedup();
+    let known = list_projects(app)?;
+    if let Some(n) = names.iter().find(|n| !known.iter().any(|p| p["name"].as_str() == Some(n.as_str()))) {
+        return err(404, format!("There's no project called {n}."));
+    }
+    let mut all = waits_on_overrides(app)?;
+    if names.is_empty() {
+        all.remove(name);
+    } else {
+        all.insert(name.into(), json!(names));
+    }
+    app.db.set_setting(WAITS_ON_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
 /// Whether a project's work ends in pull requests (and so gets Jira tickets): on when it has a git remote.
 pub fn ships_prs(app: &App, name: &str) -> Result<bool> {
     let flow = pr_flow(app, name)?;
@@ -281,6 +365,9 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("remote".into(), json!(has_remote(app, name)?));
     o.insert("pr_flow".into(), json!(pr_flow(app, name)?));
     o.insert("ships_prs".into(), json!(ships_prs(app, name)?));
+    o.insert("max_terminals".into(), json!(max_terminals(app, Some(name))));
+    o.insert("max_terminals_set".into(), json!(max_terminals_set(app, name)?));
+    o.insert("waits_on".into(), json!(waits_on(app, name)));
     let r = pr_rules(app, Some(name));
     let approvals = r.approvals.unwrap_or(app.cfg.pr.approvals);
     o.insert(

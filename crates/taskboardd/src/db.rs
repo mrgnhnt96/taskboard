@@ -203,6 +203,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Midna doesn't say, and the saved count above stands in.
     ("sessions", "live_background", "INT"),
     ("sessions", "live_background_agents", "INT"),
+    // The checkout's HEAD and changed-file stamps when the turn's prompt came in, so its Stop can tell
+    // whether the turn changed code.
+    ("sessions", "turn_tree", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

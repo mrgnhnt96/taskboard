@@ -307,6 +307,9 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         extra.insert("tb_path".into(), json!(path));
         extra.insert("plugin_version".into(), json!(version));
     }
+    if hook == "UserPromptSubmit" || hook == "Stop" {
+        extra.insert("tree".into(), client::tree_stamp(&cwd, GIT_TIMEOUT));
+    }
     let git = client::git_info(&cwd, GIT_TIMEOUT);
     let base = client::base_body(event, &session, &s("session_id"), &cwd, git);
     let mut body = base.clone();
