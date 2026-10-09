@@ -66,8 +66,8 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
           'android:99', 0, 'Emails ship with the API change', 7, NULL);
         INSERT INTO tasks VALUES (14, 'Receipt API', 'Serve them', 'api', '{api}', 'needs', NULL, 3, NULL, NULL,
           NULL, 'api', 9, 'checks', '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, 'device:pixel tag:usb', NULL, NULL, NULL, NULL);
-        INSERT INTO tasks VALUES (15, 'Mirror', 'Elsewhere', 'mirror', '/nowhere', 'needs', NULL, 4, NULL, NULL,
-          NULL, 'mirror', 3, NULL, '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+        INSERT INTO tasks VALUES (15, 'Mirror', 'Elsewhere', 'mirror', '/nowhere', 'needs', 3, 4, NULL, NULL,
+          NULL, 'mirror', 3, NULL, '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, 'none', NULL, NULL, NULL, NULL);
         INSERT INTO task_goals VALUES (7, 3, '2026-09-02T09:00:00Z');
         INSERT INTO task_goals VALUES (7, 3, '2026-09-02T10:00:00Z');
         INSERT INTO events VALUES (1, 7, '2026-09-02T10:00:00Z', 'tb', 'checkpoint', 'Form half done', '{"next":["validation"]}');
@@ -195,6 +195,8 @@ fn an_old_board_comes_over_with_its_numbers() {
         json!([{"tag": "pixel-9", "n": 1}, {"tag": "usb", "n": 1}]),
         "old device:<id> is that device, tag:x is tag x"
     );
+    let t15 = app.db.q1("SELECT * FROM tasks WHERE id = 15", vec![]).unwrap().unwrap();
+    assert!(taskboardd::devices::needs(&app, &t15).unwrap().is_empty(), "an explicit none holds over the goal's needs");
     assert!(rep.skipped.iter().any(|s| s.starts_with("T12 device need")), "a need the board can't take is listed");
 
     // Bits keep their ids and kinds; links come from the bits rows and the tasks' own lists.
@@ -283,6 +285,29 @@ fn an_old_board_comes_over_with_its_numbers() {
     // A board with work in it is refused: the numbers would clash.
     let again = import::import(&app, &old_path).unwrap_err();
     assert_eq!(again.status, 409);
+}
+
+#[test]
+fn a_goals_device_pool_is_kept_whole() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let old_path = old_dir.path().join("tasks.db");
+    Connection::open(&old_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE goals(id INTEGER PRIMARY KEY, name TEXT, project TEXT);
+             CREATE TABLE goal_devices(goal_id INT, device_id TEXT, purpose TEXT, reserved INT);
+             INSERT INTO goals VALUES (3, 'Checkout v2', 'web');
+             INSERT INTO goal_devices VALUES (3, 'pixel', 'Payments on Android', 1);
+             INSERT INTO goal_devices VALUES (3, 'iphone', 'Payments on iOS', 0);",
+        )
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    let rep = import::import(&app, &old_path).unwrap();
+    assert_eq!(app.db.count("SELECT COUNT(*) FROM device_needs", vec![]).unwrap(), 0, "a pool isn't a need for one of each");
+    let kept: Value = serde_json::from_str(&app.db.get_setting("import.goal_devices").unwrap().unwrap()).unwrap();
+    assert_eq!(kept["rows"][0]["purpose"], "Payments on Android");
+    assert!(rep.kept.iter().any(|(t, n)| t == "goal_devices" && *n == 2));
 }
 
 #[test]

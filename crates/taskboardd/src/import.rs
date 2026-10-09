@@ -291,7 +291,7 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
             }
         }
     }
-    devices(app, c, old, &mut rep)?;
+    let goal_pool = devices(app, c, old, &mut rep)?;
     bits(app, c, old, &mut rep)?;
     jira_desk(app, c, old, &mut rep)?;
     pr_links(app, &mut rep)?;
@@ -299,7 +299,8 @@ fn fill(app: &App, c: &Connection, old: &[String]) -> Result<Report> {
     breaks(app, c, old, &mut rep)?;
     // Everything else, kept whole for whatever needs it later.
     for t in old {
-        if used.contains(t) || LEFT.contains(&t.as_str()) || MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) || t.starts_with("sqlite_") {
+        let mapped = MAPPED.iter().any(|m| t.eq_ignore_ascii_case(m)) && !(goal_pool && t.eq_ignore_ascii_case("goal_devices"));
+        if used.contains(t) || LEFT.contains(&t.as_str()) || mapped || t.starts_with("sqlite_") {
             continue;
         }
         let (names, rows) = old_rows(c, t)?;
@@ -462,7 +463,8 @@ fn set_needs(app: &App, owner: &str, needs: &str) -> Result<()> {
 }
 
 /// The device pool, its loans, and what tasks (`tasks.device_need`) and goals (`goal_devices`) ask for.
-fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<()> {
+/// True when `goal_devices` is a goal's pool, to be kept whole rather than mapped.
+fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<bool> {
     // Old device id or name → the board's name for it.
     let mut names: HashMap<String, String> = HashMap::new();
     if let Some(d) = Old::read(c, old, "devices", &[])? {
@@ -546,6 +548,12 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         for r in &t.rows {
             let Some(id) = t.id(r, &["id"]) else { continue };
             let v = t.get(r, TASK_NEED);
+            // An explicit "no devices" is the task's own "needs none", over its goal's needs.
+            if text(v).map(|s| matches!(s.to_lowercase().as_str(), "none" | "[]" | "no" | "-")).unwrap_or(false) {
+                set_needs(app, &rf("task", id), "[]")?;
+                n += 1;
+                continue;
+            }
             match needs_value(words(v).into_iter().map(|w| old_need(&w, &device_of)).collect()) {
                 Ok(Some(needs)) => {
                     set_needs(app, &rf("task", id), &needs)?;
@@ -557,8 +565,14 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         }
     }
     // What each goal asks for: a need per row (a tag and a count, a device, or the need as text).
+    // Rows with a purpose or a reserved flag are a goal's own device pool, not a need for one of
+    // each: the board has no goal pools, so they're kept whole (`import.goal_devices`) instead.
     const GOAL_NEED: &[&str] = &["need", "needs", "device_need", "spec"];
-    if let Some(g) = Old::read(c, old, "goal_devices", &[])? {
+    let mut goal_pool = false;
+    if let Some(g) = Old::read(c, old, "goal_devices", &[])?.filter(|g| {
+        goal_pool = g.has(&["purpose", "reserved"]) && !g.has(GOAL_NEED);
+        !goal_pool
+    }) {
         let mut per: Vec<(i64, Vec<Value>)> = vec![];
         for r in &g.rows {
             let Some(goal) = g.id(r, &["goal_id", "goal"]) else { continue };
@@ -589,7 +603,7 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
     if n > 0 {
         rep.copied.push(("device_needs".into(), n));
     }
-    Ok(())
+    Ok(goal_pool)
 }
 
 /// A bit to link, by old id or name, to a task or a goal.

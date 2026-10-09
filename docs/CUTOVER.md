@@ -38,11 +38,15 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
 - carries each goal's setup (`task_setup`) and each task's PR plan (`ships_pr`, `no_pr`, the
   stacked-on task `pr_after`);
 - rebuilds each PR's host and link from its link, its repo, or the project's remote
-  (`[pr_body] remote`, GitHub or Bitbucket), so open PRs are watched again; a PR it can't place is
-  listed;
+  (`[pr_body] remote`, GitHub or Bitbucket), so open PRs are watched again (an old bare repo name
+  becomes the link's `owner/name`); a PR it can't place is listed;
 - maps the device pool (`devices`, `device_loans`, a task's `device_need`, `goal_devices`) and the
   bits (`bits`, a task's or goal's `bits`, link tables) into the board's own tables, and marks the
-  old Jira desk terminal (`sessions.jira_desk`) as the desk;
+  old Jira desk terminal (`sessions.jira_desk`) as the desk. An old need's `device:<id>` becomes
+  that one device and `tag:x` tag `x`; a task's `none` stays its own "needs none"; a loan a
+  finished task still held comes back. Old `goal_devices` rows with a purpose or a reserved flag
+  are a goal's own pool, which the board doesn't have: they're kept whole as
+  `import.goal_devices` rather than turned into needs;
 - maps the reviewer roster (`reviewers`: one row per person and project, duplicates folded into one
   with aliases, removed / pinned / automation / bot schedule kept, `source` = `import`), every
   review ask (`review_asks`, with its state, answer and stand-in; an ask still open on a finished
@@ -52,7 +56,7 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
   comes over closed, and is listed;
 - keeps every T, G and B number, and new ones carry on after the highest;
 - leaves out the old board's jobs (its pending work would run again), its alerts, and its other
-  running state (`bridge_*`, `dispatch_seen:*`, `usage_guard_handled:*`, `review_round:*`, …);
+  running state (`bridge_*`, `dispatch_seen:*`, `usage_guard_handled:*`, `review_round:*`, health readings and live session ids, …);
 - keeps any other old table this board has no table for whole in `settings` as `import.<table>`,
   and lists it;
 - counts the rows it actually wrote, and lists every old row it skipped (a clash, an unknown
