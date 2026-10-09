@@ -895,8 +895,9 @@ the handoff of the task that's lent it, as "Start it: …" and "Stop it when you
 when it has more than one), filled like step commands: the task's `{task}`, `{n}`, `{title}`, `{branch}`, `{base}`,
 `{repo}`, `{pr}`, `{wave}`, `{goal}`, `{jira}` (the task's ref when it has no ticket)… and the device's `{device}`
 (also `{name}`), `{kind}` and `{target}`. That device paragraph comes early in the handoff and is never cut to fit
-its length, and it ends with "Other devices in use, don't touch them: …" naming the devices other tasks have. A task
-card's `devices` has `lent` (names) and `lent_labels` (each `label`).
+its length (a device note in it is clipped to 300), and it ends with "Other devices in use, don't touch them: …":
+every device the task must leave alone, with its target and why (`dev-b emulator-5556 (with T5)`, `reserved for G3`,
+`kept for …` for one turned off), joined with "; " and clipped to 500. A task card's `devices` has `lent` (names) and `lent_labels` (each `label`).
 
 `device`: `{id, name, label, kind: str|null, kind_label: str, target: str|null, tags: [str], note, off: bool,
 focus: str|null, can_focus: bool, start_cmd: str|null, stop_cmd: str|null, held_by: {ref, title, goal}|null,
