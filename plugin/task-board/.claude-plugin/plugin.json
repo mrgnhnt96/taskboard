@@ -1,7 +1,7 @@
 {
   "name": "task-board",
   "displayName": "Task board",
-  "version": "0.1.0-beta.16",
+  "version": "0.1.0-beta.17",
   "description": "Keeps each Claude session in Midna in step with the local task board through hooks, and adds the tb command for reporting progress, findings, questions and results.",
   "author": { "name": "taskboard" },
   "keywords": ["task-board", "midna", "hooks"]
