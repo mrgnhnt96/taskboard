@@ -343,7 +343,9 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
     let v = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")]);
     let live = &v["live"];
     assert_eq!(live["base_moved"], true);
-    let f = &live["failures"][0];
+    let rebase: Vec<&str> = live["rebase"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+    assert_eq!(rebase[rebase.len() - 2..], ["git push --force-with-lease origin feat", "Don't push only to rebase."], "{rebase:?}");
+    let f =&live["failures"][0];
     assert_eq!(f["check"], "e2e");
     assert_eq!(f["base_fails"], true);
     assert_eq!(f["steps"], json!(["Run e2e"]));

@@ -493,7 +493,11 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         }
     };
     live["base_moved"] = json!(prflow::base_moved(&f, &rec));
-    live["rebase"] = json!(if prflow::base_moved(&f, &rec) { rebase_commands(&app.cfg.pr_body.remote, rec["base"].as_str().unwrap_or("")) } else { vec![] });
+    live["rebase"] = json!(if prflow::base_moved(&f, &rec) {
+        rebase_commands(&app.cfg.pr_body.remote, rec["base"].as_str().unwrap_or(""), rec["branch"].as_str().unwrap_or(""), &review_gate(app, &t))
+    } else {
+        vec![]
+    });
     live["builds_note"] = json!(builds_note);
     live["failures"] = json!(failures);
     live["base_error"] = json!(base_failing.err());
@@ -564,16 +568,24 @@ fn base_runs_failures(app: &App, rules: &crate::config::PrProject, pr: &PrRef, r
     out
 }
 
-/// What to run when the base moved under this push: rebase onto it, test, push.
-pub fn rebase_commands(remote: &str, base: &str) -> Vec<String> {
+/// What to run when the base moved under this push: rebase onto it, test, pass the owner's review
+/// gate (each `per_head` step, as `gate` says how) on the new commit, push the branch, and leave it
+/// alone if there's nothing else to push.
+pub fn rebase_commands(remote: &str, base: &str, branch: &str, gate: &[String]) -> Vec<String> {
     if base.is_empty() {
         return vec![];
     }
-    vec![
-        format!("git fetch {remote} {base} && git rebase {remote}/{base}"),
-        "run the tests again".into(),
-        "git push --force-with-lease".into(),
-    ]
+    let mut out = vec![format!("git fetch {remote} {base} && git rebase {remote}/{base}"), "run the tests again".into()];
+    out.extend(gate.iter().cloned());
+    out.push(if branch.is_empty() { "git push --force-with-lease".into() } else { format!("git push --force-with-lease {remote} {branch}") });
+    out.push("Don't push only to rebase.".into());
+    out
+}
+
+/// The owner's review gate for a push: how to pass each of the task's `per_head` steps.
+fn review_gate(app: &App, t: &Row) -> Vec<String> {
+    let tb = board::tb_cmd(app);
+    crate::steps::for_task(app, t).into_iter().filter(|s| s.per_head).map(|s| s.how(&tb)).collect()
 }
 
 #[cfg(test)]
@@ -601,8 +613,14 @@ mod tests {
 
     #[test]
     fn rebase_commands_name_the_remote_and_base() {
-        assert_eq!(rebase_commands("origin", "main")[0], "git fetch origin main && git rebase origin/main");
-        assert!(rebase_commands("origin", "").is_empty());
+        let gate = vec!["tb step run \"Owner review\"; fix what it reports and run it again".to_string()];
+        let cmds = rebase_commands("origin", "main", "feat/x", &gate);
+        assert_eq!(cmds[0], "git fetch origin main && git rebase origin/main");
+        assert_eq!(cmds[2], gate[0], "the owner's review gate runs before the push");
+        assert_eq!(cmds[3], "git push --force-with-lease origin feat/x");
+        assert_eq!(cmds[4], "Don't push only to rebase.");
+        assert_eq!(rebase_commands("origin", "main", "", &[])[2], "git push --force-with-lease");
+        assert!(rebase_commands("origin", "", "feat/x", &[]).is_empty());
     }
 
     #[test]
