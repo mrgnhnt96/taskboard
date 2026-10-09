@@ -64,14 +64,18 @@ const LEFT_SETTINGS: &[&str] = &[
 /// left so it wouldn't do a thing twice.
 const LEFT_SETTING_PREFIXES: &[&str] = &["bridge_", "bridge:", "dispatch_seen:", "usage_guard_handled:", "review_round:", "last_"];
 
-/// Whether an old setting is running state, not the owner's choice: a known key or prefix, or a
-/// per-thing mark (`<what>_seen:<id>`, `<what>_handled:<id>`, `<what>_round:<id>`).
+/// Whether an old setting is running state, not the owner's choice: a known key or prefix, a
+/// per-thing mark (`<what>_seen:<id>`, `<what>_handled:<id>`, `<what>_round:<id>`), a health
+/// reading (`review_log_health`) or a live session or process (`jira_desk_session`, `…_pid`).
 pub fn runtime_setting(key: &str) -> bool {
     let k = key.to_lowercase();
     if LEFT_SETTINGS.contains(&k.as_str()) || LEFT_SETTING_PREFIXES.iter().any(|p| k.starts_with(p)) {
         return true;
     }
     let head = k.split(':').next().unwrap_or("");
+    if ["_health", "_session", "_session_id", "_pid"].iter().any(|s| k.ends_with(s)) {
+        return true;
+    }
     k.contains(':') && ["_seen", "_handled", "_round", "_sent", "_done", "_at", "_lock", "_cursor"].iter().any(|s| head.ends_with(s))
 }
 
@@ -417,6 +421,28 @@ impl Old {
     }
 }
 
+/// One old need word as the board's: `device:<id>` is that one device (by its board name), `tag:x`
+/// (or `tag:x:2`) is tag `x`; anything else is already a tag or name with an optional count.
+fn old_need(w: &Value, device_of: &dyn Fn(&Value) -> Option<String>) -> Value {
+    let Some(s) = w.as_str().map(str::trim) else { return w.clone() };
+    let (head, rest) = match s.split_once(':') {
+        Some((h, r)) => (h.to_lowercase(), r),
+        None => return w.clone(),
+    };
+    match head.as_str() {
+        "device" | "dev" => {
+            let (id, n) = match rest.rsplit_once(':') {
+                Some((id, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => (id, n.parse().unwrap_or(1)),
+                _ => (rest, 1),
+            };
+            let name = device_of(&json!(id)).or_else(|| slug(id)).unwrap_or_else(|| id.to_string());
+            json!({"tag": name, "n": n})
+        }
+        "tag" | "kind" => json!(rest),
+        _ => w.clone(),
+    }
+}
+
 /// Device needs from old values (`android:2 ios`, a JSON list, `{"tag": …, "n": …}`), as the board
 /// stores them; None when they ask for nothing.
 fn needs_value(items: Vec<Value>) -> Result<Option<String>> {
@@ -493,13 +519,20 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 rep.skipped.push(format!("{} {}: its device or task isn't known", l.table, l.text(r, &["id"]).unwrap_or_default()));
                 continue;
             };
+            // A loan the old board never took back from a finished task is over.
+            let mut released = l.get(r, &["released_at", "returned_at", "ended_at", "released"]).clone();
+            if released.is_null() {
+                if let Some(t) = task_of(app, Some(task))?.filter(|t| t.s("status") == Some("done")) {
+                    released = [t.v("finished_at"), t.v("updated_at")].into_iter().find(|v| !v.is_null()).unwrap_or_else(|| json!(now_iso()));
+                }
+            }
             app.db.insert(
                 "device_loans",
                 vec![
                     ("device", json!(name)),
                     ("task_id", json!(task)),
                     ("at", l.get(r, &["at", "lent_at", "created_at", "started_at"]).clone()),
-                    ("released_at", l.get(r, &["released_at", "returned_at", "ended_at", "released"]).clone()),
+                    ("released_at", released),
                 ],
             )?;
             n += 1;
@@ -513,7 +546,7 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
         for r in &t.rows {
             let Some(id) = t.id(r, &["id"]) else { continue };
             let v = t.get(r, TASK_NEED);
-            match needs_value(words(v)) {
+            match needs_value(words(v).into_iter().map(|w| old_need(&w, &device_of)).collect()) {
                 Ok(Some(needs)) => {
                     set_needs(app, &rf("task", id), &needs)?;
                     n += 1;
@@ -755,18 +788,19 @@ pub fn pr_page(host: &str, repo: &str, num: i64) -> Option<String> {
 }
 
 /// The old board kept a PR as `pr_repo` and `pr_num`; the board watches it by `pr_host` and links it
-/// by `pr_url`. Both come from the link when there is one, else the repo, else the project's remote.
+/// by `pr_url`, and reads it through `pr_repo` as `owner/name`. All three come from the link when
+/// there is one, else the repo, else the project's remote; an old bare repo name (no owner) gives way.
 fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
     let rows = app.db.q(
         "SELECT id, project, repo_path, pr_host, pr_repo, pr_num, pr_url FROM tasks WHERE pr_num IS NOT NULL \
-         AND (COALESCE(pr_url, '') = '' OR COALESCE(pr_host, '') = '' OR COALESCE(pr_repo, '') = '')",
+         AND (COALESCE(pr_url, '') = '' OR COALESCE(pr_host, '') = '' OR instr(COALESCE(pr_repo, ''), '/') = 0)",
         vec![],
     )?;
     let mut cache = HashMap::new();
     let mut n = 0;
     for t in rows {
         let num = t.i("pr_num").unwrap_or(0);
-        let repo = t.s("pr_repo").filter(|r| !r.is_empty()).map(str::to_string);
+        let repo = t.s("pr_repo").filter(|r| r.contains('/')).map(str::to_string);
         let found = t.s("pr_url").and_then(find_pr).map(|l| (l.host, l.repo)).or_else(|| repo.as_deref().and_then(crate::prhost::repo_of_remote));
         let found = found.or_else(|| {
             let path = t.s("repo_path").filter(|p| !p.is_empty()).map(str::to_string).or_else(|| crate::projects::project_path(app, t.s("project")).ok().flatten())?;
@@ -781,7 +815,7 @@ fn pr_links(app: &App, rep: &mut Report) -> Result<()> {
         let host = t.s("pr_host").filter(|h| !h.is_empty()).map(str::to_string).unwrap_or(host);
         let url = t.s("pr_url").filter(|u| !u.is_empty()).map(str::to_string).or_else(|| pr_page(&host, &repo, num));
         app.db.x(
-            "UPDATE tasks SET pr_host = ?, pr_repo = COALESCE(NULLIF(pr_repo, ''), ?), pr_url = COALESCE(NULLIF(pr_url, ''), ?) WHERE id = ?",
+            "UPDATE tasks SET pr_host = ?, pr_repo = ?, pr_url = COALESCE(NULLIF(pr_url, ''), ?) WHERE id = ?",
             vec![json!(host), json!(repo), json!(url), json!(t.id())],
         )?;
         n += 1;

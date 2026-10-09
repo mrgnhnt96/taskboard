@@ -65,7 +65,7 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
           NULL, 'acme/web', 50, NULL, '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', '2026-09-03T09:00:00Z', '2026-09-04T09:00:00Z', 'Sent', NULL,
           'android:99', 0, 'Emails ship with the API change', 7, NULL);
         INSERT INTO tasks VALUES (14, 'Receipt API', 'Serve them', 'api', '{api}', 'needs', NULL, 3, NULL, NULL,
-          NULL, NULL, 9, 'checks', '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+          NULL, 'api', 9, 'checks', '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, 'device:pixel tag:usb', NULL, NULL, NULL, NULL);
         INSERT INTO tasks VALUES (15, 'Mirror', 'Elsewhere', 'mirror', '/nowhere', 'needs', NULL, 4, NULL, NULL,
           NULL, 'mirror', 3, NULL, '2026-09-02T09:00:00Z', '2026-09-04T09:00:00Z', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         INSERT INTO task_goals VALUES (7, 3, '2026-09-02T09:00:00Z');
@@ -84,6 +84,8 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         INSERT INTO settings VALUES ('usage_guard_handled:2026-09-03', '1');
         INSERT INTO settings VALUES ('review_round:T7', '2');
         INSERT INTO settings VALUES ('nudge_sent:T7', '1');
+        INSERT INTO settings VALUES ('jira_desk_session', 'midna-9');
+        INSERT INTO settings VALUES ('review_log_health', '{"ok":true}');
         INSERT INTO jobs VALUES (1, 'agent', 'pending');
         INSERT INTO reviewers VALUES (1, 'web', 'Ana', 'ana-gh', 'ana@acme.dev', NULL, 0, NULL, 1, 'high', NULL, NULL);
         INSERT INTO reviewers VALUES (2, 'web', 'Ana B', NULL, 'ana@acme.dev', '["anab"]', 0, NULL, 0, NULL, NULL, NULL);
@@ -107,6 +109,7 @@ fn old_board(path: &std::path::Path, web: &str, api: &str) -> Connection {
         INSERT INTO devices VALUES ('dup', 'pixel 9', 'android', NULL, NULL, 0);
         INSERT INTO device_loans VALUES (1, 'pixel', 7, '2026-09-03T09:00:00Z', NULL);
         INSERT INTO device_loans VALUES (2, 'gone-device', 7, '2026-09-03T09:00:00Z', NULL);
+        INSERT INTO device_loans VALUES (3, 'emu', 12, '2026-09-03T09:00:00Z', NULL);
         INSERT INTO goal_devices VALUES (3, 'android', 1);
         INSERT INTO goal_devices VALUES (3, 'iphone', 1);
         INSERT INTO bits VALUES (2, 'checkout.v2', 'backend', 'web', NULL, 3);
@@ -181,10 +184,17 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert!(rep.skipped.iter().any(|s| s.contains("devices pixel-9")), "two devices with one name: the second is listed");
     assert_eq!(taskboardd::devices::lent(&app, 7).unwrap(), vec!["pixel-9"]);
     assert!(rep.skipped.iter().any(|s| s.starts_with("device_loans 2")));
+    assert!(taskboardd::devices::lent(&app, 12).unwrap().is_empty(), "a finished task's loan comes back");
+    assert_eq!(app.db.val("SELECT released_at FROM device_loans WHERE task_id = 12", vec![]).unwrap(), json!("2026-09-04T09:00:00Z"));
     let needs = |owner: &str| app.db.val("SELECT needs FROM device_needs WHERE owner = ?", vec![json!(owner)]).unwrap();
     assert_eq!(serde_json::from_str::<Value>(needs("T7").as_str().unwrap()).unwrap(), json!([{"tag": "android", "n": 2}, {"tag": "ios", "n": 1}]));
     assert_eq!(serde_json::from_str::<Value>(needs("G3").as_str().unwrap()).unwrap(), json!([{"tag": "android", "n": 1}, {"tag": "iphone-15", "n": 1}]));
     assert!(needs("T12").is_null());
+    assert_eq!(
+        serde_json::from_str::<Value>(needs("T14").as_str().unwrap()).unwrap(),
+        json!([{"tag": "pixel-9", "n": 1}, {"tag": "usb", "n": 1}]),
+        "old device:<id> is that device, tag:x is tag x"
+    );
     assert!(rep.skipped.iter().any(|s| s.starts_with("T12 device need")), "a need the board can't take is listed");
 
     // Bits keep their ids and kinds; links come from the bits rows and the tasks' own lists.
@@ -209,7 +219,7 @@ fn an_old_board_comes_over_with_its_numbers() {
     assert_eq!(taskboardd::hours::get(&app).start, "07:00");
     assert_eq!(app.db.get_setting("project_pr_flow").unwrap().as_deref(), Some(r#"{"web":"stack"}"#));
     assert!(taskboardd::dispatch::alerts(&app).is_empty());
-    for k in ["bridge_pid", "bridge:last_sync", "dispatch_seen:T7", "usage_guard_handled:2026-09-03", "review_round:T7", "nudge_sent:T7"] {
+    for k in ["bridge_pid", "bridge:last_sync", "dispatch_seen:T7", "usage_guard_handled:2026-09-03", "review_round:T7", "nudge_sent:T7", "jira_desk_session", "review_log_health"] {
         assert!(app.db.get_setting(k).unwrap().is_none(), "{k} is the old board's running state");
         assert!(rep.left_settings.iter().any(|s| s == k));
     }
