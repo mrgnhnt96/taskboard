@@ -408,6 +408,15 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
             }
             return;
         }
+        // The PR bar's review step: the Overview tab, with the Steps row's findings open.
+        Go::Findings => {
+            crate::prefs::set(view::Fold::Findings.key(), json!("open"));
+            if let Some(Panel::Task { tab, .. }) = m.panel.as_mut() {
+                *tab = TaskTab::Overview;
+            }
+            cx.notify();
+            return;
+        }
         _ => {
             TRAIL.with(|t| *t.borrow_mut() = (String::new(), Vec::new()));
         }
@@ -434,7 +443,7 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
             m.go(Page::Board, cx);
             m.open_issue(r.clone(), cx);
         }
-        Go::Url(_) => {}
+        Go::Url(_) | Go::Findings => {}
     }
 }
 

@@ -410,7 +410,7 @@ fn a_failed_fetch_shows_all_of_gits_error() {
 fn the_review_step_is_on_the_card_before_the_pr_opens() {
     let b = new_board_with(REVIEW, |_| {});
     let id = b.task("Add login", json!({}));
-    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["wd"], Value::Null, "no round yet");
+    assert_eq!(board::task_card(&b.app, &b.row(id)).unwrap()["wd"], json!({"name": "Author review", "bar": "WD", "pending": true}), "no round yet: Not reviewed by WD yet");
     b.take(id);
     round(&b, &"c".repeat(40), false, json!({"verdict": "fail", "findings": [{"id": "F1", "title": "Typo"}]}), "");
     let card = board::task_card(&b.app, &b.row(id)).unwrap();

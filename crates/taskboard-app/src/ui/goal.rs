@@ -633,6 +633,64 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
     list.join(" · ").trim_end().to_string()
 }
 
+/// A piece of a goal row's meta line: plain text, or a ref the row links (`refLinks`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MetaBit {
+    Text(String),
+    /// T12 or G3: opens it.
+    Ref(String),
+    /// ABC-7: opens the ticket in Jira.
+    Ticket(String),
+}
+
+/// The meta line in pieces, its board refs and ticket keys apart, as the task panel links them.
+pub fn meta_bits(meta: &str) -> Vec<MetaBit> {
+    let is_ref = |w: &str| w.len() > 1 && (w.starts_with('T') || w.starts_with('G')) && w[1..].chars().all(|c| c.is_ascii_digit());
+    let is_ticket = |w: &str| {
+        w.split_once('-').is_some_and(|(k, n)| {
+            k.len() >= 2
+                && k.starts_with(|c: char| c.is_ascii_uppercase())
+                && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && !n.is_empty()
+                && n.chars().all(|c| c.is_ascii_digit())
+        })
+    };
+    let mut out: Vec<MetaBit> = vec![];
+    let mut text = String::new();
+    let mut word = String::new();
+    let take = |word: &mut String, text: &mut String, out: &mut Vec<MetaBit>| {
+        if word.is_empty() {
+            return;
+        }
+        let w = std::mem::take(word);
+        let bit = if is_ref(&w) {
+            MetaBit::Ref(w)
+        } else if is_ticket(&w) {
+            MetaBit::Ticket(w)
+        } else {
+            text.push_str(&w);
+            return;
+        };
+        if !text.is_empty() {
+            out.push(MetaBit::Text(std::mem::take(text)));
+        }
+        out.push(bit);
+    };
+    for ch in meta.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            word.push(ch);
+        } else {
+            take(&mut word, &mut text, &mut out);
+            text.push(ch);
+        }
+    }
+    take(&mut word, &mut text, &mut out);
+    if !text.is_empty() {
+        out.push(MetaBit::Text(text));
+    }
+    out
+}
+
 /// One row of `goalTasks`.
 pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskRow {
     let key = status_key(t);
@@ -2078,11 +2136,12 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
         _ => None,
     };
     // `.rows.trows`.
+    let site = m.state()["jira"]["site"].as_str().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
     let rows = |views: Vec<TaskRow>, cx: &mut Context<MainWindow>| {
         let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
         for (ix, row) in views.into_iter().enumerate() {
             let on = open_task.as_deref() == Some(row.r.as_str());
-            list = list.child(task_row_el(t, row, ix, on, cx));
+            list = list.child(task_row_el(t, row, ix, on, site.as_deref(), cx));
         }
         list
     };
@@ -2103,8 +2162,41 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
     out
 }
 
+/// A row's meta line, its task and goal refs opening them and its ticket keys opening Jira (`refLinks`).
+fn meta_line(t: &Theme, r: &str, meta: &str, site: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
+    let mut line = div().flex().items_center().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(12.5)).text_color(t.muted);
+    let hover = t.accent;
+    for (k, bit) in meta_bits(meta).into_iter().enumerate() {
+        let id = SharedString::from(format!("goal-meta-{r}-{k}"));
+        let link = |label: String| div().id(id.clone()).flex_none().cursor_pointer().text_color(t.accent_fg).hover(move |d| d.text_color(hover)).child(label);
+        line = match bit {
+            MetaBit::Ref(x) => {
+                let target = x.clone();
+                line.child(link(x.clone()).tooltip(kit::tip(format!("Open {x}"))).on_click(cx.listener(move |m, _, _, cx| {
+                    cx.stop_propagation();
+                    if target.starts_with('G') {
+                        m.go(Page::Goal(target.clone()), cx);
+                    } else {
+                        m.open_task(target.clone(), cx);
+                    }
+                })))
+            }
+            MetaBit::Ticket(x) if site.is_some() => {
+                let url = format!("https://{}/browse/{x}", site.unwrap_or_default());
+                line.child(link(x.clone()).tooltip(kit::tip(format!("Open {x} in Jira"))).on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    cx.open_url(&url);
+                }))
+            }
+            MetaBit::Ticket(x) | MetaBit::Text(x) => line.child(div().min_w_0().truncate().child(x.replace(' ', "\u{a0}"))),
+        };
+    }
+    line
+}
+
 /// One `.trow`: the step number (or "·" for a shared task), the status chip, Jira and PR marks, title and meta.
-fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let meta = (!row.meta.is_empty()).then(|| meta_line(t, &row.r, &row.meta, site, cx));
     let hover = accent_tint(t);
     let target = row.r.clone();
     let pr_color = match row.pr_phase.as_str() {
@@ -2190,7 +2282,7 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, cx: &mut Context<Ma
                         })
                         .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(row.title.clone())),
                 )
-                .when(!row.meta.is_empty(), |d| d.child(div().text_size(px(12.5)).text_color(t.muted).truncate().child(row.meta.clone()))),
+                .children(meta),
         )
         .when_some(row.tip.clone(), |d, tip| d.tooltip(kit::tip(tip)))
         .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx)))
@@ -3412,6 +3504,24 @@ mod pr_plan_tests {
     use super::*;
 
     #[::core::prelude::v1::test]
+    fn a_rows_meta_links_its_refs() {
+        let bits = meta_bits("Done · PR canceled: T3 fixed it in ABC-7 · also for G2");
+        assert_eq!(
+            bits,
+            vec![
+                MetaBit::Text("Done · PR canceled: ".into()),
+                MetaBit::Ref("T3".into()),
+                MetaBit::Text(" fixed it in ".into()),
+                MetaBit::Ticket("ABC-7".into()),
+                MetaBit::Text(" · also for ".into()),
+                MetaBit::Ref("G2".into()),
+            ]
+        );
+        assert_eq!(meta_bits("starts when a terminal is free"), vec![MetaBit::Text("starts when a terminal is free".into())]);
+        assert_eq!(meta_bits("Tests ran 2x"), vec![MetaBit::Text("Tests ran 2x".into())], "words aren't refs");
+    }
+
+    #[::core::prelude::v1::test]
     fn the_goal_counts_its_planned_prs() {
         let open = json!({"status": "done", "ships_pr": true, "pr": {"num": 3, "state": "OPEN"}});
         let todo = json!({"status": "queued", "ships_pr": true});
@@ -3425,7 +3535,7 @@ mod pr_plan_tests {
         assert!(row.pr_planned);
         assert!(task_meta(&canceled, 0, std::slice::from_ref(&canceled), &json!({})).contains("PR canceled: not needed"));
         // The wave rail has a chip for it.
-        assert!(waves::wtask(&canceled).facts.iter().any(|(c, x)| *c == "quiet" && x == "PR canceled"));
-        assert!(!waves::wtask(&open).facts.iter().any(|(_, x)| x == "PR canceled"));
+        assert!(waves::wtask(&canceled).facts.iter().any(|(c, x)| *c == "quiet" && x == "PR canceled: not needed"));
+        assert!(!waves::wtask(&open).facts.iter().any(|(_, x)| x.starts_with("PR canceled")));
     }
 }

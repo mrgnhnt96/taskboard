@@ -725,6 +725,18 @@ pub fn bar_result(app: &App, t: &Row) -> Result<Value> {
     Ok(results(app, t)?.into_iter().find(|r| r["bar"].is_string()).unwrap_or(Value::Null))
 }
 
+/// The PR bar's step on a task that ends in a PR, while it has none or it's still open: its latest round
+/// (`bar_result`), or `{name, bar, pending: true}` before the first ("Not reviewed by WD yet"); null on a
+/// task that doesn't end in a PR, once its PR is merged or closed, or when its project has no such step.
+pub fn bar_card(app: &App, t: &Row) -> Result<Value> {
+    let Some(st) = for_task(app, t).into_iter().find(|s| !s.bar.is_empty()) else { return Ok(Value::Null) };
+    if !crate::projects::task_ships_pr(app, t)? || has(t.s("no_pr")) || (t.i("pr_num").is_some() && !board::pr_still_open(t)) {
+        return Ok(Value::Null);
+    }
+    let r = bar_result(app, t)?;
+    Ok(if r.is_null() { json!({"name": st.name, "bar": st.bar, "pending": true}) } else { r })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

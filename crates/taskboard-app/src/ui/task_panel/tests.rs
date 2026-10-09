@@ -467,6 +467,27 @@ fn new_comments_link_to_the_first_unread_thread() {
 }
 
 #[::core::prelude::v1::test]
+fn the_review_step_says_before_its_first_round_and_opens_the_findings() {
+    let pending = json!({"name": "Author review", "bar": "WD", "pending": true});
+    let text = panel_text(with_bar(json!({"wd": pending}), Value::Null, "none"), json!({}));
+    assert!(text.contains("WD Not reviewed by WD yet"), "{text}");
+    let tree = tree(&json!({"task": with_bar(json!({"wd": {"bar": "WD", "headline": "2 open findings", "open": 2}}), Value::Null, "none"), "state": {}, "ui": {}}));
+    assert!(format!("{tree:?}").contains("Findings"), "the step links to its findings: {tree:?}");
+    // A task that doesn't end in a PR has none.
+    let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": false, "wd": pending});
+    assert!(!panel_text(task, json!({})).contains("WD"));
+}
+
+#[::core::prelude::v1::test]
+fn new_comments_show_while_changes_are_asked() {
+    let bar = json!({"new_comments": 2, "comments_url": "https://github.com/acme/webapp/pull/13#discussion_r1"});
+    let text = panel_text(with_bar(bar.clone(), json!({"phase": "fix"}), "changes"), json!({}));
+    assert!(text.contains("2 new comments ›"), "{text}");
+    let text = panel_text(with_bar(bar, json!({"phase": "review"}), "none"), json!({}));
+    assert!(text.contains("Review 2 new comments") && !text.contains("2 new comments ›"), "once, in the step: {text}");
+}
+
+#[::core::prelude::v1::test]
 fn the_review_step_shows_before_the_pr_opens() {
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
                       "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});

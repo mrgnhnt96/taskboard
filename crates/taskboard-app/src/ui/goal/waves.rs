@@ -141,8 +141,8 @@ pub(super) fn wtask(t: &Value) -> WTask {
         facts.push(("compact", c));
     }
     // Finished without the PR it was meant to open (`tb done --no-pr`).
-    if fmt::opt_s(t, "no_pr").is_some() && !has_pr(t) {
-        facts.push(("quiet", "PR canceled".into()));
+    if let Some(why) = fmt::opt_s(t, "no_pr").filter(|_| !has_pr(t)) {
+        facts.push(("quiet", format!("PR canceled: {why}")));
     }
     let term = (fmt::opt_s(t, "who").is_some() && fmt::opt_s(t, "session_id").is_some() && !matches!(s(t, "status"), "planned" | "queued"))
         .then(|| s(t, "session_id").to_string());
@@ -475,7 +475,7 @@ fn wchip(t: &Theme, cls: &str, text: &str) -> Div {
         "compact" => (t.accent_fg, t.accent_soft),
         _ => (t.text_2, t.panel_2),
     };
-    div().flex_none().px(px(8.)).py(px(2.)).rounded(px(6.)).text_size(px(12.5)).text_color(fg).bg(bg).whitespace_nowrap().child(text.to_string())
+    div().flex_none().px(px(8.)).py(px(2.)).rounded(px(6.)).text_size(px(12.5)).text_color(fg).bg(bg).max_w_full().truncate().child(text.to_string())
 }
 
 /// The `term` fact: Midna's mark and the terminal's name; it shows the terminal's tab in Midna.

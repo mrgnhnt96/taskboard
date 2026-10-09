@@ -84,7 +84,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "stacks_on": stack::card(app, t)?,
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
         "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
-        "wd": crate::steps::bar_result(app, t)?,
+        "wd": crate::steps::bar_card(app, t)?,
         "reviewer_rows": rows,
     }))
 }

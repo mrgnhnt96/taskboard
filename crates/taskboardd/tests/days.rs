@@ -146,7 +146,7 @@ fn human_estimate_from_tb_done() {
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
     app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
-    let id = post(&app, "/tasks", json!({"title": "Add login", "detail": "Do it.", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let id = post(&app, "/tasks", json!({"title": "Add login", "detail": "Do it.", "project": "webapp", "ships_pr": false})).unwrap()["id"].as_i64().unwrap();
     runner::start_queued(&app).unwrap();
     let job = app.db.q("SELECT * FROM jobs WHERE kind = 'agent'", p![]).unwrap().remove(0);
     let prompt = board::job_args(&job).st("prompt");

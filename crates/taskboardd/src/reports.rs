@@ -1070,11 +1070,12 @@ fn on_done(r: &mut Report) -> Result<Value> {
 }
 
 /// How long `tb done --no-pr`'s reason may be: one short line.
-pub const NO_PR_MAX: usize = 200;
+pub const NO_PR_MAX: usize = 100;
 
 /// What `tb done` refuses before anything opens or finishes: a blank or long `--no-pr`; a task that ends
-/// in a PR, has a remote and has none, finishing without `--pr-body` or `--no-pr`; and a task with a
-/// design attached finishing with no evidence and no `--no-evidence`.
+/// in a PR and has none, finishing without `--pr-body` or `--no-pr` (unless its repo has no remote at all; a
+/// remote the board can't read still counts); and a task with a design attached finishing with no evidence
+/// and no `--no-evidence`.
 fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     let app = r.app;
     let Some(t) = t.filter(|t| t.s("status") != Some("done")) else { return Ok(()) };
@@ -1092,7 +1093,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     let no_pr = !r.b("no_pr").is_empty();
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
     let has_pr = find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || has(t.s("pr_url")) || !r.b("pr_body").is_empty();
-    if !no_pr && !has_pr && projects::task_ships_pr(app, t)? && projects::has_remote(app, &t.st("project"))? == Some(true) {
+    if !no_pr && !has_pr && projects::task_ships_pr(app, t)? && projects::has_remote(app, &t.st("project"))? != Some(false) {
         return err(
             409,
             format!(

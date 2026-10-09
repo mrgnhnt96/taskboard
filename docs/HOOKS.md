@@ -276,7 +276,9 @@ bar = "WD"            # its name in the app's PR bar
   blocks. Everything is optional.
 - **On the task.** The app shows each step's latest headline ("2 open findings", "No findings", "Answered, not
   approved", "Couldn't review this round") with its findings in a fold, open ones first, then by severity, and
-  "Moved since" once the branch has a newer commit. The `bar` step is the PR bar's first step.
+  "Moved since" once the branch has a newer commit. The `bar` step is the PR bar's first step on a task that ends in a PR
+  (until the PR is merged or closed): "Not reviewed by WD yet" before its first round, then its headline, which opens
+  the findings. "N new comments" shows in every review state (beside the reviewers while changes are asked).
 - **The agent's commands.** `tb steps` lists the steps and the latest findings; `tb step triage "Author-side review"
   F2 --state fixed --commit <sha> --note "…"` (or `answered`, `dismissed`, `open`) answers one; `tb step again
   "Author-side review"` runs another round. A round sooner than `min_gap_mins` after the last is refused with when

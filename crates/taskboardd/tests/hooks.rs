@@ -126,7 +126,7 @@ fn a_hook_can_stop_a_task_from_finishing() {
         "task.finishing": cmd("RECORD; echo 'the tests are red' >&2; exit 2"),
         "task.done": cmd("RECORD"),
     }}));
-    let id = b.new_task(json!({}));
+    let id = b.new_task(json!({"ships_pr": false}));
     b.report("tb.take", json!({"task": "T1"})).unwrap();
     let (code, why) = b.report("tb.done", json!({"summary": "All good"})).unwrap_err();
     assert_eq!(code, 409);
@@ -225,7 +225,7 @@ fn a_hook_can_skip_review_and_comments() {
 #[test]
 fn a_skip_a_step_cant_take_is_noted_and_ignored() {
     let b = board(json!({"hooks": {"task.finishing": cmd(r#"echo '{"decision": "skip", "reason": "why not"}'"#)}}));
-    let id = b.new_task(json!({}));
+    let id = b.new_task(json!({"ships_pr": false}));
     b.report("tb.take", json!({"task": "T1"})).unwrap();
     b.report("tb.done", json!({"summary": "Done"})).unwrap();
     assert_eq!(b.task(id).s("status"), Some("done"));
