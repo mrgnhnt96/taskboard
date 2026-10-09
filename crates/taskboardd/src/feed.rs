@@ -14,8 +14,10 @@
 //!   went bad (1, 5 and 15 minutes), and raises the `pr-feed` alert when a restart fails or it's
 //!   still bad five minutes after the last one; the alert clears once the feed is healthy again;
 //! - [`feed_healthy`] answers false, and [`holding`] tells the reviewer ask, nudge and swap logic to
-//!   wait (only the first ask still goes out while it's outside the work hours, when a quiet feed is
-//!   expected);
+//!   wait; a stuck feed holds even a PR's first ask, at any hour (only a feed that's merely quiet
+//!   outside the work hours, when that's expected, lets the first ask through);
+//! - once it's healthy again, [`holding`] keeps holding for `settle_secs` (5 minutes) while the
+//!   events it missed catch up;
 //! - the PR poll (`[intervals] prs`) runs as a fallback; while the feed is healthy it only runs with
 //!   `poll_while_healthy`.
 //!
@@ -25,7 +27,8 @@
 //! # State
 //!
 //! The setting `pr_feed` keeps `{since, last_event_at, last_event, last_heartbeat_at, heartbeats,
-//! unhealthy_since, problem, restarts: [{at, ok, error?}], alerted_at}`.
+//! unhealthy_since, problem, restarts: [{at, ok, error?}], alerted_at, healthy_at}` (`healthy_at`: when it
+//! last came back, which starts the settle window).
 
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -58,6 +61,9 @@ pub struct FeedConfig {
     pub restart_mins: Vec<f64>,
     /// Keep polling every PR (`[intervals] prs`) while the feed is healthy too.
     pub poll_while_healthy: bool,
+    /// After the feed comes back, reviewer asks, nudges and swaps wait this many more seconds while the
+    /// events it missed catch up.
+    pub settle_secs: f64,
 }
 
 impl Default for FeedConfig {
@@ -70,6 +76,7 @@ impl Default for FeedConfig {
             silent_secs: 3600.0,
             restart_mins: vec![1.0, 5.0, 15.0],
             poll_while_healthy: false,
+            settle_secs: 300.0,
         }
     }
 }
@@ -129,14 +136,34 @@ pub fn feed_healthy(app: &App) -> bool {
     problem(app).is_none()
 }
 
-/// Why the reviewer ask, nudge or swap logic should wait now, if it should. `first_ask` is the first
-/// request for review on a PR: it still goes out while the feed is unhealthy outside the work hours.
-pub fn holding(app: &App, first_ask: bool) -> Option<String> {
-    let (_, why) = problem(app)?;
-    if first_ask && !hours::is_open(app) {
+/// Seconds left of the settle window after the feed came back (`settle_secs`), if it's in one. A feed
+/// that's healthy again before [`check`] has noticed is in it too.
+pub fn settling(app: &App) -> Option<f64> {
+    let c = &app.cfg.feed;
+    if !c.on || c.settle_secs <= 0.0 || problem(app).is_some() {
         return None;
     }
-    Some(format!("Holding reviewer asks, nudges and swaps: {why}."))
+    let st = state(app);
+    if st.contains_key("unhealthy_since") {
+        return Some(c.settle_secs);
+    }
+    let left = c.settle_secs - (now_ts() - ts(&st, "healthy_at")?);
+    (left > 0.0).then_some(left)
+}
+
+/// Why the reviewer ask, nudge or swap logic should wait now, if it should: the feed is unhealthy, or
+/// it came back less than `settle_secs` ago. `first_ask` is the first request for review on a PR: it
+/// still goes out when the feed is merely quiet outside the work hours, but not when it's stuck (down
+/// or stale) or settling.
+pub fn holding(app: &App, first_ask: bool) -> Option<String> {
+    if let Some((kind, why)) = problem(app) {
+        if first_ask && kind == "silent" && !hours::is_open(app) {
+            return None;
+        }
+        return Some(format!("Holding reviewer asks, nudges and swaps: {why}."));
+    }
+    let left = settling(app)?;
+    Some(format!("Holding reviewer asks, nudges and swaps: the PR feed just came back, so its missed events catch up first ({} left).", span(left)))
 }
 
 /// Whether the PR poll runs this round: always without the feed, else while it's unhealthy (or with
@@ -161,6 +188,7 @@ pub fn health(app: &App) -> Value {
         "restarts": st.get("restarts").cloned().unwrap_or(json!([])),
         "listener": if app.cfg.feed.listener.trim().is_empty() { Value::Null } else { json!(listener_running()) },
         "holding": holding(app, false),
+        "settling_secs": settling(app).map(|s| s.round()),
     })
 }
 
@@ -255,6 +283,7 @@ pub fn check(app: &App) -> Result<()> {
             for k in ["unhealthy_since", "problem", "restarts", "alerted_at"] {
                 st.remove(k);
             }
+            st.insert("healthy_at".into(), json!(now_iso()));
             save(app, &st)?;
             app.info("feed: the PR feed is healthy again");
             dispatch::clear_alert_key(app, ALERT_KEY)?;

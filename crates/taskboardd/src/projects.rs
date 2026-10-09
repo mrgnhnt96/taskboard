@@ -10,10 +10,10 @@ use crate::util::*;
 
 const REMOTE_TTL: Duration = Duration::from_secs(600);
 const PR_FLOW_SETTING: &str = "project_pr_flow";
-/// `tb project set --approvals / --expected-check / --expected-wait`: name → the rules set on the board.
+/// `tb project set --approvals / --expected-check / --expected-wait / --ask-stage`: name → the rules set on the board.
 const PR_RULES_SETTING: &str = "project_pr_rules";
 /// The PR rules `tb project set` can change, over `[pr.projects.<name>]`.
-pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins"];
+pub const PR_RULE_KEYS: &[&str] = &["approvals", "expected", "expected_wait_mins", "ask_stage"];
 pub const PR_FLOWS: &[&str] = &["auto", "on", "off"];
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {
@@ -116,6 +116,9 @@ pub fn pr_rules(app: &App, name: Option<&str>) -> crate::config::PrProject {
     if let Some(m) = set.get("expected_wait_mins").and_then(|v| v.as_f64()) {
         r.expected_wait_mins = Some(m);
     }
+    if let Some(b) = set.get("ask_stage").and_then(|v| v.as_bool()) {
+        r.ask_stage = Some(b);
+    }
     r
 }
 
@@ -150,6 +153,14 @@ pub fn set_pr_rules(app: &App, name: &str, body: &Value) -> Result<bool> {
                 }
                 json!(names)
             }
+            "ask_stage" | "swap" => match v.as_bool().or_else(|| match v.as_str() {
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                _ => None,
+            }) {
+                Some(b) => json!(b),
+                None => return err(400, format!("{key} is on or off (true or false).")),
+            },
             _ => match v.as_f64() {
                 Some(m) if m > 0.0 && m <= 24.0 * 60.0 => json!(m),
                 _ => return err(400, "expected_wait_mins is minutes, more than 0 and at most a day (1440)."),
@@ -239,6 +250,7 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
         "pr_rules".into(),
         json!({"approvals": approvals, "expected": r.expected,
                "expected_wait_mins": r.expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS),
+               "ask_stage": crate::reviewers::ask_stage_on(app, Some(name)),
                "set": pr_rules_set(app, name)?}),
     );
     Ok(d)

@@ -160,6 +160,12 @@ impl Default for ReviewersConfig {
     }
 }
 
+/// Whether a project's PRs have the `ask` stage: its own switch (`tb project set --ask-stage`,
+/// `[pr.projects.<name>] ask_stage`), else `[reviewers] ask_stage`.
+pub fn ask_stage_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).ask_stage.unwrap_or(app.cfg.reviewers.ask_stage)
+}
+
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
 pub const LEVELS: [(&str, f64); 4] = [("off", 0.25), ("low", 0.5), ("normal", 1.0), ("high", 2.0)];
 

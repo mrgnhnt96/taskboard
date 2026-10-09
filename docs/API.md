@@ -595,10 +595,12 @@ board reads that one PR again and steps it (`feed.rs` documents the health rules
 |---|---|---|
 | `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?}`. |
 | `POST /prs/heartbeat` | `{}` | `tb feed heartbeat`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. **Response:** the health. |
-| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null}`; also `state.pr_feed`. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null}` (`settling_secs`: what's left of the settle window); also `state.pr_feed`. |
 
 While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
-reviewer asks, nudges and swaps (the first ask on a PR still goes out outside the work hours); the PR poll runs (while
+reviewer asks, nudges and swaps. A stuck feed (down or stale) holds even a PR's first ask, at any hour; only a feed
+that's merely quiet outside the work hours lets the first ask through. Once the feed is healthy again, `holding` keeps
+holding for `settle_secs` (300) while the events it missed catch up (`pr_feed.healthy_at`). The PR poll runs (while
 healthy it rests unless `poll_while_healthy`); the board restarts the feed at `restart_mins` (1, 5, 15) after it went
 bad with `restart_cmd` (or by restarting its own `listener`), and raises the `pr-feed` alert if a restart fails or it's
 still bad 5 minutes after the last one. The alert clears when the feed is healthy again.
@@ -658,8 +660,8 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
-| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, set: {…what tb project set changed}}` (`tb project show`). |
-| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, set: {…what tb project set changed}}` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
 
 ### Goals
 | Path | Body | Notes |
@@ -934,14 +936,19 @@ reviewer is asked (`fill_in`, once per ask). With `[reviewers] swap = true`, an 
 `swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
 by the picker's choice (`swap`): only inside work hours and never while `feed::holding` (the event feed's
 health gate) says to hold; the stand-in rules wait for it too, and so does the board's own ask at the `ask` stage,
-except a PR's first ask outside work hours. Each change is logged on the task and the PR is read again.
+except a PR's first ask while the feed is merely quiet outside work hours. Each change is logged on the task and the
+PR is read again.
 
-**The `ask` stage** (`[reviewers] ask_stage`, off by default). Once the owner has marked a green PR reviewed
+**The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
+`tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old
+board used the stage). Once the owner has marked a green PR reviewed
 (`POST /tasks/:id/pr/reviewed`, "I reviewed it"), its phase is `ask` until reviewers are asked (`pr_flow.asked`).
 In work hours, with `pr.wake` on, the agent is brought back to run `tb pr reviewers` (which finishes the visit);
 otherwise the board picks and asks them itself through the host (asks with `why: "stage"`, by "Task board"),
 retrying after each of `ask_retry_waits` seconds (`pr_flow.ask_tries`, `ask_retry_at`) and alerting once they're
-spent. Then the phase moves on to `review`.
+spent. Then the phase moves on to `review`. While the feed holds (`feed::holding`), the agent isn't brought back to
+ask and the board doesn't ask; the sweep brings the agent back once the feed has settled. `tb pr reviewers` (besides
+`--dry-run`) answers 409 while the feed holds, and, with the stage on, before the owner has reviewed the PR.
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 

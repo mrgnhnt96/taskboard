@@ -945,7 +945,7 @@ enum CiTokenCmd {
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
-    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks)
+    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks, the ask stage)
     Set {
         name: String,
         #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
@@ -959,6 +959,9 @@ enum ProjectCmd {
         /// Minutes to wait for the expected checks before going on without them (default: config.toml's)
         #[arg(long = "expected-wait")]
         expected_wait: Option<String>,
+        /// After your review, its PRs wait in the ask stage until reviewers are asked (default: config.toml's)
+        #[arg(long = "ask-stage", value_parser = ["on", "off", "default"])]
+        ask_stage: Option<String>,
     },
 }
 
@@ -3255,8 +3258,12 @@ fn project_line(p: &Value) -> String {
         ),
         None => String::new(),
     };
+    let switches: String = [("ask_stage", "ask stage")]
+        .iter()
+        .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
+        .collect();
     format!(
-        "{} · PR flow {} · {} · {remote}{approvals}{expected}",
+        "{} · PR flow {} · {} · {remote}{approvals}{expected}{switches}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -3286,6 +3293,17 @@ fn project_rules(approvals: Option<String>, expected: Vec<String>, wait: Option<
     Ok(b)
 }
 
+/// An on/off PR rule from `tb project set` (`default` sends null: back to config.toml's).
+fn project_switch(b: &mut serde_json::Map<String, Value>, key: &str, v: Option<String>) {
+    if let Some(v) = v {
+        b.insert(key.into(), match v.as_str() {
+            "on" => json!(true),
+            "off" => json!(false),
+            _ => Value::Null,
+        });
+    }
+}
+
 fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
     match action {
         ProjectCmd::Show { name } => {
@@ -3303,13 +3321,14 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
+            project_switch(&mut body, "ask_stage", ask_stage);
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }
             if body.is_empty() {
-                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off, or --approvals 2"));
+                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off, --approvals 2 or --ask-stage on"));
             }
             let v = c.call("POST", &format!("/projects/{name}"), Some(Value::Object(body)))?;
             out(&format!("Changed {}.", project_line(&v)));

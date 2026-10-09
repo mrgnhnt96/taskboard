@@ -319,3 +319,27 @@ fn a_file_that_isnt_a_board_is_refused() {
     assert_eq!(import::import(&app, &p).unwrap_err().status, 400);
     assert_eq!(import::import(&app, &dir.path().join("missing.db")).unwrap_err().status, 404);
 }
+
+#[test]
+fn the_review_switches_the_old_board_used_come_on() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let old_path = old_dir.path().join("tasks.db");
+    Connection::open(&old_path)
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, project TEXT, status TEXT, pr_repo TEXT, pr_num INT, pr_phase TEXT, pr_flow TEXT);
+             CREATE TABLE review_asks(id INTEGER PRIMARY KEY, task_id INT, reviewer TEXT, status TEXT, reason TEXT, at TEXT);
+             INSERT INTO tasks VALUES (1, 'Ask stage', 'web', 'done', 'acme/web', 4, 'ask', NULL);
+             INSERT INTO tasks VALUES (2, 'Asked', 'api', 'done', 'acme/api', 5, 'review', '{"asked": {"at": "2026-09-01T10:00:00Z"}}');
+             INSERT INTO tasks VALUES (3, 'Plain', 'docs', 'done', 'acme/docs', 6, 'review', 'not json');
+             INSERT INTO review_asks VALUES (1, 3, 'ana', 'pending', 'auto', '2026-09-01T10:00:00Z');"#,
+        )
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    let rep = import::import(&app, &old_path).unwrap();
+    let on = |p: &str| taskboardd::reviewers::ask_stage_on(&app, Some(p));
+    assert!(on("web") && on("api"));
+    assert!(!on("docs"), "nothing shows the stage there");
+    assert!(rep.lines().iter().any(|l| l.contains("turned on") && l.contains("web: ask stage")), "{:?}", rep.lines());
+}

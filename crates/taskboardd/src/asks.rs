@@ -135,6 +135,26 @@ pub fn wanted(app: &App, t: &Row, rec: &Value, count: Option<usize>) -> usize {
     n.saturating_sub(on_pr(&flow(t), rec).len())
 }
 
+/// Why asking this PR's reviewers waits for the PR feed (`feed::holding`), if it does: the PR's
+/// first ask goes out when the feed is merely quiet outside the work hours, later ones don't.
+pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
+    let first = app.db.count("SELECT COUNT(*) FROM review_asks WHERE task_id = ?", crate::p![t.id()])? == 0;
+    Ok(crate::feed::holding(app, first))
+}
+
+/// Whether this PR's reviewers may be asked now (`tb pr reviewers`, besides `--dry-run`): not while
+/// the PR feed is holding (`feed::holding`; a PR's first ask goes out when the feed is merely quiet
+/// outside the work hours), and with the `ask` stage on, not before the owner has reviewed it.
+fn may_ask_now(app: &App, t: &Row) -> Result<()> {
+    if let Some(why) = held(app, t)? {
+        return err(409, format!("{why} Try again once tb feed says it's healthy."));
+    }
+    if reviewers::ask_stage_on(app, t.s("project")) && !flow(t).contains_key("reviewed") && t.s("status") == Some("done") {
+        return err(409, format!("{} hasn't reviewed PR #{} yet: reviewers are asked after that (the ask stage).", app.cfg.owner, t.i0("pr_num")));
+    }
+    Ok(())
+}
+
 /// `tb pr reviewers [--ask WHO…] [--replace X [--with Y]] [--drop X] [--count N] [--dry-run]`. With
 /// none of `ask`, `replace` and `drop`, the picker chooses (`count`, else enough for `[reviewers]
 /// count`).
@@ -160,6 +180,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         return Ok(json!({"task": rf("task", id), "dry_run": true,
                          "picks": picks.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>()}));
     }
+    may_ask_now(app, &t)?;
     let h = host(app, &pr)?;
     let mut asked: Vec<(Who, String)> = vec![];
     let mut dropped: Vec<Who> = vec![];
@@ -267,9 +288,6 @@ fn agent_asks(app: &App, t: &Row) -> Result<bool> {
 /// The `ask` stage without an agent: outside work hours (or with `pr.wake` off) the board picks
 /// and asks the reviewers itself, retrying after each of `ask_retry_waits` when it can't.
 pub fn stage(app: &App) -> Result<()> {
-    if !app.cfg.reviewers.ask_stage {
-        return Ok(());
-    }
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_phase = 'ask' AND pr_num IS NOT NULL", vec![])? {
         if let Err(e) = stage_one(app, &t) {
             app.info(format!("reviewers: asking for {}: {}", rf("task", t.id()), e.message));
@@ -279,15 +297,21 @@ pub fn stage(app: &App) -> Result<()> {
 }
 
 fn stage_one(app: &App, t: &Row) -> Result<bool> {
-    if agent_asks(app, t)? {
+    if prflow::waking(app, t)? {
         return Ok(false);
     }
-    let first = app.db.count("SELECT COUNT(*) FROM review_asks WHERE task_id = ?", crate::p![t.id()])? == 0;
-    if let Some(why) = crate::feed::holding(app, first) {
+    if let Some(why) = held(app, t)? {
         app.info(format!("reviewers: not asking for {} yet: {why}", rf("task", t.id())));
         return Ok(false);
     }
     let f = flow(t);
+    if agent_asks(app, t)? {
+        // The agent asks: bring it back now if the feed held its wake before.
+        if let Some(rec) = f.get("rec").filter(|r| r.is_object()) {
+            app.db.tx(|| prflow::step(app, t, rec).map(|_| ()))?;
+        }
+        return Ok(false);
+    }
     if f.s("ask_retry_at").is_some_and(|r| r > now_iso().as_str()) {
         return Ok(false);
     }
@@ -353,10 +377,10 @@ fn stage_one(app: &App, t: &Row) -> Result<bool> {
 /// "I reviewed it": with the `ask` stage on, the PR moves to it now, and the board asks at once
 /// when no agent will.
 pub fn after_reviewed(app: &App, id: i64) -> Result<()> {
-    if !app.cfg.reviewers.ask_stage {
+    let t = board::get_task(app, id)?;
+    if !reviewers::ask_stage_on(app, t.s("project")) {
         return Ok(());
     }
-    let t = board::get_task(app, id)?;
     let Some(rec) = flow(&t).get("rec").filter(|r| r.is_object()).cloned() else { return Ok(()) };
     app.db.tx(|| prflow::step(app, &t, &rec).map(|_| ()))?;
     let t = board::get_task(app, id)?;

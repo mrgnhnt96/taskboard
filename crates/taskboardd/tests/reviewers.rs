@@ -593,3 +593,93 @@ fn work_minutes_count_only_the_work_hours() {
     b.post("/hours", json!({"on": true, "start": "09:00", "end": "17:00", "days": "all"}));
     assert_eq!(taskboardd::picker::work_minutes(&b.app, a, z), 120.0);
 }
+
+fn ago(secs: f64) -> String {
+    taskboardd::util::iso(taskboardd::util::now_ts() - secs)
+}
+
+/// The feed's state as `feed.rs` keeps it (times in seconds before now).
+fn feed_state(b: &Board, st: Value) {
+    b.app.db.set_setting("pr_feed", Some(&st.to_string())).unwrap();
+}
+
+#[test]
+fn tb_pr_reviewers_waits_for_a_held_feed_and_its_settle_window() {
+    let b = board_with(|c| c.feed.on = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    // Stuck: no heartbeat for over 3 minutes.
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("Holding reviewer asks") && e.contains("heartbeat"), "{e}");
+    assert!(b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true})).is_ok(), "a dry run asks nobody");
+
+    // Back, but only just: the missed events catch up first.
+    taskboardd::feed::check(&b.app).unwrap();
+    b.post("/prs/heartbeat", json!({}));
+    taskboardd::feed::check(&b.app).unwrap();
+    assert!(taskboardd::feed::feed_healthy(&b.app));
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("just came back"), "{e}");
+    assert!(b.get("/prs/feed", &[])["settling_secs"].as_f64().unwrap() > 290.0);
+
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(1.0), "healthy_at": ago(301.0)}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")]);
+}
+
+#[test]
+fn a_stuck_feed_holds_even_the_first_ask_outside_work_hours() {
+    let b = board_with(|c| c.feed.on = true);
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
+    closed_hours(&b);
+    assert!(taskboardd::feed::holding(&b.app, true).is_some(), "stuck is down or stale, not a quiet night");
+    feed_state(&b, json!({"since": ago(9000.0)}));
+    assert_eq!(taskboardd::feed::holding(&b.app, true), None, "merely quiet outside the hours: the first ask goes");
+}
+
+#[test]
+fn with_the_ask_stage_reviewers_wait_for_the_owner_s_review() {
+    let b = board_with(|_| {});
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    // The project's own switch, as tb project set --ask-stage on sets it.
+    let v = b.post("/projects/webapp", json!({"ask_stage": true}));
+    assert_eq!(v["pr_rules"]["ask_stage"], true);
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
+    assert!(e.contains("hasn't reviewed PR #9 yet"), "{e}");
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    assert_eq!(b.phase(id), "ask", "the project's switch turns the stage on");
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert_eq!(b.phase(id), "review");
+    let v = b.post("/projects/webapp", json!({"ask_stage": "off"}));
+    assert_eq!(v["pr_rules"]["ask_stage"], false);
+    assert!(b.try_post("/projects/webapp", json!({"ask_stage": "maybe"})).unwrap_err().contains("on or off"));
+}
+
+#[test]
+fn the_agent_isn_t_woken_to_ask_while_the_feed_holds_and_is_once_it_s_back() {
+    let b = board_with(|c| {
+        c.reviewers.ask_stage = true;
+        c.feed.on = true;
+    });
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    assert_eq!(b.phase(id), "ask");
+    assert!(pr_jobs(&b, id).is_empty(), "held: no wake");
+    taskboardd::runner::reviews(&b.app).unwrap();
+    assert!(pr_jobs(&b, id).is_empty());
+
+    feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(1.0), "healthy_at": ago(400.0)}));
+    taskboardd::runner::reviews(&b.app).unwrap();
+    let jobs = pr_jobs(&b, id);
+    assert_eq!(jobs.len(), 1, "the sweep brings it back once the feed has settled");
+    assert!(jobs[0].contains("pr reviewers T"), "{}", jobs[0]);
+}

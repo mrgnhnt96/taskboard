@@ -94,6 +94,7 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # expected_wait_mins = 90             # how long to wait for them
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
+# ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
 # relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
@@ -109,6 +110,7 @@ stuck_secs = 180.0                   # no heartbeat (POST /prs/heartbeat) this l
 silent_secs = 3600.0                 # no event or heartbeat this long inside the work hours
 restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the board restarts it
 poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
+settle_secs = 300.0                  # after it comes back, asks, nudges and swaps wait this long while missed events catch up
 
 # PR builds stopped (`tb pr-builds stop`, on your word): every build of your PRs and your pushes is
 # cancelled when the board hears of it (a build event on the feed, or a running check on a poll), and
