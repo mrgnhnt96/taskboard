@@ -934,20 +934,21 @@ Every POST takes `project` (or `cwd`, the folder it's run in) and `reviewer` (an
 | `POST /reviewers/pin` | `{on?: bool}` | First in line for the main-contributor pick (`tb reviewers pin`/`unpin`). |
 | `POST /reviewers/auto` | `{level: "off"\|"low"\|"normal"\|"high"\|number}` | How automated their reviewing is (0.25, 0.5, 1, 2, or 0.1–10): a weight on their turn. |
 | `POST /reviewers/bot` | `{every_h, mark}` or `{off: true}` | Their review bot's schedule and the text its comments carry. |
-| `POST /reviewers/alias` | `{aliases: []}` | More names, emails or host ids of theirs (409 for one that names someone else). For someone without a host account, a host id (one word, `@login` or `{uuid}`) becomes it. |
+| `POST /reviewers/alias` | `{aliases?: [], user?}` | More names, emails or host ids of theirs (409 for one that names someone else). For someone without a host account, an alias that's clearly one (`@login` or `{uuid}`) becomes it; a bare word (a nickname or a login) stays a name. `user` (`tb reviewers alias <who> --user <login>`) sets their host account outright, and one they had stays as an alias. |
 | `POST /reviewers/merge` | `{other}` | Fold `other` into them: names, accounts, asks and bot runs. |
 | `POST /reviewers/sync` | | `tb reviewers sync`: commit authors of the last `history_months` with at least `min_commits` commits (added up per person: emails of one reviewer, or one author name with one work email plus noreply ones) join the roster now (a GitHub noreply email gives their login), and the host's members (`PrHost::members`) give reviewers without an account theirs, matched by name. The picker does this itself at most every `sync_every_hours`. **Response:** `{project, joined, matched, reviewers: [reviewer]}`. |
 
-**The picker** (`picker.rs`, `[reviewers]` in config.toml) asks one main contributor (pinned reviewers first, then
-the `main_contributors` people with the most commits to the files the PR changes; skipped when one of them is
-already on the PR), then the rest in turn, `count` in all. It never picks
+**The picker** (`picker.rs`, `[reviewers]` in config.toml) asks one main contributor (whoever's turn comes first of
+`main_contributors` people: pinned reviewers first, then those with the most commits to the files the PR changes;
+skipped when one of them is already on the PR), then the rest in turn, `count` in all. It never picks
 the PR's author (nor `[reviewers] me`, nor the repo's `git config user.email`), anyone removed, anyone without a
 host account, or anyone already on the PR or swapped off it. Turns: a reviewer is due at their last ask + (1 + open
 asks) × `turn_gap_hours` / weight, earliest first (ties: fewest asks, then pinned, then most commits to the changed
 files, then to the project); weight = automation × speed, where speed comes from the median work minutes they took
-to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`) over their last `speed_asks` asks of the last
-`speed_days`: an ask swapped off counts as `slow_cap_mins`, and one still open counts its time so far (up to the
-cap) once that's slower than the rest. Each review sweep the ledger
+to review (`speed_by_minutes`, `slow_speed`, `no_speed_yet`, and `too_slow` for a median of `slow_cap_mins` or
+more) over their last `speed_asks` asks of the last `speed_days`: an ask swapped off counts as `slow_cap_mins`, and
+one still open counts its time so far (up to the cap) once that's slower than the rest; until then it takes none of
+the `speed_asks` places. Each review sweep the ledger
 marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: minutes inside the work hours, or every
 minute with the hours off), and closed when the PR merged or closed first. The sweep runs every `[intervals] reviews`
 seconds (60) on its own timer, whether or not the PRs are polled: with a healthy feed the poll rests, the sweep doesn't.
@@ -957,9 +958,10 @@ picker checks candidates, in turn order and at most `pick_tries` per pick, with 
 online (active, or posted today, or away before `quiet_from` where they are) > quiet > off (outside
 `local_start`–`local_end` in their Slack time zone, or a weekend). A status matching `out_pattern` is out and never
 picked. People are found by their `slack` id or email, then their other emails (not noreply ones), then by full
-name, then by the part of an email (or a noreply email's login) before the @, matched to Slack's emails and
-handles (`users.list`; a name or prefix that fits more than one person finds nobody). Someone none of those finds
-leaves the roster ("not on Slack") with `drop_not_on_slack`; when Slack refuses the user list, nobody is dropped.
+name, then by their host login or the part of an email (or a noreply email's login) before the @, matched to
+Slack's emails and handles (`users.list`). Someone none of those finds leaves the roster ("not on Slack") with
+`drop_not_on_slack`; when Slack refuses the user list, or a name or prefix fits more than one person, they're
+unknown and nobody is dropped.
 It takes the first one online, else the best tier it saw. Outside work hours, or without a provider, nobody is
 checked, but an out status seen within `out_keeps_hours` still keeps them from being picked. The client only
 calls `users.lookupByEmail`, `users.list`, `users.info`, `users.getPresence` and `search.messages`: the board never

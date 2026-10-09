@@ -268,12 +268,13 @@ create_url = ""                      # example: "https://flags.example.com/new?k
 # x speed, from their median review time in work minutes.
 [reviewers]
 count = 2
-main_contributors = 3                 # the main-contributor pick comes from this many top authors of the changed files
+main_contributors = 3                 # the main pick comes from this many: pinned reviewers, then top authors of the changed files
 history_months = 6                    # commit history that counts
 min_commits = 5                       # commits in that window to join the roster from the history
 turn_gap_hours = 4.0
-speed_by_minutes = [[30, 3.0], [60, 2.0], [120, 1.5], [240, 1.0], [480, 0.75]]   # [work minutes up to, speed]
-slow_speed = 0.5                      # slower than the last step
+speed_by_minutes = [[30, 3.0], [60, 2.0], [120, 1.5], [240, 1.0]]   # [work minutes up to, speed]
+slow_speed = 0.5                      # slower than the last step, under slow_cap_mins
+too_slow = 0.05                       # a median of slow_cap_mins or more (non-answers count as that)
 no_speed_yet = 1.0                    # hasn't reviewed yet
 speed_days = 14.0                     # speed comes from the asks of the last this many days
 speed_asks = 8                        # and at most this many of them

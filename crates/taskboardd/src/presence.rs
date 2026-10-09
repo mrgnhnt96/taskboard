@@ -5,10 +5,10 @@
 //! they are: starting their day), quiet (on Slack but none of those), off (outside their own working
 //! hours, `local_start`–`local_end` in their Slack time zone, or a weekend), and out (their Slack
 //! status matches `out_pattern`): never picked. People are found on Slack by their Slack id or
-//! email, else by name, else by the part of their email (or noreply login) before the @. Someone
-//! none of those finds is taken off the roster with `drop_not_on_slack` ("not on Slack"; `tb
-//! reviewers back` undoes it), else skipped; someone a lookup couldn't be tried for (Slack refused
-//! the user list) is neither. The picker checks at most `pick_tries` candidates per pick, in turn
+//! email, else by name, else by their host login or the part of their email (or noreply login)
+//! before the @. Someone none of those finds is taken off the roster with `drop_not_on_slack` ("not
+//! on Slack"; `tb reviewers back` undoes it), else skipped; someone a lookup couldn't be tried for
+//! (Slack refused the user list), or who fits more than one person on Slack, is neither. The picker checks at most `pick_tries` candidates per pick, in turn
 //! order, and takes the first online one, else the best tier it saw. Outside the board's work hours
 //! it checks nobody, but an out status seen within `out_keeps_hours` still holds.
 //!
@@ -132,8 +132,24 @@ enum Lookup {
     Found(String),
     /// Every lookup ran and none found them.
     NotFound,
-    /// A lookup couldn't run (Slack refused the user list), so nobody can say they're not there.
-    Untried,
+    /// A lookup couldn't run (Slack refused the user list) or fit more than one person, so nobody
+    /// can say they're not there. Why, for the log.
+    Untried(&'static str),
+}
+
+/// What one way of matching someone in the workspace's people found.
+enum Hits {
+    None,
+    One(String),
+    Many,
+}
+
+fn hits(found: Vec<&Value>) -> Hits {
+    match found.as_slice() {
+        [] => Hits::None,
+        [u] => u["id"].as_str().map(|s| Hits::One(s.to_string())).unwrap_or(Hits::None),
+        _ => Hits::Many,
+    }
 }
 
 const NOREPLY: &str = "@users.noreply.github.com";
@@ -190,12 +206,10 @@ impl SlackAvailability {
         }
         let people = match self.people() {
             Ok(p) => p,
-            Err(_) => return Ok(Lookup::Untried),
+            Err(_) => return Ok(Lookup::Untried("couldn't look them up on Slack")),
         };
-        let one = |hits: Vec<&Value>| match hits.as_slice() {
-            [u] => u["id"].as_str().map(|s| s.to_string()),
-            _ => None,
-        };
+        // A match that fits more than one person finds nobody, but doesn't say they're not there.
+        let mut ambiguous = false;
         // By full name (theirs, or another name of theirs that isn't an email).
         let mut names = vec![r.st("name").trim().to_lowercase()];
         names.extend(jloads_arr(r.s("aliases")).iter().filter_map(|a| a.as_str()).filter(|a| !a.contains('@') && a.contains(' ')).map(|a| a.trim().to_lowercase()));
@@ -203,11 +217,13 @@ impl SlackAvailability {
         let named = |u: &Value| {
             [&u["real_name"], &u["profile"]["real_name"], &u["profile"]["display_name"]].iter().filter_map(|v| v.as_str()).any(|n| names.contains(&n.trim().to_lowercase()))
         };
-        if let Some(id) = one(people.iter().filter(|u| named(u)).collect()) {
-            return Ok(Lookup::Found(id));
+        match hits(people.iter().filter(|u| named(u)).collect()) {
+            Hits::One(id) => return Ok(Lookup::Found(id)),
+            Hits::Many => ambiguous = true,
+            Hits::None => {}
         }
-        // By the part of their email before the @ (a noreply email's login).
-        let prefixes: Vec<String> = all
+        // By the part of their email before the @ (a noreply email's login), or their host login.
+        let mut prefixes: Vec<String> = all
             .iter()
             .filter_map(|e| {
                 let local = e.split('@').next().unwrap_or("");
@@ -215,15 +231,23 @@ impl SlackAvailability {
                 Some(local.trim().to_lowercase()).filter(|l| !l.is_empty())
             })
             .collect();
+        // A Bitbucket `{uuid}` names nobody on Slack.
+        if let Some(u) = r.s("host_user").map(|u| u.trim().trim_start_matches('@').to_lowercase()).filter(|u| !u.is_empty() && !u.starts_with('{')) {
+            if !prefixes.contains(&u) {
+                prefixes.push(u);
+            }
+        }
         let prefixed = |u: &Value| {
             let email = u["profile"]["email"].as_str().unwrap_or("").split('@').next().unwrap_or("").to_lowercase();
             let handle = u["name"].as_str().unwrap_or("").to_lowercase();
             prefixes.iter().any(|p| *p == email || *p == handle)
         };
-        if let Some(id) = one(people.iter().filter(|u| prefixed(u)).collect()) {
-            return Ok(Lookup::Found(id));
+        match hits(people.iter().filter(|u| prefixed(u)).collect()) {
+            Hits::One(id) => return Ok(Lookup::Found(id)),
+            Hits::Many => ambiguous = true,
+            Hits::None => {}
         }
-        Ok(Lookup::NotFound)
+        Ok(if ambiguous { Lookup::Untried("more than one person on Slack fits them") } else { Lookup::NotFound })
     }
 }
 
@@ -232,7 +256,7 @@ impl Availability for SlackAvailability {
         let id = match self.user_id(r)? {
             Lookup::Found(id) => id,
             Lookup::NotFound => return Ok(Presence { tier: Tier::Missing, why: "not on Slack".into() }),
-            Lookup::Untried => return Ok(Presence { tier: Tier::Unknown, why: "couldn't look them up on Slack".into() }),
+            Lookup::Untried(why) => return Ok(Presence { tier: Tier::Unknown, why: why.into() }),
         };
         let info = self.api.get("users.info", &[("user", id.clone())])?;
         let u = &info["user"];
@@ -484,6 +508,29 @@ mod tests {
         // Slack refuses the user list: they can't be said to be missing.
         let a = slack(vec![("users.list 200", json!({"ok": false, "error": "missing_scope"}))]);
         assert_eq!(a.check(&bo).unwrap().tier, Tier::Unknown);
+    }
+
+    #[test]
+    fn a_host_login_finds_them_and_two_matches_are_not_missing() {
+        let people = json!({"ok": true, "members": [
+            {"id": "U1", "real_name": "Ana Lima", "name": "alima", "profile": {"email": "alima@acme.com"}},
+            {"id": "U2", "real_name": "Ana Lima", "name": "ana2", "profile": {"email": "ana2@acme.com"}},
+            {"id": "U3", "real_name": "Cy Ng", "name": "cyng", "profile": {"email": "cy.ng@acme.com"}},
+        ]});
+        let info = json!({"ok": true, "user": {"id": "U3", "tz_offset": offset_for(11), "profile": {"status_text": "", "status_emoji": ""}}});
+        let a = slack(vec![("users.list 200", people.clone()), ("users.info U3", info), ("users.getPresence U3", json!({"ok": true, "presence": "active"}))]);
+        // Host-only, under a name Slack doesn't have: found by their login as the Slack handle.
+        let mut cy = Row::new();
+        cy.insert("id".into(), json!(3));
+        cy.insert("name".into(), json!("Cyrus"));
+        cy.insert("host_user".into(), json!("cyng"));
+        assert_eq!(a.check(&cy).unwrap().tier, Tier::Online);
+        // A name that fits two people is unknown, not "not on Slack".
+        let a = slack(vec![("users.list 200", people)]);
+        let mut ana = Row::new();
+        ana.insert("id".into(), json!(1));
+        ana.insert("name".into(), json!("Ana Lima"));
+        assert_eq!(a.check(&ana).unwrap(), Presence { tier: Tier::Unknown, why: "more than one person on Slack fits them".into() });
     }
 
     #[test]

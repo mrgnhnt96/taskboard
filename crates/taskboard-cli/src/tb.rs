@@ -552,11 +552,14 @@ enum ReviewersCmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Another name, email or host account of theirs (a host id becomes their account when they have none)
+    /// Another name, email or host account of theirs (an @login or {uuid} becomes their account when they have none)
     Alias {
         who: String,
-        #[arg(required = true)]
+        #[arg(required_unless_present = "user")]
         aliases: Vec<String>,
+        /// Their host account (a login or {uuid}); one they had stays as an alias
+        #[arg(long)]
+        user: Option<String>,
         #[arg(long)]
         project: Option<String>,
     },
@@ -1872,7 +1875,7 @@ fn reviewers_cmd(c: &Ctx, action: ReviewersCmd) -> Result<i32, String> {
             c.call("POST", "/reviewers/bot", Some(body(&project, &who, json!({"every_h": every, "mark": mark, "off": off}))))?
         }
         ReviewersCmd::Auto { who, level, project } => c.call("POST", "/reviewers/auto", Some(body(&project, &who, json!({"level": level}))))?,
-        ReviewersCmd::Alias { who, aliases, project } => c.call("POST", "/reviewers/alias", Some(body(&project, &who, json!({"aliases": aliases}))))?,
+        ReviewersCmd::Alias { who, aliases, user, project } => c.call("POST", "/reviewers/alias", Some(body(&project, &who, json!({"aliases": aliases, "user": user}))))?,
         ReviewersCmd::Sync { project } => {
             let v = c.call("POST", "/reviewers/sync", Some(body(&project, "", json!({}))))?;
             out(&format!("{}: {} joined from the commit history, {} matched to a host account.", v["project"].as_str().unwrap_or(""), v["joined"], v["matched"]));
