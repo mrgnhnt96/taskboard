@@ -106,6 +106,67 @@ fn the_word_is_for_this_conversation_only() {
 fn the_boards_start_says_it_came_from_the_ui() {
     let b = board();
     let id = b.new_task();
-    api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/start"), &Query::new(), &json!({"mode": "queue"})).unwrap();
+    let from_app: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+    api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/start"), &from_app, &json!({"mode": "queue"})).unwrap();
     assert!(b.log(id).contains(&"Started in the UI".to_string()), "{:?}", b.log(id));
+}
+
+#[test]
+fn a_start_with_no_terminal_is_only_the_apps() {
+    let b = board();
+    let id = b.new_task();
+    let e = api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/start"), &Query::new(), &json!({"mode": "queue"})).unwrap_err();
+    assert_eq!(e.status, 403);
+    assert!(e.message.contains("Only a human can start"), "{}", e.message);
+    assert_eq!(b.status(id), "queued");
+    assert!(!b.log(id).iter().any(|l| l.starts_with("Started")), "{:?}", b.log(id));
+    // An empty via_session is no terminal either.
+    let e = api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/start"), &Query::new(), &json!({"mode": "queue", "via_session": ""}))
+        .unwrap_err();
+    assert_eq!(e.status, 403);
+}
+
+#[test]
+fn a_prompt_about_a_start_is_no_word() {
+    let b = board();
+    let id = b.new_task();
+    for said in [
+        format!("why did T{id} start failing yesterday?"),
+        format!("T{id} started an hour ago, right?"),
+        format!("is T{id} starting?"),
+        format!("did you start T{id}?"),
+        format!("don't start T{id}"),
+        format!("restart T{id}"),
+        format!("the log says start T{id} failed"),
+    ] {
+        b.said(&said);
+        assert_eq!(b.tb_start(id).unwrap_err().0, 403, "{said}");
+    }
+}
+
+#[test]
+fn an_unnamed_ask_is_only_for_a_task_this_conversation_made_after_it() {
+    let b = board();
+    // Made before the prompt: "it" isn't this task.
+    let id = b.new_task();
+    b.said("start the dev server and check the login page");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    b.said("queue it");
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+
+    // A task made elsewhere (the board's API, not this terminal) after the prompt isn't it either.
+    b.said("make a task for the login page and queue it");
+    let other = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Other", "project": "webapp"})).unwrap();
+    let other = other["id"].as_i64().unwrap();
+    assert_eq!(b.tb_start(other).unwrap_err().0, 403);
+
+    // Made by this conversation after the prompt: that's the word.
+    let made = b.new_task();
+    assert!(b.tb_start(made).unwrap()["starting"] == true);
+
+    // Once a later prompt comes in, the unnamed one no longer counts.
+    b.said("make a task for the signup page and queue it");
+    let next = b.new_task();
+    b.said("thanks");
+    assert_eq!(b.tb_start(next).unwrap_err().0, 403);
 }
