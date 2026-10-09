@@ -113,14 +113,15 @@ impl Step {
         self.min_gap_mins.filter(|m| *m > 0.0).map(|m| m * 60.0)
     }
 
-    /// The step with its placeholders filled.
+    /// The step with its placeholders filled; its scripts as they run (`fill_shell`), so what's shown is
+    /// what runs.
     pub fn filled(&self, vars: &BTreeMap<String, String>) -> Step {
         Step {
             prompt: fill(&self.prompt, vars),
-            run: fill(&self.run, vars),
-            check: fill(&self.check, vars),
+            run: fill_shell(&self.run, vars),
+            check: fill_shell(&self.check, vars),
             open: fill(&self.open, vars),
-            publish: fill(&self.publish, vars),
+            publish: fill_shell(&self.publish, vars),
             ..self.clone()
         }
     }

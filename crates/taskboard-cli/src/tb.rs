@@ -2209,7 +2209,7 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
                 detached_tip = Some(tip);
                 (dir, Some(b))
             } else {
-                (dir, None)
+                return Err(format!("{dir} isn't on a branch. Say which one with --branch."));
             }
         } else {
             (dir, has)
@@ -4266,6 +4266,9 @@ mod tests {
         assert_eq!((at.head.as_deref(), at.branch.as_deref(), at.pinned), (Some(second.as_str()), Some("main"), true));
         let e = aim(&c, &v, &a("no-such-branch", &det)).err().unwrap();
         assert_eq!(e, format!("{det} has no branch no-such-branch."));
+        // Without its branch, a detached checkout is refused, as the Python board did.
+        let bare = Aim { worktree: Some(det.clone()), ..Aim::default() };
+        assert_eq!(aim(&c, &v, &bare).err().unwrap(), format!("{det} isn't on a branch. Say which one with --branch."));
         // A branch the checkout's head isn't on is refused.
         let det2 = root.join("det2");
         git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det2.to_string_lossy(), &feat]);
