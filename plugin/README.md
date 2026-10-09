@@ -32,6 +32,15 @@ claude plugin install task-board@taskboard
 
 Restart Claude Code (or run `/reload-plugins`) so the hooks and skill load.
 
+## The version
+
+Claude Code runs an installed plugin from its cache (`~/.claude/plugins/cache/taskboard/task-board/<version>`),
+keyed by the `version` in `task-board/.claude-plugin/plugin.json`: a changed hook or skill doesn't reach anyone
+until that version changes. It's the release's version: `scripts/release.sh` writes it through
+`scripts/set-version.sh`, and the release workflow's `--check` fails when it's out of step. To try a plugin change
+before a release, change the version too (any new string; e.g. `0.1.0-beta.14-dev.1`), then `/plugin` → update, or
+reinstall.
+
 ## How `bin/tb` finds the binary
 
 The shim resolves its own real path (following symlinks) and runs the first of these that exists

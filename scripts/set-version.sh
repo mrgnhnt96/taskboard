@@ -7,16 +7,22 @@
 #
 # Git tags are the source of truth: scripts/release.sh calls this before it
 # tags, and the release workflow runs --check against the tag.
+#
+# The Claude Code plugin's plugin.json carries it too: Claude Code runs an
+# installed plugin from a cache keyed by that version, so a plugin change only
+# reaches people once the version changes (plugin/README.md, "The version").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 crates=(taskboardd taskboard-cli taskboard-app)
+plugin=plugin/task-board/.claude-plugin/plugin.json
 
 versions() {
   echo "Cargo.toml $(awk '/^\[workspace.package\]/{p=1} p && /^version *=/{gsub(/[" ]/,""); sub(/version=/,""); print; exit}' Cargo.toml)"
   for crate in "${crates[@]}"; do
     echo "Cargo.lock:$crate $(grep -A1 "^name = \"$crate\"$" Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')"
   done
+  echo "$plugin $(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$plugin" | head -1)"
 }
 
 if [ "${1:-}" = "--check" ]; then
@@ -46,5 +52,6 @@ sed -i '' "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"$versio
 for crate in "${crates[@]}"; do
   sed -i '' "/^name = \"$crate\"$/{n;s/^version = \".*\"/version = \"$version\"/;}" Cargo.lock
 done
+sed -i '' "s/^\( *\"version\": *\"\)[^\"]*\"/\1$version\"/" "$plugin"
 
 versions
