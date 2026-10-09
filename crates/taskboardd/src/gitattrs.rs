@@ -1,7 +1,8 @@
 //! Generated files out of agents' diffs: the board keeps a block of `<glob> -diff` lines (the globs
 //! from `tb limits --generated`) in each active project's and worktree's `.git/info/attributes`, so
 //! `git diff` shows them as one line instead of every generated line. Only the block is the board's:
-//! the rest of the file is left alone, and with no globs the block goes.
+//! the rest of the file is left alone, and with no globs the block goes. A repo that stops being
+//! looked after (its project removed, its work done) has its block taken out.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,8 @@ pub const END: &str = "# <<< taskboard";
 /// How often the runner puts the blocks back.
 pub const EVERY_SECS: f64 = 300.0;
 const GIT_SECS: f64 = 5.0;
+/// The attributes files the board last kept a block in.
+const MANAGED_KEY: &str = "gitattrs_managed";
 
 /// `text` with the board's block set to `globs` (or taken out, with none).
 pub fn apply(text: &str, globs: &[String]) -> String {
@@ -106,7 +109,8 @@ pub fn targets(app: &App) -> Result<Vec<(Option<String>, String)>> {
     Ok(out)
 }
 
-/// Puts the block in every active project's attributes. Returns how many files changed.
+/// Puts the block in every active project's attributes, and takes it out of the ones it was in
+/// before that aren't looked after now. Returns how many files changed.
 pub fn sync(app: &App) -> Result<usize> {
     let l = limits::get(app);
     let mut files: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
@@ -119,14 +123,29 @@ pub fn sync(app: &App) -> Result<usize> {
             }
         }
     }
+    let before: Vec<String> = app.db.get_setting(MANAGED_KEY)?.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut managed: Vec<String> = vec![];
+    for old in before {
+        files.entry(PathBuf::from(&old)).or_default();
+    }
     let mut changed = 0;
     for (f, globs) in files {
         match write(&f, &globs) {
             Ok(true) => changed += 1,
             Ok(false) => {}
-            Err(e) => app.info(format!("attributes: couldn't write {}: {e}", f.display())),
+            Err(e) => {
+                app.info(format!("attributes: couldn't write {}: {e}", f.display()));
+                if f.exists() {
+                    managed.push(f.to_string_lossy().into_owned());
+                }
+                continue;
+            }
+        }
+        if !globs.is_empty() {
+            managed.push(f.to_string_lossy().into_owned());
         }
     }
+    app.db.set_setting(MANAGED_KEY, Some(&serde_json::to_string(&managed).unwrap_or_default()))?;
     if changed > 0 {
         app.info(format!("attributes: updated the generated files in {}", plural(changed as i64, "repo")));
     }

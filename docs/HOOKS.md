@@ -236,7 +236,9 @@ prompt = "Sign off the screens this task changes."
   no value is left as written.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
-  comment that starts with a `pragmas` entry passes. Opening a PR, `tb pr wait` and `tb done` are refused while
+  comment that starts with a `pragmas` entry passes. An Edit is judged on the whole file: it's applied to the
+  file's current text, a comment already in the file or in its HEAD version may move or re-indent, and the refusal
+  names the file's line. Opening a PR, `tb pr wait` and `tb done` are refused while
   the branch (committed or not, against origin's default branch) adds one, and the handoff tells the agent the rule.
 - **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
   create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like

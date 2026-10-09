@@ -171,7 +171,7 @@ fn init() -> i32 {
     }
     let cfg = load(None, None, false);
     println!("Data: {}", cfg.data.display());
-    println!("API: {}api", cfg.url());
+    println!("API: {}", cfg.api_url());
     println!("Notification links: {}", cfg.page_url);
     println!("Owner: {}", cfg.owner);
     println!("Midna CLI: {}{}", cfg.midna.display(), if cfg.midna.is_file() { "" } else { " (not found)" });

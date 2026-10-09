@@ -115,10 +115,6 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     if needs > 0 {
         return st("needs", format!("{} need{} you", fmt::plural(needs, "task", "tasks"), if needs == 1 { "s" } else { "" }));
     }
-    // Stopped at a wave for the owner (the Python board's stopped state): its line is the summary.
-    if let Some(line) = fmt::opt_s(g, "stopped") {
-        return st("stopped", line.to_string());
-    }
     if c.active > 0 {
         return st("working", "Running".into());
     }
@@ -127,6 +123,11 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     }
     if b(g, "paused") {
         return st("paused", "Paused".into());
+    }
+    // Stopped at a wave for the owner (the Python board's stopped state), once nothing runs: its
+    // line is the summary.
+    if let Some(line) = fmt::opt_s(g, "stopped") {
+        return st("stopped", line.to_string());
     }
     if queued == 0 {
         return None;
@@ -140,18 +141,20 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     st("queued", "Queued".into())
 }
 
-/// Every queued task is held back: blocked by another task's work, or held (waves, locks, bits,
-/// devices). The Python board's `blocked + held >= queued`.
 fn bits_waiting(g: &Value) -> String {
     format!("Waiting on {}", fmt::plural(i(g, "bits_waiting"), "bit", "bits"))
 }
 
+/// Some queued task is blocked by another task's work, and every queued task is blocked or held
+/// (waves, locks, bits, devices). The Python board's `blocked > 0 && blocked + held >= queued`: a goal
+/// whose tasks only wait their turn isn't Blocked.
 fn blocked_all(g: &Value, queued: i64) -> bool {
-    let n = i(g, "blocked") + i(g, "held");
-    n > 0 && n >= queued
+    let blocked = i(g, "blocked");
+    blocked > 0 && blocked + i(g, "held") >= queued
 }
 
 /// `goalNavStatus`: the goal list's line for a goal: (kind, label); kinds run, warn, done, queued, idle.
+/// A goal stopped for the owner says "Waiting on you"; `nav_tip` gives its stopped line.
 pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     let needs = i(g, "needs");
     if c.n > 0 && c.done == c.n {
@@ -166,9 +169,6 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     if needs > 0 {
         return ("warn", if needs > 1 { format!("{needs} need you") } else { "Needs you".into() });
     }
-    if fmt::opt_s(g, "stopped").is_some() {
-        return ("warn", "Stopped".into());
-    }
     if b(g, "paused") {
         return ("warn", "Paused".into());
     }
@@ -176,13 +176,23 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     if running != 0 {
         return ("run", if running > 1 { format!("{running} running") } else { "Running".into() });
     }
+    if i(g, "starting") == 0 && fmt::opt_s(g, "stopped").is_some() {
+        return ("warn", STOPPED_LABEL.into());
+    }
     if i(g, "queued") > 0 {
-        return if blocked_all(g, i(g, "queued")) { ("warn", "Blocked".into()) } else { ("queued", "Queued".into()) };
+        return if i(g, "blocked") > 0 { ("warn", "Blocked".into()) } else { ("queued", "Queued".into()) };
     }
     if c.n == 0 {
         return ("idle", "No tasks yet".into());
     }
     ("idle", if c.done > 0 { "Not running".into() } else { "Not started".into() })
+}
+
+const STOPPED_LABEL: &str = "Waiting on you";
+
+/// The goal list line's tooltip: a stopped goal's stopped line ("Wave 2 is done. Review it, then continue").
+pub fn nav_tip(g: &Value, kind: &str, label: &str) -> Option<String> {
+    (kind == "warn" && label == STOPPED_LABEL).then(|| fmt::opt_s(g, "stopped").map(|s| s.to_string())).flatten()
 }
 
 /// Kept for other pages: the goal list's (label, tone) for a goal summary.
@@ -487,6 +497,8 @@ pub struct NavItem {
     /// A coloured dot before the label (every kind but idle).
     pub dot: bool,
     pub label: String,
+    /// The label's tooltip (a stopped goal's stopped line).
+    pub tip: Option<String>,
     /// "· 1 of 4 done".
     pub n: String,
     pub ring: Ring,
@@ -559,6 +571,7 @@ pub fn nav_view(goals: &[&Value], cur: Option<&str>, view: &'static str) -> NavV
                         current: cur.is_some_and(|c| same_ref(g, c)),
                         kind,
                         dot: kind != "idle",
+                        tip: nav_tip(g, kind, &label),
                         label,
                         n: format!("· {} of {} done", c.done, c.n),
                         ring: ring(&c, st.as_ref()),
@@ -651,10 +664,11 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
                     line(&[(9., 5.8), (9., 9.5)], 1.8, glyph_c, window);
                     line(&[(9., 12.), (9., 12.4)], 1.8, glyph_c, window);
                 }
-                Some("paused" | "stopped") => {
+                Some("paused") => {
                     line(&[(7.6, 6.6), (7.6, 11.4)], 1.8, glyph_c, window);
                     line(&[(10.4, 6.6), (10.4, 11.4)], 1.8, glyph_c, window);
                 }
+                Some("stopped") => fill_poly(&[(6.6, 6.6), (11.4, 6.6), (11.4, 11.4), (6.6, 11.4)], glyph_c, window),
                 Some("blocked") => {
                     line(&[(6.6, 8.6), (11.4, 8.6), (11.4, 12.), (6.6, 12.), (6.6, 8.6)], 1.1, glyph_c, window);
                     line(&[(7.6, 8.6), (7.6, 7.7), (9., 6.3), (10.4, 7.7), (10.4, 8.6)], 1.1, glyph_c, window);
@@ -1031,11 +1045,13 @@ fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindo
                             )
                             .child(
                                 div()
+                                    .id(SharedString::from(format!("gitem-st-{}", it.r)))
                                     .flex()
                                     .items_center()
                                     .gap(px(5.))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
+                                    .when_some(it.tip.clone(), |d, tip| d.tooltip(kit::tip(tip)))
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(color)
@@ -1306,7 +1322,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 #[cfg(test)]
 mod tests {
     use super::{
-        Filters, Row, Status, goal_counts, pick_project, held_why, landing, nav_status, nav_view, nav_view_for, peek_view, rail_clear, rail_shut, rail_view, rail_width,
+        Filters, Row, Status, goal_counts, pick_project, held_why, landing, nav_status, nav_tip, nav_view, nav_view_for, peek_view, rail_clear, rail_shut, rail_view, rail_width,
         recent_open, recent_since, ring, status_of, toggle_recent, toggle_shut,
     };
     use crate::fmt::{self, b, s};
@@ -1535,13 +1551,30 @@ mod tests {
         let st = status_of(&stopped, &goal_counts(&stopped), false).unwrap();
         assert_eq!((st.key, st.label.as_str()), ("stopped", "Wave 1 is done. Review it, then continue"));
         assert_eq!(ring(&goal_counts(&stopped), Some(&st)).glyph, Some("stopped"));
-        assert_eq!(nav_status(&stopped, &goal_counts(&stopped)), ("warn", "Stopped".to_string()));
+        let (k, l) = nav_status(&stopped, &goal_counts(&stopped));
+        assert_eq!((k, l.as_str()), ("warn", "Waiting on you"));
+        assert_eq!(nav_tip(&stopped, k, &l).as_deref(), Some("Wave 1 is done. Review it, then continue"));
+        // Working, starting and paused show first; stopped only once nothing runs.
+        let running = json!({"tasks": [{"status": "working"}, {"status": "queued"}], "queued": 1, "stopped": "Wave 1 is done. Review it, then continue"});
+        assert_eq!(status_of(&running, &goal_counts(&running), false).unwrap().key, "working");
+        assert_eq!(nav_status(&running, &goal_counts(&running)).1, "Running");
+        let starting = json!({"tasks": [{"status": "queued"}], "queued": 1, "starting": 1, "stopped": "x"});
+        assert_eq!(status_of(&starting, &goal_counts(&starting), false).unwrap().key, "starting");
+        let paused = json!({"tasks": [{"status": "queued"}], "queued": 1, "paused": true, "stopped": "x"});
+        assert_eq!(status_of(&paused, &goal_counts(&paused), false).unwrap().key, "paused");
+        assert_eq!(nav_status(&paused, &goal_counts(&paused)).1, "Paused");
+        assert_eq!(nav_tip(&paused, "warn", "Paused"), None);
+
         let held = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "blocked": 1, "held": 1});
         assert_eq!(status_of(&held, &goal_counts(&held), false).unwrap().key, "blocked");
         assert_eq!(nav_status(&held, &goal_counts(&held)).1, "Blocked");
         let one = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "blocked": 1});
         assert_eq!(status_of(&one, &goal_counts(&one), false).unwrap().key, "queued");
-        assert_eq!(nav_status(&one, &goal_counts(&one)).1, "Queued");
+        assert_eq!(nav_status(&one, &goal_counts(&one)).1, "Blocked", "the nav's Blocked is blocked > 0");
+        // Tasks only waiting their turn (held by waves, locks, bits, devices) aren't Blocked.
+        let turn = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "held": 2});
+        assert_eq!(status_of(&turn, &goal_counts(&turn), false).unwrap().key, "queued");
+        assert_eq!(nav_status(&turn, &goal_counts(&turn)).1, "Queued");
         let bits = json!({"tasks": [{"status": "done"}], "bits_waiting": 2});
         assert!(!goal_counts(&bits).finished);
         assert_eq!(nav_status(&bits, &goal_counts(&bits)), ("warn", "Waiting on 2 bits".to_string()));

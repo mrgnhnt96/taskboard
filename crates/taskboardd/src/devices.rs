@@ -20,7 +20,8 @@ pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS devices(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, tags TEXT DEFAULT '[]', focus TEXT, note TEXT,
   off INT DEFAULT 0, created_at TEXT, updated_at TEXT);
--- What a task (T12) or a goal (G3) asks for: [{"tag": "android", "n": 2}]. A task without its own asks for its goal's.
+-- What a task (T12) or a goal (G3) asks for: [{"tag": "android", "n": 2}]. A task without its own asks for its goal's;
+-- a task's [] needs none, whatever its goal asks for.
 CREATE TABLE IF NOT EXISTS device_needs(owner TEXT PRIMARY KEY, needs TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS device_loans(
   id INTEGER PRIMARY KEY, device TEXT NOT NULL, task_id INT NOT NULL, at TEXT, released_at TEXT);
@@ -169,25 +170,33 @@ pub fn goal_needs(app: &App, goal_id: i64) -> Result<Vec<Need>> {
 }
 
 /// Sets a task's or goal's needs from `body.devices` (when the body has it); true when they changed.
+/// A task's `none` (or an empty list) is its own "needs none", over its goal's needs; its `goal` drops
+/// its own needs so it asks for its goal's again.
 pub fn take_needs(app: &App, kind: &str, id: i64, body: &Value, who: &str) -> Result<bool> {
-    if body.get("devices").is_none() {
-        return Ok(false);
-    }
+    let Some(given) = body.get("devices").filter(|v| !v.is_null()) else { return Ok(false) };
     let owner = rf(kind, id);
-    let new = clean_needs(body.get("devices"))?;
-    let old = read_needs(app, &owner)?.unwrap_or_default();
+    let inherit = kind == "task" && given.as_str().map(|s| s.trim().eq_ignore_ascii_case("goal")).unwrap_or(false);
+    // A goal that asks for nothing has no row; a task's empty row is its "needs none".
+    let new = match if inherit { None } else { Some(clean_needs(Some(given))?) } {
+        Some(n) if n.is_empty() && kind != "task" => None,
+        n => n,
+    };
+    let old = read_needs(app, &owner)?;
     if new == old {
         return Ok(false);
     }
-    if new.is_empty() {
-        app.db.x("DELETE FROM device_needs WHERE owner = ?", p![owner])?;
-    } else {
-        app.db.x(
+    match &new {
+        None => app.db.x("DELETE FROM device_needs WHERE owner = ?", p![owner])?,
+        Some(n) => app.db.x(
             "INSERT INTO device_needs(owner, needs) VALUES(?, ?) ON CONFLICT(owner) DO UPDATE SET needs = excluded.needs",
-            p![owner, jdumps(&needs_json(&new))],
-        )?;
-    }
-    let text = if new.is_empty() { "Needs no devices".to_string() } else { format!("Needs devices: {}", needs_text(&new)) };
+            p![owner, jdumps(&needs_json(n))],
+        )?,
+    };
+    let text = match &new {
+        None if kind == "task" => "Needs its goal's devices".to_string(),
+        Some(n) if !n.is_empty() => format!("Needs devices: {}", needs_text(n)),
+        _ => "Needs no devices".to_string(),
+    };
     if kind == "task" {
         board::log_event(app, id, who, "note", &text)?;
         board::bump_ctx(app, id)?;

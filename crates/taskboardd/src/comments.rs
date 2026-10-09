@@ -114,7 +114,7 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
             if let Some((close, from, buf)) = block.as_mut() {
                 if at(&c, i, close) {
                     i += close.chars().count();
-                    out.push((*from, buf.trim().to_string()));
+                    out.push((*from, block_text(buf)));
                     block = None;
                 } else {
                     buf.push(c[i]);
@@ -140,7 +140,9 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
             }
             if let Some(tok) = sx.line.iter().find(|t| at(&c, i, t)) {
                 if !sx.word_start || i == 0 || c[i - 1].is_whitespace() || matches!(c[i - 1], ';' | '&' | '|' | '(' | ')') {
-                    out.push((n + 1, c[i + tok.chars().count()..].iter().collect::<String>().trim().to_string()));
+                    let rest: String = c[i + tok.chars().count()..].iter().collect();
+                    let rest = if *tok == "//" { rest.trim_start_matches('/').strip_prefix('!').unwrap_or(rest.trim_start_matches('/')).to_string() } else { rest };
+                    out.push((n + 1, rest.trim().to_string()));
                     break;
                 }
                 i += 1;
@@ -184,9 +186,16 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
         }
     }
     if let Some((_, from, buf)) = block {
-        out.push((from, buf.trim().to_string()));
+        out.push((from, block_text(&buf)));
     }
     out
+}
+
+/// A block comment's text: a doc marker (`/**`, `/*!`) and each line's leading `*` dropped.
+fn block_text(buf: &str) -> String {
+    let buf = buf.strip_prefix('*').or(buf.strip_prefix('!')).unwrap_or(buf);
+    let lines: Vec<&str> = buf.lines().map(|l| l.trim()).map(|l| l.strip_prefix('*').map(|r| r.trim_start()).unwrap_or(l)).collect();
+    lines.join("\n").trim().to_string()
 }
 
 pub fn is_pragma(text: &str, pragmas: &[String]) -> bool {
@@ -196,9 +205,22 @@ pub fn is_pragma(text: &str, pragmas: &[String]) -> bool {
 
 /// The comments `new` has that `old` didn't (by what they say), pragmas and empty ones aside.
 pub fn added(old: &str, new: &str, lang: &str, pragmas: &[String]) -> Vec<(usize, String)> {
+    added_over(&[old], new, lang, pragmas)
+}
+
+/// The comments `new` has that none of `olds` did: each comment may appear as many times as the
+/// old text that had it most.
+fn added_over(olds: &[&str], new: &str, lang: &str, pragmas: &[String]) -> Vec<(usize, String)> {
     let mut had: HashMap<String, usize> = HashMap::new();
-    for (_, t) in comments_in(old, lang) {
-        *had.entry(t).or_default() += 1;
+    for old in olds {
+        let mut here: HashMap<String, usize> = HashMap::new();
+        for (_, t) in comments_in(old, lang) {
+            *here.entry(t).or_default() += 1;
+        }
+        for (t, k) in here {
+            let e = had.entry(t).or_default();
+            *e = (*e).max(k);
+        }
     }
     let mut out = vec![];
     for (n, t) in comments_in(new, lang) {
@@ -279,17 +301,26 @@ pub fn edit_adds(c: &CommentsConfig, tool: &str, input: &Value) -> Vec<Found> {
     match tool {
         "Edit" | "MultiEdit" => {
             let Some(lang) = watched(c, &path) else { return vec![] };
-            if tool == "Edit" {
-                pairs.push((s(&input["old_string"]), s(&input["new_string"]), lang));
+            let edits: Vec<(String, String, bool)> = if tool == "Edit" {
+                vec![(s(&input["old_string"]), s(&input["new_string"]), input["replace_all"] == true)]
             } else {
-                for e in input["edits"].as_array().into_iter().flatten() {
-                    pairs.push((s(&e["old_string"]), s(&e["new_string"]), lang));
+                input["edits"].as_array().into_iter().flatten().map(|e| (s(&e["old_string"]), s(&e["new_string"]), e["replace_all"] == true)).collect()
+            };
+            let before = std::fs::read_to_string(&path).ok();
+            match before.as_deref().and_then(|b| apply_edits(b, &edits)) {
+                Some(after) => {
+                    let before = before.unwrap_or_default();
+                    let head = at_head(&path).unwrap_or_default();
+                    return found_in(&path, added_over(&[&before, &head], &after, lang, &c.pragmas));
                 }
+                None => pairs.extend(edits.into_iter().map(|(o, n, _)| (o, n, lang))),
             }
         }
         "Write" => {
             let Some(lang) = watched(c, &path) else { return vec![] };
-            pairs.push((std::fs::read_to_string(&path).unwrap_or_default(), s(&input["content"]), lang));
+            let before = std::fs::read_to_string(&path).unwrap_or_default();
+            let head = at_head(&path).unwrap_or_default();
+            return found_in(&path, added_over(&[&before, &head], &s(&input["content"]), lang, &c.pragmas));
         }
         "NotebookEdit" => {
             let nb = s(&input["notebook_path"]);
@@ -306,6 +337,39 @@ pub fn edit_adds(c: &CommentsConfig, tool: &str, input: &Value) -> Vec<Found> {
         _ => return vec![],
     }
     pairs.iter().flat_map(|(o, n, l)| added(o, n, l, &c.pragmas)).map(|(line, text)| Found { file: path.clone(), line, text }).collect()
+}
+
+fn found_in(path: &str, adds: Vec<(usize, String)>) -> Vec<Found> {
+    adds.into_iter().map(|(line, text)| Found { file: path.to_string(), line, text }).collect()
+}
+
+/// A file's text after an Edit or MultiEdit, the way Claude applies them: in order, each `old`
+/// replaced once (or everywhere with `replace_all`). None when an `old` isn't there.
+pub fn apply_edits(text: &str, edits: &[(String, String, bool)]) -> Option<String> {
+    let mut out = text.to_string();
+    for (old, new, all) in edits {
+        if old.is_empty() {
+            if !out.is_empty() {
+                return None;
+            }
+            out = new.clone();
+        } else if !out.contains(old.as_str()) {
+            return None;
+        } else if *all {
+            out = out.replace(old.as_str(), new);
+        } else {
+            out = out.replacen(old.as_str(), new, 1);
+        }
+    }
+    Some(out)
+}
+
+/// The file as it is at HEAD in its repo, if it's tracked there.
+fn at_head(path: &str) -> Option<String> {
+    let p = Path::new(path);
+    let dir = p.parent()?.to_str()?;
+    let name = p.file_name()?.to_str()?;
+    Git(crate::proc::which("git")).run(dir, &["show", &format!("HEAD:./{name}")])
 }
 
 /// What the `PreToolUse` hook says when an edit adds a comment.
@@ -460,7 +524,8 @@ mod tests {
     #[test]
     fn finds_comments_outside_strings() {
         let rs = "let a = \"// not\"; // yes\nfn f<'a>(x: &'a str) -> char { '/' } // after a lifetime\nlet r = r#\"/* raw */\"#;\n/* block\n spans */ let b = 1;\n/// doc";
-        assert_eq!(texts(comments_in(rs, "rust")), vec!["yes", "after a lifetime", "block\n spans", "/ doc"]);
+        assert_eq!(texts(comments_in(rs, "rust")), vec!["yes", "after a lifetime", "block\nspans", "doc"]);
+        assert_eq!(texts(comments_in("/// A doc\n//! inner\n/** one */\n/**\n * two\n * lines\n */", "dart")), vec!["A doc", "inner", "one", "two\nlines"]);
         let py = "x = '#no'  # yes\ns = \"\"\"\n# in a docstring\n\"\"\"\n#!/usr/bin/env python";
         assert_eq!(texts(comments_in(py, "python")), vec!["yes", "!/usr/bin/env python"]);
         assert_eq!(texts(comments_in("echo $# ${#x} # real", "shell")), vec!["real"]);
@@ -479,13 +544,66 @@ mod tests {
     #[test]
     fn edits_are_checked_by_language_when_on() {
         let c = on();
-        let edit = serde_json::json!({"file_path": "/x/a.rs", "old_string": "let a = 1;", "new_string": "// set a\nlet a = 2;"});
-        assert_eq!(edit_adds(&c, "Edit", &edit), vec![Found { file: "/x/a.rs".into(), line: 1, text: "set a".into() }]);
+        let edit = serde_json::json!({"file_path": "/nowhere/a.rs", "old_string": "let a = 1;", "new_string": "// set a\nlet a = 2;"});
+        assert_eq!(edit_adds(&c, "Edit", &edit), vec![Found { file: "/nowhere/a.rs".into(), line: 1, text: "set a".into() }], "an unreadable file falls back to the snippet");
         assert!(edit_adds(&CommentsConfig::default(), "Edit", &edit).is_empty(), "off by default");
         let md = serde_json::json!({"file_path": "/x/README.md", "old_string": "", "new_string": "<!-- hi -->"});
         assert!(edit_adds(&c, "Edit", &md).is_empty(), "not a watched language");
         let multi = serde_json::json!({"file_path": "/x/a.dart", "edits": [{"old_string": "a", "new_string": "b // why"}, {"old_string": "c", "new_string": "/* and */ d"}]});
         assert_eq!(edit_adds(&c, "MultiEdit", &multi).len(), 2);
+    }
+
+    #[test]
+    fn applies_edits_like_claude() {
+        let e = |o: &str, n: &str, all| (o.to_string(), n.to_string(), all);
+        assert_eq!(apply_edits("a b a", &[e("a", "x", false)]).as_deref(), Some("x b a"));
+        assert_eq!(apply_edits("a b a", &[e("a", "x", true), e("b", "y", false)]).as_deref(), Some("x y x"));
+        assert_eq!(apply_edits("a", &[e("z", "x", false)]), None);
+        assert_eq!(apply_edits("", &[e("", "new", false)]).as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn edits_are_judged_against_the_whole_file() {
+        let c = on();
+        let dir = std::env::temp_dir().join(format!("tb-comments-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("m.rs");
+        let path = f.to_str().unwrap().to_string();
+        std::fs::write(&f, "fn a() {}\n// keep me\nfn b() {}\nfn c() {}\n").unwrap();
+        let moved = serde_json::json!({"file_path": path, "edits": [
+            {"old_string": "// keep me\n", "new_string": ""},
+            {"old_string": "fn c() {}", "new_string": "    // keep me\nfn c() {}"}
+        ]});
+        assert!(edit_adds(&c, "MultiEdit", &moved).is_empty(), "a comment already in the file may move or re-indent");
+        let new = serde_json::json!({"file_path": path, "old_string": "fn b() {}\nfn c() {}", "new_string": "fn b() {}\n// new\nfn c() {}"});
+        assert_eq!(edit_adds(&c, "Edit", &new), vec![Found { file: path.clone(), line: 4, text: "new".into() }], "the file's line, not the snippet's");
+        let doubled = serde_json::json!({"file_path": path, "edits": [{"old_string": "fn a() {}", "new_string": "// keep me\nfn a() {}"}]});
+        assert_eq!(edit_adds(&c, "MultiEdit", &doubled).len(), 1, "a second copy is new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_comment_at_head_may_come_back() {
+        let Some(git) = crate::proc::which("git") else { return };
+        let dir = std::env::temp_dir().join(format!("tb-comments-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_str().unwrap().to_string();
+        let g = |args: &[&str]| {
+            let mut all: Vec<String> = vec!["-C".into(), d.clone(), "-c".into(), "user.name=t".into(), "-c".into(), "user.email=t@t".into()];
+            all.extend(args.iter().map(|a| a.to_string()));
+            assert!(crate::proc::run(&git, &all, None, 10.0).is_ok_and(|o| o.code == Some(0)))
+        };
+        g(&["init", "-q"]);
+        let f = dir.join("m.rs");
+        std::fs::write(&f, "// moved\nfn a() {}\nfn b() {}\n").unwrap();
+        g(&["add", "m.rs"]);
+        g(&["commit", "-q", "-m", "x"]);
+        std::fs::write(&f, "fn a() {}\nfn b() {}\n").unwrap();
+        let path = f.to_str().unwrap().to_string();
+        let back = serde_json::json!({"file_path": path, "old_string": "fn b() {}", "new_string": "// moved\nfn b() {}"});
+        assert!(edit_adds(&on(), "Edit", &back).is_empty(), "the second half of a move");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

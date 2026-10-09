@@ -1,6 +1,8 @@
 //! The goal page's Devices and Bits asides. Read-only like the rest of the app: devices can be
-//! focused (their window raised) and bits' names copied or their tool's "new flag" page opened; adding
-//! devices and bits, and recording a bit made, go through `tb device` and `tb bit`.
+//! focused (their window raised); bits' names and create links can be copied, their tool's "new flag"
+//! page opened, and a backend bit marked created with one click once the owner has made it there (the
+//! owner's own signal, like "I reviewed it"). Adding and changing devices and bits go through
+//! `tb device` and `tb bit`.
 use super::*;
 
 /// One device in the aside.
@@ -49,6 +51,8 @@ pub struct BitRow {
     pub tone: &'static str,
     /// "Create in Flagsmith" and its link, for a backend bit not made yet.
     pub create: Option<(String, String)>,
+    /// A backend bit not made yet: the owner can mark it created.
+    pub can_mark: bool,
     pub uses: String,
 }
 
@@ -72,6 +76,7 @@ pub fn bit_rows(g: &Value) -> Vec<BitRow> {
                 state,
                 tone,
                 create: (!local && !made).then(|| fmt::opt_s(x, "create_url").map(|u| (format!("Create in {tool}"), u.to_string()))).flatten(),
+                can_mark: !local && !made,
                 uses: uses.join(", "),
             }
         })
@@ -153,7 +158,13 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
     Some(aside_card(t).child(head).child(list))
 }
 
-pub fn bits_aside(t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+/// "Mark created": `POST bits/:name/made`, the owner's word that it's made in the flag tool.
+fn mark_made(m: &mut MainWindow, name: &str, cx: &mut Context<MainWindow>) {
+    let n = name.to_string();
+    run(m, format!("bit-made:{name}"), None, true, format!("bits/{name}/made"), json!({}), cx, move |_, _, _| format!("Marked {n} created"));
+}
+
+pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
     let rows = bit_rows(g);
     if rows.is_empty() {
         return None;
@@ -186,7 +197,21 @@ pub fn bits_aside(t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<
                     })),
             );
         if let Some((label, url)) = x.create.clone() {
-            line = line.child(kit::btn_small(t, SharedString::from(format!("bit-create-{ix}")), label).on_click(move |_, _, cx| cx.open_url(&url)));
+            let link = url.clone();
+            line = line
+                .child(
+                    kit::btn_small(t, SharedString::from(format!("bit-link-{ix}")), "Copy link").tooltip(kit::tip(url.clone())).on_click(cx.listener(move |m, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                        m.toast("Copied the link", false, cx);
+                    })),
+                )
+                .child(kit::btn_small(t, SharedString::from(format!("bit-create-{ix}")), label).on_click(move |_, _, cx| cx.open_url(&url)));
+        }
+        if x.can_mark {
+            let busy = m.goal_page.busy.contains(&format!("bit-made:{}", x.name));
+            let name = x.name.clone();
+            let b = kit::btn_small(t, SharedString::from(format!("bit-made-{ix}")), if busy { "Marking…" } else { "Mark created" });
+            line = line.child(if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| mark_made(m, &name, cx))) });
         }
         let mut meta = div().flex().items_center().gap(px(8.)).pl(px(18.)).text_size(px(12.)).child(chip(fg, bg, x.state.clone()));
         if !x.uses.is_empty() {
@@ -219,7 +244,8 @@ mod tests {
         assert_eq!((d[1].state.as_str(), d[1].tags.as_str()), ("Off", "android, phone"));
         assert!(!d[2].ours);
         let b = bit_rows(&g);
-        assert_eq!((b[0].state.as_str(), b[0].create.clone()), ("Local, not in Flagsmith", None));
+        assert_eq!((b[0].state.as_str(), b[0].create.clone(), b[0].can_mark), ("Local, not in Flagsmith", None, false));
+        assert!(b[1].can_mark && !b[2].can_mark, "only a backend bit not made yet can be marked created");
         assert_eq!(b[1].create, Some(("Create in Flagsmith".into(), "https://f.example/new?key=newCheckout".into())));
         assert_eq!((b[1].state.as_str(), b[1].uses.as_str()), ("Not created", "T4, G1"));
         assert_eq!((b[2].state.as_str(), b[2].tone), ("Created", "up"));

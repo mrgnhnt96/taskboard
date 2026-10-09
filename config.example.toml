@@ -162,9 +162,9 @@ refuse_message = "The board doesn't take {ext} files as attachments: publish it 
 
 # Terminals the board opens in Midna. `background`: the job purposes whose terminals open in Midna's
 # Background group instead of their project's tabs: start (a task), pr (a PR visit), plan (planning a
-# goal), reopen (a closed terminal reopened).
+# goal), reopen (a closed terminal reopened), jira_desk (the Jira desk's terminal).
 [terminals]
-background = []                      # example: ["plan"]
+background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
 # MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`
@@ -244,8 +244,9 @@ branch = ""                          # example: "{type}/{key}-{slug}"
 focus = ""                           # example: "open -a Simulator"
 focus_timeout_secs = 15.0
 
-# Bits (feature flags, `tb bit add newCheckout --backend --task T4`). A task waits until its backend
-# bits are made in the flag tool (`tb bit made`); the goal page links each one to the tool's new-flag page.
+# Bits (feature flags, `tb bit add newCheckout --backend --task T4`). Tasks build behind a flag whether or
+# not it's made; a goal whose tasks are done waits until its backend bits are made in the flag tool
+# (`tb bit made`, or "Mark created" on the goal page, which links each one to the tool's new-flag page).
 [bits]
 tool = ""                            # its name, as the app says it ("Create in Flagsmith"); empty = "the flag tool"
 create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"

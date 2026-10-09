@@ -187,7 +187,14 @@ pub struct Size {
 
 fn size_of(events: &[Value]) -> Size {
     let last_at = events.iter().rev().find_map(|e| e["timestamp"].as_str().map(|s| s.to_string()));
-    let tokens = events.iter().rev().filter(|e| e["type"] == "assistant" && e["isSidechain"] != true).find_map(|e| {
+    // The newest of the last reply's usage and the last compact boundary's postTokens wins.
+    let tokens = events.iter().rev().filter(|e| e["isSidechain"] != true).find_map(|e| {
+        if e["type"] == "system" && e["subtype"] == "compact_boundary" {
+            return e["compactMetadata"]["postTokens"].as_i64();
+        }
+        if e["type"] != "assistant" {
+            return None;
+        }
         let u = e["message"].get("usage")?;
         let n = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().map(|k| u[*k].as_i64().unwrap_or(0)).sum::<i64>();
         (n > 0).then_some(n)
@@ -236,5 +243,16 @@ mod tests {
         let s = size_of(&ev);
         assert_eq!(s.tokens, Some(3250));
         assert_eq!(s.last_at.as_deref(), Some("2026-10-01T10:03:00Z"));
+    }
+
+    #[test]
+    fn reads_post_tokens_after_compacting() {
+        let reply = json!({"type": "assistant", "message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": 150000}}, "timestamp": "2026-10-01T10:00:00Z"});
+        let boundary = json!({"type": "system", "subtype": "compact_boundary", "compactMetadata": {"trigger": "manual", "preTokens": 150010, "postTokens": 12000}, "timestamp": "2026-10-01T10:01:00Z"});
+        assert_eq!(size_of(&[reply.clone(), boundary.clone()]).tokens, Some(12000));
+        let later = json!({"type": "assistant", "message": {"usage": {"input_tokens": 5, "cache_read_input_tokens": 14000}}, "timestamp": "2026-10-01T10:02:00Z"});
+        assert_eq!(size_of(&[reply.clone(), boundary, later]).tokens, Some(14005));
+        let bare = json!({"type": "system", "subtype": "compact_boundary", "compactMetadata": {"trigger": "auto"}});
+        assert_eq!(size_of(&[reply, bare]).tokens, Some(150010));
     }
 }

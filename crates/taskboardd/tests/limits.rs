@@ -183,6 +183,22 @@ fn generated_files_go_in_a_managed_attributes_block() {
 }
 
 #[test]
+fn a_repo_no_longer_looked_after_loses_its_block() {
+    let b = board_with(|c| c.limits.generated = vec!["*.g.dart".into()]);
+    git_repo(&b.repo());
+    let attrs = b.repo().join(".git").join("info").join("attributes");
+    std::fs::create_dir_all(attrs.parent().unwrap()).unwrap();
+    std::fs::write(&attrs, "*.png binary\n").unwrap();
+    gitattrs::sync(&b.app).unwrap();
+    assert!(std::fs::read_to_string(&attrs).unwrap().contains("*.g.dart -diff"));
+
+    b.app.db.set_setting("midna_projects", Some("[]")).unwrap();
+    assert_eq!(gitattrs::sync(&b.app).unwrap(), 1);
+    assert_eq!(std::fs::read_to_string(&attrs).unwrap(), "*.png binary\n", "the project went, so its block did");
+    assert_eq!(gitattrs::sync(&b.app).unwrap(), 0, "and it's forgotten after that");
+}
+
+#[test]
 fn a_compacting_terminal_is_flagged_until_it_speaks_again() {
     let b = board_with(|_| {});
     let id = b.new_task();

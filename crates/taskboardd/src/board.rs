@@ -470,7 +470,7 @@ pub fn is_held(app: &App, t: &Row) -> Result<bool> {
             return Ok(true);
         }
     }
-    Ok(crate::locks::blocker(app, t)?.is_some() || crate::bits::blocker(app, t)?.is_some() || crate::devices::blocker(app, t)?.is_some())
+    Ok(crate::locks::blocker(app, t)?.is_some() || crate::devices::blocker(app, t)?.is_some())
 }
 
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {

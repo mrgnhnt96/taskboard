@@ -43,11 +43,14 @@ The task panel keeps its metadata and attachment editing and terminal rename, wh
 Brought back from the Python board (past the frozen web copy, so not in its goldens): a wave's "Stop after this
 wave for my review" checkbox, the owner's own word (the API refuses `stop_after` unless the app sends it, with
 `X-Task-Board-From: app`; agents hold a wave with `tb goal wave --hold` instead); the goal page's Devices aside
-(who has each device, Focus) and Bits aside ("N of M created", Copy, "Create in <tool>", "Local, not in <tool>";
-a bit is recorded made with `tb bit made`, never from the app); device and ⚑ bit chips on cards and wave rows;
-Devices and Bits rows in the task's Context tab; a goal stopped at a wave shows "Waiting on you" (rail: the stop
-line and a pause glyph; goal list: "Stopped"); a goal is Blocked when its blocked plus held tasks cover every
-queued one; and a done goal with unmade backend bits shows "Waiting on N bits".
+(who has each device, Focus) and Bits aside ("N of M created", Copy, Copy link, "Create in <tool>", "Local, not
+in <tool>", and a one-click "Mark created" on a backend bit not made yet, the owner's signal like "I reviewed it";
+agents record it with `tb bit made`); device and ⚑ bit chips on cards and wave rows; Devices and Bits rows in the
+task's Context tab; a goal stopped at a wave shows "Waiting on you" once nothing in it is working, starting or
+paused (rail: the stop line and a stop-square glyph; goal list: "Waiting on you" with the stop line as its
+tooltip); a goal is Blocked only when some queued task is blocked (the rail also needs its blocked plus held tasks
+to cover every queued one); and a done goal with unmade backend bits shows "Waiting on N bits" (unmade bits never
+hold a task's start).
 
 ## How it's tested
 

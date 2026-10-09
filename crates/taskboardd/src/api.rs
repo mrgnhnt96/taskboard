@@ -301,8 +301,10 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["goals", id, "waves", n, "continue"]) => {
             let (g, n) = (gid(id)?, wave_n(n)?);
             let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
-            app.db.tx(|| crate::waves::release(app, g, n, &who))?;
-            goal_detail(app, g)
+            let started = app.db.tx(|| crate::waves::release(app, g, n, &who))?;
+            let mut d = goal_detail(app, g)?;
+            d["let_start"] = json!(started);
+            Ok(d)
         }
         (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
         (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),

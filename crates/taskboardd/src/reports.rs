@@ -1271,6 +1271,8 @@ fn on_take(r: &mut Report) -> Result<Value> {
         crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
     }
     let t = board::get_task(app, t.id())?;
+    // Lent before the handoff is built, so it names them, the same as a runner start.
+    crate::devices::lend(app, &t)?;
     let c = r.handoff_for(&t)?;
     Ok(ok(Some(&t), Some(c)))
 }
@@ -1388,6 +1390,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"),
                     "stack_on": item.get("stack_on"), "ships_pr": item.get("ships_pr"),
+                    "devices": item.get("devices"), "bits": item.get("bits"),
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
@@ -1447,7 +1450,8 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
-                           "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr")}]);
+                           "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
+                           "devices": r.body.get("devices"), "bits": r.body.get("bits")}]);
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
         return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
@@ -1464,6 +1468,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                 "jira": r.body.get("jira"),
                 "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
+                "devices": r.body.get("devices"), "bits": r.body.get("bits"),
                 "origin": {"from": "Added by an agent", "by": r.name()}}),
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
