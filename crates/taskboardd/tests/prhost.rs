@@ -396,6 +396,25 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
 }
 
 #[test]
+fn a_partly_approved_pr_reads_1_of_2_approved_and_approved_at_the_count_it_needs() {
+    let b = board_with(|c| {
+        c.pr.projects.insert("webapp".into(), PrProject { approvals: Some(2), ..Default::default() });
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved"), reviewer("b", "pending"), reviewer("c", "pending")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.task(id).st("pr_review"), "1 of 2 approved");
+    let card = board::task_card(&b.app, &b.task(id)).unwrap();
+    assert_eq!((card["pr"]["bar"]["approvals"].as_i64(), card["pr"]["bar"]["need"].as_i64()), (Some(1), Some(2)));
+    // Bitbucket never says APPROVED: two of three reviewers are enough.
+    h.rec.lock().reviewers = vec![reviewer("a", "approved"), reviewer("b", "approved"), reviewer("c", "pending")];
+    poll(&b);
+    assert_eq!(b.task(id).st("pr_review"), "Approved");
+}
+
+#[test]
 fn the_pr_bar_has_a_pill_per_reviewer_from_the_host() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);

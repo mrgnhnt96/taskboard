@@ -99,6 +99,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "checks_why": skipped,
         "you": if you.is_empty() { Value::Null } else { json!(you) },
         "approvals": approvals, "reviewers": reviewers,
+        "need": prflow::approvals_needed(app, t),
         "new_comments": new_comments,
         "comments_url": comments_url,
         "waits_on_base": t.s("pr_phase") == Some("waits"),

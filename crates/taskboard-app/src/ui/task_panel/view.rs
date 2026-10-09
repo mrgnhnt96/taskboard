@@ -1171,9 +1171,11 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         let words = if new_comments > 0 { fmt::plural(new_comments, "new comment", "new comments") } else { "New comments".to_string() };
         let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
         step("Review", StepSt::Ask, Some(&words), go)
-    } else if reviewers > 0 && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
-        let st = if approvals >= reviewers { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
-        step("Review", st, Some(&format!("{approvals} of {reviewers}")), url)
+    } else if (reviewers > 0 || approvals > 0) && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
+        // "1 of 2": out of the approvals it needs, else (the host decides) the reviewers on it.
+        let of = bar["need"].as_i64().filter(|n| *n > 0).unwrap_or(reviewers);
+        let st = if approvals >= of { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
+        step("Review", st, Some(&format!("{approvals} of {of}")), url)
     } else if s(bar, "review") == "setup" && review.1 == StepSt::Todo {
         step("Review", StepSt::Ask, Some("Needs setup"), None)
     } else {

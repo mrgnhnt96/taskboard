@@ -828,7 +828,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         build_label(rec)
     };
     let mut task_fields = fields!["pr_state" => rec["state"].as_str().unwrap_or("OPEN").to_uppercase(),
-                                  "pr_build" => build, "pr_review" => review_label(&review_of(&f, rec))];
+                                  "pr_build" => build, "pr_review" => review_label(&review_of(&f, rec), approvals_needed(app, t))];
     if let Some(title) = rec["title"].as_str() {
         task_fields.push(("pr_title", json!(title)));
     }
@@ -956,11 +956,17 @@ fn build_label(rec: &Value) -> &'static str {
     }
 }
 
-fn review_label(r: &Review) -> String {
-    match r.decision.as_str() {
-        "APPROVED" => "Approved".into(),
-        "CHANGES_REQUESTED" => "Changes requested".into(),
-        _ if r.approvals > 0 => format!("{} approved", plural(r.approvals, "reviewer")),
+/// `tasks.pr_review`: "Approved" once it has the approvals it needs (`need`, as `approved` counts them),
+/// else "1 of 2 approved". With no count (0) the host's verdict, or any approval, decides.
+fn review_label(r: &Review, need: Option<i64>) -> String {
+    if r.changes || r.decision == "CHANGES_REQUESTED" {
+        return "Changes requested".into();
+    }
+    match need {
+        Some(n) if r.approvals >= n => "Approved".into(),
+        Some(n) if r.approvals > 0 => format!("{} of {n} approved", r.approvals),
+        None if r.decision == "APPROVED" || (r.decision.is_empty() && r.approvals > 0) => "Approved".into(),
+        None if r.approvals > 0 => format!("{} approved", plural(r.approvals, "reviewer")),
         _ => "Not reviewed yet".into(),
     }
 }
@@ -1071,6 +1077,20 @@ pub fn mark_merged(app: &App, t: &Row, who: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_review_label_counts_approvals_against_the_ones_needed() {
+        let r = |approvals: i64, decision: &str| Review { changes: decision == "CHANGES_REQUESTED", approvals, decision: decision.into(), requesters: vec![] };
+        assert_eq!(review_label(&r(1, ""), Some(2)), "1 of 2 approved");
+        assert_eq!(review_label(&r(2, ""), Some(2)), "Approved", "Bitbucket never says APPROVED; the count does");
+        assert_eq!(review_label(&r(3, ""), Some(2)), "Approved");
+        assert_eq!(review_label(&r(1, "APPROVED"), Some(2)), "1 of 2 approved", "the host's verdict below the board's count");
+        assert_eq!(review_label(&r(0, "REVIEW_REQUIRED"), Some(2)), "Not reviewed yet");
+        assert_eq!(review_label(&r(1, "CHANGES_REQUESTED"), Some(2)), "Changes requested");
+        assert_eq!(review_label(&r(1, "APPROVED"), None), "Approved", "no count: the host decides");
+        assert_eq!(review_label(&r(2, ""), None), "Approved", "no count, no verdict: any approval");
+        assert_eq!(review_label(&r(1, "REVIEW_REQUIRED"), None), "1 reviewer approved");
+    }
 
     #[test]
     fn labels_the_build() {
