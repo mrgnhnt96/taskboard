@@ -533,7 +533,7 @@ fn carry_on_text(app: &App, task: &str) -> String {
     format!(
         "[task-board] You ended your turn, but {task} isn't finished and nothing is waiting on {owner}: the board \
          started this turn and you didn't ask a question. Carry on with the next step now. If you really need {owner}, \
-         run tb question; if you need another task's work, run tb wait-for."
+         run tb question; if you need another task's work, run tb wait-for, with --merged when you need its PR merged first."
     )
 }
 
@@ -981,6 +981,7 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     let tasks = r.body.get("tasks").cloned().unwrap_or(Value::Null);
     if tasks.as_str().map(|s| s.trim().eq_ignore_ascii_case("none")).unwrap_or(false) {
         board::update_task(app, t.id(), fields!["waits_for" => null])?;
+        waitsfor::clear_merged(app, &board::get_task(app, t.id())?)?;
         r.log(t.id(), "note", "Waits for nothing any more", None)?;
         return Ok(with(ok(Some(&t), Some("It waits for nothing now.".into())), json!({"parked": false})));
     }
@@ -992,11 +993,31 @@ fn on_wait_for(r: &mut Report) -> Result<Value> {
     let merged = waitsfor::clean(app, &Value::Array(all.iter().map(|v| json!(v.to_string())).collect()), Some(&t))?;
     let why = one_line(&r.b("why"), 500);
     board::update_task(app, t.id(), fields!["waits_for" => merged])?;
+    let wanted_ids: Vec<i64> = jloads_arr(Some(&wanted)).iter().filter_map(|v| v.as_i64()).collect();
+    let until_merged = as_bool(r.body.get("merged"), false);
+    if until_merged {
+        waitsfor::set_merged(app, &board::get_task(app, t.id())?, &wanted_ids)?;
+    }
     let t = board::get_task(app, t.id())?;
-    let names = jloads_arr(Some(&wanted)).iter().filter_map(|v| v.as_i64()).map(|n| rf("task", n)).collect::<Vec<_>>().join(", ");
+    let names = wanted_ids.iter().map(|n| rf("task", *n)).collect::<Vec<_>>().join(", ");
     if waitsfor::blocker(app, &t)?.is_none() {
-        r.log(t.id(), "note", &format!("Needs {names}, which is ready{}", if why.is_empty() { String::new() } else { format!(": {why}") }), None)?;
-        let text = waitsfor::bring_in_text(app, &t)?;
+        let what = if until_merged { "which is merged" } else { "which is ready" };
+        r.log(t.id(), "note", &format!("Needs {names}, {what}{}", if why.is_empty() { String::new() } else { format!(": {why}") }), None)?;
+        let mut text = waitsfor::bring_in_text(app, &t)?;
+        let merged_ids = waitsfor::merged_ids(&t);
+        let mut open = vec![];
+        for n in &wanted_ids {
+            if !merged_ids.contains(n) && !waitsfor::merged(app, board::find_task(app, Some(*n))?.as_ref())? {
+                open.push(rf("task", *n));
+            }
+        }
+        if !open.is_empty() {
+            text.push_str(&format!(
+                "\nIf you can't build on it until its PR merges, run {} wait-for {} --merged instead.",
+                board::tb_cmd(app),
+                open.join(" ")
+            ));
+        }
         return Ok(with(ok(Some(&t), Some(text)), json!({"parked": false})));
     }
     let held = t.s("session_id").filter(|s| !s.is_empty()).map(|s| s.to_string());

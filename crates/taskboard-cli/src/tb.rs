@@ -141,6 +141,9 @@ enum Cmd {
         tasks: Vec<String>,
         #[arg(long)]
         why: Option<String>,
+        /// Wait until its PR merges, not just until it's done
+        #[arg(long)]
+        merged: bool,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -2884,7 +2887,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::WaitFor { tasks, why, t } => {
+        Cmd::WaitFor { tasks, why, merged, t } => {
             if tasks.is_empty() {
                 return Err("say which task this one needs, for example: tb wait-for T14 (or none)".into());
             }
@@ -2893,7 +2896,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             } else {
                 json!(tasks.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?)
             };
-            c.run_report("tb.wait_for", json!({"tasks": list, "why": why}), t.task, true, |v| {
+            let mut body = json!({"tasks": list, "why": why});
+            if merged {
+                body["merged"] = json!(true);
+            }
+            c.run_report("tb.wait_for", body, t.task, true, |v| {
                 if v["moved_on"] == true {
                     format!("{} waits now; this terminal moves on.\n\n{}", v["task"].as_str().unwrap_or(""), v["context"].as_str().unwrap_or(""))
                 } else if v["parked"] == true {
