@@ -186,6 +186,23 @@ fn a_later_prompt_that_takes_the_start_back_wins() {
 }
 
 #[test]
+fn a_task_waiting_on_unfinished_work_does_not_start_even_on_the_word() {
+    let b = board();
+    let first = b.new_task();
+    let v = b.report("tb.new_task", json!({"title": "Add logout", "waits_for": [format!("T{first}")]}));
+    let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
+    b.said(&format!("start T{id}"));
+    let (code, why) = b.tb_start(id).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.contains(&format!("T{id} can't start yet. Blocked by T{first}")), "{why}");
+    assert_eq!(b.status(id), "queued");
+
+    // Once the work it needs is done, the same word starts it.
+    board::update_task(&b.app, first, vec![("status", json!("done"))]).unwrap();
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+}
+
+#[test]
 fn a_no_a_later_time_a_condition_a_question_or_a_paste_is_no_word() {
     let b = board();
     let id = b.new_task();
@@ -410,4 +427,18 @@ fn a_later_prompt_that_names_no_task_can_take_the_ask_back() {
     b.said(&format!("start T{other} instead"));
     assert_eq!(b.tb_start(id).unwrap_err().0, 403);
     assert!(b.tb_start(other).unwrap()["starting"] == true);
+}
+
+#[test]
+fn an_ask_for_the_goal_points_the_agent_at_the_goal() {
+    let b = board();
+    let g = api::dispatch(&b.app, "POST", "/goals", &Query::new(), &json!({"name": "Settings", "project": "webapp"})).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let v = b.report("tb.new_task", json!({"title": "Chips", "goal": format!("G{g}")}));
+    let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
+    b.said("You can start the goal");
+    let (code, why) = b.tb_start(id).unwrap_err();
+    assert_eq!(code, 403);
+    assert!(why.contains(&format!("run tb start G{g}")), "{why}");
 }
