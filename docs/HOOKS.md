@@ -143,9 +143,11 @@ For a PR on a host the board doesn't read (GitLab, …), `pr.checks` and `pr.fix
 `tb pr-builds stop` with a `[pr_builds.cancel]` command per CI.
 
 A skip covers one push; the next push asks `pr.checks` again. From any other hook or by hand, `tb pr skip-checks
-[T12] --reason "…"` does the same for the current push, and `--all` for every push from now on. A check that really
-failed but not because of the PR is cleared with `tb pr not-ours` instead (per check and push, with a reason and proof
-links; see docs/API.md).
+[T12] --reason "…"` (the reason is required) does the same for the current push's checks that were stopped, are still
+running or never posted, and `--all` for every push from now on. It never covers a failure: it refuses while a check
+failed on the push, and a later push's failure still holds the PR. A check that really failed but not because of the
+PR is cleared with `tb pr not-ours` instead (per check and push, with a reason and proof links; see docs/API.md). Only a
+hook's own skip of `pr.fix` passes a failure.
 
 ## What a hook gets
 
@@ -297,7 +299,7 @@ bar = "WD"            # its name in the app's PR bar
 tb hooks                               # the flow's events, what each can't do, and the hooks on each
 tb hooks test pr.fix --task T12        # run an event's hooks now against a task ("test": true in the input)
 tb hooks log [-n 20]                   # the latest runs and their decisions
-tb pr skip-checks [T12] [--all] [--reason "…"]
+tb pr skip-checks [T12] [--all] --reason "…"
 ```
 
 `tb hooks test` asks the board for the input and runs the hooks in your shell, printing their output and

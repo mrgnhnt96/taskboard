@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::{gist, Cancelled, Check, HostResult, MergeOpts, PrHost, PrRef, Record, Reviewer, Thread};
+use super::{gist, Cancelled, Check, HostResult, MergeOpts, PrHost, PrRef, Record, Reply, Reviewer, Thread, REPLY_MAX};
 
 /// One HTTP call: method, full URL and JSON body; answers the JSON reply (Null when it's empty). An
 /// error starts with "Bitbucket answered <code>" when Bitbucket answered.
@@ -69,6 +69,8 @@ impl Http for BasicHttp {
 pub struct BitbucketHost {
     http: Box<dyn Http>,
     api: String,
+    /// Which account `http` signs in as, for caching who it is (`prhost::account_key`); empty: ask each read.
+    account: String,
 }
 
 /// A Bitbucket id in a URL path (`{uuid}` braces escaped).
@@ -95,7 +97,18 @@ fn same_user(u: &Value, id: &str) -> bool {
 
 impl BitbucketHost {
     pub fn new(http: Box<dyn Http>, api: &str) -> BitbucketHost {
-        BitbucketHost { http, api: api.trim_end_matches('/').to_string() }
+        BitbucketHost { http, api: api.trim_end_matches('/').to_string(), account: String::new() }
+    }
+
+    /// Names the account `http` signs in as, so who it is is asked once.
+    pub fn with_account(mut self, key: &str) -> BitbucketHost {
+        self.account = key.to_string();
+        self
+    }
+
+    /// The board's own Bitbucket account (`GET /user`): its `{uuid}`, as comments name their authors.
+    fn viewer(&self) -> String {
+        super::viewer_cached(&self.account, || Ok(uid(&self.get(&format!("{}/user", self.api))?)))
     }
 
     fn repo_url(&self, repo: &str) -> String {
@@ -175,11 +188,15 @@ impl PrHost for BitbucketHost {
     fn read(&self, pr: &PrRef) -> HostResult<Record> {
         let p = self.get(&self.pr_url(pr))?;
         let comments = self.get_all(&format!("{}/comments?pagelen=100", self.pr_url(pr)), 5)?;
-        // PR tasks need a newer token scope on some workspaces; a PR without them reads as none.
-        let tasks = self.get_all(&format!("{}/tasks?pagelen=100", self.pr_url(pr)), 3).unwrap_or_default();
+        // PR tasks need a newer token scope on some workspaces. Tasks that can't be read are unknown, not
+        // none: the merge waits on them (`prcmds::merge_blockers`).
+        let tasks = self.get_all(&format!("{}/tasks?pagelen=100", self.pr_url(pr)), 3);
         let head = p["source"]["commit"]["hash"].as_str().unwrap_or("");
         let statuses = if head.is_empty() { vec![] } else { self.statuses(&pr.repo, head)? };
-        Ok(summarize(&p, &comments, &tasks, &statuses))
+        let mut r = summarize(&p, &comments, tasks.as_deref().unwrap_or(&[]), &statuses);
+        r.tasks_error = tasks.err();
+        r.viewer = self.viewer();
+        Ok(r)
     }
 
     fn reply(&self, pr: &PrRef, thread: &Thread, body: &str) -> HostResult<()> {
@@ -308,6 +325,22 @@ impl PrHost for BitbucketHost {
         out.dedup();
         Ok(out)
     }
+
+    fn base_failed_checks(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<Check>> {
+        let list = self.get(&format!("{}/commits/{base}?pagelen={commits}", self.repo_url(&pr.repo)))?;
+        let mut out: Vec<Check> = vec![];
+        for c in list["values"].as_array().cloned().unwrap_or_default().into_iter().take(commits) {
+            let Some(hash) = c["hash"].as_str() else { continue };
+            for s in self.statuses(&pr.repo, hash)?.into_iter().filter(|s| s["state"] == "FAILED") {
+                let name = s["name"].as_str().filter(|n| !n.is_empty()).or(s["key"].as_str()).unwrap_or("").to_string();
+                let url = s["url"].as_str().filter(|u| !u.is_empty()).map(|u| u.to_string());
+                if !name.is_empty() && !out.iter().any(|o| o.name == name && o.url == url) {
+                    out.push(Check { name, state: "failed".into(), url });
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn check_state(s: &str) -> &'static str {
@@ -398,6 +431,17 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             continue;
         }
         let last = spoken.iter().max_by_key(|x| x["created_on"].as_str().unwrap_or("").to_string()).unwrap();
+        let mut later: Vec<&&Value> = spoken.iter().copied().filter(|x| x["id"].as_i64() != Some(id)).collect();
+        later.sort_by_key(|x| x["created_on"].as_str().unwrap_or("").to_string());
+        let replies = later
+            .iter()
+            .map(|x| Reply {
+                author: uid(&x["user"]),
+                author_name: x["user"]["display_name"].as_str().unwrap_or("").to_string(),
+                text: crate::util::one_line(x["content"]["raw"].as_str().unwrap_or(""), REPLY_MAX),
+                at: x["created_on"].as_str().unwrap_or("").to_string(),
+            })
+            .collect();
         threads.push(Thread {
             id: id.to_string(),
             kind: if c["inline"].is_object() { "review" } else { "comment" }.into(),
@@ -413,6 +457,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             text: gist(c["content"]["raw"].as_str().unwrap_or("")),
             url: c["links"]["html"]["href"].as_str().map(|s| s.to_string()),
             outdated: false,
+            replies,
         });
     }
     let mut tasks_open = 0;
@@ -437,6 +482,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
             text: gist(t["content"]["raw"].as_str().unwrap_or("")),
             url: None,
             outdated: false,
+            replies: vec![],
         });
     }
     let comments_n = live.iter().filter(|c| c["deleted"] != true && uid(&c["user"]) != author).count() as i64;
@@ -457,6 +503,8 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
         reviewers,
         threads,
         tasks_open,
+        tasks_error: None,
+        viewer: String::new(),
         mergeable: Value::Null,
     }
 }
@@ -486,7 +534,12 @@ pub(crate) mod tests {
         fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
             self.calls.lock().push((method.into(), url.into(), body.cloned()));
             let key = format!("{method} {url}");
-            self.answers.iter().find(|(k, _)| key.contains(k)).map(|(_, v)| v.clone()).ok_or_else(|| format!("Bitbucket answered 404: no answer for {key}"))
+            let v = self.answers.iter().find(|(k, _)| key.contains(k)).map(|(_, v)| v.clone()).ok_or_else(|| format!("Bitbucket answered 404: no answer for {key}"))?;
+            // A canned `{"error": "…"}` is a failed call.
+            match v["error"].as_str() {
+                Some(e) => Err(e.to_string()),
+                None => Ok(v),
+            }
         }
     }
 
@@ -543,12 +596,44 @@ pub(crate) mod tests {
                 ("POST https://api/repositories/ws/repo/pipelines/", Value::Null),
                 ("POST https://api/repositories/ws/repo/pullrequests", json!({"id": 31, "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/31"}}})),
                 ("GET https://api/repositories/ws/repo/commits/main", json!({"values": [{"hash": "m1"}, {"hash": "m2"}]})),
-                ("GET https://api/repositories/ws/repo/commit/m1/statuses", json!({"values": [{"key": "test", "name": "Tests", "state": "FAILED"}]})),
+                ("GET https://api/repositories/ws/repo/commit/m1/statuses", json!({"values": [{"key": "test", "name": "Tests", "state": "FAILED", "url": "https://bitbucket.org/ws/repo/pipelines/results/38"}]})),
                 ("GET https://api/repositories/ws/repo/commit/m2/statuses", json!({"values": [{"key": "build", "name": "Build", "state": "SUCCESSFUL"}]})),
             ],
             calls,
         };
         BitbucketHost::new(Box::new(http), "https://api/")
+    }
+
+    #[test]
+    fn a_thread_the_board_s_own_account_answered_isn_t_waiting() {
+        // The board posts as a bot account, not as the PR's author.
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let mut c = comments();
+        c["values"] = json!([
+            {"id": 1, "user": {"uuid": REV}, "content": {"raw": "Rename this"}, "created_on": "t1"},
+            {"id": 2, "parent": {"id": 1}, "user": {"uuid": "{bot}"}, "content": {"raw": "Done"}, "created_on": "t2"},
+            {"id": 3, "user": {"uuid": REV}, "content": {"raw": "Why?"}, "created_on": "t3"}
+        ]);
+        c["next"] = Value::Null;
+        let http = FakeHttp {
+            answers: vec![
+                ("GET https://api/user", json!({"uuid": "{bot}", "account_id": "557058:bot"})),
+                ("/pullrequests/7/tasks", json!({"error": "Bitbucket answered 403"})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7/comments", c),
+                ("GET https://api/repositories/ws/repo/commit/abc123/statuses", json!({"values": []})),
+                ("GET https://api/repositories/ws/repo/pullrequests/7", pr_json()),
+            ],
+            calls: calls.clone(),
+        };
+        let h = BitbucketHost::new(Box::new(http), "https://api/").with_account("bitbucket:test-bot");
+        let r = h.read(&pr()).unwrap();
+        assert_eq!(r.viewer, "{bot}");
+        let open: Vec<&str> = r.threads.iter().filter(|t| t.waiting_on(r.us())).map(|t| t.id.as_str()).collect();
+        assert_eq!(open, vec!["3"], "the bot had the last word on 1");
+        assert_eq!(r.tasks_error.as_deref(), Some("Bitbucket answered 403"), "tasks that can't be read are unknown");
+        assert!(r.to_value()["tasks_open"].is_null());
+        h.read(&pr()).unwrap();
+        assert_eq!(calls.lock().iter().filter(|(_, u, _)| u == "https://api/user").count(), 1, "who the account is is asked once");
     }
 
     fn pr() -> PrRef {
@@ -571,6 +656,8 @@ pub(crate) mod tests {
         assert_eq!(open, vec!["3", "9", "task-11"], "1 has my last word, 6 is resolved, 8 is a draft, a reply chain counts under its root");
         let t3 = r.threads.iter().find(|t| t.id == "3").unwrap();
         assert_eq!((t3.last_author.as_str(), t3.last_id.as_str()), (REV, "5"));
+        let replies: Vec<(&str, &str)> = t3.replies.iter().map(|x| (x.author.as_str(), x.text.as_str())).collect();
+        assert_eq!(replies, vec![(ME, "Because"), (REV, "Not convinced")], "the replies under it, oldest first");
         let t1 = r.threads.iter().find(|t| t.id == "1").unwrap();
         assert_eq!((t1.kind.as_str(), t1.path.as_deref(), t1.line), ("review", Some("a.rs"), Some(4)));
         assert_eq!(r.tasks_open, 1);
@@ -595,6 +682,10 @@ pub(crate) mod tests {
         h.retarget(&pr(), "develop").unwrap();
         assert_eq!(h.cancel_builds(&pr(), "abc123").unwrap(), Cancelled::Stopped(1));
         assert_eq!(h.base_failures(&pr(), "main", 5).unwrap(), vec!["Tests".to_string()]);
+        assert_eq!(
+            h.base_failed_checks(&pr(), "main", 5).unwrap(),
+            vec![Check { name: "Tests".into(), state: "failed".into(), url: Some("https://bitbucket.org/ws/repo/pipelines/results/38".into()) }]
+        );
         let opened = h.open("ws/repo", "main", "feat", "Add x", "## Summary").unwrap();
         assert_eq!((opened.num, opened.url.as_str()), (31, "https://bitbucket.org/ws/repo/pull-requests/31"));
         let calls = calls.lock().clone();

@@ -143,6 +143,8 @@ pub struct Accounts {
     sandbox: bool,
     gh: Arc<Mutex<Gh>>,
     mem: Mutex<HashMap<Provider, Cred>>,
+    /// The sandbox's CI token (`tb ci-token`).
+    ci_mem: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -161,7 +163,7 @@ struct Login {
 
 impl Accounts {
     pub fn new(cfg: &Config) -> Accounts {
-        Accounts { sandbox: cfg.accounts_sandbox, gh: Arc::new(Mutex::new(Gh::default())), mem: Mutex::new(HashMap::new()) }
+        Accounts { sandbox: cfg.accounts_sandbox, gh: Arc::new(Mutex::new(Gh::default())), mem: Mutex::new(HashMap::new()), ci_mem: Mutex::new(None) }
     }
 
     fn get(&self, p: Provider) -> Option<Cred> {
@@ -671,6 +673,56 @@ pub fn gh_env(cfg: &Config) -> Vec<(String, String)> {
     credentials(cfg, Provider::Github).map(|(_, t)| vec![("GH_TOKEN".to_string(), t)]).unwrap_or_default()
 }
 
+// ------------------------------------------------------------------ the CI token (tb ci-token)
+
+/// The Keychain item holding the CI token: an Azure DevOps personal access token, for reading the failed
+/// steps and tests of an Azure Pipelines check (`prhost/ci.rs`).
+const CI_SERVICE: &str = "taskboard-azure-devops";
+
+/// The CI token the board reads failed steps with: the one stored with `tb ci-token set`, else the
+/// daemon's `pr.azure_token_env` variable (a daemon started by launchd rarely has it). (where, token).
+pub fn ci_token(app: &App) -> Option<(&'static str, String)> {
+    let stored = if app.accounts.sandbox { app.accounts.ci_mem.lock().clone() } else { keychain_get(CI_SERVICE).map(|(_, s)| s) };
+    if let Some(t) = stored.filter(|t| !t.trim().is_empty()) {
+        return Some(("board", t));
+    }
+    std::env::var(&app.cfg.pr.azure_token_env).ok().filter(|t| !t.trim().is_empty()).map(|t| ("env", t))
+}
+
+/// `GET ci-token`: whether the board has a CI token and where it's from; never the token.
+pub fn ci_token_status(app: &App) -> Value {
+    let found = ci_token(app);
+    json!({"set": found.is_some(), "source": found.map(|(s, _)| s), "env": app.cfg.pr.azure_token_env})
+}
+
+/// `POST ci-token {token}`: keeps the CI token in the Keychain (`taskboard-azure-devops`).
+pub fn set_ci_token(app: &App, body: &Value) -> Result<Value> {
+    let token = body_str(body, "token").trim().to_string();
+    if token.is_empty() {
+        return err(400, "Give the token: an Azure DevOps personal access token with Build (read) and Test management (read).");
+    }
+    if token.chars().any(char::is_whitespace) {
+        return err(400, "That isn't a token: it has spaces in it.");
+    }
+    if app.accounts.sandbox {
+        *app.accounts.ci_mem.lock() = Some(token);
+    } else {
+        keychain_set(CI_SERVICE, "azure-devops", &token).map_err(|e| ApiError::new(400, e))?;
+    }
+    app.info("accounts: CI token stored");
+    Ok(ci_token_status(app))
+}
+
+/// `POST ci-token/clear`: forgets the stored CI token (the env variable, if set, is used again).
+pub fn clear_ci_token(app: &App) -> Result<Value> {
+    if app.accounts.sandbox {
+        *app.accounts.ci_mem.lock() = None;
+    } else {
+        keychain_delete(CI_SERVICE);
+    }
+    Ok(ci_token_status(app))
+}
+
 // ------------------------------------------------------------------ Keychain
 
 fn keychain_get(service: &str) -> Option<Cred> {
@@ -725,6 +777,19 @@ mod tests {
 
     fn account(v: &Value, id: &str) -> Value {
         v["accounts"].as_array().unwrap().iter().find(|a| a["id"] == id).cloned().unwrap()
+    }
+
+    #[test]
+    fn the_ci_token_is_kept_by_the_board_and_never_answered() {
+        let (app, _dir) = board();
+        let v = set_ci_token(&app, &json!({"token": "azpat-123"})).unwrap();
+        assert_eq!((v["set"].clone(), v["source"].clone()), (json!(true), json!("board")));
+        assert!(!v.to_string().contains("azpat-123"));
+        assert_eq!(ci_token(&app), Some(("board", "azpat-123".to_string())));
+        assert!(set_ci_token(&app, &json!({"token": ""})).is_err());
+        assert!(set_ci_token(&app, &json!({"token": "a b"})).is_err());
+        let v = clear_ci_token(&app).unwrap();
+        assert_eq!(v["source"].as_str(), if std::env::var(&app.cfg.pr.azure_token_env).is_ok_and(|t| !t.trim().is_empty()) { Some("env") } else { None });
     }
 
     #[test]

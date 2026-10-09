@@ -390,3 +390,141 @@ fn a_stacked_pr_is_retargeted_through_its_host() {
     taskboardd::propen::host::retarget(&b.app, &b.task(id), "develop").unwrap();
     assert!(h.calls().contains(&"retarget develop".to_string()), "a Bitbucket PR moves too");
 }
+
+#[test]
+fn a_thread_waits_on_the_board_s_own_account_and_unread_tasks_hold_the_merge() {
+    // #49: the board posts as "bot", not as the PR's author "me".
+    let b = board_with(|c| c.pr.agents_merge = true);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.viewer = "bot".into();
+    rec.threads = vec![thread("1", "bot"), thread("2", "rev")];
+    rec.reviewers = vec![reviewer("a", "approved"), reviewer("c", "approved")];
+    rec.approvals = 2;
+    rec.tasks_error = Some("Bitbucket answered 403".into());
+    let h = fake(&b, rec);
+    poll(&b);
+    let card = board::pr_card(&b.task(id));
+    assert_eq!(card["stage"]["open_threads"], 1, "the board's own account answered 1");
+    b.post(&format!("/tasks/T{id}/pr/reply"), json!({"thread": "2", "text": "Done"}));
+    assert_eq!(h.rec.lock().threads[1].last_author, "bot", "a reply is the board's account's");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("couldn't read its PR tasks (Bitbucket answered 403)"), "{e}");
+    assert!(!e.contains("thread"), "{e}");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert!(live["tasks_open"].is_null(), "unknown, not 0");
+    assert_eq!(live["tasks_error"], "Bitbucket answered 403");
+    h.rec.lock().tasks_error = None;
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn a_pr_needs_two_approvals_unless_its_project_is_set_otherwise_with_tb() {
+    // #50: the board's default is 2 (tests otherwise run with the host's verdict).
+    let b = board_with(|c| c.pr.approvals = taskboardd::config::DEFAULT_APPROVALS);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    rec.approvals = 1;
+    rec.review_decision = "APPROVED".into();
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "one approval isn't enough, whatever the host says");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({})).unwrap_err();
+    assert!(e.contains("it has 1 of the 2 approvals it needs"), "{e}");
+    let v = b.post("/projects/webapp", json!({"approvals": 1}));
+    assert_eq!(v["pr_rules"]["approvals"], 1);
+    assert_eq!(v["pr_rules"]["set"], json!({"approvals": 1}));
+    assert_eq!(v["pr_flow"], "auto", "the PR flow is left alone");
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    assert!(b.try_post("/projects/webapp", json!({"approvals": -1})).unwrap_err().contains("0 (the host's own decision) to 20"));
+    let v = b.post("/projects/webapp", json!({"approvals": null}));
+    assert_eq!(v["pr_rules"]["approvals"], 2, "back to the board's default");
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    assert!(b.try_post("/projects/webapp", json!({})).unwrap_err().contains("Say what to change"));
+}
+
+#[test]
+fn an_expected_check_that_never_posts_stops_holding_the_merge_once_the_wait_is_over() {
+    // #51: expected checks set with tb; after the wait only failed checks block the merge.
+    let b = board_with(|c| c.pr.agents_merge = true);
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    fake(&b, rec);
+    let v = b.post("/projects/webapp", json!({"expected": ["build", "E2E"], "expected_wait_mins": 30}));
+    assert_eq!(v["pr_rules"]["expected"], json!(["build", "E2E"]));
+    assert_eq!(v["pr_rules"]["expected_wait_mins"], 30.0);
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "e2e hasn't posted");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("expected checks haven't posted: E2E (it waits up to 30 min for them)"), "{e}");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 31.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!((live["expected_missing"].clone(), live["expected_waited_out"].clone()), (json!(["E2E"]), json!(true)));
+    assert!(live["blockers"].as_array().unwrap().is_empty(), "{live}");
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+    let v = b.post("/projects/webapp", json!({"expected": null, "expected_wait_mins": null}));
+    assert!(v["pr_rules"]["expected"].is_null(), "back to config.toml's (none)");
+    assert!(b.try_post("/projects/webapp", json!({"expected": [""]})).unwrap_err().contains("needs a name"));
+}
+
+#[test]
+fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied() {
+    // #52: the PR's run fails two tests, the base's runs of the same check only one.
+    let b = board_with(|c| {
+        c.pr.projects.insert(
+            "webapp".into(),
+            PrProject { failures_cmd: Some("echo 'Run e2e'; echo test: login_works; [ -n \"$TB_HEAD\" ] && echo test: logout_works; true".into()), ..Default::default() },
+        );
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks = vec![check("e2e", "failed")];
+    let mut th = thread("1", "rev");
+    th.replies = vec![
+        taskboardd::prhost::Reply { author: "me".into(), author_name: "Me".into(), text: "Why rename it?".into(), at: "t2".into() },
+        taskboardd::prhost::Reply { author: "rev".into(), author_name: "Rev".into(), text: "It clashes with the other one".into(), at: "t3".into() },
+    ];
+    rec.threads = vec![th];
+    let h = fake(&b, rec);
+    *h.base_checks.lock() = vec![Check { name: "e2e".into(), state: "failed".into(), url: Some("https://ci.example.com/base/1".into()) }];
+    poll(&b);
+    h.rec.lock().base_head = "b2".into();
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    let f = &live["failures"][0];
+    assert_eq!(f["tests"], json!(["login_works", "logout_works"]));
+    assert_eq!(f["base_tests"], json!(["login_works"]), "only the test the base fails too");
+    assert_eq!((f["base_fails"].clone(), f["base_compared"].clone()), (json!(false), json!("steps")), "logout_works is this PR's");
+    assert_eq!(live["rebase"][0], "git fetch origin main && git rebase origin/main");
+    assert_eq!(live["open_threads"][0]["replies"][1]["text"], "It clashes with the other one");
+}
+
+#[test]
+fn merging_moves_the_prs_stacked_on_it_onto_its_base_first() {
+    // #50: the merge deletes the branch, so the PR into it is pointed at the base before.
+    let b = board_with(|_| {});
+    let parent = b.pr_task(BB);
+    let mut rec = green();
+    rec.branch = "base-work".into();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    let child = b.pr_task("https://bitbucket.org/acme/webapp/pull-requests/10");
+    let child_rec = Record { base: "base-work".into(), branch: "more-work".into(), head: "h9".into(), ..green() }.to_value();
+    prflow::merge_flow(&b.app, child, vec![("rec", child_rec)]).unwrap();
+    b.post(&format!("/tasks/T{parent}/pr/merge"), json!({}));
+    let calls = h.calls();
+    let at = |c: &str| calls.iter().position(|x| x.starts_with(c)).unwrap_or_else(|| panic!("{c} in {calls:?}"));
+    assert!(at("retarget main") < at("merge "), "{calls:?}");
+    assert_eq!(b.flow(child)["retargeted"], "main");
+    assert_eq!(b.phase(parent), "merged");
+    let said: Vec<String> = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", taskboardd::p![child]).unwrap().iter().map(|r| r.st("text")).collect();
+    assert!(said.iter().any(|l| l.contains("now goes into main")), "{said:?}");
+}

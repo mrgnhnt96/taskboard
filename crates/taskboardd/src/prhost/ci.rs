@@ -3,8 +3,8 @@
 //! [`provider_for`] picks one per check: the project's own `failures_cmd` when it has one
 //! (`[pr.projects.<name>]`), else by the check's link: GitHub Actions (`gh run view --json jobs`),
 //! Bitbucket Pipelines (the run's steps and their test reports), or Azure Pipelines (the build's
-//! timeline and failed test results, with a token from the env var `pr.azure_token_env`). A check
-//! none of them can read gets no detail; `tb pr status` says so.
+//! timeline and failed test results, with the CI token stored with `tb ci-token set`, else the env var
+//! `pr.azure_token_env`). A check none of them can read gets no detail; `tb pr status` says so.
 
 use std::path::Path;
 
@@ -71,8 +71,8 @@ pub fn provider_for(app: &App, project: &PrProject, check: &Check) -> HostResult
             Some(Box::new(BitbucketPipelines { host: BitbucketHost::new(Box::new(BasicHttp::new(&email, &token)), &app.cfg.pr.bitbucket_api) }))
         }
         Some(Kind::Azure) => {
-            let var = &app.cfg.pr.azure_token_env;
-            let token = std::env::var(var).ok().filter(|t| !t.trim().is_empty()).ok_or_else(|| format!("no Azure DevOps token in ${var}"))?;
+            let (_, token) = crate::accounts::ci_token(app)
+                .ok_or_else(|| format!("no Azure DevOps token: store one with tb ci-token set (or set ${})", app.cfg.pr.azure_token_env))?;
             Some(Box::new(AzurePipelines { http: Box::new(BasicHttp::for_service("Azure DevOps", "", &token)) }))
         }
     })

@@ -244,16 +244,29 @@ fn a_hook_can_stop_the_agent_being_brought_back() {
 }
 
 #[test]
-fn tb_pr_skip_checks_moves_the_pr_on() {
+fn tb_pr_skip_checks_moves_the_pr_on_but_never_past_a_failure() {
     let b = board(json!({"hooks": {}}));
     let id = b.new_task(json!({}));
     b.done_with_pr(id);
     b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &rec("h1", &["ci"], ""))).unwrap();
     assert_eq!(b.task(id).s("pr_phase"), Some("fix"));
+    let (code, e) = b.post("/tasks/T1/pr/skip-checks", json!({"reason": "builds cancelled", "all": true})).unwrap_err();
+    assert!(code == 409 && e.contains("not failures") && e.contains("tb pr not-ours"), "{code} {e}");
+    let (code, _) = b.post("/tasks/T1/pr/skip-checks", json!({"all": true})).unwrap_err();
+    assert_eq!(code, 400, "a reason is required");
+    // The builds were stopped: those can be skipped.
+    let mut stopped = rec("h2", &[], "");
+    stopped["checks"] = json!([{"name": "ci", "state": "stopped"}]);
+    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &stopped)).unwrap();
     b.post("/tasks/T1/pr/skip-checks", json!({"reason": "builds cancelled", "all": true})).unwrap();
     assert_eq!(b.task(id).s("pr_phase"), Some("review"));
-    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &rec("h2", &["ci"], ""))).unwrap();
+    assert_eq!(b.task(id).s("pr_build"), Some("Checks skipped"));
+    let bar = taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap();
+    assert_eq!(bar["checks"], "skipped", "skipped, not “not this PR's”");
+    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &rec("h3", &[], ""))).unwrap();
     assert_eq!(b.task(id).s("pr_phase"), Some("review"), "--all skips later pushes too");
+    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &rec("h4", &["ci"], ""))).unwrap();
+    assert_eq!(b.task(id).s("pr_phase"), Some("fix"), "but a later push's failure still counts");
 }
 
 #[test]

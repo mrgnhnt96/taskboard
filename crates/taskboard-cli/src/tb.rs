@@ -337,6 +337,11 @@ enum Cmd {
     },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
+    /// The CI token the board reads failed steps and tests with (Azure DevOps): show, set or clear it
+    CiToken {
+        #[command(subcommand)]
+        action: Option<CiTokenCmd>,
+    },
     /// Print an account's token for a script: github, bitbucket or slack
     Token {
         #[arg(value_parser = ["github", "bitbucket", "slack"])]
@@ -902,14 +907,33 @@ enum AlertCmd {
 }
 
 #[derive(Subcommand)]
+enum CiTokenCmd {
+    /// Whether the board has one, and where it's from
+    Show,
+    /// Store an Azure DevOps personal access token (Build and Test management, read); read from stdin when left out
+    Set { token: Option<String> },
+    /// Forget the stored token (the env variable is used again, if set)
+    Clear,
+}
+
+#[derive(Subcommand)]
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
-    /// Change a project: --pr-flow auto (by its git remote), on or off
+    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks)
     Set {
         name: String,
         #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
         pr_flow: Option<String>,
+        /// Approvals its PRs need before they're ready to merge (0: the host's own decision; default: config.toml's)
+        #[arg(long)]
+        approvals: Option<String>,
+        /// A check that must post on every push (repeat for more; none: wait for none; default: config.toml's)
+        #[arg(long = "expected-check")]
+        expected_check: Vec<String>,
+        /// Minutes to wait for the expected checks before going on without them (default: config.toml's)
+        #[arg(long = "expected-wait")]
+        expected_wait: Option<String>,
     },
 }
 
@@ -926,11 +950,12 @@ enum PrCmd {
         /// The file (- for stdin)
         file: String,
     },
-    /// Count the PR's checks as passed (e.g. a hook cancelled the builds), so it moves on to review
+    /// Count checks that were stopped or never ran as passed (e.g. a hook cancelled the builds); not failures (use not-ours)
     SkipChecks {
         task: Option<String>,
-        #[arg(long)]
-        reason: Option<String>,
+        /// Why they don't need to pass
+        #[arg(long, required = true)]
+        reason: String,
         /// Every later push too, not just the current one
         #[arg(long)]
         all: bool,
@@ -1086,6 +1111,9 @@ fn print_pr_status(t: &str, v: &Value) {
     if let (Some(b), Some(base)) = (rec["branch"].as_str(), rec["base"].as_str()) {
         let moved = if live["base_moved"] == true { format!(" · {base} has moved since this push: rebase onto it") } else { String::new() };
         out(&format!("Branch {b} into {base}{moved}"));
+        for cmd in live["rebase"].as_array().cloned().unwrap_or_default() {
+            out(&format!("  {}", cmd.as_str().unwrap_or("")));
+        }
     }
     if let Some(l) = pr["bar"]["stacks_on"]["line"].as_str() {
         out(l);
@@ -1103,8 +1131,10 @@ fn print_pr_status(t: &str, v: &Value) {
             let f = failures.iter().find(|f| f["check"].as_str() == Some(name));
             let mut line = format!("  {} {name}", mark(ch["state"].as_str().unwrap_or("")));
             if let Some(f) = f {
-                if f["base_fails"] == true {
-                    line += " [base fails this too]";
+                match (f["base_fails"] == true, f["base_compared"].as_str()) {
+                    (true, Some("check")) => line += " [base fails this check too]",
+                    (true, _) => line += " [base fails this too]",
+                    _ => {}
                 }
                 if f["cleared"] == true {
                     line += " [not this PR's]";
@@ -1115,11 +1145,14 @@ fn print_pr_status(t: &str, v: &Value) {
             }
             out(&line);
             if let Some(f) = f {
+                let on_base = |key: &str, s: &str| f[key].as_array().is_some_and(|a| a.iter().any(|x| x.as_str() == Some(s)));
                 for s in f["steps"].as_array().cloned().unwrap_or_default() {
-                    out(&format!("      step: {}", s.as_str().unwrap_or("")));
+                    let s = s.as_str().unwrap_or("");
+                    out(&format!("      step: {s}{}", if on_base("base_steps", s) { " [base fails this too]" } else { "" }));
                 }
                 for s in f["tests"].as_array().cloned().unwrap_or_default() {
-                    out(&format!("      test: {}", s.as_str().unwrap_or("")));
+                    let s = s.as_str().unwrap_or("");
+                    out(&format!("      test: {s}{}", if on_base("base_tests", s) { " [base fails this too]" } else { "" }));
                 }
                 if let Some(e) = f["error"].as_str() {
                     out(&format!("      couldn't read its steps: {e}"));
@@ -1131,7 +1164,12 @@ fn print_pr_status(t: &str, v: &Value) {
         out(&format!("Couldn't compare with the base branch: {e}"));
     }
     if let Some(m) = live["expected_missing"].as_array().filter(|m| !m.is_empty()) {
-        out(&format!("Expected checks not posted yet: {}", m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
+        let names = m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ");
+        match live["expected_wait_mins"].as_f64() {
+            Some(w) if live["expected_waited_out"] == true => out(&format!("Expected checks never posted: {names} (stopped waiting after {w} min; they don't hold the merge)")),
+            Some(w) => out(&format!("Expected checks not posted yet: {names} (waits up to {w} min)")),
+            None => out(&format!("Expected checks not posted yet: {names}")),
+        }
     }
     if live["not_ours"].is_object() {
         let n = &live["not_ours"];
@@ -1161,9 +1199,16 @@ fn print_pr_status(t: &str, v: &Value) {
             let at = th["path"].as_str().map(|p| format!(" · {p}{}", th["line"].as_i64().map(|l| format!(":{l}")).unwrap_or_default())).unwrap_or_default();
             let kind = if th["kind"] == "task" { " · task" } else { "" };
             out(&format!("  {} · {who}{kind}{at} · {}", th["id"].as_str().unwrap_or(""), th["text"].as_str().unwrap_or("")));
+            for r in th["replies"].as_array().cloned().unwrap_or_default() {
+                let who = r["author_name"].as_str().filter(|n| !n.is_empty()).or(r["author"].as_str()).unwrap_or("");
+                out(&format!("      ↳ {who}: {}", r["text"].as_str().unwrap_or("")));
+            }
         }
     } else if rec["comments"].as_i64().unwrap_or(0) > 0 && !rec["threads"].is_array() {
         out(&format!("Review comments from others: {}", rec["comments"]));
+    }
+    if let Some(e) = live["tasks_error"].as_str() {
+        out(&format!("PR tasks: couldn't read tasks ({e})"));
     }
     if v["watched"] != true {
         out("The board doesn't watch this PR's host; read it with the host's own tools.");
@@ -2980,8 +3025,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             PrCmd::SkipChecks { task, reason, all } => {
                 let t = c.pr_task(task)?;
                 let who = if c.session.is_empty() { "tb" } else { "The agent" };
-                c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason.unwrap_or_default(), "all": all, "who": who})))?;
-                out(&format!("{t}'s PR checks count as passed{}.", if all { " on every push" } else { " for this push" }));
+                c.call("POST", &format!("/tasks/{t}/pr/skip-checks"), Some(json!({"reason": reason, "all": all, "who": who})))?;
+                out(&format!("{t}'s PR checks that didn't fail count as passed{}.", if all { " on every push" } else { " for this push" }));
                 Ok(0)
             }
             PrCmd::BodyCheck { file } => {
@@ -3007,6 +3052,29 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 None => out(SAVED),
                 Some(_) => out(&format!("The board knows tb is at {exe}.")),
             }
+            Ok(0)
+        }
+        Cmd::CiToken { action } => {
+            let v = match action {
+                None | Some(CiTokenCmd::Show) => c.call("GET", "/ci-token", None)?,
+                Some(CiTokenCmd::Set { token }) => {
+                    let token = match token {
+                        Some(t) => t,
+                        None => {
+                            let mut s = String::new();
+                            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("couldn't read the token from stdin: {e}"))?;
+                            s.trim().to_string()
+                        }
+                    };
+                    c.call("POST", "/ci-token", Some(json!({"token": token})))?
+                }
+                Some(CiTokenCmd::Clear) => c.call("POST", "/ci-token/clear", None)?,
+            };
+            out(&match v["source"].as_str() {
+                Some("board") => "CI token: stored on the board (Keychain).".to_string(),
+                Some(_) => format!("CI token: from ${} in the daemon's environment.", v["env"].as_str().unwrap_or("")),
+                None => format!("No CI token: store one with tb ci-token set (or set ${} for the daemon).", v["env"].as_str().unwrap_or("")),
+            });
             Ok(0)
         }
         Cmd::Accounts => {
@@ -3045,12 +3113,50 @@ fn project_line(p: &Value) -> String {
         Some(false) => "no git remote",
         None => "no folder",
     };
+    let r = &p["pr_rules"];
+    let approvals = match r["approvals"].as_i64() {
+        Some(0) => " · approvals: the host's decision".to_string(),
+        Some(n) => format!(" · {n} approvals"),
+        None => String::new(),
+    };
+    let expected = match r["expected"].as_array() {
+        Some(l) if l.is_empty() => " · expects no checks".to_string(),
+        Some(l) => format!(
+            " · expects {} (waits {} min)",
+            l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
+            r["expected_wait_mins"].as_f64().map(|m| m.to_string()).unwrap_or_default()
+        ),
+        None => String::new(),
+    };
     format!(
-        "{} · PR flow {} · {} · {remote}",
+        "{} · PR flow {} · {} · {remote}{approvals}{expected}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
     )
+}
+
+/// `tb project set`'s PR-rule flags as the API's body: `default` sends null (back to config.toml's).
+fn project_rules(approvals: Option<String>, expected: Vec<String>, wait: Option<String>) -> Result<serde_json::Map<String, Value>, String> {
+    let mut b = serde_json::Map::new();
+    let is_default = |s: &str| s.trim().eq_ignore_ascii_case("default");
+    if let Some(a) = approvals {
+        let v = if is_default(&a) { Value::Null } else { json!(a.trim().parse::<i64>().map_err(|_| format!("--approvals takes a count or default, not “{a}”"))?) };
+        b.insert("approvals".into(), v);
+    }
+    if !expected.is_empty() {
+        let v = match expected.as_slice() {
+            [one] if is_default(one) => Value::Null,
+            [one] if one.trim().eq_ignore_ascii_case("none") => json!([]),
+            list => json!(list),
+        };
+        b.insert("expected".into(), v);
+    }
+    if let Some(w) = wait {
+        let v = if is_default(&w) { Value::Null } else { json!(w.trim().parse::<f64>().map_err(|_| format!("--expected-wait takes minutes or default, not “{w}”"))?) };
+        b.insert("expected_wait_mins".into(), v);
+    }
+    Ok(b)
 }
 
 fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
@@ -3070,11 +3176,15 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow } => {
-            let Some(flow) = pr_flow else {
-                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off"));
-            };
-            let v = c.call("POST", &format!("/projects/{name}"), Some(json!({"pr_flow": flow})))?;
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait } => {
+            let mut body = project_rules(approvals, expected_check, expected_wait)?;
+            if let Some(flow) = pr_flow {
+                body.insert("pr_flow".into(), json!(flow));
+            }
+            if body.is_empty() {
+                return Err(format!("say what to change, for example: tb project set {name} --pr-flow off, or --approvals 2"));
+            }
+            let v = c.call("POST", &format!("/projects/{name}"), Some(Value::Object(body)))?;
             out(&format!("Changed {}.", project_line(&v)));
             Ok(0)
         }

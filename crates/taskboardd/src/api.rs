@@ -73,7 +73,10 @@ fn required(body: &Value, key: &str, limit: usize, label: &str) -> Result<String
 
 /// Counts the PR's checks as passed for its current push (or every push, with `all`), and moves it on.
 fn pr_skip_checks(app: &App, id: i64, body: &Value) -> Result<Value> {
-    let reason = { let r = one_line(&body_str(body, "reason"), 500); if r.is_empty() { "no reason given".to_string() } else { r } };
+    let reason = one_line(&body_str(body, "reason"), 500);
+    if reason.is_empty() {
+        return err(400, "Say why the checks don't need to pass: --reason \"<why>\" (a hook cancelled the builds, say).");
+    }
     let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
@@ -109,6 +112,9 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
     let r = match (method, segs.as_slice()) {
         ("GET", ["state"]) => get_state(app, query),
         ("GET", ["accounts"]) => accounts::status(app, q(query, "fresh", "") == "1"),
+        ("GET", ["ci-token"]) => Ok(accounts::ci_token_status(app)),
+        ("POST", ["ci-token", "clear"]) => accounts::clear_ci_token(app),
+        ("POST", ["ci-token"]) => accounts::set_ci_token(app, body),
         ("POST", ["accounts", "github", "login"]) => accounts::github_login(app),
         ("POST", ["accounts", "github", "cancel"]) => accounts::github_cancel(app),
         ("POST", ["accounts", "github", "import"]) => accounts::github_import(app),
@@ -565,11 +571,20 @@ fn get_summary(app: &App) -> Result<Value> {
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
     let list = projects::list_projects(app)?;
     let Some(p) = list.iter().find(|p| p["name"] == name) else { return err(404, format!("There's no project called {name}.")) };
-    let flow = body_str(body, "pr_flow");
-    if !projects::PR_FLOWS.contains(&flow.as_str()) {
+    let rules = projects::PR_RULE_KEYS.iter().any(|k| body.get(*k).is_some());
+    let flow = body.get("pr_flow").filter(|v| !v.is_null()).map(|_| body_str(body, "pr_flow"));
+    if flow.is_none() && !rules {
+        return err(400, format!("Say what to change: pr_flow, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")));
+    }
+    if flow.as_ref().is_some_and(|f| !projects::PR_FLOWS.contains(&f.as_str())) {
         return err(400, "pr_flow is auto (by its git remote), on or off.");
     }
-    app.db.tx(|| projects::set_pr_flow(app, name, &flow))?;
+    app.db.tx(|| {
+        if let Some(f) = &flow {
+            projects::set_pr_flow(app, name, f)?;
+        }
+        projects::set_pr_rules(app, name, body).map(|_| ())
+    })?;
     projects::describe(app, p)
 }
 

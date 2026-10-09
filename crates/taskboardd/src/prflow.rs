@@ -99,7 +99,7 @@ pub fn card(t: &Row) -> Value {
         "failed_checks": rec.get("failed").cloned().unwrap_or(json!([])),
         "comments": rec.get("comments").cloned().unwrap_or(json!(0)),
         "open_threads": open_threads(&f, &rec).len(),
-        "not_ours": not_ours(&f, &rec),
+        "not_ours": not_ours_card(&f, &rec),
         "review_decision": rec.get("review_decision").cloned().unwrap_or(Value::Null),
         "checked_at": f.v("checked_at"),
         "awaiting_you": t.s("status") == Some("done") && awaiting_owner(t),
@@ -450,10 +450,15 @@ fn str_list(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default()
 }
 
-/// The threads waiting on the PR's author: unresolved, someone else spoke last, and not acknowledged on
-/// the board since. Empty for a record without threads (older reads).
+/// Who a thread waits on: the board's own account on the host (`viewer`), else the PR's author.
+pub fn us(rec: &Value) -> &str {
+    rec["viewer"].as_str().filter(|v| !v.is_empty()).or(rec["author"].as_str()).unwrap_or("")
+}
+
+/// The threads waiting on us (`us`): unresolved, someone else spoke last, and not acknowledged on the
+/// board since. Empty for a record without threads (older reads).
 pub fn open_threads(f: &Row, rec: &Value) -> Vec<Value> {
-    let author = rec["author"].as_str().unwrap_or("");
+    let author = us(rec);
     let acks = f.get("threads_acked").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     rec["threads"]
         .as_array()
@@ -478,6 +483,16 @@ pub fn not_ours(f: &Row, rec: &Value) -> Value {
     f.get("not_ours").and_then(|m| m.get(head)).cloned().unwrap_or(Value::Null)
 }
 
+/// This push's clearance for the card: with each proof link labelled (`links: [{url, label}]`).
+fn not_ours_card(f: &Row, rec: &Value) -> Value {
+    let mut n = not_ours(f, rec);
+    if n.is_object() {
+        let links: Vec<Value> = str_list(&n["proof"]).iter().map(|u| json!({"url": u, "label": crate::prcmds::proof_label(u)})).collect();
+        n["links"] = json!(links);
+    }
+    n
+}
+
 /// The failed checks that still count: those `tb pr not-ours` didn't clear for this push.
 pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
     let cleared = str_list(&not_ours(f, rec)["checks"]);
@@ -486,7 +501,7 @@ pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
 
 /// Expected checks (`[pr.projects.<name>] expected`) that haven't posted on this push.
 pub fn expected_missing(app: &App, t: &Row, rec: &Value) -> Option<Vec<String>> {
-    let want = app.cfg.pr.project(t.s("project")).expected?;
+    let want = crate::projects::pr_rules(app, t.s("project")).expected?;
     let posted: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter_map(|c| c["name"].as_str().map(|s| s.to_lowercase())).collect();
     Some(want.into_iter().filter(|w| !posted.contains(&w.to_lowercase())).collect())
 }
@@ -542,12 +557,13 @@ pub fn review_of(f: &Row, rec: &Value) -> Review {
     Review { changes, approvals, decision, requesters }
 }
 
-/// Approvals this task's project needs, if it says.
+/// Approvals this task's PR needs: its project's count, else `pr.approvals` (2). None (a count of 0):
+/// the host's own verdict decides.
 pub fn approvals_needed(app: &App, t: &Row) -> Option<i64> {
-    app.cfg.pr.project(t.s("project")).approvals
+    Some(crate::projects::pr_rules(app, t.s("project")).approvals.unwrap_or(app.cfg.pr.approvals)).filter(|n| *n > 0)
 }
 
-/// Approved enough to merge: the project's count, or (unset) the host's verdict or any approval.
+/// Approved enough to merge: the count it needs, or (0) the host's verdict or any approval.
 pub fn approved(app: &App, t: &Row, r: &Review) -> bool {
     if r.changes {
         return false;
@@ -558,11 +574,24 @@ pub fn approved(app: &App, t: &Row, r: &Review) -> bool {
     }
 }
 
-/// Why this head's checks are skipped (a hook or `tb pr skip-checks`), if they are. `*` skips every push.
-pub fn checks_skipped(f: &Row, rec: &Value) -> Option<String> {
+/// This head's entry in `skip_checks` (`*` skips every push): a hook's reason (a string), or
+/// `tb pr skip-checks`' `{reason, who, at}`.
+fn skip_entry<'a>(f: &'a Row, rec: &Value) -> Option<&'a Value> {
     let skips = f.get("skip_checks")?.as_object()?;
     let head = rec["head"].as_str().unwrap_or("");
-    skips.get(head).or_else(|| skips.get("*")).map(|v| v.as_str().unwrap_or("").to_string())
+    skips.get(head).or_else(|| skips.get("*"))
+}
+
+/// Why this head's checks are skipped (a hook or `tb pr skip-checks`), if they are.
+pub fn checks_skipped(f: &Row, rec: &Value) -> Option<String> {
+    skip_entry(f, rec).map(|v| v.as_str().or(v["reason"].as_str()).unwrap_or("").to_string())
+}
+
+/// The skip covers failed checks too: only the owner's hooks can skip a failure. `tb pr skip-checks`
+/// covers checks that were stopped, are still running or never posted; a failure still needs a fix or
+/// `tb pr not-ours`.
+pub fn skip_hides_failures(f: &Row, rec: &Value) -> bool {
+    skip_entry(f, rec).is_some_and(|v| v.is_string())
 }
 
 pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
@@ -573,8 +602,9 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     }
     let f = flow(t);
     // While the board's PR builds are stopped (`prbuilds.rs`), checks count as passed.
-    let skipped = checks_skipped(&f, rec).is_some() || crate::prbuilds::stopped(app);
-    if !skipped && !failing(&f, rec).is_empty() {
+    let stopped = crate::prbuilds::stopped(app);
+    let skipped = checks_skipped(&f, rec).is_some() || stopped;
+    if !stopped && !skip_hides_failures(&f, rec) && !failing(&f, rec).is_empty() {
         return "fix".into();
     }
     if !skipped && checks_waiting(app, t, &f, rec) {
@@ -612,15 +642,27 @@ pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
     if rec["running"].as_i64().unwrap_or(0) > 0 {
         return true;
     }
-    let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
-    let waited = first.map(crate::clock::awake_since).unwrap_or(0.0);
     match expected_missing(app, t, rec) {
-        Some(missing) => {
-            let wait = app.cfg.pr.project(t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS);
-            !missing.is_empty() && waited < wait * 60.0
-        }
-        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && waited < app.cfg.pr.no_checks_after_mins * 60.0,
+        Some(missing) => !missing.is_empty() && !expected_wait_over(app, t, f, rec),
+        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && head_waited(f, rec) < app.cfg.pr.no_checks_after_mins * 60.0,
     }
+}
+
+/// Seconds (awake) since this push was first seen.
+fn head_waited(f: &Row, rec: &Value) -> f64 {
+    let first = f.get("head_at").and_then(|h| h.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_f64());
+    first.map(crate::clock::awake_since).unwrap_or(0.0)
+}
+
+/// The project's `expected_wait_mins` (90 unless it says).
+pub fn expected_wait_mins(app: &App, t: &Row) -> f64 {
+    crate::projects::pr_rules(app, t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS)
+}
+
+/// This push has waited out its expected checks: one that hasn't posted by now no longer holds the PR
+/// (the stage moves on, and `tb pr merge` doesn't wait on it).
+pub fn expected_wait_over(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
+    head_waited(f, rec) >= expected_wait_mins(app, t) * 60.0
 }
 
 /// The task's flow with this record's head noted (when it was first seen), as `step` will save it.
@@ -716,13 +758,26 @@ fn gate_once(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     Ok(matches!(d, hooks::Decision::Skip { .. }))
 }
 
-/// `tb pr skip-checks`: this push's checks (or, with `all`, every push's) count as passed.
+/// `tb pr skip-checks`: this push's checks (or, with `all`, every push's) that were stopped, are running
+/// or never posted count as passed. Never a failure: that's a fix, or `tb pr not-ours` with proof.
 pub fn skip_checks(app: &App, t: &Row, reason: &str, all: bool, who: &str) -> Result<()> {
     let f = flow(t);
-    let head = f.get("rec").and_then(|r| r["head"].as_str()).filter(|h| !h.is_empty());
+    let rec = f.get("rec").cloned().unwrap_or(Value::Null);
+    let failed = failing(&f, &rec);
+    if !failed.is_empty() {
+        return err(
+            409,
+            format!(
+                "PR #{}'s checks failed on this push: {}. tb pr skip-checks is for builds that were stopped or never ran, not failures. Fix them, or, if one fails without this PR too, clear it with tb pr not-ours --check \"<check>\" --title \"<what fails>\" --reason \"<why>\" --proof <link>.",
+                t.i0("pr_num"),
+                failed.join(", ")
+            ),
+        );
+    }
+    let head = rec["head"].as_str().filter(|h| !h.is_empty());
     let key = if all { "*" } else { head.unwrap_or("*") };
     let mut skips = f.get("skip_checks").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-    skips.insert(key.to_string(), json!(reason));
+    skips.insert(key.to_string(), json!({"reason": reason, "who": who, "at": now_iso()}));
     merge_flow(app, t.id(), fields!["skip_checks" => Value::Object(skips)])?;
     let which = if key == "*" { "every push's checks" } else { "this push's checks" };
     board::log_event(app, t.id(), who, "status", &format!("PR #{}: skipped {which}: {reason}", t.i0("pr_num")))?;
@@ -753,7 +808,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     let phase_changed = phase != old;
     let build = if crate::prbuilds::stopped(app) {
         "Builds stopped"
-    } else if checks_skipped(&f, rec).is_some() {
+    } else if checks_skipped(&f, rec).is_some() && (skip_hides_failures(&f, rec) || failing(&f, rec).is_empty()) {
         "Checks skipped"
     } else if !str_list(&rec["failed"]).is_empty() && failing(&f, rec).is_empty() {
         "Failed, not this PR"

@@ -27,9 +27,14 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     let rec = f.get("rec").cloned().unwrap_or(json!({}));
     let head = rec["head"].as_str().unwrap_or("");
     let skipped = prflow::checks_skipped(&f, &rec);
-    let cleared = !prflow::not_ours(&f, &rec).is_null() && prflow::failing(&f, &rec).is_empty() && rec["failed"].as_array().is_some_and(|a| !a.is_empty());
-    let checks = if skipped.is_some() || cleared {
+    let failing = !prflow::failing(&f, &rec).is_empty();
+    let cleared = !prflow::not_ours(&f, &rec).is_null() && !failing && rec["failed"].as_array().is_some_and(|a| !a.is_empty());
+    // Skipped (a hook, or `tb pr skip-checks` for builds that didn't fail) is told apart from failures
+    // cleared as not this PR's, which come with proof.
+    let checks = if cleared {
         "not_ours"
+    } else if skipped.is_some() && (!failing || prflow::skip_hides_failures(&f, &rec)) {
+        "skipped"
     } else if rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(false) && rec.get("state").is_some() {
         "not_needed"
     } else {
