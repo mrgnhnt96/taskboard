@@ -1009,6 +1009,8 @@ fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
             }
             el(K::Line, line)
         }
+        // A ticket that couldn't be made reads as a warning (`tb task set --jira new` tries again).
+        (Some(j), None) if b(j, "failed") => txt(opt_s(j, "status").unwrap_or("Ticket asked for"), St::WarnHelp),
         (Some(j), None) => txt(opt_s(j, "status").unwrap_or("Ticket asked for"), St::Small),
         _ => txt("No ticket.", St::Small),
     };

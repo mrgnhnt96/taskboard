@@ -153,6 +153,17 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         limit: i64,
     },
+    /// Jira: how it's set up and its jobs, one job (J12), or the Jira desk's report on one:
+    /// tb jira J12 ok key=PROJ-1 status="To Do" [found=yes] [product=web] / tb jira J12 fail "<why>"
+    Jira {
+        /// J12
+        job: Option<String>,
+        /// ok or fail
+        #[arg(value_parser = ["ok", "fail"])]
+        result: Option<String>,
+        /// key=… status=… found=yes product=…, or (with fail) why
+        rest: Vec<String>,
+    },
     /// Add, change or delete a task
     Task {
         #[command(subcommand)]
@@ -367,6 +378,8 @@ enum GoalCmd {
         #[arg(long, value_name = "BASE|off")]
         worktrees: Option<String>,
     },
+    /// What every task in the goal does first (its handoff shows it): {task} {n} {wave} {goal} are filled in; none clears it
+    Setup { goal: String, text: String },
     /// Name a wave, or stop the goal after it for the owner's review
     Wave {
         goal: String,
@@ -422,6 +435,9 @@ enum TaskCmd {
         /// Nothing else in its goal runs while it does (board: nothing else on the board)
         #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
         alone: Option<String>,
+        /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
+        #[arg(long)]
+        jira: Option<String>,
     },
     /// Change a task
     Set {
@@ -686,6 +702,84 @@ fn print_warnings(v: &Value) {
     }
 }
 
+/// `--jira` on `tb task new`: a key links it, `new` asks for one, `none` means no ticket.
+fn jira_arg(v: &str) -> Value {
+    match v.trim().to_lowercase().as_str() {
+        "new" => json!({"mode": "create"}),
+        "none" => json!({"mode": "none"}),
+        _ => json!({"mode": "link", "key": v.trim()}),
+    }
+}
+
+fn jira_job_line(j: &Value) -> String {
+    let a = &j["args"];
+    let r = &j["result"];
+    let what = match a["op"].as_str().unwrap_or("") {
+        "create" => format!("find or make “{}”", a["summary"].as_str().unwrap_or("")),
+        "transition" => format!("move {} to {}", a["key"].as_str().unwrap_or(""), a["status"].as_str().unwrap_or("")),
+        "status" => format!("read {}'s status", a["key"].as_str().unwrap_or("")),
+        "comment" => format!("comment on {}", a["key"].as_str().unwrap_or("")),
+        op => op.to_string(),
+    };
+    let how = match (j["state"].as_str().unwrap_or(""), r["key"].as_str(), r["message"].as_str()) {
+        ("done", Some(k), _) => format!("done: {k}{}", r["status"].as_str().map(|s| format!(" ({s})")).unwrap_or_default()),
+        ("failed" | "expired", _, Some(m)) => format!("failed: {m}"),
+        (st, _, _) => st.to_string(),
+    };
+    format!("{}  {what} · {how}{}", j["ref"].as_str().unwrap_or(""), j["task_id"].as_i64().map(|t| format!(" · T{t}")).unwrap_or_default())
+}
+
+fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<String>) -> Result<i32, String> {
+    let Some(job) = job else {
+        let v = c.call("GET", "/jira", None)?;
+        if v["on"] != true {
+            out("Jira is off: the board's config.toml has no [jira] site and project.");
+            return Ok(0);
+        }
+        out(&format!(
+            "Jira {} {} through {}{}{}.",
+            v["site"].as_str().unwrap_or(""),
+            v["project"].as_str().unwrap_or(""),
+            if v["via"] == "claude" { "headless Claude and the Atlassian connector" } else { "the REST API" },
+            if v["auto_ticket"] == true { "; every PR task gets a ticket" } else { "" },
+            if v["desk"] == true { "; the Jira desk finds or makes tickets" } else { "" }
+        ));
+        for p in v["products"].as_array().cloned().unwrap_or_default() {
+            out(&format!("Product {}: {}", p["name"].as_str().unwrap_or(""), p["what"].as_str().unwrap_or("")));
+        }
+        for j in v["jobs"].as_array().cloned().unwrap_or_default() {
+            out(&jira_job_line(&j));
+        }
+        return Ok(0);
+    };
+    let n = job.trim().trim_start_matches(['J', 'j']).to_string();
+    if n.is_empty() || !n.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("“{job}” isn't a Jira job; they look like J12"));
+    }
+    let Some(result) = result else {
+        let v = c.call("GET", &format!("/jira/jobs/J{n}"), None)?;
+        out(&jira_job_line(&v));
+        return Ok(0);
+    };
+    let mut b = json!({"ok": result == "ok"});
+    let mut why = vec![];
+    for r in rest {
+        match r.split_once('=') {
+            Some((k, v)) if ["key", "status", "found", "product"].contains(&k.to_lowercase().as_str()) => {
+                let k = k.to_lowercase();
+                b[&k] = if k == "found" { json!(matches!(v.to_lowercase().as_str(), "yes" | "true" | "1")) } else { json!(v) };
+            }
+            _ => why.push(r),
+        }
+    }
+    if !why.is_empty() {
+        b["message"] = json!(why.join(" "));
+    }
+    let v = c.call("POST", &format!("/jira/jobs/J{n}"), Some(b))?;
+    out(&jira_job_line(&v));
+    Ok(0)
+}
+
 fn goal_lines(g: &Value) -> Vec<String> {
     let mut lines = vec![format!(
         "{} · {} · {} · {}/{} done",
@@ -700,6 +794,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
     }
     if g["paused"] == true {
         lines.push("Paused: nothing new starts.".into());
+    }
+    if let Some(s) = g["setup"].as_str().filter(|s| !s.is_empty()) {
+        lines.push(format!("Set up: {s}"));
     }
     lines.push(format!(
         "Runs {}, at most {} at a time.",
@@ -1077,6 +1174,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
         Cmd::Locks => {
             let v = c.call("GET", "/locks", None)?;
             let locks = v["locks"].as_array().cloned().unwrap_or_default();
@@ -1184,6 +1282,16 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 let v = c.call("POST", &format!("/goals/{g}"), Some(b))?;
                 out(&format!("Changed {} “{}”.", g, v["name"].as_str().unwrap_or("")));
+                Ok(0)
+            }
+            GoalCmd::Setup { goal, text } => {
+                let g = goal_ref(&goal)?;
+                let v = c.call("POST", &format!("/goals/{g}"), Some(json!({"setup": text})))?;
+                if v["setup"].is_string() {
+                    out(&format!("Set up for {g}: every task's handoff now starts with it."));
+                } else {
+                    out(&format!("{g} has no setup now."));
+                }
                 Ok(0)
             }
             GoalCmd::Wave { goal, wave, name, stop } => {
@@ -1304,7 +1412,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone } => {
+            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone, jira } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -1334,6 +1442,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(a) = alone {
                     body["alone"] = json!(a);
+                }
+                if let Some(j) = jira {
+                    body["jira"] = jira_arg(&j);
                 }
                 match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
@@ -1792,9 +1903,15 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--wave", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "goal", "setup", "G1", "Run make bootstrap in {task}'s worktree"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "bitbucket", "--user"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "token", "jira"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "jira"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "jira", "J12", "ok", "key=PROJ-1", "status=To Do", "found=yes"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "jira", "J12", "fail", "no", "such", "project"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "jira", "J12", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "Fix it", "--jira", "none"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
     }
 

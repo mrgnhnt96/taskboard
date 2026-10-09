@@ -292,6 +292,15 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["qa"]) => qa::settings(app),
         ("POST", ["qa"]) => app.db.tx(|| qa::set_settings(app, body)),
         ("POST", ["jira", "comment"]) => qa::intake(app, body),
+        ("GET", ["jira"]) => crate::jira_desk::state(app),
+        ("GET", ["jira", "jobs", id]) => {
+            let n = need_ref(&json!(id), "job")?;
+            match app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![n])? {
+                Some(j) => Ok(board::job_dict(&j)),
+                None => err(404, format!("There's no Jira job {}.", rf("job", n))),
+            }
+        }
+        ("POST", ["jira", "jobs", id]) => crate::jira_desk::report(app, need_ref(&json!(id), "job")?, body),
         ("GET", ["qa-comments"]) => {
             let limit = q(query, "limit", "50").parse::<i64>().unwrap_or(50).clamp(1, 200);
             Ok(json!({"on": qa::on(app), "comments": qa::listing(app, limit, as_bool(query.get("waiting").map(|s| json!(s)).as_ref(), false))?}))
@@ -475,6 +484,9 @@ fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
 }
 
 fn close_session_inner(app: &App, s: &Row, force: bool, why: &str) -> Result<Option<i64>> {
+    if crate::jira_desk::is_desk(app, s.s("id"))? && board::task_for_session(app, s.s("id"))?.is_none() {
+        return err(409, "The Jira desk stays open: the board sends it every Jira job.");
+    }
     match board::close_rule(Some(s)) {
         None => return err(404, "That terminal isn't open any more."),
         Some("force") if !force => return err(409, "It's busy. Use Force close to stop what it's doing."),
@@ -740,13 +752,16 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             if k.is_empty() || k.eq_ignore_ascii_case("none") {
                 f.push(("jira_key", Value::Null));
                 f.push(("jira_status", Value::Null));
+                f.push(("jira_none", json!(1)));
             } else if k.eq_ignore_ascii_case("new") {
-                if !has(t.s("jira_key")) {
+                f.push(("jira_none", json!(0)));
+                if !has(t.s("jira_key")) && !jira::ticket_asked(app, id)? {
                     jira::request_create_for_task(app, &t)?;
                     board::log_event(app, id, OWNER, "jira", "Asked Jira for a ticket")?;
                 }
             } else {
                 let key = ops::jira_key(&k)?;
+                f.push(("jira_none", json!(0)));
                 if Some(key.as_str()) != t.s("jira_key") {
                     f.push(("jira_key", json!(key)));
                     f.push(("jira_status", Value::Null));
@@ -1152,13 +1167,17 @@ fn task_jira(app: &App, id: i64, body: &Value) -> Result<Value> {
                 if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
                     return err(409, format!("It already has {k}."));
                 }
+                if jira::ticket_asked(app, id)? {
+                    return err(409, "Its ticket is already being found or made.");
+                }
+                board::update_task(app, id, fields!["jira_none" => 0])?;
                 let j = jira::request_create_for_task(app, &t)?;
                 board::log_event(app, id, OWNER, "jira", "Asked Jira for a ticket")?;
                 extra["job"] = json!(rf("job", j));
             }
             "link" => {
                 let key = ops::jira_key(&body_str(body, "key"))?;
-                board::update_task(app, id, fields!["jira_key" => key, "jira_status" => null])?;
+                board::update_task(app, id, fields!["jira_key" => key, "jira_status" => null, "jira_none" => 0])?;
                 board::bump_ctx(app, id)?;
                 board::log_event(app, id, OWNER, "jira", &format!("Linked {key}"))?;
                 extra["job"] = json!(rf("job", jira::request(app, "status", id, &key, None, None)?));
@@ -1317,7 +1336,10 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         if hk("worktree_base") {
             f.push(("worktree_base", json!(crate::worktrees::clean_base(body.get("worktree_base"))?)));
         }
-        let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr"));
+        if hk("setup") {
+            f.push(("setup", ops::clean_setup(body)));
+        }
+        let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr" | "setup"));
         if !f.is_empty() {
             f.push(("updated_at", json!(now_iso())));
             board::update_goal(app, id, f)?;
