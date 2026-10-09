@@ -330,8 +330,8 @@ pub fn note_rename(app: &App, cur: Option<&Row>, name: Option<&str>) -> Result<(
 }
 
 const SESSION_EVENTS_KEEP: i64 = 300;
-/// The most of a typed prompt kept whole in `session_events.full`; a longer one is clipped there (with
-/// "…"), and the start word check reads a clipped prompt as no one's word.
+/// The most of a typed prompt kept whole in `session_events.full`; a longer one keeps its start and its
+/// end there ([`crate::startword::keep_ends`]), and the start word check reads both.
 pub const PROMPT_FULL_KEEP: usize = 20_000;
 
 pub fn session_event(app: &App, sid: &str, kind: &str, text: &str, at: Option<&str>) -> Result<()> {
@@ -344,7 +344,7 @@ pub fn session_event_with(app: &App, sid: &str, kind: &str, text: &str, at: Opti
         return Ok(());
     }
     // A prompt shows as one line, but the start word check reads it as typed: its lines, and all of it.
-    let full = (kind == "prompt").then(|| clip(text.trim(), PROMPT_FULL_KEEP));
+    let full = (kind == "prompt").then(|| crate::startword::keep_ends(text.trim(), PROMPT_FULL_KEEP));
     let text = if kind == "reply" { clip(text.trim(), 4000) } else { one_line(text, 600) };
     app.db.insert(
         "session_events",
