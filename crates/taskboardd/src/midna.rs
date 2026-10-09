@@ -248,7 +248,7 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     }
     let mut a = a.clone();
     if !has(a.s("settings")) {
-        if let Some(s) = limits::settings_arg(app) {
+        if let Some(s) = crate::builds::settings_arg(app, &cwd) {
             a.insert("settings".into(), json!(s));
         }
     }

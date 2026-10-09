@@ -180,6 +180,12 @@ refuse_message = "The board doesn't take {ext} files as attachments: publish it 
 [terminals]
 background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 
+# Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
+# so many worktree agents don't each cold-build the project with every core at once.
+[builds]
+shared_target = true                 # CARGO_TARGET_DIR = the main checkout's target/, shared by its worktrees; builds take turns and reuse each other
+jobs = 4                             # CARGO_BUILD_JOBS per terminal; 0 leaves cargo's default (every core)
+
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
 # MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`
 # while the branch adds any. A comment whose text starts with a pragma is fine.
@@ -230,8 +236,11 @@ in_review = "In Review"
 done = ""                            # status for a finished task without a PR; empty = leave it
 merged = ""                          # status once its PR merges, e.g. "Ready for QA"; empty = leave it
 via = "rest"                         # "rest" (the API token) or "claude" (the Atlassian connector through claude -p)
-claude_tools = ["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian"]   # the connector's tools, for via = "claude" and the desk:
-                                     # the claude.ai Atlassian connector, and a local Atlassian MCP server
+claude_tools = []                    # the tools for via = "claude" and the desk. Empty: each op gets only the claude.ai
+                                     # Atlassian connector's tools it needs, by exact name (getJiraIssue and executeRead,
+                                     # plus transitionJiraIssue, addOrEditJiraIssueComment, searchJiraIssuesUsingJql or
+                                     # createJiraIssue for the ops that use them). Set, every op gets this list as it is;
+                                     # example: ["mcp__atlassian"] for a local Atlassian MCP server (a server's name allows all its tools)
 claude_model = "haiku"               # Jira ops are mechanical: a small model
 qa_poll_mins = 0                     # minutes between QA's checks for new comments; 0 = 5 over REST, 30 through Claude
 claude_budget_usd = "0.50"

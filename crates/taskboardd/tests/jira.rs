@@ -91,16 +91,33 @@ fn claude_runs_jira_ops_with_the_connector_tools() {
     assert_eq!(b.task(t).st("jira_status"), "In Review");
     let args = b.claude_args();
     assert!(args.contains("Read the status of PROJ-7"), "{args}");
-    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP,mcp__atlassian"), "{args}");
+    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP__getJiraIssue,mcp__claude_ai_Atlassian_MCP__executeRead\n"), "{args}");
     assert!(args.contains("--model\nhaiku"), "{args}");
+    assert!(args.contains("Never create, edit or delete anything else."), "{args}");
 
     // A move it can't make fails the job with Claude's reason.
     jira::request(&b.app, "transition", t, "PROJ-7", Some("Done"), None).unwrap();
     b.answer(json!({"ok": false, "error": "PROJ-7 can't go to Done from In Review"}));
     b.tick();
+    let args = b.claude_args();
+    assert!(args.contains("operation listJiraIssueTransitions"), "{args}");
+    assert!(args.contains(r#"{"issueIdOrKey": "PROJ-7"}"#), "{args}");
+    assert!(args.contains("__executeRead,mcp__claude_ai_Atlassian_MCP__transitionJiraIssue\n"), "{args}");
     let j = b.jobs("kind = 'jira' AND json_extract(args, '$.op') = 'transition'");
     assert_eq!(j[0].st("state"), "failed");
     assert!(j[0].st("result").contains("can't go to Done"), "{}", j[0].st("result"));
+
+    // The owner's own list wins.
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        c.jira.claude_tools = vec!["mcp__atlassian".into()];
+        fake_claude(c, d);
+    });
+    let t = b.new_task(json!({"jira": {"mode": "link", "key": "PROJ-8"}}));
+    b.answer(json!({"ok": true, "status": "To Do"}));
+    b.tick();
+    assert_eq!(b.task(t).st("jira_status"), "To Do");
+    assert!(b.claude_args().contains("--allowedTools\nmcp__atlassian\n"), "{}", b.claude_args());
 }
 
 #[test]
@@ -349,7 +366,10 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     let (args, _) = midna::claude_args(&a).unwrap();
     assert_eq!(args[0], "--allowedTools");
     let rules: Vec<&str> = args[1].split(',').collect();
-    assert_eq!(rules, vec!["mcp__claude_ai_Atlassian_MCP", "mcp__atlassian", "Bash(tb jira:*)", &format!("Bash({tb} jira:*)")]);
+    let server = |n: &str| format!("mcp__claude_ai_Atlassian_MCP__{n}");
+    let (desk_tb, desk_path) = ("Bash(tb jira:*)".to_string(), format!("Bash({tb} jira:*)"));
+    let want = [server("getJiraIssue"), server("executeRead"), server("searchJiraIssuesUsingJql"), server("createJiraIssue"), desk_tb, desk_path];
+    assert_eq!(rules, want.iter().map(String::as_str).collect::<Vec<_>>());
 
     // Every report it's told to run starts with a command an allow rule covers.
     let prefixes: Vec<&str> = rules.iter().filter_map(|r| r.strip_prefix("Bash(")?.strip_suffix(":*)")).collect();
