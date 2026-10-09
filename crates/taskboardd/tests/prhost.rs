@@ -71,7 +71,7 @@ impl Board {
 const BB: &str = "https://bitbucket.org/acme/webapp/pull-requests/9";
 
 fn check(name: &str, state: &str) -> Check {
-    Check { name: name.into(), state: state.into(), url: None }
+    Check { name: name.into(), state: state.into(), url: None, at: None }
 }
 
 fn reviewer(user: &str, state: &str) -> Reviewer {
@@ -554,7 +554,7 @@ fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied()
     ];
     rec.threads = vec![th];
     let h = fake(&b, rec);
-    *h.base_checks.lock() = vec![Check { name: "e2e".into(), state: "failed".into(), url: Some("https://ci.example.com/base/1".into()) }];
+    *h.base_checks.lock() = vec![Check { name: "e2e".into(), state: "failed".into(), url: Some("https://ci.example.com/base/1".into()), at: None }];
     poll(&b);
     h.rec.lock().base_head = "b2".into();
     let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();

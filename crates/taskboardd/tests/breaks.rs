@@ -44,7 +44,7 @@ impl Board {
     fn branch_queued(&self, state: &str, commits: Vec<Commit>, queued: Option<f64>) {
         *self.ci.read.lock() = BranchRead {
             head: commits[0].sha.clone(),
-            checks: vec![Check { name: "build".into(), state: state.into(), url: None }],
+            checks: vec![Check { name: "build".into(), state: state.into(), url: None, at: None }],
             commits,
             queued_at: queued.map(iso),
         };

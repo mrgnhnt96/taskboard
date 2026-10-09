@@ -102,7 +102,7 @@ pub fn green() -> Record {
         branch: "feat".into(),
         base: "main".into(),
         base_head: "b1".into(),
-        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None }],
+        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None, at: None }],
         ..Default::default()
     }
 }

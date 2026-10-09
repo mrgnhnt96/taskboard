@@ -206,7 +206,7 @@ mod tests {
     use std::sync::Arc;
 
     fn check(url: &str) -> Check {
-        Check { name: "ci".into(), state: "failed".into(), url: Some(url.into()) }
+        Check { name: "ci".into(), state: "failed".into(), url: Some(url.into()), at: None }
     }
 
     #[test]
