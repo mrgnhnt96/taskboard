@@ -1107,6 +1107,9 @@ enum ProjectCmd {
         /// Busy terminals the project may have before its queued tasks wait for one to free up (default: config.toml's [terminals] project_max)
         #[arg(long = "max-terminals")]
         max_terminals: Option<String>,
+        /// Other projects whose tasks this project's tasks may wait for (tb wait-for), comma-separated; one way only (none: only its own)
+        #[arg(long = "waits-on")]
+        waits_on: Option<String>,
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
@@ -3885,8 +3888,10 @@ fn project_line(p: &Value) -> String {
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
+    let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{approvals}{expected}{switches}",
+        "{} · PR flow {} · {} · {remote}{terminals}{waits_on}{approvals}{expected}{switches}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -3944,8 +3949,11 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, max_terminals } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, max_terminals, waits_on } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
+            if let Some(w) = waits_on {
+                body.insert("waits_on".into(), json!(w));
+            }
             if let Some(m) = max_terminals {
                 let v = if m.trim().eq_ignore_ascii_case("default") {
                     Value::Null
