@@ -160,7 +160,7 @@ pub fn when_of(t: &Row) -> (Value, &'static str) {
     }
 }
 
-pub fn pr_card(t: &Row) -> Value {
+pub fn pr_card(app: &App, t: &Row) -> Value {
     if !has(t.s("pr_repo")) || t.i("pr_num").is_none() {
         return Value::Null;
     }
@@ -178,13 +178,22 @@ pub fn pr_card(t: &Row) -> Value {
             "pass"
         }
     });
-    let review = rec.as_ref().map(|r| prflow::review_of(&flow, r)).map(|rv| match rv.decision.as_str() {
-        "APPROVED" => "approved",
-        "CHANGES_REQUESTED" => "changes",
-        "REVIEW_REQUIRED" => "pending",
-        _ if rv.approvals > 0 => "approved",
-        _ => "none",
+    // "approved" by the rule the merge goes by (`prflow::approved`): the approvals it needs, else the host's
+    // verdict. Fewer is "pending", with `approvals` saying how many of how many.
+    let need = prflow::approvals_needed(app, t);
+    let rv = rec.as_ref().map(|r| prflow::review_of(&flow, r));
+    let review = rv.as_ref().map(|rv| {
+        if rv.changes || rv.decision == "CHANGES_REQUESTED" {
+            "changes"
+        } else if prflow::approved(app, t, rv) {
+            "approved"
+        } else if rv.decision == "REVIEW_REQUIRED" || rv.approvals > 0 {
+            "pending"
+        } else {
+            "none"
+        }
     });
+    let approvals = rv.as_ref().map(|rv| json!({"have": rv.approvals, "need": need}));
     let state = match t.s("pr_state").unwrap_or("OPEN").to_uppercase().as_str() {
         "MERGED" => "MERGED",
         "OPEN" => "OPEN",
@@ -195,7 +204,7 @@ pub fn pr_card(t: &Row) -> Value {
     json!({
         "host": t.st("pr_host"), "repo": short_repo, "full_repo": repo, "num": t.i0("pr_num"), "url": t.st("pr_url"),
         "state": state, "title": t.v("pr_title"), "checks": checks, "review": review,
-        "stage": prflow::card(t),
+        "approvals": approvals, "stage": prflow::card(t),
     })
 }
 
@@ -228,7 +237,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
     };
     let waits: Vec<Value> = waitsfor::ids(t).into_iter().map(|n| json!(rf("task", n))).collect();
     let waiting = if status == "queued" { waitsfor::waiting_line(app, t)? } else { Value::Null };
-    let mut pr = pr_card(t);
+    let mut pr = pr_card(app, t);
     if pr.is_object() {
         pr["bar"] = crate::prbar::bar(app, t)?;
     }

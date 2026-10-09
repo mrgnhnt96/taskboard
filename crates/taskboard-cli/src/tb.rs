@@ -1294,6 +1294,17 @@ fn mark(state: &str) -> &'static str {
     }
 }
 
+/// The State line's review: "approved" only once it has the approvals it needs; short of them,
+/// "1 of 2 approved".
+fn review_words(pr: &Value) -> String {
+    let review = pr["review"].as_str().unwrap_or("unknown");
+    let (have, need) = (pr["approvals"]["have"].as_i64().unwrap_or(0), pr["approvals"]["need"].as_i64());
+    match need {
+        Some(n) if review == "pending" && have > 0 => format!("{have} of {n} approved"),
+        _ => review.to_string(),
+    }
+}
+
 fn print_pr_status(t: &str, v: &Value) {
     let pr = &v["pr"];
     let live = &v["live"];
@@ -1301,7 +1312,7 @@ fn print_pr_status(t: &str, v: &Value) {
     if let Some(stage) = pr["stage"]["label"].as_str() {
         out(&format!("Stage: {stage}"));
     }
-    out(&format!("State: {} · checks: {} · review: {}", pr["state"].as_str().unwrap_or("?"), pr["checks"].as_str().unwrap_or("unknown"), pr["review"].as_str().unwrap_or("unknown")));
+    out(&format!("State: {} · checks: {} · review: {}", pr["state"].as_str().unwrap_or("?"), pr["checks"].as_str().unwrap_or("unknown"), review_words(pr)));
     if let Some(e) = live["read_error"].as_str() {
         out(&format!("Couldn't read it just now ({e}); this is the last read."));
     }
@@ -4372,6 +4383,17 @@ mod tests {
         assert_eq!(start_said("T4", false, &json!({"status": "queued", "starting": true})), "Opening T4 in a new terminal now.");
         assert_eq!(start_said("T4", true, &json!({"status": "queued", "starting": false})), "T4 starts in a new terminal once its project has a free terminal.");
         assert_eq!(start_said("T4", false, &json!({"status": "working", "who": "Term", "starting": false})), "T4 is on Term.");
+    }
+
+    #[test]
+    fn pr_status_counts_approvals_against_the_ones_needed() {
+        let pr = |review: &str, have: i64, need: Value| json!({"review": review, "approvals": {"have": have, "need": need}});
+        assert_eq!(review_words(&pr("pending", 1, json!(2))), "1 of 2 approved");
+        assert_eq!(review_words(&pr("approved", 2, json!(2))), "approved");
+        assert_eq!(review_words(&pr("pending", 0, json!(2))), "pending");
+        assert_eq!(review_words(&pr("changes", 1, json!(2))), "changes");
+        assert_eq!(review_words(&pr("pending", 1, Value::Null)), "pending", "no count: the host decides");
+        assert_eq!(review_words(&json!({"review": null})), "unknown");
     }
 
     #[test]

@@ -500,8 +500,12 @@ The card is draggable to Working when it's queued/planned, not starting, and not
   "title": str|null,             // PR title (a leading Jira key is trimmed off for display)
   "state": "OPEN"|"MERGED"|"DECLINED",   // upper case; anything not OPEN/MERGED shows as declined/closed
   "checks": "pass"|"fail"|"pending"|"none"|null,   // CI status of the head. none = no checks configured/expected.
-  "review": "approved"|"changes"|"pending"|"none"|null,   // approved = enough approvals; changes = changes requested;
-                                 // pending = reviewers asked, nobody has decided; none = no review asked yet
+  "review": "approved"|"changes"|"pending"|"none"|null,   // approved = the approvals it needs (`approvals.need`; with
+                                 // no count, the host's verdict or any approval), as the merge counts them; changes = changes requested;
+                                 // pending = reviewers asked or some approvals short of the count (`tb pr status`: "review: 1 of 2 approved");
+                                 // none = no review asked yet
+  "approvals": {"have": int, "need": int|null}|null,   // approvals so far against the ones it needs (null need: the host decides);
+                                 // the panel's Review step reads "1 of 2" from it when there's no `bar`
   "stage": {
     "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
                                  // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")

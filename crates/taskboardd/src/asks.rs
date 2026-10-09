@@ -300,7 +300,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         "dropped": dropped.iter().map(|w| json!({"user": w.user, "name": w.name})).collect::<Vec<_>>(),
         "replaced": replaced.as_ref().map(|(o, n)| json!({"old": o.name, "new": n.name})),
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
-        "pr": board::pr_card(&t),
+        "pr": board::pr_card(app, &t),
     }))
 }
 

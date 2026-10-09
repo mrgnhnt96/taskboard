@@ -1061,6 +1061,9 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
         (StepSt::Ask, Some("New comments".into()))
     } else if rv == "approved" {
         (StepSt::Done, Some("Approved".into()))
+    } else if let (Some(have), Some(need)) = (p["approvals"]["have"].as_i64().filter(|n| *n > 0), p["approvals"]["need"].as_i64().filter(|n| *n > 0)) {
+        // Short of the approvals it needs ("approved" says it has them): "1 of 2".
+        (StepSt::Wait, Some(format!("{} of {need}", have.min(need))))
     } else if rv == "pending" {
         (StepSt::Wait, Some("Waiting".into()))
     } else {
@@ -1172,10 +1175,11 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
         step("Review", StepSt::Ask, Some(&words), go)
     } else if (reviewers > 0 || approvals > 0) && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
-        // "1 of 2": out of the approvals it needs, else (the host decides) the reviewers on it.
+        // "1 of 2": out of the approvals it needs, else (the host decides) the reviewers on it; more than
+        // needed still reads "2 of 2".
         let of = bar["need"].as_i64().filter(|n| *n > 0).unwrap_or(reviewers);
         let st = if approvals >= of { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
-        step("Review", st, Some(&format!("{approvals} of {of}")), url)
+        step("Review", st, Some(&format!("{} of {of}", approvals.min(of))), url)
     } else if s(bar, "review") == "setup" && review.1 == StepSt::Todo {
         step("Review", StepSt::Ask, Some("Needs setup"), None)
     } else {
