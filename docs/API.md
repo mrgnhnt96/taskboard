@@ -464,10 +464,12 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
   "review": "approved"|"changes"|"pending"|"none"|null,   // approved = enough approvals; changes = changes requested;
                                  // pending = reviewers asked, nobody has decided; none = no review asked yet
   "stage": {
-    "phase": "checks"|"fix"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
+    "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
                                  // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")
+                                 // ask ([reviewers] ask_stage): the owner reviewed it; reviewers are being asked ("Asking for reviews")
     "label": str,                // plain words, e.g. "Watching checks", "Fixing checks", "Awaiting reviews", "Answering comments", "Merging", "Merged"
-    "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge (links to it)
+    "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge/ask (links to it)
+    "asked": {"at": iso, "names": [str], "by": str} | null,   // who was last asked to review, when, and by whom (the agent, tb, "Task board")
     "stopped": {"asked": bool, "message": str} | null
                                  // optional: that terminal stopped before finishing (asked = it asked you a question).
                                  // Shows "Needs you" and an answer box on the done task; the answer goes through POST /tasks/:id/answer.
@@ -502,8 +504,8 @@ With `bar`, the task panel shows five steps: the review step (named by its `bar`
 
 The task panel shows three steps (Checks, Review, Merge) from `checks`, `review`, `state` and `stage.phase`. A done
 task whose PR is still OPEN shows "Awaiting merge" (or `stage.label`) instead of Done. The original's `build`,
-`review` free text, `review_log`, reviewer lists (now `bar.reviewer_rows`),
-`reviewed_at` and `asked` are gone.
+`review` free text, `review_log`, reviewer lists (now `bar.reviewer_rows`) and
+`reviewed_at` are gone; `asked` is `stage.asked`.
 
 ### `attachment` (from `board.attachment_dict`)
 ```
@@ -831,6 +833,13 @@ reviewer is asked (`fill_in`, once per ask). With `[reviewers] swap = true`, an 
 `swap_after_mins` work minutes on a PR waiting for review is replaced through the host (`PrHost::replace_reviewer`)
 by the picker's choice (`swap`): only inside work hours and never while `asks::feed_holding` (the event feed's
 health gate) says to hold. Each change is logged on the task and the PR is read again.
+
+**The `ask` stage** (`[reviewers] ask_stage`, off by default). Once the owner has marked a green PR reviewed
+(`POST /tasks/:id/pr/reviewed`, "I reviewed it"), its phase is `ask` until reviewers are asked (`pr_flow.asked`).
+In work hours, with `pr.wake` on, the agent is brought back to run `tb pr reviewers` (which finishes the visit);
+otherwise the board picks and asks them itself through the host (asks with `why: "stage"`, by "Task board"),
+retrying after each of `ask_retry_waits` seconds (`pr_flow.ask_tries`, `ask_retry_at`) and alerting once they're
+spent. Then the phase moves on to `review`.
 
 The app's Settings ▸ Reviewers lists each project's roster; it changes nothing.
 

@@ -233,6 +233,10 @@ bot_due_mins = 45.0
 # again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is asked.
 swap = false
 swap_after_mins = 90.0
+# The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The agent is
+# brought back to ask (tb pr reviewers); outside work hours (or with pr.wake off) the board asks itself.
+ask_stage = false
+ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when it can't ask
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a

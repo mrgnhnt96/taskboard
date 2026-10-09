@@ -487,6 +487,78 @@ fn nobody_is_swapped_unless_swapping_is_on_and_the_hours_are_open() {
     assert_eq!(states(&b, id), vec![pair("Ana", "open")], "outside work hours");
 }
 
+fn pr_jobs(b: &Board, id: i64) -> Vec<String> {
+    b.app.db.q("SELECT args FROM jobs WHERE task_id = ? AND purpose = 'pr' ORDER BY id", vec![json!(id)]).unwrap().iter().map(|j| j.st("args")).collect()
+}
+
+/// Work hours that aren't open now: only tomorrow.
+fn closed_hours(b: &Board) {
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap().format("%a").to_string().to_lowercase();
+    b.post("/hours", json!({"on": true, "start": "00:00", "end": "23:59", "days": tomorrow}));
+}
+
+#[test]
+fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    assert!(pr_jobs(&b, id).is_empty());
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    assert_eq!(b.phase(id), "ask");
+    assert_eq!(prflow::label("ask"), "Asking for reviews");
+    let jobs = pr_jobs(&b, id);
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert!(jobs[0].contains("pr reviewers T"), "{}", jobs[0]);
+    assert!(h.calls().iter().all(|c| !c.starts_with("request")), "the agent asks, not the board");
+
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert_eq!(b.phase(id), "review");
+    assert_eq!(b.flow(id)["asked"]["names"].as_array().unwrap().len(), 2);
+    assert!(b.flow(id).get("woke").is_none(), "asking finished the visit");
+    let card = board::task_card(&b.app, &b.task(id)).unwrap();
+    assert_eq!(card["pr"]["stage"]["asked"]["by"], "The agent");
+}
+
+#[test]
+fn outside_work_hours_the_board_asks_for_reviews_itself_and_retries() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    poll(&b);
+    closed_hours(&b);
+    // Nobody on the roster yet: it can't ask, and tries again later.
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    assert_eq!(b.phase(id), "ask");
+    assert_eq!(b.flow(id)["ask_tries"], 1);
+    assert!(pr_jobs(&b, id).is_empty(), "no agent outside work hours");
+    crew(&b);
+    poll(&b);
+    assert_eq!(b.flow(id)["ask_tries"], 1, "it waits a minute first");
+
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.ask_retry_at', '2000-01-01T00:00:00Z')", vec![]).unwrap();
+    poll(&b);
+    assert!(h.calls().contains(&"request {ana},{bo}".to_string()), "{:?}", h.calls());
+    assert_eq!(b.asks(id).iter().map(|a| (a.st("why"), a.st("asked_by"))).collect::<Vec<_>>(),
+               vec![pair("stage", "Task board"), pair("stage", "Task board")]);
+    assert_eq!(b.phase(id), "review");
+    assert_eq!(b.flow(id)["asked"]["names"], json!(["Ana", "Bo"]));
+    assert!(b.flow(id).get("ask_tries").is_none());
+}
+
+#[test]
+fn without_the_ask_stage_the_review_goes_straight_to_reviewers() {
+    let b = board_with(|_| {});
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    poll(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+}
+
 pub fn local_ts(y: i32, m: u32, d: u32, h: u32, min: u32) -> f64 {
     use chrono::TimeZone;
     chrono::Local.with_ymd_and_hms(y, m, d, h, min, 0).single().unwrap().timestamp() as f64

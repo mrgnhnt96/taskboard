@@ -6,8 +6,14 @@
 //! `threads_acked` (thread id → the last comment it was acknowledged at, by `tb pr ack` or a reply to a
 //! comment the host can't resolve), `not_ours` (head → the failed checks cleared for that push, with
 //! the reason and proof), `head_base` (head → the base's commit when that push was first seen),
-//! `swapped_off` (reviewers taken off the PR, whose requests for changes no longer hold) and
-//! `addressed` (the last `tb pr addressed`).
+//! `swapped_off` (reviewers taken off the PR, whose requests for changes no longer hold),
+//! `addressed` (the last `tb pr addressed`) and `asked` (who was last asked to review, when and by
+//! whom: `asks.rs`; the `ask` stage waits for it).
+//!
+//! The `ask` stage (`[reviewers] ask_stage`): once the owner has looked at a green PR ("I reviewed
+//! it"), the PR waits for reviewers to be asked. The agent is brought back to run `tb pr reviewers`;
+//! when it can't be (outside work hours, or `pr.wake` off), the board asks them itself
+//! (`asks::stage`).
 
 use std::path::Path;
 
@@ -17,8 +23,8 @@ use crate::app::App;
 use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner};
 
-pub const WAKE: &[&str] = &["fix", "comments", "merge"];
-pub const IN_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits"];
+pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
+pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "merge", "waits"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -28,6 +34,7 @@ pub fn label(phase: &str) -> &str {
     match phase {
         "checks" => "Watching checks",
         "fix" => "Fixing checks",
+        "ask" => "Asking for reviews",
         "review" => "Awaiting review",
         "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
@@ -96,6 +103,7 @@ pub fn card(t: &Row) -> Value {
         "review_decision": rec.get("review_decision").cloned().unwrap_or(Value::Null),
         "checked_at": f.v("checked_at"),
         "awaiting_you": t.s("status") == Some("done") && awaiting_owner(t),
+        "asked": f.v("asked"),
     })
 }
 
@@ -288,6 +296,12 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
         "merge" => format!(
             "It's approved and every check is green. Merge it with {tb} pr merge {r}: it checks the PR once more, then \
              merges it with the repository's default strategy and deletes its branch."
+        ),
+        "ask" => format!(
+            "{} has reviewed it. Ask for reviews with {tb} pr reviewers {r}: the board picks the reviewers (a main \
+             contributor of the changed files, then whoever's turn it is) and asks them on the PR. To ask someone in \
+             particular, add --ask <name>. It finishes the visit.",
+            app.cfg.owner
         ),
         _ => String::new(),
     };
@@ -570,6 +584,9 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if review_skipped || approved(app, t, &review) {
         // A stacked PR waits for the PR it builds on to merge first (`stack.rs`).
         return if crate::stack::holds(app, t).unwrap_or(false) { "waits" } else { "merge" }.into();
+    }
+    if app.cfg.reviewers.ask_stage && f.contains_key("reviewed") && !f.contains_key("asked") {
+        return "ask".into();
     }
     "review".into()
 }

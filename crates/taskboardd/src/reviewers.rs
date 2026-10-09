@@ -121,6 +121,11 @@ pub struct ReviewersConfig {
     /// Replace a reviewer who hasn't reviewed within `swap_after_mins` work minutes (through the host).
     pub swap: bool,
     pub swap_after_mins: f64,
+    /// After the owner's own review, the PR waits in the `ask` stage until reviewers are asked:
+    /// the agent asks (`tb pr reviewers`), or outside work hours the board does.
+    pub ask_stage: bool,
+    /// Seconds between the board's tries when its own ask fails.
+    pub ask_retry_waits: Vec<i64>,
 }
 
 impl Default for ReviewersConfig {
@@ -149,6 +154,8 @@ impl Default for ReviewersConfig {
             bot_due_mins: 45.0,
             swap: false,
             swap_after_mins: 90.0,
+            ask_stage: false,
+            ask_retry_waits: vec![60, 300, 900],
         }
     }
 }

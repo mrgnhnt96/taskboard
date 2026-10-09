@@ -494,3 +494,15 @@ fn reviewer_pills_show_each_reviewers_state() {
         assert!(text.contains(want), "{want:?} in {text}");
     }
 }
+
+#[::core::prelude::v1::test]
+fn reviewer_pills_say_when_each_was_asked_and_the_ask_stage_shows_its_bar() {
+    let at = crate::fmt::now().to_rfc3339();
+    let rows = json!([{"name": "Ana", "user": "ana", "state": "waiting", "swaps": 0, "asked_at": at}]);
+    let bar = json!({"approvals": 0, "reviewers": 1, "new_comments": 0, "reviewer_rows": rows});
+    let text = panel_text(with_bar(bar, json!({"phase": "ask", "label": "Asking for reviews"}), "pending"), json!({}));
+    let when = crate::fmt::hhmm(&at);
+    assert!(when.ends_with("AM") || when.ends_with("PM"), "{when}");
+    assert!(text.contains(&format!("Ana Waiting Asked {when}")), "{text}");
+    assert!(text.contains("Asking for reviews"), "{text}");
+}

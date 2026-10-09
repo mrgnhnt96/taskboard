@@ -238,6 +238,10 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         if !names.is_empty() || picking {
             note_asked(app, id, &names, &by)?;
         }
+        // At the `ask` stage, asking finishes the agent's visit.
+        if t.s("pr_phase") == Some("ask") {
+            prflow::waited(app, &t)?;
+        }
         Ok(())
     })?;
     let _ = prflow::refresh_task(app, id)?;
@@ -250,6 +254,111 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
         "pr": board::pr_card(&t),
     }))
+}
+
+/// Whether the agent asks at this PR's `ask` stage: it's being (or will be) brought back in hours.
+fn agent_asks(app: &App, t: &Row) -> Result<bool> {
+    if prflow::waking(app, t)? {
+        return Ok(true);
+    }
+    Ok(app.cfg.pr.wake && crate::hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()))
+}
+
+/// The `ask` stage without an agent: outside work hours (or with `pr.wake` off) the board picks
+/// and asks the reviewers itself, retrying after each of `ask_retry_waits` when it can't.
+pub fn stage(app: &App) -> Result<()> {
+    if !app.cfg.reviewers.ask_stage {
+        return Ok(());
+    }
+    for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND pr_phase = 'ask' AND pr_num IS NOT NULL", vec![])? {
+        if let Err(e) = stage_one(app, &t) {
+            app.info(format!("reviewers: asking for {}: {}", rf("task", t.id()), e.message));
+        }
+    }
+    Ok(())
+}
+
+fn stage_one(app: &App, t: &Row) -> Result<bool> {
+    if agent_asks(app, t)? {
+        return Ok(false);
+    }
+    let f = flow(t);
+    if f.s("ask_retry_at").is_some_and(|r| r > now_iso().as_str()) {
+        return Ok(false);
+    }
+    let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { return Ok(false) };
+    let pr = pr_of(t)?;
+    let n = wanted(app, t, &rec, None);
+    let tried: std::result::Result<Vec<(Who, String)>, String> = (|| {
+        let picks = pick(app, t, &rec, n, &[]).map_err(|e| e.message)?;
+        if picks.is_empty() && n > 0 && on_pr(&f, &rec).is_empty() {
+            return Err(format!("nobody on {}'s roster can review it", t.st("project")));
+        }
+        if !picks.is_empty() {
+            let users: Vec<String> = picks.iter().map(|(w, _)| w.user.clone()).collect();
+            prhost::host_for(app, &pr.host)?.request_reviews(&pr, &users)?;
+        }
+        Ok(picks)
+    })();
+    match tried {
+        Ok(picks) => {
+            app.db.tx(|| {
+                let names: Vec<String> = picks.iter().map(|(w, _)| w.name.clone()).collect();
+                for (w, _) in &picks {
+                    if reviewers::open_ask(app, t.id(), &w.user)?.is_none() {
+                        reviewers::record_ask(app, t, &w.user, &w.name, "stage", board::BOARD, None)?;
+                    }
+                }
+                note_asked(app, t.id(), &names, board::BOARD)?;
+                let text = if names.is_empty() {
+                    format!("PR #{} already has its reviewers", pr.num)
+                } else {
+                    format!("Asked {} to review PR #{}", names.join(", "), pr.num)
+                };
+                reviewers::note(app, t, board::BOARD, &text)
+            })?;
+            let _ = prflow::refresh_task(app, t.id())?;
+            Ok(true)
+        }
+        Err(e) => {
+            let waits = &app.cfg.reviewers.ask_retry_waits;
+            let tries = f.i0("ask_tries") + 1;
+            let wait = waits.get((tries as usize).min(waits.len().max(1)) - 1).copied().unwrap_or(900);
+            app.db.tx(|| {
+                prflow::merge_flow(app, t.id(), fields!["ask_tries" => tries, "ask_retry_at" => iso(now_ts() + wait as f64)])?;
+                let e = e.trim_end_matches(['.', ' ']);
+                reviewers::note(app, t, board::BOARD, &format!("Couldn't ask for reviews on PR #{}: {e}. Trying again in {}", pr.num, plural((wait / 60).max(1), "minute")))?;
+                if tries == waits.len() as i64 {
+                    crate::dispatch::add_alert(
+                        app,
+                        &format!("The board couldn't ask for reviews on PR #{} for {} after {tries} tries: {e}.", pr.num, rf("task", t.id())),
+                        Some(t.id()),
+                        t.i("goal_id"),
+                        None,
+                        Some("pr"),
+                    )?;
+                }
+                Ok(())
+            })?;
+            Ok(false)
+        }
+    }
+}
+
+/// "I reviewed it": with the `ask` stage on, the PR moves to it now, and the board asks at once
+/// when no agent will.
+pub fn after_reviewed(app: &App, id: i64) -> Result<()> {
+    if !app.cfg.reviewers.ask_stage {
+        return Ok(());
+    }
+    let t = board::get_task(app, id)?;
+    let Some(rec) = flow(&t).get("rec").filter(|r| r.is_object()).cloned() else { return Ok(()) };
+    app.db.tx(|| prflow::step(app, &t, &rec).map(|_| ()))?;
+    let t = board::get_task(app, id)?;
+    if t.s("pr_phase") == Some("ask") && t.s("status") == Some("done") {
+        stage_one(app, &t)?;
+    }
+    Ok(())
 }
 
 /// The event feed (#3) says the PR reads can't be trusted right now: the sweep then swaps nobody.
@@ -280,6 +389,7 @@ fn answer_of(rec: &Value, user: &str) -> Option<String> {
 ///   event feed is holding ([`feed_holding`]).
 pub fn sweep(app: &App) -> Result<()> {
     app.db.tx(|| crate::botrun::note_runs(app))?;
+    stage(app)?;
     let tasks = app.db.q("SELECT DISTINCT t.* FROM tasks t JOIN review_asks a ON a.task_id = t.id WHERE a.state IN ('open', 'swapped')", vec![])?;
     for t in tasks {
         let f = flow(&t);

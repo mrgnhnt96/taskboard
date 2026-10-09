@@ -238,6 +238,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                 alerts::clear_alerts(app, Some(t), None)?;
                 alerts::prune_alerts(app)
             })?;
+            crate::asks::after_reviewed(app, t)?;
             task_detail(app, t)
         }
         ("POST", ["done", "close-terminals"]) => close_done_terminals(app, body, query),

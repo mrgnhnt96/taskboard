@@ -1270,3 +1270,15 @@ mod tests {
         .unwrap();
     }
 }
+
+#[cfg(test)]
+mod reviewer_tests {
+    use serde_json::json;
+
+    #[test]
+    fn a_reviewer_row_says_their_accounts_bot_pace_and_why_they_are_removed() {
+        let r = json!({"name": "Ana", "user": "ana", "emails": ["ana@acme.com"], "aliases": [], "bot": {"every_h": 4.0}, "automation": 2.0,
+                       "median_work_mins": 75.0, "open_asks": 1, "removed": true, "removed_why": "left the team"});
+        assert_eq!(super::reviewer_note(&r), "ana, ana@acme.com · Bot every 4h · Automation 2 · Reviews in 1h 15m · 1 open · Removed: left the team");
+    }
+}
