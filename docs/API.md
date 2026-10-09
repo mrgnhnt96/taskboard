@@ -657,7 +657,9 @@ Every one answers with `GET /accounts`'s `{"accounts": […]}`.
 
 ## QA comments (optional)
 
-Off until Settings ▸ QA switches it on; needs Jira. `qa_comment`:
+Off until Settings ▸ QA switches it on; needs Jira. Every `[jira] qa_poll_mins` (0: 5 minutes over REST, 30 through
+Claude) the board makes one search, `key in (<its tickets>) AND updated >= -<N>m`, and reads the new comments of the
+tickets it finds; with `via = "claude"` that whole check is one `claude -p`, told the current UTC time. `qa_comment`:
 ```
 {"id": int, "ref": "Q3", "jira_key": "PROJ-7", "comment_id": str, "url": str, "author": str|null,
  "verdict": "task"|"flag"|"none"|null,   // null: still being read

@@ -595,26 +595,40 @@ fn comment_row(key: &str, id: &Value, created: &Value, author: Value, text: Stri
     json!({"key": key, "id": id.as_str().map(|s| s.to_string()).unwrap_or_else(|| id.to_string()), "created": created, "author": author, "text": text})
 }
 
-/// QA: the comments on these tickets made in the last `minutes`, each as {key, id, created, author:
+/// The one search QA makes per check: the board's tickets updated in the last `minutes`.
+pub fn recent_jql(keys: &[String], minutes: i64) -> String {
+    format!("key in ({}) AND updated >= -{minutes}m", keys.join(","))
+}
+
+/// QA: the comments on these tickets made in the last `minutes` (one search, then the comments of
+/// the tickets it finds; through Claude, all of it in one call), each as {key, id, created, author:
 /// {displayName, accountId, emailAddress}, text}.
 pub fn recent_comments(app: &App, keys: &[String], minutes: i64) -> std::result::Result<Vec<Value>, String> {
     if !app.cfg.jira_on() {
         return Err("Jira isn't set up".into());
     }
+    let jql = recent_jql(keys, minutes);
     if app.cfg.jira_via_claude() {
-        let d = crate::jira_claude::run(app, "comments", &json!({"keys": keys.join(", "), "minutes": minutes}))?;
+        let now = now_ts();
+        let input = json!({"jql": jql, "now": iso(now), "after": iso(now - minutes as f64 * 60.0)});
+        let d = crate::jira_claude::run(app, "comments", &input)?;
+        let after = now - minutes as f64 * 60.0;
+        let asked = |c: &&Value| {
+            let on_board = c["key"].as_str().is_some_and(|k| keys.iter().any(|x| x.eq_ignore_ascii_case(k)));
+            on_board && !c["created"].as_str().and_then(comment_time).is_some_and(|t| t < after)
+        };
         return Ok(d["comments"]
             .as_array()
             .cloned()
             .unwrap_or_default()
             .iter()
+            .filter(asked)
             .map(|c| {
                 let author = json!({"displayName": c["author"], "accountId": c["author_account_id"], "emailAddress": c["author_email"]});
                 comment_row(c["key"].as_str().unwrap_or(""), &c["id"], &c["created"], author, c["text"].as_str().unwrap_or("").to_string())
             })
             .collect());
     }
-    let jql = format!("key in ({}) AND updated >= -{minutes}m", keys.join(","));
     let found = api(app, "POST", "search/jql", Some(json!({"jql": jql, "fields": ["summary"], "maxResults": 100})))?;
     let mut out = vec![];
     for issue in found["issues"].as_array().cloned().unwrap_or_default() {

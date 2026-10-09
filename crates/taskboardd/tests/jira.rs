@@ -29,10 +29,10 @@ fn board_with(f: impl FnOnce(&mut Config, &std::path::Path)) -> Board {
     Board { app, dir }
 }
 
-/// A `claude` that answers whatever `answer.json` holds and keeps its arguments in `args.txt`.
+/// A `claude` that answers whatever `answer.json` holds and keeps its arguments in `args.txt` (every call's in `all-args.txt`).
 fn fake_claude(cfg: &mut Config, dir: &std::path::Path) {
     let path = dir.join("fake-claude");
-    std::fs::write(&path, "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$d/args.txt\"\ncat \"$d/answer.json\"\n").unwrap();
+    std::fs::write(&path, "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$@\" > \"$d/args.txt\"\ncat \"$d/args.txt\" >> \"$d/all-args.txt\"\ncat \"$d/answer.json\"\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     cfg.claude = path.to_string_lossy().to_string();
@@ -91,7 +91,8 @@ fn claude_runs_jira_ops_with_the_connector_tools() {
     assert_eq!(b.task(t).st("jira_status"), "In Review");
     let args = b.claude_args();
     assert!(args.contains("Read the status of PROJ-7"), "{args}");
-    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian,mcp__atlassian"), "{args}");
+    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP,mcp__atlassian"), "{args}");
+    assert!(args.contains("--model\nhaiku"), "{args}");
 
     // A move it can't make fails the job with Claude's reason.
     jira::request(&b.app, "transition", t, "PROJ-7", Some("Done"), None).unwrap();
@@ -123,6 +124,37 @@ fn claude_finds_or_makes_a_ticket_and_picks_the_product() {
     assert_eq!(board::get_goal(&b.app, g).unwrap().st("product"), "ios", "the goal takes the product picked for it");
     let log = b.get(&format!("/tasks/T{t}/log"));
     assert!(log.to_string().contains("Linked PROJ-9 (To Do), which already covers it"), "{log}");
+}
+
+#[test]
+fn qa_checks_jira_through_claude_with_one_batched_search() {
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        fake_claude(c, d);
+    });
+    assert_eq!(b.app.cfg.qa_poll_secs(), 30.0 * 60.0, "through Claude, every 30 minutes");
+    let t = b.new_task(json!({}));
+    board::update_task(&b.app, t, fields!["jira_key" => "PROJ-7"]).unwrap();
+    b.app.db.set_setting("qa_on", Some("1")).unwrap();
+    b.app.db.set_setting("qa_since", Some(&taskboardd::util::iso(taskboardd::util::now_ts() - 3600.0))).unwrap();
+    let recent = taskboardd::util::iso(taskboardd::util::now_ts() - 60.0);
+    let old = taskboardd::util::iso(taskboardd::util::now_ts() - 5.0 * 3600.0);
+    b.answer(json!({"ok": true, "comments": [
+        {"key": "PROJ-7", "id": "501", "created": recent, "author": "Sam QA", "text": "The button is still grey"},
+        {"key": "PROJ-7", "id": "502", "created": old, "author": "Sam QA", "text": "Old"},
+        {"key": "PROJ-99", "id": "503", "created": recent, "author": "Sam QA", "text": "Not ours"},
+    ]}));
+    assert_eq!(taskboardd::qa::poll(&b.app).unwrap(), 1);
+    let args = std::fs::read_to_string(b.dir.path().join("all-args.txt")).unwrap();
+    assert_eq!(args.matches("Make exactly one JQL search").count(), 1, "one Jira call per check: {args}");
+    assert!(args.contains("Make exactly one JQL search, with this query as it is: key in (PROJ-7) AND updated >= -65m"), "{args}");
+    assert!(args.contains("UTC now"), "{args}");
+    assert!(args.contains("--model\nhaiku"), "{args}");
+
+    let rest = board_with(|_, _| {});
+    assert_eq!(rest.app.cfg.qa_poll_secs(), 5.0 * 60.0);
+    let mins = board_with(|c, _| c.jira.qa_poll_mins = 12);
+    assert_eq!(mins.app.cfg.qa_poll_secs(), 12.0 * 60.0);
 }
 
 #[test]

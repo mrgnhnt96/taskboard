@@ -17,8 +17,6 @@ use crate::{board, dispatch, fields, jira, ops, p, proc};
 const ON_KEY: &str = "qa_on";
 const SINCE_KEY: &str = "qa_since";
 const CHECKED_KEY: &str = "qa_checked_at";
-/// How often the board asks Jira for new comments.
-const POLL_SECS: f64 = 5.0 * 60.0;
 /// Tickets of tasks finished within this long are watched.
 const WATCH_DAYS: f64 = 30.0;
 const RETRY_SECS: f64 = 5.0 * 60.0;
@@ -422,7 +420,7 @@ pub fn resolve(app: &App, c: &Row, action: &str, who: &str, note: Option<&str>, 
     }
 }
 
-/// Each runner tick: ask Jira for new comments every few minutes, and retry comments that couldn't be read.
+/// Each runner tick: ask Jira for new comments every `qa_poll_mins`, and retry comments that couldn't be read.
 pub fn tick(app: &App) -> Result<()> {
     if !on(app) {
         return Ok(());
@@ -434,7 +432,7 @@ pub fn tick(app: &App) -> Result<()> {
         }
     }
     let checked = app.db.get_setting(CHECKED_KEY)?;
-    if checked.as_deref().map(|c| age_secs(Some(c)).unwrap_or(f64::MAX) < POLL_SECS).unwrap_or(false) {
+    if checked.as_deref().map(|c| age_secs(Some(c)).unwrap_or(f64::MAX) < app.cfg.qa_poll_secs()).unwrap_or(false) {
         return Ok(());
     }
     app.db.set_setting(CHECKED_KEY, Some(&now_iso()))?;
@@ -465,7 +463,7 @@ pub fn poll(app: &App) -> std::result::Result<usize, String> {
         return Ok(0);
     }
     // Jira's JQL takes minutes, not seconds: look back a little past the last check.
-    let comments = jira::recent_comments(app, &keys, (POLL_SECS / 60.0) as i64 * 2 + 5)?;
+    let comments = jira::recent_comments(app, &keys, (app.cfg.qa_poll_secs() / 60.0) as i64 * 2 + 5)?;
     let since = parse_iso(&since).unwrap_or(0.0);
     let mut new = 0;
     for cm in comments {
