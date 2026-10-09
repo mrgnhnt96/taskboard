@@ -128,6 +128,13 @@ pub fn set_task_ships_pr(app: &App, t: &Row, v: &Value, who: &str) -> Result<boo
     if want == t.i("ships_pr") {
         return Ok(false);
     }
+    let ends_in_pr = match want {
+        Some(v) => v != 0,
+        None => ships_prs(app, &t.st("project"))?,
+    };
+    if !ends_in_pr {
+        crate::stack::refuse_no_pr(app, t)?;
+    }
     crate::board::update_task(app, t.id(), crate::fields!["ships_pr" => want])?;
     let text = match want {
         Some(1) => "Ends in a PR".to_string(),

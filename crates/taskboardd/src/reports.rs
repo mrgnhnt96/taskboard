@@ -1050,6 +1050,7 @@ fn on_done(r: &mut Report) -> Result<Value> {
         if !projects::task_ships_pr(r.app, &t)? {
             return err(409, format!("{} doesn't end in a PR, so there's none to cancel: finish with tb done \"<summary>\".", rf("task", t.id())));
         }
+        crate::stack::refuse_no_pr(r.app, &t)?;
         board::update_task(r.app, t.id(), fields!["no_pr" => no_pr])?;
         r.log(t.id(), "status", &format!("PR canceled: {no_pr}"), None)?;
     }

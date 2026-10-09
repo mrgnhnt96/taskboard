@@ -440,7 +440,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
   "waits_for": ["T14"],           // tasks it starts after
-  "waits_for_state": [{"ref": "T14", "done": bool}],   // the same, each with whether it's done; the goal page's "Waits for" chip
+  "waits_for_state": [{"ref": "T14", "done": bool, "stack": bool}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done; the goal page's "Waits for" chip
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
   "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
@@ -490,7 +490,8 @@ The card is draggable to Working when it's queued/planned, not in a goal and not
     "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
     "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
     "stacks_on": stack_on|null,
-    "retargeted": str|null,      // the base the board pointed it at once its parent merged (or "failed: …")
+    "retargeted": str|null,      // the base the board pointed it at once its parent merged
+    "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
     "wd": step_result|null,      // the author-side review step (a step with `bar`), on GET /tasks/:id only
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int}]
                                  // one pill per reviewer still on the PR, from the host's reviewer states
@@ -792,8 +793,11 @@ Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. T
 `origin/<parent branch>`, the handoff says to cut its branch from there and open the PR into it, `{base}` is the
 parent's branch, and once its PR is approved and green its phase is `waits` ("Waits on base") instead of `merge`.
 When the parent's PR merges (the watcher sees it, or `POST /tasks/:id/pr/merged`), the board points each open stacked
-PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucket) once, logs it, and alerts if it couldn't; the stacked task is told to
-rebase as for any `waits_for`.
+PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucket) once, and logs it. A failed move
+is kept in `pr_flow.retarget_error` and tried again on later refreshes after 1, 5, 15, then every 60 minutes
+(`retarget_at`); its alert (key `retarget:T<n>`) is raised once and clears when the move works. The stacked task is told to
+rebase as for any `waits_for`. A task others still stack on (open, or done with their PR open) can't be set to end
+without a PR (`--pr no`, `tb done --no-pr`): the 409 names them.
 
 **The PR plan** (`tasks.ships_pr`): `tb task new --pr|--no-pr`, `tb task set --pr yes|no|auto`. The handoff and steps
 use it instead of the project's default.

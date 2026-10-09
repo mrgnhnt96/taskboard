@@ -65,6 +65,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "waits_on_base": t.s("pr_phase") == Some("waits"),
         "stacks_on": stack::card(app, t)?,
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
+        "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
         "wd": Value::Null,
         "reviewer_rows": rows,
     }))

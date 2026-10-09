@@ -248,7 +248,9 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "position": position,
         "starting": t.i("start_job").is_some() && status == "queued",
         "waits_for": waits,
-        "waits_for_state": waitsfor::ids(t).into_iter().map(|n| Ok(json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref())}))).collect::<Result<Vec<_>>>()?,
+        // What it waits for, and the task it stacks on (`stack: true`).
+        "waits_for_state": waitsfor::deps(t).into_iter().map(|n| Ok(json!({"ref": rf("task", n), "done": waitsfor::ready(find_task(app, Some(n))?.as_ref()),
+                                                                           "stack": crate::stack::parent_id(t) == Some(n)}))).collect::<Result<Vec<_>>>()?,
         "locks": crate::locks::names(t),
         "alone": t.v("alone"),
         "waiting": waiting,
