@@ -34,7 +34,7 @@
 //! [`Record`] is one read of a PR. [`Record::to_value`] turns it into the JSON the PR flow keeps as
 //! `pr_flow.rec` and steps on (`prflow::phase_of`): `state`, `head`, `branch`, `base`, `base_head`,
 //! `checks` (`name`, `state` = passed / failed / running / stopped, `url`), `failed`, `running`,
-//! `comments` (comments from others), `approvals`, `review_decision`, `changes_at`, `reviewers`,
+//! `comments` (comments from others), `approvals` (not the author's or the board's own account's), `review_decision`, `changes_at`, `reviewers`,
 //! `threads`, `tasks_open`, `tasks_error`, `viewer`. A thread ([`Thread`]) is open while it's unresolved
 //! and someone other than the board's own account (`viewer`, the account it posts as; the PR's author
 //! when that isn't known) had the last word; a PR task (Bitbucket) is open until it's resolved. When the
@@ -210,6 +210,14 @@ impl Record {
             &self.author
         } else {
             &self.viewer
+        }
+    }
+
+    /// Recounts `approvals` without the board's own account (`viewer`): like the PR's author, its
+    /// approval doesn't count toward the ones a PR needs.
+    pub fn leave_out_viewer(&mut self) {
+        if !self.viewer.is_empty() {
+            self.approvals = self.reviewers.iter().filter(|r| r.state == "approved" && r.user != self.viewer).count() as i64;
         }
     }
 
@@ -521,6 +529,17 @@ mod tests {
         assert_eq!(r.us(), "bot");
         let t = Thread { kind: "review".into(), last_author: "bot".into(), ..Default::default() };
         assert!(!t.waiting_on(r.us()), "the board's account answered last, though it isn't the PR's author");
+    }
+
+    #[test]
+    fn the_board_s_own_approval_doesn_t_count() {
+        let rv = |user: &str| Reviewer { user: user.into(), state: "approved".into(), ..Default::default() };
+        let mut r = Record { author: "me".into(), approvals: 2, reviewers: vec![rv("bot"), rv("rev")], ..Default::default() };
+        r.leave_out_viewer();
+        assert_eq!(r.approvals, 2, "the board's account isn't known yet");
+        r.viewer = "bot".into();
+        r.leave_out_viewer();
+        assert_eq!(r.approvals, 1);
     }
 
     #[test]
