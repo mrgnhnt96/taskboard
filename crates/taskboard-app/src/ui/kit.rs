@@ -88,11 +88,6 @@ pub fn tone_pill(t: &Theme, name: &str, text: impl Into<SharedString>) -> Div {
     pill(fg, bg, text)
 }
 
-/// A thin horizontal divider.
-pub fn divider(t: &Theme) -> Div {
-    div().h(px(1.)).w_full().flex_none().bg(t.divider)
-}
-
 // ------------------------------------------------------------------ buttons
 
 fn btn_base(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
@@ -356,18 +351,8 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 /// The web board's inline SVG icons (`ICON.*` in `app.js`), drawn on a 24-unit grid.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Glyph {
-    /// `ICON.flag` (stroke 2.2).
-    Flag,
     /// `ICON.x` (stroke 2.2).
     X,
-    /// `ICON.fwd`: a right chevron (stroke 2.2).
-    Fwd,
-    /// `ICON.more`: three filled dots.
-    More,
-    /// `ICON.jira`: a ticket (stroke 2.4).
-    Jira,
-    /// `ICON.pr`: a pull request (stroke 2.4).
-    Pr,
 }
 
 /// A [`Glyph`] `size` px square in `color`.
@@ -388,48 +373,10 @@ pub fn glyph(g: Glyph, size: f32, color: Hsla) -> impl IntoElement {
                     window.paint_path(p, color);
                 }
             };
-            let ring = |cx: f32, cy: f32, r: f32| -> Vec<(f32, f32)> {
-                (0..=24).map(|i| i as f32 * std::f32::consts::TAU / 24.).map(|a| (cx + r * a.cos(), cy + r * a.sin())).collect()
-            };
             match g {
-                Glyph::Flag => {
-                    stroke(&[(5., 21.), (5., 4.)], 2.2, window);
-                    stroke(&[(5., 4.), (16., 4.), (14., 8.), (16., 12.), (5., 12.)], 2.2, window);
-                }
                 Glyph::X => {
                     stroke(&[(6., 6.), (18., 18.)], 2.2, window);
                     stroke(&[(18., 6.), (6., 18.)], 2.2, window);
-                }
-                Glyph::Fwd => stroke(&[(9., 6.), (15., 12.), (9., 18.)], 2.2, window),
-                Glyph::More => {
-                    for x in [5., 12., 19.] {
-                        let mut p = PathBuilder::fill();
-                        let pts = ring(x, 12., 1.8);
-                        p.move_to(u(pts[0].0, pts[0].1));
-                        for (x, y) in &pts[1..] {
-                            p.line_to(u(*x, *y));
-                        }
-                        p.close();
-                        if let Ok(p) = p.build() {
-                            window.paint_path(p, color);
-                        }
-                    }
-                }
-                Glyph::Jira => {
-                    stroke(&[(4., 6.), (20., 6.), (20., 18.), (4., 18.), (4., 6.)], 2.4, window);
-                    stroke(&[(8., 10.), (16., 10.)], 2.4, window);
-                    stroke(&[(8., 14.), (13., 14.)], 2.4, window);
-                }
-                Glyph::Pr => {
-                    for (x, y) in [(6., 6.), (6., 18.), (18., 18.)] {
-                        stroke(&ring(x, y, 2.5), 2.4, window);
-                    }
-                    stroke(&[(6., 8.5), (6., 15.5)], 2.4, window);
-                    // M18 15.5V9a3 3 0 0 0-3-3h-4
-                    let mut pts = vec![(18., 15.5), (18., 9.)];
-                    pts.extend((1..=6).map(|i| i as f32 * std::f32::consts::FRAC_PI_2 / 6.).map(|a| (15. + 3. * a.cos(), 9. - 3. * a.sin())));
-                    pts.push((11., 6.));
-                    stroke(&pts, 2.4, window);
                 }
             }
         },

@@ -3,6 +3,7 @@ pub mod backlog;
 pub mod board;
 pub mod days;
 pub mod goal;
+pub mod home;
 pub mod hours;
 pub mod issue_panel;
 pub mod kit;
