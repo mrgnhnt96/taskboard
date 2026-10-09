@@ -124,10 +124,12 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<LineCmd>,
     },
-    /// Start a task, only when the human told you to in this conversation (the board checks their prompts)
+    /// Start a task, or run a goal (G<n>), only when the human told you to in this conversation (the board
+    /// checks their prompts for a task). A goal runs its tasks in their waves; never start them one by one.
     Start {
+        /// T<n>, or G<n> for a goal
         task: String,
-        /// Queue it to start when its repo is free, instead of now in a new terminal
+        /// Queue the task to start when its repo is free, instead of now in a new terminal
         #[arg(long)]
         queue: bool,
     },
@@ -2879,14 +2881,24 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Start { task, queue } => {
+            if task.trim().starts_with(['G', 'g']) {
+                let g = goal_ref(&task)?;
+                let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({})))?;
+                let n = v["queued_now"].as_i64().unwrap_or(0);
+                out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
+                return Ok(0);
+            }
             let r = task_ref(&task)?;
             if c.session.is_empty() {
                 return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {r} on the board."));
             }
             let mode = if queue { "queue" } else { "new" };
-            let v = c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
-            let status = v["status"].as_str().unwrap_or("");
-            out(&format!("{} {r}{}.", if queue { "Queued" } else { "Starting" }, if status.is_empty() { String::new() } else { format!(" ({status})") }));
+            c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
+            out(&if queue {
+                format!("{r} starts in a new terminal once its repo is free.")
+            } else {
+                format!("Opening {r} in a new terminal now.")
+            });
             Ok(0)
         }
         Cmd::Status { t } => {

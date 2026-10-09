@@ -1005,6 +1005,7 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     }
     // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's,
     // and only the app's own request is that; any other caller with no terminal is no one's word.
+    let t = board::get_task(app, id)?;
     let via = body_str(body, "via_session");
     let started = if via.is_empty() {
         if !from_app(query) {
@@ -1020,10 +1021,14 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         "Started in the UI".to_string()
     } else {
         if crate::startword::owners_word(app, &via, id)?.is_none() {
+            // An ask for the goal ("start the goal") is no word for each of its tasks; the goal runs them.
+            let goal = board::find_goal(app, t.i("goal_id"))?
+                .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
+                .unwrap_or_default();
             return err(
                 403,
                 format!(
-                    "Only a human can start {}: nobody asked for it in this terminal's conversation. {} can press Start on the board, or tell you to start it.",
+                    "Only a human can start {}: nobody asked for it in this terminal's conversation. {} can press Start on the board, or tell you to start it.{goal}",
                     rf("task", id),
                     app.cfg.owner
                 ),
@@ -1031,6 +1036,10 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         }
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
+    // Starting ahead of its wave or its turn is fine; ahead of the work it needs is not.
+    if let Some(b) = crate::waitsfor::blocker(app, &t)? {
+        return err(409, format!("{} can't start yet. {b}.", rf("task", id)));
+    }
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
     }
