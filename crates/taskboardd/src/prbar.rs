@@ -8,12 +8,15 @@ use crate::app::App;
 use crate::util::*;
 use crate::{prflow, stack};
 
-/// Where the Checks step links: the first failed check, else the PR's own list of checks (GitHub's
-/// Checks tab; elsewhere the PR), not whichever check happened to post first.
+/// Where the Checks step links: the first failed check, else the latest build (a running one, else
+/// the last the host lists), else the PR's own list of checks (GitHub's Checks tab; elsewhere the PR).
 pub fn build_url(rec: &Value, pr_url: Option<&str>) -> Value {
     let checks = rec["checks"].as_array().cloned().unwrap_or_default();
     let link = |c: &Value| c["url"].as_str().filter(|u| u.starts_with("http")).map(|u| u.to_string());
     let failed = checks.iter().filter(|c| c["state"] == "failed").find_map(link);
+    let running = || checks.iter().rev().filter(|c| c["state"] == "running").find_map(link);
+    let latest = || checks.iter().rev().find_map(link);
+    let failed = failed.or_else(running).or_else(latest);
     let all = pr_url.filter(|u| u.starts_with("http")).map(|u| {
         let u = u.trim_end_matches('/');
         if u.starts_with("https://github.com/") { format!("{u}/checks") } else { u.to_string() }
@@ -132,4 +135,34 @@ pub fn reviewer_rows(f: &Row, rec: &Value) -> Vec<Value> {
 
 fn str_list(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(checks: Value) -> Value {
+        json!({"checks": checks})
+    }
+
+    #[test]
+    fn checks_open_the_failed_build_else_the_latest_else_the_pr() {
+        let bb = Some("https://bitbucket.org/ws/repo/pull-requests/7");
+        let failed = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
+                                {"name": "test", "state": "failed", "url": "https://ci/2"},
+                                {"name": "e2e", "state": "running", "url": "https://ci/3"}]));
+        assert_eq!(build_url(&failed, bb), "https://ci/2", "a failed check opens itself");
+        let running = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
+                                 {"name": "e2e", "state": "running", "url": "https://ci/3"},
+                                 {"name": "lint", "state": "passed", "url": "https://ci/4"}]));
+        assert_eq!(build_url(&running, bb), "https://ci/3", "a running build is the latest");
+        let passed = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
+                                {"name": "lint", "state": "passed", "url": "https://ci/4"},
+                                {"name": "gate", "state": "passed"}]));
+        assert_eq!(build_url(&passed, bb), "https://ci/4", "else the last the host lists with a link");
+        assert_eq!(build_url(&rec(json!([])), bb), bb.unwrap(), "no checks: the PR");
+        assert_eq!(build_url(&rec(json!([{"name": "gate", "state": "passed"}])), bb), bb.unwrap(), "none with a link: the PR");
+        assert_eq!(build_url(&rec(json!([])), Some("https://github.com/acme/web/pull/3/")), "https://github.com/acme/web/pull/3/checks");
+        assert_eq!(build_url(&rec(json!([])), None), Value::Null);
+    }
 }

@@ -331,7 +331,7 @@ fn a_rounds_findings_show_on_the_task_and_can_be_triaged() {
     let c = b.card(id);
     assert_eq!(c["pr"]["bar"]["wd"]["bar"], "WD", "{}", c["pr"]["bar"]);
     assert_eq!(c["pr"]["bar"]["reviewers"], 2);
-    assert_eq!(c["pr"]["bar"]["build_url"], "https://github.com/acme/webapp/pull/21/checks", "passed checks open the PR's Checks tab");
+    assert_eq!(c["pr"]["bar"]["build_url"], "https://ci.example/1", "with nothing failed, Checks opens the latest build");
 }
 
 #[test]

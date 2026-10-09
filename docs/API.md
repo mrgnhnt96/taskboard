@@ -494,7 +494,7 @@ The card is draggable to Working when it's queued/planned, not in a goal, not st
                                  // a "Failed, but not because of this PR" box with the title, checks, reason, the proof links by their labels and "Checked … ago" (`at`)
   } | null,
   "bar": {                       // on cards from this board (absent in the frozen web fixtures)
-    "build_url": str|null,       // the failed check's link, else the first check's
+    "build_url": str|null,       // the first failed check's link, else the latest (running, else last listed), else the PR's checks page
     "checks": "not_needed"|"skipped"|"not_ours"|null,   // no checks at all / this push's checks skipped (a hook, tb pr skip-checks) / its failures cleared (`tb pr not-ours`)
     "checks_why": str|null,      // why they were skipped
     "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
