@@ -716,7 +716,7 @@ comma-separated string, or `"none"`) with an optional `project` for that project
 It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes),
 and takes the block out of a repo it no longer looks after (its project off Midna's list with no open goal, task, PR or terminal
 there; its work done). The Python board's block (`# task-board: generated files …` to `# task-board: end`) is replaced
-by the board's, and once after an upgrade every repo the board has known is swept for blocks from before they were tracked.
+by the board's, and once after an upgrade every repo the board has known is swept for blocks from before they were tracked (and again after `taskboardd import`, for the repos it brings).
 
 - `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>

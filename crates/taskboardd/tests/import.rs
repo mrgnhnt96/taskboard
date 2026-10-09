@@ -445,3 +445,22 @@ fn the_review_switches_the_old_board_used_come_on() {
     assert!(swaps("docs"), "it swapped a reviewer who timed out there");
     assert!(!swaps("web"));
 }
+
+#[test]
+fn an_import_sweeps_the_known_repos_for_old_attributes_blocks_again() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let old_path = old_dir.path().join("tasks.db");
+    Connection::open(&old_path)
+        .unwrap()
+        .execute_batch("CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, project TEXT, status TEXT); INSERT INTO tasks VALUES (1, 'Old', 'web', 'done');")
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    // The daemon ran on the fresh folder first: a sweep of nothing marked the sweep done.
+    taskboardd::gitattrs::sync(&app).unwrap();
+    assert!(app.db.get_setting("gitattrs_swept").unwrap().is_some());
+    import::import(&app, &old_path).unwrap();
+    assert_eq!(app.db.get_setting("gitattrs_swept").unwrap(), None, "the next sync sweeps the imported repos");
+    taskboardd::gitattrs::sync(&app).unwrap();
+    assert!(app.db.get_setting("gitattrs_swept").unwrap().is_some());
+}
