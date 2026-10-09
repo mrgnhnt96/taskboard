@@ -133,7 +133,8 @@ window at 100 % makes goals show "Queued until agents can start".
   "task_title": str|null,
   "last_activity": iso|null,
   "seen_at": iso|null,         // fallback for idle time when last_activity is null
-  "can_take": bool,            // idle and no task: offered in New task → "In an idle terminal"
+  "can_take": bool,            // idle, no task and nothing in its line: offered in New task → "In an idle terminal"
+  "line": [{"ref": "T14", "id": 14, "title": str, "kind": "queued"|"resume"}],  // tasks waiting their turn in this terminal, first first
   "branch": str|null,          // git branch Midna reports (shown in the Sessions list subline)
   "closing": bool,             // a close job is pending/running for it
   "close": "close"|"force"|null, // how it can be closed: idle → "close", busy → "force" (press-and-hold), gone → null
@@ -439,6 +440,9 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "pr": pr | null,
   "position": number|null,        // order in the goal (unused by the UI apart from sorting done server-side)
   "starting": bool,               // queued and a start job is pending/running ("Starting")
+  "line": {"session": str, "name": str, "kind": "queued"|"resume", "pos": int, "label": str, "after": "T12"|null} | null,
+                                  // queued in a terminal's line (`tb task new --here --next`, or switched away from): it starts
+                                  // there by itself, after `after`; label "Queued in Term 3" / "To resume in Term 3" (resume = started before)
   "waiting": str|null,            // queued only: why it isn't starting yet, one plain line
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
@@ -460,7 +464,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
-The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
+The card is draggable to Working when it's queued/planned, not in a goal, not starting and not in a terminal's line (drop = start with mode `new`).
+`POST /tasks/T<n>/start` refuses (409) a task in a terminal's line; `tb line drop T<n>` takes it out first.
 
 ### `pr`
 ```

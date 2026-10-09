@@ -17,6 +17,10 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   `tb checkpoint --done "what's finished" --next "what's next" --decision "a choice to keep"`
   Flags repeat; `--file path` for key files.
 - **Notes** worth keeping: `tb note "..."`. For the whole goal: `tb note --goal --kind finding|decision|reference "..."`.
+- **The owner asks for something else**: the board asks on each of their prompts whether it's part of this task. Small follow-ups to the same change are; a separate fix or feature (its own commit or PR) isn't. Split separate work off before you start on it, without asking:
+  - `tb task new "<title>" --detail "<the ask>" --here --next` queues it in this terminal after the current task; carry on with the current one.
+  - `--here --now` switches to it now; the current task waits here to resume. Commit or stash its changes first when they share the checkout.
+  - `tb switch T<n>` moves to a task in this terminal's line; `tb line` lists the line; `tb line drop T<n>` sends one back to the board.
 - **Something outside the task**: don't fix it. Report it and carry on:
   `tb found "<short summary, 80 chars max>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
 - **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"`, then end your turn. Never ask the owner; see `questions.md`.
@@ -33,9 +37,9 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
   A review step may report findings: `tb steps` lists them with their ids. Fix each, then `tb step triage "<name>" F2 --state fixed --commit <sha>` (or `answered`/`dismissed` with `--note "why"`), and `tb step again "<name>"` for another round (add `--branch <b>` or `--worktree <dir>`, and/or `--commit <ref>`, to aim it at something other than this checkout's head; `tb step aim` with the same flags saves the aim so later rounds and the gates follow it, and `tb steps` shows it; a pinned `--commit` is dropped once its branch gets a new commit, and a detached checkout takes `--worktree <dir> --branch <b>` together, judged on the branch's tip, which must contain the checkout's head). After a rebase's push (once the task has a PR), `tb step publish "<name>"` republishes a review step's result for the new head (`tb pr status` lists it in the rebase commands). A step that runs per push needs a round on each new commit; rounds may need a gap between them (the refusal says when).
 - **Review findings** (a review step, a reviewer, a check): fix only what this task's change caused. A finding on code the change didn't touch goes to the backlog (`tb backlog add … --kind follow`) and is dismissed in the review with a line saying so. Never reverse an earlier decision (a goal note, a checkpoint `--decision`, an owner's answer) to satisfy a finding.
 - **Jira** (when the board has it on: your handoff has a `Jira:` line or names a ticket): read `jira.md`. Never ask the owner which ticket.
-- **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
+- **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. When this terminal has a line, `tb done`, `tb fail` and a `tb wait-for` that parks the task move it on to the next task and print its handoff: carry straight on with it. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
 
-`tb status` shows this terminal's task. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
+`tb status` shows this terminal's task and its line. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
 
 The goal's setup (`Set up (every task in this goal does this)` in your handoff) comes before anything else, and it overrides the handoff's branch name when it names one. Set it only when the owner asks: `tb goal setup G<n> "<what every task does first>"` ({task}, {n}, {wave} and {goal} are filled in per task; `none` clears it).
 

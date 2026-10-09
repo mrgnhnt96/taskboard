@@ -723,6 +723,14 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         ));
     }
 
+    if let Some(label) = opt_s(&t["line"], "label") {
+        let when = match opt_s(&t["line"], "after") {
+            Some(a) => format!("It starts there by itself once {a} is done."),
+            None => "It starts there by itself next.".to_string(),
+        };
+        out.push(el(K::Box(BoxTone::Info), vec![txt(label, St::BoxLabel), txt(when, St::Plain)]));
+    }
+
     if starts_by_hand(t) {
         let mut st = vec![el(
             K::Row,

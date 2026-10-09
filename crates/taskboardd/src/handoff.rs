@@ -597,7 +597,7 @@ pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
     let tb = board::tb_cmd(app);
     let q = match project.filter(|p| !p.is_empty()) {
         Some(p) => app.db.q1(
-            "SELECT id FROM tasks WHERE status = 'queued' AND project = ? AND session_id IS NULL \
+            "SELECT id FROM tasks WHERE status = 'queued' AND project = ? AND session_id IS NULL AND line_session IS NULL \
              ORDER BY priority = 'high' DESC, created_at, id LIMIT 1",
             p![p],
         )?,

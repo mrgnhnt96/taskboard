@@ -209,6 +209,10 @@ pub fn owner(app: &App, path: &str, t: &Row) -> Result<Option<Row>> {
         if o.s("status") == Some("done") && !board::pr_still_open(&o) {
             continue;
         }
+        // A task waiting in this terminal's line shares its checkout; it doesn't own it.
+        if o.s("line_session").is_some() && o.s("line_session") == t.s("session_id") {
+            continue;
+        }
         let ctx = board::task_context(&o);
         let theirs = [
             root_of(ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str())),

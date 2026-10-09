@@ -317,13 +317,13 @@ pub fn started(app: &App, t: &Row) -> Result<()> {
 pub fn to_close(app: &App) -> Result<Vec<(Row, Row, String)>> {
     let mut out = vec![];
     for t in app.db.q(
-        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL \
+        "SELECT * FROM tasks WHERE status = 'queued' AND session_id IS NULL AND line_session IS NULL \
          AND json_extract(context, '$.parked.session') IS NOT NULL",
         p![],
     )? {
         let Some(p) = parked(&t) else { continue };
         let Some(s) = board::get_session(app, p.s("session"))? else { continue };
-        if s.s("status") == Some("gone") || board::task_for_session(app, s.s("id"))?.is_some() {
+        if s.s("status") == Some("gone") || crate::lines::busy(app, &s.st("id"))? {
             continue;
         }
         let at = p.st("at");

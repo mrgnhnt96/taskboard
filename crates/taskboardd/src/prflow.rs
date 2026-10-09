@@ -409,7 +409,7 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     for s in rows {
         let t = board::get_task(app, s.i0("pr_task"))?;
         if !t.b("auto_close")
-            || board::task_for_session(app, s.s("id"))?.is_some()
+            || crate::lines::busy(app, &s.st("id"))?
             || board::close_rule(Some(&s)).is_none()
             || !board::opened_by_board(app, s.s("id"))?
         {
