@@ -917,11 +917,16 @@ minute with the hours off), and closed when the PR merged or closed first.
 
 **Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). During the board's work hours the
 picker checks candidates, in turn order and at most `pick_tries` per pick, with Taskboard's Slack account: tiers
-online (active, or posted today) > quiet > off (outside `local_start`–`local_end` in their Slack time zone, or a
-weekend). A status matching `out_pattern` is out and never picked; someone Slack doesn't know leaves the roster
-("not on Slack") with `drop_not_on_slack`. It takes the first one online, else the best tier it saw. Outside work
-hours, or without a provider, nobody is checked. The client only calls `users.lookupByEmail`, `users.info`,
-`users.getPresence` and `search.messages`: the board never messages anyone.
+online (active, or posted today, or away before `quiet_from` where they are) > quiet > off (outside
+`local_start`–`local_end` in their Slack time zone, or a weekend). A status matching `out_pattern` is out and never
+picked. People are found by their `slack` id or email, then their other emails (not noreply ones), then by full
+name, then by the part of an email (or a noreply email's login) before the @, matched to Slack's emails and
+handles (`users.list`; a name or prefix that fits more than one person finds nobody). Someone none of those finds
+leaves the roster ("not on Slack") with `drop_not_on_slack`; when Slack refuses the user list, nobody is dropped.
+It takes the first one online, else the best tier it saw. Outside work hours, or without a provider, nobody is
+checked, but an out status seen within `out_keeps_hours` still keeps them from being picked. The client only
+calls `users.lookupByEmail`, `users.list`, `users.info`, `users.getPresence` and `search.messages`: the board never
+messages anyone.
 
 **Review bots** (`botrun.rs`). A reviewer with `bot: {every_h, mark}` runs their own review bot. After each poll the
 board looks for comments by them that carry `mark` (case-insensitive) on the PRs it watches, from the last

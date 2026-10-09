@@ -1,13 +1,16 @@
 //! Whether a reviewer is around to review now, for the picker's tiers (`picker.rs`). Optional:
 //! `[reviewers] availability = "slack"` turns it on.
 //!
-//! Tiers, best first: online (active on Slack, or posted today), quiet (on Slack but neither),
-//! off (outside their own working hours, `local_start`–`local_end` in their Slack time zone, or a
-//! weekend), and out (their Slack status matches `out_pattern`): never picked. Someone Slack doesn't
-//! know is taken off the roster with `drop_not_on_slack` ("not on Slack"; `tb reviewers back` undoes
-//! it), else skipped. The picker checks at most `pick_tries` candidates per pick, in turn order,
-//! and takes the first online one, else the best tier it saw. Outside the board's work hours it
-//! checks nobody.
+//! Tiers, best first: online (active on Slack, or posted today, or away before `quiet_from` where
+//! they are: starting their day), quiet (on Slack but none of those), off (outside their own working
+//! hours, `local_start`–`local_end` in their Slack time zone, or a weekend), and out (their Slack
+//! status matches `out_pattern`): never picked. People are found on Slack by their Slack id or
+//! email, else by name, else by the part of their email (or noreply login) before the @. Someone
+//! none of those finds is taken off the roster with `drop_not_on_slack` ("not on Slack"; `tb
+//! reviewers back` undoes it), else skipped; someone a lookup couldn't be tried for (Slack refused
+//! the user list) is neither. The picker checks at most `pick_tries` candidates per pick, in turn
+//! order, and takes the first online one, else the best tier it saw. Outside the board's work hours
+//! it checks nobody, but an out status seen within `out_keeps_hours` still holds.
 //!
 //! The board never messages anyone: the Slack client only calls the read methods in [`READ_ONLY`]
 //! (with Taskboard's Slack account, Settings ▸ Accounts), and refuses every other.
@@ -28,7 +31,7 @@ use crate::util::*;
 use crate::{fields, hours, reviewers};
 
 /// The Slack methods the board may call.
-pub const READ_ONLY: &[&str] = &["users.lookupByEmail", "users.info", "users.getPresence", "search.messages"];
+pub const READ_ONLY: &[&str] = &["users.lookupByEmail", "users.list", "users.info", "users.getPresence", "search.messages"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -120,31 +123,117 @@ fn hm(s: &str) -> i64 {
 pub struct SlackAvailability {
     pub api: Box<dyn SlackApi>,
     pub cfg: reviewers::ReviewersConfig,
+    /// The workspace's people (`users.list`) and when they were read, for the name lookups.
+    pub people: Mutex<Option<(f64, Vec<Value>)>>,
 }
 
+/// What looking someone up on Slack found.
+enum Lookup {
+    Found(String),
+    /// Every lookup ran and none found them.
+    NotFound,
+    /// A lookup couldn't run (Slack refused the user list), so nobody can say they're not there.
+    Untried,
+}
+
+const NOREPLY: &str = "@users.noreply.github.com";
+
 impl SlackAvailability {
-    fn user_id(&self, r: &Row) -> std::result::Result<Option<String>, String> {
+    pub fn new(api: Box<dyn SlackApi>, cfg: reviewers::ReviewersConfig) -> SlackAvailability {
+        SlackAvailability { api, cfg, people: Mutex::new(None) }
+    }
+
+    /// Everyone in the workspace (not deleted, not bots), read at most every `cache_mins`.
+    fn people(&self) -> std::result::Result<Vec<Value>, String> {
+        if let Some((at, list)) = self.people.lock().as_ref() {
+            if now_ts() - at < self.cfg.cache_mins * 60.0 {
+                return Ok(list.clone());
+            }
+        }
+        let mut out = vec![];
+        let mut cursor = String::new();
+        for _ in 0..50 {
+            let mut params = vec![("limit", "200".to_string())];
+            if !cursor.is_empty() {
+                params.push(("cursor", cursor.clone()));
+            }
+            let v = self.api.get("users.list", &params)?;
+            out.extend(v["members"].as_array().cloned().unwrap_or_default().into_iter().filter(|u| u["deleted"] != true && u["is_bot"] != true));
+            cursor = v["response_metadata"]["next_cursor"].as_str().unwrap_or("").to_string();
+            if cursor.is_empty() {
+                break;
+            }
+        }
+        *self.people.lock() = Some((now_ts(), out.clone()));
+        Ok(out)
+    }
+
+    fn user_id(&self, r: &Row) -> std::result::Result<Lookup, String> {
         let slack = r.st("slack");
         let looks_like_id = |s: &str| s.len() > 6 && (s.starts_with('U') || s.starts_with('W')) && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
         if looks_like_id(&slack) {
-            return Ok(Some(slack));
+            return Ok(Lookup::Found(slack));
         }
+        let all: Vec<String> = jloads_arr(r.s("emails")).iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect();
         let mut emails: Vec<String> = if slack.contains('@') { vec![slack] } else { vec![] };
-        emails.extend(jloads_arr(r.s("emails")).iter().filter_map(|e| e.as_str().map(|s| s.to_string())).filter(|e| !e.ends_with("@users.noreply.github.com")));
+        emails.extend(all.iter().filter(|e| !e.ends_with(NOREPLY)).cloned());
         for e in emails {
             match self.api.get("users.lookupByEmail", &[("email", e)]) {
-                Ok(v) => return Ok(v["user"]["id"].as_str().map(|s| s.to_string())),
+                Ok(v) => {
+                    if let Some(id) = v["user"]["id"].as_str() {
+                        return Ok(Lookup::Found(id.to_string()));
+                    }
+                }
                 Err(e) if e == "users_not_found" => continue,
                 Err(e) => return Err(e),
             }
         }
-        Ok(None)
+        let people = match self.people() {
+            Ok(p) => p,
+            Err(_) => return Ok(Lookup::Untried),
+        };
+        let one = |hits: Vec<&Value>| match hits.as_slice() {
+            [u] => u["id"].as_str().map(|s| s.to_string()),
+            _ => None,
+        };
+        // By full name (theirs, or another name of theirs that isn't an email).
+        let mut names = vec![r.st("name").trim().to_lowercase()];
+        names.extend(jloads_arr(r.s("aliases")).iter().filter_map(|a| a.as_str()).filter(|a| !a.contains('@') && a.contains(' ')).map(|a| a.trim().to_lowercase()));
+        names.retain(|n| !n.is_empty());
+        let named = |u: &Value| {
+            [&u["real_name"], &u["profile"]["real_name"], &u["profile"]["display_name"]].iter().filter_map(|v| v.as_str()).any(|n| names.contains(&n.trim().to_lowercase()))
+        };
+        if let Some(id) = one(people.iter().filter(|u| named(u)).collect()) {
+            return Ok(Lookup::Found(id));
+        }
+        // By the part of their email before the @ (a noreply email's login).
+        let prefixes: Vec<String> = all
+            .iter()
+            .filter_map(|e| {
+                let local = e.split('@').next().unwrap_or("");
+                let local = if e.ends_with(NOREPLY) { local.split_once('+').map(|(_, l)| l).unwrap_or(local) } else { local };
+                Some(local.trim().to_lowercase()).filter(|l| !l.is_empty())
+            })
+            .collect();
+        let prefixed = |u: &Value| {
+            let email = u["profile"]["email"].as_str().unwrap_or("").split('@').next().unwrap_or("").to_lowercase();
+            let handle = u["name"].as_str().unwrap_or("").to_lowercase();
+            prefixes.iter().any(|p| *p == email || *p == handle)
+        };
+        if let Some(id) = one(people.iter().filter(|u| prefixed(u)).collect()) {
+            return Ok(Lookup::Found(id));
+        }
+        Ok(Lookup::NotFound)
     }
 }
 
 impl Availability for SlackAvailability {
     fn check(&self, r: &Row) -> std::result::Result<Presence, String> {
-        let Some(id) = self.user_id(r)? else { return Ok(Presence { tier: Tier::Missing, why: "not on Slack".into() }) };
+        let id = match self.user_id(r)? {
+            Lookup::Found(id) => id,
+            Lookup::NotFound => return Ok(Presence { tier: Tier::Missing, why: "not on Slack".into() }),
+            Lookup::Untried => return Ok(Presence { tier: Tier::Unknown, why: "couldn't look them up on Slack".into() }),
+        };
         let info = self.api.get("users.info", &[("user", id.clone())])?;
         let u = &info["user"];
         if u["deleted"] == true {
@@ -177,6 +266,9 @@ impl Availability for SlackAvailability {
                 return Ok(Presence { tier: Tier::Online, why: "posted on Slack today".into() });
             }
         }
+        if mins < hm(&self.cfg.quiet_from) {
+            return Ok(Presence { tier: Tier::Online, why: "starting their day".into() });
+        }
         Ok(Presence { tier: Tier::Quiet, why: "away on Slack".into() })
     }
 }
@@ -200,18 +292,30 @@ pub fn provider(app: &App) -> Option<Arc<dyn Availability>> {
     match app.cfg.reviewers.availability.trim() {
         "slack" => {
             let (_, token) = crate::accounts::board_credentials(app, crate::accounts::Provider::Slack)?;
-            Some(Arc::new(SlackAvailability { api: Box::new(SlackHttp::new(&token)), cfg: app.cfg.reviewers.clone() }))
+            Some(Arc::new(SlackAvailability::new(Box::new(SlackHttp::new(&token)), app.cfg.reviewers.clone())))
         }
         _ => None,
     }
 }
 
-/// A reviewer's presence now (cached for `cache_mins`); Unknown outside work hours or without a provider.
+fn out_key(r: &Row) -> String {
+    format!("reviewer_out:{}", r.id())
+}
+
+/// The out status last seen for them, if it's within `out_keeps_hours`.
+fn kept_out(app: &App, r: &Row) -> Option<Presence> {
+    let v = jloads_obj(app.db.get_setting(&out_key(r)).ok().flatten().as_deref());
+    let at = v.get("at").and_then(|a| a.as_str()).and_then(parse_iso)?;
+    (now_ts() - at < app.cfg.reviewers.out_keeps_hours * 3600.0).then(|| Presence { tier: Tier::Out, why: v.get("why").and_then(|w| w.as_str()).unwrap_or("out").to_string() })
+}
+
+/// A reviewer's presence now (cached for `cache_mins`); Unknown outside work hours (unless they were
+/// out recently) or without a provider.
 pub fn of(app: &App, r: &Row) -> Presence {
     let unknown = |why: &str| Presence { tier: Tier::Unknown, why: why.into() };
     let Some(p) = provider(app) else { return unknown("no availability check") };
     if !hours::is_open(app) {
-        return unknown("outside work hours");
+        return kept_out(app, r).unwrap_or_else(|| unknown("outside work hours"));
     }
     let key = format!("{}:{}", app.cfg.data.display(), r.id());
     if let Some((at, pr)) = CACHE.lock().get(&key).cloned() {
@@ -227,6 +331,15 @@ pub fn of(app: &App, r: &Row) -> Presence {
         }
     };
     CACHE.lock().insert(key, (now_ts(), pr.clone()));
+    // Remember an out status for after hours; anything else they answered clears it.
+    let seen = match pr.tier {
+        Tier::Out => Some(jdumps(&json!({"at": now_iso(), "why": pr.why}))),
+        Tier::Unknown => return pr,
+        _ => None,
+    };
+    if let Err(e) = app.db.set_setting(&out_key(r), seen.as_deref()) {
+        app.info(format!("reviewers: couldn't note {}'s Slack status: {e}", r.st("name")));
+    }
     pr
 }
 
@@ -246,8 +359,19 @@ pub fn best(app: &App, cands: &mut [Pick], pool: &[usize]) -> Result<Option<usiz
     if pool.is_empty() {
         return Ok(None);
     }
-    if provider(app).is_none() || !hours::is_open(app) {
+    if provider(app).is_none() {
         return Ok(pool.first().copied());
+    }
+    if !hours::is_open(app) {
+        // Nobody's checked; only someone recently out is passed over.
+        for &i in pool {
+            let pr = of(app, &cands[i].reviewer);
+            cands[i].tier = pr.tier.name().to_string();
+            if pr.tier != Tier::Out {
+                return Ok(Some(i));
+            }
+        }
+        return Ok(None);
     }
     let mut seen: Option<(u8, usize)> = None;
     for (checked, &i) in pool.iter().enumerate() {
@@ -299,7 +423,7 @@ mod tests {
     }
 
     fn slack(pairs: Vec<(&str, Value)>) -> SlackAvailability {
-        SlackAvailability { api: Box::new(Canned(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())), cfg: Default::default() }
+        SlackAvailability::new(Box::new(Canned(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())), Default::default())
     }
 
     /// Their Slack time zone offset that puts them at `hour` local time now, on a weekday.
@@ -328,8 +452,38 @@ mod tests {
         assert_eq!(a.check(&reviewer("ana@acme.com")).unwrap(), Presence { tier: Tier::Out, why: "status: On vacation".into() });
         let a = slack(vec![("users.lookupByEmail ana@acme.com", found), ("users.info U1", user("", 21))]);
         assert_eq!(a.check(&reviewer("ana@acme.com")).unwrap().tier, Tier::Off, "9 PM where they are");
-        let a = slack(vec![("users.lookupByEmail ana@acme.com", json!({"ok": false, "error": "users_not_found"}))]);
+        let a = slack(vec![("users.lookupByEmail ana@acme.com", json!({"ok": false, "error": "users_not_found"})), ("users.list 200", json!({"ok": true, "members": []}))]);
         assert_eq!(a.check(&reviewer("ana@acme.com")).unwrap().tier, Tier::Missing);
+    }
+
+    #[test]
+    fn away_early_in_their_day_isnt_quiet() {
+        let found = json!({"ok": true, "user": {"id": "U1"}});
+        let a = slack(vec![("users.lookupByEmail ana@acme.com", found), ("users.info U1", user("", 9)), ("users.getPresence U1", json!({"ok": true, "presence": "away"}))]);
+        assert_eq!(a.check(&reviewer("ana@acme.com")).unwrap(), Presence { tier: Tier::Online, why: "starting their day".into() });
+    }
+
+    #[test]
+    fn people_without_a_work_email_are_found_by_name_or_email_prefix() {
+        let people = json!({"ok": true, "members": [
+            {"id": "U1", "real_name": "Ana Lima", "name": "alima", "profile": {"email": "alima@acme.com"}},
+            {"id": "U2", "real_name": "Bo Park", "name": "bo", "profile": {"email": "bo.park@acme.com"}},
+            {"id": "U3", "real_name": "Old Bot", "is_bot": true, "name": "ana-gh", "profile": {}},
+        ]});
+        let info = |id: &str| json!({"ok": true, "user": {"id": id, "tz_offset": offset_for(11), "profile": {"status_text": "", "status_emoji": ""}}});
+        let a = slack(vec![("users.list 200", people.clone()), ("users.info U1", info("U1")), ("users.getPresence U1", json!({"ok": true, "presence": "active"}))]);
+        // Only a noreply email: found by name.
+        let mut ana = reviewer("9+ana-gh@users.noreply.github.com");
+        ana.insert("name".into(), json!("ana lima"));
+        assert_eq!(a.check(&ana).unwrap().tier, Tier::Online);
+        // Another name, found by the part of the email before the @ (the Slack handle).
+        let a = slack(vec![("users.list 200", people), ("users.info U2", info("U2")), ("users.getPresence U2", json!({"ok": true, "presence": "active"}))]);
+        let mut bo = reviewer("9+bo@users.noreply.github.com");
+        bo.insert("name".into(), json!("Robert"));
+        assert_eq!(a.check(&bo).unwrap().tier, Tier::Online);
+        // Slack refuses the user list: they can't be said to be missing.
+        let a = slack(vec![("users.list 200", json!({"ok": false, "error": "missing_scope"}))]);
+        assert_eq!(a.check(&bo).unwrap().tier, Tier::Unknown);
     }
 
     #[test]

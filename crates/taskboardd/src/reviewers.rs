@@ -132,6 +132,11 @@ pub struct ReviewersConfig {
     /// An ask swapped off for not reviewing counts as this many work minutes, and one still open as
     /// its time so far, up to this.
     pub slow_cap_mins: f64,
+    /// Away on Slack with no post today is quiet only from this time where they are; before it
+    /// they're starting their day.
+    pub quiet_from: String,
+    /// An out status seen within this many hours still holds outside the work hours, when nobody's checked.
+    pub out_keeps_hours: f64,
 }
 
 impl Default for ReviewersConfig {
@@ -165,6 +170,8 @@ impl Default for ReviewersConfig {
             speed_days: 14.0,
             speed_asks: 8,
             slow_cap_mins: 240.0,
+            quiet_from: "10:00".into(),
+            out_keeps_hours: 24.0,
         }
     }
 }

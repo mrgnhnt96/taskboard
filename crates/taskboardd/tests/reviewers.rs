@@ -658,3 +658,26 @@ fn an_alias_links_a_host_account_and_a_shared_name_alone_is_not_one_person() {
     b.add("Dee", json!({"user": "{dee2}"}));
     assert_eq!(b.roster().len(), 2);
 }
+
+#[test]
+fn someone_out_stays_out_after_hours_for_a_while() {
+    use taskboardd::presence::Tier;
+    let b = board_with(|c| c.reviewers.availability = "slack".into());
+    fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Ana", Tier::Out), ("Bo", Tier::Quiet), ("Cy", Tier::Quiet), ("Dee", Tier::Quiet)])));
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Bo", "turn")]);
+
+    // After hours nobody is checked, but Ana's out status still holds.
+    closed_hours(&b);
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Bo", "turn")]);
+    // Once it's older than out_keeps_hours, it doesn't.
+    let ana = b.roster().into_iter().find(|r| r["name"] == "Ana").unwrap()["id"].as_i64().unwrap();
+    let old = json!({"at": taskboardd::util::iso(taskboardd::util::now_ts() - 25.0 * 3600.0), "why": "status: OOO"}).to_string();
+    b.app.db.set_setting(&format!("reviewer_out:{ana}"), Some(&old)).unwrap();
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true, "count": 1}));
+    assert_eq!(picks(&v), vec![pair("Ana", "turn")]);
+}
