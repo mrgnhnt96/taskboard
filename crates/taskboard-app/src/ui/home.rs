@@ -304,7 +304,14 @@ pub fn tile_vm(c: &Value) -> Tile {
                     "fix" => ("Checks failed", "down", with(label)),
                     "comments" => ("Comments", "goal", num.clone()),
                     "merge" => ("Ready to merge", "up", num.clone()),
-                    _ => ("In review", "goal", num.clone()),
+                    // Partly approved: "PR #119 · 1 of 2 approved", out of the approvals it needs.
+                    _ => {
+                        let have = p["bar"]["approvals"].as_i64().unwrap_or(0);
+                        match p["bar"]["need"].as_i64() {
+                            Some(need) if have > 0 && have < need => ("In review", "goal", format!("{num} · {have} of {need} approved")),
+                            _ => ("In review", "goal", num.clone()),
+                        }
+                    }
                 }
             }
         }
@@ -926,6 +933,18 @@ mod tests {
         assert_eq!(tile_vm(&pr("checks")).line, "PR #119 · Watching checks");
         assert_eq!(tile_vm(&pr("merge")).status, "Ready to merge");
         assert_eq!(tile_vm(&pr("fix")).tone, "down");
+    }
+
+    #[test]
+    fn a_partly_approved_pr_tile_counts_its_approvals_against_the_ones_needed() {
+        let pr = |approvals: i64, need: Value| {
+            card(json!({"status": "done", "pr": {"num": 119, "url": "https://x/pr/119", "state": "OPEN", "stage": {"phase": "review", "label": "Awaiting reviews"},
+                "bar": {"approvals": approvals, "reviewers": 3, "need": need, "reviewer_rows": []}}}))
+        };
+        let t = tile_vm(&pr(1, json!(2)));
+        assert_eq!((t.status.as_str(), t.line.as_str()), ("In review", "PR #119 · 1 of 2 approved"));
+        assert_eq!(tile_vm(&pr(0, json!(2))).line, "PR #119", "none yet");
+        assert_eq!(tile_vm(&pr(1, Value::Null)).line, "PR #119", "no count: the host decides");
     }
 
     #[test]

@@ -450,6 +450,19 @@ fn the_pr_bar_has_every_step_once_the_board_sends_it() {
 }
 
 #[::core::prelude::v1::test]
+fn the_review_step_counts_approvals_against_the_ones_needed() {
+    let review = |approvals: i64, reviewers: i64, need: Value| {
+        let bar = json!({"approvals": approvals, "reviewers": reviewers, "need": need, "new_comments": 0, "reviewer_rows": []});
+        let p = with_bar(bar.clone(), json!({"phase": "review", "label": "Awaiting reviews"}), "pending")["pr"].clone();
+        view::pr_steps_full(&p, &bar).into_iter().find(|s| s.name == "Review").map(|s| (s.sub.unwrap_or_default(), s.st)).unwrap()
+    };
+    assert_eq!(review(2, 3, json!(2)), ("2 of 2".into(), view::StepSt::Done), "enough approvals, though one reviewer hasn't");
+    assert_eq!(review(1, 3, json!(2)), ("1 of 2".into(), view::StepSt::Wait));
+    assert_eq!(review(1, 2, Value::Null), ("1 of 2".into(), view::StepSt::Wait), "no count: out of the reviewers");
+    assert_eq!(review(2, 2, Value::Null).1, view::StepSt::Done);
+}
+
+#[::core::prelude::v1::test]
 fn checks_say_when_they_arent_needed_or_this_prs() {
     let text = panel_text(with_bar(json!({"checks": "not_needed"}), Value::Null, "none"), json!({}));
     assert!(text.contains("Checks Not needed") && text.contains("You Review Not asked"), "{text}");

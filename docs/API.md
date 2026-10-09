@@ -522,7 +522,9 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "checks": "not_needed"|"skipped"|"not_ours"|null,   // no checks at all / this push's checks skipped (a hook, tb pr skip-checks) / its failures cleared (`tb pr not-ours`)
     "checks_why": str|null,      // why they were skipped
     "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
-    "approvals": int, "reviewers": int,           // "1 of 2": approvals of (approvals + reviewers still asked)
+    "approvals": int, "reviewers": int,           // approvals; reviewers = approvals + reviewers still asked
+    "need": int|null,            // approvals the PR needs (the project's `approvals`, else `pr.approvals`): the Review step and the
+                                 // home tile show "1 of 2" against it, Done at approvals >= need; null: the host's verdict decides ("x of reviewers")
     "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
     "comments_url": str|null,   // where "N new comments" goes: the unread thread waiting longest, else the PR
     "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
