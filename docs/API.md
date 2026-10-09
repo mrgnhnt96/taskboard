@@ -851,9 +851,17 @@ its goal's needs, and `"goal"` drops its own so it asks for its goal's again. Th
 are free, lends them when it starts or an agent takes it with `tb take` (before the handoff is built, which names
 them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
-device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
+device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"). A task started
+without all it asks for (by hand, or with nothing free) logs "<why>; it started without".
 
-`device`: `{id, name, tags: [str], note, off: bool, focus: str|null, can_focus: bool, held_by: {ref, title, goal}|null}`.
+A goal can keep devices of its own (`tb goal devices`): its tasks are lent those before the rest of the pool, a
+device it reserves is never lent to another goal's tasks (nor to tasks in no goal), and the purpose it gives a device
+counts as one of that device's tags for the goal's tasks (a device for `measure` answers a `measure` need there). A
+device is reserved by one goal at a time. The goal detail's `devices` aside lists the goal's own devices first,
+each with `in_pool`, `purpose` and `reserved`, and `pool` (how many it has).
+
+`device`: `{id, name, tags: [str], note, off: bool, focus: str|null, can_focus: bool, held_by: {ref, title, goal}|null,
+goals: [{goal, purpose, reserved}], reserved_for: "G3"|null}`.
 
 | Request | Body | What |
 |---|---|---|
@@ -863,6 +871,9 @@ device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
 | `POST /devices/:name` | `{name?, tags?, focus?, note?, off?}` | Change it; `off` keeps it from being lent. |
 | `POST /devices/:name/remove` | | Take it out of the pool (409 while it's lent). |
 | `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name). 409 when there's neither. |
+| `GET /goals/:id/devices` | | `tb goal devices G3`. `{goal, devices: [device + {purpose, reserved}]}`: the goal's own devices. |
+| `POST /goals/:id/devices` | `{device, purpose?, reserved?}` | `tb goal devices G3 --add rig [--purpose measure] [--reserve\|--unreserve]`. Put a device in the goal's pool, or change its purpose (a tag word; `none` drops it) or `reserved` (unchanged when left out). 409 when another goal reserves it. Same response as GET. |
+| `POST /goals/:id/devices/:name/remove` | | `tb goal devices G3 --remove rig`. 404 when it isn't one of the goal's. |
 
 ## Bits (feature flags)
 

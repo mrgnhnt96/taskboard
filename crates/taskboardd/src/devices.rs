@@ -4,6 +4,10 @@
 //! handoff. A device is lent to one task at a time and comes back when the task stops being active
 //! (done, or a failed start). A device can have a focus command that raises its window (the
 //! simulator, the device hub), run from `tb device focus` or the app.
+//!
+//! A goal can hold devices of its own (`tb goal devices`): its tasks are lent those first, a device
+//! it reserves is never lent to another goal's tasks (nor to tasks in no goal), and the purpose it
+//! gives a device ("measure") counts as one of that device's tags for its own tasks.
 
 use std::collections::HashMap;
 
@@ -26,6 +30,11 @@ CREATE TABLE IF NOT EXISTS device_needs(owner TEXT PRIMARY KEY, needs TEXT NOT N
 CREATE TABLE IF NOT EXISTS device_loans(
   id INTEGER PRIMARY KEY, device TEXT NOT NULL, task_id INT NOT NULL, at TEXT, released_at TEXT);
 CREATE INDEX IF NOT EXISTS device_loans_task ON device_loans(task_id);
+-- A goal's own devices: its tasks get them before the rest of the pool, a reserved one goes to no
+-- other goal's tasks, and its purpose counts as a tag on it for the goal's tasks.
+CREATE TABLE IF NOT EXISTS goal_devices(
+  goal_id INT NOT NULL, device TEXT NOT NULL, purpose TEXT, reserved INT DEFAULT 0, at TEXT,
+  PRIMARY KEY(goal_id, device));
 "#;
 
 /// `[devices]` in config.toml.
@@ -212,6 +221,43 @@ fn pool(app: &App) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM devices ORDER BY name", p![])
 }
 
+/// Every goal's own devices (rows of goal_devices whose goal and device still exist).
+fn goal_pools(app: &App) -> Result<Vec<Row>> {
+    app.db.q(
+        "SELECT gd.* FROM goal_devices gd JOIN goals g ON g.id = gd.goal_id JOIN devices d ON d.name = gd.device ORDER BY gd.goal_id, gd.device",
+        p![],
+    )
+}
+
+/// The goal that reserves each device.
+fn reserved(pools: &[Row]) -> HashMap<String, i64> {
+    pools.iter().filter(|r| r.b("reserved")).filter_map(|r| Some((r.s("device")?.to_string(), r.i("goal_id")?))).collect()
+}
+
+/// The pool as a task sees it: devices reserved for another goal left out, and in its own goal's
+/// pool, each device's purpose added to its tags. With the names in its goal's pool, lent first.
+fn view(app: &App, goal: Option<i64>) -> Result<(Vec<Row>, Vec<String>)> {
+    let pools = goal_pools(app)?;
+    let res = reserved(&pools);
+    let ours: Vec<&Row> = pools.iter().filter(|r| goal.is_some() && r.i("goal_id") == goal).collect();
+    let mut out = vec![];
+    for mut d in pool(app)? {
+        let name = d.st("name");
+        if res.get(&name).is_some_and(|g| Some(*g) != goal) {
+            continue;
+        }
+        if let Some(p) = ours.iter().find(|r| r.s("device") == Some(name.as_str())).and_then(|r| r.s("purpose")) {
+            let mut tags = tags_of(&d);
+            if !tags.iter().any(|t| t == p) {
+                tags.push(p.to_string());
+                d.insert("tags".into(), json!(jdumps(&json!(tags))));
+            }
+        }
+        out.push(d);
+    }
+    Ok((out, ours.iter().filter_map(|r| r.s("device").map(str::to_string)).collect()))
+}
+
 /// Device name → the active task that has it.
 fn held(app: &App) -> Result<HashMap<String, i64>> {
     let mut out = HashMap::new();
@@ -236,11 +282,13 @@ pub fn lent(app: &App, task_id: i64) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Picks devices for the needs from the free ones, preferring those listed in `prefer`. Each need
-/// takes its count; a device answers one need. The picks, and the needs left short.
-fn fill(needs: &[Need], free: &[Row], prefer: &[String]) -> (Vec<String>, Vec<Need>) {
+/// Picks devices for the needs from the free ones, preferring those listed in `prefer` (the ones it
+/// had), then those in `first` (its goal's own). Each need takes its count; a device answers one
+/// need. The picks, and the needs left short.
+fn fill(needs: &[Need], free: &[Row], prefer: &[String], first: &[String]) -> (Vec<String>, Vec<Need>) {
     let mut order: Vec<&Row> = free.iter().collect();
-    order.sort_by_key(|d| (!prefer.iter().any(|p| Some(p.as_str()) == d.s("name")), tags_of(d).len(), d.st("name")));
+    let has = |l: &[String], d: &Row| l.iter().any(|p| Some(p.as_str()) == d.s("name"));
+    order.sort_by_key(|d| (!has(prefer, d), !has(first, d), tags_of(d).len(), d.st("name")));
     let mut picked: Vec<String> = vec![];
     let mut short: Vec<Need> = vec![];
     for need in needs {
@@ -262,9 +310,10 @@ fn fill(needs: &[Need], free: &[Row], prefer: &[String]) -> (Vec<String>, Vec<Ne
     (picked, short)
 }
 
-fn free_for(app: &App, task_id: i64) -> Result<Vec<Row>> {
+/// The devices in the task's view of the pool that are on and not lent to another task.
+fn free_in(app: &App, seen: &[Row], task_id: i64) -> Result<Vec<Row>> {
     let held = held(app)?;
-    Ok(pool(app)?.into_iter().filter(|d| !d.b("off") && held.get(&d.st("name")).map(|t| *t == task_id).unwrap_or(true)).collect())
+    Ok(seen.iter().filter(|d| !d.b("off") && held.get(&d.st("name")).map(|t| *t == task_id).unwrap_or(true)).cloned().collect())
 }
 
 /// Why the device pool holds this queued task back: not enough free devices for what it asks for.
@@ -273,16 +322,27 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     if needs.is_empty() {
         return Ok(None);
     }
-    let (_, short) = fill(&needs, &free_for(app, t.id())?, &[]);
+    let (all, ours) = view(app, t.i("goal_id"))?;
+    let (_, short) = fill(&needs, &free_in(app, &all, t.id())?, &[], &ours);
     let Some(first) = short.first() else { return Ok(None) };
-    let all = pool(app)?;
     let have = all.iter().filter(|d| !d.b("off") && answers(d, &first.tag)).count() as i64;
     let want = needs.iter().find(|x| x.tag == first.tag).map(|x| x.n).unwrap_or(first.n);
     if have < want {
-        return Ok(Some(if have == 0 {
+        // Devices that would answer it but are reserved for another goal.
+        let res = reserved(&goal_pools(app)?);
+        let mut kept: Vec<String> = pool(app)?
+            .iter()
+            .filter(|d| !d.b("off") && answers(d, &first.tag))
+            .filter_map(|d| res.get(&d.st("name")).filter(|g| Some(**g) != t.i("goal_id")).map(|g| format!("{} is reserved for {}", d.st("name"), rf("goal", *g))))
+            .collect();
+        kept.sort();
+        let kept = if kept.is_empty() { String::new() } else { format!(" ({})", kept.join("; ")) };
+        return Ok(Some(if have == 0 && kept.is_empty() {
             format!("Needs a {} device, and the pool has none (tb device add)", first.tag)
+        } else if have == 0 {
+            format!("Needs a {} device, and the pool has none for it{kept}", first.tag)
         } else {
-            format!("Needs {want} {} devices, and the pool has {have}", first.tag)
+            format!("Needs {want} {} devices, and the pool has {have}{kept}", first.tag)
         }));
     }
     let held = held(app)?;
@@ -306,12 +366,18 @@ pub fn lend(app: &App, t: &Row) -> Result<Vec<String>> {
     if needs.is_empty() {
         return Ok(vec![]);
     }
-    let (picked, _) = fill(&needs, &free_for(app, t.id())?, &before);
+    let (seen, ours) = view(app, t.i("goal_id"))?;
+    let (picked, short) = fill(&needs, &free_in(app, &seen, t.id())?, &before, &ours);
     for d in &picked {
         app.db.insert("device_loans", crate::fields!["device" => d, "task_id" => t.id(), "at" => now])?;
     }
     if !picked.is_empty() && picked != before {
         board::log_event(app, t.id(), board::BOARD, "note", &format!("Lent it {}", picked.join(", ")))?;
+    }
+    // Started (by hand, or a start that didn't wait) without all it asks for: say why on the task.
+    if !short.is_empty() {
+        let why = blocker(app, t)?.unwrap_or_else(|| format!("No {} device was free", short[0].tag));
+        board::log_event(app, t.id(), board::BOARD, "note", &format!("{why}; it started without"))?;
     }
     Ok(picked)
 }
@@ -350,8 +416,11 @@ fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value>
         None => Value::Null,
     };
     let focus = d.s("focus").filter(|f| !f.trim().is_empty()).is_some() || !app.cfg.devices.focus.trim().is_empty();
+    let pools: Vec<Row> = goal_pools(app)?.into_iter().filter(|r| r.s("device") == d.s("name")).collect();
+    let reserved_for = pools.iter().find(|r| r.b("reserved")).map(|r| rf("goal", r.i0("goal_id")));
+    let goals: Vec<Value> = pools.iter().map(|r| json!({"goal": rf("goal", r.i0("goal_id")), "purpose": r.v("purpose"), "reserved": r.b("reserved")})).collect();
     Ok(json!({"id": d.id(), "name": d.v("name"), "tags": tags_of(d), "note": d.v("note"), "off": d.b("off"),
-              "focus": d.v("focus"), "can_focus": focus, "held_by": holder}))
+              "focus": d.v("focus"), "can_focus": focus, "held_by": holder, "goals": goals, "reserved_for": reserved_for}))
 }
 
 /// `GET /devices`: the pool, who has each device, and the queued tasks waiting for one.
@@ -382,10 +451,93 @@ pub fn goal_card(app: &App, goal_id: i64) -> Result<Value> {
         return Ok(Value::Null);
     }
     let held = held(app)?;
-    let devices = all.iter().map(|d| device_dict(d, &held, app)).collect::<Result<Vec<_>>>()?;
+    // The goal's own devices first, each with its purpose and whether it's reserved here.
+    let mine: Vec<Row> = goal_pools(app)?.into_iter().filter(|r| r.i("goal_id") == Some(goal_id)).collect();
+    let mut devices = vec![];
+    for d in &all {
+        let mut v = device_dict(d, &held, app)?;
+        let own = mine.iter().find(|r| r.s("device") == d.s("name"));
+        v["in_pool"] = json!(own.is_some());
+        v["purpose"] = own.map(|r| r.v("purpose")).unwrap_or(Value::Null);
+        v["reserved"] = json!(own.is_some_and(|r| r.b("reserved")));
+        devices.push(v);
+    }
+    devices.sort_by_key(|v| v["in_pool"] != true);
     let ours: Vec<i64> = tasks.iter().map(|t| t.id()).collect();
     let lent = held.iter().filter(|(_, t)| ours.contains(t)).count();
-    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "devices": devices, "lent_here": lent}))
+    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "devices": devices, "lent_here": lent, "pool": mine.len()}))
+}
+
+/// A goal's own devices, for `GET /goals/:id/devices`.
+fn goal_pool(app: &App, goal_id: i64) -> Result<Value> {
+    let held = held(app)?;
+    let mut out = vec![];
+    for r in goal_pools(app)?.into_iter().filter(|r| r.i("goal_id") == Some(goal_id)) {
+        let d = get(app, &r.st("device"))?;
+        let mut v = device_dict(&d, &held, app)?;
+        v["purpose"] = r.v("purpose");
+        v["reserved"] = json!(r.b("reserved"));
+        out.push(v);
+    }
+    Ok(json!({"goal": rf("goal", goal_id), "devices": out}))
+}
+
+/// Puts a device in a goal's own pool, or changes its purpose (`none` drops it) or `reserved`.
+fn goal_pool_set(app: &App, goal_id: i64, body: &Value) -> Result<Value> {
+    board::get_goal(app, goal_id)?;
+    let d = get(app, &body_str(body, "device"))?;
+    let name = d.st("name");
+    let had = app.db.q1("SELECT * FROM goal_devices WHERE goal_id = ? AND device = ?", p![goal_id, name])?;
+    let purpose = if body.get("purpose").is_some() {
+        let v = body_str(body, "purpose").trim().to_lowercase();
+        if v.is_empty() || v == "none" {
+            None
+        } else if TAG.is_match(&v) {
+            Some(v)
+        } else {
+            return err(400, format!("“{v}” can't be a purpose: it counts as a tag, so use lowercase letters, numbers, dots, dashes or underscores, like measure."));
+        }
+    } else {
+        had.as_ref().and_then(|r| r.s("purpose").map(str::to_string))
+    };
+    let reserve = if body.get("reserved").is_some() { as_bool(body.get("reserved"), false) } else { had.as_ref().is_some_and(|r| r.b("reserved")) };
+    if reserve {
+        if let Some(g) = reserved(&goal_pools(app)?).get(&name).filter(|g| **g != goal_id) {
+            let g = rf("goal", *g);
+            return err(409, format!("{name} is reserved for {g}. Take it out there first (tb goal devices {g} --remove {name})."));
+        }
+    }
+    app.db.x(
+        "INSERT INTO goal_devices(goal_id, device, purpose, reserved, at) VALUES(?, ?, ?, ?, ?) \
+         ON CONFLICT(goal_id, device) DO UPDATE SET purpose = excluded.purpose, reserved = excluded.reserved",
+        p![goal_id, name, purpose, reserve as i64, now_iso()],
+    )?;
+    for t in board::goal_tasks(app, goal_id)? {
+        board::bump_ctx(app, t.id())?;
+    }
+    goal_pool(app, goal_id)
+}
+
+fn goal_pool_remove(app: &App, goal_id: i64, name: &str) -> Result<Value> {
+    let n = name.trim().to_lowercase();
+    if app.db.q1("SELECT 1 FROM goal_devices WHERE goal_id = ? AND device = ?", p![goal_id, n])?.is_none() {
+        return err(404, format!("{n} isn't one of {}'s devices.", rf("goal", goal_id)));
+    }
+    app.db.x("DELETE FROM goal_devices WHERE goal_id = ? AND device = ?", p![goal_id, n])?;
+    for t in board::goal_tasks(app, goal_id)? {
+        board::bump_ctx(app, t.id())?;
+    }
+    goal_pool(app, goal_id)
+}
+
+/// `/goals/:id/devices…` routes: the goal's own devices.
+pub fn goal_route(app: &App, method: &str, goal_id: i64, rest: &[&str], body: &Value) -> Result<Value> {
+    match (method, rest) {
+        ("GET", []) => goal_pool(app, goal_id),
+        ("POST", []) => app.db.tx(|| goal_pool_set(app, goal_id, body)),
+        ("POST", [name, "remove"]) => app.db.tx(|| goal_pool_remove(app, goal_id, name)),
+        _ => err(404, "There's nothing at that address."),
+    }
 }
 
 fn get(app: &App, name: &str) -> Result<Row> {
@@ -423,6 +575,7 @@ fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
                 return err(409, format!("There's already a device called {n}."));
             }
             app.db.x("UPDATE device_loans SET device = ? WHERE device = ?", p![n, new_name])?;
+            app.db.x("UPDATE goal_devices SET device = ? WHERE device = ?", p![n, new_name])?;
             f.push(("name", json!(n)));
             new_name = n;
         }
@@ -455,6 +608,7 @@ fn remove(app: &App, name: &str) -> Result<Value> {
         return err(409, format!("{} has {} now. Remove it once that task is done, or switch it off with tb device set {} --off.", rf("task", *t), d.st("name"), d.st("name")));
     }
     app.db.x("DELETE FROM devices WHERE id = ?", p![d.id()])?;
+    app.db.x("DELETE FROM goal_devices WHERE device = ?", p![d.st("name")])?;
     Ok(json!({"ok": true, "removed": d.v("name")}))
 }
 
@@ -510,7 +664,7 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
             board::tb_cmd(app)
         )]);
     }
-    let all = pool(app)?;
+    let (all, _) = view(app, t.i("goal_id"))?;
     let described: Vec<String> = names
         .iter()
         .map(|n| match all.iter().find(|d| d.s("name") == Some(n.as_str())) {
@@ -556,11 +710,13 @@ mod tests {
     fn fill_prefers_the_devices_it_had_and_narrow_ones() {
         let free = vec![dev("pixel-7", &["android"]), dev("pixel-8", &["android", "tablet"]), dev("iphone", &["ios"])];
         let needs = vec![Need { tag: "android".into(), n: 1 }, Need { tag: "ios".into(), n: 1 }];
-        assert_eq!(fill(&needs, &free, &[]), (vec!["pixel-7".to_string(), "iphone".to_string()], vec![]));
-        assert_eq!(fill(&needs, &free, &["pixel-8".to_string()]).0, vec!["pixel-8".to_string(), "iphone".to_string()]);
-        let (picked, short) = fill(&[Need { tag: "android".into(), n: 3 }], &free, &[]);
+        assert_eq!(fill(&needs, &free, &[], &[]), (vec!["pixel-7".to_string(), "iphone".to_string()], vec![]));
+        assert_eq!(fill(&needs, &free, &["pixel-8".to_string()], &[]).0, vec!["pixel-8".to_string(), "iphone".to_string()]);
+        let (picked, short) = fill(&[Need { tag: "android".into(), n: 3 }], &free, &[], &[]);
         assert_eq!(picked.len(), 2);
         assert_eq!(short, vec![Need { tag: "android".into(), n: 1 }]);
-        assert_eq!(fill(&[Need { tag: "iphone".into(), n: 1 }], &free, &[]).0, vec!["iphone".to_string()], "a name answers too");
+        assert_eq!(fill(&[Need { tag: "iphone".into(), n: 1 }], &free, &[], &[]).0, vec!["iphone".to_string()], "a name answers too");
+        assert_eq!(fill(&needs, &free, &[], &["pixel-8".to_string()]).0[0], "pixel-8", "the goal's own devices go first");
+        assert_eq!(fill(&needs, &free, &["pixel-7".to_string()], &["pixel-8".to_string()]).0[0], "pixel-7", "after the ones it had");
     }
 }

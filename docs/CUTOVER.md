@@ -47,8 +47,10 @@ The old file is only read (it's copied first, with its `-wal` and `-shm`). The i
   old Jira desk terminal (`sessions.jira_desk`) as the desk. An old need's `device:<id>` becomes
   that one device and `tag:x` tag `x`; a task's `none` stays its own "needs none"; a loan a
   finished task still held comes back. Old `goal_devices` rows with a purpose or a reserved flag
-  are a goal's own pool, which the board doesn't have: they're kept whole as
-  `import.goal_devices` rather than turned into needs;
+  are a goal's own pool: they become the goal's own devices (`tb goal devices`), the purpose made a
+  tag word (`Payments on Android` → `payments-on-android`), rather than needs. A blocked device
+  (`devices.blocked`) comes over switched off, its note saying what it's kept for; a removed one
+  (`devices.removed_at`) doesn't come over, and is listed;
 - maps the reviewer roster (`reviewers`: one row per person and project, `source` = `import`).
   Rows that are one person fold into one: the most active row stays, with its own removed mark,
   and the commits, asks and swaps add up. The host display name (`bb_name`) becomes an alias;

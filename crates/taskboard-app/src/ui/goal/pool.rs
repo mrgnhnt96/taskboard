@@ -1,7 +1,8 @@
 //! The goal page's Devices and Bits asides. Read-only like the rest of the app: devices can be
-//! focused (their window raised); bits' names and create links can be copied, their tool's "new flag"
-//! page opened, and a backend bit marked created with one click once the owner has made it there (the
-//! owner's own signal, like "I reviewed it"). Adding and changing devices and bits go through
+//! focused (their window raised); bits' names, descriptions and create links can be copied, their
+//! tool's "new flag" page opened, and a backend bit marked created with one click once the owner has
+//! made it there, or marked not created again (the owner's own signal, like "I reviewed it"). Adding
+//! and changing devices and bits go through
 //! `tb device` and `tb bit`.
 use super::*;
 
@@ -16,6 +17,9 @@ pub struct DeviceRow {
     pub state: String,
     pub ours: bool,
     pub can_focus: bool,
+    /// In this goal's own pool: its purpose and whether it's reserved here ("for measure, reserved");
+    /// reserved for another goal: "reserved for G4".
+    pub pool: String,
 }
 
 pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
@@ -29,7 +33,17 @@ pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
                 None if b(d, "off") => "Off".into(),
                 None => "Free".into(),
             };
+            let mut pool: Vec<String> = vec![];
+            if b(d, "in_pool") {
+                pool.extend(fmt::opt_s(d, "purpose").map(|p| format!("for {p}")));
+                if b(d, "reserved") {
+                    pool.push("reserved".into());
+                }
+            } else if let Some(g) = fmt::opt_s(d, "reserved_for") {
+                pool.push(format!("reserved for {g}"));
+            }
             DeviceRow {
+                pool: pool.join(", "),
                 name: s(d, "name").to_string(),
                 tags: arr(d, "tags").iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
                 ours: held_by.as_ref().is_some_and(|r| ours.contains(r)),
@@ -53,6 +67,10 @@ pub struct BitRow {
     pub create: Option<(String, String)>,
     /// A backend bit not made yet: the owner can mark it created.
     pub can_mark: bool,
+    /// A backend bit marked made: the owner can take the mark back.
+    pub can_unmark: bool,
+    /// Its note (what the flag is for), copyable while a backend bit isn't made yet.
+    pub note: Option<String>,
     pub uses: String,
 }
 
@@ -77,6 +95,8 @@ pub fn bit_rows(g: &Value) -> Vec<BitRow> {
                 tone,
                 create: (!local && !made).then(|| fmt::opt_s(x, "create_url").map(|u| (format!("Create in {tool}"), u.to_string()))).flatten(),
                 can_mark: !local && !made,
+                can_unmark: !local && made,
+                note: fmt::opt_s(x, "note").map(str::to_string),
                 uses: uses.join(", "),
             }
         })
@@ -146,7 +166,8 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                         .flex_1()
                         .min_w_0()
                         .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(d.name.clone()))
-                        .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone()))),
+                        .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone())))
+                        .when(!d.pool.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.accent_fg).truncate().child(d.pool.clone()))),
                 )
                 .child(holder)
                 .when(d.can_focus, |x| {
@@ -158,10 +179,13 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
     Some(aside_card(t).child(head).child(list))
 }
 
-/// "Mark created": `POST bits/:name/made`, the owner's word that it's made in the flag tool.
-fn mark_made(m: &mut MainWindow, name: &str, cx: &mut Context<MainWindow>) {
+/// "Mark created": `POST bits/:name/made`, the owner's word that it's made in the flag tool; "Mark
+/// not created" takes it back (`undo`).
+fn mark_made(m: &mut MainWindow, name: &str, undo: bool, cx: &mut Context<MainWindow>) {
     let n = name.to_string();
-    run(m, format!("bit-made:{name}"), None, true, format!("bits/{name}/made"), json!({}), cx, move |_, _, _| format!("Marked {n} created"));
+    run(m, format!("bit-made:{name}"), None, true, format!("bits/{name}/made"), json!({"undo": undo}), cx, move |_, _, _| {
+        if undo { format!("Marked {n} not created") } else { format!("Marked {n} created") }
+    });
 }
 
 pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
@@ -207,17 +231,34 @@ pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWin
                 )
                 .child(kit::btn_small(t, SharedString::from(format!("bit-create-{ix}")), label).on_click(move |_, _, cx| cx.open_url(&url)));
         }
-        if x.can_mark {
+        if let Some(note) = x.note.clone().filter(|_| x.can_mark) {
+            line = line.child(
+                kit::btn_small(t, SharedString::from(format!("bit-note-{ix}")), "Copy description").tooltip(kit::tip(note.clone())).on_click(cx.listener(move |m, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(note.clone()));
+                    m.toast("Copied the description", false, cx);
+                })),
+            );
+        }
+        if x.can_mark || x.can_unmark {
             let busy = m.goal_page.busy.contains(&format!("bit-made:{}", x.name));
-            let name = x.name.clone();
-            let b = kit::btn_small(t, SharedString::from(format!("bit-made-{ix}")), if busy { "Marking…" } else { "Mark created" });
-            line = line.child(if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| mark_made(m, &name, cx))) });
+            let (name, undo) = (x.name.clone(), x.can_unmark);
+            let label = match (busy, undo) {
+                (true, _) => "Marking…",
+                (false, false) => "Mark created",
+                (false, true) => "Mark not created",
+            };
+            let b = kit::btn_small(t, SharedString::from(format!("bit-made-{ix}")), label);
+            line = line.child(if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| mark_made(m, &name, undo, cx))) });
         }
         let mut meta = div().flex().items_center().gap(px(8.)).pl(px(18.)).text_size(px(12.)).child(chip(fg, bg, x.state.clone()));
         if !x.uses.is_empty() {
             meta = meta.child(div().text_color(t.muted).truncate().child(x.uses.clone()));
         }
-        list = list.child(div().flex().flex_col().gap(px(4.)).py(px(6.)).when(ix > 0, |d| d.border_t_1().border_color(t.divider)).child(line).child(meta));
+        let mut row = div().flex().flex_col().gap(px(4.)).py(px(6.)).when(ix > 0, |d| d.border_t_1().border_color(t.divider)).child(line).child(meta);
+        if let Some(note) = x.note.clone() {
+            row = row.child(div().pl(px(18.)).text_size(px(12.)).text_color(t.muted).child(note));
+        }
+        list = list.child(row);
     }
     Some(aside_card(t).child(head).child(list))
 }
@@ -232,20 +273,25 @@ mod tests {
             "tasks": [{"ref": "T4"}],
             "devices": {"needs_text": "ios", "devices": [
                 {"name": "sim-a", "tags": ["ios"], "held_by": {"ref": "T4", "title": "Sim test"}, "can_focus": true},
-                {"name": "pixel-7", "tags": ["android", "phone"], "held_by": null, "off": true, "can_focus": false},
+                {"name": "pixel-7", "tags": ["android", "phone"], "held_by": null, "off": true, "can_focus": false, "in_pool": true, "purpose": "measure", "reserved": true},
+                {"name": "pixel-9", "tags": [], "held_by": null, "reserved_for": "G4"},
                 {"name": "pixel-8", "tags": [], "held_by": {"ref": "T9", "title": "Other"}}]},
             "bits": {"tool": "Flagsmith", "backend": 2, "made": 1, "list": [
                 {"name": "beta-banner", "kind": "local", "made": false, "tasks": ["T4"], "goals": []},
-                {"name": "newCheckout", "kind": "backend", "made": false, "create_url": "https://f.example/new?key=newCheckout", "tasks": ["T4"], "goals": ["G1"]},
+                {"name": "newCheckout", "kind": "backend", "made": false, "note": "Gate the new checkout","create_url": "https://f.example/new?key=newCheckout", "tasks": ["T4"], "goals": ["G1"]},
                 {"name": "oldCheckout", "kind": "backend", "made": true, "create_url": null, "tasks": [], "goals": []}]},
         });
         let d = device_rows(&g);
-        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true });
-        assert_eq!((d[1].state.as_str(), d[1].tags.as_str()), ("Off", "android, phone"));
-        assert!(!d[2].ours);
+        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true, pool: String::new() });
+        assert_eq!((d[1].state.as_str(), d[1].tags.as_str(), d[1].pool.as_str()), ("Off", "android, phone", "for measure, reserved"));
+        assert_eq!(d[2].pool, "reserved for G4");
+        assert!(!d[3].ours);
         let b = bit_rows(&g);
         assert_eq!((b[0].state.as_str(), b[0].create.clone(), b[0].can_mark), ("Local, not in Flagsmith", None, false));
         assert!(b[1].can_mark && !b[2].can_mark, "only a backend bit not made yet can be marked created");
+        assert!(b[2].can_unmark && !b[1].can_unmark && !b[0].can_unmark, "only a made backend bit can be marked not created");
+        assert_eq!(b[1].note.as_deref(), Some("Gate the new checkout"));
+        assert_eq!(b[0].note, None);
         assert_eq!(b[1].create, Some(("Create in Flagsmith".into(), "https://f.example/new?key=newCheckout".into())));
         assert_eq!((b[1].state.as_str(), b[1].uses.as_str()), ("Not created", "T4, G1"));
         assert_eq!((b[2].state.as_str(), b[2].tone), ("Created", "up"));
@@ -255,6 +301,9 @@ mod tests {
     #[::core::prelude::v1::test]
     fn a_stopped_goal_and_one_waiting_on_bits_wait_on_you() {
         let g = json!({"tasks": [{"status": "done"}, {"status": "queued"}], "stopped": "Wave 1 is done. Review it, then continue"});
+        assert_eq!(goal_state(&g), ("Waiting on you".to_string(), "warn"));
+        // Stopped by a failed wave, with a task taken by hand still working: stopped comes first.
+        let g = json!({"tasks": [{"status": "working"}, {"status": "queued"}], "stopped": "Wave 1 stopped: T2 failed"});
         assert_eq!(goal_state(&g), ("Waiting on you".to_string(), "warn"));
         let g = json!({"tasks": [{"status": "done"}], "bits_waiting": 1});
         assert_eq!(goal_state(&g), ("Waiting on 1 bit".to_string(), "warn"));
