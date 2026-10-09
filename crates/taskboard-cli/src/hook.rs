@@ -20,7 +20,8 @@ const GIT_TIMEOUT: f64 = 0.3;
 const SLACK: f64 = 0.35;
 const SESSION_END_POST_CAP: f64 = 0.8;
 const MAX_CONTEXT: usize = 9900;
-const MAX_PROMPT: usize = 8000;
+/// A prompt is sent whole up to what the board keeps of one; a longer one keeps its start and its end.
+const MAX_PROMPT: usize = taskboardd::board::PROMPT_FULL_KEEP;
 const MAX_LAST_MESSAGE: usize = 2000;
 const MAX_OUTPUT: usize = 1000;
 
@@ -122,15 +123,6 @@ fn board_event(hook: &str) -> Option<&'static str> {
 
 fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
-}
-
-/// Like `clip`, but a cut text ends in "…" so the board knows it was cut (the start word check
-/// takes no word from a prompt whose end it can't see).
-fn clip_marked(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        return s.to_string();
-    }
-    format!("{}…", clip(s, n - 1))
 }
 
 fn clip_middle(s: &str, n: usize) -> String {
@@ -275,7 +267,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             extra.insert("reason".into(), json!(reason));
         }
         "UserPromptSubmit" => {
-            extra.insert("prompt".into(), json!(clip_marked(&s("prompt"), MAX_PROMPT)));
+            extra.insert("prompt".into(), json!(taskboardd::startword::keep_ends(&s("prompt"), MAX_PROMPT)));
         }
         "Stop" => {
             extra.insert("last_message".into(), json!(clip(&s("last_assistant_message"), MAX_LAST_MESSAGE)));
@@ -442,7 +434,15 @@ mod tests {
         assert!(PUSH_RE.is_match("git push --force-with-lease"));
         assert!(!PUSH_RE.is_match("git commit -m push"));
         assert_eq!(clip_middle("abcdefghij", 7), "abc\n…\nj");
-        assert_eq!(clip_marked("abcdefghij", 5), "abcd…");
-        assert_eq!(clip_marked("abc", 5), "abc");
+    }
+
+    #[test]
+    fn a_long_prompt_keeps_its_start_and_its_end() {
+        let typed = format!("start T8. here's the log:\n{}\njk", "INFO all good\n".repeat(3000));
+        let sent = taskboardd::startword::keep_ends(&typed, MAX_PROMPT);
+        assert!(sent.chars().count() <= MAX_PROMPT);
+        assert!(sent.starts_with("start T8.") && sent.ends_with("\njk") && sent.contains(taskboardd::startword::CUT_MARK));
+        let short = format!("start T8. {}…", "word ".repeat(1000));
+        assert_eq!(taskboardd::startword::keep_ends(&short, MAX_PROMPT), short, "sent whole up to the board's cap");
     }
 }

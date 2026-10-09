@@ -7,7 +7,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{board, midna, p, reports};
+use taskboardd::{board, midna, p, reports, startword};
 
 struct Board {
     app: Arc<App>,
@@ -378,15 +378,21 @@ fn the_check_reads_past_the_first_600_characters() {
 }
 
 #[test]
-fn a_prompt_clipped_on_its_way_in_is_no_word() {
+fn a_prompt_the_old_hook_clipped_is_no_word_but_takes_nothing_back() {
     let b = board();
     let id = b.new_task();
-    // What the hook sends for a prompt past its 8000 characters: the start, then "…".
+    // What the hook before beta.16 sent for a prompt past its 8000 characters: the start, then "…".
     let long = format!("start T{id}. {}", "x ".repeat(4100));
     let clipped: String = long.chars().take(7999).collect::<String>().trim_end().to_string() + "…";
     b.said(&clipped);
     assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    // It doesn't take back an ask before it.
+    b.said(&format!("start T{id}"));
+    b.said(&("x ".repeat(4000).trim_end().to_string() + "…"));
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
     // A later prompt that names the task is read on its own.
+    let id = b.new_task();
+    b.said(&clipped.replace(&format!("T{}", id - 1), &format!("T{id}")));
     b.said(&format!("ok, start T{id}"));
     assert!(b.tb_start(id).unwrap()["starting"] == true);
 }
@@ -522,4 +528,133 @@ fn the_boards_run_needs_no_word() {
     let v = api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({})).unwrap();
     assert_eq!(v["queued_now"], 1);
     assert_eq!(b.status(id), "queued");
+}
+
+/// A log the owner pasted, `n` characters or more of it.
+fn log_paste(n: usize) -> String {
+    let line = "2026-10-09 12:01:02 INFO worker 3 finished the batch in 41ms\n";
+    line.repeat(n / line.len() + 1)
+}
+
+impl Board {
+    /// What the UserPromptSubmit hook sends for a typed prompt: the same cut, then the report.
+    fn typed(&self, prompt: &str) {
+        self.said(&startword::keep_ends(prompt, board::PROMPT_FULL_KEEP));
+    }
+}
+
+/// Every phrase in #123, both ways, through the hook's path: each case is a fresh conversation with T8
+/// and T9 on the board, the prompts typed in order ("+" is the agent making a task with `tb task new`),
+/// then `tb start` on one task ("T8", "T9", or "M1"/"M2", the first or second task the agent made).
+#[test]
+fn the_start_word_holds_only_the_start_its_no_time_or_condition_is_about() {
+    let paste = log_paste(25_000);
+    let log = log_paste(9000);
+    let typed = "The footer overlaps the cookie banner on small screens and the links wrap badly. ".repeat(60);
+    let starts: Vec<(Vec<String>, &str)> = vec![
+        // A long prompt: its start and its end are read.
+        (vec![format!("start T8. here's the log: {log}")], "T8"),
+        (vec![format!("start T8. here's the log:\n{log}")], "T8"),
+        (vec![format!("start T8. here's the log:\n{paste}\nthat's all")], "T8"),
+        (vec!["start T8".into(), paste.clone(), "ok go ahead".into()], "T8"),
+        (vec!["start T8".into(), format!("here's the log:\n{paste}")], "T8"),
+        (vec![format!("here's the log:\n{paste}\nok, start T8")], "T8"),
+        (vec![format!("start T8. {typed}…")], "T8"),
+        (vec!["start T8. no need to ask".into()], "T8"),
+        // A time or condition about something else.
+        (vec!["start T8 and tell me when it's done".into()], "T8"),
+        (vec!["start T8. let me know if it fails".into()], "T8"),
+        (vec!["start T8, it only takes a few minutes".into()], "T8"),
+        (vec!["start T8. it only takes a few minutes".into()], "T8"),
+        (vec!["start T8. I'll review later".into()], "T8"),
+        (vec!["start T8, then wait for review".into()], "T8"),
+        (vec!["start T8 then wait for review".into()], "T8"),
+        (vec!["start T8, the Monday report fix".into()], "T8"),
+        (vec!["start T8 (the Monday report fix)".into()], "T8"),
+        (vec!["start T8. once it's done, start T9".into()], "T8"),
+        (vec!["make a task for the footer and queue it and let me know when it's done".into(), "+".into()], "M1"),
+        (vec!["make a task for the footer".into(), "+".into(), "queue it and let me know when it's done".into()], "M1"),
+        // A no about something else.
+        (vec!["start T8, no rush".into()], "T8"),
+        (vec!["start T8 and don't ask me again".into()], "T8"),
+        (vec!["start T8 but don't merge it".into()], "T8"),
+        (vec!["start T8. don't forget the tests".into()], "T8"),
+        (vec!["start T8 without the migration".into()], "T8"),
+        (vec!["start T8 now, not later".into()], "T8"),
+        (vec!["no, start T8".into()], "T8"),
+        (vec!["nope, start T8".into()], "T8"),
+        // Phrasing.
+        (vec!["start both T8 and T9".into()], "T8"),
+        (vec!["start both T8 and T9".into()], "T9"),
+        (vec!["start them: T8 and T9".into()], "T8"),
+        (vec!["start them: T8 and T9".into()], "T9"),
+        (vec!["start T8 — it's ready".into()], "T8"),
+        (vec!["start T8 (it's ready)".into()], "T8"),
+        (vec!["start T8…".into()], "T8"),
+        (vec!["start T8...".into()], "T8"),
+        (vec!["T8 is ready, start it".into()], "T8"),
+        (vec!["T8 is ready. Start it.".into()], "T8"),
+        (vec!["make a task for the footer".into(), "+".into(), "start the new task".into()], "M1"),
+        (vec!["make a task for the footer and start the new task".into(), "+".into()], "M1"),
+        (vec!["make two tasks for the footer".into(), "+".into(), "+".into(), "queue the first one".into()], "M1"),
+        (vec!["make two tasks for the footer and queue the first one".into(), "+".into(), "+".into()], "M1"),
+        (vec!["run T8".into()], "T8"),
+        (vec!["pick up T8".into()], "T8"),
+    ];
+    let holds: Vec<(Vec<String>, &str)> = vec![
+        (vec!["start T8 tomorrow".into()], "T8"),
+        (vec!["start T8 once T7 lands".into()], "T8"),
+        (vec!["don't start T8".into()], "T8"),
+        (vec!["start T8. jk".into()], "T8"),
+        (vec!["wait until 6am, then start T8".into()], "T8"),
+        (vec!["start T8. Not now though.".into()], "T8"),
+        (vec!["start T8. once it's done, start T9".into()], "T9"),
+        (vec!["start T8. Do it tomorrow.".into()], "T8"),
+        (vec![format!("start T8. here's the log:\n{paste}\njk")], "T8"),
+        (vec!["start T8".into(), format!("here's the log:\n{paste}\nnever mind")], "T8"),
+        (vec![format!("here's the log:\n{paste}start T8\n")], "T8"),
+        (vec!["make two tasks for the footer".into(), "+".into(), "+".into(), "queue the first one".into()], "M2"),
+        (vec!["T8 is ready, start it".into()], "T9"),
+        (vec!["run T8's tests".into()], "T8"),
+        // The lower-priority ones.
+        (vec!["start T8 then".into()], "T8"),
+        (vec!["ok, start T8 then.".into()], "T8"),
+        (vec!["start T8 down the road".into()], "T8"),
+        (vec!["start T8, down the road".into()], "T8"),
+        (vec!["start T8 at your convenience".into()], "T8"),
+        (vec!["start T8, at your convenience".into()], "T8"),
+        (vec!["start T8 at six am".into()], "T8"),
+        (vec!["start T8, six am".into()], "T8"),
+        (vec!["start T8 on the 15th".into()], "T8"),
+        (vec!["start T8, on the 15th".into()], "T8"),
+        (vec!["start T8... psych".into()], "T8"),
+        (vec!["I forbid you: start T8".into()], "T8"),
+        (vec!["here's the output.\nstart T8\nexit 1".into()], "T8"),
+    ];
+    let b = board();
+    let mut wrong = vec![];
+    for (want, cases) in [(true, &starts), (false, &holds)] {
+        for (said, target) in cases {
+            b.report("hook.session_start", json!({"source": "clear"}));
+            let (t8, t9) = (b.new_task(), b.new_task());
+            let mut made = vec![];
+            for p in said {
+                if p == "+" {
+                    made.push(b.new_task());
+                } else {
+                    b.typed(&p.replace("T8", "\u{1}").replace("T9", "\u{2}").replace('\u{1}', &format!("T{t8}")).replace('\u{2}', &format!("T{t9}")));
+                }
+            }
+            let id = match *target {
+                "T8" => t8,
+                "T9" => t9,
+                m => made[m[1..].parse::<usize>().unwrap() - 1],
+            };
+            let got = b.tb_start(id);
+            if got.is_ok() != want {
+                let shown: Vec<String> = said.iter().map(|p| p.chars().take(80).collect()).collect();
+                wrong.push(format!("{} {target}: {shown:?} {:?}", if want { "refused" } else { "started" }, got.err()));            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
