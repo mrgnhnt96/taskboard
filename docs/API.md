@@ -733,7 +733,11 @@ runs nothing else in its scope starts ("Waits while T13 runs alone").
 | `POST /goals/:id` | `{worktree_base: "origin/main"\|"off"}` | Each task starts in `<repo>/.claude/worktrees/T<n>`, made with `git fetch` and `git worktree add --detach` at the base. Once the task is finished (failed, or no open PR) and its terminal is gone, the board removes the worktree, or keeps one with uncommitted changes. |
 
 `tb propose` and `--task` items take a fourth `::` field, what the task waits for: `"title::detail::2::#1, T14"`, where
-`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one).
+`#k` is the k-th task in the same request (400 when it doesn't point at an earlier one). A fifth field is the files
+the wave plans for the task, comma-separated: `"title::detail::2::::src/form.rs, src/form.css"` (an object item, and
+`tb.new_task` with a goal, take `files: [str]`; `tb task new --goal G3 --file src/form.rs`). They're kept in the task's
+context as `plan_files`; its handoff names them, and each wave mate's handoff lists them as the files that task owns
+(else the files it has touched). The handoff's wave mates are only the ones still queued or working.
 
 ## Devices
 

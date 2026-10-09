@@ -133,8 +133,9 @@ enum Cmd {
     /// Propose planned tasks for a goal: --task "title::what to do"
     Propose {
         goal: String,
-        /// A planned task: "title::detail", "title::detail::<wave>" or "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS]")]
+        /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
+        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
         tasks: Vec<String>,
     },
     /// Named locks, who holds each, and tasks that run alone
@@ -570,7 +571,7 @@ enum GoalCmd {
         #[arg(long = "device", value_name = "TAG[:N]|none")]
         devices: Vec<String>,
     },
-    /// What every task in the goal does first (its handoff shows it): {task} {n} {wave} {goal} are filled in; none clears it
+    #[command(about = setup_about())]
     Setup { goal: String, text: String },
     /// Name a wave, or hold it: none of its tasks start, nor any later wave, until it's continued.
     /// (A review stop after a wave is the owner's own checkbox in the app.)
@@ -612,6 +613,9 @@ enum TaskCmd {
         /// The goal's wave it runs in, side by side with the rest of that wave
         #[arg(long)]
         wave: Option<i64>,
+        /// A file the wave plans for it, so its wave mates leave it alone (needs --goal); repeat for more
+        #[arg(long = "file", value_name = "PATH")]
+        files: Vec<String>,
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
@@ -992,6 +996,14 @@ fn goal_ref(v: &str) -> Result<String, String> {
         return Err(format!("expected G<number>, got {v:?}"));
     }
     Ok(format!("G{digits}"))
+}
+
+/// `tb goal setup`'s help. Clap turns every `{n}` in help into a line break, so each placeholder's name is set
+/// in bold, which keeps the braces apart from it until the styling is drawn (or stripped).
+fn setup_about() -> String {
+    let b = clap::builder::styling::Style::new().bold();
+    let names: Vec<String> = ["task", "n", "wave", "goal"].iter().map(|n| format!("{{{b}{n}{b:#}}}")).collect();
+    format!("What every task in the goal does first (its handoff shows it): {} are filled in; none clears it", names.join(" "))
 }
 
 /// Backlog refs in the order given, each once.
@@ -2209,9 +2221,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
+                }
+                if !files.is_empty() && goal.is_none() {
+                    return Err("--file needs --goal: it tells the task's wave mates which files are its".into());
                 }
                 if here && (goal.is_some() || !also.is_empty()) {
                     return Err("--here makes a standalone task on this terminal; leave out --goal and --also".into());
@@ -2230,6 +2245,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(w) = wave {
                     body["wave"] = json!(w);
+                }
+                if !files.is_empty() {
+                    body["files"] = json!(files);
                 }
                 if !waits_for.is_empty() {
                     body["waits_for"] = json!(waits_for.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?);
@@ -2943,6 +2961,16 @@ mod tests {
         assert_eq!(lock_arg(&["local-core,emulator-5554".into()]), vec!["local-core", "emulator-5554"]);
         assert_eq!(lock_arg(&["a".into(), "b c".into()]), vec!["a", "b", "c"]);
         assert!(lock_arg(&["none".into()]).is_empty());
+    }
+
+    #[test]
+    fn goal_setup_help_shows_its_placeholders() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let setup = cmd.find_subcommand_mut("goal").unwrap().find_subcommand_mut("setup").unwrap();
+        let help = setup.render_help().to_string();
+        assert!(help.contains("{task} {n} {wave} {goal}"), "{help}");
+        assert!(Cli::try_parse_from(["tb", "task", "new", "Form", "--goal", "G3", "--wave", "1", "--file", "src/a.rs", "--file", "src/b.rs"]).is_ok());
     }
 
     #[test]
