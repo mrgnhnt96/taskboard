@@ -505,6 +505,14 @@ fn set_needs(app: &App, owner: &str, needs: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every old devices column `devices` reads (some only for some rows).
+const DEVICE_COLS: &[&str] = &[
+    "name", "label", "tags", "tag", "kinds", "kind", "platform", "type", "os", "target", "runtime", "os_version", "version",
+    "start_cmd", "start_command", "start", "boot_cmd", "stop_cmd", "stop_command", "stop", "shutdown_cmd", "removed_at", "removed",
+    "blocked", "blocked_for", "kept_for", "blocked_reason", "off", "disabled", "retired", "enabled", "note", "notes", "description",
+    "detail", "focus", "focus_cmd", "focus_command", "created_at", "created", "added_at", "updated_at", "updated",
+];
+
 /// The device pool, its loans, and what tasks (`tasks.device_need`) and goals (`goal_devices`) ask for.
 /// True when `goal_devices` is a goal's own pool (purpose, reserved) rather than its needs.
 fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Result<bool> {
@@ -519,15 +527,18 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 continue;
             };
             let mut tags: Vec<String> = vec![];
-            for v in [d.get(r, &["tags", "tag", "kinds"]), d.get(r, &["kind", "platform", "type", "os"])] {
-                for w in words(v) {
-                    if let Some(t) = text(&w).as_deref().and_then(slug).map(|t| t.replace(':', "-")) {
-                        if t != name && !tags.contains(&t) {
-                            tags.push(t);
-                        }
+            for w in words(d.get(r, &["tags", "tag", "kinds"])) {
+                if let Some(t) = text(&w).as_deref().and_then(slug).map(|t| t.replace(':', "-")) {
+                    if t != name && !tags.contains(&t) {
+                        tags.push(t);
                     }
                 }
             }
+            // The kind is a label, as on the Python board, not a tag: a need never matched it.
+            let kind = text(d.get(r, &["kind", "platform", "type", "os"])).map(|k| one_line(&k, 80));
+            let target = text(d.get(r, &["target", "runtime", "os_version", "version"])).map(|t| one_line(&t, 80));
+            let start = text(d.get(r, &["start_cmd", "start_command", "start", "boot_cmd"])).map(|c| c.trim().to_string());
+            let stop = text(d.get(r, &["stop_cmd", "stop_command", "stop", "shutdown_cmd"])).map(|c| c.trim().to_string());
             for k in [d.text(r, &["id"]), raw.clone()].into_iter().flatten() {
                 names.entry(k.to_lowercase()).or_insert_with(|| name.clone());
             }
@@ -543,12 +554,17 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
                 (n, k) => json!(n.or(k)),
             };
             app.db.x(
-                "INSERT OR IGNORE INTO devices(name, tags, focus, note, off, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO devices(name, tags, focus, note, kind, target, start_cmd, stop_cmd, off, created_at, updated_at) \
+                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 vec![
                     json!(name),
                     json!(jdumps(&json!(tags))),
                     d.get(r, &["focus", "focus_cmd", "focus_command"]).clone(),
                     note,
+                    json!(kind),
+                    json!(target),
+                    json!(start),
+                    json!(stop),
                     json!(off as i64),
                     d.get(r, &["created_at", "created", "added_at"]).clone(),
                     d.get(r, &["updated_at", "updated"]).clone(),
@@ -561,6 +577,14 @@ fn devices(app: &App, c: &Connection, old: &[String], rep: &mut Report) -> Resul
             }
         }
         rep.copied.push(("devices".into(), n));
+        // A row skipped early (no name, removed, kept back) doesn't look at every column: mark them all
+        // read, then keep the rest like other tables' extras.
+        if let Some(r) = d.rows.first() {
+            for col in DEVICE_COLS {
+                d.get(r, &[col]);
+            }
+        }
+        park_unread(app, &d, rep)?;
     }
     let device_of = |v: &Value| -> Option<String> {
         let k = text(v)?;

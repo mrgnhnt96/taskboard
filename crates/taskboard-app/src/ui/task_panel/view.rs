@@ -1657,7 +1657,11 @@ fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let mut out = vec![];
     let d = &t["devices"];
-    let lent: Vec<&str> = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
+    // Each with its kind and target ("dev-a (Android phone, Android 14)") when the board gives them.
+    let mut lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
+    if lent.is_empty() {
+        lent = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
+    }
     let devices = if !lent.is_empty() { Some(lent.join(", ")) } else { opt_s(d, "needs_text").map(|n| format!("Needs {n}")) };
     if let Some(v) = devices {
         out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));

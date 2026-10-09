@@ -5,6 +5,11 @@
 //! (done, or a failed start). A device can have a focus command that raises its window (the
 //! simulator, the device hub), run from `tb device focus` or the app.
 //!
+//! A device may also say what it is (`kind`, a label like phone or simulator, never matched against
+//! needs; `target`, like Android 14 or an iOS 17 runtime), shown with its name ("dev-a (Android phone,
+//! Android 14)"), and how to boot it and shut it down (`start_cmd`, `stop_cmd`): the handoff tells the
+//! task that's lent it "Start it: …" and "Stop it when you're done: …", filled like step commands.
+//!
 //! A goal can hold devices of its own (`tb goal devices`): its tasks are lent only those (or those
 //! first, with `[devices] goal_pool_only = false`), a device it reserves is never lent to other
 //! goals' tasks (nor to tasks in no goal; several goals may reserve one and share it), and the
@@ -38,6 +43,53 @@ CREATE TABLE IF NOT EXISTS goal_devices(
   goal_id INT NOT NULL, device TEXT NOT NULL, purpose TEXT, reserved INT DEFAULT 0, at TEXT,
   PRIMARY KEY(goal_id, device));
 "#;
+
+/// Device columns added since the first schema: what it is (a label, not a tag), and how to boot it
+/// and shut it down.
+pub const ADDED: &[(&str, &str, &str)] = &[("devices", "kind", "TEXT"), ("devices", "target", "TEXT"), ("devices", "start_cmd", "TEXT"), ("devices", "stop_cmd", "TEXT")];
+
+/// Kinds the board names in words ("android" → "Android phone"); any other kind shows as it was given.
+const KINDS: &[(&[&str], &str)] = &[
+    (&["android", "android_phone", "android-phone", "android phone"], "Android phone"),
+    (&["android_tablet", "android-tablet", "android tablet"], "Android tablet"),
+    (&["android_emulator", "android-emulator", "android emulator", "emulator", "android_emu", "avd"], "Android emulator"),
+    (&["ios", "iphone", "ios_phone", "ios-phone"], "iPhone"),
+    (&["ipad", "ios_tablet", "ios-tablet"], "iPad"),
+    (&["ios_simulator", "ios-simulator", "ios simulator", "simulator", "ios_sim", "sim"], "iOS simulator"),
+    (&["phone"], "Phone"),
+    (&["tablet"], "Tablet"),
+    (&["watch"], "Watch"),
+    (&["tv"], "TV"),
+    (&["desktop", "mac", "macos"], "Mac"),
+    (&["browser", "web"], "Browser"),
+];
+
+/// A device's kind in words: one the board knows by name, else as given.
+pub fn kind_label(kind: &str) -> String {
+    let k = kind.trim();
+    let low = k.to_lowercase();
+    KINDS.iter().find(|(keys, _)| keys.contains(&low.as_str())).map(|(_, l)| l.to_string()).unwrap_or_else(|| k.to_string())
+}
+
+/// "Android phone, Android 14": a device's kind and target, empty when it has neither.
+pub fn what(d: &Row) -> String {
+    let mut parts: Vec<String> = vec![];
+    if let Some(k) = d.s("kind").filter(|k| !k.trim().is_empty()) {
+        parts.push(kind_label(k));
+    }
+    if let Some(t) = d.s("target").filter(|t| !t.trim().is_empty()) {
+        parts.push(t.trim().to_string());
+    }
+    parts.join(", ")
+}
+
+/// "dev-a (Android phone, Android 14)": the name, with its kind and target when it has them.
+pub fn label(d: &Row) -> String {
+    match what(d) {
+        w if w.is_empty() => d.st("name"),
+        w => format!("{} ({w})", d.st("name")),
+    }
+}
 
 /// `[devices]` in config.toml.
 #[derive(Debug, Clone, Deserialize)]
@@ -466,7 +518,15 @@ pub fn card(app: &App, t: &Row) -> Result<Value> {
     if needs.is_empty() && has.is_empty() {
         return Ok(Value::Null);
     }
-    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "lent": has}))
+    // Each lent device's name with its kind and target, for showing; `lent` stays the names.
+    let mut labels = vec![];
+    for n in &has {
+        labels.push(match app.db.q1("SELECT * FROM devices WHERE name = ?", p![n])? {
+            Some(d) => label(&d),
+            None => n.clone(),
+        });
+    }
+    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "lent": has, "lent_labels": labels}))
 }
 
 fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value> {
@@ -482,8 +542,10 @@ fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value>
     let by: Vec<i64> = pools.iter().filter(|r| r.b("reserved")).map(|r| r.i0("goal_id")).collect();
     let reserved_for = (!by.is_empty()).then(|| goals_text(&by));
     let goals: Vec<Value> = pools.iter().map(|r| json!({"goal": rf("goal", r.i0("goal_id")), "purpose": r.v("purpose"), "reserved": r.b("reserved")})).collect();
-    Ok(json!({"id": d.id(), "name": d.v("name"), "tags": tags_of(d), "note": d.v("note"), "off": d.b("off"),
-              "focus": d.v("focus"), "can_focus": focus, "held_by": holder, "goals": goals, "reserved_for": reserved_for}))
+    let kind = d.s("kind").map(kind_label);
+    Ok(json!({"id": d.id(), "name": d.v("name"), "label": label(d), "kind": d.v("kind"), "kind_label": kind, "target": d.v("target"),
+              "tags": tags_of(d), "note": d.v("note"), "off": d.b("off"), "focus": d.v("focus"), "can_focus": focus,
+              "start_cmd": d.v("start_cmd"), "stop_cmd": d.v("stop_cmd"), "held_by": holder, "goals": goals, "reserved_for": reserved_for}))
 }
 
 /// `GET /devices`: the pool, who has each device, and the queued tasks waiting for one.
@@ -610,6 +672,18 @@ fn get(app: &App, name: &str) -> Result<Row> {
     }
 }
 
+/// A kind or target from a body: one line, or None for empty (or `none`).
+fn clean_label(body: &Value, key: &str) -> Option<String> {
+    let v = one_line(&body_str(body, key), 80);
+    (!v.is_empty() && !v.eq_ignore_ascii_case("none")).then_some(v)
+}
+
+/// A start or stop command from a body, as given; None for empty (or `none`).
+fn clean_cmd(body: &Value, key: &str) -> Option<String> {
+    let v = body_str(body, key).trim().to_string();
+    (!v.is_empty() && !v.eq_ignore_ascii_case("none")).then_some(v)
+}
+
 fn add(app: &App, body: &Value) -> Result<Value> {
     let name = clean_name(&body_str(body, "name"))?;
     if app.db.q1("SELECT id FROM devices WHERE name = ?", p![name])?.is_some() {
@@ -621,7 +695,9 @@ fn add(app: &App, body: &Value) -> Result<Value> {
     app.db.insert(
         "devices",
         crate::fields!["name" => name, "tags" => clean_tags(body.get("tags"))?, "focus" => if focus.trim().is_empty() { None } else { Some(focus) },
-                       "note" => if note.is_empty() { None } else { Some(note) }, "off" => 0, "created_at" => now, "updated_at" => now],
+                       "note" => if note.is_empty() { None } else { Some(note) }, "kind" => clean_label(body, "kind"), "target" => clean_label(body, "target"),
+                       "start_cmd" => clean_cmd(body, "start_cmd"), "stop_cmd" => clean_cmd(body, "stop_cmd"),
+                       "off" => 0, "created_at" => now, "updated_at" => now],
     )?;
     device_dict(&get(app, &name)?, &held(app)?, app)
 }
@@ -656,8 +732,18 @@ fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
     if body.get("off").is_some() {
         f.push(("off", json!(as_bool(body.get("off"), false) as i64)));
     }
+    for k in ["kind", "target"] {
+        if body.get(k).is_some() {
+            f.push((k, json!(clean_label(body, k))));
+        }
+    }
+    for k in ["start_cmd", "stop_cmd"] {
+        if body.get(k).is_some() {
+            f.push((k, json!(clean_cmd(body, k))));
+        }
+    }
     if f.is_empty() {
-        return err(400, "Say what to change: name, tags, focus, note or off.");
+        return err(400, "Say what to change: name, tags, kind, target, start_cmd, stop_cmd, focus, note or off.");
     }
     f.push(("updated_at", json!(now_iso())));
     app.db.update("devices", &json!(d.id()), f)?;
@@ -712,7 +798,31 @@ pub fn route(app: &App, method: &str, rest: &[&str], body: &Value) -> Result<Val
     }
 }
 
-/// The handoff's line about the devices lent to the task.
+/// What fills a device's start and stop commands: the task's step placeholders (`{task}`, `{branch}`,
+/// …), and the device's `{device}` (also `{name}`), `{kind}` and `{target}`.
+pub fn cmd_vars(app: &App, t: &Row, d: &Row) -> std::collections::BTreeMap<String, String> {
+    let mut v = crate::steps::vars_for(app, t);
+    v.insert("device".into(), d.st("name"));
+    v.insert("name".into(), d.st("name"));
+    v.insert("kind".into(), d.st("kind"));
+    v.insert("target".into(), d.st("target"));
+    v
+}
+
+/// "Start it: …" and "Stop it when you're done: …" for a lent device, filled for the task.
+fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<String> {
+    let vars = cmd_vars(app, t, d);
+    let mut out = vec![];
+    if let Some(c) = d.s("start_cmd").filter(|c| !c.trim().is_empty()) {
+        out.push(format!("Start it: {}", crate::steps::fill(c.trim(), &vars)));
+    }
+    if let Some(c) = d.s("stop_cmd").filter(|c| !c.trim().is_empty()) {
+        out.push(format!("Stop it when you're done: {}", crate::steps::fill(c.trim(), &vars)));
+    }
+    out
+}
+
+/// The handoff's line about the devices lent to the task, and how to start and stop each.
 pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
     let names = lent(app, t.id())?;
     if names.is_empty() {
@@ -727,23 +837,42 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
         )]);
     }
     let (all, _) = view(app, t.i("goal_id"))?;
+    let rows: Vec<Option<&Row>> = names.iter().map(|n| all.iter().find(|d| d.s("name") == Some(n.as_str()))).collect();
     let described: Vec<String> = names
         .iter()
-        .map(|n| match all.iter().find(|d| d.s("name") == Some(n.as_str())) {
+        .zip(&rows)
+        .map(|(n, d)| match d {
             Some(d) => {
-                let tags = tags_of(d);
-                let note = d.s("note").map(|x| format!(", {x}")).unwrap_or_default();
-                if tags.is_empty() && note.is_empty() { n.clone() } else { format!("{n} ({}{note})", tags.join(", ")) }
+                // What it is (kind, target), else its tags; then its note.
+                let mut parts: Vec<String> = match what(d) {
+                    w if w.is_empty() => tags_of(d),
+                    w => vec![w],
+                };
+                parts.extend(d.s("note").filter(|x| !x.is_empty()).map(str::to_string));
+                if parts.is_empty() { n.clone() } else { format!("{n} ({})", parts.join(", ")) }
             }
             None => n.clone(),
         })
         .collect();
-    Ok(vec![format!(
+    let mut text = format!(
         "The board lent this task {} {}: use only {}, since other tasks have the rest of the pool. They go back when the task is done.",
         if names.len() == 1 { "the device" } else { "the devices" },
         described.join(", "),
         if names.len() == 1 { "that one" } else { "these" }
-    )])
+    );
+    for (n, d) in names.iter().zip(&rows) {
+        let Some(d) = d else { continue };
+        let cmds = cmd_lines(app, t, d);
+        if cmds.is_empty() {
+            continue;
+        }
+        if names.len() == 1 {
+            text += &format!("\n{}", cmds.join("\n"));
+        } else {
+            text += &format!("\n{n}:\n{}", cmds.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"));
+        }
+    }
+    Ok(vec![text])
 }
 
 #[cfg(test)]
