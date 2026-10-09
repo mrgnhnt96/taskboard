@@ -160,10 +160,13 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "queued": int,       // status queued
   "starting": int,     // queued with a live start job
   "blocked": int,      // queued and waiting on another task (waits_for)
+  "held": int,         // queued, not blocked, but held back by its waves or order, a lock, a bit or the device pool
+                       // (the goal shows Blocked when blocked + held covers every queued task)
+  "bits_waiting": int, // its backend bits not made in the flag tool yet; a done goal waits on them ("Waiting on N bits")
   "planned": int,      // status planned
   "open_issues": int,  // open backlog issues in the goal
   "prs_open": [int],   // PR numbers of done, not-failed tasks whose PR is still open (the goal isn't finished until they merge)
-  "finished_at": iso|null,  // latest finished_at once EVERY task is done and prs_open is empty; else null
+  "finished_at": iso|null,  // latest finished_at once EVERY task is done, prs_open is empty and no backend bit waits; else null
   "peek": [{"ref": "T12", "title": str, "status": "needs"|"working"|"failed"|"starting"|"blocked"|"queued", "why": str|null}]
             // hover card on the rail: non-planned, not-done tasks plus failed ones; why = the blocker line for blocked ones
 }
@@ -184,7 +187,11 @@ A goal with `finished_at` (or all tasks done and no open PRs) shows as finished;
                                     // source: "you", a task ref like "T4", or free text; shown as the note's byline
   "backlog": [issue],               // the goal's issues that are NOT dropped, newest first (full issue shape, see GET /backlog/:id, history optional)
   "closed_count": int,              // the goal's dropped ("won't do") issues
-  "attachments": [attachment]       // attached to the goal itself
+  "attachments": [attachment],      // attached to the goal itself
+  "bits": {"list": [bit], "backend": int, "made": int, "waiting": int, "tool": str},
+                                    // its bits (linked to it or to a task counted in it); "N of M created" counts backend ones
+  "devices": {"needs": [{"tag", "n"}], "needs_text": "2 android", "devices": [device], "lent_here": int} | null
+                                    // what each task asks for (unless it asks for its own) and the pool; null with no pool and no asks
 }
 ```
 The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat object is preferred.
@@ -428,6 +435,9 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
   "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
+  "devices": {"needs": [{"tag": "android", "n": 2}], "needs_text": "2 android", "lent": ["pixel-7"]} | null,
+                                  // what it asks for from the device pool (its own, else its goal's) and what it has now
+  "bits": [{"name": str, "kind": "backend"|"local", "made": bool, "waiting": bool}]   // its bits; waiting = backend, not made
 }
 ```
 The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
@@ -624,7 +634,8 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 `wave`:
 ```
 {"wave": int, "name": str, "stop_after": bool, "released_at": iso|null, "passed": bool,
- "state": "done"|"stopped"|"failed"|"running"|"ready"|"waiting",   // stopped: done, waiting for your review
+ "held": bool, "held_at": iso|null,                                  // held with tb goal wave --hold
+ "state": "done"|"stopped"|"failed"|"running"|"held"|"ready"|"waiting",   // stopped: done, waiting for your review
  "blocked": bool, "held_by": state|null, "hold": str|null,           // the earlier wave that holds it, and why
  "tasks": ["T3"], "total": int, "done": int, "failed": ["T4"], "active": int, "starting": int, "planned": int}
 ```
@@ -632,8 +643,9 @@ A goal's tasks can be grouped in waves (`tasks.wave`); a wave starts once every 
 
 | Request | Body | What |
 |---|---|---|
-| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave or make it a review stop (`tb goal wave`). Answers the goal detail. |
-| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task. Answers the goal detail. |
+| `POST /goals/:id/waves/:n` | `{name?, stop_after?}` | Name a wave (`tb goal wave --name`) or make it a review stop. `stop_after` is the owner's own word: only Taskboard.app sets it (it sends `X-Task-Board-From: app`); from anyone else it's 403. Answers the goal detail. |
+| `POST /goals/:id/waves/:n/hold` | `{on?: bool (true), who?}` | Hold a wave (`tb goal wave --hold`): its tasks that haven't started don't, nor any later wave, until it's continued. `on: false` lifts it. 409 on a done wave. Answers the goal detail. |
+| `POST /goals/:id/waves/:n/continue` | `{who?}` | "Continue to wave N": go on past a review stop or a failed task; on a held wave that isn't done, let it start. Answers the goal detail. |
 | `POST /tasks/:id` | `{wave: int\|null}` | A task's wave (only in a goal). |
 
 ## Locks, running alone and worktrees
@@ -652,3 +664,42 @@ runs nothing else in its scope starts ("Waits while T13 runs alone").
 
 `tb propose` and `--task` items take a fourth `::` field, what the task waits for: `"title::detail::2::#1, T14"`, where
 `#k` is the k-th task in the same request (400 when it doesn't point at an earlier one).
+
+## Devices
+
+One pool of devices for every project (`tb devices`, `tb device add|set|remove|focus`). A task asks for devices by
+tag or name (`{devices: "android:2 ios"}` on `POST /tasks`, `POST /tasks/:id`, or `POST /goals/:id` for the goal's
+tasks that don't ask for their own; `"none"` clears). The runner starts it only once that many are free, lends them
+when it starts (before the handoff is built, which names them), and takes them back once the task isn't active
+(done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
+device (T4 has them)", "Needs 2 ios devices, and the pool has 1").
+
+`device`: `{id, name, tags: [str], note, off: bool, focus: str|null, can_focus: bool, held_by: {ref, title, goal}|null}`.
+
+| Request | Body | What |
+|---|---|---|
+| `GET /devices` | | `{devices: [device], waiting: [{ref, title, goal, needs, why}]}`. |
+| `POST /devices` | `{name, tags?, focus?, note?}` | Add one. Names and tags are lowercase letters, digits, `.`, `_`, `-` (names also `:`). 409 when the name is taken. |
+| `GET /devices/:name` | | The device. |
+| `POST /devices/:name` | `{name?, tags?, focus?, note?, off?}` | Change it; `off` keeps it from being lent. |
+| `POST /devices/:name/remove` | | Take it out of the pool (409 while it's lent). |
+| `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name). 409 when there's neither. |
+
+## Bits (feature flags)
+
+A bit is `backend` (it has to be made in the flag tool) or `local` (in the code only), linked to tasks and goals. A
+queued task waits while a backend bit linked to it isn't made ("Waits for the bit newCheckout to be made in
+Flagsmith"); a goal whose tasks are all done waits on its unmade backend bits. The handoff lists a task's bits.
+`[bits]` in config.toml names the tool and its "new flag" link.
+
+`bit`: `{id, name, kind, project, note, made: bool, made_at, made_by, waiting: bool, create_url: str|null, tasks: ["T4"], goals: ["G2"], created_at}`.
+
+| Request | Body | What |
+|---|---|---|
+| `GET /bits` | query `goal`, `task` or `project` | `{bits: [bit], tool, create_url}`. |
+| `POST /bits` | `{name, kind: "backend"\|"local", tasks?: ["T4"], goals?: ["G2"], project?, note?, who?}` | Add one (`tb bit add`). The project defaults to its first task's or goal's. |
+| `GET /bits/:name` | | The bit. |
+| `POST /bits/:name` | `{name?, kind?, note?, project?, tasks?, not_tasks?, goals?, not_goals?, who?}` | Change it or its links (`tb bit set`). |
+| `POST /bits/:name/made` | `{undo?: bool, who?}` | It's made in the flag tool, or with `undo` it isn't (`tb bit made`). Never from the app. |
+| `POST /bits/:name/remove` | `{who?}` | Remove it and its links. |
+| `POST /tasks/:id` | `{bits: ["newCheckout"]\|"none", not_bits: [...]}` | Link a task to bits (404 for a bit that isn't there). |

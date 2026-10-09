@@ -81,7 +81,10 @@ fn a_wave_waits_for_the_one_before_it() {
 fn a_review_stop_holds_the_goal_until_the_owner_continues() {
     let b = new_board();
     let (g, t) = planned(&b);
-    b.post(&format!("goals/G{g}/waves/1"), json!({"name": "Basics", "stop_after": true}));
+    // The review stop is the owner's checkbox in the app (`_from=app`).
+    let mut from_app = Query::new();
+    from_app.insert(api::FROM.into(), "app".into());
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/waves/1"), &from_app, &json!({"name": "Basics", "stop_after": true})).unwrap();
     b.set(t[0], "done", false);
     b.set(t[1], "done", false);
     let w = b.waves(g);

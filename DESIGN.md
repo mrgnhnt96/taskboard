@@ -39,10 +39,15 @@ one a "handoff" prompt, and the Claude plugin's hooks and the `tb` CLI report pr
   waking the task's conversation when there's something to do (optional).
 - Jira (optional): REST API only, configured in `config.toml` (site, project, email, token, transitions,
   labels/components per "product"). Off when not configured.
+- Waves, with the owner's review stop (set only from the app) and holds (`tb goal wave --hold`).
+- A device pool (`devices.rs`): named devices with tags, asked for by tag, lent by the runner, named in the
+  handoff, an optional focus command each (`[devices]`).
+- Bits (`bits.rs`): feature flags, local or backend; a task waits on its unmade backend bits, a done goal too
+  (`[bits]` names the flag tool and its new-flag link).
 
 ## Dropped
 
-Bits (feature flags), waves and devices (emulators), WD review gate, master-build breaks and Azure DevOps,
+WD review gate, master-build breaks and Azure DevOps,
 stopping PR builds, Slack reviewer nudges and reviewer cycling, the private Review log service, the Jira
 desk terminal (replaced by REST), code-comment guard hooks, compact-before-resume guard.
 

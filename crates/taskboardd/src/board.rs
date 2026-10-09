@@ -253,6 +253,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         } else {
             Value::Null
         },
+        "devices": crate::devices::card(app, t)?,
+        "bits": crate::bits::task_card(app, t.id())?,
     }))
 }
 
@@ -442,23 +444,41 @@ pub fn is_blocked(app: &App, t: &Row) -> Result<bool> {
     Ok(t.s("status") == Some("queued") && t.i("start_job").is_none() && waitsfor::blocker(app, t)?.is_some())
 }
 
+/// A queued task that isn't blocked by another task's work but that something else holds back:
+/// its goal's waves or order, a lock, a bit or the device pool.
+pub fn is_held(app: &App, t: &Row) -> Result<bool> {
+    if t.s("status") != Some("queued") || t.i("start_job").is_some() {
+        return Ok(false);
+    }
+    if let Some(g) = find_goal(app, t.i("goal_id"))? {
+        if crate::runner::goal_order_blocker(app, t, &g)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(crate::locks::blocker(app, t)?.is_some() || crate::bits::blocker(app, t)?.is_some() || crate::devices::blocker(app, t)?.is_some())
+}
+
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
     let done = n(&|r| r.s("status") == Some("done"));
     let mut blocked = 0;
+    let mut held = 0;
     for r in &rows {
         if is_blocked(app, r)? {
             blocked += 1;
+        } else if is_held(app, r)? {
+            held += 1;
         }
     }
+    let bits_waiting = crate::bits::goal_waiting(app, goal_id)?;
     let prs_open: Vec<i64> = rows
         .iter()
         .filter(|r| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r))
         .filter_map(|r| r.i("pr_num"))
         .collect();
     let total = rows.len() as i64;
-    let finished_at = if total > 0 && done == total && prs_open.is_empty() {
+    let finished_at = if total > 0 && done == total && prs_open.is_empty() && bits_waiting == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
         Value::Null
@@ -470,6 +490,8 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         "queued": n(&|r| r.s("status") == Some("queued")),
         "starting": n(&|r| r.s("status") == Some("queued") && r.i("start_job").is_some()),
         "blocked": blocked,
+        "held": held,
+        "bits_waiting": bits_waiting,
         "planned": n(&|r| r.s("status") == Some("planned")),
         "failed": n(&|r| r.s("status") == Some("done") && r.b("failed")),
         "prs_open": prs_open,
@@ -485,7 +507,9 @@ pub fn goal_state_line(c: &Value) -> String {
     let done = c["done"].as_i64().unwrap_or(0);
     if total > 0 && done == total {
         let open = c["prs_open"].as_array().cloned().unwrap_or_default();
+        let bits = c["bits_waiting"].as_i64().unwrap_or(0);
         return match open.len() {
+            0 if bits > 0 => format!("Waiting on {}", plural(bits, "bit")),
             0 => "Done".into(),
             1 => format!("Waits for PR #{} to merge", open[0]),
             n => format!("Waits for {n} PRs to merge"),

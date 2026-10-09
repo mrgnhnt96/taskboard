@@ -61,7 +61,7 @@ Planning a goal? Read `planning.md` first.
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`.
    - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
    - Another goal's task does it: `tb task set T<n> --also G<n>`.
-   - Waves, waits, locks, running alone and worktrees: `planning.md`.
+   - Waves, waits, locks, running alone, worktrees, devices and bits (feature flags): `planning.md`.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move an issue to another goal, or out of its goal: `tb backlog move B<n> G<n>|none`.

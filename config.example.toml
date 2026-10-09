@@ -155,6 +155,18 @@ default_product = ""                 # a ticket's product when its goal has none
 footer = ""                          # example: "Code style: follow ~/code-style.md."
 footer_file = ""                     # example: "~/.config/taskboard/handoff-footer.md" (read for every handoff)
 branch = ""                          # example: "{type}/{key}-{slug}"
+# The device pool (`tb devices`, `tb device add pixel-7 --tag android`). A device's own focus command
+# (`tb device add … --focus "…"`) raises its window; this one is for devices without their own.
+# Run with `sh -c`; {name} (and $TASKBOARD_DEVICE) is the device's name. Empty: no focus for those.
+[devices]
+focus = ""                           # example: "open -a Simulator"
+focus_timeout_secs = 15.0
+
+# Bits (feature flags, `tb bit add newCheckout --backend --task T4`). A task waits until its backend
+# bits are made in the flag tool (`tb bit made`); the goal page links each one to the tool's new-flag page.
+[bits]
+tool = ""                            # its name, as the app says it ("Create in Flagsmith"); empty = "the flag tool"
+create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
 # (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a

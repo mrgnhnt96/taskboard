@@ -538,6 +538,8 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     parts.extend(other_tasks(app, &t)?);
     parts.extend(worktree_and_lock_lines(&t, &ctx));
     parts.extend(crate::comments::rule_line(&app.cfg));
+    parts.extend(crate::devices::handoff_lines(app, &t)?);
+    parts.extend(crate::bits::handoff_lines(app, &t)?);
     let mut tail = vec![pr_block(app, &t, &tb)?];
     tail.extend(crate::jira::handoff_block(app, &t)?);
     tail.push(report_block(app, &tb));
