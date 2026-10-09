@@ -70,6 +70,20 @@ function hhmm(iso) {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
+// A log entry's time: the clock today; on an older day the day, then the clock below it.
+function logTime(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d)) return '';
+  const clock = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return clock;
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return `Yesterday\n${clock}`;
+  const day = d.getFullYear() === now.getFullYear()
+    ? d.toLocaleDateString([], { day: 'numeric', month: 'short' })
+    : d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${day}\n${clock}`;
+}
 function span(m) {
   if (m < 1) return 'under a minute';
   if (m < 60) return `${m}m`;
@@ -1279,7 +1293,7 @@ function logTab(t) {
   const all = Array.isArray(t.log) ? t.log : [];
   const list = all.filter(e => f === 'all' || LOG_GROUP[e.kind] === f);
   const chips = LOG_FILTERS.map(([id, label]) => `<button type="button" class="fchip" data-act="log-filter" data-arg="${id}" aria-pressed="${f === id}">${label}</button>`).join('');
-  const items = list.map(e => `<li><span class="time" title="${esc(fullTime(e.at))}">${esc(hhmm(e.at))}</span><span class="dot" style="background:${LOG_DOT[e.kind] || 'var(--faint)'}"></span>
+  const items = list.map(e => `<li><span class="time" title="${esc(fullTime(e.at))}">${esc(logTime(e.at))}</span><span class="dot" style="background:${LOG_DOT[e.kind] || 'var(--faint)'}"></span>
     <span class="stack" style="gap:0"><span class="who"><b>${esc(e.who || 'Task board')}</b><span class="kind">${esc(LOG_LABEL[e.kind] || cap(e.kind))}</span></span><span class="txt">${esc(e.text)}</span></span></li>`).join('');
   return `<div class="fchips" role="group" aria-label="Filter the log">${chips}</div>
     ${list.length ? `<ol class="log">${items}</ol>` : `<p class="empty">${all.length ? 'Nothing of this kind yet.' : 'Nothing logged yet.'}</p>`}

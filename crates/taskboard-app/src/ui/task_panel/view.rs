@@ -1855,7 +1855,7 @@ fn log_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                 el(
                     K::LogItem,
                     vec![
-                        txt_tip(fmt::hhmm(at), St::Time, fmt::full_time(at)),
+                        txt_tip(fmt::log_time(at), St::Time, fmt::full_time(at)),
                         Node::Dot(log_dot(kind)),
                         txt(opt_s(e, "who").unwrap_or("Task board"), St::Strong),
                         txt(log_label(kind), St::Kind),

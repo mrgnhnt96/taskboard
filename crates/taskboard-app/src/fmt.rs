@@ -1,6 +1,6 @@
 //! Text helpers ported from the web board (`app.js`): refs, relative times, durations, clocks,
 //! and reading fields out of the API's JSON.
-use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDateTime, Utc};
 #[cfg(test)]
 use chrono::{Offset, TimeZone};
 #[cfg(not(test))]
@@ -83,6 +83,20 @@ pub fn hhmm(iso: &str) -> String {
     let Some(t) = parse(iso) else { return String::new() };
     let l = local(t);
     if is_today(t) { l.format("%-I:%M %p").to_string() } else { l.format("%b %-d").to_string() }
+}
+
+/// A log entry's time: "3:05 PM" today; on an older day the day, then the time on the line
+/// below: "Yesterday\n3:05 PM", "Oct 7\n3:05 PM", "Oct 7, 2025\n3:05 PM" in another year.
+pub fn log_time(iso: &str) -> String {
+    let Some(t) = parse(iso) else { return String::new() };
+    let (l, today) = (local(t), local(now()).date_naive());
+    let clock = l.format("%-I:%M %p");
+    match l.date_naive() {
+        d if d == today => clock.to_string(),
+        d if today.pred_opt() == Some(d) => format!("Yesterday\n{clock}"),
+        d if d.year() == today.year() => format!("{}\n{clock}", l.format("%b %-d")),
+        _ => format!("{}\n{clock}", l.format("%b %-d, %Y")),
+    }
 }
 
 /// "10/7/2026, 3:05:00 PM" (the web's `fullTime`: `toLocaleString()` in en-US).
@@ -268,6 +282,16 @@ mod tests {
         assert_eq!(span(0), "under a minute");
         assert_eq!(span(125), "2h 5m");
         assert_eq!(span(120), "2h");
+    }
+
+    #[test]
+    fn log_times_keep_the_clock_on_older_days() {
+        crate::parity::freeze("2026-10-09T15:00:00Z");
+        assert_eq!(log_time("2026-10-09T09:15:00Z"), "9:15 AM");
+        assert_eq!(log_time("2026-10-08T15:42:00Z"), "Yesterday\n3:42 PM");
+        assert_eq!(log_time("2026-10-07T09:15:00Z"), "Oct 7\n9:15 AM");
+        assert_eq!(log_time("2025-10-07T21:05:00Z"), "Oct 7, 2025\n9:05 PM");
+        assert_eq!(log_time("nope"), "");
     }
 
     #[test]
