@@ -432,17 +432,23 @@ pub fn fill_branch(tpl: &str, kind: &str, key: &str, title: &str, id: i64) -> St
     b.trim_matches(|c| c == '-' || c == '_' || c == '/').to_string()
 }
 
-/// The goal's setup text (`tb goal setup`) with {task} {n} {wave} {goal} filled for this task.
-pub fn fill_setup(text: &str, t: &Row) -> String {
-    text.replace("{task}", &rf("task", t.id()))
+/// The goal's setup text (`tb goal setup`) with {task} {n} {wave} {goal} filled for this task, and the
+/// devices lent to it: {device} {target} for the first, {device2} {target2} for the second…
+pub fn fill_setup(app: &App, text: &str, t: &Row) -> Result<String> {
+    let mut out = text
+        .replace("{task}", &rf("task", t.id()))
         .replace("{n}", &t.id().to_string())
         .replace("{wave}", &t.i("wave").map(|w| w.to_string()).unwrap_or_default())
-        .replace("{goal}", &t.i("goal_id").map(|g| rf("goal", g)).unwrap_or_default())
+        .replace("{goal}", &t.i("goal_id").map(|g| rf("goal", g)).unwrap_or_default());
+    for (k, v) in crate::devices::setup_vars(app, t)? {
+        out = out.replace(&format!("{{{k}}}"), &v);
+    }
+    Ok(out)
 }
 
-fn setup_block(t: &Row, g: Option<&Row>) -> Vec<String> {
-    let Some(text) = g.and_then(|g| g.s("setup")).filter(|s| !s.trim().is_empty()) else { return vec![] };
-    vec![format!("Set up (every task in this goal does this):\n{}", clip(fill_setup(text, t).trim(), 1500))]
+fn setup_block(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>> {
+    let Some(text) = g.and_then(|g| g.s("setup")).filter(|s| !s.trim().is_empty()) else { return Ok(vec![]) };
+    Ok(vec![format!("Set up (every task in this goal does this):\n{}", clip(fill_setup(app, text, t)?.trim(), 1500))])
 }
 
 /// The task's wave: where it sits, who still runs beside it (and the files each owns or has touched), whether the
@@ -513,7 +519,10 @@ fn footer(app: &App) -> Option<String> {
     }
 }
 
-fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>) -> String {
+/// Joins the parts and the tail, cutting parts from the last one back (each down to 80 characters) until
+/// it fits. The first part and the `kept` ones (by index: the device lines, whose start and stop commands
+/// are no use cut short) are never cut; when even that doesn't fit, they're all that's left.
+fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>, kept: &[usize]) -> String {
     let all = |p: &[String]| p.iter().chain(tail.iter()).cloned().collect::<Vec<_>>().join("\n\n");
     let text = all(&parts);
     let len = text.chars().count();
@@ -525,6 +534,9 @@ fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>) -> String {
         if over <= 0 {
             break;
         }
+        if kept.contains(&i) {
+            continue;
+        }
         let n = parts[i].chars().count() as i64;
         let cut = (n - over - 1).max(80) as usize;
         if (cut as i64) < n {
@@ -534,7 +546,8 @@ fn fit_to_limit(mut parts: Vec<String>, tail: Vec<String>) -> String {
     }
     let text = all(&parts);
     if text.chars().count() > LIMIT {
-        return all(&parts[..1]);
+        let first: Vec<String> = parts.iter().enumerate().filter(|(i, _)| *i == 0 || kept.contains(i)).map(|(_, p)| p.clone()).collect();
+        return all(&first);
     }
     text
 }
@@ -549,7 +562,13 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     parts.extend(goal_and_notes(app, g.as_ref())?);
     parts.extend(also_goals(app, &t)?);
     parts.extend(wave_section(app, &t, g.as_ref())?);
-    parts.extend(setup_block(&t, g.as_ref()));
+    parts.extend(setup_block(app, &t, g.as_ref())?);
+    // The devices lent to it, early and never cut, so a long handoff keeps how to start and stop them.
+    let mut kept = vec![];
+    for line in crate::devices::handoff_lines(app, &t)? {
+        kept.push(parts.len());
+        parts.push(line);
+    }
     parts.extend(branch_and_last_commit(&w));
     parts.extend(checkpoint_and_answers(app, &t, &ctx));
     parts.extend(attachments_block(app, &t, g.as_ref())?);
@@ -561,14 +580,13 @@ pub fn build(app: &App, task_id: i64) -> Result<String> {
     parts.extend(other_tasks(app, &t)?);
     parts.extend(worktree_and_lock_lines(&t, &ctx));
     parts.extend(crate::comments::rule_line(&app.cfg));
-    parts.extend(crate::devices::handoff_lines(app, &t)?);
     parts.extend(crate::bits::handoff_lines(app, &t)?);
     let mut tail = vec![pr_block(app, &t, &tb)?];
     tail.extend(crate::jira::handoff_block(app, &t)?);
     tail.push(report_block(app, &tb));
     tail.extend(footer(app));
     tail.push(CLOSING.to_string());
-    Ok(fit_to_limit(parts, tail))
+    Ok(fit_to_limit(parts, tail, &kept))
 }
 
 /// What a fresh conversation about a done task's PR needs to know.
@@ -597,7 +615,7 @@ pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
     let tb = board::tb_cmd(app);
     let q = match project.filter(|p| !p.is_empty()) {
         Some(p) => app.db.q1(
-            "SELECT id FROM tasks WHERE status = 'queued' AND project = ? AND session_id IS NULL \
+            "SELECT id FROM tasks WHERE status = 'queued' AND project = ? AND session_id IS NULL AND line_session IS NULL \
              ORDER BY priority = 'high' DESC, created_at, id LIMIT 1",
             p![p],
         )?,

@@ -186,9 +186,10 @@ pub fn card(t: &Theme) -> Div {
     div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.border).bg(t.card)
 }
 
-/// The dimmed full-window backdrop behind a modal or panel; clicks on it call `on_close`.
+/// The dimmed full-window backdrop behind a modal or panel; clicks on it call `on_close`. It occludes
+/// what's behind it, so wheel and hover over the overlay never reach the board underneath.
 pub fn scrim(t: &Theme, id: &str) -> Stateful<Div> {
-    div().id(SharedString::from(id.to_string())).absolute().top_0().left_0().size_full().bg(t.backdrop)
+    div().id(SharedString::from(id.to_string())).absolute().top_0().left_0().size_full().bg(t.backdrop).occlude()
 }
 
 /// The modal dialog box (centered by the caller's scrim).

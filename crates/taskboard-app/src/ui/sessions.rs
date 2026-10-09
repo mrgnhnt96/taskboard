@@ -439,12 +439,17 @@ impl RowVm {
 pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
     let id = s(x, "id").to_string();
     let status = display_status(x).to_string();
-    let sub = match (opt_s(x, "task_ref"), opt_s(x, "role")) {
+    let mut sub = match (opt_s(x, "task_ref"), opt_s(x, "role")) {
         (Some(r), _) => format!("{r} · {}", s(x, "task_title")),
         // The Jira desk: "Handles Jira for the board".
         (None, Some(role)) => role.to_string(),
         (None, None) => ["No task", s(x, "branch")].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" · "),
     };
+    // The tasks waiting their turn in it: "T12 · Fix the header · then T14, T9".
+    let line: Vec<&str> = arr(x, "line").iter().filter_map(|l| opt_s(l, "ref")).collect();
+    if !line.is_empty() {
+        sub = format!("{sub} · then {}", line.join(", "));
+    }
     let state = if b(x, "closing") {
         "Closing…".to_string()
     } else if opt_s(x, "compacting").is_some() {
@@ -918,6 +923,11 @@ pub fn detail_vm(c: &DetailCtx) -> DetailView {
             links.push(LinkVm { k: "Task", r: String::new(), title, pill: None, go: None });
         }
         links.extend(last);
+    }
+    for l in arr(d, "line") {
+        let r = s(l, "ref").to_string();
+        let k = if s(&l["line"], "kind") == "resume" { "To resume" } else { "Queued here" };
+        links.push(LinkVm { k, r: r.clone(), title: s(l, "title").into(), pill: None, go: Some(("Open task", LinkTarget::Task(r))) });
     }
 
     let st = &d["stats"];

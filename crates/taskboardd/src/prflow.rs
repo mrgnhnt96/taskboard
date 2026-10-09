@@ -409,7 +409,7 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     for s in rows {
         let t = board::get_task(app, s.i0("pr_task"))?;
         if !t.b("auto_close")
-            || board::task_for_session(app, s.s("id"))?.is_some()
+            || crate::lines::busy(app, &s.st("id"))?
             || board::close_rule(Some(&s)).is_none()
             || !board::opened_by_board(app, s.s("id"))?
         {
@@ -559,6 +559,12 @@ pub fn review_of(f: &Row, rec: &Value) -> Review {
     Review { changes, approvals, decision, requesters }
 }
 
+/// Whether agents may merge a project's PRs once they're approved and green: its own switch (`tb project
+/// set --agents-merge`, `[pr.projects.<name>] agents_merge`), else `pr.agents_merge`.
+pub fn agents_merge_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).agents_merge.unwrap_or(app.cfg.pr.agents_merge)
+}
+
 /// Approvals this task's PR needs: its project's count, else `pr.approvals` (2). None (a count of 0):
 /// the host's own verdict decides.
 pub fn approvals_needed(app: &App, t: &Row) -> Option<i64> {
@@ -619,7 +625,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if (review.changes && !answered) || new_comments {
         return "comments".into();
     }
-    let review_skipped = review_skipped(&f, rec);
+    let review_skipped = review_skipped(app, t, &f, rec);
     if review.changes && answered && !review_skipped {
         // The changes are pushed; the reviewer who asked for them hasn't looked again yet.
         return "rereview".into();
@@ -635,8 +641,10 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     "review".into()
 }
 
-pub fn review_skipped(f: &Row, rec: &Value) -> bool {
-    f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false)
+/// The review doesn't hold the merge: skipped for this push (`tb pr skip-review`), or the project has no
+/// Review step (`tb project set --review off`).
+pub fn review_skipped(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
+    !crate::reviewers::review_on(app, t.s("project")) || f.get("skip_review").and_then(|v| v.as_object()).map(|m| m.contains_key(rec["head"].as_str().unwrap_or(""))).unwrap_or(false)
 }
 
 /// The checks are still going: one is running, or (since this push was first seen) the expected
@@ -862,7 +870,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         changes.push(("review_alerted", json!(now_iso())));
     }
     let key = wake_key(&phase, rec);
-    let may_wake = app.cfg.pr.wake && (phase != "merge" || app.cfg.pr.agents_merge);
+    let may_wake = app.cfg.pr.wake && (phase != "merge" || agents_merge_on(app, t.s("project")));
     let mut now_flow = f.clone();
     for (k, v) in &changes {
         if v.is_null() {
@@ -915,7 +923,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         changes.push(("merge_gave_up", json!(now_iso())));
     }
     if phase == "merge"
-        && !app.cfg.pr.agents_merge
+        && !agents_merge_on(app, t.s("project"))
         && t.s("status") == Some("done")
         && f.s("merge_alerted") != Some(head.as_str())
         && f.s("held") != Some(key.as_str())

@@ -117,6 +117,13 @@ enum Cmd {
     },
     /// Take a task in this terminal (prints its handoff)
     Take { task: String },
+    /// Switch this terminal to a task in its line; the one it's on waits here to resume
+    Switch { task: String },
+    /// This terminal's line: the tasks waiting their turn here
+    Line {
+        #[command(subcommand)]
+        action: Option<LineCmd>,
+    },
     /// Start a task, only when the human told you to in this conversation (the board checks their prompts)
     Start {
         task: String,
@@ -409,10 +416,10 @@ enum DeviceCmd {
         focus: Option<String>,
         #[arg(long)]
         note: Option<String>,
-        /// What it is, shown with its name: phone, tablet, simulator, android… A label, not a tag
+        /// What it is, shown with its name: android (an emulator), ios (a simulator), device (a phone or tablet), other… A label, not a tag
         #[arg(long)]
         kind: Option<String>,
-        /// What it runs, shown with its name: Android 14, an iOS 17 runtime…
+        /// The device's serial or UDID (emulator-5554, a simulator's UDID): {target} in its start and stop commands
         #[arg(long)]
         target: Option<String>,
         /// How to boot it, told to the task that's lent it ({device} {task} {branch}… filled in)
@@ -438,7 +445,7 @@ enum DeviceCmd {
         /// What it is (a label, not a tag), or none
         #[arg(long)]
         kind: Option<String>,
-        /// What it runs, or none
+        /// Its serial or UDID, or none
         #[arg(long)]
         target: Option<String>,
         /// Its start command, or none
@@ -838,6 +845,12 @@ enum GoalCmd {
 }
 
 #[derive(Subcommand)]
+enum LineCmd {
+    /// Take a task out of this terminal's line and back to the board, to wait for Start
+    Drop { task: String },
+}
+
+#[derive(Subcommand)]
 enum TaskCmd {
     /// Add a task: planned in a goal, or on its own
     New {
@@ -862,6 +875,12 @@ enum TaskCmd {
         /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
         #[arg(long)]
         here: bool,
+        /// With --here on a terminal that has a task: queue it in this terminal's line, after that task
+        #[arg(long, requires = "here", conflicts_with = "now")]
+        next: bool,
+        /// With --here on a terminal that has a task: switch to it now; that task waits here to resume
+        #[arg(long, requires = "here")]
+        now: bool,
         /// It starts only once this task (any goal) is done; repeat for more
         #[arg(long = "waits-for", value_name = "T12")]
         waits_for: Vec<String>,
@@ -1035,7 +1054,7 @@ enum CiTokenCmd {
 enum ProjectCmd {
     /// A project's PR flow and git remote (every project with no name)
     Show { name: Option<String> },
-    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks, the ask stage, swaps)
+    /// Change a project: --pr-flow auto (by its git remote), on or off; its PR rules (approvals, expected checks, the ask stage, swaps, the Review step)
     Set {
         name: String,
         #[arg(long = "pr-flow", value_parser = ["auto", "on", "off"])]
@@ -1055,6 +1074,12 @@ enum ProjectCmd {
         /// Swap a reviewer who hasn't reviewed after [reviewers] swap_after_mins work minutes (default: config.toml's)
         #[arg(long, value_parser = ["on", "off", "default"])]
         swap: Option<String>,
+        /// The Review step: off, its PRs go to merge without reviewers (default: on)
+        #[arg(long, value_parser = ["on", "off", "default"])]
+        review: Option<String>,
+        /// Agents merge its PRs once they're approved and green (tb pr merge) (default: config.toml's pr.agents_merge)
+        #[arg(long = "agents-merge", value_parser = ["on", "off", "default"])]
+        agents_merge: Option<String>,
     },
 }
 
@@ -1601,6 +1626,11 @@ fn device_arg(values: &[String]) -> Value {
     }
 }
 
+/// After `tb done` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
+fn then_next(v: &Value) -> String {
+    v["context"].as_str().filter(|c| !c.trim().is_empty()).map(|c| format!("\n\n{c}")).unwrap_or_default()
+}
+
 fn print_warnings(v: &Value) {
     for w in v["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str()) {
         out(&format!("Note: {w}"));
@@ -1685,7 +1715,7 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
     Ok(0)
 }
 
-/// "dev-a (Android phone, Android 14) · android, phone · lent to T4" for `tb devices`.
+/// "dev-a (Android emulator, emulator-5554) · android · lent to T4" for `tb devices`.
 fn device_line(d: &Value) -> String {
     let tags: Vec<&str> = d["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let mut line = d["label"].as_str().or(d["name"].as_str()).unwrap_or("").to_string();
@@ -2209,7 +2239,7 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
                 detached_tip = Some(tip);
                 (dir, Some(b))
             } else {
-                (dir, None)
+                return Err(format!("{dir} isn't on a branch. Say which one with --branch."));
             }
         } else {
             (dir, has)
@@ -2776,7 +2806,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence});
             let Some(file) = pr_body else {
-                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.", v["task"].as_str().unwrap_or("")));
+                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(v)));
             };
             let text = read_body(&file)?;
             let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &text);
@@ -2798,17 +2828,36 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             }
             let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
-            out(&format!("{} is done.{pr}", v["task"].as_str().unwrap_or("")));
+            out(&format!("{} is done.{pr}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
             Ok(0)
         }
         Cmd::Fail { reason, t } => {
-            c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.", v["task"].as_str().unwrap_or("")))
+            c.run_report("tb.fail", json!({"reason": reason}), t.task, true, |v| format!("{} is marked failed.{}", v["task"].as_str().unwrap_or(""), then_next(v)))
         }
         Cmd::Take { task } => {
             let r = task_ref(&task)?;
             match c.report("tb.take", json!({"task": r}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
                 Some(v) => out(v["context"].as_str().unwrap_or(&format!("Took {r}."))),
+            }
+            Ok(0)
+        }
+        Cmd::Switch { task } => {
+            let r = task_ref(&task)?;
+            match c.report("tb.switch", json!({"to": r}), None, TB_TIMEOUT)? {
+                None => out(SAVED),
+                Some(v) => out(v["context"].as_str().unwrap_or(&format!("Switched to {r}."))),
+            }
+            Ok(0)
+        }
+        Cmd::Line { action } => {
+            let body = match action {
+                Some(LineCmd::Drop { task }) => json!({"drop": task_ref(&task)?}),
+                None => json!({}),
+            };
+            match c.report("tb.line", body, None, TB_TIMEOUT)? {
+                None => out("The board isn't answering."),
+                Some(v) => out(v["context"].as_str().unwrap_or("")),
             }
             Ok(0)
         }
@@ -2845,7 +2894,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 json!(tasks.iter().map(|x| task_ref(x)).collect::<Result<Vec<_>, _>>()?)
             };
             c.run_report("tb.wait_for", json!({"tasks": list, "why": why}), t.task, true, |v| {
-                if v["parked"] == true {
+                if v["moved_on"] == true {
+                    format!("{} waits now; this terminal moves on.\n\n{}", v["task"].as_str().unwrap_or(""), v["context"].as_str().unwrap_or(""))
+                } else if v["parked"] == true {
                     format!(
                         "{} waits now: {}. End your turn; the board carries this conversation on once it's ready.",
                         v["task"].as_str().unwrap_or(""),
@@ -3185,7 +3236,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -3206,6 +3257,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if here {
                     body["here"] = json!(true);
+                }
+                if next || now {
+                    body["line"] = json!(if next { "next" } else { "now" });
                 }
                 if let Some(w) = wave {
                     body["wave"] = json!(w);
@@ -3712,7 +3766,7 @@ fn project_line(p: &Value) -> String {
         ),
         None => String::new(),
     };
-    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps")]
+    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review"), ("agents_merge", "agents merge")]
         .iter()
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
@@ -3775,10 +3829,12 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             project_switch(&mut body, "ask_stage", ask_stage);
             project_switch(&mut body, "swap", swap);
+            project_switch(&mut body, "review", review);
+            project_switch(&mut body, "agents_merge", agents_merge);
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }
@@ -4266,6 +4322,9 @@ mod tests {
         assert_eq!((at.head.as_deref(), at.branch.as_deref(), at.pinned), (Some(second.as_str()), Some("main"), true));
         let e = aim(&c, &v, &a("no-such-branch", &det)).err().unwrap();
         assert_eq!(e, format!("{det} has no branch no-such-branch."));
+        // Without its branch, a detached checkout is refused, as the Python board did.
+        let bare = Aim { worktree: Some(det.clone()), ..Aim::default() };
+        assert_eq!(aim(&c, &v, &bare).err().unwrap(), format!("{det} isn't on a branch. Say which one with --branch."));
         // A branch the checkout's head isn't on is refused.
         let det2 = root.join("det2");
         git(std::path::Path::new(&c.cwd), &["worktree", "add", "-q", "--detach", &det2.to_string_lossy(), &feat]);
@@ -4307,6 +4366,18 @@ mod tests {
         assert!(!has_pr(&json!({"vars": {}})));
         assert!(has_pr(&json!({"vars": {"pr": "12", "pr_url": ""}})));
         assert!(has_pr(&json!({"vars": {"pr": "", "pr_url": "https://example.com/pr/1"}})));
+    }
+
+    #[test]
+    fn asks_split_into_this_terminals_line() {
+        let ok = |a: &[&str]| Cli::try_parse_from(a).is_ok();
+        assert!(ok(&["tb", "task", "new", "Footer", "--here", "--next"]));
+        assert!(ok(&["tb", "task", "new", "Footer", "--here", "--now"]));
+        assert!(!ok(&["tb", "task", "new", "Footer", "--next"]), "--next needs --here");
+        assert!(!ok(&["tb", "task", "new", "Footer", "--here", "--next", "--now"]));
+        assert!(ok(&["tb", "switch", "T3"]));
+        assert!(ok(&["tb", "line"]));
+        assert!(ok(&["tb", "line", "drop", "T3"]));
     }
 
     #[test]

@@ -219,3 +219,37 @@ fn placeholders_fill_in_the_handoff() {
     assert!(h.contains("against main"), "{h}");
     assert!(h.contains("tb step ask \"Design sign-off\", then end your turn"), "{h}");
 }
+
+const SHOWN: &str = r#"
+[[steps]]
+name = "Look"
+owner = true
+prompt = "Look at {worktree} against {base_ref}."
+
+[[steps]]
+name = "Args"
+run = "args.sh {pr} {branch} {title}"
+"#;
+
+#[test]
+fn the_owners_question_fills_every_placeholder() {
+    let b = board(SHOWN);
+    let id = b.new_task();
+    b.report("tb.step_ask", json!({"name": "Look"})).unwrap();
+    let q = b.card(id)["question"].as_str().unwrap().to_string();
+    assert!(!q.contains('{'), "{q}");
+    assert!(q.contains("against origin/main"), "{q}");
+}
+
+#[test]
+fn shown_scripts_are_what_runs() {
+    let b = board(SHOWN);
+    let id = b.new_task();
+    board::update_task(&b.app, id, vec![("title", json!("Fix `rm -rf` it's"))]).unwrap();
+    let h = handoff::build(&b.app, id).unwrap();
+    // An empty `{pr}` keeps its slot and the title stays one quoted word, as fill_shell runs it.
+    assert!(h.contains("`args.sh '' "), "{h}");
+    assert!(h.contains(r#"'Fix `rm -rf` it'"'"'s'`"#), "{h}");
+    let (_, why) = b.report("tb.done", json!({"summary": "Done", "pr": PR})).unwrap_err();
+    assert!(why.contains(r#"'Fix `rm -rf` it'"'"'s'"#), "{why}");
+}

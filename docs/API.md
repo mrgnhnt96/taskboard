@@ -133,7 +133,8 @@ window at 100 % makes goals show "Queued until agents can start".
   "task_title": str|null,
   "last_activity": iso|null,
   "seen_at": iso|null,         // fallback for idle time when last_activity is null
-  "can_take": bool,            // idle and no task: offered in New task → "In an idle terminal"
+  "can_take": bool,            // idle, no task and nothing in its line: offered in New task → "In an idle terminal"
+  "line": [{"ref": "T14", "id": 14, "title": str, "kind": "queued"|"resume"}],  // tasks waiting their turn in this terminal, first first
   "branch": str|null,          // git branch Midna reports (shown in the Sessions list subline)
   "closing": bool,             // a close job is pending/running for it
   "close": "close"|"force"|null, // how it can be closed: idle → "close", busy → "force" (press-and-hold), gone → null
@@ -160,7 +161,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "run_in_order": bool, "max_terminals": int, "auto_close": bool,
   "archived": bool, "paused": bool, "deprioritized": bool,
   "worktree_base": str|null,   // each task starts in its own git worktree detached at this branch (`tb goal set --worktrees`)
-  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled
+  "setup": str|null,           // what every task in the goal does first (`tb goal setup`); its handoff shows it with {task} {n} {wave} {goal} filled, and {device} {target} ({device2} {target2}…) for the devices lent to the task
   "total": int,        // tasks in the goal, planned included
   "done": int,         // tasks with status done (failed included)
   "active": int,       // working + needs
@@ -439,6 +440,9 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "pr": pr | null,
   "position": number|null,        // order in the goal (unused by the UI apart from sorting done server-side)
   "starting": bool,               // queued and a start job is pending/running ("Starting")
+  "line": {"session": str, "name": str, "kind": "queued"|"resume", "pos": int, "label": str, "after": "T12"|null} | null,
+                                  // queued in a terminal's line (`tb task new --here --next`, or switched away from): it starts
+                                  // there by itself, after `after`; label "Queued in Term 3" / "To resume in Term 3" (resume = started before)
   "waiting": str|null,            // queued only: why it isn't starting yet, one plain line
                                   // ("Waits for T4 to finish", "Waits for work hours (tomorrow 6am)", "Waits for the 5-hour usage to reset (3pm)")
   "blocked": bool,                // queued and waiting on another task (waits_for), shown as "Blocked"
@@ -460,7 +464,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
 }
 ```
 `stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
-The card is draggable to Working when it's queued/planned, not in a goal and not starting (drop = start with mode `new`).
+The card is draggable to Working when it's queued/planned, not in a goal, not starting and not in a terminal's line (drop = start with mode `new`).
+`POST /tasks/T<n>/start` refuses (409) a task in a terminal's line; `tb line drop T<n>` takes it out first.
 
 ### `pr`
 ```
@@ -568,7 +573,7 @@ now. A host that can't be reached answers 502; a refusal answers 409 with the re
 | `POST /tasks/:id/pr/ack` | `{thread, who?}` | `tb pr ack`: a thread that asks for nothing is resolved without a reply (on the board only, where the host can't resolve it). The ack holds until someone writes on the thread again. |
 | `POST /tasks/:id/pr/addressed` | `{who?}` | `tb pr addressed`: 409 while threads are open; then asks each reviewer with a standing request for changes (not one swapped off) to review again, records an ask for each (`why: "rereview"`, unless they have one open, so a slow re-review is swapped like any ask), and ends the visit (stage `rereview`). **Response:** `{asked: [name]}`. |
 | `POST /tasks/:id/pr/reviewers` | `{ask?: [who], replace?: who, with?: who, drop?: who, count?, dry_run?: bool, who?}` | `tb pr reviewers`: sets the PR's reviewers through its host. With none of `ask`, `replace` and `drop`, the picker chooses (`count` more, else enough to have `[reviewers] count` on the PR; `dry_run` answers `{picks: [{user, name, why: "pinned"\|"main"\|"turn"}]}` and asks nobody); 409 when nobody on the roster can review. `replace` without `with` takes the picker's choice. `ask` requests each (a roster name, alias, email or host id; someone on the PR's list by name; else a host id as given); `replace` takes one off and asks `with` in their place; `drop` takes one off (either closes their ask as `dropped`, which says nothing about their speed). 409 for the PR's author or someone removed from the roster. Each ask is recorded (`review_asks`), the people taken off go into `pr_flow.swapped_off` (their requests for changes stop holding), and `pr_flow.asked` notes who was asked. **Response:** `{asked: [{user, name}], dropped, replaced: {old, new}?, asks: [ask], pr}`. |
-| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted, until their `expected_wait_mins` is over; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then points every open PR that goes into its branch at its base (a PR that can't be moved stops the merge: 502), merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while `pr.agents_merge` is off. |
+| `POST /tasks/:id/pr/merge` | `{who?, agent?: bool}` | `tb pr merge`: 409 unless it's open, its checks passed (failures cleared as not-ours aside; expected checks posted, until their `expected_wait_mins` is over; none running or stopped), it has the approvals it needs, nobody (still on it) asks for changes, no thread or PR task is open (and its PR tasks could be read), and a stacked base PR has merged. Then points every open PR that goes into its branch at its base (a PR that can't be moved stops the merge: 502), merges with the project's `merge_strategy` (else the repository's default) and deletes the source branch. 403 from an agent (`agent: true`) while agents don't merge the task's project's PRs (its `agents_merge`, else `pr.agents_merge`). |
 | `POST /tasks/:id/pr/not-ours` | `{reason, title, proof: [url], checks?: [str], who?}` | `tb pr not-ours`: clears failed checks of the current head (all of them, or `checks`) that aren't the PR's fault. `reason` 20–300 characters, `title` up to 80, at least one http(s) `proof` link. 409 when nothing failed on this push or a named check didn't fail. A new push has to pass on its own. |
 | `POST /tasks/:id/pr/skip-checks` | `{reason, all?: bool, who?}` | Counts this push's checks (or every push's) that were stopped, are running or never posted as passed: for builds a hook cancelled. 400 without a `reason`; 409 while a check failed on this push (use `not-ours`), and a later push's failure still counts. The card's `pr.bar.checks` is `skipped`. |
 | `POST /tasks/:id/pr/wait` | `{}` | `tb pr wait`: the agent finished this visit. |
@@ -635,7 +640,7 @@ tried again after each of `retry_secs` (0, 10, 30, 60, 120 s), then raises an al
 way to cancel alerts at once. A cancel command may write the builds it stopped, one name per line, to the file named by
 `$TB_CANCELLED`. A cancelled push is logged on its task and kept in `recent`; a follow-up only when it stopped a build (a
 cancel command's follow-up that writes nothing to `$TB_CANCELLED` is left out of both, and so is any round, the first
-too, that writes it empty: it stopped nothing). An entry with no builds of its
+too, that writes it empty, or a host cancel that stops none: it stopped nothing; the push is still marked cancelled). An entry with no builds of its
 own names the pipeline the build event gave (`pipeline`, or Azure's `definition.name`). A build or PR event matches a
 board task's PR, or one the owner opened by hand, by its repo in any case, or by the repo's short name (after the last
 `/`) when one side gives no org, so `ACME/repo`, `repo` and `acme/repo` are one; only among the board's PRs with that
@@ -682,8 +687,8 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 ### Projects
 | Path | Body | Notes |
 |---|---|---|
-| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, set: {…what tb project set changed}}` (`tb project show`). |
-| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null, swap?: bool\|"on"\|"off"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`, `--swap on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
+| `GET /projects` | | Every known project with `remote: bool\|null`, `pr_flow: "auto"\|"on"\|"off"`, `ships_prs: bool`, `pr_rules: {approvals, expected: [str]\|null, expected_wait_mins, ask_stage: bool, swap: bool, review: bool, agents_merge: bool, set: {…what tb project set changed}}` (`tb project show`). |
+| `POST /projects/:name` | `{pr_flow?: "auto"\|"on"\|"off", approvals?: int\|null, expected?: [str]\|null, expected_wait_mins?: number\|null, ask_stage?: bool\|"on"\|"off"\|null, swap?: bool\|"on"\|"off"\|null, review?: bool\|"on"\|"off"\|null, agents_merge?: bool\|"on"\|"off"\|null}` | `pr_flow`: whether the project's work ends in PRs; `auto` follows its git remote (`tb project set --pr-flow`). The PR rules (`tb project set --approvals N`, `--expected-check NAME` (repeat; `none` = `[]`), `--expected-wait MINS`, `--ask-stage on|off`, `--swap on|off`, `--review on|off`, `--agents-merge on|off`; `default` sends null) change the project's rules on the board; null goes back to config.toml's. At least one key. **Response read:** the project as in `GET /projects`. |
 
 ### Goals
 | Path | Body | Notes |
@@ -868,7 +873,7 @@ are free, lends them when it starts or an agent takes it with `tb take` (before 
 them), and takes them back once the task isn't active
 (done, or a failed start), the same rule as locks. A queued task's `waiting` line says why ("Waits for a android
 device (T4 has them)", "Needs 2 ios devices, and the pool has 1 (pixel-8 is reserved for G3)"); a device asked for by
-name says so first, whatever the goal's pool ("Waiting for a free dev-c (dev-c is reserved for G2)", "Waiting for dev-c
+name says so first, whatever the goal's pool ("Waiting for a free dev-c (dev-c is reserved for G2)", "Waiting for a free dev-c (dev-c is with T4)", "Waiting for dev-c
 (it's off)"), and a need no device has as its name or tag says "No dev-zz yet (tb device add)". A task started
 without all it asks for (by hand, or with nothing free) logs "<why>; it started without".
 
@@ -881,15 +886,19 @@ tasks share it. An archived goal reserves nothing and its pool lends nothing; it
 The goal detail's `devices` aside lists the goal's own devices first, each with `in_pool`, `purpose` and
 `reserved`, and `pool` (how many it has).
 
-A device can say what it is: `kind` (phone, tablet, simulator, android…; a label, never matched against needs) and
-`target` (Android 14, an iOS 17 runtime…), shown with its name as `label` ("dev-a (Android phone, Android 14)";
-known kinds are named in words, others show as given). Its `start_cmd` and `stop_cmd` go in the handoff of the task
-that's lent it, as "Start it: …" and "Stop it when you're done: …" (under the device's name when it has more than
-one), filled like step commands: the task's `{task}`, `{title}`, `{branch}`, `{base}`, `{repo}`, `{pr}`… and the
-device's `{device}` (also `{name}`), `{kind}` and `{target}`. A task card's `devices` has `lent` (names) and
-`lent_labels` (each `label`).
+A device can say what it is: `kind` (a label, never matched against needs) and `target` (the emulator's serial or
+the simulator's UDID, which its commands use as `{target}`), shown with its name as `label` ("dev-a (Android
+emulator, emulator-5554)"). Known kinds are named in words, as the Python board named them: `android` → "Android
+emulator", `ios` → "iOS simulator", `device` → "Phone or tablet", `other` → "Device" (others show as given; a
+device with no kind has `kind_label` "Device" and no kind in its `label`). Its `start_cmd` and `stop_cmd` go in
+the handoff of the task that's lent it, as "Start it: …" and "Stop it when you're done: …" (under the device's name
+when it has more than one), filled like step commands: the task's `{task}`, `{n}`, `{title}`, `{branch}`, `{base}`,
+`{repo}`, `{pr}`, `{wave}`, `{goal}`, `{jira}` (the task's ref when it has no ticket)… and the device's `{device}`
+(also `{name}`), `{kind}` and `{target}`. That device paragraph comes early in the handoff and is never cut to fit
+its length, and it ends with "Other devices in use, don't touch them: …" naming the devices other tasks have. A task
+card's `devices` has `lent` (names) and `lent_labels` (each `label`).
 
-`device`: `{id, name, label, kind: str|null, kind_label: str|null, target: str|null, tags: [str], note, off: bool,
+`device`: `{id, name, label, kind: str|null, kind_label: str, target: str|null, tags: [str], note, off: bool,
 focus: str|null, can_focus: bool, start_cmd: str|null, stop_cmd: str|null, held_by: {ref, title, goal}|null,
 goals: [{goal, purpose, reserved}], reserved_for: "G3"|"G3 and G4"|null}` (`goals` and `reserved_for`: goals not archived).
 
@@ -1089,12 +1098,12 @@ checkout's head runs on a throwaway checkout of it). `tb step aim --branch B | -
 as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so do the `tb done` and PR-opening gates. A
 pinned `sha` keeps its branch's `tip` at the time (`tb` sends it; the board reads it when left out): once the branch's tip
 moves, the pin no longer counts (`aim` has no `sha`, and `dropped: <sha>`; the aim follows the branch), and the next
-`tb.step` report drops it from the task with a "Rounds no longer pinned at …" line. `tb` refuses a `--commit` from a
-detached checkout unless `--branch` names its branch (`--worktree` and `--branch` go together), and the commit must be
+`tb.step` report drops it from the task with a "Rounds no longer pinned at …" line. `tb` refuses a detached
+`--worktree` (and a `--commit` from a detached checkout) unless `--branch` names its branch (`--worktree` and `--branch` go together), and the commit must be
 on it. A detached checkout aimed with `--branch` is judged on that branch's tip (refused when the branch is missing
 or doesn't contain the checkout's head). A pin with no `tip` (saved before the board kept it) is dropped once the branch's tip isn't its sha. Prompts'
 `{branch}` is the aimed branch; a placeholder with no value yet is empty (in a script, each value is one shell word,
-`''` when empty), and refusals and the handoff show the steps filled, `{head}` and `{worktree}` included (`GET /steps`'s
+`''` when empty, and `tb steps`, refusals and the handoff show `run`, `check` and `publish` quoted that way), and refusals, the handoff and `tb step ask`'s question show the steps filled, `{head}` and `{worktree}` included (`GET /steps`'s
 `vars` carries them too). A step's
 `publish` script (`tb step publish "<step>"`, which needs the step passed on the head and the task's PR; report
 `tb.step_publish` with `name`, `head`, `ok`, `output`, logged as "Published <step> for <sha>" or "Couldn't publish …")

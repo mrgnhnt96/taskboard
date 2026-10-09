@@ -143,6 +143,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let v = if t.is_none() { prflow::visited_by(app, sid)? } else { None };
             Ok(json!({"session": sid,
                       "task": match t { Some(t) => board::task_card(app, &t)?, None => Value::Null },
+                      "line": crate::lines::entries(app, sid)?,
                       "visiting": match v { Some(v) => board::task_card(app, &v)?, None => Value::Null }}))
         }
         ("GET", ["steps"]) => {
@@ -628,7 +629,7 @@ fn close_sessions(app: &App, body: &Value) -> Result<Value> {
             let sid = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
             let s = board::get_session(app, Some(&sid))?;
             match s {
-                Some(s) if board::close_rule(Some(&s)) == Some("close") && board::task_for_session(app, Some(&sid))?.is_none() => {
+                Some(s) if board::close_rule(Some(&s)) == Some("close") && !crate::lines::busy(app, &sid)? => {
                     if close_session_inner(app, &s, false, "close the idle terminals you picked")?.is_some() {
                         closing.push(sid);
                     }
@@ -1002,6 +1003,14 @@ fn start(app: &App, id: i64, body: &Value) -> Result<Value> {
     if !["new", "queue", "attach"].contains(&mode.as_str()) {
         return err(400, "Start mode must be new, queue or attach.");
     }
+    let t = board::get_task(app, id)?;
+    if let (Some(line), Some("queued")) = (t.s("line_session"), t.s("status")) {
+        let name = board::session_name(app, Some(line), None);
+        return err(
+            409,
+            format!("{} waits in {name}'s line and starts there by itself. To run it elsewhere, take it out first: tb line drop {}.", rf("task", id), rf("task", id)),
+        );
+    }
     // From `tb start` in a terminal: only on a human's word there. From the board's Start: the owner's.
     let via = body_str(body, "via_session");
     let started = if via.is_empty() {
@@ -1167,6 +1176,7 @@ fn detach(app: &App, id: i64) -> Result<Value> {
             return err(409, "This task is done.");
         }
         cancel_pending(app, id)?;
+        crate::lines::leave(app, &t)?;
         let pickup = if t.s("pickup") == Some("attach") { "manual".to_string() } else { t.st("pickup") };
         board::update_task(
             app,
@@ -1417,7 +1427,7 @@ fn close_done_terminals(app: &App, body: &Value, query: &Query) -> Result<Value>
             }
             let Some(s) = board::get_session(app, t.s("session_id"))? else { continue };
             let sid = s.st("id");
-            if s.s("status") == Some("gone") || pending.contains(&sid) || board::task_for_session(app, Some(&sid))?.is_some() {
+            if s.s("status") == Some("gone") || pending.contains(&sid) || crate::lines::busy(app, &sid)? {
                 continue;
             }
             board::create_job(app, "close", json!({"session": sid, "force": false}), Some(t.id()), "close", None)?;
@@ -2210,7 +2220,7 @@ fn get_pr(app: &App, id: i64) -> Result<Value> {
     }
     let f = jloads_obj(t.s("pr_flow"));
     Ok(json!({"task": rf("task", id), "pr": board::pr_card(&t), "record": f.v("rec"), "checked_at": f.v("checked_at"),
-              "agents_merge": app.cfg.pr.agents_merge, "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
+              "agents_merge": crate::prflow::agents_merge_on(app, t.s("project")), "watched": crate::prhost::watched(t.s("pr_host")) && app.cfg.pr.watch}))
 }
 
 fn pr_wait(app: &App, id: i64) -> Result<Value> {

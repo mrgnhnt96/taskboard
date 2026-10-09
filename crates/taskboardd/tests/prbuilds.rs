@@ -113,7 +113,9 @@ fn stopping_records_who_and_the_checks_count_as_passed_while_builds_are_cancelle
     let v = b.post("/pr-builds", json!({"stopped": false, "who": "Sam"}));
     assert_eq!((v["stopped"].as_bool(), v["resumed_by"].as_str()), (Some(false), Some("Sam")));
     assert!(b.queue().is_empty(), "resuming drops the follow-ups");
-    assert_eq!(v["recent"][0]["what"], "stopped 0 builds");
+    assert_eq!(v["recent"], json!([]), "the host's cancel stopped nothing, so nothing is recorded (#98)");
+    let logged = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE 'PR builds are stopped: cancelled%'", vec![json!(id)]).unwrap();
+    assert_eq!(logged, 0, "nor told on the task");
     prflow::refresh(&b.app).unwrap();
     assert_eq!(b.task(id).st("pr_phase"), "checks", "resumed: the checks count again");
     assert!(api::dispatch(&b.app, "POST", "/pr-builds", &Query::new(), &json!({})).is_err());
@@ -438,4 +440,22 @@ fn a_cancel_command_that_stopped_nothing_records_nothing() {
     assert_eq!(logged, 0);
     assert!(b.flow(id)["builds_cancelled"]["h7"].is_string());
     assert_eq!(b.queue()[0]["round"], 1, "still followed up");
+}
+
+/// #98: the host's own cancel tells what it stopped on its first round, one recent entry per build.
+#[test]
+fn the_host_s_cancel_that_stopped_builds_is_recorded() {
+    let b = board_with(|_, _| {});
+    let id = b.pr_task(GH);
+    let h = FakeHost::new("github", running());
+    *h.stops.lock() = vec!["CI #12".into()];
+    prhost::install(&b.app, h.clone());
+    prflow::refresh(&b.app).unwrap();
+    b.post("/pr-builds", json!({"stopped": true}));
+    prbuilds::tick(&b.app).unwrap();
+    let v = b.get("/pr-builds");
+    assert_eq!((v["recent"][0]["what"].as_str(), v["recent"][0]["build"].as_str()), (Some("stopped 1 build"), Some("CI #12")));
+    let logged = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text LIKE 'PR builds are stopped: cancelled%'", vec![json!(id)]).unwrap();
+    assert_eq!(logged, 1);
+    assert!(b.flow(id)["builds_cancelled"]["h1"].is_string());
 }

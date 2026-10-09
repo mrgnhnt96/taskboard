@@ -232,6 +232,18 @@ pub fn swap_on(app: &App, project: Option<&str>) -> bool {
     crate::projects::pr_rules(app, project).swap.unwrap_or(app.cfg.reviewers.swap)
 }
 
+/// Whether a project's PRs have a Review step (`tb project set --review`, `[pr.projects.<name>] review`):
+/// off, they go to merge without reviewers. On unless the project says.
+pub fn review_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).review.unwrap_or(true)
+}
+
+/// Whether the board has anyone it could ask on a project's PRs: a roster reviewer, not removed,
+/// whose host id is known.
+pub fn any_askable(app: &App, project: &str) -> Result<bool> {
+    Ok(roster(app, project)?.iter().any(|r| r.s("removed_at").is_none() && has(r.s("host_user"))))
+}
+
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
 pub const LEVELS: [(&str, f64); 4] = [("off", 0.25), ("low", 0.5), ("normal", 1.0), ("high", 2.0)];
 

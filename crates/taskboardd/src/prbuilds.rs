@@ -485,10 +485,10 @@ pub fn tick(app: &App) -> Result<()> {
                     q.push(next);
                 }
                 save_queue(app, &q)?;
-                // A cancel is told, and kept in the recent list, only when it stopped something: a
-                // cancel command that reported none (an empty $TB_CANCELLED) stopped nothing, as on the
-                // Python board, and a follow-up that doesn't report what it stopped stopped nothing
-                // anyone knows of. The push is still marked cancelled, so a poll doesn't cancel it again.
+                // A cancel is told, and kept in the recent list, only when it stopped something: the
+                // host's own cancel or a cancel command that reported none (an empty $TB_CANCELLED)
+                // stopped nothing, as on the Python board, and a follow-up that doesn't report what it
+                // stopped stopped nothing anyone knows of. The push is still marked cancelled, so a poll doesn't cancel it again.
                 let stopped_some = match &builds {
                     Some(b) => !b.is_empty(),
                     None => round == 0,
@@ -565,8 +565,8 @@ fn attempt(app: &App, item: &Value) -> std::result::Result<Done, (String, bool)>
     let h = prhost::host_for(app, &host).map_err(|e| (e, true))?;
     let pr = PrRef { host: host.clone(), repo: s("repo"), num: item["num"].as_i64().unwrap_or(0), url: s("url") };
     match h.cancel_builds(&pr, &s("head")) {
-        // The host's own cancel is told on its first round whatever it stopped.
-        Ok(Cancelled::Stopped(b)) => Ok((format!("stopped {}", plural(b.len() as i64, "build")), Some(b).filter(|b| !b.is_empty()))),
+        // The host's own cancel says what it stopped: none stopped nothing, as on the Python board.
+        Ok(Cancelled::Stopped(b)) => Ok((format!("stopped {}", plural(b.len() as i64, "build")), Some(b))),
         Ok(Cancelled::Unsupported(why)) => Err((why, false)),
         Err(e) => Err((e, true)),
     }

@@ -317,7 +317,7 @@ pub fn checks_of(pr: &Value) -> (&'static str, &'static str) {
 
 /// `startsByHand`.
 pub fn starts_by_hand(x: &Value) -> bool {
-    matches!(s(x, "status"), "queued" | "planned") && obj(x, "goal").is_none() && !b(x, "starting")
+    matches!(s(x, "status"), "queued" | "planned") && obj(x, "goal").is_none() && !b(x, "starting") && x["line"].is_null()
 }
 
 pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
@@ -340,6 +340,10 @@ pub fn task_card_vm(x: &Value, selected: Option<&str>) -> TaskCardVm {
     }
     if let Some(c) = fmt::compacting(x) {
         chips.push(Chip { text: c, cls: "compact".into() });
+    }
+    // Where it waits its turn: "To resume in Term 3" or "Queued in Term 3".
+    if let Some(l) = opt_s(&x["line"], "label") {
+        chips.push(Chip { text: l.to_string(), cls: "line".into() });
     }
     // The devices lent to it, and its bits (⚑, warn while a backend one isn't made).
     for d in arr(&x["devices"], "lent").iter().filter_map(|d| d.as_str()) {
@@ -1343,7 +1347,7 @@ fn chip_colors(t: &Theme, cls: &str) -> (Hsla, Hsla) {
         "k-follow" | "st-ticket" => (t.accent_fg, t.accent_soft),
         "st-task" => (t.goal, t.goal_soft),
         "st-drop" => (t.muted, t.col),
-        "compact" => (t.accent_fg, t.accent_soft),
+        "compact" | "line" => (t.accent_fg, t.accent_soft),
         "device" => (t.goal, t.goal_soft),
         "bit-wait" => (t.warn_fg, t.warn_soft),
         "bit" => (t.muted, t.panel_2),
@@ -1506,6 +1510,18 @@ mod tests {
 
     fn sel<'a>(route: &'a Value, k: &str) -> Option<&'a str> {
         route["q"][k].as_str()
+    }
+
+    #[test]
+    fn a_task_in_a_terminals_line_says_where_and_has_no_start() {
+        let x = json!({"id": 14, "ref": "T14", "title": "Footer", "project": "webapp", "status": "queued",
+                       "line": {"session": "s1", "name": "Term 3", "kind": "resume", "pos": 1, "label": "To resume in Term 3", "after": "T12"}});
+        let card = task_card_vm(&x, None);
+        assert!(card.chips.iter().any(|c| c.text == "To resume in Term 3" && c.cls == "line"));
+        assert!(!starts_by_hand(&x));
+        let mut free = x.clone();
+        free["line"] = Value::Null;
+        assert!(starts_by_hand(&free));
     }
 
     #[test]

@@ -79,7 +79,7 @@ max_terminals = 2                    # how many terminals a goal made from the b
 [pr]
 watch = true
 wake = true                          # bring a done task back when its PR has failed checks or comments
-agents_merge = false                 # let agents merge an approved, green PR
+agents_merge = false                 # let agents merge an approved, green PR (a project can say otherwise)
 gh = "gh"
 no_checks_after_mins = 15.0
 bitbucket_api = "https://api.bitbucket.org/2.0"
@@ -96,6 +96,8 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 # ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
 # swap = true                         # swap slow reviewers on this project (unset: [reviewers] swap; tb project set --swap)
+# review = false                      # no Review step: its PRs go to merge without reviewers (unset: on; tb project set --review)
+# agents_merge = true                 # agents merge its approved, green PRs (unset: pr.agents_merge; tb project set --agents-merge)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
 # relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and
