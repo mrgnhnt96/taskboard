@@ -752,3 +752,33 @@ T8=R ## `start T8`
 T8=R ## sart T8 tmrw
 T8=R ## agent:Should I start T8? || yse, but not now
 T8=R T9=R ## agent:Should I start T8? || T9 instead?
+# From #161: "now"/"next" after a task counts only when the question asks to start it.
+T8=R ## agent:Should I close T8 now? || yes
+T8=R ## agent:Should I merge T8 next? || yes
+T8=R ## agent:Can I merge T8 now? || go
+T8=R ## agent:Should I close T8 now? || 👍
+T8=R ## agent:I can close T8 now if you'd like. || do it
+T8=R ## agent:I can merge T8 now if you want. || yes
+T8=R ## agent:Should I stop T8 now or after the release? || now
+T8=R ## agent:Should I archive T8 now or later? || right now
+T8=R ## agent:Should I rebase T8 now? || yes
+T8=R ## agent:Should I stop T8 now? || yes
+T8=R ## agent:Should I archive T8 next? || yes
+T8=R ## agent:Should I delete T8 now? || do it
+T8=R ## agent:Should I test T8 next? || go
+T8=R ## agent:I can rebase T8 now if you want. || yes
+T8=R ## agent:Want me to merge T8 next? || sure
+T8=R ## close T8 now
+T8=S ## agent:Should I pick up T8 next? || yes
+T8=S ## agent:Should I work on T8 now? || yes
+T8=S ## agent:Should I kick off T8 now? || go
+T8=S ## agent:Want me to begin T8 next? || yes
+# From #163: typos, quoted offers and mixed answers.
+T8=S ## pleas start T8
+T8=S ## kick of T8
+T8=S ## agent:Should I start T8? || yrs
+T8=S ## > Should I start T8?\n👍
+T8=S ## > I can start T8 now if you want.\nyes
+T8=S ## hold that thought, actually start T8
+T8=R ## agent:Should I start T8? || yep, nope, hold
+T8=R ## agent:Should I start T8? || yes but leave it alone for now
