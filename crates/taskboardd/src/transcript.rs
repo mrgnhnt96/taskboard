@@ -200,9 +200,81 @@ pub struct Turn {
     pub shell_dirs: Vec<String>,
     /// Paths the turn's shell commands name (`../lib/x.rs`, `/abs/dir`), as written.
     pub shell_paths: Vec<String>,
-    /// The turn's tool calls that came back, by `tool_use_id`, and whether each came back an error
-    /// (refused at the permission prompt or by a hook, cut off, or failed).
+    /// The turn's tool calls that came back, by `tool_use_id`, and whether each was refused (denied
+    /// at the permission prompt or blocked by a hook) rather than run; a call that failed or was cut
+    /// off after it started ran.
     pub results: Vec<(String, bool)>,
+    /// The turn's tool calls, as (`tool_use_id`, `call_key`): what a hook that got no id calls one.
+    pub calls: Vec<(String, String)>,
+}
+
+/// The id a hook gives a tool call Claude sent no `tool_use_id` for: made from its tool and input,
+/// keys sorted, so the transcript's copy of the call gets the same one.
+pub fn call_key(tool: &str, input: &Value) -> String {
+    fn sorted(v: &Value) -> Value {
+        match v {
+            Value::Object(o) => {
+                let mut keys: Vec<&String> = o.keys().collect();
+                keys.sort();
+                Value::Object(keys.into_iter().map(|k| (k.clone(), sorted(&o[k]))).collect())
+            }
+            Value::Array(a) => Value::Array(a.iter().map(sorted).collect()),
+            x => x.clone(),
+        }
+    }
+    // FNV-1a: the same in `tb` and the daemon, whatever either was built with.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in tool.bytes().chain([0]).chain(sorted(input).to_string().into_bytes()) {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    format!("call-{h:016x}")
+}
+
+/// How Claude Code words the result of a call it never ran: the owner denied it (or it needed an
+/// approval no one could give), or a PreToolUse hook blocked it.
+const REFUSALS: &[&str] = &[
+    "The user doesn't want to proceed",
+    "The user doesn't want to take this action",
+    "Permission to use ",
+    "Permission for this command was denied",
+    "This command requires approval",
+    "This command uses shell operators that require approval",
+    "This Bash command contains multiple operations",
+    "Contains expansion",
+    "PreToolUse:",
+];
+
+/// A tool result's text, whether a string or a list of text blocks.
+fn result_text(b: &Value) -> String {
+    match &b["content"] {
+        Value::String(s) => s.clone(),
+        Value::Array(a) => a.iter().filter_map(|x| x["text"].as_str()).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// An error result for a call that never ran: refused, not failed or cut off after it started.
+fn refused(b: &Value) -> bool {
+    b["is_error"] == true && {
+        let text = result_text(b);
+        REFUSALS.iter().any(|r| text.trim_start().starts_with(r))
+    }
+}
+
+/// The tool calls in one of the main conversation's events, as (tool_use_id, call_key).
+fn tool_calls(e: &Value) -> Vec<(String, String)> {
+    if e["type"] != "assistant" || e["isSidechain"] == true {
+        return vec![];
+    }
+    e["message"]["content"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|b| b["type"] == "tool_use")
+                .filter_map(|b| b["id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), call_key(b["name"].as_str().unwrap_or(""), &b["input"]))))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The paths a shell command names: its words with a `/` in them (a flag's `--x=` value included),
@@ -219,7 +291,7 @@ fn named_paths(command: &str) -> Vec<String> {
     out
 }
 
-/// The tool results in one of the main conversation's events, as (tool_use_id, is_error).
+/// The tool results in one of the main conversation's events, as (tool_use_id, refused).
 fn tool_results(e: &Value) -> Vec<(String, bool)> {
     if e["type"] != "user" || e["isSidechain"] == true {
         return vec![];
@@ -229,7 +301,7 @@ fn tool_results(e: &Value) -> Vec<(String, bool)> {
         .map(|a| {
             a.iter()
                 .filter(|b| b["type"] == "tool_result")
-                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), b["is_error"] == true)))
+                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), refused(b))))
                 .collect()
         })
         .unwrap_or_default()
@@ -252,6 +324,7 @@ fn turns_of(events: &[Value]) -> Vec<Turn> {
                 }
             }
             cur.results.extend(tool_results(e));
+            cur.calls.extend(tool_calls(e));
             for (name, input) in tool_uses(e) {
                 if SUBAGENT_TOOLS.contains(&name) {
                     cur.ran_subagent = true;
@@ -383,13 +456,29 @@ mod tests {
         let ev = vec![
             json!({"type": "user", "message": {"content": "Go"}, "timestamp": "2026-10-01T10:00:00Z"}),
             json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}),
-            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "denied"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "The user doesn't want to proceed with this tool use. The tool use was rejected."}]}}),
             json!({"type": "user", "isSidechain": true, "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]}}),
             json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t3", "content": "ok"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t4", "is_error": true, "content": [{"type": "text", "text": "PreToolUse:Bash hook error: midna: denied by the human"}]}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t5", "is_error": true, "content": "Exit code 1\nerror: test failed"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t6", "is_error": true, "content": "[Tool call interrupted: the session ended before this call's result was recorded]"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t7", "is_error": true, "content": "This command requires approval"}]}}),
         ];
         let t = turns_of(&ev);
         assert_eq!(t.len(), 1, "a tool result isn't a prompt");
-        assert_eq!(t[0].results, vec![("t1".to_string(), true), ("t3".to_string(), false)]);
+        let r = |id: &str, refused: bool| (id.to_string(), refused);
+        assert_eq!(t[0].results, vec![r("t1", true), r("t3", false), r("t4", true), r("t5", false), r("t6", false), r("t7", true)], "only a refusal never ran");
+        assert_eq!(t[0].calls, vec![("t1".to_string(), call_key("Bash", &json!({"command": "ls"})))]);
+    }
+
+    #[test]
+    fn a_calls_key_is_its_tool_and_input_whatever_the_key_order() {
+        let a = call_key("Bash", &serde_json::from_str(r#"{"command": "ls", "description": "List", "x": {"b": 1, "a": [2]}}"#).unwrap());
+        let b = call_key("Bash", &serde_json::from_str(r#"{"x": {"a": [2], "b": 1}, "description": "List", "command": "ls"}"#).unwrap());
+        assert_eq!(a, b);
+        assert!(a.starts_with("call-") && a.len() == 21, "{a}");
+        assert_ne!(a, call_key("Agent", &serde_json::from_str(r#"{"command": "ls", "description": "List", "x": {"b": 1, "a": [2]}}"#).unwrap()));
+        assert_ne!(a, call_key("Bash", &json!({"command": "ls -a"})));
     }
 
     #[test]
