@@ -807,19 +807,22 @@ fn the_hooks_transcript_path_stands_in_when_the_session_id_finds_none() {
     assert!(out["block"].as_str().is_some_and(|x| x.contains("a.rs")), "{out}");
 }
 
-// The Stop check's whole rule set, one row per scenario from #141, #145, #149, #153, #156 and #160.
+// The Stop check's whole rule set, one row per scenario from #141, #145, #149, #153, #156, #160 and #164.
 //
 // 1. A Bash or subagent call ran unless the transcript shows no result for it, or an error that reads
-//    as a refusal: Claude Code's wording for one, or a bare deny reason with nothing that says the call
-//    started. Any other error (API error, max turns, aborted, killed, stderr) ran.
+//    as a refusal: Claude Code's wording for one (whatever else it says), or a bare deny reason, one
+//    short line with a deny word and nothing that says the call started. Any other error (API error,
+//    subagent stopped, max turns, aborted, killed, stderr, a program's own message) ran.
 // 2. Each window is one call, paired with that call in the transcript among the calls since the
 //    prompt the hooks last saw (a slash command's prompt starts them over): by `tool_use_id`, else by
 //    tool and input in the order they started, else (a hook rewrote the input) with the unpaired calls
-//    of its tool. A window counts what changed from its start to its end, or to the Stop when it's still
-//    open and its call ran; a call that ran with no window counts from the prompt's stamp.
+//    of its tool; one the transcript doesn't show that started while a subagent ran is the subagent's,
+//    which its window covers. A window counts what changed from its start to its end, or to the Stop
+//    when it's still open and its call ran; a call that ran with no window counts from the prompt's
+//    stamp. A compaction's summary isn't a prompt: the calls before an auto-compact stay the turn's.
 // 3. A shell call's changes count only in the folders the turn worked in (its cwd, `cd` targets, paths
-//    it names, folders of files it runs or rewrites from); a subagent's anywhere. The turn never leaves
-//    its checkout: a folder that holds the checkout's root adds nothing.
+//    it names, folders of files it runs or rewrites from, not a file it sources); a subagent's anywhere.
+//    The turn never leaves its checkout: a folder that holds the checkout's root adds nothing.
 // 4. Hooks that never sent a ToolEnd (loaded before the call stamps) keep to the prompt's stamp.
 
 /// A tree stamp: its files, and the reflog entry of a commit made just before it.
@@ -1106,11 +1109,80 @@ fn stop_check_rows() -> Vec<Row> {
     transcript.push(slash);
     transcript.extend(ran("t2", "Bash", cmd("python3 fix.py")));
     rows.push(row("#160 a call after the slash command, its start lost", Warm, "", transcript, vec![start("t1", CLEAN), end("t1", CLEAN), Step::Prompt(CLEAN), blocks(SAVED, &["a.rs"])]));
+    rows.extend(rows_164());
+    rows
+}
+
+/// #164: refusals Claude Code words with no deny word, failures with one, an auto-compact mid-turn,
+/// `source` of a file at the checkout's root, a bare policy reason, a subagent's id-less Bash.
+fn rows_164() -> Vec<Row> {
+    use Hooks::*;
+    let cmd = |c: &str| json!({"command": c});
+    let mut rows = vec![];
+    // 1. Refusals with no deny word: Bash and Agent, warm, cold and with no tool_use_id.
+    for refusal in [
+        "The server-side auto mode classifier gave no verdict for this action. Try again, or ask the user to approve it.",
+        "This command changes directory before running a version-control command. Run git with -C instead.",
+        "This session is isolated in the worktree /tmp/wt/agent-1 but this command points git at a directory outside it.",
+        "This agent is isolated in the worktree /tmp/wt/agent-1, but this command runs zsh in a plain command. Refusing to run it.",
+        "Parser skipped input between top-level statements",
+        // 5: a bare policy reason.
+        "policy: network is cut off for this session",
+    ] {
+        for (tool, input) in [("Bash", cmd("python3 fix.py")), ("Agent", json!({"prompt": "fix it"}))] {
+            for hooks in [Warm, Cold] {
+                rows.push(row(format!("#164 refused, {tool} {}: {refusal}", if hooks == Warm { "warm" } else { "cold" }), hooks, "", failed("t1", tool, input.clone(), refusal).to_vec(), vec![Step::Start(tool, "t1".into(), Some(CLEAN)), pass(SAVED)]));
+            }
+            let key = taskboardd::transcript::call_key(tool, &input);
+            rows.push(row(format!("#164 refused, {tool} with no id: {refusal}"), Warm, "", failed("toolu_1", tool, input.clone(), refusal).to_vec(), vec![Step::Start(tool, key, Some(CLEAN)), pass(SAVED)]));
+        }
+    }
+    // 2. A deny word in a failure from a call that edited first (its end lost).
+    for (tool, error) in [
+        ("Bash", "! [rejected]        main -> main (fetch first)"),
+        ("Bash", "To github.com:acme/webapp.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'github.com:acme/webapp.git'"),
+        ("Bash", "403 Forbidden"),
+        ("Bash", "remote: Pushing to main is not allowed"),
+        ("Bash", "error: pushing to main is not allowed\nhint: open a pull request"),
+        ("Agent", "API Error: 403 {\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"Request not allowed\"}}"),
+        ("Agent", "API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Output blocked by content filtering policy\"}}"),
+        ("Agent", "Agent stopped: a tool use was rejected"),
+    ] {
+        let input = if tool == "Agent" { json!({"prompt": "fix it"}) } else { cmd("python3 fix.py && git push") };
+        rows.push(row(format!("#164 ran, then failed: {error}"), Warm, "", failed("t1", tool, input, error).to_vec(), vec![Step::Start(tool, "t1".into(), Some(CLEAN)), blocks(SAVED, &["a.rs"])]));
+    }
+    // 3. An auto-compact mid-turn: the summary isn't a prompt, so the calls before it stay the turn's.
+    let compacted = |first: Vec<Value>| {
+        let mut t = first;
+        t.push(json!({"type": "system", "subtype": "compact_boundary", "compactMetadata": {"trigger": "auto", "preTokens": 160000}}));
+        t.push(json!({"type": "user", "isCompactSummary": true, "isVisibleInTranscriptOnly": true, "message": {"content": "This session is being continued from a previous conversation that ran out of context."}}));
+        t.extend(ran("t2", "Read", json!({"file_path": "b.rs"})));
+        t
+    };
+    let echo = ran("t1", "Bash", cmd("echo z > a.rs")).to_vec();
+    rows.push(row("#164 an auto-compact after a call whose end was lost", Warm, "", compacted(echo.clone()), vec![start("t1", CLEAN), blocks(SAVED, &["a.rs"])]));
+    rows.push(row("#164 an auto-compact after a call whose start was lost", Warm, "", compacted(echo.clone()), vec![blocks(SAVED, &["a.rs"])]));
+    rows.push(row("#164 an auto-compact after a call that closed", Warm, "", compacted(echo), vec![start("t1", CLEAN), end("t1", CLEAN), pass(SAVED)]));
+    // 4. `source` or `.` of a file at the checkout's root (a daemon HOME there) adds no folder; running one does.
+    for command in ["source ../.zshrc && cargo test", ". ../.zshrc && cargo test", "cat ../.zshrc"] {
+        rows.push(row(format!("#164 doesn't widen: {command}"), Warm, "app", ran("t1", "Bash", cmd(command)).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), pass(LIB)]));
+    }
+    rows.push(row("#164 widens: bash ../build.sh", Warm, "app", ran("t1", "Bash", cmd("bash ../build.sh")).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), blocks(LIB, &["x.rs"])]));
+    // 5. A subagent's Bash with no tool_use_id: its subagent's window covers it.
+    let ls = taskboardd::transcript::call_key("Bash", &cmd("ls"));
+    let sidechain = json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}});
+    rows.push(row(
+        "#164 a subagent's id-less Bash, then the owner saves",
+        Warm,
+        "",
+        [vec![tool_use("t1", "Agent", json!({"prompt": "look around"})), sidechain], vec![tool_result("t1", false)]].concat(),
+        vec![Step::Start("Agent", "t1".into(), Some(CLEAN)), start(&ls, CLEAN), Step::End("Agent", "t1".into(), Some(CLEAN)), pass(SAVED)],
+    ));
     rows
 }
 
 #[test]
-fn the_stop_check_keeps_every_scenario_from_141_to_160() {
+fn the_stop_check_keeps_every_scenario_from_141_to_164() {
     let mut wrong: Vec<String> = vec![];
     for r in stop_check_rows() {
         let b = new_board();
@@ -1118,7 +1190,7 @@ fn the_stop_check_keeps_every_scenario_from_141_to_160() {
         for d in ["app", "lib", "tools", "docs", "scripts"] {
             std::fs::create_dir_all(format!("{}/{d}", b.repo())).unwrap();
         }
-        for f in ["Cargo.toml", "tools/gen.py", "tools/gen.ts", "scripts/build.sh", "x.js", "s.sh"] {
+        for f in ["Cargo.toml", "tools/gen.py", "tools/gen.ts", "scripts/build.sh", "x.js", "s.sh", ".zshrc", "build.sh"] {
             std::fs::write(format!("{}/{f}", b.repo()), "").unwrap();
         }
         std::fs::write(b.dir.path().join("run.sh"), "").unwrap();

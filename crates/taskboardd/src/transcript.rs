@@ -149,9 +149,10 @@ fn slash_command(e: &Value) -> bool {
     prompt_text(e).is_some_and(|t| SLASH_PREFIXES.iter().any(|p| t.trim_start().starts_with(p)))
 }
 
-/// The text of a user entry that isn't a tool's result, meta or a subagent's.
+/// The text of a user entry that isn't a tool's result, meta, a subagent's or a compaction's summary
+/// (an auto-compact mid-turn writes one, and the turn goes on past it).
 fn prompt_text(e: &Value) -> Option<String> {
-    if e["type"] != "user" || e["isMeta"] == true || e["isSidechain"] == true {
+    if e["type"] != "user" || ["isMeta", "isSidechain", "isCompactSummary", "isVisibleInTranscriptOnly"].iter().any(|k| e[*k] == true) {
         return None;
     }
     let content = &e["message"]["content"];
@@ -276,11 +277,23 @@ const REFUSALS: &[&str] = &[
     "This Bash command contains multiple operations",
     "Contains expansion",
     "PreToolUse:",
+    "The server-side auto mode classifier",
+    "This command changes directory before running a version-control command",
+    "This session is isolated in the worktree",
+    "This agent is isolated in the worktree",
+    "Parser skipped input between top-level statements",
 ];
 
+/// How an error from a call that started reads, whatever deny word it has: the API's or a subagent's.
+const RAN_ERRORS: &[&str] = &["API Error", "Agent stopped"];
 /// Words a bare deny reason (a hook's own `permissionDecisionReason`, sent back as its text) says the
-/// call was stopped with, on its first line.
-const DENY_WORDS: &[&str] = &["refuse", "denied", "deny", "blocked", "not allowed", "disallowed", "forbidden", "rejected"];
+/// call was stopped with.
+const DENY_WORDS: &[&str] = &["refuse", "denied", "deny", "blocked", "not allowed", "disallowed", "forbidden", "rejected", "policy"];
+/// How a program's own message starts (`fatal: ...`, `! [rejected] ...`, `403 Forbidden`): a command
+/// that ran and failed, not a hook's reason.
+static PROGRAM_MESSAGE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?i:[^a-z]|(error|fatal|warning|hint|remote):|npm err!)").unwrap());
+/// The longest a bare deny reason runs.
+const DENY_REASON_MAX: usize = 300;
 /// What a command that ran prints when the OS or a server turns it down: its own failure, not a refusal.
 const RAN_DENIALS: &[&str] = &["permission denied", "connection refused", "operation not permitted"];
 
@@ -296,10 +309,11 @@ fn result_text(b: &Value) -> String {
 /// An error result for a call that never ran: refused, not failed or cut off after it started.
 ///
 /// A call ran unless its error reads as a refusal: Claude Code's own wording for one (`REFUSALS`,
-/// whatever else the text says), or a bare deny reason (a `DENY_WORDS` word on its first line) with
-/// nothing that says the call started: the tool's own output (`output`: Claude kept a shell's stdout
-/// and stderr), a shell's exit code, an interruption. Any other error (an API error, max turns, a
-/// command aborted, killed or failing on stderr) is from a call that ran, and may have edited first.
+/// whatever else the text says), or a bare deny reason: one short line with a `DENY_WORDS` word and
+/// nothing that says the call started (the tool's own output, as Claude keeps a shell's stdout and
+/// stderr in `output`; a shell's exit code; an interruption; an API error; a subagent stopped; a
+/// program's own message). Any other error (an API error, max turns, a command aborted, killed or
+/// failing on stderr) is from a call that ran, and may have edited first.
 fn refused(b: &Value, output: bool) -> bool {
     if b["is_error"] != true {
         return false;
@@ -312,14 +326,18 @@ fn refused(b: &Value, output: bool) -> bool {
     if REFUSALS.iter().any(|r| t.starts_with(r)) {
         return true;
     }
-    if output || t.starts_with("Exit code ") || t.starts_with("[Tool call interrupted") {
+    if output || t.starts_with("Exit code ") || t.starts_with("[Tool call interrupted") || RAN_ERRORS.iter().any(|r| t.starts_with(r)) {
         return false;
     }
-    let mut first = t.lines().next().unwrap_or("").to_lowercase();
-    for ran in RAN_DENIALS {
-        first = first.replace(ran, "");
+    let reason = t.trim_end();
+    if reason.contains('\n') || reason.len() > DENY_REASON_MAX || PROGRAM_MESSAGE.is_match(reason) {
+        return false;
     }
-    DENY_WORDS.iter().any(|w| first.contains(w))
+    let mut reason = reason.to_lowercase();
+    for ran in RAN_DENIALS {
+        reason = reason.replace(ran, "");
+    }
+    DENY_WORDS.iter().any(|w| reason.contains(w))
 }
 
 /// The tool calls in one of the main conversation's events, as (tool_use_id, call_key, tool).
@@ -356,7 +374,8 @@ fn named_paths(command: &str) -> Vec<String> {
 }
 
 /// Programs that run the file named after them (`python3 ../tools/gen.py`).
-const INTERPRETERS: &[&str] = &["python", "python3", "node", "bash", "sh", "zsh", "fish", "ruby", "perl", "php", "lua", "deno", "bun", "tsx", "ts-node", "dart", "swift", "Rscript", "osascript", "source", "."];
+/// `source` and `.` aren't among them: a file sourced sets up the shell, and adds no folder.
+const INTERPRETERS: &[&str] = &["python", "python3", "node", "bash", "sh", "zsh", "fish", "ruby", "perl", "php", "lua", "deno", "bun", "tsx", "ts-node", "dart", "swift", "Rscript", "osascript"];
 /// What runs the program after it (`sudo`, `env`, `time`, `npx`).
 const WRAPPERS: &[&str] = &["sudo", "env", "time", "nice", "nohup", "exec", "command", "xargs", "npx", "bunx"];
 /// Two words that run the program after them (`uv run`, `pnpm exec`).
@@ -672,6 +691,61 @@ mod tests {
         assert_eq!(tool_results(&ev(result("odd failure"), json!({"stdout": "", "stderr": "odd failure"}))), vec![("t".to_string(), false)]);
         assert_eq!(tool_results(&ev(result("odd failure"), json!("Error: odd failure"))), vec![("t".to_string(), false)], "a string result is no refusal by itself");
         assert_eq!(tool_results(&ev(result("Blocked: outside the repo"), json!("Error: Blocked: outside the repo"))), vec![("t".to_string(), true)]);
+    }
+
+    #[test]
+    fn every_refusal_wording_reads_as_one_and_a_deny_word_in_a_failure_doesnt() {
+        let result = |content: &str| json!({"type": "tool_result", "tool_use_id": "t", "is_error": true, "content": content});
+        let worded = [
+            "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+            "The user doesn't want to take this action right now. STOP what you are doing.",
+            "Permission to use Bash has been denied.",
+            "Permission for this action has been denied. Reason: not now",
+            "This command requires approval",
+            "This command uses shell operators that require approval for safety",
+            "This Bash command contains multiple operations. The following parts require approval: rm x",
+            "Contains expansion",
+            "PreToolUse:Bash hook error: no",
+            "The server-side auto mode classifier gave no verdict for this action. Try again.",
+            "This command changes directory before running a version-control command. Run git with -C instead.",
+            "This session is isolated in the worktree /tmp/wt but this command points git at a directory outside it.",
+            "This agent is isolated in the worktree /tmp/wt, but this command is too complex to verify that it stays inside the worktree.",
+            "Parser skipped input between top-level statements",
+        ];
+        assert_eq!(worded.len(), REFUSALS.len(), "a row for every wording");
+        for r in REFUSALS {
+            assert!(worded.iter().any(|w| w.starts_with(r)), "{r}");
+        }
+        for text in worded.iter().copied().chain(["Error: Parser skipped input between top-level statements", "policy: network is cut off for this session"]) {
+            assert!(refused(&result(text), false), "{text}");
+        }
+        for text in [
+            "! [rejected]        main -> main (fetch first)",
+            "To github.com:acme/webapp.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs",
+            "403 Forbidden",
+            "remote: Pushing to main is not allowed",
+            "fatal: push to main is not allowed",
+            "API Error: 403 {\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"Request not allowed\"}}",
+            "API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Output blocked by content filtering policy\"}}",
+            "Agent stopped: a tool use was rejected",
+        ] {
+            assert!(!refused(&result(text), false), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_auto_compact_mid_turn_keeps_the_turns_calls() {
+        let call = |id: &str| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": "ls"}}]}});
+        let ev = vec![
+            json!({"type": "user", "message": {"content": "Go"}, "timestamp": "2026-10-01T10:00:00Z"}),
+            call("t1"),
+            json!({"type": "system", "subtype": "compact_boundary"}),
+            json!({"type": "user", "isCompactSummary": true, "isVisibleInTranscriptOnly": true, "message": {"content": "This session is being continued from a previous conversation."}}),
+            call("t2"),
+        ];
+        let t = turns_of(&ev);
+        assert_eq!(t.len(), 1, "the summary isn't a prompt");
+        assert_eq!(t[0].calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), vec!["t1", "t2"]);
     }
 
     #[test]

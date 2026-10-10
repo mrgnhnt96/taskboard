@@ -250,16 +250,19 @@ prompt = "Sign off the screens this task changes."
   there, itself; one not there yet, its folder too; a script it runs, or a manifest or config a rewriting command
   like `cargo fmt --manifest-path ../Cargo.toml` names, its folder too, through wrappers like `env`, `uv run`,
   `npx`, `pnpm exec` and `bunx`), so a save in a sibling folder during a long command doesn't count. The turn never
-  leaves its checkout: a folder that holds the whole checkout (`bash ../../run.sh`, `source ~/.zshrc`) adds nothing.
+  leaves its checkout: a folder that holds the whole checkout (`bash ../../run.sh`) adds nothing, and a file the
+  shell sources (`source ~/.zshrc`, `. .env`) adds no folder.
   A call run in the background counts up to the Stop; a call whose window never closed counts up to the Stop
   unless the transcript shows it never ran: no result, or an error that reads as a refusal (Claude Code's wording
-  for a denial at the permission prompt, by the auto mode classifier or by a hook, or a hook's bare deny reason
-  with nothing that says the call started). Any other error (an API error, max turns, a command aborted or killed)
-  is from a call that ran. Each window is one call: a call Claude sent no `tool_use_id` for is found in the
+  for a denial at the permission prompt, by the auto mode classifier, a worktree or parser check or a hook, or a
+  hook's bare deny reason: one short line with a deny word and nothing that says the call started). Any other
+  error (an API error, a subagent stopped, max turns, a command aborted or killed, a program's own message like
+  `! [rejected]` or `403 Forbidden`) is from a call that ran. A call the transcript doesn't show that started while
+  a subagent ran is the subagent's: its window covers it. Each window is one call: a call Claude sent no `tool_use_id` for is found in the
   transcript by its tool and input, identical ones paired in the order they started (a refused twin keeps its
   own window, and the next one's starts at its own stamp), and one whose input a hook rewrote with its tool's
   unpaired call. Only the calls since the last prompt the hooks saw count (a slash command's prompt starts the
-  windows over). A stamp git couldn't finish in time (as under load) opens the window at the prompt's stamp, or
+  windows over; an auto-compact's summary isn't a prompt, so the calls before it stay the turn's). A stamp git couldn't finish in time (as under load) opens the window at the prompt's stamp, or
   leaves it open to the Stop's, and a call that ran with no window at all (its start lost) counts from the
   prompt's stamp. The board goes by these windows once the session's hooks
   have sent a `ToolEnd` (reset when a new Claude process starts), or when the turn's calls were opened by a
