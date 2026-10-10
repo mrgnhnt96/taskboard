@@ -533,7 +533,8 @@ fn new_commit(before: &Value, after: &Value) -> Option<String> {
 /// The directories a turn worked in: the terminal's folder, the folders of the files it edited and
 /// the ones its shell commands moved into, named, or ran a file from. None when the terminal's folder
 /// isn't known. A turn never leaves its checkout (`root`, the stamp's): a folder that holds the whole
-/// checkout (`bash ../../../run.sh`, `source ~/.zshrc`) adds nothing.
+/// checkout (`bash ../../../run.sh`) adds nothing. A file the shell sources (`source ~/.zshrc`) adds no
+/// folder, even with HOME at the checkout's root.
 fn turn_scope(cwd: &str, root: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
     let mut dirs = turn_dirs(cwd, turn)?;
     let root = root.trim_end_matches('/');
@@ -823,7 +824,8 @@ fn window_changes(windows: &mut Value, key: &str, before: &Value, after: &Value)
 /// tool and input) with that key's calls, the n-th window started with the n-th call; and a made-up id
 /// the transcript shows no call for (a hook rewrote the input) with the unpaired calls of its tool, when
 /// there are as many of each. A paired call ran unless the transcript shows no result or a refusal for
-/// it; an unpaired made-up window can't be told apart, so it ran. An open window that ran counts to the
+/// it; an unpaired made-up window can't be told apart, so it ran, unless it started while a subagent's
+/// window was open: then it's the subagent's own call, which that window covers. An open window that ran counts to the
 /// Stop's stamp. A call with no window that ran (its start lost on the way, as under load) counts from
 /// the prompt's stamp, once more of them ran than unpaired windows of their tool could stand for.
 fn settle_windows(windows: &mut Value, turn: Option<&transcript::Turn>, before: Option<&Value>, after: &Value) {
@@ -857,6 +859,7 @@ fn settle_windows(windows: &mut Value, turn: Option<&transcript::Turn>, before: 
         let n = nth.entry(w.id.clone()).or_default();
         match by_key.get(w.id.as_str()) {
             Some(same) => w.call = same.get(*n).copied(),
+            None if w.entry["inside"] == true => {}
             None => orphans.push(j),
         }
         *n += 1;
@@ -882,6 +885,9 @@ fn settle_windows(windows: &mut Value, turn: Option<&transcript::Turn>, before: 
             (None, _) => true,
             (Some(turn), Some(i)) => turn.ran(&calls[i].0) == Some(true),
             (Some(turn), None) if !made_up(&w.id) => turn.ran(&w.id) == Some(true),
+            // One the transcript doesn't show, started inside a subagent's window: the subagent's own
+            // call, which its window covers.
+            (Some(_), None) if w.entry["inside"] == true => false,
             (Some(_), None) => true,
         };
         if ran {
@@ -916,11 +922,13 @@ fn on_tool_start(r: &mut Report) -> Result<Value> {
     // call's tool and input) is another call, with its own stamp.
     let order = windows["count"].as_u64().unwrap_or(0);
     windows["count"] = json!(order + 1);
+    // Started while a subagent's window was open: maybe one of the subagent's own calls.
+    let inside = windows["calls"].as_object().is_some_and(|o| o.values().flat_map(|l| l.as_array().into_iter().flatten()).any(|w| window_key(w["tool"].as_str().unwrap_or("")) == "files" && w["closed"] != true));
     if !windows["calls"][&id].is_array() {
         windows["calls"][&id] = json!([]);
     }
     if let Some(list) = windows["calls"][&id].as_array_mut() {
-        list.push(json!({"tree": tree, "tool": r.b("tool"), "background": background, "order": order, "closed": false}));
+        list.push(json!({"tree": tree, "tool": r.b("tool"), "background": background, "order": order, "closed": false, "inside": inside}));
     }
     if as_bool(r.body.get("ends"), false) {
         // Opened by hooks that send ToolEnd: the Stop can go by the windows before the first one ends.
