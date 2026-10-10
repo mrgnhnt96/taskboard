@@ -807,6 +807,368 @@ fn the_hooks_transcript_path_stands_in_when_the_session_id_finds_none() {
     assert!(out["block"].as_str().is_some_and(|x| x.contains("a.rs")), "{out}");
 }
 
+// The Stop check's whole rule set, one row per scenario from #141, #145, #149, #153, #156 and #160.
+//
+// 1. A Bash or subagent call ran unless the transcript shows no result for it, or an error that reads
+//    as a refusal: Claude Code's wording for one, or a bare deny reason with nothing that says the call
+//    started. Any other error (API error, max turns, aborted, killed, stderr) ran.
+// 2. Each window is one call, paired with that call in the transcript among the calls since the
+//    prompt the hooks last saw (a slash command's prompt starts them over): by `tool_use_id`, else by
+//    tool and input in the order they started, else (a hook rewrote the input) with the unpaired calls
+//    of its tool. A window counts what changed from its start to its end, or to the Stop when it's still
+//    open and its call ran; a call that ran with no window counts from the prompt's stamp.
+// 3. A shell call's changes count only in the folders the turn worked in (its cwd, `cd` targets, paths
+//    it names, folders of files it runs or rewrites from); a subagent's anywhere. The turn never leaves
+//    its checkout: a folder that holds the checkout's root adds nothing.
+// 4. Hooks that never sent a ToolEnd (loaded before the call stamps) keep to the prompt's stamp.
+
+/// A tree stamp: its files, and the reflog entry of a commit made just before it.
+#[derive(Clone, Copy)]
+struct Stamp(&'static [(&'static str, &'static str)], Option<&'static str>);
+
+const CLEAN: Stamp = Stamp(&[], None);
+const SAVED: Stamp = Stamp(&[("a.rs", "h1:5")], None);
+const LIB: Stamp = Stamp(&[("lib/x.rs", "h1:5")], None);
+
+impl Stamp {
+    fn value(self, b: &Board) -> Value {
+        match self.1 {
+            None => tree(b, "aaa", self.0),
+            Some(how) => tree_with(b, "ccc", self.0, &[("ccc", how), ("aaa", "commit (initial): start")]),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Hooks {
+    /// Hooks that don't stamp each call: the prompt's stamp, narrowed to where the turn worked.
+    Old,
+    /// The new `tb` on a hooks.json with no ToolEnd and no Agent matcher.
+    NoEnds,
+    /// Hooks that have sent a ToolEnd before.
+    Warm,
+    /// A fresh terminal whose hooks.json sends ToolEnd, before its first one.
+    Cold,
+}
+
+enum Step {
+    /// A call's start, stamped (or not, as under load).
+    Start(&'static str, String, Option<Stamp>),
+    /// A call started in the background.
+    Background(&'static str, String, Stamp),
+    /// A call's end, stamped (or not).
+    End(&'static str, String, Option<Stamp>),
+    /// Another prompt the hooks see (a slash command), stamped.
+    Prompt(Stamp),
+    /// The Stop, stamped, and what it says: the names it must and mustn't show (none: it passes).
+    Stop(Stamp, &'static [&'static str], &'static [&'static str]),
+}
+
+struct Row {
+    name: String,
+    hooks: Hooks,
+    /// The terminal's folder, under the checkout.
+    cwd: &'static str,
+    transcript: Vec<Value>,
+    steps: Vec<Step>,
+}
+
+fn start(id: &str, at: Stamp) -> Step {
+    Step::Start("Bash", id.to_string(), Some(at))
+}
+fn end(id: &str, at: Stamp) -> Step {
+    Step::End("Bash", id.to_string(), Some(at))
+}
+fn pass(at: Stamp) -> Step {
+    Step::Stop(at, &[], &[])
+}
+fn blocks(at: Stamp, shows: &'static [&'static str]) -> Step {
+    Step::Stop(at, shows, &[])
+}
+fn ran(id: &str, tool: &str, input: Value) -> [Value; 2] {
+    [tool_use(id, tool, input), tool_result(id, false)]
+}
+fn failed(id: &str, tool: &str, input: Value, error: &str) -> [Value; 2] {
+    [tool_use(id, tool, input), tool_error(id, error)]
+}
+fn row(name: impl Into<String>, hooks: Hooks, cwd: &'static str, transcript: Vec<Value>, steps: Vec<Step>) -> Row {
+    Row { name: name.into(), hooks, cwd, transcript, steps }
+}
+
+fn stop_check_rows() -> Vec<Row> {
+    use Hooks::*;
+    let cmd = |c: &str| json!({"command": c});
+    let mut rows = vec![
+        // #141: the prompt's stamp, only for a turn that could change files without naming them.
+        row("#141 the owner saves; the turn only read", Old, "", vec![json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "a.rs"}}]}})], vec![pass(SAVED)]),
+        row("#141 a script's edit", Old, "", vec![bash("python3 fix.py")], vec![blocks(Stamp(&[("src/charts.rs", "h2:40")], None), &["charts.rs"])]),
+        row("#141 junk files", Old, "", vec![bash("ls")], vec![pass(Stamp(&[(".DS_Store", "h7:6148"), ("src/._a.rs", "h8:4"), ("src/a.rs.swp", "h9:12")], None))]),
+        row("#141 a pull moves HEAD", Old, "", vec![bash("git pull")], vec![pass(Stamp(&[], Some("pull: Fast-forward")))]),
+        row("#141 a checkout moves HEAD", Old, "", vec![bash("git checkout other")], vec![pass(Stamp(&[], Some("checkout: moving from main to other")))]),
+        row("#141 a commit", Old, "", vec![bash("git commit -am mine")], vec![blocks(Stamp(&[], Some("commit: mine")), &["a commit: mine"])]),
+        row("#141 another terminal's file outside this one's folder", Old, "app", vec![bash("cargo fmt")], vec![pass(LIB)]),
+        row("#141 a folder the shell moved into", Old, "app", vec![bash("cd ../lib && sed -i '' s/a/b/ x.rs")], vec![blocks(LIB, &["x.rs"])]),
+        row("#141 a second Stop with no prompt", Old, "", vec![bash("ls")], vec![pass(CLEAN), pass(SAVED)]),
+        // #145: only what changed while one of the agent's calls ran.
+        row("#145 the owner saves between calls", Warm, "", ran("t1", "Bash", cmd("ls")).to_vec(), vec![start("t1", CLEAN), end("t1", CLEAN), pass(SAVED)]),
+        row(
+            "#145 a generated file before a later call",
+            Warm,
+            "",
+            [ran("t1", "Bash", cmd("ls")), ran("t2", "Bash", cmd("git status"))].concat(),
+            vec![start("t1", CLEAN), end("t1", CLEAN), start("t2", Stamp(&[("coverage/lcov.info", "h2:9")], None)), end("t2", Stamp(&[("coverage/lcov.info", "h2:9")], None)), pass(Stamp(&[("coverage/lcov.info", "h2:9")], None))],
+        ),
+        row(
+            "#145 a sed outside the terminal's folder",
+            Warm,
+            "app",
+            ran("t1", "Bash", cmd("sed -i '' s/a/b/ ../lib/x.rs")).to_vec(),
+            vec![start("t1", CLEAN), end("t1", LIB), Step::Stop(Stamp(&[("lib/x.rs", "h1:5"), ("a.rs", "h1:5")], None), &["x.rs"], &["a.rs"])],
+        ),
+        row("#145 another terminal's commit", Warm, "", ran("t1", "Bash", cmd("ls")).to_vec(), vec![start("t1", CLEAN), end("t1", CLEAN), pass(Stamp(&[], Some("commit: theirs")))]),
+        row(
+            "#145 the agent's commit",
+            Warm,
+            "",
+            ran("t1", "Bash", cmd("git commit -am mine")).to_vec(),
+            vec![start("t1", CLEAN), end("t1", Stamp(&[], Some("commit: mine"))), blocks(Stamp(&[], Some("commit: mine")), &["a commit: mine"])],
+        ),
+        // #149: hooks loaded before the call stamps; a denied or long call.
+        row("#149 a subagent on hooks with no ToolEnd", NoEnds, "", ran("t1", "Agent", json!({"prompt": "fix it"})).to_vec(), vec![blocks(SAVED, &["a.rs"])]),
+        row(
+            "#149 a background subagent's commit on hooks with no ToolEnd",
+            NoEnds,
+            "",
+            ran("t1", "Agent", json!({"prompt": "fix it", "run_in_background": true})).to_vec(),
+            vec![blocks(Stamp(&[], Some("commit: theirs too")), &["a commit: theirs too"])],
+        ),
+        row("#149 a denied call", Warm, "", vec![tool_use("t1", "Bash", cmd("rm -rf build")), tool_result("t1", true)], vec![start("t1", CLEAN), pass(SAVED)]),
+        row("#149 a call with no result", Warm, "", vec![tool_use("t1", "Agent", json!({"prompt": "fix it"}))], vec![Step::Start("Agent", "t1".into(), Some(CLEAN)), pass(SAVED)]),
+        row("#149 a save in a sibling folder during a long call", Warm, "app", ran("t1", "Bash", cmd("cargo test")).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), pass(LIB)]),
+        row(
+            "#149 a long call's own output in the terminal's folder",
+            Warm,
+            "app",
+            ran("t1", "Bash", cmd("cargo test")).to_vec(),
+            vec![start("t1", CLEAN), Step::Stop(Stamp(&[("lib/x.rs", "h1:5"), ("app/gen.rs", "h2:5")], None), &["gen.rs"], &["x.rs"])],
+        ),
+        row(
+            "#149 a subagent works anywhere",
+            Warm,
+            "app",
+            ran("t1", "Agent", json!({"prompt": "fix lib"})).to_vec(),
+            vec![Step::Start("Agent", "t1".into(), Some(CLEAN)), Step::End("Agent", "t1".into(), Some(LIB)), blocks(LIB, &["x.rs"])],
+        ),
+        row("#149 a background command goes on past its end", Warm, "", ran("t1", "Bash", json!({"command": "./watch.sh", "run_in_background": true})).to_vec(), vec![Step::Background("Bash", "t1".into(), CLEAN), end("t1", CLEAN), blocks(SAVED, &["a.rs"])]),
+        row("#149 an end with no start", Warm, "", vec![bash("ls")], vec![end("t9", SAVED), pass(SAVED)]),
+        // #153: a cold session, id-less calls, failures after the call started, named paths.
+        row("#153 a cold session's denied first call", Cold, "", vec![tool_use("t1", "Bash", cmd("rm -rf build")), tool_result("t1", true)], vec![start("t1", CLEAN), pass(SAVED)]),
+        row("#153 a cold session's first call, its end lost", Cold, "", ran("t1", "Agent", json!({"prompt": "fix it"})).to_vec(), vec![Step::Start("Agent", "t1".into(), Some(CLEAN)), blocks(SAVED, &["a.rs"])]),
+        row("#153 a start from hooks with no ToolEnd keeps to the prompt's stamp", NoEnds, "", ran("t1", "Bash", cmd("python3 fix.py")).to_vec(), vec![start("t1", SAVED), blocks(SAVED, &["a.rs"])]),
+        row("#153 a call that wrote, then exited 1", Warm, "", failed("t1", "Bash", cmd("python3 fix.py && cargo build"), "Exit code 1\nerror: could not compile").to_vec(), vec![start("t1", CLEAN), blocks(SAVED, &["a.rs"])]),
+        row(
+            "#153 a call that wrote, then was interrupted",
+            Warm,
+            "",
+            failed("t1", "Bash", cmd("python3 fix.py"), "[Tool call interrupted: the session ended before this call's result was recorded]").to_vec(),
+            vec![start("t1", CLEAN), blocks(SAVED, &["a.rs"])],
+        ),
+        row("#153 a hook blocked it", Warm, "", failed("t1", "Bash", cmd("rm -rf build"), "PreToolUse:Bash hook error: midna: denied by the human").to_vec(), vec![start("t1", CLEAN), pass(SAVED)]),
+        row("#153 ls ../docs/ doesn't widen to the checkout", Warm, "app", ran("t1", "Bash", cmd("ls ../docs/ && cargo test")).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), pass(LIB)]),
+        row("#153 a manifest a test reads doesn't widen", Warm, "app", ran("t1", "Bash", cmd("cargo test --manifest-path ../Cargo.toml")).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), pass(LIB)]),
+        row("#153 a file the command makes widens to its folder", Warm, "app", ran("t1", "Bash", cmd("python3 gen.py > ../lib/new.rs")).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), blocks(LIB, &["x.rs"])]),
+        row("#153 a manifest a formatter rewrites from", Warm, "app", ran("t1", "Bash", cmd("cargo fmt --manifest-path=../lib/Cargo.toml")).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), blocks(LIB, &["x.rs"])]),
+        // #156: twins, a missed stamp, a lost start.
+        row("#156 a missed stamp at the start", Warm, "", ran("t1", "Bash", cmd("python3 fix.py")).to_vec(), vec![Step::Start("Bash", "t1".into(), None), end("t1", SAVED), blocks(SAVED, &["a.rs"])]),
+        row("#156 a missed stamp at the end", Warm, "", ran("t1", "Bash", cmd("python3 fix.py")).to_vec(), vec![start("t1", CLEAN), Step::End("Bash", "t1".into(), None), blocks(SAVED, &["a.rs"])]),
+        row("#156 a lost start", Warm, "", ran("t1", "Bash", cmd("python3 fix.py")).to_vec(), vec![blocks(SAVED, &["a.rs"])]),
+        row("#156 a refused call with no window", Warm, "", vec![tool_use("t1", "Bash", cmd("rm -rf build")), tool_result("t1", true)], vec![pass(SAVED)]),
+    ];
+    for refusal in [
+        "Hook PreToolUse:Bash denied this tool",
+        "Error: Hook PreToolUse:Bash denied this tool",
+        "Permission for this action was denied by the Claude Code auto mode classifier. Reason: it deletes the build folder",
+        "Permission for this action has been denied. Reason: not now",
+        "Permission for this tool use was denied. The tool use was rejected",
+        "sprout refuses this write: build/ is outside this node's declared work",
+        "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+        // #160 6: a bare deny reason that mentions a timeout.
+        "BLOCKED: this command timed out last time and was interrupted",
+    ] {
+        for hooks in [Warm, Cold] {
+            rows.push(row(format!("#156 refused: {refusal}"), hooks, "", failed("t1", "Bash", cmd("rm -rf build"), refusal).to_vec(), vec![start("t1", CLEAN), pass(SAVED)]));
+        }
+    }
+    // Twins: two identical calls with no tool_use_id.
+    let input = json!({"command": "cargo build", "description": "Build"});
+    let key = taskboardd::transcript::call_key("Bash", &input);
+    let denied = "Permission for this action has been denied. Reason: not now";
+    let twins = |first: Value, second: Value| vec![tool_use("toolu_1", "Bash", input.clone()), first, tool_use("toolu_2", "Bash", input.clone()), second];
+    rows.extend([
+        row("#156 twins: ran and closed, then refused", Warm, "", twins(tool_result("toolu_1", false), tool_error("toolu_2", denied)), vec![start(&key, CLEAN), end(&key, CLEAN), start(&key, CLEAN), pass(SAVED)]),
+        row("#156 twins: refused, then ran, its end lost", Warm, "", twins(tool_error("toolu_1", denied), tool_result("toolu_2", false)), vec![start(&key, CLEAN), start(&key, CLEAN), blocks(SAVED, &["a.rs"])]),
+        row("#156 twins: refused, then ran and closed", Warm, "", twins(tool_error("toolu_1", denied), tool_result("toolu_2", false)), vec![start(&key, CLEAN), start(&key, CLEAN), end(&key, CLEAN), pass(SAVED)]),
+        row("#156 twins: both ran, the second's end lost", Warm, "", twins(tool_result("toolu_1", false), tool_result("toolu_2", false)), vec![start(&key, CLEAN), end(&key, CLEAN), start(&key, CLEAN), blocks(SAVED, &["a.rs"])]),
+        row("#160 twins: refused, the owner saves, the same call runs", Warm, "", twins(tool_error("toolu_1", denied), tool_result("toolu_2", false)), vec![start(&key, CLEAN), start(&key, SAVED), end(&key, SAVED), pass(SAVED)]),
+        row("#153 an id-less denied call, found by its tool and input", Warm, "", vec![tool_use("toolu_1", "Bash", input.clone()), tool_result("toolu_1", true)], vec![start(&key, CLEAN), pass(SAVED)]),
+        row("#153 an id-less call that ran", Warm, "", ran("toolu_1", "Bash", input.clone()).to_vec(), vec![start(&key, CLEAN), blocks(SAVED, &["a.rs"])]),
+        row(
+            "#153 an id-less call the transcript doesn't show",
+            Warm,
+            "",
+            [vec![tool_use("toolu_1", "Bash", input.clone()), tool_result("toolu_1", true)], ran("toolu_2", "Bash", cmd("ls")).to_vec()].concat(),
+            vec![start("call-0000000000000000", CLEAN), blocks(SAVED, &["a.rs"])],
+        ),
+        // #160 3: a hook rewrote the input, so the made-up id isn't the transcript's; the call closed before the save.
+        row("#160 an id-less call whose input a hook rewrote", Warm, "", ran("toolu_1", "Bash", input.clone()).to_vec(), vec![start(&taskboardd::transcript::call_key("Bash", &cmd("cargo build --quiet")), CLEAN), end(&taskboardd::transcript::call_key("Bash", &cmd("cargo build --quiet")), CLEAN), pass(SAVED)]),
+    ]);
+    // Files a command runs or rewrites from widen the turn to their folder (from `app/`, writing `lib/x.rs`).
+    for command in [
+        "cargo fmt --manifest-path ../Cargo.toml",
+        "python3 ../tools/gen.py",
+        "../scripts/build.sh",
+        "node ../x.js",
+        "bash ../s.sh",
+        // #160 5: wrapped interpreters.
+        "/usr/bin/env python3 ../tools/gen.py",
+        "uv run python ../tools/gen.py",
+        "npx tsx ../tools/gen.ts",
+        "pnpm exec tsx ../tools/gen.ts",
+        "bunx tsx ../tools/gen.ts",
+    ] {
+        let (wrote, shows): (&'static [(&str, &str)], &'static [&str]) = if command.contains("tools/") {
+            (&[("tools/out.rs", "h1:5")], &["out.rs"])
+        } else if command.contains("scripts/") {
+            (&[("scripts/out.rs", "h1:5")], &["out.rs"])
+        } else {
+            (&[("lib/x.rs", "h1:5")], &["x.rs"])
+        };
+        rows.push(row(format!("#156 widens: {command}"), Warm, "app", ran("t1", "Bash", cmd(command)).to_vec(), vec![start("t1", CLEAN), end("t1", Stamp(wrote, None)), blocks(Stamp(wrote, None), shows)]));
+    }
+    // Commands that read, test or set up the shell don't widen (the owner saves `lib/x.rs` meanwhile),
+    // and #160 4: a folder that holds the checkout adds nothing.
+    for command in [
+        "cat ../tools/gen.py",
+        "head ../Cargo.toml",
+        "ls ../docs/",
+        "grep -rn TODO ../docs",
+        "cargo test",
+        "pytest",
+        "source .venv/bin/activate && cargo test",
+        "bash ../../run.sh",
+        "source ../../.env && cargo test",
+        ". ../../.env && cargo test",
+        "cat ../../notes.txt",
+    ] {
+        rows.push(row(format!("#156 doesn't widen: {command}"), Warm, "app", ran("t1", "Bash", cmd(command)).to_vec(), vec![start("t1", CLEAN), end("t1", LIB), pass(LIB)]));
+    }
+    // #160 1: errors that aren't refusals, from a call that edited first (its end lost).
+    for (tool, error) in [
+        ("Agent", "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"),
+        ("Agent", "Prompt is too long"),
+        ("Agent", "Agent stopped: max turns reached"),
+        ("Bash", "Command was aborted before completion"),
+        ("Bash", "Command was killed with SIGKILL"),
+        ("Bash", "Error: Command failed"),
+        ("Bash", "error: could not write to target/out: No space left on device"),
+    ] {
+        let input = if tool == "Agent" { json!({"prompt": "fix it"}) } else { cmd("python3 fix.py") };
+        rows.push(row(format!("#160 ran, then failed: {error}"), Warm, "", failed("t1", tool, input, error).to_vec(), vec![Step::Start(tool, "t1".into(), Some(CLEAN)), blocks(SAVED, &["a.rs"])]));
+    }
+    rows.push(row(
+        "#160 a string toolUseResult",
+        Warm,
+        "",
+        vec![tool_use("t1", "Bash", cmd("python3 fix.py")), json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "Error: Command failed"}]}, "toolUseResult": "Error: Command failed"})],
+        vec![start("t1", CLEAN), blocks(SAVED, &["a.rs"])],
+    ));
+    rows.push(row(
+        "#156 the tool's own output beside an error",
+        Warm,
+        "",
+        vec![tool_use("t1", "Bash", cmd("python3 fix.py")), json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "odd failure"}]}, "toolUseResult": {"stdout": "", "stderr": "odd failure"}})],
+        vec![start("t1", CLEAN), blocks(SAVED, &["a.rs"])],
+    ));
+    // #160 3: a slash command's prompt starts the windows over; calls before it are settled.
+    let slash = json!({"type": "user", "message": {"content": "<command-name>/review</command-name>\n<command-message>review</command-message>"}});
+    let first_turns = [
+        ("ls", ran("t1", "Bash", cmd("ls")).to_vec(), vec![start("t1", CLEAN), end("t1", CLEAN)]),
+        ("a refused call", vec![tool_use("t1", "Bash", cmd("rm -rf build")), tool_result("t1", true)], vec![start("t1", CLEAN)]),
+        ("an id-less ls", ran("toolu_1", "Bash", cmd("ls")).to_vec(), vec![start(&taskboardd::transcript::call_key("Bash", &cmd("ls")), CLEAN), end(&taskboardd::transcript::call_key("Bash", &cmd("ls")), CLEAN)]),
+    ];
+    for (name, first, mut steps) in first_turns {
+        let mut transcript = first;
+        transcript.push(slash.clone());
+        steps.extend([Step::Prompt(CLEAN), pass(SAVED)]);
+        rows.push(row(format!("#160 {name}, then a slash command, then the owner saves"), Warm, "", transcript, steps));
+    }
+    let mut transcript = ran("t1", "Bash", cmd("ls")).to_vec();
+    transcript.push(slash);
+    transcript.extend(ran("t2", "Bash", cmd("python3 fix.py")));
+    rows.push(row("#160 a call after the slash command, its start lost", Warm, "", transcript, vec![start("t1", CLEAN), end("t1", CLEAN), Step::Prompt(CLEAN), blocks(SAVED, &["a.rs"])]));
+    rows
+}
+
+#[test]
+fn the_stop_check_keeps_every_scenario_from_141_to_160() {
+    let mut wrong: Vec<String> = vec![];
+    for r in stop_check_rows() {
+        let b = new_board();
+        b.add_session("s1");
+        for d in ["app", "lib", "tools", "docs", "scripts"] {
+            std::fs::create_dir_all(format!("{}/{d}", b.repo())).unwrap();
+        }
+        for f in ["Cargo.toml", "tools/gen.py", "tools/gen.ts", "scripts/build.sh", "x.js", "s.sh"] {
+            std::fs::write(format!("{}/{f}", b.repo()), "").unwrap();
+        }
+        std::fs::write(b.dir.path().join("run.sh"), "").unwrap();
+        std::fs::write(b.dir.path().join("notes.txt"), "").unwrap();
+        let cwd = if r.cwd.is_empty() { b.repo() } else { format!("{}/{}", b.repo(), r.cwd) };
+        let clean = CLEAN.value(&b);
+        match r.hooks {
+            Hooks::Old => b.report("hook.prompt", "s1", json!({"prompt": "Go", "tree": clean})),
+            Hooks::NoEnds => b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean})),
+            Hooks::Warm => {
+                prompt_with_windows(&b, &clean);
+                Value::Null
+            }
+            Hooks::Cold => {
+                b.report("hook.session_start", "s1", json!({"source": "startup"}));
+                b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean}))
+            }
+        };
+        turn(&b, "s1", "Go", &r.transcript);
+        let ends = r.hooks == Hooks::Cold;
+        for step in &r.steps {
+            match step {
+                Step::Start(tool, id, at) => {
+                    b.report("hook.tool_start", "s1", json!({"tool": tool, "tool_use_id": id, "ends": ends, "tree": at.map(|s| s.value(&b))}));
+                }
+                Step::Background(tool, id, at) => {
+                    b.report("hook.tool_start", "s1", json!({"tool": tool, "tool_use_id": id, "ends": ends, "background": true, "tree": at.value(&b)}));
+                }
+                Step::End(tool, id, at) => {
+                    b.report("hook.tool_end", "s1", json!({"tool": tool, "tool_use_id": id, "tree": at.map(|s| s.value(&b))}));
+                }
+                Step::Prompt(at) => {
+                    b.report("hook.prompt", "s1", json!({"prompt": "/review", "tool_windows": r.hooks != Hooks::Old, "tree": at.value(&b)}));
+                }
+                Step::Stop(at, shows, hides) => {
+                    let out = b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": cwd, "tree": at.value(&b)}));
+                    match (out["block"].as_str(), shows.is_empty()) {
+                        (None, true) => {}
+                        (Some(block), true) => wrong.push(format!("{}: should pass, blocks: {block}", r.name)),
+                        (None, false) => wrong.push(format!("{}: should block on {shows:?}", r.name)),
+                        (Some(block), false) if shows.iter().all(|s| block.contains(s)) && !hides.iter().any(|h| block.contains(h)) => {}
+                        (Some(block), false) => wrong.push(format!("{}: should show {shows:?} and not {hides:?}: {block}", r.name)),
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} rows wrong:\n{}", wrong.len(), wrong.join("\n"));
+}
+
 
 #[test]
 fn a_review_alert_stays_until_the_pr_is_reviewed() {
