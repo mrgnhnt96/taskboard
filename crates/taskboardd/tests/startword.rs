@@ -584,7 +584,6 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["say:make a goal for dark mode", "goal new", "say:go ahead and run all the tasks"],
         vec!["say:make a goal for dark mode", "goal new", "say:thanks", "say:run it"],
         // Still working.
-        vec!["say:run G"],
         vec!["say:add a task to the goal", "task new", "say:start the goal"],
         // #144: "it" is the conversation's one goal.
         vec!["plan", "say:run it"],
@@ -606,6 +605,8 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["plan", "agent:Updated the plan. Want me to run it?", "say:yes"],
     ];
     let refused: Vec<Vec<&str>> = vec![
+        // #157: a goal that isn't the conversation's doesn't run from its terminal, even by name.
+        vec!["say:run G"],
         vec!["say:run the goal"],
         vec!["say:run it"],
         vec!["say:yes"],
@@ -1092,6 +1093,8 @@ fn a_run_check_runs_nothing_and_says_whether_it_would() {
     let (code, why) = check(json!({"check": true})).unwrap_err();
     assert_eq!(code, 403);
     assert!(why.contains("the only way to run it from outside a Midna terminal"), "{why}");
+    // #157: the goal must be the conversation's; the board hands it this one.
+    b.typed(&format!("[task-board:G{g}] Plan the goal."));
     b.typed(&format!("run G{g}"));
     let v = check(json!({"via_session": "s1", "check": true})).unwrap();
     assert_eq!(v["would_run"], true);
@@ -1348,12 +1351,13 @@ fn the_start_word_reads_the_asks_154_found() {
         holds.push((convo(&["agent:Should I start T8?", no]), "T8"));
     }
     holds.push((convo(&["start T8, don't start until T9 merges"]), "T8"));
-    // Still refused.
+    // #157: a no on another task holds only that one, and "it" can be the task the statement after the
+    // question speaks of.
     for no in ["yes, but don't start T9", "yes, and don't touch T9"] {
-        holds.push((convo(&["agent:Should I start T8?", no]), "T8"));
+        starts.push((convo(&["agent:Should I start T8?", no]), "T8"));
         holds.push((convo(&["agent:Should I start T8?", no]), "T9"));
     }
-    holds.push((convo(&["agent:Should I start it? T8 is ready.", "yes"]), "T8"));
+    starts.push((convo(&["agent:Should I start it? T8 is ready.", "yes"]), "T8"));
     let wrong = start_cases_wrong(&starts, &holds);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
