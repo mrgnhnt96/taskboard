@@ -1,4 +1,4 @@
-//! The start-word row suite from #157 (1,048 rows): every row must stay green.
+//! The start-word row suite from #157, grown by #158 and #159: every row must stay green.
 //! Rows live in `tests/startword_rows/`. Point `PROBE_CASES` / `PROBE_GOALS` at another
 //! file to probe it; `<file>.out` gets `ok`/`BAD` per row.
 
@@ -63,6 +63,16 @@ impl Board {
     }
     fn goal_new(&self) -> i64 {
         let v = self.report("tb.goal", json!({"name": "Dark mode", "project": "webapp", "tasks": ["Colors::pick them", "Toggle::add it"]}));
+        v["goal"].as_str().unwrap().trim_start_matches('G').parse().unwrap()
+    }
+    /// A goal made in another terminal's conversation (`s2`).
+    fn goal_other(&self) -> i64 {
+        let repo = self._dir.path().join("webapp");
+        let term = |id: &str| json!({"id": id, "name": "Term", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}});
+        midna::sync(&self.app, &[term("s1"), term("s2")], &[]).unwrap();
+        let b = json!({"event": "tb.goal", "session": "s2", "claude_session": "c-s2", "cwd": "", "name": "Search", "project": "webapp",
+                       "tasks": ["Index::build it", "Box::add it"]});
+        let v = reports::handle(&self.app, b, false).unwrap();
         v["goal"].as_str().unwrap().trim_start_matches('G').parse().unwrap()
     }
     fn run(&self, g: i64, via: &str, app: bool) -> Result<Value, (u16, String)> {
@@ -186,9 +196,13 @@ fn goal_row(line: &str) -> String {
     for st in steps.split(" || ") {
         let t = expand(&goal_refs(st, g));
         match st {
-            "goal new" => {
-                g = b.goal_new();
+            "goal new" | "goal other" => {
+                g = if st == "goal new" { b.goal_new() } else { b.goal_other() };
                 gs.push(g);
+            }
+            // The goal runs here, on whatever word there is, before the row's own run.
+            "run" => {
+                let _ = b.run(g, &via, from_app);
             }
             s if s.starts_with("use:") => g = gs[s[4..].parse::<usize>().unwrap() - 1],
             "propose" => {
@@ -197,8 +211,8 @@ fn goal_row(line: &str) -> String {
             "task new" => {
                 b.report("tb.new_task", json!({"title": "Toggle", "goal": format!("G{g}")}));
             }
-            "clear" => {
-                b.report("hook.session_start", json!({"source": "clear"}));
+            "clear" | "startup" => {
+                b.report("hook.session_start", json!({"source": st}));
             }
             "plan" | "plan-nosession" => {
                 api::dispatch(&b.app, "POST", &format!("/goals/G{g}/plan"), &Query::new(), &json!({"mode": "edit"})).unwrap();

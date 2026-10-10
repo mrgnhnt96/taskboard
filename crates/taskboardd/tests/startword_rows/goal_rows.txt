@@ -54,7 +54,7 @@ R ## nosession
 R ## say:run G || nosession
 R ## plan-nosession || say:run the goal
 R ## say:run the goal
-R ## say:run G
+S ## say:run G
 R ## say:what does G do?
 R ## say:make a goal for dark mode || goal new
 R ## say:make a goal for dark mode || goal new || say:looks good
@@ -336,3 +336,58 @@ R ## goal new || say:add a script to the goal || agent:Added. || say:run it
 R ## goal new || say:add a task-level lint || agent:Added. || say:run it
 S ## goal new || say:run the goal
 S ## goal new || agent:Made G. || say:run it
+# From #158: a goal the owner names runs wherever it was made; a yes is good for one run, nearby, in this conversation.
+S ## say:kick off G please
+S ## say:go ahead and run G now
+S ## say:run G, the plan looks right
+S ## agent:G has one planned task. Want me to run it? || say:yes
+S ## say:what's in G? || agent:G has one planned task. Want me to run it? || say:yes
+S ## goal new || say:also run G1 || use:1
+S ## goal new || say:run it || clear || say:run G
+S ## goal other || say:run G
+S ## goal other || say:please kick off G now
+S ## goal other || agent:G has two planned tasks. Want me to run it? || say:yes
+R ## goal other || say:run it
+R ## goal other || say:run the goal
+R ## goal new || agent:Made G. Want me to run it? || say:yes || say:what's the coverage like? || say:fix the header padding || say:why is CI slow? || say:rename the toggle || say:check the logs || say:bump the deps || say:what does the footer do? || say:add a test for login || say:look at the flaky test || say:tidy the README || say:open the PR || say:what's next?
+R ## goal new || agent:Made G. Want me to run it? || say:yes || run
+R ## goal new || agent:Made G. Want me to run it? || say:yes || run || task new
+R ## goal new || say:run it || run || task new
+R ## agent:G has one planned task. Want me to run it? || say:yes || run || task new
+R ## goal new || agent:Made G. Want me to run it? || say:yes || task new || say:thanks, that's all for today
+R ## goal new || agent:Made G. Want me to run it? || say:yes || startup
+R ## goal new || say:run the goal || startup
+S ## goal new || agent:Made G. Want me to run it? || say:yes || clear
+S ## goal new || agent:Made G. Want me to run it? || say:yes || say:thanks
+# From #159: emoji, markdown, typos, offers and everyday wording.
+S ## goal new || say:spin it up
+S ## goal new || say:get going on it
+S ## goal new || say:go for it
+S ## goal new || say:do it
+S ## goal new || agent:Made G. Want me to run it? || say:yess
+S ## goal new || agent:Made G. Want me to run it? || say:yep 🚀
+S ## goal new || agent:I can run G now if you want. || say:yes
+S ## goal new || agent:I can run it now if you want. || say:do it
+S ## goal new || say:run teh goal
+S ## goal new || say:ok run it 👍
+S ## goal new || say:**run it**
+S ## goal new || agent:Made G. Want me to run it? || say:yes but leave G1 alone
+S ## say:can you set up a goal for the onboarding flow? || goal new || say:sounds good, go
+S ## say:make a goal for search || goal new || agent:Made G with 3 tasks. || say:go for it
+S ## plan || say:do it
+S ## plan || say:go for it
+S ## plan || say:👍 run it
+S ## goal new || say:lgtm 🚀 run it
+S ## goal new || say:go ahead w/ the goal
+S ## goal new || say:start everything in the goal
+S ## goal new || say:start em all
+S ## goal new || goal new || say:run both
+S ## goal new || goal new || say:run both of them || use:2
+S ## say:G looks good. run it
+# The same reading holds what it held before.
+R ## goal other || agent:Want me to run it? || say:yes
+R ## goal other || say:do it
+R ## goal new || say:do it tomorrow
+R ## goal new || agent:I can run G tomorrow if you want. || say:yes
+R ## goal new || agent:Made G. Want me to run it? || say:yess, after the deploy
+R ## say:what does G do? || agent:It has one planned task. || say:thanks
