@@ -1,0 +1,338 @@
+R ## goal new || agent:For the goal I wrote seed.sh. Want me to run it? || say:yes
+R ## goal new || agent:The plan's seed script is ready. Want me to run it? || say:yes
+R ## goal new || agent:The goal's migration is written. Want me to run it? || say:yes
+R ## goal new || agent:The goal's smoke test is ready. Want me to run it? || say:yes
+R ## goal new || agent:Its first task needs a seed script. Want me to run it? || say:yes
+R ## goal new || agent:The plan needs a migration. I wrote it. Want me to run it? || say:yes
+R ## goal new || say:make the plan's seed script || agent:Done. || say:run it
+R ## goal new || say:add a goal-level smoke test || agent:Done. || say:run it
+R ## goal new || say:add a task-level lint || agent:Done. || say:run it
+R ## goal new || say:write the goal's migration || agent:Done. || say:run it
+R ## goal new || agent:I wrote the goal's seed script. Want me to run it? || say:yes
+R ## goal new || agent:For the plan I drafted a migration. Want me to run it? || say:yes
+R ## goal new || agent:In the goal there's a codemod. Want me to run it? || say:yes
+R ## goal new || say:write the plan's backfill || agent:Done. || say:run it
+S ## goal new || agent:I split the work into two tasks. Want me to run it? || say:yes
+S ## goal new || agent:It has a Colors task and a Toggle task. Want me to run it? || say:yes
+S ## goal new || agent:The changes are small. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Some of the work is in the settings screen. Want me to run it? || say:yes
+S ## goal new || agent:Made G. My guess is a day of work. Want me to run it? || say:yes
+S ## goal new || agent:Made G. This touches the header and the footer. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The work is split so each PR stays small. Want me to run it? || say:yes
+S ## goal new || agent:Made G:\n- T10 Colors\n- T11 Toggle\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n1. Colors: touches the theme\n2. Toggle: adds the switch\n\nWant me to run it? || say:yes
+S ## say:make a goal for the migration || goal new || agent:Made G. The first touches the theme. || say:run it
+S ## say:make a goal for the export screen || goal new || agent:Made G. The work is mostly UI. || say:run it
+S ## goal new || agent:Made G. Want me to run it? Colors goes first. || say:yes
+S ## goal new || agent:Made G. Want me to run it? Nothing blocks it now. || say:yes
+S ## goal new || agent:Made G. Want me to run it? I'll write the tests first in each task. || say:yes
+S ## goal new || agent:Made G with T10 and T11. Want me to run it? || say:yes
+S ## goal new || goal new || say:run it
+S ## say:plan the login tests as a goal || goal new || agent:Planned. Want me to run it? || say:yes
+S ## goal new || agent:Two tasks, each opens a PR. Want me to run it? || say:yes
+S ## goal new || agent:The plan adds tests to both tasks. Want me to run it? || say:yes
+S ## say:make a goal for dark mode with two tasks || goal new || say:looks good, run the goal
+S ## say:make a goal for dark mode || goal new || say:looks good, run it
+S ## say:make a goal for dark mode || goal new || say:great, start the goal
+S ## say:make a goal for dark mode || goal new || say:run G
+S ## say:make a goal for dark mode || goal new || say:start G
+S ## say:make a goal for dark mode || goal new || say:go ahead and run all the tasks
+S ## say:make a goal for dark mode || goal new || say:lgtm, kick it off
+S ## say:make a goal for dark mode || goal new || say:ship it
+S ## say:make a goal for dark mode || goal new || agent:I made G with 2 tasks. Want me to run it? || say:yes
+S ## say:make a goal for dark mode || goal new || agent:I made G with 2 tasks. Should I start the goal? || say:yep
+S ## say:make a goal for dark mode and run it || goal new
+S ## say:add tasks to G || propose || say:great, start the goal
+S ## say:add a task to G || task new || say:looks good, run the goal
+S ## plan || say:looks good, run the goal
+S ## plan || say:run it
+S ## plan || agent:The plan for G is ready. Run it? || say:yes
+S ## nosession || app
+S ## app
+S ## say:make a goal for dark mode || goal new || say:looks good, run the goal || clear
+R ## nosession
+R ## say:run G || nosession
+R ## plan-nosession || say:run the goal
+R ## say:run the goal
+R ## say:run G
+R ## say:what does G do?
+R ## say:make a goal for dark mode || goal new
+R ## say:make a goal for dark mode || goal new || say:looks good
+R ## say:make a goal for dark mode || goal new || say:don't run it yet
+R ## say:make a goal for dark mode || goal new || say:run it tomorrow
+R ## say:make a goal for dark mode || goal new || say:looks good, I'll run it from the board
+R ## say:make a goal for dark mode || goal new || agent:I made G. Want me to run it? || say:not yet
+R ## say:make a goal for dark mode || goal new || agent:I made G. Want me to run it tomorrow? || say:yes
+R ## plan || say:looks good
+R ## plan || say:should we run the goal?
+R ## say:make a goal for dark mode || goal new || say:run the goal || nosession
+S ## plan || say:ok start it
+S ## plan || say:looks good, kick it off
+S ## plan || agent:The plan is ready. Want me to run it? || say:yes
+S ## say:make a goal for dark mode || goal new || agent:Done, two tasks. Want me to run it? || say:yes
+S ## say:make a goal for dark mode || goal new || say:rename the second task to Toggle || say:ok run it
+S ## say:make a goal for dark mode || goal new || say:rename the second task to Toggle || agent:Renamed it. || say:ok run it
+S ## plan || say:add a task for the docs || task new || say:run it
+S ## plan || say:sounds good, run it
+S ## plan || say:yes run it
+S ## plan || agent:Plan ready. Shall I kick it off? || say:sure
+S ## plan || agent:Want me to run it now? || say:go ahead
+S ## plan || say:ok run it now please
+S ## plan || say:let's run it
+S ## plan || say:run it, thanks
+S ## plan || say:can you run it?
+S ## plan || say:can you run the goal?
+S ## plan || say:looks good, start it up
+S ## plan || say:tweak the toggle task || agent:Updated. || say:great, run it
+S ## plan || agent:The plan is ready. Want me to run it? || say:yes go ahead
+S ## plan || agent:The plan is ready. Want me to run it? || say:yep, run it
+S ## plan || say:ship it
+S ## say:make a goal for dark mode || goal new || say:start all of them
+S ## plan || say:make a goal for the footer || goal new || say:run it
+S ## plan || agent:The plan is ready. Want me to run it? It has 2 tasks. || say:yes
+R ## plan || say:make a goal for the footer || goal new || say:run it || use:1
+R ## plan || say:make a goal for the footer || goal new || agent:Done. Want me to run it? || say:yes || use:1
+R ## say:make a goal for dark mode || goal new || say:make a goal for the footer || goal new || say:thanks || say:run it || use:2
+? ## say:make a goal for dark mode || goal new || say:make a goal for the footer || goal new || say:thanks || say:run it
+R ## plan || say:can you write a script to seed test data? || agent:Wrote scripts/seed.sh. Want me to run it? || say:yes
+R ## plan || say:write a script to seed test data || agent:Done. || say:run it
+R ## plan || say:the migration is in scripts/migrate.sh — run it
+R ## plan || agent:I can run the linter on the plan files. Want me to run it? || say:yes
+R ## plan || agent:Want me to run the tests? || say:yes
+R ## plan || agent:The PR for the footer is green. Ready to merge? || say:ship it
+R ## say:make a goal for dark mode || goal new || agent:I opened a PR for the docs. Want me to merge it? || say:yes
+R ## plan || agent:Want me to run it tomorrow? || say:yes
+R ## plan || say:run it after lunch
+R ## plan || say:don't run it yet
+R ## plan || say:run it?
+R ## plan || say:should we run it?
+R ## plan || agent:Want me to run it, or tweak the toggle task first? || say:yes
+R ## plan || say:there's a flaky test, can you run it again?
+R ## plan || agent:I wrote a quick benchmark. Should I run it? || say:sure
+R ## plan || say:the dev server is down. start it
+R ## plan || agent:I made a test task T10 in the goal. Want me to start it? || say:yes
+R ## plan || say:I have a seed script. run it
+R ## plan || agent:The docker container stopped. Should I start it? || say:yes
+S ## goal new || agent:Made the goal with two tasks. Want me to run it? || say:yes
+S ## goal new || agent:Created G with Colors and Toggle. Want me to run it? || say:yes
+S ## goal new || agent:Done — two tasks, each with tests. Want me to run it? || say:yes
+S ## goal new || agent:The goal has two tasks: add the migration and update the API. Want me to run it? || say:yes
+S ## goal new || agent:Each task opens its own PR. Want me to run it? || say:sure
+S ## goal new || agent:Two tasks: Colors (touches the theme files) and Toggle. Should I start it? || say:yes
+S ## goal new || agent:The plan has a build step and a deploy step. Want me to run it? || say:yes
+S ## say:make a goal for adding tests to login || goal new || agent:Done. Want me to run it? || say:yes
+S ## say:make a goal to clean up the build scripts || goal new || agent:Done, 2 tasks. Want me to run it? || say:yes
+S ## say:make a goal for the migration || goal new || say:run it
+S ## goal new || say:let's run it
+S ## goal new || say:can you run it?
+S ## goal new || say:ship it
+S ## goal new || say:start all of them
+S ## goal new || agent:Want me to run it? It has 2 tasks. || say:yes
+S ## goal new || agent:Want me to run it? Both tasks are small. || say:yes
+S ## goal new || agent:Should I kick it off? I'll start with Colors. || say:yes
+S ## goal new || agent:Ready. Want me to run all of them? || say:yes
+S ## goal new || say:run them all
+S ## goal new || say:go ahead and run it
+S ## goal new || say:yes, run it
+S ## goal new || say:sounds good, ship it
+S ## goal new || agent:I can run the goal now. Want me to? || say:yes
+S ## goal new || agent:Done. Should I run it now? || say:yep
+S ## goal new || agent:Want me to run it? I'd start with the migration. || say:yes
+S ## goal new || agent:Want me to run it? || say:yes. Also rename the goal to Theme.
+S ## goal new || agent:Want me to run it? || say:yes - keep the PRs small
+S ## goal new || say:could u run it
+R ## goal new || agent:I set up the dev database. Should I start it? || say:yes
+R ## goal new || agent:I wrote a rake task to backfill the colors. Want me to run it? || say:yes
+R ## goal new || agent:The emulator is ready. Want me to run it? || say:yes
+R ## goal new || agent:I built the app. Want me to run it? || say:yes
+R ## goal new || agent:I wrote a small CLI to check the colors. Should I run it? || say:yes
+R ## goal new || agent:The codemod is ready. Want me to run it? || say:sure
+R ## goal new || agent:I drafted a SQL query to count users. Want me to run it? || say:yes
+R ## goal new || agent:Wrote seed.sh. Want me to run it? || say:yes
+R ## goal new || agent:The worker crashed. Should I restart it? || say:yes
+R ## goal new || agent:The dev server is down. Should I start it? || say:yes
+R ## goal new || say:set up the emulator || agent:Done. || say:run it
+R ## goal new || say:write a backfill || agent:Done, it's ready. || say:run it
+R ## goal new || say:add a storybook story for the toggle || agent:Added. || say:run it
+R ## goal new || say:fix the flaky spec || agent:Fixed. || say:run it
+R ## goal new || say:draft the codemod || agent:Drafted. Want me to run it? || say:yes
+R ## goal new || agent:I can run the linter. Want me to? || say:yes
+R ## goal new || agent:Want me to run it, or tweak the plan first? || say:yes
+R ## goal new || agent:Should I run it tomorrow? || say:yes
+R ## goal new || agent:Want me to run it? Or should I wait for the review? || say:yes
+R ## goal new || agent:Want me to run it? I could also wait until Monday. || say:yes
+R ## goal new || agent:Should I run the tests? || say:yes
+R ## goal new || agent:Should I run it? || say:yes, but first rename Toggle
+R ## goal new || agent:Should I run it? || say:no
+R ## goal new || say:ship it tomorrow
+R ## goal new || say:can you run it after lunch?
+R ## goal new || say:let's run it once the review is done
+R ## goal new || say:start all of them later
+R ## goal new || say:run all the tests
+R ## goal new || say:start the dev server
+R ## goal new || say:ship that fix
+R ## goal new || say:run that script
+R ## goal new || say:start this server
+R ## goal new || say:let's run it by the team first
+R ## goal new || say:can you run it locally and paste the output
+S ## plan || say:run G
+S ## plan || say:go ahead and run all the tasks
+S ## say:make a goal for dark mode || goal new || say:rename the second task to Toggle || say:ok run the goal
+S ## say:make a goal for dark mode || goal new || say:thanks || say:run it
+S ## say:make a goal for dark mode || goal new || agent:I made G. Want me to run it? || say:yes please
+S ## say:make a goal for dark mode || goal new || say:looks good — run the goal
+S ## say:make a goal for dark mode || goal new || say:perfect, run it now
+S ## say:make a goal for dark mode || goal new || say:pls run the goal
+S ## say:make a goal for dark mode || goal new || say:run the goal, I'll review the PRs after lunch
+S ## say:make a goal for dark mode || goal new || say:kick off the goal
+R ## plan || agent:The plan is ready. Want me to run it tomorrow? || say:yes
+R ## plan || say:don't run the goal yet
+R ## say:make a goal for dark mode || goal new || say:run the goal tomorrow
+R ## say:make a goal for dark mode || goal new || say:what happens if I run the goal?
+S ## goal new || agent:Made G. The first task updates the colors. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Both tasks touch the theme. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The tasks are small and independent. Want me to run it? || say:yes
+S ## goal new || agent:Made G with two tasks:\n- Colors\n- Toggle\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n\n1. Colors: touches the theme\n2. Toggle: adds the switch\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G. Colors goes first, then Toggle. Want me to run it? || say:yes
+S ## goal new || agent:G is ready. Each task has its own tests. Want me to run it? || say:yes
+S ## goal new || agent:Made the goal. A migration and an API change. Want me to run it? || say:yes
+S ## goal new || agent:Made G (the theme work). Want me to run it? || say:yes
+S ## goal new || agent:Made G. The work is split so each PR stays small. Should I kick it off? || say:sure
+S ## goal new || agent:All set. Two tasks, tests in each. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Another task can come later if needed. Want me to run it? || say:yes
+S ## say:add the dark mode toggle as a goal || goal new || agent:Done. || say:run it
+S ## say:write up the theme work as a goal || goal new || agent:Done. || say:run it
+S ## say:make the settings cleanup a goal || goal new || agent:Made G. || say:run it
+S ## say:turn the footer fixes into a goal || goal new || agent:Done. || say:go ahead and run it
+S ## say:make a goal for dark mode || goal new || agent:Made G with Colors and Toggle. || say:ship it
+S ## say:make a goal for the API change || goal new || agent:Made G. It has 2 tasks. || say:run it
+R ## say:make a goal for dark mode || goal new || say:make the plan's seed script || agent:Done. || say:run it
+R ## say:make a goal for dark mode || goal new || say:add a goal-level smoke test || agent:Added. || say:run it
+R ## goal new || say:write a seed script for the goal || agent:Written. || say:run it
+R ## goal new || say:add a lint script || agent:Added. || say:run it
+R ## goal new || say:build the app for the goal || agent:Built. || say:run it
+R ## goal new || say:write the goal's migration || agent:Written. Want me to run it? || say:yes
+R ## goal new || say:set up the emulator for this goal || agent:Done. || say:start it
+R ## goal new || agent:Made G. I also wrote a backfill script. Want me to run it? || say:yes
+R ## goal new || agent:Made G. The dev server is down. Should I start it? || say:yes
+R ## goal new || agent:Made G. I wrote a codemod for the colors. Should I run it? || say:yes
+R ## goal new || agent:Made G. The tests for the goal are written. Want me to run them? || say:yes
+R ## goal new || agent:The goal's smoke test is ready. Should I run it? || say:yes
+R ## goal new || agent:Made G. Should I run it after the review? || say:yes
+R ## goal new || agent:Made G. Want me to run it? It depends on the API change though. || say:yes
+R ## goal new || agent:Made G. Want me to run it? I'd hold until the migration merges. || say:yes
+S ## goal new || agent:Made G. Want me to run it? Each PR waits for your review. || say:yes
+S ## goal new || agent:Made G. Want me to run it? The API change landed, so nothing is waiting on it. || say:yes
+R ## goal new || goal new || agent:Made G. Want me to run it? || say:yes || use:2
+S ## goal new || goal new || agent:Made G. Want me to run it? || say:yes
+R ## goal new || agent:Made G. || goal new || agent:Made G too. Want me to run it? || say:yes || use:2
+S ## goal new || agent:Made G. || goal new || agent:Made G too. Want me to run it? || say:yes
+R ## goal new || agent:Made G. || goal new || agent:Made G. The second is smaller. Want me to run it? || say:yes || use:2
+? ## goal new || goal new || agent:Made two goals. Want me to run them? || say:yes || use:2
+R ## goal new || goal new || say:run it || use:2
+S ## goal new || agent:Made G. Want me to run it? || say:yes || goal new || agent:Made G. || say:ok || use:2
+R ## goal new || agent:Made G. The goal's migration looks good. Want me to run it? || say:yes
+R ## goal new || agent:Made G. The goal's migration passes locally. Want me to run it? || say:yes
+R ## goal new || agent:Made G. I tested the goal's migration. Want me to run it? || say:yes
+R ## goal new || agent:Made G. I fixed the plan's seed script. Want me to run it? || say:yes
+R ## goal new || agent:Made G. I checked the goal's backfill. Want me to run it? || say:yes
+R ## goal new || agent:Made G. I reviewed the goal's smoke test. Want me to run it? || say:yes
+R ## goal new || agent:Here's the goal's migration. Want me to run it? || say:yes
+R ## goal new || agent:Attached is the goal's migration. Want me to run it? || say:yes
+R ## goal new || agent:The goal’s migration is written. Want me to run it? || say:yes
+R ## goal new || agent:The goal's own migration is ready. Want me to run it? || say:yes
+R ## goal new || agent:The goal migration is ready. Want me to run it? || say:yes
+R ## goal new || agent:The migration for the goal is ready. Want me to run it? || say:yes
+R ## goal new || agent:The goal's seed data is in place. Want me to run it? || say:yes
+R ## goal new || agent:The plan's backfill is safe to run. Want me to run it? || say:yes
+R ## goal new || agent:The goal's seed script works now. Want me to run it? || say:yes
+R ## goal new || agent:I wrote the migration for G. Want me to run it? || say:yes
+R ## goal new || agent:I wrote seed.sh for G. Want me to run it? || say:yes
+R ## goal new || agent:G needs a seed script. I wrote it. Want me to run it? || say:yes
+R ## goal new || agent:Made G. Its seed script is ready. Want me to run it? || say:yes
+R ## goal new || agent:Made G. The goal's codemod is done. Should I run it? || say:yes
+R ## goal new || agent:Made G. The goal's smoke-test is ready. Should I run it? || say:yes
+S ## goal new || agent:The goal's tasks are ready. Want me to run it? || say:yes
+S ## goal new || agent:The goal's plan is ready. Want me to run it? || say:yes
+S ## goal new || agent:The goal's two tasks are ready. Want me to run it? || say:yes
+S ## goal new || agent:The goal's ready. Want me to run it? || say:yes
+S ## goal new || agent:The dark mode goal is ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Both tasks are ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Its tasks are ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The Colors task is ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Mostly UI work. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Should take a day. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Colors is the bigger one. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Each PR stays small. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Two PRs total. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Nothing risky. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Everything's planned. Want me to run it? || say:yes
+S ## goal new || agent:Made G. All tasks have tests. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Colors and Toggle are ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Colors is ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Toggle is done already. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The docs task is ready. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The branch is set up. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The tickets are added. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The tickets are all set up. Want me to run it? || say:yes
+S ## goal new || agent:Made G. The docs are updated. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Jira is updated. Want me to run it? || say:yes
+S ## goal new || agent:Made G. I added the tickets to Jira. Want me to run it? || say:yes
+S ## goal new || agent:Made G. I created the branch. Want me to run it? || say:yes
+S ## goal new || agent:Made G. I wrote the acceptance criteria into each task. Want me to run it? || say:yes
+S ## goal new || agent:Made G. I made Colors and Toggle. Want me to run it? || say:yes
+S ## goal new || agent:Made G. I updated the description. Want me to run it? || say:yes
+S ## goal new || agent:Made G. I added a design link to each task. Want me to run it? || say:yes
+S ## goal new || agent:Made G:\n* Colors\n* Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n• Colors\n• Toggle\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n1) Colors\n2) Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Made G with:\n- Colors\n- Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Made G. Tasks:\n- Colors\n- Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Made G (two tasks):\n- Colors\n- Toggle\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n- Colors: write the migration\n- Toggle: run the seed script\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n- Colors (needs a migration)\n- Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:G is set up:\n- Colors\n- Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n- Colors\n- Toggle\n\nBoth are small. Want me to run it? || say:yes
+S ## goal new || agent:Made G:\n- Colors: the seed script is ready\n- Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Here's the plan:\n- Colors\n- Toggle\nWant me to run it? || say:yes
+R ## goal new || agent:Made G:\n- Colors\n- Toggle\n\nI also wrote seed.sh. Want me to run it? || say:yes
+R ## goal new || agent:Made G:\n- Colors\n- Toggle\n\nThe seed script is ready too. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Want me to run it? Toggle goes second. || say:yes
+S ## goal new || agent:Made G. Want me to run it? No blockers. || say:yes
+S ## goal new || agent:Made G. Want me to run it? It isn't blocked on anything. || say:yes
+S ## goal new || agent:Made G. Want me to run it? Nothing needs to land first. || say:yes
+R ## goal new || agent:Made G. Want me to run it? The API change has to merge first. || say:yes
+R ## goal new || agent:Made G. Want me to run it? It's blocked on the API change. || say:yes
+R ## goal new || agent:Made G. Want me to run it? I'd wait until the API change lands. || say:yes
+R ## goal new || agent:Made G. Want me to run it? First the API change needs to merge. || say:yes
+S ## goal new || say:make the goal's PRs smaller || agent:Done. || say:run it
+S ## goal new || say:make the goal a bit smaller || agent:Done. || say:run it
+S ## goal new || say:make the tasks smaller || agent:Done. || say:run it
+S ## goal new || say:add the goal's tasks to Jira || agent:Done. || say:run it
+S ## goal new || say:add acceptance criteria to each task || agent:Done. || say:run it
+S ## goal new || say:write better descriptions for the tasks || agent:Done. || say:run it
+R ## goal new || say:fix the goal's migration || agent:Done. || say:run it
+R ## goal new || say:update the plan's seed script || agent:Done. || say:run it
+R ## goal new || say:add a smoke test to the goal || agent:Done. || say:run it
+R ## goal new || say:write a backfill for the plan || agent:Done. || say:run it
+R ## goal new || say:set up the goal's emulator || agent:Done. || say:start it
+R ## goal new || say:make the goal's seed script || agent:Done. Want me to run it? || say:yes
+S ## goal new || agent:Made G:\n\n- Colors: touches the theme\n- Toggle: adds the switch\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n1. Colors\n2. Toggle\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n- Colors: touches the theme\n- Toggle: adds the switch\nWant me to run it? || say:yes
+S ## goal new || agent:Made G:\n\n1. Colors\n2. Toggle\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G with two tasks:\n- T10 Colors\n- T11 Toggle\n\nWant me to run it? || say:yes
+S ## goal new || agent:Made G. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Want me to run G? || say:yes
+S ## goal new || agent:Made G. The work is split so each PR stays small. Should I run G? || say:yes
+S ## goal new || agent:Made G. This touches the header. Want me to run it? || say:yes
+S ## goal new || agent:Made G. It touches the header. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Both tasks touch the header. Want me to run it? || say:yes
+S ## goal new || agent:Made G. Colors goes first. Want me to run it? || say:yes
+R ## goal new || agent:Made G. I wrote the goal's seed script. Want me to run it? || say:yes
+R ## goal new || agent:Made G. For the plan I drafted a migration. Want me to run it? || say:yes
+R ## goal new || say:add a script to the goal || agent:Added. || say:run it
+R ## goal new || say:add a task-level lint || agent:Added. || say:run it
+S ## goal new || say:run the goal
+S ## goal new || agent:Made G. || say:run it

@@ -1845,21 +1845,22 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     let now = as_bool(body.get("now"), false);
     // From `tb start G2` or `tb goal set G2 --run` in a terminal: only on a human's word there, as for a
     // task. The board's Run sends no terminal, and only the app's own request is that; any other caller
-    // with no terminal is no one's word.
+    // with no terminal is no one's word. The app's own request is the owner's Run, whatever terminal it
+    // names.
     let via = body_str(body, "via_session");
-    if via.is_empty() {
-        if !from_app(query) {
-            board::get_goal(app, id)?;
-            return err(
-                403,
-                format!(
-                    "Only a human can run {}: {} can press Run on the board, the only way to run it from outside a Midna terminal, or ask an agent in a Midna terminal to run it there (tb start {}).",
-                    rf("goal", id),
-                    app.cfg.owner,
-                    rf("goal", id)
-                ),
-            );
-        }
+    if from_app(query) {
+        board::get_goal(app, id)?;
+    } else if via.is_empty() {
+        board::get_goal(app, id)?;
+        return err(
+            403,
+            format!(
+                "Only a human can run {}: {} can press Run on the board, the only way to run it from outside a Midna terminal, or ask an agent in a Midna terminal to run it there (tb start {}).",
+                rf("goal", id),
+                app.cfg.owner,
+                rf("goal", id)
+            ),
+        );
     } else {
         board::get_goal(app, id)?;
         if crate::startword::owners_goal_word(app, &via, id)?.is_none() {
