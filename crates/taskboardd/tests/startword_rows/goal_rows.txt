@@ -391,3 +391,19 @@ R ## goal new || say:do it tomorrow
 R ## goal new || agent:I can run G tomorrow if you want. || say:yes
 R ## goal new || agent:Made G. Want me to run it? || say:yess, after the deploy
 R ## say:what does G do? || agent:It has one planned task. || say:thanks
+# From #162: a bare go-word runs a new goal only when the question was to run it.
+R ## goal new || agent:Should I archive it? || say:do it
+R ## goal new || agent:Made G. Should I add a third task? || say:go for it
+R ## goal new || agent:Made G. Want me to write the PR description? || say:go ahead
+R ## goal new || agent:Should I rename G? || say:make it so
+R ## goal new || agent:Made G. Should I rename it to Theme? || say:go
+R ## goal new || agent:Made G. Want me to open a draft PR? || say:do it
+R ## goal new || agent:It flips the theme. Want me to add a test for it? || say:do it
+S ## goal new || agent:Made G. Want me to run it? || say:do it
+S ## goal new || agent:Made G. Should I start it? || say:go ahead
+S ## goal new || say:do it
+# From #163: goals answer now-or-later, quoted asks and typos too.
+S ## agent:Should I run G now or after the release? || say:now
+R ## agent:Should I run G now or after the release? || say:after the release
+S ## goal new || say:> Want me to run it?\nyes
+S ## goal new || say:kick it of
