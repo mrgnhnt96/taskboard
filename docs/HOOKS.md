@@ -246,13 +246,16 @@ prompt = "Sign off the screens this task changes."
   `PostToolUse` / `PostToolUseFailure` hook (`tb hook ToolEnd`) stamp the checkout around each Bash, Agent and Task
   call, and only what changed while one of those calls ran counts, so an edit saved between calls, by the owner or
   another terminal, doesn't block the Stop. A subagent's changes count anywhere in the checkout; a Bash call's only
-  in the terminal's folder, the folders its commands `cd` into, and the paths they name (and those paths' folders),
-  so a save in a sibling folder during a long command doesn't count. A call run in the background counts up to the
-  Stop; a call whose window never closed counts up to the Stop only when the transcript shows it came back without
-  an error (one refused at the permission prompt or by a hook never ran). The board goes by these windows only once
-  the session's hooks have sent a `ToolEnd` (reset when a new Claude process starts): a terminal still on hooks
-  loaded before the plugin stamped each call keeps to the prompt's stamp, narrowed to the turn's folders unless it
-  ran a subagent.
+  in the terminal's folder, the folders its commands `cd` into, and the paths they name (a folder or file already
+  there, itself; one not there yet, its folder too), so a save in a sibling folder during a long command doesn't
+  count. A call run in the background counts up to the Stop; a call whose window never closed counts up to the Stop
+  unless the transcript shows it was refused (denied at the permission prompt, or blocked by a hook) or never
+  answered. A call that failed or was cut off after it started still counts. A call Claude sent no `tool_use_id`
+  for is found in the transcript by its tool and input. The board goes by these windows once the session's hooks
+  have sent a `ToolEnd` (reset when a new Claude process starts), or when the turn's calls were opened by a
+  hooks.json that registers `ToolEnd` (the hook reads its plugin folder's `hooks/hooks.json`): a terminal still on
+  hooks loaded before the plugin stamped each call keeps to the prompt's stamp, narrowed to the turn's folders
+  unless it ran a subagent.
 - **The comment guard** (`[comments] guard = true`): the plugin's `PreToolUse` hook also runs on Edit, Write,
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
   comment that starts with a `pragmas` entry passes. An Edit is judged on the whole file: it's applied to the

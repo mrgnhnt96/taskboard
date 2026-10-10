@@ -420,9 +420,15 @@ fn tool_use(id: &str, tool: &str, input: Value) -> Value {
     json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": tool, "input": input}]}})
 }
 
-/// The result the transcript shows for call `id`.
+/// The result the transcript shows for call `id`: an error is the owner's refusal.
 fn tool_result(id: &str, error: bool) -> Value {
-    json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": error, "content": "x"}]}})
+    let content = if error { "The user doesn't want to proceed with this tool use. The tool use was rejected." } else { "x" };
+    json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": error, "content": content}]}})
+}
+
+/// An error result for call `id` with this text.
+fn tool_error(id: &str, content: &str) -> Value {
+    json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": true, "content": content}]}})
 }
 
 /// A prompt from hooks that stamp each call, which have already closed one call's window (so the board
@@ -475,6 +481,116 @@ fn a_call_refused_or_never_answered_doesnt_count_the_owners_edits() {
     turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix it"}))]);
     b.report("hook.tool_start", "s1", json!({"tool": "Agent", "tool_use_id": "t1", "tree": clean.clone()}));
     assert_eq!(stop(), None, "a call with no result in the transcript never ran");
+
+    // Blocked by another PreToolUse hook.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "rm -rf build"})), tool_error("t1", "PreToolUse:Bash hook error: midna: denied by the human")]);
+    call(&b, "t1", clean.clone(), None);
+    assert_eq!(stop(), None, "a call a hook blocked never ran");
+}
+
+#[test]
+fn a_call_that_failed_after_it_started_still_counts_to_the_stop() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let wrote = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": wrote.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    for result in ["Exit code 1\nerror: could not compile", "[Tool call interrupted: the session ended before this call's result was recorded]"] {
+        prompt_with_windows(&b, &clean);
+        turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py && cargo build"})), tool_error("t1", result)]);
+        call(&b, "t1", clean.clone(), None);
+        assert!(stop().is_some_and(|x| x.contains("a.rs")), "it wrote the file, then failed: {result}");
+    }
+}
+
+/// A call's start from hooks whose hooks.json sends ToolEnd.
+fn start_with_ends(b: &Board, tool: &str, id: &str, start: &Value) {
+    b.report("hook.tool_start", "s1", json!({"tool": tool, "tool_use_id": id, "ends": true, "tree": start}));
+}
+
+#[test]
+fn a_cold_sessions_first_call_goes_by_the_windows_when_its_hooks_send_tool_end() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": saved.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    // A fresh terminal: no ToolEnd yet. Its first Bash call is denied; the owner saves `a.rs`.
+    b.report("hook.session_start", "s1", json!({"source": "startup"}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "rm -rf build"})), tool_result("t1", true)]);
+    start_with_ends(&b, "Bash", "t1", &clean);
+    assert_eq!(stop(), None, "a denied first call");
+
+    b.report("hook.session_start", "s1", json!({"source": "startup"}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Agent", json!({"prompt": "fix it"})), tool_result("t1", false)]);
+    start_with_ends(&b, "Agent", "t1", &clean);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a first call that ran, its end lost");
+
+    // A start from hooks that don't send ToolEnd still keeps to the prompt's stamp.
+    b.report("hook.session_start", "s1", json!({"source": "startup"}));
+    b.report("hook.prompt", "s1", json!({"prompt": "Go", "tool_windows": true, "tree": clean.clone()}));
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py"})), tool_result("t1", false)]);
+    b.report("hook.tool_start", "s1", json!({"tool": "Bash", "tool_use_id": "t1", "tree": saved.clone()}));
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "the prompt's stamp");
+}
+
+#[test]
+fn a_call_with_no_tool_use_id_is_found_in_the_transcript_by_its_tool_and_input() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": saved.clone()}))["block"].as_str().map(|s| s.to_string());
+    let input = json!({"command": "python3 fix.py", "description": "Fix it"});
+    // The hook's own id for it, from the payload's copy of the input (keys in another order).
+    let made_up = taskboardd::transcript::call_key("Bash", &json!({"description": "Fix it", "command": "python3 fix.py"}));
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("toolu_1", "Bash", input.clone()), tool_result("toolu_1", true)]);
+    call(&b, &made_up, clean.clone(), None);
+    assert_eq!(stop(), None, "the denied call, matched by its tool and input");
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("toolu_1", "Bash", input.clone()), tool_result("toolu_1", false)]);
+    call(&b, &made_up, clean.clone(), None);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "the same call, run");
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("toolu_1", "Bash", input), tool_result("toolu_1", true), tool_use("toolu_2", "Bash", json!({"command": "ls"})), tool_result("toolu_2", false)]);
+    call(&b, "call-0000000000000000", clean.clone(), None);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a call the transcript doesn't show can't be told apart: it ran");
+}
+
+#[test]
+fn a_folder_or_file_a_command_names_doesnt_widen_the_turn_to_its_parent() {
+    let b = new_board();
+    b.add_session("s1");
+    let app = format!("{}/app", b.repo());
+    std::fs::create_dir_all(format!("{}/docs", b.repo())).unwrap();
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(format!("{}/Cargo.toml", b.repo()), "").unwrap();
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("lib/x.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": app, "tree": saved.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    // From `app/`, a long call names `../docs/` and `../Cargo.toml`; the owner saves `lib/x.rs` meanwhile.
+    for command in ["ls ../docs/ && cargo test", "cargo test --manifest-path ../Cargo.toml"] {
+        prompt_with_windows(&b, &clean);
+        turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": command})), tool_result("t1", false)]);
+        call(&b, "t1", clean.clone(), Some(saved.clone()));
+        assert_eq!(stop(), None, "{command}");
+    }
+
+    // A file the command makes: its folder is the turn's.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 gen.py > ../lib/new.rs"})), tool_result("t1", false)]);
+    call(&b, "t1", clean.clone(), Some(saved.clone()));
+    assert!(stop().is_some_and(|x| x.contains("x.rs")), "the folder a new file goes in");
 }
 
 #[test]

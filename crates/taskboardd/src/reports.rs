@@ -544,11 +544,15 @@ fn turn_scope(cwd: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
         dirs.push(clean_path(&if d.starts_with('/') { d } else { format!("{cwd}/{d}") }));
     }
     for p in &turn.shell_paths {
-        // A path a command names, and the folder it sits in.
+        // A path a command names: a folder or a file there already, itself; one not there yet (the
+        // command makes it), the folder it goes in too. A folder's parent would widen the turn to the
+        // whole checkout for one `ls ../`.
         let p = if p == "~" { home.clone() } else if let Some(rest) = p.strip_prefix("~/") { format!("{home}/{rest}") } else { p.clone() };
         let full = clean_path(&if p.starts_with('/') { p } else { format!("{cwd}/{p}") });
-        if let Some(parent) = std::path::Path::new(&full).parent() {
-            dirs.push(parent.to_string_lossy().to_string());
+        if !std::path::Path::new(&full).exists() {
+            if let Some(parent) = std::path::Path::new(&full).parent() {
+                dirs.push(parent.to_string_lossy().to_string());
+            }
         }
         dirs.push(full);
     }
@@ -796,6 +800,10 @@ fn on_tool_start(r: &mut Report) -> Result<Value> {
     }
     let tree = r.body.get("tree").cloned().unwrap_or(Value::Null);
     windows["open"][r.b("tool_use_id")] = json!({"tree": tree, "tool": r.b("tool"), "background": as_bool(r.body.get("background"), false)});
+    if as_bool(r.body.get("ends"), false) {
+        // Opened by hooks that send ToolEnd: the Stop can go by the windows before the first one ends.
+        windows["ends"] = json!(true);
+    }
     app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
     Ok(ok(None, None))
 }
@@ -2352,20 +2360,25 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 r.turn_at = turn.at.as_str().map(|s| s.to_string());
             }
             let before = s.s("turn_tree").and_then(|t| serde_json::from_str::<Value>(t).ok());
-            // Windows only once these hooks have closed one: a terminal still on hooks loaded before
-            // the plugin stamped each call opens none for a subagent and closes none.
-            let windows = s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok()).filter(|w| w.is_object() && s.b("tool_ends"));
+            // Windows only from hooks that close them: once they have sent a call's end, or when this
+            // turn's were opened by a hooks.json that sends one. A terminal still on hooks loaded
+            // before the plugin stamped each call opens none for a subagent and closes none.
+            let windows = s.s("turn_windows").and_then(|t| serde_json::from_str::<Value>(t).ok()).filter(|w| w.is_object() && (s.b("tool_ends") || w["ends"] == true));
             if let Some(mut windows) = windows {
                 // The hook stamped each Bash and subagent call: only what changed while one ran is the
                 // turn's. A call still open (its end lost, or run in the background) runs to the Stop,
-                // unless it never ran: no result in the transcript, or one refused or failed.
+                // unless it never ran: no result in the transcript, or one refused.
                 let after = r.body.get("tree").cloned().unwrap_or(Value::Null);
                 let open: Vec<(String, Value)> = windows["open"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
                 for (id, w) in open {
-                    // An id the hook made up (no `tool_use_id`) can't be looked up.
                     let ran = match &turn {
-                        Some(turn) if !id.starts_with("call-") => turn.results.iter().any(|(i, error)| *i == id && !error),
-                        _ => true,
+                        Some(turn) => {
+                            // An id the hook made up (no `tool_use_id`) is the call's tool and input: the
+                            // transcript's calls with the same ones. None found, it can't be told apart.
+                            let ids: Vec<&str> = if id.starts_with("call-") { turn.calls.iter().filter(|(_, k)| *k == id).map(|(i, _)| i.as_str()).collect() } else { vec![id.as_str()] };
+                            ids.is_empty() || turn.results.iter().any(|(i, refused)| ids.contains(&i.as_str()) && !refused)
+                        }
+                        None => true,
                     };
                     if ran {
                         window_changes(&mut windows, window_key(w["tool"].as_str().unwrap_or("")), &w["tree"], &after);

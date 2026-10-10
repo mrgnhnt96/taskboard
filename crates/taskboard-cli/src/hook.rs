@@ -106,15 +106,25 @@ const SUBAGENT_TOOLS: &[&str] = &["Agent", "Task"];
 const WINDOW_TOOLS: &[&str] = &["Bash", "Agent", "Task"];
 
 /// The id Claude gives a tool call, which its PreToolUse and PostToolUse both carry; failing that, one
-/// made from the call itself.
+/// made from the call itself, which the board can match to the transcript's copy of the call.
 fn tool_call_id(payload: &Value) -> String {
     if let Some(id) = payload["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
         return id.to_string();
     }
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    (payload["tool_name"].as_str().unwrap_or(""), payload["tool_input"].to_string()).hash(&mut h);
-    format!("call-{:016x}", h.finish())
+    taskboardd::transcript::call_key(payload["tool_name"].as_str().unwrap_or(""), &payload["tool_input"])
+}
+
+/// Whether the hooks.json Claude loaded for this plugin sends `ToolEnd`, so each window this hook
+/// opens is closed: the plugin's folder is its installed version's, the one Claude read.
+fn hooks_send_tool_end(root: Option<&std::path::Path>) -> bool {
+    let Some(text) = root.and_then(|r| std::fs::read_to_string(r.join("hooks").join("hooks.json")).ok()) else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else { return false };
+    v["hooks"]["PostToolUse"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|m| m["hooks"].as_array().into_iter().flatten())
+        .any(|h| h["args"].as_array().is_some_and(|a| a.iter().any(|x| x == "ToolEnd")) || h["command"].as_str().is_some_and(|c| c.contains("ToolEnd")))
 }
 
 /// The report that opens (`hook.tool_start`) or closes (`hook.tool_end`) a tool call's window on the
@@ -129,6 +139,9 @@ fn tool_window_body(payload: &Value, session: &str, event: &str) -> Option<Value
     body["tool"] = json!(tool);
     body["tool_use_id"] = json!(tool_call_id(payload));
     body["background"] = json!(payload["tool_input"]["run_in_background"] == true);
+    if event == "hook.tool_start" {
+        body["ends"] = json!(hooks_send_tool_end(plugin_root().as_deref()));
+    }
     body["tree"] = client::tree_stamp(&cwd, GIT_TIMEOUT);
     Some(body)
 }
@@ -516,6 +529,20 @@ mod tests {
         assert_eq!(bg["background"], json!(true));
         assert_eq!(bg["tool_use_id"], call("Agent", json!({"prompt": "x", "run_in_background": true}), None).unwrap()["tool_use_id"], "the same call, the same id");
         assert!(call("Read", json!({"file_path": "/a"}), Some("toolu_2")).is_none());
+        assert_eq!(bg["tool_use_id"].as_str(), Some(taskboardd::transcript::call_key("Agent", &json!({"prompt": "x", "run_in_background": true})).as_str()), "the board can find it in the transcript");
+    }
+
+    #[test]
+    fn knows_whether_the_loaded_hooks_send_tool_end() {
+        let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/task-board");
+        assert!(hooks_send_tool_end(Some(&plugin)), "this plugin's hooks.json");
+        let old = std::env::temp_dir().join(format!("tb-old-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(old.join("hooks")).unwrap();
+        let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "tb", "args": ["hook", "PreToolUse"]}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "tb", "args": ["hook", "PostToolUse"]}]}]}});
+        std::fs::write(old.join("hooks").join("hooks.json"), hooks.to_string()).unwrap();
+        assert!(!hooks_send_tool_end(Some(&old)), "a hooks.json from before ToolEnd");
+        let _ = std::fs::remove_dir_all(&old);
+        assert!(!hooks_send_tool_end(None), "no plugin folder");
     }
 
     #[test]
