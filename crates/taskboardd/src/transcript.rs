@@ -204,8 +204,12 @@ pub struct Turn {
     /// at the permission prompt or blocked by a hook) rather than run; a call that failed or was cut
     /// off after it started ran.
     pub results: Vec<(String, bool)>,
-    /// The turn's tool calls, as (`tool_use_id`, `call_key`): what a hook that got no id calls one.
-    pub calls: Vec<(String, String)>,
+    /// The turn's tool calls in order, as (`tool_use_id`, `call_key`, tool): the key is what a hook
+    /// that got no id calls one.
+    pub calls: Vec<(String, String, String)>,
+    /// Paths the turn's shell commands run or build from (`python3 ../tools/gen.py`, `--manifest-path
+    /// ../Cargo.toml`), as written: what they write can be anywhere in the file's folder.
+    pub shell_runs: Vec<String>,
 }
 
 /// The id a hook gives a tool call Claude sent no `tool_use_id` for: made from its tool and input,
@@ -231,18 +235,23 @@ pub fn call_key(tool: &str, input: &Value) -> String {
 }
 
 /// How Claude Code words the result of a call it never ran: the owner denied it (or it needed an
-/// approval no one could give), or a PreToolUse hook blocked it.
+/// approval no one could give), the auto mode classifier or a safety check denied it, or a PreToolUse
+/// hook blocked it. Matched after an `Error: `, `Hook ` or `<tool_use_error>` in front.
 const REFUSALS: &[&str] = &[
     "The user doesn't want to proceed",
     "The user doesn't want to take this action",
     "Permission to use ",
-    "Permission for this command was denied",
+    "Permission for this ",
     "This command requires approval",
     "This command uses shell operators that require approval",
     "This Bash command contains multiple operations",
     "Contains expansion",
     "PreToolUse:",
 ];
+
+/// What a call that started says when it fails or is stopped: it was interrupted, timed out or cut
+/// off (a shell's failure starts with its exit code).
+const RAN_WORDS: &[&str] = &["interrupted", "timed out", "cut off"];
 
 /// A tool result's text, whether a string or a list of text blocks.
 fn result_text(b: &Value) -> String {
@@ -254,15 +263,30 @@ fn result_text(b: &Value) -> String {
 }
 
 /// An error result for a call that never ran: refused, not failed or cut off after it started.
-fn refused(b: &Value) -> bool {
-    b["is_error"] == true && {
-        let text = result_text(b);
-        REFUSALS.iter().any(|r| text.trim_start().starts_with(r))
+///
+/// The Stop asks only about a call whose window is still open, and these hooks close a call's window
+/// when it ends, failed (PostToolUseFailure) or not: an error for one that never closed is a call
+/// Claude never ran, however the refusal is worded (a hook's deny reason comes back as its bare
+/// text). Only the tool's own output (`output`: Claude kept a shell's stdout and stderr) or a
+/// failure's wording says it started.
+fn refused(b: &Value, output: bool) -> bool {
+    if b["is_error"] != true {
+        return false;
     }
+    let text = result_text(b);
+    let mut t = text.trim_start();
+    for front in ["<tool_use_error>", "Error: ", "Hook "] {
+        t = t.strip_prefix(front).unwrap_or(t).trim_start();
+    }
+    if REFUSALS.iter().any(|r| t.starts_with(r)) {
+        return true;
+    }
+    let lower = t.to_lowercase();
+    !(output || t.starts_with("Exit code ") || t.starts_with("[Tool call interrupted") || RAN_WORDS.iter().any(|w| lower.contains(w)))
 }
 
-/// The tool calls in one of the main conversation's events, as (tool_use_id, call_key).
-fn tool_calls(e: &Value) -> Vec<(String, String)> {
+/// The tool calls in one of the main conversation's events, as (tool_use_id, call_key, tool).
+fn tool_calls(e: &Value) -> Vec<(String, String, String)> {
     if e["type"] != "assistant" || e["isSidechain"] == true {
         return vec![];
     }
@@ -271,7 +295,10 @@ fn tool_calls(e: &Value) -> Vec<(String, String)> {
         .map(|a| {
             a.iter()
                 .filter(|b| b["type"] == "tool_use")
-                .filter_map(|b| b["id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), call_key(b["name"].as_str().unwrap_or(""), &b["input"]))))
+                .filter_map(|b| b["id"].as_str().filter(|id| !id.is_empty()).map(|id| {
+                    let tool = b["name"].as_str().unwrap_or("");
+                    (id.to_string(), call_key(tool, &b["input"]), tool.to_string())
+                }))
                 .collect()
         })
         .unwrap_or_default()
@@ -291,17 +318,75 @@ fn named_paths(command: &str) -> Vec<String> {
     out
 }
 
+/// Programs that run the file named after them (`python3 ../tools/gen.py`).
+const INTERPRETERS: &[&str] = &["python", "python3", "node", "bash", "sh", "zsh", "fish", "ruby", "perl", "php", "lua", "deno", "bun", "tsx", "ts-node", "dart", "swift", "Rscript", "osascript", "source", "."];
+/// What runs the program after it (`sudo`, `env`, `time`).
+const WRAPPERS: &[&str] = &["sudo", "env", "time", "nice", "nohup", "exec", "command", "xargs"];
+/// A long flag that names the file a command builds or runs from (`--manifest-path`, `--config`).
+static RUN_FLAG: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^--[\w-]*(manifest|config|project|makefile|file|settings|rcfile)[\w-]*$").unwrap());
+/// The words of a command that rewrites the sources its manifest names (`cargo fmt`, `eslint --fix`),
+/// where building or testing from one (`cargo test --manifest-path ../Cargo.toml`) only reads them.
+const REWRITES: &[&str] = &["fmt", "format", "fix", "--fix", "--write", "--apply", "generate", "codegen"];
+
+/// The paths a shell command runs or builds from, rather than reads: the program itself
+/// (`../tools/gen.sh`), the script an interpreter runs, and the manifest or config a long flag names
+/// for a command that rewrites what it covers. What one of those writes lands anywhere near it, as
+/// `cargo fmt --manifest-path ../Cargo.toml` rewrites `../lib/x.rs`; a `cat ../a.rs` only reads.
+fn run_paths(command: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut add = |w: &str| {
+        if w.contains('/') && !w.contains("://") && !w.contains('$') && !out.iter().any(|x| x == w) {
+            out.push(w.to_string());
+        }
+    };
+    let unquote = |w: &str| w.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string();
+    for segment in command.split(|c: char| c == '\n' || ";&|()".contains(c)) {
+        let words: Vec<String> = segment.split_whitespace().map(unquote).filter(|w| !w.is_empty()).collect();
+        let mut i = 0;
+        while i < words.len() && (WRAPPERS.contains(&words[i].as_str()) || (words[i].contains('=') && !words[i].starts_with('-'))) {
+            i += 1;
+        }
+        let Some(program) = words.get(i) else { continue };
+        let name = program.rsplit('/').next().unwrap_or(program);
+        if program.contains('/') {
+            add(program);
+        } else if INTERPRETERS.contains(&name) || name.starts_with("python") {
+            if let Some(script) = words[i + 1..].iter().find(|w| !w.starts_with('-')) {
+                add(script);
+            }
+        }
+        if !words[i + 1..].iter().any(|w| REWRITES.contains(&w.as_str())) {
+            continue;
+        }
+        for (j, w) in words.iter().enumerate().skip(i + 1) {
+            let (flag, value) = match w.split_once('=') {
+                Some((f, v)) => (f, Some(unquote(v))),
+                None => (w.as_str(), words.get(j + 1).cloned()),
+            };
+            if RUN_FLAG.is_match(flag) {
+                if let Some(v) = value {
+                    add(&v);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The tool results in one of the main conversation's events, as (tool_use_id, refused).
 fn tool_results(e: &Value) -> Vec<(String, bool)> {
     if e["type"] != "user" || e["isSidechain"] == true {
         return vec![];
     }
+    // The tool's own output, which Claude keeps beside a lone result; a refusal has only its words.
+    let lone = e["message"]["content"].as_array().is_some_and(|a| a.iter().filter(|b| b["type"] == "tool_result").count() == 1);
+    let output = lone && e["toolUseResult"].is_object();
     e["message"]["content"]
         .as_array()
         .map(|a| {
             a.iter()
                 .filter(|b| b["type"] == "tool_result")
-                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), refused(b))))
+                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), refused(b, output))))
                 .collect()
         })
         .unwrap_or_default()
@@ -335,6 +420,11 @@ fn turns_of(events: &[Value]) -> Vec<Turn> {
                     for p in named_paths(command) {
                         if !cur.shell_paths.contains(&p) {
                             cur.shell_paths.push(p);
+                        }
+                    }
+                    for p in run_paths(command) {
+                        if !cur.shell_runs.contains(&p) {
+                            cur.shell_runs.push(p);
                         }
                     }
                     for c in SHELL_DIR.captures_iter(command) {
@@ -468,7 +558,43 @@ mod tests {
         assert_eq!(t.len(), 1, "a tool result isn't a prompt");
         let r = |id: &str, refused: bool| (id.to_string(), refused);
         assert_eq!(t[0].results, vec![r("t1", true), r("t3", false), r("t4", true), r("t5", false), r("t6", false), r("t7", true)], "only a refusal never ran");
-        assert_eq!(t[0].calls, vec![("t1".to_string(), call_key("Bash", &json!({"command": "ls"})))]);
+        assert_eq!(t[0].calls, vec![("t1".to_string(), call_key("Bash", &json!({"command": "ls"})), "Bash".to_string())]);
+    }
+
+    #[test]
+    fn an_error_for_a_call_is_a_refusal_unless_it_says_the_call_started() {
+        let result = |content: &str| json!({"type": "tool_result", "tool_use_id": "t", "is_error": true, "content": content});
+        for text in [
+            "Hook PreToolUse:Bash denied this tool",
+            "Error: Hook PreToolUse:Bash denied this tool",
+            "Permission for this action was denied by the Claude Code auto mode classifier. Reason: it deletes files outside the project",
+            "Permission for this action has been denied. Reason: the owner said no",
+            "Permission for this tool use was denied. The tool use was rejected",
+            "Error: Permission for this command was denied by a built-in Claude Code safety check, not by the user.",
+            "<tool_use_error>Blocked: sleep 100 followed by: tail -15 x</tool_use_error>",
+            "sprout: sprout refuses this write: \"/dev/null\" is outside this node's declared work",
+            "BLOCKED: mutating command targets a path outside this repo",
+            "Permission for this action was denied. Reason: the command timed out last time",
+        ] {
+            assert!(refused(&result(text), false), "{text}");
+        }
+        for text in ["Exit code 1\nerror: test failed", "Error: Exit code 137", "[Tool call interrupted: the session ended]", "Command timed out after 2m 0s", "Interrupted by user", "the stream was cut off"] {
+            assert!(!refused(&result(text), false), "{text}");
+        }
+        assert!(!refused(&result("whatever it printed"), true), "the tool's own output: it ran");
+        assert!(!refused(&json!({"type": "tool_result", "tool_use_id": "t", "content": "Permission for this action"}), false), "not an error");
+        let ev = |result: Value, output: Value| json!({"type": "user", "message": {"content": [result]}, "toolUseResult": output});
+        assert_eq!(tool_results(&ev(result("odd failure"), json!({"stdout": "", "stderr": "odd failure"}))), vec![("t".to_string(), false)]);
+        assert_eq!(tool_results(&ev(result("odd failure"), json!("Error: odd failure"))), vec![("t".to_string(), true)]);
+    }
+
+    #[test]
+    fn reads_the_files_a_command_runs_or_builds_from() {
+        assert_eq!(run_paths("python3 ../tools/gen.py --out x && FOO=1 sudo ./build.sh; cat ../a.rs | head ../b.rs"), vec!["../tools/gen.py", "./build.sh"]);
+        assert_eq!(run_paths("cargo fmt --manifest-path ../Cargo.toml; npx prettier --write --config=../web/.prettierrc src"), vec!["../Cargo.toml", "../web/.prettierrc"]);
+        assert!(run_paths("cargo test --manifest-path ../Cargo.toml").is_empty(), "a build or a test only reads what its manifest names");
+        assert!(run_paths("ls ../tools/ && grep -r x ../lib && python3 -m pytest").is_empty());
+        assert_eq!(run_paths("node 'scripts/gen.js'\nbash -x ../ci/run.sh"), vec!["scripts/gen.js", "../ci/run.sh"]);
     }
 
     #[test]
