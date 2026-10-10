@@ -1288,3 +1288,130 @@ fn the_start_word_reads_the_asks_151_found() {
     let wrong = start_cases_wrong(&starts, &holds);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// Every phrase in #154, both ways, through the hook's path: "it" carries the ref a describing sentence
+/// follows, plain words after the question leave it, and the tasks the agent made beat one it mentions.
+#[test]
+fn the_start_word_reads_the_asks_154_found() {
+    let convo = |steps: &[&str]| steps.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    let mut starts: Vec<(Vec<String>, &str)> = vec![];
+    let mut holds: Vec<(Vec<String>, &str)> = vec![];
+    // 1. A sentence describing the task between its ref and "it".
+    for question in [
+        "T8 is ready. It only touches the header. Should I start it?",
+        "I looked at T8. The fix is small. Want me to start it?",
+        "T8 is ready. It touches one file. Should I start it?",
+        "T8 is ready. Its PR will be small. Should I start it?",
+        "T8 is ready. My plan is to keep it to the footer. Should I start it?",
+        "T8 is ready. A quick look says it's one file. Should I start it?",
+        "T8 is unblocked now. The migration it needed merged. Should I start it?",
+        "Rebased T8 on master. The conflicts were in the theme file. Should I start it?",
+        "T8 is ready.\n\nThe change:\n- the header\n- the footer\n\nShould I start it?",
+    ] {
+        starts.push((convo(&[&format!("agent:{question}"), "yes"]), "T8"));
+    }
+    let added = "agent:Added T10: rename the settings toggle. It's a small change in the settings screen. Should I start it?";
+    starts.push((convo(&[added, "yes"]), "T10"));
+    for question in ["I made T10 and T11. Both touch the settings screen. Want me to start them?", "T10 and T11 are ready. Each is a one-line change. Want me to start them?"] {
+        for target in ["T10", "T11"] {
+            starts.push((convo(&[&format!("agent:{question}"), "yes"]), target));
+        }
+    }
+    // ...but not past something else that could be started.
+    holds.push((convo(&["agent:T8 is ready. The dev server stopped. Should I start it?", "yes"]), "T8"));
+    // 2. Plain words after the question.
+    for question in [
+        "Want me to start T8? It's the first of the two.",
+        "Should I start T8? I'll write the tests first.",
+        "Should I start T8? Nothing blocks it now.",
+        "Should I start T8? T9 merged, so nothing is waiting on it.",
+        "Should I start T8? I'll hold the PR as a draft until you look.",
+    ] {
+        starts.push((convo(&[&format!("agent:{question}"), "yes"]), "T8"));
+    }
+    // ...while ones that set something before the start still hold it.
+    for question in ["Should I start T8? It's blocked on T9.", "Should I start T8? I need to check T9 first.", "Should I start T8? I'd wait until T9 merges."] {
+        holds.push((convo(&[&format!("agent:{question}"), "yes"]), "T8"));
+    }
+    // 3. The task the agent made, not one it mentions in passing.
+    for question in ["I made T10. T8 is still in review. Want me to start it?", "I made T10 for the follow-up. T8 stays as it is. Want me to start it?"] {
+        starts.push((convo(&[&format!("agent:{question}"), "yes"]), "T10"));
+        holds.push((convo(&[&format!("agent:{question}"), "yes"]), "T8"));
+    }
+    let old_one = "agent:I made T10 and T11. T8 is the old one. Want me to start them?";
+    for target in ["T10", "T11"] {
+        starts.push((convo(&[old_one, "yes"]), target));
+    }
+    holds.push((convo(&[old_one, "yes"]), "T8"));
+    // A "don't start" after the yes, or typed after the ask, holds it.
+    for no in ["yes, don't start until T9 merges", "yes, don't start it until T9 merges"] {
+        holds.push((convo(&["agent:Should I start T8?", no]), "T8"));
+    }
+    holds.push((convo(&["start T8, don't start until T9 merges"]), "T8"));
+    // Still refused.
+    for no in ["yes, but don't start T9", "yes, and don't touch T9"] {
+        holds.push((convo(&["agent:Should I start T8?", no]), "T8"));
+        holds.push((convo(&["agent:Should I start T8?", no]), "T9"));
+    }
+    holds.push((convo(&["agent:Should I start it? T8 is ready.", "yes"]), "T8"));
+    let wrong = start_cases_wrong(&starts, &holds);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every phrase in #155, both ways, as #126's are read: a goal word before the thing's name only says
+/// which ("the goal's migration" is a migration), and a summary of the goal, a list of its tasks or a
+/// sentence that only says more of it leaves "it" the goal.
+#[test]
+fn the_goal_runs_as_155_found() {
+    let mut runs: Vec<Vec<&str>> = vec![];
+    let mut refused: Vec<Vec<&str>> = vec![];
+    // 1. A goal word as whose, or before the thing's name.
+    for reply in [
+        "agent:For the goal I wrote seed.sh. Want me to run it?",
+        "agent:The plan's seed script is ready. Want me to run it?",
+        "agent:The goal's migration is written. Want me to run it?",
+        "agent:The goal's smoke test is ready. Want me to run it?",
+        "agent:Its first task needs a seed script. Want me to run it?",
+        "agent:The plan needs a migration. I wrote it. Want me to run it?",
+        "agent:I wrote the goal's seed script. Want me to run it?",
+        "agent:For the plan I drafted a migration. Want me to run it?",
+        "agent:In the goal there's a codemod. Want me to run it?",
+    ] {
+        refused.push(vec!["plan", reply, "say:yes"]);
+        refused.push(vec!["say:make a goal for dark mode", "goal new", reply, "say:yes"]);
+    }
+    for ask in ["say:make the plan's seed script", "say:add a goal-level smoke test", "say:add a task-level lint", "say:write the goal's migration", "say:write the plan's backfill"] {
+        refused.push(vec!["plan", ask, "agent:Done.", "say:run it"]);
+        refused.push(vec!["say:make a goal for dark mode", "goal new", ask, "agent:Done.", "say:run it"]);
+    }
+    // 2. A summary of the goal, a list of its tasks, or a sentence that only says more of it.
+    for reply in [
+        "agent:I split the work into two tasks. Want me to run it?",
+        "agent:It has a Colors task and a Toggle task. Want me to run it?",
+        "agent:The changes are small. Want me to run it?",
+        "agent:Made G. Some of the work is in the settings screen. Want me to run it?",
+        "agent:Made G. My guess is a day of work. Want me to run it?",
+        "agent:Made G. This touches the header and the footer. Want me to run it?",
+        "agent:Made G. The work is split so each PR stays small. Want me to run it?",
+        "agent:Made G:\n- T10 Colors\n- T11 Toggle\n\nWant me to run it?",
+        "agent:Made G:\n1. Colors: touches the theme\n2. Toggle: adds the switch\n\nWant me to run it?",
+        "agent:Here's the plan:\n- Colors: update the theme files\n- Toggle: add the switch\n\nWant me to run it?",
+        "agent:Here's a summary:\n- Colors: write a seed script for the theme\n- Toggle: add the switch\n\nWant me to run it?",
+        "agent:Made G. Want me to run it? Colors goes first.",
+        "agent:Made G. Want me to run it? Nothing blocks it now.",
+        "agent:Made G. Want me to run it? I'll write the tests first in each task.",
+        "agent:Made G with T10 and T11. Want me to run it?",
+    ] {
+        runs.push(vec!["plan", reply, "say:yes"]);
+        runs.push(vec!["say:make a goal for dark mode", "goal new", reply, "say:yes"]);
+    }
+    runs.push(vec!["say:make a goal for the migration", "goal new", "agent:Made G. The first touches the theme.", "say:run it"]);
+    runs.push(vec!["say:make a goal for the export screen", "goal new", "agent:Made G. The work is mostly UI.", "say:run it"]);
+    // Two goals made: "it" is the newer.
+    runs.push(vec!["say:make a goal for dark mode", "goal new", "say:make a goal for the toggle", "goal new", "say:run it"]);
+    runs.push(vec!["say:make two goals, one for dark mode and one for the toggle", "goal new", "goal new", "say:run it"]);
+    // Planned as a goal.
+    runs.push(vec!["say:plan the login tests as a goal", "goal new", "agent:Planned. Want me to run it?", "say:yes"]);
+    let wrong = goal_cases_wrong(&runs, &refused);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
