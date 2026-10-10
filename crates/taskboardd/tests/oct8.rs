@@ -505,6 +505,140 @@ fn a_call_that_failed_after_it_started_still_counts_to_the_stop() {
     }
 }
 
+#[test]
+fn a_call_refused_in_any_wording_doesnt_count_the_owners_edits() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": saved.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    // A warm session (it has sent ToolEnd): the Bash call never ran, and the owner saves `a.rs`.
+    for refusal in [
+        "Hook PreToolUse:Bash denied this tool",
+        "Error: Hook PreToolUse:Bash denied this tool",
+        "Permission for this action was denied by the Claude Code auto mode classifier. Reason: it deletes the build folder",
+        "Permission for this action has been denied. Reason: not now",
+        "Permission for this tool use was denied. The tool use was rejected",
+        "sprout refuses this write: build/ is outside this node's declared work",
+    ] {
+        prompt_with_windows(&b, &clean);
+        turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "rm -rf build"})), tool_error("t1", refusal)]);
+        call(&b, "t1", clean.clone(), None);
+        assert_eq!(stop(), None, "{refusal}");
+    }
+
+    // The tool's own output beside an error says it ran.
+    prompt_with_windows(&b, &clean);
+    let ran = json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": "odd failure"}]}, "toolUseResult": {"stdout": "", "stderr": "odd failure"}});
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py"})), ran]);
+    call(&b, "t1", clean.clone(), None);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "it ran, then failed");
+}
+
+#[test]
+fn two_identical_calls_with_no_tool_use_id_pair_with_their_own_results() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let saved = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": saved.clone()}))["block"].as_str().map(|s| s.to_string());
+    let input = json!({"command": "cargo build", "description": "Build"});
+    let key = taskboardd::transcript::call_key("Bash", &input);
+    let denied = "Permission for this action has been denied. Reason: not now";
+    let twins = |first: Value, second: Value| [tool_use("toolu_1", "Bash", input.clone()), first, tool_use("toolu_2", "Bash", input.clone()), second];
+
+    // The first ran and closed; the same call again was refused; then the owner saves `a.rs`.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &twins(tool_result("toolu_1", false), tool_error("toolu_2", denied)));
+    call(&b, &key, clean.clone(), Some(clean.clone()));
+    call(&b, &key, clean.clone(), None);
+    assert_eq!(stop(), None, "the refused twin never ran");
+
+    // Refused first (no end), then the same call ran and its end was lost.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &twins(tool_error("toolu_1", denied), tool_result("toolu_2", false)));
+    call(&b, &key, clean.clone(), None);
+    call(&b, &key, clean.clone(), None);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "the twin that ran");
+
+    // Refused first, then the same call ran and closed before the save.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &twins(tool_error("toolu_1", denied), tool_result("toolu_2", false)));
+    call(&b, &key, clean.clone(), None);
+    call(&b, &key, clean.clone(), Some(clean.clone()));
+    assert_eq!(stop(), None, "the one that ran closed");
+
+    // Both ran, the second's end lost.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &twins(tool_result("toolu_1", false), tool_result("toolu_2", false)));
+    call(&b, &key, clean.clone(), Some(clean.clone()));
+    call(&b, &key, clean.clone(), None);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "the second ran to the Stop");
+}
+
+#[test]
+fn a_file_a_command_runs_or_rewrites_from_widens_the_turn_to_its_folder() {
+    let b = new_board();
+    b.add_session("s1");
+    let app = format!("{}/app", b.repo());
+    std::fs::create_dir_all(format!("{}/tools", b.repo())).unwrap();
+    std::fs::create_dir_all(format!("{}/lib", b.repo())).unwrap();
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(format!("{}/Cargo.toml", b.repo()), "").unwrap();
+    std::fs::write(format!("{}/tools/gen.py", b.repo()), "").unwrap();
+    let clean = tree(&b, "aaa", &[]);
+    let stop = |after: &Value| b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": app, "tree": after}))["block"].as_str().map(|s| s.to_string());
+
+    for (command, wrote) in [("cargo fmt --manifest-path ../Cargo.toml", "lib/x.rs"), ("python3 ../tools/gen.py", "tools/out.rs")] {
+        let after = tree(&b, "aaa", &[(wrote, "h1:5")]);
+        prompt_with_windows(&b, &clean);
+        turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": command})), tool_result("t1", false)]);
+        call(&b, "t1", clean.clone(), Some(after.clone()));
+        assert!(stop(&after).is_some_and(|x| x.contains(wrote.rsplit('/').next().unwrap())), "{command}");
+    }
+
+    // Reading the same files keeps the turn where it was.
+    for command in ["cat ../tools/gen.py", "head ../Cargo.toml"] {
+        let after = tree(&b, "aaa", &[("lib/x.rs", "h1:5")]);
+        prompt_with_windows(&b, &clean);
+        turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": command})), tool_result("t1", false)]);
+        call(&b, "t1", clean.clone(), Some(after.clone()));
+        assert_eq!(stop(&after), None, "{command}");
+    }
+}
+
+#[test]
+fn a_call_with_a_missed_stamp_or_a_lost_start_still_counts() {
+    let b = new_board();
+    b.add_session("s1");
+    let clean = tree(&b, "aaa", &[]);
+    let wrote = tree(&b, "aaa", &[("a.rs", "h1:5")]);
+    let stop = || b.report("hook.stop", "s1", json!({"last_message": "Done.", "cwd": b.repo(), "tree": wrote.clone()}))["block"].as_str().map(|s| s.to_string());
+
+    // Git ran past the hook's limit at the call's start (as under load): its window opens at the
+    // prompt's stamp.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py"})), tool_result("t1", false)]);
+    call(&b, "t1", Value::Null, Some(wrote.clone()));
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "no stamp at the start");
+
+    // And at its end: the window stays open to the Stop.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py"})), tool_result("t1", false)]);
+    call(&b, "t1", clean.clone(), Some(Value::Null));
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "no stamp at the end");
+
+    // The call's start never reached the board.
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "python3 fix.py"})), tool_result("t1", false)]);
+    assert!(stop().is_some_and(|x| x.contains("a.rs")), "a call that ran with no window");
+
+    prompt_with_windows(&b, &clean);
+    turn(&b, "s1", "Go", &[tool_use("t1", "Bash", json!({"command": "rm -rf build"})), tool_result("t1", true)]);
+    assert_eq!(stop(), None, "a refused call with no window");
+}
+
 /// A call's start from hooks whose hooks.json sends ToolEnd.
 fn start_with_ends(b: &Board, tool: &str, id: &str, start: &Value) {
     b.report("hook.tool_start", "s1", json!({"tool": tool, "tool_use_id": id, "ends": true, "tree": start}));

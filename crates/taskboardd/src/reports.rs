@@ -556,6 +556,15 @@ fn turn_scope(cwd: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
         }
         dirs.push(full);
     }
+    for p in &turn.shell_runs {
+        // A file a command runs or builds from (a script, a manifest, a config): what it writes can be
+        // anywhere in its folder.
+        let p = if let Some(rest) = p.strip_prefix("~/") { format!("{home}/{rest}") } else { p.clone() };
+        let full = clean_path(&if p.starts_with('/') { p } else { format!("{cwd}/{p}") });
+        if let Some(parent) = std::path::Path::new(&full).parent() {
+            dirs.push(parent.to_string_lossy().to_string());
+        }
+    }
     for f in &turn.files {
         if let Some(parent) = std::path::Path::new(f).parent().filter(|p| p.is_absolute()) {
             dirs.push(clean_path(&parent.to_string_lossy()));
@@ -773,6 +782,9 @@ fn window_key(tool: &str) -> &'static str {
     if tool == "Agent" || tool == "Task" { "files" } else { "shell_files" }
 }
 
+/// The calls the hook opens a window for.
+const WINDOW_TOOLS: &[&str] = &["Bash", "Agent", "Task"];
+
 /// Adds what changed in the checkout between a call's two stamps to the turn's windows, under `key`.
 fn window_changes(windows: &mut Value, key: &str, before: &Value, after: &Value) {
     let (files, commit) = tree_changes(before, after);
@@ -798,8 +810,22 @@ fn on_tool_start(r: &mut Report) -> Result<Value> {
     if !windows["open"].is_object() {
         windows["open"] = json!({});
     }
-    let tree = r.body.get("tree").cloned().unwrap_or(Value::Null);
-    windows["open"][r.b("tool_use_id")] = json!({"tree": tree, "tool": r.b("tool"), "background": as_bool(r.body.get("background"), false)});
+    let mut tree = r.body.get("tree").cloned().filter(|t| t.is_object()).unwrap_or(Value::Null);
+    if tree.is_null() {
+        // No stamp (git ran past the hook's limit, as under load): the window opens at the prompt's.
+        tree = board::get_session(app, Some(sid))?.and_then(|s| s.s("turn_tree").and_then(|t| serde_json::from_str::<Value>(t).ok())).unwrap_or(Value::Null);
+    }
+    let id = r.b("tool_use_id");
+    let background = as_bool(r.body.get("background"), false);
+    if windows["open"][&id].is_object() {
+        // The same call again while the first still runs (an id the hook made from the call's tool and
+        // input): one window from the first's stamp, counting the calls in it.
+        let w = &mut windows["open"][&id];
+        w["n"] = json!(w["n"].as_u64().unwrap_or(1) + 1);
+        w["background"] = json!(w["background"] == true || background);
+    } else {
+        windows["open"][&id] = json!({"tree": tree, "tool": r.b("tool"), "background": background});
+    }
     if as_bool(r.body.get("ends"), false) {
         // Opened by hooks that send ToolEnd: the Stop can go by the windows before the first one ends.
         windows["ends"] = json!(true);
@@ -821,12 +847,21 @@ fn on_tool_end(r: &mut Report) -> Result<Value> {
     if open["background"] == true {
         return Ok(ok(None, None));
     }
-    if let Some(o) = windows["open"].as_object_mut() {
+    let Some(after) = r.body.get("tree").filter(|t| t.is_object()) else {
+        // No stamp (git ran past the hook's limit): the window stays open, to the Stop's.
+        return Ok(ok(None, None));
+    };
+    window_changes(&mut windows, window_key(open["tool"].as_str().unwrap_or("")), &open["tree"], after);
+    let n = open["n"].as_u64().unwrap_or(1);
+    if n > 1 {
+        windows["open"][&id]["n"] = json!(n - 1);
+    } else if let Some(o) = windows["open"].as_object_mut() {
         o.remove(&id);
     }
-    if let Some(after) = r.body.get("tree") {
-        window_changes(&mut windows, window_key(open["tool"].as_str().unwrap_or("")), &open["tree"], after);
-    }
+    // How many of this id's calls have closed, so the Stop pairs a still-open one with the right
+    // transcript call when the hook had to make the id up.
+    let closed = windows["closed"][&id].as_u64().unwrap_or(0) + 1;
+    windows["closed"][&id] = json!(closed);
     app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
     Ok(ok(None, None))
 }
@@ -2370,18 +2405,38 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 // unless it never ran: no result in the transcript, or one refused.
                 let after = r.body.get("tree").cloned().unwrap_or(Value::Null);
                 let open: Vec<(String, Value)> = windows["open"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-                for (id, w) in open {
+                let closed = windows["closed"].clone();
+                let ran_ok = |turn: &transcript::Turn, ids: &[&str]| turn.results.iter().any(|(i, refused)| ids.contains(&i.as_str()) && !refused);
+                for (id, w) in &open {
                     let ran = match &turn {
                         Some(turn) => {
-                            // An id the hook made up (no `tool_use_id`) is the call's tool and input: the
-                            // transcript's calls with the same ones. None found, it can't be told apart.
-                            let ids: Vec<&str> = if id.starts_with("call-") { turn.calls.iter().filter(|(_, k)| *k == id).map(|(i, _)| i.as_str()).collect() } else { vec![id.as_str()] };
-                            ids.is_empty() || turn.results.iter().any(|(i, refused)| ids.contains(&i.as_str()) && !refused)
+                            if id.starts_with("call-") {
+                                // An id the hook made up (no `tool_use_id`) is the call's tool and input: the
+                                // transcript's calls with the same ones. Each window that closed was one of
+                                // those that ran (a refused call sends no end), so this one ran when more of
+                                // them ran than closed. Fewer calls shown than windows, it can't be told apart.
+                                let same: Vec<&str> = turn.calls.iter().filter(|(_, k, _)| k == id).map(|(i, _, _)| i.as_str()).collect();
+                                let closed = closed[id].as_u64().unwrap_or(0) as usize;
+                                let ran = same.iter().filter(|i| ran_ok(turn, &[**i])).count();
+                                same.len() < closed + w["n"].as_u64().unwrap_or(1) as usize || ran > closed
+                            } else {
+                                ran_ok(turn, &[id.as_str()])
+                            }
                         }
                         None => true,
                     };
                     if ran {
                         window_changes(&mut windows, window_key(w["tool"].as_str().unwrap_or("")), &w["tree"], &after);
+                    }
+                }
+                if let (Some(turn), Some(before)) = (&turn, &before) {
+                    // A call that ran with no window at all (its start lost on the way, as under load):
+                    // from the prompt's stamp to the Stop's.
+                    let known = |x: &str| open.iter().any(|(i, _)| i == x) || closed.get(x).is_some();
+                    for (id, key, tool) in &turn.calls {
+                        if WINDOW_TOOLS.contains(&tool.as_str()) && !known(id) && !known(key) && ran_ok(turn, &[id.as_str()]) {
+                            window_changes(&mut windows, window_key(tool), before, &after);
+                        }
                     }
                 }
                 let none = transcript::Turn::default();

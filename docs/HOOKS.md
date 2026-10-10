@@ -247,11 +247,17 @@ prompt = "Sign off the screens this task changes."
   call, and only what changed while one of those calls ran counts, so an edit saved between calls, by the owner or
   another terminal, doesn't block the Stop. A subagent's changes count anywhere in the checkout; a Bash call's only
   in the terminal's folder, the folders its commands `cd` into, and the paths they name (a folder or file already
-  there, itself; one not there yet, its folder too), so a save in a sibling folder during a long command doesn't
-  count. A call run in the background counts up to the Stop; a call whose window never closed counts up to the Stop
-  unless the transcript shows it was refused (denied at the permission prompt, or blocked by a hook) or never
-  answered. A call that failed or was cut off after it started still counts. A call Claude sent no `tool_use_id`
-  for is found in the transcript by its tool and input. The board goes by these windows once the session's hooks
+  there, itself; one not there yet, its folder too; a script it runs, or a manifest or config a rewriting command
+  like `cargo fmt --manifest-path ../Cargo.toml` names, its folder too), so a save in a sibling folder during a
+  long command doesn't count. A call run in the background counts up to the Stop; a call whose window never closed
+  counts up to the Stop unless the transcript shows it never ran or was never answered. Since these hooks close a
+  window whenever a call ends, failed or not, an error result for a call whose window is still open means it never
+  ran (denied at the permission prompt or by the auto mode classifier, or blocked by a hook, whatever the wording),
+  unless the result carries the tool's own output or says it started (an exit code, interrupted, timed out, cut
+  off). A call Claude sent no `tool_use_id` for is found in the transcript by its tool and input; of identical
+  ones, the windows that closed go to those that ran. A stamp git couldn't finish in time (as under load) opens
+  the window at the prompt's stamp, or leaves it open to the Stop's, and a call that ran with no window at all (its
+  start lost) counts from the prompt's stamp. The board goes by these windows once the session's hooks
   have sent a `ToolEnd` (reset when a new Claude process starts), or when the turn's calls were opened by a
   hooks.json that registers `ToolEnd` (the hook reads its plugin folder's `hooks/hooks.json`): a terminal still on
   hooks loaded before the plugin stamped each call keeps to the prompt's stamp, narrowed to the turn's folders
