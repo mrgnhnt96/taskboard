@@ -339,7 +339,7 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
         if !r.spooled {
             let tree = r.body.get("tree").filter(|t| t.is_object()).map(jdumps);
             // A hook that stamps each Bash and subagent call says so: its turn starts with no windows.
-            let windows = as_bool(r.body.get("tool_windows"), false).then(|| jdumps(&json!({"open": {}, "files": [], "commit": null})));
+            let windows = as_bool(r.body.get("tool_windows"), false).then(|| jdumps(&json!({"calls": {}, "files": [], "commit": null})));
             app.db.x("UPDATE sessions SET turn_tree = ?, turn_windows = ? WHERE id = ?", p![tree, windows, sid])?;
         }
     }
@@ -531,8 +531,22 @@ fn new_commit(before: &Value, after: &Value) -> Option<String> {
 }
 
 /// The directories a turn worked in: the terminal's folder, the folders of the files it edited and
-/// the ones its shell commands moved into. None when the terminal's folder isn't known.
-fn turn_scope(cwd: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
+/// the ones its shell commands moved into, named, or ran a file from. None when the terminal's folder
+/// isn't known. A turn never leaves its checkout (`root`, the stamp's): a folder that holds the whole
+/// checkout (`bash ../../../run.sh`, `source ~/.zshrc`) adds nothing.
+fn turn_scope(cwd: &str, root: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
+    let mut dirs = turn_dirs(cwd, turn)?;
+    let root = root.trim_end_matches('/');
+    if !root.is_empty() {
+        let mut roots = vec![root.to_string()];
+        roots.extend(std::fs::canonicalize(root).ok().map(|r| r.to_string_lossy().to_string()));
+        let holds_root = |d: &str| d == "/" || roots.iter().any(|r| r.starts_with(&format!("{}/", d.trim_end_matches('/'))));
+        dirs.retain(|d| !holds_root(d) && std::fs::canonicalize(d).map(|c| !holds_root(&c.to_string_lossy())).unwrap_or(true));
+    }
+    Some(dirs)
+}
+
+fn turn_dirs(cwd: &str, turn: &transcript::Turn) -> Option<Vec<String>> {
     let cwd = cwd.trim_end_matches('/');
     if cwd.is_empty() {
         return None;
@@ -802,13 +816,94 @@ fn window_changes(windows: &mut Value, key: &str, before: &Value, after: &Value)
     }
 }
 
+/// What the turn's windows still open at the Stop, and its calls that have none, add to the turn.
+///
+/// Each window is one call, paired with that call in the transcript among the calls since the prompt
+/// the hooks last saw (`Turn::current_calls`): by its `tool_use_id`; an id the hook made up (the call's
+/// tool and input) with that key's calls, the n-th window started with the n-th call; and a made-up id
+/// the transcript shows no call for (a hook rewrote the input) with the unpaired calls of its tool, when
+/// there are as many of each. A paired call ran unless the transcript shows no result or a refusal for
+/// it; an unpaired made-up window can't be told apart, so it ran. An open window that ran counts to the
+/// Stop's stamp. A call with no window that ran (its start lost on the way, as under load) counts from
+/// the prompt's stamp, once more of them ran than unpaired windows of their tool could stand for.
+fn settle_windows(windows: &mut Value, turn: Option<&transcript::Turn>, before: Option<&Value>, after: &Value) {
+    struct Window {
+        id: String,
+        entry: Value,
+        call: Option<usize>,
+    }
+    let mut list: Vec<Window> = windows["calls"]
+        .as_object()
+        .map(|o| o.iter().flat_map(|(id, l)| l.as_array().into_iter().flatten().map(|e| Window { id: id.clone(), entry: e.clone(), call: None })).collect())
+        .unwrap_or_default();
+    list.sort_by_key(|w| w.entry["order"].as_u64().unwrap_or(0));
+    let made_up = |id: &str| id.starts_with("call-");
+    let none = transcript::Turn::default();
+    let calls = turn.unwrap_or(&none).current_calls();
+    let mut paired = vec![false; calls.len()];
+    for w in list.iter_mut().filter(|w| !made_up(&w.id)) {
+        w.call = calls.iter().position(|(id, _, _)| *id == w.id);
+        if let Some(i) = w.call {
+            paired[i] = true;
+        }
+    }
+    let mut by_key: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (i, (_, key, _)) in calls.iter().enumerate().filter(|(i, _)| !paired[*i]) {
+        by_key.entry(key.as_str()).or_default().push(i);
+    }
+    let mut nth: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut orphans: Vec<usize> = vec![];
+    for (j, w) in list.iter_mut().enumerate().filter(|(_, w)| made_up(&w.id)) {
+        let n = nth.entry(w.id.clone()).or_default();
+        match by_key.get(w.id.as_str()) {
+            Some(same) => w.call = same.get(*n).copied(),
+            None => orphans.push(j),
+        }
+        *n += 1;
+        if let Some(i) = w.call {
+            paired[i] = true;
+        }
+    }
+    let mut unpaired: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for tool in WINDOW_TOOLS {
+        let mine: Vec<usize> = orphans.iter().copied().filter(|&j| list[j].entry["tool"].as_str() == Some(*tool)).collect();
+        let free: Vec<usize> = (0..calls.len()).filter(|&i| !paired[i] && calls[i].2 == *tool).collect();
+        if !mine.is_empty() && mine.len() == free.len() {
+            for (&j, &i) in mine.iter().zip(&free) {
+                list[j].call = Some(i);
+                paired[i] = true;
+            }
+        } else {
+            unpaired.insert(tool.to_string(), mine.len());
+        }
+    }
+    for w in list.iter().filter(|w| w.entry["closed"] != true) {
+        let ran = match (turn, w.call) {
+            (None, _) => true,
+            (Some(turn), Some(i)) => turn.ran(&calls[i].0) == Some(true),
+            (Some(turn), None) if !made_up(&w.id) => turn.ran(&w.id) == Some(true),
+            (Some(_), None) => true,
+        };
+        if ran {
+            window_changes(windows, window_key(w.entry["tool"].as_str().unwrap_or("")), &w.entry["tree"], after);
+        }
+    }
+    let (Some(turn), Some(before)) = (turn, before) else { return };
+    for tool in WINDOW_TOOLS {
+        let lost = (0..calls.len()).filter(|&i| !paired[i] && calls[i].2 == *tool && turn.ran(&calls[i].0) == Some(true)).count();
+        if lost > unpaired.get(*tool).copied().unwrap_or(0) {
+            window_changes(windows, window_key(tool), before, after);
+        }
+    }
+}
+
 /// `hook.tool_start`: a Bash or subagent call is starting; its stamp opens its window.
 fn on_tool_start(r: &mut Report) -> Result<Value> {
     let Some(sid) = r.sid().filter(|_| !r.spooled) else { return Ok(ok(None, None)) };
     let app = r.app;
-    let mut windows = turn_windows(app, sid)?.unwrap_or_else(|| json!({"open": {}, "files": [], "commit": null}));
-    if !windows["open"].is_object() {
-        windows["open"] = json!({});
+    let mut windows = turn_windows(app, sid)?.unwrap_or_else(|| json!({"calls": {}, "files": [], "commit": null}));
+    if !windows["calls"].is_object() {
+        windows["calls"] = json!({});
     }
     let mut tree = r.body.get("tree").cloned().filter(|t| t.is_object()).unwrap_or(Value::Null);
     if tree.is_null() {
@@ -817,14 +912,15 @@ fn on_tool_start(r: &mut Report) -> Result<Value> {
     }
     let id = r.b("tool_use_id");
     let background = as_bool(r.body.get("background"), false);
-    if windows["open"][&id].is_object() {
-        // The same call again while the first still runs (an id the hook made from the call's tool and
-        // input): one window from the first's stamp, counting the calls in it.
-        let w = &mut windows["open"][&id];
-        w["n"] = json!(w["n"].as_u64().unwrap_or(1) + 1);
-        w["background"] = json!(w["background"] == true || background);
-    } else {
-        windows["open"][&id] = json!({"tree": tree, "tool": r.b("tool"), "background": background});
+    // One window per call, in the order they started: the same id again (one the hook made from the
+    // call's tool and input) is another call, with its own stamp.
+    let order = windows["count"].as_u64().unwrap_or(0);
+    windows["count"] = json!(order + 1);
+    if !windows["calls"][&id].is_array() {
+        windows["calls"][&id] = json!([]);
+    }
+    if let Some(list) = windows["calls"][&id].as_array_mut() {
+        list.push(json!({"tree": tree, "tool": r.b("tool"), "background": background, "order": order, "closed": false}));
     }
     if as_bool(r.body.get("ends"), false) {
         // Opened by hooks that send ToolEnd: the Stop can go by the windows before the first one ends.
@@ -843,25 +939,18 @@ fn on_tool_end(r: &mut Report) -> Result<Value> {
     app.db.x("UPDATE sessions SET tool_ends = 1 WHERE id = ? AND COALESCE(tool_ends, 0) = 0", p![sid])?;
     let Some(mut windows) = turn_windows(app, sid)? else { return Ok(ok(None, None)) };
     let id = r.b("tool_use_id");
-    let Some(open) = windows["open"].get(&id).cloned() else { return Ok(ok(None, None)) };
-    if open["background"] == true {
+    // The newest of this id's calls still open: a twin left open before it was refused (no end comes
+    // for one), so the end is the later call's.
+    let Some(i) = windows["calls"][&id].as_array().and_then(|l| l.iter().rposition(|w| w["closed"] != true && w["background"] != true)) else {
         return Ok(ok(None, None));
-    }
+    };
     let Some(after) = r.body.get("tree").filter(|t| t.is_object()) else {
         // No stamp (git ran past the hook's limit): the window stays open, to the Stop's.
         return Ok(ok(None, None));
     };
+    let open = windows["calls"][&id][i].clone();
     window_changes(&mut windows, window_key(open["tool"].as_str().unwrap_or("")), &open["tree"], after);
-    let n = open["n"].as_u64().unwrap_or(1);
-    if n > 1 {
-        windows["open"][&id]["n"] = json!(n - 1);
-    } else if let Some(o) = windows["open"].as_object_mut() {
-        o.remove(&id);
-    }
-    // How many of this id's calls have closed, so the Stop pairs a still-open one with the right
-    // transcript call when the hook had to make the id up.
-    let closed = windows["closed"][&id].as_u64().unwrap_or(0) + 1;
-    windows["closed"][&id] = json!(closed);
+    windows["calls"][&id][i]["closed"] = json!(true);
     app.db.x("UPDATE sessions SET turn_windows = ? WHERE id = ?", p![jdumps(&windows), sid])?;
     Ok(ok(None, None))
 }
@@ -2404,43 +2493,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 // turn's. A call still open (its end lost, or run in the background) runs to the Stop,
                 // unless it never ran: no result in the transcript, or one refused.
                 let after = r.body.get("tree").cloned().unwrap_or(Value::Null);
-                let open: Vec<(String, Value)> = windows["open"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
-                let closed = windows["closed"].clone();
-                let ran_ok = |turn: &transcript::Turn, ids: &[&str]| turn.results.iter().any(|(i, refused)| ids.contains(&i.as_str()) && !refused);
-                for (id, w) in &open {
-                    let ran = match &turn {
-                        Some(turn) => {
-                            if id.starts_with("call-") {
-                                // An id the hook made up (no `tool_use_id`) is the call's tool and input: the
-                                // transcript's calls with the same ones. Each window that closed was one of
-                                // those that ran (a refused call sends no end), so this one ran when more of
-                                // them ran than closed. Fewer calls shown than windows, it can't be told apart.
-                                let same: Vec<&str> = turn.calls.iter().filter(|(_, k, _)| k == id).map(|(i, _, _)| i.as_str()).collect();
-                                let closed = closed[id].as_u64().unwrap_or(0) as usize;
-                                let ran = same.iter().filter(|i| ran_ok(turn, &[**i])).count();
-                                same.len() < closed + w["n"].as_u64().unwrap_or(1) as usize || ran > closed
-                            } else {
-                                ran_ok(turn, &[id.as_str()])
-                            }
-                        }
-                        None => true,
-                    };
-                    if ran {
-                        window_changes(&mut windows, window_key(w["tool"].as_str().unwrap_or("")), &w["tree"], &after);
-                    }
-                }
-                if let (Some(turn), Some(before)) = (&turn, &before) {
-                    // A call that ran with no window at all (its start lost on the way, as under load):
-                    // from the prompt's stamp to the Stop's.
-                    let known = |x: &str| open.iter().any(|(i, _)| i == x) || closed.get(x).is_some();
-                    for (id, key, tool) in &turn.calls {
-                        if WINDOW_TOOLS.contains(&tool.as_str()) && !known(id) && !known(key) && ran_ok(turn, &[id.as_str()]) {
-                            window_changes(&mut windows, window_key(tool), before, &after);
-                        }
-                    }
-                }
+                settle_windows(&mut windows, turn.as_ref(), before.as_ref(), &after);
                 let none = transcript::Turn::default();
-                let scope = turn_scope(&r.b("cwd"), turn.as_ref().unwrap_or(&none));
+                let scope = turn_scope(&r.b("cwd"), after["root"].as_str().unwrap_or(""), turn.as_ref().unwrap_or(&none));
                 let anywhere = windows["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str());
                 let scoped = windows["shell_files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).filter(|f| scope.as_ref().is_none_or(|dirs| under_any(f, dirs)));
                 for f in anywhere.chain(scoped) {
@@ -2455,7 +2510,7 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 // The stamp only speaks for turns that could change files without naming them.
                 if turn.ran_shell || turn.ran_subagent {
                     let (files, commit) = tree_changes(&before, after);
-                    let scope = if turn.ran_subagent { None } else { turn_scope(&r.b("cwd"), turn) };
+                    let scope = if turn.ran_subagent { None } else { turn_scope(&r.b("cwd"), after["root"].as_str().unwrap_or(""), turn) };
                     for f in files {
                         if !r.turn_files.contains(&f) && scope.as_ref().is_none_or(|dirs| under_any(&f, dirs)) {
                             r.turn_files.push(f);

@@ -12,6 +12,8 @@ use crate::util::*;
 
 const ENDED: &[&str] = &["turn_duration", "stop_hook_summary"];
 const NEUTRAL_PREFIXES: &[&str] = &["<command-name>", "<command-message>", "<local-command", "<system-reminder>", "[Request interrupted by user"];
+/// The neutral prompts that are a slash command the owner sent (its UserPromptSubmit still fires).
+const SLASH_PREFIXES: &[&str] = &["<command-name>", "<command-message>"];
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 /// Tools that can change files the transcript doesn't name: a shell command, or a subagent.
 const SHELL_TOOLS: &[&str] = &["Bash"];
@@ -133,6 +135,22 @@ fn lines(path: &Path) -> Vec<Value> {
 }
 
 fn prompt_of(e: &Value) -> Option<String> {
+    let text = prompt_text(e)?;
+    let lead = text.trim_start();
+    if NEUTRAL_PREFIXES.iter().any(|p| lead.starts_with(p)) {
+        return None;
+    }
+    Some(text)
+}
+
+/// A slash command the owner sent: neutral to the turn, but its UserPromptSubmit starts the hooks'
+/// windows (and the prompt's stamp) over.
+fn slash_command(e: &Value) -> bool {
+    prompt_text(e).is_some_and(|t| SLASH_PREFIXES.iter().any(|p| t.trim_start().starts_with(p)))
+}
+
+/// The text of a user entry that isn't a tool's result, meta or a subagent's.
+fn prompt_text(e: &Value) -> Option<String> {
     if e["type"] != "user" || e["isMeta"] == true || e["isSidechain"] == true {
         return None;
     }
@@ -153,11 +171,7 @@ fn prompt_of(e: &Value) -> Option<String> {
         _ => return None,
     }
     let text = texts.into_iter().filter(|t| !t.trim().is_empty()).collect::<Vec<_>>().join("\n");
-    let lead = text.trim_start();
-    if text.trim().is_empty() || NEUTRAL_PREFIXES.iter().any(|p| lead.starts_with(p)) {
-        return None;
-    }
-    Some(text)
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// The main conversation's tool calls in one event, as (name, input).
@@ -210,6 +224,21 @@ pub struct Turn {
     /// Paths the turn's shell commands run or build from (`python3 ../tools/gen.py`, `--manifest-path
     /// ../Cargo.toml`), as written: what they write can be anywhere in the file's folder.
     pub shell_runs: Vec<String>,
+    /// How many of `calls` came before the turn's last slash command: the hooks' windows (and the
+    /// prompt's stamp) start over at its UserPromptSubmit, so only the calls after it are theirs.
+    pub since_prompt: usize,
+}
+
+impl Turn {
+    /// The calls made since the last prompt the hooks saw: the ones this turn's windows cover.
+    pub fn current_calls(&self) -> &[(String, String, String)] {
+        &self.calls[self.since_prompt.min(self.calls.len())..]
+    }
+
+    /// Whether call `id` came back without being refused: `None` when the transcript shows no result.
+    pub fn ran(&self, id: &str) -> Option<bool> {
+        self.results.iter().rev().find(|(i, _)| i == id).map(|(_, refused)| !refused)
+    }
 }
 
 /// The id a hook gives a tool call Claude sent no `tool_use_id` for: made from its tool and input,
@@ -249,9 +278,11 @@ const REFUSALS: &[&str] = &[
     "PreToolUse:",
 ];
 
-/// What a call that started says when it fails or is stopped: it was interrupted, timed out or cut
-/// off (a shell's failure starts with its exit code).
-const RAN_WORDS: &[&str] = &["interrupted", "timed out", "cut off"];
+/// Words a bare deny reason (a hook's own `permissionDecisionReason`, sent back as its text) says the
+/// call was stopped with, on its first line.
+const DENY_WORDS: &[&str] = &["refuse", "denied", "deny", "blocked", "not allowed", "disallowed", "forbidden", "rejected"];
+/// What a command that ran prints when the OS or a server turns it down: its own failure, not a refusal.
+const RAN_DENIALS: &[&str] = &["permission denied", "connection refused", "operation not permitted"];
 
 /// A tool result's text, whether a string or a list of text blocks.
 fn result_text(b: &Value) -> String {
@@ -264,11 +295,11 @@ fn result_text(b: &Value) -> String {
 
 /// An error result for a call that never ran: refused, not failed or cut off after it started.
 ///
-/// The Stop asks only about a call whose window is still open, and these hooks close a call's window
-/// when it ends, failed (PostToolUseFailure) or not: an error for one that never closed is a call
-/// Claude never ran, however the refusal is worded (a hook's deny reason comes back as its bare
-/// text). Only the tool's own output (`output`: Claude kept a shell's stdout and stderr) or a
-/// failure's wording says it started.
+/// A call ran unless its error reads as a refusal: Claude Code's own wording for one (`REFUSALS`,
+/// whatever else the text says), or a bare deny reason (a `DENY_WORDS` word on its first line) with
+/// nothing that says the call started: the tool's own output (`output`: Claude kept a shell's stdout
+/// and stderr), a shell's exit code, an interruption. Any other error (an API error, max turns, a
+/// command aborted, killed or failing on stderr) is from a call that ran, and may have edited first.
 fn refused(b: &Value, output: bool) -> bool {
     if b["is_error"] != true {
         return false;
@@ -281,8 +312,14 @@ fn refused(b: &Value, output: bool) -> bool {
     if REFUSALS.iter().any(|r| t.starts_with(r)) {
         return true;
     }
-    let lower = t.to_lowercase();
-    !(output || t.starts_with("Exit code ") || t.starts_with("[Tool call interrupted") || RAN_WORDS.iter().any(|w| lower.contains(w)))
+    if output || t.starts_with("Exit code ") || t.starts_with("[Tool call interrupted") {
+        return false;
+    }
+    let mut first = t.lines().next().unwrap_or("").to_lowercase();
+    for ran in RAN_DENIALS {
+        first = first.replace(ran, "");
+    }
+    DENY_WORDS.iter().any(|w| first.contains(w))
 }
 
 /// The tool calls in one of the main conversation's events, as (tool_use_id, call_key, tool).
@@ -320,8 +357,36 @@ fn named_paths(command: &str) -> Vec<String> {
 
 /// Programs that run the file named after them (`python3 ../tools/gen.py`).
 const INTERPRETERS: &[&str] = &["python", "python3", "node", "bash", "sh", "zsh", "fish", "ruby", "perl", "php", "lua", "deno", "bun", "tsx", "ts-node", "dart", "swift", "Rscript", "osascript", "source", "."];
-/// What runs the program after it (`sudo`, `env`, `time`).
-const WRAPPERS: &[&str] = &["sudo", "env", "time", "nice", "nohup", "exec", "command", "xargs"];
+/// What runs the program after it (`sudo`, `env`, `time`, `npx`).
+const WRAPPERS: &[&str] = &["sudo", "env", "time", "nice", "nohup", "exec", "command", "xargs", "npx", "bunx"];
+/// Two words that run the program after them (`uv run`, `pnpm exec`).
+const WRAPPER_PAIRS: &[(&str, &str)] = &[("uv", "run"), ("pnpm", "exec"), ("pnpm", "dlx"), ("yarn", "exec"), ("yarn", "dlx"), ("poetry", "run"), ("pipenv", "run"), ("bundle", "exec")];
+
+/// A program's name without its folder (`/usr/bin/env` is `env`).
+fn base_name(program: &str) -> &str {
+    program.rsplit('/').next().unwrap_or(program)
+}
+
+/// Where the program in `words` is: past the wrappers (by name, wherever they live), their flags,
+/// and the `NAME=value` settings in front.
+fn program_at(words: &[String]) -> usize {
+    let mut i = 0;
+    let mut wrapped = false;
+    while i < words.len() {
+        let w = words[i].as_str();
+        let name = base_name(w);
+        if WRAPPERS.contains(&name) {
+            (i, wrapped) = (i + 1, true);
+        } else if WRAPPER_PAIRS.iter().any(|(a, b)| name == *a && words.get(i + 1).map(|x| x.as_str()) == Some(b)) {
+            (i, wrapped) = (i + 2, true);
+        } else if (w.contains('=') && !w.starts_with('-')) || (wrapped && w.starts_with('-')) {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i
+}
 /// A long flag that names the file a command builds or runs from (`--manifest-path`, `--config`).
 static RUN_FLAG: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^--[\w-]*(manifest|config|project|makefile|file|settings|rcfile)[\w-]*$").unwrap());
 /// The words of a command that rewrites the sources its manifest names (`cargo fmt`, `eslint --fix`),
@@ -342,18 +407,15 @@ fn run_paths(command: &str) -> Vec<String> {
     let unquote = |w: &str| w.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string();
     for segment in command.split(|c: char| c == '\n' || ";&|()".contains(c)) {
         let words: Vec<String> = segment.split_whitespace().map(unquote).filter(|w| !w.is_empty()).collect();
-        let mut i = 0;
-        while i < words.len() && (WRAPPERS.contains(&words[i].as_str()) || (words[i].contains('=') && !words[i].starts_with('-'))) {
-            i += 1;
-        }
+        let i = program_at(&words);
         let Some(program) = words.get(i) else { continue };
-        let name = program.rsplit('/').next().unwrap_or(program);
-        if program.contains('/') {
-            add(program);
-        } else if INTERPRETERS.contains(&name) || name.starts_with("python") {
+        let name = base_name(program);
+        if INTERPRETERS.contains(&name) || name.starts_with("python") {
             if let Some(script) = words[i + 1..].iter().find(|w| !w.starts_with('-')) {
                 add(script);
             }
+        } else if program.contains('/') {
+            add(program);
         }
         if !words[i + 1..].iter().any(|w| REWRITES.contains(&w.as_str())) {
             continue;
@@ -400,6 +462,10 @@ fn turns_of(events: &[Value]) -> Vec<Turn> {
             continue;
         }
         let Some(cur) = out.last_mut() else { continue };
+        if slash_command(e) {
+            cur.since_prompt = cur.calls.len();
+            continue;
+        }
         if e["type"] == "system" && ENDED.contains(&e["subtype"].as_str().unwrap_or("")) {
             cur.closed = true;
         } else {
@@ -562,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn an_error_for_a_call_is_a_refusal_unless_it_says_the_call_started() {
+    fn an_error_for_a_call_is_a_refusal_only_when_it_reads_as_one() {
         let result = |content: &str| json!({"type": "tool_result", "tool_use_id": "t", "is_error": true, "content": content});
         for text in [
             "Hook PreToolUse:Bash denied this tool",
@@ -575,17 +641,52 @@ mod tests {
             "sprout: sprout refuses this write: \"/dev/null\" is outside this node's declared work",
             "BLOCKED: mutating command targets a path outside this repo",
             "Permission for this action was denied. Reason: the command timed out last time",
+            "sprout: blocked, the last run timed out",
+            "Hook said no: interrupted work isn't allowed here, it's not allowed",
         ] {
             assert!(refused(&result(text), false), "{text}");
         }
-        for text in ["Exit code 1\nerror: test failed", "Error: Exit code 137", "[Tool call interrupted: the session ended]", "Command timed out after 2m 0s", "Interrupted by user", "the stream was cut off"] {
+        for text in [
+            "Exit code 1\nerror: test failed",
+            "Error: Exit code 137",
+            "[Tool call interrupted: the session ended]",
+            "Command timed out after 2m 0s",
+            "Interrupted by user",
+            "the stream was cut off",
+            "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}",
+            "Prompt is too long",
+            "Agent stopped: max turns reached",
+            "Command was aborted before completion",
+            "Command was killed with SIGKILL",
+            "Error: Command failed",
+            "error: could not compile `app`",
+            "bash: ./x.sh: Permission denied",
+            "curl: (7) Failed to connect to localhost port 3000: Connection refused",
+            "Exit code 1\nthe hook blocked it",
+        ] {
             assert!(!refused(&result(text), false), "{text}");
         }
-        assert!(!refused(&result("whatever it printed"), true), "the tool's own output: it ran");
+        assert!(!refused(&result("blocked: whatever it printed"), true), "the tool's own output: it ran");
         assert!(!refused(&json!({"type": "tool_result", "tool_use_id": "t", "content": "Permission for this action"}), false), "not an error");
         let ev = |result: Value, output: Value| json!({"type": "user", "message": {"content": [result]}, "toolUseResult": output});
         assert_eq!(tool_results(&ev(result("odd failure"), json!({"stdout": "", "stderr": "odd failure"}))), vec![("t".to_string(), false)]);
-        assert_eq!(tool_results(&ev(result("odd failure"), json!("Error: odd failure"))), vec![("t".to_string(), true)]);
+        assert_eq!(tool_results(&ev(result("odd failure"), json!("Error: odd failure"))), vec![("t".to_string(), false)], "a string result is no refusal by itself");
+        assert_eq!(tool_results(&ev(result("Blocked: outside the repo"), json!("Error: Blocked: outside the repo"))), vec![("t".to_string(), true)]);
+    }
+
+    #[test]
+    fn a_slash_command_starts_the_hooks_calls_over_but_not_the_turn() {
+        let ev = vec![
+            json!({"type": "user", "message": {"content": "Go"}, "timestamp": "2026-10-01T10:00:00Z"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}),
+            json!({"type": "user", "message": {"content": "<command-name>/review</command-name>\n<command-message>review</command-message>"}}),
+            json!({"type": "user", "message": {"content": "<system-reminder>x</system-reminder>"}}),
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "pwd"}}]}}),
+        ];
+        let t = turns_of(&ev);
+        assert_eq!(t.len(), 1, "a slash command is neutral to the turn");
+        assert_eq!(t[0].calls.len(), 2);
+        assert_eq!(t[0].current_calls().iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), vec!["t2"]);
     }
 
     #[test]
@@ -595,6 +696,17 @@ mod tests {
         assert!(run_paths("cargo test --manifest-path ../Cargo.toml").is_empty(), "a build or a test only reads what its manifest names");
         assert!(run_paths("ls ../tools/ && grep -r x ../lib && python3 -m pytest").is_empty());
         assert_eq!(run_paths("node 'scripts/gen.js'\nbash -x ../ci/run.sh"), vec!["scripts/gen.js", "../ci/run.sh"]);
+        for (command, script) in [
+            ("/usr/bin/env python3 ../tools/gen.py", "../tools/gen.py"),
+            ("uv run python ../tools/gen.py", "../tools/gen.py"),
+            ("npx tsx ../tools/gen.ts", "../tools/gen.ts"),
+            ("pnpm exec tsx ../tools/gen.ts", "../tools/gen.ts"),
+            ("bunx tsx ../tools/gen.ts", "../tools/gen.ts"),
+            ("/opt/homebrew/bin/python3 ../tools/gen.py", "../tools/gen.py"),
+            ("env -i FOO=1 node ../x.js", "../x.js"),
+        ] {
+            assert_eq!(run_paths(command), vec![script], "{command}");
+        }
     }
 
     #[test]
