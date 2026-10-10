@@ -2215,7 +2215,7 @@ fn on_status(r: &mut Report) -> Result<Value> {
 }
 
 const START_TEXT: &[(&str, &str)] =
-    &[("startup", "Started a Claude session"), ("resume", "Resumed an earlier conversation"), ("clear", "Cleared its conversation and started again")];
+    &[("startup", "Started a Claude session"), ("resume", "Resumed an earlier conversation"), ("clear", crate::startword::CLEARED)];
 
 fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
     let b = &r.body;

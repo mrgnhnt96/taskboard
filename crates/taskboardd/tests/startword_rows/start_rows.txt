@@ -708,3 +708,47 @@ T8=S ## agent:T8 is ready. It touches the footer. Should I start it? || yes
 T8=S ## agent:T8 touches the footer. Should I start it? || yes
 T8=S ## agent:T8 is ready. Should I start it? || yes
 T8=R ## agent:I made T10. T8 is in review. Want me to start it? || yes
+# From #159: emoji, markdown, typos, offers and choice questions.
+T8=S ## get going on T8
+T8=S ## pls get going on T8 when u can
+T8=S ## sart T8 plz
+T8=S ## **start T8**
+T8=S ## start **T8** now
+T8=S T9=R ## ## Plan\n- start T8\n- T9 can wait
+T8=S ## `T8` - start it
+T8=S ## start T8 🚀
+T8=S ## start T8 🙏
+T8=S ## let's get T8 going
+T8=S ## T8 next please
+T8=S ## ok T8 now
+T8=S ## after looking at the logs, I think T8 is the right call. start it.
+T8=S ## > Should I start T8?\nyes
+T8=S ## agent:Should I start T8? || 👍👍
+T8=S ## agent:Should I start T8? || yes 🎉
+T8=S ## agent:Should I start T8? || ✅
+T8=S ## agent:Should I start T8? || 🚀
+T8=S ## agent:Should I start T8? || make it so
+T8=S ## agent:Should I start T8? || yse
+T8=S ## agent:Should I start T8? || yess
+T8=S ## agent:Should I start T8? || yeah go ahaed
+T8=S ## agent:Shall I get going on T8? || yeah
+T8=S ## agent:Ready to start T8 whenever you are. || go
+T8=S ## agent:I can start T8 now if you want. || yes
+T8=S ## agent:I can start T8 now if you want. || do it
+T8=S ## agent:T8 is unblocked now that T9 merged. Should I start it? || yes
+T8=S T9=R ## agent:Should I start T8? || yes, but leave T9 alone
+T8=S ## agent:Should I start T8 now or after the release? || now
+T8=R ## start T8, actually hold that thought
+T8=R T9=S ## agent:Should I start T8? || T9 instead
+# The same reading holds what it held before.
+T8=R ## agent:Should I start T8? || 👎
+T8=R ## agent:I can start T8 tomorrow if you want. || yes
+T8=R ## agent:Should I start T8 now or after the release? || after the release
+T8=R ## # start T8
+T8=R ## > start T8
+T8=R ## **don't start T8**
+T8=R ## start T8 🚀 tomorrow
+T8=R ## `start T8`
+T8=R ## sart T8 tmrw
+T8=R ## agent:Should I start T8? || yse, but not now
+T8=R T9=R ## agent:Should I start T8? || T9 instead?

@@ -603,10 +603,11 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run it? It has 2 tasks.", "say:yes"],
         vec!["plan", "agent:Want me to run it? It has 2 tasks.", "say:yes"],
         vec!["plan", "agent:Updated the plan. Want me to run it?", "say:yes"],
+        // #158: a goal the owner names runs wherever it was made.
+        vec!["say:run G"],
     ];
     let refused: Vec<Vec<&str>> = vec![
-        // #157: a goal that isn't the conversation's doesn't run from its terminal, even by name.
-        vec!["say:run G"],
+        // #157, as #158 left it: a goal that isn't the conversation's runs from its terminal only by name.
         vec!["say:run the goal"],
         vec!["say:run it"],
         vec!["say:yes"],
@@ -1090,9 +1091,12 @@ fn a_run_check_runs_nothing_and_says_whether_it_would() {
     let (code, why) = check(json!({"via_session": "s1", "check": true})).unwrap_err();
     assert_eq!(code, 403);
     assert!(why.contains(&format!("Only a human can run G{g}")), "{why}");
+    // #158: the advice is what works from any terminal, the goal by name.
+    assert!(why.contains(&format!("tell you to run G{g} by name")), "{why}");
     let (code, why) = check(json!({"check": true})).unwrap_err();
     assert_eq!(code, 403);
     assert!(why.contains("the only way to run it from outside a Midna terminal"), "{why}");
+    assert!(why.contains(&format!("to run G{g} by name")), "{why}");
     // #157: the goal must be the conversation's; the board hands it this one.
     b.typed(&format!("[task-board:G{g}] Plan the goal."));
     b.typed(&format!("run G{g}"));
@@ -1101,6 +1105,8 @@ fn a_run_check_runs_nothing_and_says_whether_it_would() {
     assert_eq!(b.status(id), "planned", "a check runs nothing");
     assert!(b.tb_run(g).is_ok());
     assert_eq!(b.status(id), "queued");
+    // #158: the run spent the word; a second run needs a new one.
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
 }
 
 /// Each case is a fresh conversation with T8, T9, T10 and T11 on the board, the steps in order ("agent:"

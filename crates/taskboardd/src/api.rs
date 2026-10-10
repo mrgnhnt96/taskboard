@@ -1855,9 +1855,10 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         return err(
             403,
             format!(
-                "Only a human can run {}: {} can press Run on the board, the only way to run it from outside a Midna terminal, or ask an agent in a Midna terminal to run it there (tb start {}).",
+                "Only a human can run {}: {} can press Run on the board, the only way to run it from outside a Midna terminal, or tell an agent in a Midna terminal to run {} by name, and it runs it there (tb start {}).",
                 rf("goal", id),
                 app.cfg.owner,
+                rf("goal", id),
                 rf("goal", id)
             ),
         );
@@ -1867,13 +1868,16 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             return err(
                 403,
                 format!(
-                    "Only a human can run {}: nobody asked for it in this terminal's conversation. {} can press Run on the board, or tell you to start it.",
+                    "Only a human can run {}: nobody asked for it in this terminal's conversation since it last ran here. {} can press Run on the board, or tell you to run {} by name.",
                     rf("goal", id),
-                    app.cfg.owner
+                    app.cfg.owner,
+                    rf("goal", id)
                 ),
             );
         }
     }
+    // A run on the terminal's word spends it (a check runs nothing, so spends nothing).
+    let spend = !from_app(query) && !as_bool(body.get("check"), false);
     // `tb goal set G2 … --run` asks first, so a refused run changes nothing.
     if as_bool(body.get("check"), false) {
         return Ok(json!({"ok": true, "goal": rf("goal", id), "would_run": true}));
@@ -1900,6 +1904,9 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         }
         Ok(n)
     })?;
+    if spend {
+        crate::startword::note_ran_goal(app, &via, id)?;
+    }
     let mut d = goal_detail(app, id)?;
     d["queued_now"] = json!(n);
     Ok(d)
