@@ -782,3 +782,40 @@ T8=S ## > I can start T8 now if you want.\nyes
 T8=S ## hold that thought, actually start T8
 T8=R ## agent:Should I start T8? || yep, nope, hold
 T8=R ## agent:Should I start T8? || yes but leave it alone for now
+# From #165: a bare "T8 next?"/"T8 now?", filler or a work verb on the task still asks to start it.
+T8=S ## agent:T9 merged. T8 next? || yes
+T8=S ## agent:T8 now? || go
+T8=S ## agent:T8 next? || 👍
+T8=S ## agent:Want T8 next? || yes
+T8=S ## agent:Okay, T8 next? || yes
+T8=S ## agent:How about T8 next? || sure
+T8=S ## agent:Want me to tackle T8 next? || yes
+T8=S ## agent:Want me to take T8 next? || yes
+T8=S ## agent:Want me to handle T8 now? || yes
+T8=S ## agent:Shall I go on to T8 now? || yes
+T8=R ## agent:Should I squash T8 now? || yes
+T8=R ## agent:Want me to review T8 next? || yes
+T8=R ## agent:Should I rename T8 now? || yes
+T8=R ## agent:Should I ship T8 now? || yes
+T8=R ## agent:Should I push T8 now? || yes
+T8=R ## agent:T8 next? || not yet
+# From #166: "ready for"/"on to"/"get started on", and a start question with a second question after it.
+T8=S ## agent:T9 is merged. Ready for T8? || yes
+T8=S ## agent:T9 is merged and green. On to T8? || yes
+T8=S ## agent:T9 merged. Shall I move on to T8? || yes
+T8=S ## agent:Should I jump on T8? || yes
+T8=S ## agent:Shall I get started on T8? || yep
+T8=S ## agent:T9 is done and T8 is up next. Want me to get going on it? || yes
+T8=S ## agent:Should I start T8? Also, do you want me to update the changelog? || yes
+T8=S ## agent:Should I start T8? I also noticed the README is stale. Want me to fix that too? || yes to both
+T8=S ## agent:Should I start T8? Or is there something more urgent? || yes
+T8=S ## agent:Want me to start T8 now? Or should I wait? || start now
+T8=S ## agent:Want me to kick off T8? Or would you rather I look at the flaky test first? || kick it off
+T8=R T9=R ## agent:Should I start T8? Also, should I close T9? || just close T9
+T8=R ## agent:Ready to merge T8? || yes
+T8=R ## agent:Should I close T8 now? Also, do you want me to update the changelog? || yes
+T8=R ## agent:Want me to start T8 now? Or should I wait? || yes
+T8=R ## agent:Want me to kick off T8? Or would you rather I look at the flaky test first? || yes
+T8=R ## agent:Should I start T8? Or should I close it? || yes
+T8=R ## agent:Should I start T8? Also, should I close T9? || yes, but not T8
+T8=S T9=S ## agent:Should I start T8 and T9? || both

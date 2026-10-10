@@ -407,3 +407,9 @@ S ## agent:Should I run G now or after the release? || say:now
 R ## agent:Should I run G now or after the release? || say:after the release
 S ## goal new || say:> Want me to run it?\nyes
 S ## goal new || say:kick it of
+# From #166: "ready for G?"/"G next?", and a run question with a second question after it.
+S ## agent:Ready for G? || say:yes
+S ## agent:G next? || say:yes
+S ## agent:Should I run G? Also, do you want me to update the docs? || say:yes
+S ## goal new || agent:Made G. Should I kick it off? Also, should I link the epic? || say:do it
+R ## goal new || agent:Made G. Should I archive it? Also, should I link the epic? || say:do it
