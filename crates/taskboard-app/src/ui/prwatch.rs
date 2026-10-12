@@ -1,5 +1,6 @@
 //! The board's PR watch in the window's chrome: the status-bar pills of an unhealthy PR feed
-//! (`state.pr_feed`) and of stopped PR builds (`state.pr_builds`), and the "Master is red" banner
+//! (`state.pr_feed`), of the work event stream's sources (`state.stream`, read-only: modes change
+//! with `tb stream mode`) and of stopped PR builds (`state.pr_builds`), and the "Master is red" banner
 //! line for each open break of a watched default branch that's the owner's (`state.master`), which
 //! stands in for that break's urgent alert.
 
@@ -39,6 +40,99 @@ pub fn builds_pill(v: &Value) -> Option<Pill> {
         title += &format!(": {r}");
     }
     Some(Pill { cls: "hours", label: "PR builds stopped".into(), title })
+}
+
+/// One source's row in the Streams card: what `tb stream` prints, in words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamRow {
+    pub name: &'static str,
+    /// "Board" or "Stream".
+    pub mode: &'static str,
+    /// Healthy, Stuck, Silent or Settling, while its stream is watched.
+    pub health: Option<String>,
+    /// The health's tone: up, warn or down.
+    pub tone: &'static str,
+    /// "3:05 PM" today, else "Oct 7, 3:05 PM".
+    pub last_event: Option<String>,
+    /// "Polling", "Poll resting", or none for Jira (it has no poll).
+    pub poll: Option<&'static str>,
+}
+
+/// The Streams pill: shown while any source's stream is watched (stream mode, or `[feed] on` for
+/// PRs). Its dot is the worst source's tone; hovering lists every source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamsView {
+    pub tone: &'static str,
+    pub rows: Vec<StreamRow>,
+}
+
+pub fn streams_view(v: &Value) -> Option<StreamsView> {
+    let sources = arr(v, "sources");
+    if !sources.iter().any(|x| x["watched"] == true) {
+        return None;
+    }
+    let rows: Vec<StreamRow> = sources
+        .iter()
+        .map(|x| {
+            let (health, tone) = match (x["watched"] == true, fmt::opt_s(x, "problem")) {
+                (false, _) => (None, "up"),
+                (true, Some(p)) => (Some(fmt::cap(p)), "down"),
+                (true, None) if x["settling_secs"].is_number() => (Some("Settling".into()), "warn"),
+                (true, None) => (Some("Healthy".into()), "up"),
+            };
+            let name = s(x, "source");
+            StreamRow {
+                name: match name {
+                    "prs" => "PRs",
+                    "builds" => "Builds",
+                    "jira" => "Jira",
+                    _ => "QA",
+                },
+                mode: if s(x, "mode") == "stream" { "Stream" } else { "Board" },
+                health,
+                tone,
+                last_event: fmt::opt_s(x, "last_event_at").map(|t| fmt::log_time(t).replace('\n', ", ")),
+                poll: (name != "jira").then_some(if x["polling"] == false { "Poll resting" } else { "Polling" }),
+            }
+        })
+        .collect();
+    let tone = ["down", "warn"].into_iter().find(|t| rows.iter().any(|r| r.tone == *t)).unwrap_or("up");
+    Some(StreamsView { tone, rows })
+}
+
+fn tone_color(t: &Theme, tone: &str) -> Hsla {
+    match tone {
+        "down" => t.down,
+        "warn" => t.warn,
+        _ => t.up,
+    }
+}
+
+/// The hover card: one row per source, in the tooltip's inverted colours.
+struct StreamsCard {
+    rows: Vec<StreamRow>,
+}
+
+impl Render for StreamsCard {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.global::<Theme>();
+        let cell = |w: f32| div().w(px(w)).flex_none().flex().items_center().gap(px(5.));
+        let mut card =
+            div().flex().flex_col().gap(px(3.)).px(px(10.)).py(px(7.)).rounded(px(6.)).bg(t.text).text_color(t.bg).text_size(px(12.)).font_family(t.ui_font.clone());
+        for r in &self.rows {
+            card = card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(cell(56.).font_weight(FontWeight::SEMIBOLD).child(r.name))
+                    .child(cell(56.).child(r.mode))
+                    .child(cell(80.).children(r.health.clone().map(|h| [kit::dot(tone_color(t, r.tone), 6.).into_any_element(), h.into_any_element()]).into_iter().flatten()))
+                    .child(cell(120.).children(r.last_event.clone()))
+                    .child(cell(84.).children(r.poll)),
+            );
+        }
+        card
+    }
 }
 
 /// One "Master is red" line: its text, and the fix task to open.
@@ -130,6 +224,16 @@ pub fn pills(st: &Value, t: &Theme) -> Vec<AnyElement> {
     if let Some(p) = st.get("pr_feed").and_then(feed_pill) {
         out.push(pill_shell(t, "feed-pill", t.warn_fg, t.warn_soft).child(kit::dot(t.warn, 7.)).child(p.label).tooltip(kit::tip(p.title)).into_any_element());
     }
+    if let Some(v) = st.get("stream").and_then(streams_view) {
+        let rows = v.rows;
+        out.push(
+            pill_shell(t, "streams-pill", t.muted, t.seg)
+                .child(kit::dot(tone_color(t, v.tone), 7.))
+                .child("Streams")
+                .tooltip(move |_, cx| cx.new(|_| StreamsCard { rows: rows.clone() }).into())
+                .into_any_element(),
+        );
+    }
     out
 }
 
@@ -166,6 +270,35 @@ mod tests {
         assert!(shown_as_master(&st, &json!({"key": "master:M3", "urgent": true})), "its urgent alert isn't a second line");
         assert!(!shown_as_master(&st, &json!({"key": "master:M4", "urgent": true})));
         assert!(!shown_as_master(&st, &json!({"key": "qa:3"})));
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_streams_pill_lists_each_source_while_any_stream_is_watched() {
+        let src = |name: &str, extra: Value| {
+            let mut x = json!({"source": name, "mode": "board", "watched": false, "problem": null, "polling": true, "settling_secs": null, "last_event_at": null});
+            for (k, v) in extra.as_object().unwrap() {
+                x[k] = v.clone();
+            }
+            x
+        };
+        let board = json!({"sources": [src("prs", json!({})), src("builds", json!({})), src("jira", json!({})), src("qa", json!({}))]});
+        assert_eq!(streams_view(&board), None, "nothing watched: no pill");
+
+        let at = fmt::log_time("2026-10-12T15:04:00Z").replace('\n', ", ");
+        let v = streams_view(&json!({"sources": [
+            src("prs", json!({"mode": "stream", "watched": true, "polling": false, "last_event_at": "2026-10-12T15:04:00Z"})),
+            src("builds", json!({"mode": "stream", "watched": true, "settling_secs": 40})),
+            src("jira", json!({"mode": "stream", "watched": true, "polling": false, "problem": "silent"})),
+            src("qa", json!({}))]}))
+        .unwrap();
+        assert_eq!(v.tone, "down", "the worst source colours the dot");
+        let r = &v.rows;
+        assert_eq!((r[0].name, r[0].mode, r[0].health.as_deref(), r[0].poll), ("PRs", "Stream", Some("Healthy"), Some("Poll resting")));
+        assert_eq!(r[0].last_event.as_deref(), Some(at.as_str()));
+        assert!(at.contains("AM") || at.contains("PM"), "12-hour: {at}");
+        assert_eq!((r[1].health.as_deref(), r[1].tone, r[1].poll), (Some("Settling"), "warn", Some("Polling")));
+        assert_eq!((r[2].name, r[2].health.as_deref(), r[2].poll), ("Jira", Some("Silent"), None), "Jira has no poll");
+        assert_eq!((r[3].name, r[3].mode, r[3].health.as_deref(), r[3].last_event.as_deref()), ("QA", "Board", None, None));
     }
 
     #[::core::prelude::v1::test]

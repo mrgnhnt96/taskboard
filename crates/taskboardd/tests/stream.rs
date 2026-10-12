@@ -341,6 +341,7 @@ fn health_is_kept_per_source() {
 
     b.feed_state("qa", json!({"since": ago(4000.0)}));
     assert_eq!(b.source("qa")["problem"], "silent");
+    assert_eq!(b.get("/state")["stream"], b.get("/stream"), "the app reads the same overview from /state");
 }
 
 #[test]
