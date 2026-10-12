@@ -413,3 +413,11 @@ S ## agent:G next? || say:yes
 S ## agent:Should I run G? Also, do you want me to update the docs? || say:yes
 S ## goal new || agent:Made G. Should I kick it off? Also, should I link the epic? || say:do it
 R ## goal new || agent:Made G. Should I archive it? Also, should I link the epic? || say:do it
+# From #171: start-now answers after "Or should I wait?", and "it" for the goal just named.
+S ## agent:Should I run G now? Or should I wait for the release? || say:run it now
+S ## agent:Should I run G now? Or should I wait for the release? || say:run now
+S ## agent:Should I run G now? Or should I wait for the release? || say:run it
+S ## agent:Want me to kick off G? Or should I wait? || say:kick it off
+S ## agent:Should I start G? Or should I wait? || say:start now
+S ## goal new || agent:Made G. Ready for it? || say:yes
+S ## goal new || agent:Made G. Want me to get started on it? || say:yes

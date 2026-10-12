@@ -819,3 +819,20 @@ T8=R ## agent:Want me to kick off T8? Or would you rather I look at the flaky te
 T8=R ## agent:Should I start T8? Or should I close it? || yes
 T8=R ## agent:Should I start T8? Also, should I close T9? || yes, but not T8
 T8=S T9=S ## agent:Should I start T8 and T9? || both
+# From #171: an "Or …" offering another task, a person or doing it yourself; "it" for the task just named; "Also, …" asks.
+T8=R T9=R ## agent:Should I start T8? Or T9? || yes
+T8=R ## agent:Should I start T8? Or would you prefer to do it yourself? || yes
+T8=R ## agent:Should I start T8? Or do you want to handle it yourself? || yes
+T8=R ## agent:Should I start T8? Or should I hand it to someone else? || yes
+T8=R ## agent:T8 next? I'd merge it first. || yes
+T8=R T9=R ## agent:T8 next? Or T9? || yes
+T8=R ## agent:Should I start T8? Or should Sam take it? || yes
+T8=S T9=R ## agent:Should I start T8? Or should I start T9? || T8
+T8=R T9=S ## agent:Should I start T8? Or should I start T9? || T9
+T8=S ## agent:Want me to tackle T8? Or should I wait? || tackle it
+T8=S ## agent:T9 is done. Want me to get started on T8? Or should I wait? || get started
+T8=S ## agent:T9 is done and T8 is up next. Ready for it? || yes
+T8=S ## agent:T8 is up next. Want me to get started on it? || yes
+T8=S ## agent:Should I start T8? Also, do you want me to update the changelog after? || yes
+T8=S ## agent:Should I start T8? Also, should I close the stale PR? || yes
+T8=S ## agent:Should I start T8? Also, should I delete the old branch? || yes to both
