@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner};
+use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
 pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "merge", "waits"];
@@ -322,7 +322,8 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     let cid = last
         .as_ref()
         .and_then(|l| l.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()))
-        .or_else(|| t.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()));
+        .or_else(|| t.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()))
+        .filter(|c| transcript::conversation_saved(&app.cfg.claude_projects, args["cwd"].as_str().unwrap_or(""), c));
     let live = last.as_ref().is_some_and(|l| l.s("status") != Some("gone") && board::runs_claude(l));
     let too_big = match (&cid, live) {
         (Some(cid), false) => {

@@ -274,9 +274,16 @@ fn say_hello(cfg: &Config, base: &Value, version: &str, path: &str, left: f64) {
     }
 }
 
+/// A `claude -p` (or Agent SDK) run: Claude Code marks it with an `sdk-*` entrypoint. One an agent
+/// starts in its terminal inherits `MIDNA_SESSION`, but it isn't that terminal's conversation.
+fn headless(entrypoint: Option<&str>) -> bool {
+    entrypoint.is_some_and(|e| e.starts_with("sdk"))
+}
+
 pub fn run(event_arg: Option<&str>) -> i32 {
     let start = Instant::now();
-    let session = std::env::var("MIDNA_SESSION").unwrap_or_default();
+    // A headless run reports nothing for the terminal it ran in; it only meets the token guard.
+    let session = if headless(std::env::var("CLAUDE_CODE_ENTRYPOINT").ok().as_deref()) { String::new() } else { std::env::var("MIDNA_SESSION").unwrap_or_default() };
     // The app token guard runs in every terminal, Midna's or not; everything else only in Midna's.
     if session.is_empty() && event_arg != Some("PreToolUse") {
         return 0;
@@ -565,5 +572,13 @@ mod tests {
         assert!(sent.starts_with("start T8.") && sent.ends_with("\njk") && sent.contains(taskboardd::startword::CUT_MARK));
         let short = format!("start T8. {}…", "word ".repeat(1000));
         assert_eq!(taskboardd::startword::keep_ends(&short, MAX_PROMPT), short, "sent whole up to the board's cap");
+    }
+
+    #[test]
+    fn a_headless_run_isnt_the_terminals_conversation() {
+        assert!(headless(Some("sdk-cli")), "claude -p");
+        assert!(headless(Some("sdk-ts")), "the Agent SDK");
+        assert!(!headless(Some("cli")), "the terminal's own claude");
+        assert!(!headless(None));
     }
 }
