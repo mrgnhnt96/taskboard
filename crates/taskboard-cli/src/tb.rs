@@ -144,6 +144,13 @@ enum Cmd {
         #[arg(long)]
         midna: bool,
     },
+    /// Print the preview card Midna shows for a hovered taskboard:// task or goal link, as JSON. Only reads
+    Preview {
+        url: String,
+        /// The board's port, when it isn't the usual one
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Wait for another task's work before carrying on (or `none`)
     WaitFor {
         tasks: Vec<String>,
@@ -3019,6 +3026,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&start_said(&r, queue, &v));
             Ok(0)
         }
+        Cmd::Preview { url, port } => crate::preview::run(&url, port),
         Cmd::Peek { midna } => {
             // whoami, not a tb.status report: a report marks the terminal active and hands it deliveries.
             if c.session.is_empty() {
