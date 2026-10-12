@@ -1,5 +1,6 @@
 //! Reading Claude Code transcripts (`~/.claude/projects/<dashed path>/<conversation>.jsonl`).
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -282,6 +283,7 @@ const REFUSALS: &[&str] = &[
     "This session is isolated in the worktree",
     "This agent is isolated in the worktree",
     "Parser skipped input between top-level statements",
+    "Sibling tool call errored",
 ];
 
 /// How an error from a call that started reads, whatever deny word it has: the API's or a subagent's.
@@ -289,13 +291,12 @@ const RAN_ERRORS: &[&str] = &["API Error", "Agent stopped"];
 /// Words a bare deny reason (a hook's own `permissionDecisionReason`, sent back as its text) says the
 /// call was stopped with.
 const DENY_WORDS: &[&str] = &["refuse", "denied", "deny", "blocked", "not allowed", "disallowed", "forbidden", "rejected", "policy"];
-/// How a program's own message starts (`fatal: ...`, `! [rejected] ...`, `403 Forbidden`): a command
-/// that ran and failed, not a hook's reason.
-static PROGRAM_MESSAGE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?i:[^a-z]|(error|fatal|warning|hint|remote):|npm err!)").unwrap());
-/// The longest a bare deny reason runs.
-const DENY_REASON_MAX: usize = 300;
+/// How a program's own message starts on its first line (`fatal: ...`, `! [rejected] ...`,
+/// `403 Forbidden`, `npm error ...`, git's `To <remote>`): a command that ran and failed, not a hook's reason.
+static PROGRAM_MESSAGE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"^(?i:!|\d{3}\b|(error|fatal|warning|hint|remote|push rejected):|npm err|To \S+$)").unwrap());
 /// What a command that ran prints when the OS or a server turns it down: its own failure, not a refusal.
-const RAN_DENIALS: &[&str] = &["permission denied", "connection refused", "operation not permitted"];
+const RAN_DENIALS: &[&str] = &["permission denied", "connection refused", "operation not permitted", "access denied for user"];
 
 /// A tool result's text, whether a string or a list of text blocks.
 fn result_text(b: &Value) -> String {
@@ -309,12 +310,13 @@ fn result_text(b: &Value) -> String {
 /// An error result for a call that never ran: refused, not failed or cut off after it started.
 ///
 /// A call ran unless its error reads as a refusal: Claude Code's own wording for one (`REFUSALS`,
-/// whatever else the text says), or a bare deny reason: one short line with a `DENY_WORDS` word and
-/// nothing that says the call started (the tool's own output, as Claude keeps a shell's stdout and
-/// stderr in `output`; a shell's exit code; an interruption; an API error; a subagent stopped; a
-/// program's own message). Any other error (an API error, max turns, a command aborted, killed or
-/// failing on stderr) is from a call that ran, and may have edited first.
-fn refused(b: &Value, output: bool) -> bool {
+/// whatever else the text says), or a bare deny reason: a `DENY_WORDS` word on its first line (a
+/// hook's reason may run on, or start with a symbol) and nothing that says the call started (the
+/// tool's own output, as Claude keeps a shell's stdout and stderr in `output`; a shell's exit code; an
+/// interruption; an API error; a subagent stopped; a program's own message, or one that starts with
+/// `<program>:` for a program the call ran, from `programs`). Any other error (an API error, max turns, a
+/// command aborted, killed or failing on stderr) is from a call that ran, and may have edited first.
+fn refused(b: &Value, output: bool, programs: &[String]) -> bool {
     if b["is_error"] != true {
         return false;
     }
@@ -329,8 +331,9 @@ fn refused(b: &Value, output: bool) -> bool {
     if output || t.starts_with("Exit code ") || t.starts_with("[Tool call interrupted") || RAN_ERRORS.iter().any(|r| t.starts_with(r)) {
         return false;
     }
-    let reason = t.trim_end();
-    if reason.contains('\n') || reason.len() > DENY_REASON_MAX || PROGRAM_MESSAGE.is_match(reason) {
+    let reason = t.lines().next().unwrap_or("").trim();
+    let from_program = |p: &String| reason.strip_prefix(p.as_str()).is_some_and(|rest| rest.starts_with(':'));
+    if PROGRAM_MESSAGE.is_match(reason) || programs.iter().any(from_program) {
         return false;
     }
     let mut reason = reason.to_lowercase();
@@ -454,8 +457,24 @@ fn run_paths(command: &str) -> Vec<String> {
     out
 }
 
-/// The tool results in one of the main conversation's events, as (tool_use_id, refused).
-fn tool_results(e: &Value) -> Vec<(String, bool)> {
+/// The programs a shell command runs (`gh`, `npm`, `mysql`), past its wrappers, by name.
+fn programs_of(command: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for segment in command.split(|c: char| c == '\n' || ";&|()".contains(c)) {
+        let words: Vec<String> = segment.split_whitespace().map(|w| w.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string()).filter(|w| !w.is_empty()).collect();
+        if let Some(program) = words.get(program_at(&words)) {
+            let name = base_name(program).to_string();
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// The tool results in one of the main conversation's events, as (tool_use_id, refused). `programs`
+/// holds the programs each shell call ran, by tool_use_id.
+fn tool_results(e: &Value, programs: &HashMap<String, Vec<String>>) -> Vec<(String, bool)> {
     if e["type"] != "user" || e["isSidechain"] == true {
         return vec![];
     }
@@ -467,7 +486,7 @@ fn tool_results(e: &Value) -> Vec<(String, bool)> {
         .map(|a| {
             a.iter()
                 .filter(|b| b["type"] == "tool_result")
-                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), refused(b, output))))
+                .filter_map(|b| b["tool_use_id"].as_str().filter(|id| !id.is_empty()).map(|id| (id.to_string(), refused(b, output, programs.get(id).map(Vec::as_slice).unwrap_or_default()))))
                 .collect()
         })
         .unwrap_or_default()
@@ -475,6 +494,7 @@ fn tool_results(e: &Value) -> Vec<(String, bool)> {
 
 fn turns_of(events: &[Value]) -> Vec<Turn> {
     let mut out: Vec<Turn> = vec![];
+    let mut programs: HashMap<String, Vec<String>> = HashMap::new();
     for e in events {
         if let Some(p) = prompt_of(e) {
             out.push(Turn { at: e["timestamp"].clone(), prompt: p, ..Turn::default() });
@@ -493,7 +513,12 @@ fn turns_of(events: &[Value]) -> Vec<Turn> {
                     cur.files.push(p);
                 }
             }
-            cur.results.extend(tool_results(e));
+            for b in e["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use" && SHELL_TOOLS.contains(&b["name"].as_str().unwrap_or(""))) {
+                if let Some(id) = b["id"].as_str() {
+                    programs.insert(id.to_string(), programs_of(b["input"]["command"].as_str().unwrap_or("")));
+                }
+            }
+            cur.results.extend(tool_results(e, &programs));
             cur.calls.extend(tool_calls(e));
             for (name, input) in tool_uses(e) {
                 if SUBAGENT_TOOLS.contains(&name) {
@@ -663,7 +688,7 @@ mod tests {
             "sprout: blocked, the last run timed out",
             "Hook said no: interrupted work isn't allowed here, it's not allowed",
         ] {
-            assert!(refused(&result(text), false), "{text}");
+            assert!(refused(&result(text), false, &[]), "{text}");
         }
         for text in [
             "Exit code 1\nerror: test failed",
@@ -683,14 +708,14 @@ mod tests {
             "curl: (7) Failed to connect to localhost port 3000: Connection refused",
             "Exit code 1\nthe hook blocked it",
         ] {
-            assert!(!refused(&result(text), false), "{text}");
+            assert!(!refused(&result(text), false, &[]), "{text}");
         }
-        assert!(!refused(&result("blocked: whatever it printed"), true), "the tool's own output: it ran");
-        assert!(!refused(&json!({"type": "tool_result", "tool_use_id": "t", "content": "Permission for this action"}), false), "not an error");
+        assert!(!refused(&result("blocked: whatever it printed"), true, &[]), "the tool's own output: it ran");
+        assert!(!refused(&json!({"type": "tool_result", "tool_use_id": "t", "content": "Permission for this action"}), false, &[]), "not an error");
         let ev = |result: Value, output: Value| json!({"type": "user", "message": {"content": [result]}, "toolUseResult": output});
-        assert_eq!(tool_results(&ev(result("odd failure"), json!({"stdout": "", "stderr": "odd failure"}))), vec![("t".to_string(), false)]);
-        assert_eq!(tool_results(&ev(result("odd failure"), json!("Error: odd failure"))), vec![("t".to_string(), false)], "a string result is no refusal by itself");
-        assert_eq!(tool_results(&ev(result("Blocked: outside the repo"), json!("Error: Blocked: outside the repo"))), vec![("t".to_string(), true)]);
+        assert_eq!(tool_results(&ev(result("odd failure"), json!({"stdout": "", "stderr": "odd failure"})), &HashMap::new()), vec![("t".to_string(), false)]);
+        assert_eq!(tool_results(&ev(result("odd failure"), json!("Error: odd failure")), &HashMap::new()), vec![("t".to_string(), false)], "a string result is no refusal by itself");
+        assert_eq!(tool_results(&ev(result("Blocked: outside the repo"), json!("Error: Blocked: outside the repo")), &HashMap::new()), vec![("t".to_string(), true)]);
     }
 
     #[test]
@@ -711,14 +736,41 @@ mod tests {
             "This session is isolated in the worktree /tmp/wt but this command points git at a directory outside it.",
             "This agent is isolated in the worktree /tmp/wt, but this command is too complex to verify that it stays inside the worktree.",
             "Parser skipped input between top-level statements",
+            "<tool_use_error>Sibling tool call errored</tool_use_error>",
         ];
         assert_eq!(worded.len(), REFUSALS.len(), "a row for every wording");
         for r in REFUSALS {
-            assert!(worded.iter().any(|w| w.starts_with(r)), "{r}");
+            assert!(worded.iter().any(|w| w.trim_start_matches("<tool_use_error>").starts_with(r)), "{r}");
         }
-        for text in worded.iter().copied().chain(["Error: Parser skipped input between top-level statements", "policy: network is cut off for this session"]) {
-            assert!(refused(&result(text), false), "{text}");
+        let long = format!("Blocked: {}", "rm -rf is not allowed here. ".repeat(12));
+        let reasons = [
+            "Error: Parser skipped input between top-level statements",
+            "policy: network is cut off for this session",
+            // #167 1: a hook's reason on two lines, starting with a symbol, or over 300 characters.
+            "Blocked: rm -rf is not allowed here.\nUse trash instead.",
+            "Denied by guard.\n(see docs/guard.md)",
+            "`rm -rf` is not allowed in this repo",
+            "[guard] blocked: rm -rf",
+            "⛔ Blocked: force push",
+            &long,
+        ];
+        for text in worded.iter().copied().chain(reasons) {
+            assert!(refused(&result(text), false, &[]), "{text}");
         }
+        // #167 2: a program's own one-line error, with a deny word.
+        let gh = ["gh".to_string()];
+        for text in [
+            "npm error code E403: publishing is not allowed for this package",
+            "npm error 403 403 Forbidden - PUT https://registry.npmjs.org/pkg",
+            "Access denied for user 'x'@'localhost' (using password: YES)",
+            "Push rejected: protected branch main",
+            "gh: request blocked (HTTP 403)",
+        ] {
+            assert!(!refused(&result(text), false, &gh), "{text}");
+        }
+        assert!(refused(&result("gh: request blocked (HTTP 403)"), false, &[]), "no gh in the call: a hook's reason");
+        assert!(refused(&result("rm -rf is not allowed here"), false, &["rm".to_string()]), "the program's name, but not its message");
+        assert_eq!(programs_of("cd x && sudo npm publish | tee log; /usr/bin/gh pr create"), vec!["cd", "npm", "tee", "gh"]);
         for text in [
             "! [rejected]        main -> main (fetch first)",
             "To github.com:acme/webapp.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs",
@@ -729,7 +781,7 @@ mod tests {
             "API Error: 400 {\"type\":\"error\",\"error\":{\"message\":\"Output blocked by content filtering policy\"}}",
             "Agent stopped: a tool use was rejected",
         ] {
-            assert!(!refused(&result(text), false), "{text}");
+            assert!(!refused(&result(text), false, &[]), "{text}");
         }
     }
 
