@@ -18,13 +18,60 @@ pub struct GhCli {
     pub env: Vec<(String, String)>,
 }
 
+impl GhCli {
+    fn gh(&self, args: &[String]) -> HostResult<crate::proc::Output> {
+        crate::proc::run_with(&self.bin, args, None, 30.0, &self.env, None).map_err(|_| "gh didn't answer in 30 seconds".to_string())
+    }
+
+    /// When the spent primary limit lifts: the latest `reset` among the resources `gh api rate_limit`
+    /// says have nothing left (asking doesn't count against the limit).
+    fn reset_at(&self) -> Option<f64> {
+        let o = self.gh(&s(&["api", "rate_limit"])).ok().filter(|o| o.code == Some(0))?;
+        let v: Value = serde_json::from_str(&o.stdout).ok()?;
+        v["resources"].as_object()?.values().filter(|r| r["remaining"].as_i64() == Some(0)).filter_map(|r| r["reset"].as_f64()).reduce(f64::max)
+    }
+}
+
 impl Gh for GhCli {
     fn run(&self, args: &[String]) -> HostResult<String> {
-        let o = crate::proc::run_with(&self.bin, args, None, 30.0, &self.env, None).map_err(|_| "gh didn't answer in 30 seconds".to_string())?;
-        if o.code != Some(0) {
-            return Err(o.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed").to_string());
-        }
-        Ok(o.stdout)
+        let key = super::account_key("github", &self.env.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>());
+        super::limit::Gate::new("github", key).call(is_write(args), || {
+            let o = self.gh(args).map_err(|e| (e, None))?;
+            if o.code != Some(0) {
+                let first = o.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed").to_string();
+                let hit = rate_limited(&o.stderr).map(|primary| super::limit::Hit { reset_at: if primary { self.reset_at() } else { None }, why: first.clone(), ..Default::default() });
+                return Err((first, hit));
+            }
+            Ok((o.stdout, None))
+        })
+    }
+}
+
+/// Whether `gh` said the account is rate-limited: Some(true) for the primary limit (it has a reset
+/// time), Some(false) for a secondary limit or a bare 429.
+fn rate_limited(stderr: &str) -> Option<bool> {
+    let e = stderr.to_lowercase();
+    if e.contains("secondary rate limit") || e.contains("abuse detection") {
+        Some(false)
+    } else if e.contains("rate limit exceeded") || e.contains("rate_limited") {
+        Some(true)
+    } else if e.contains("http 429") || e.contains("too many requests") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether a `gh` call changes something on GitHub (so `max_per_hour` doesn't hold it back).
+fn is_write(args: &[String]) -> bool {
+    let a: Vec<&str> = args.iter().map(|x| x.as_str()).collect();
+    let method = a.windows(2).find(|w| w[0] == "-X" || w[0] == "--method").map(|w| w[1].to_uppercase());
+    match a.as_slice() {
+        ["api", "graphql", ..] => a.iter().any(|x| x.starts_with("query=mutation")),
+        ["api", ..] => method.is_some_and(|m| m != "GET"),
+        ["pr", "view" | "list" | "checks" | "diff" | "status", ..] | ["run", "view" | "list", ..] => false,
+        ["pr", ..] | ["run", ..] | ["workflow", "run", ..] => true,
+        _ => false,
     }
 }
 
@@ -705,5 +752,27 @@ pub(crate) mod tests {
             {"name": "lint", "conclusion": "success", "steps": []}
         ]});
         assert_eq!(failed_steps(&jobs), vec!["test › cargo test".to_string()]);
+    }
+
+    #[test]
+    fn gh_rate_limits_are_told_apart() {
+        assert_eq!(rate_limited("gh: API rate limit exceeded for user ID 1. (HTTP 403)"), Some(true));
+        assert_eq!(rate_limited("GraphQL: API rate limit already exceeded for user ID 1. (RATE_LIMITED)"), Some(true));
+        assert_eq!(rate_limited("gh: You have exceeded a secondary rate limit. (HTTP 403)"), Some(false));
+        assert_eq!(rate_limited("HTTP 429: Too Many Requests"), Some(false));
+        assert_eq!(rate_limited("gh: Not Found (HTTP 404)"), None);
+    }
+
+    #[test]
+    fn only_calls_that_change_github_are_writes() {
+        let w = |a: &[&str]| is_write(&s(a));
+        assert!(!w(&["api", "-X", "GET", "repos/o/r/pulls"]));
+        assert!(w(&["api", "-X", "POST", "repos/o/r/issues/1/comments"]));
+        assert!(!w(&["api", "graphql", "-f", "query=query($owner:String!){x}"]));
+        assert!(w(&["api", "graphql", "-f", "query=mutation($id:ID!){x}"]));
+        assert!(!w(&["pr", "view", "1", "--json", "number"]));
+        assert!(w(&["pr", "merge", "1", "--squash"]));
+        assert!(w(&["run", "cancel", "9"]));
+        assert!(!w(&["run", "view", "9"]));
     }
 }

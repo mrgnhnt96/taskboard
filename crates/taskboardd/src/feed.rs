@@ -239,6 +239,7 @@ pub fn health(app: &App) -> Value {
         "active": st.v("active"),
         "idle_until": st.v("idle_until"),
         "off_hours": off_hours(app),
+        "rate_limits": crate::prhost::limit::status(),
     })
 }
 

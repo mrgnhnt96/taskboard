@@ -476,6 +476,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     close_pr_tabs(app)?;
     // Outside a transaction: a restart command may take a while.
     crate::feed::check(app)?;
+    crate::prhost::limit::check(app)?;
     crate::prbuilds::tick(app)?;
     crate::breaks::tick(app)?;
     let made = start_queued(app)?;
@@ -527,11 +528,13 @@ pub fn run(app: Arc<App>) {
             last_spool = Instant::now();
             safe("spool", reports::ingest_spool(&app).map(|_| ()));
         }
-        if due(last_prs, iv.prs) {
+        // Wider while the board's calls would run past a host's `max_per_hour`.
+        let stretch = crate::prhost::limit::stretch();
+        if due(last_prs, iv.prs * stretch) {
             last_prs = Some(Instant::now());
             safe("prs", prs(&app));
         }
-        if due(last_reviews, iv.reviews) {
+        if due(last_reviews, iv.reviews * stretch) {
             last_reviews = Some(Instant::now());
             safe("reviews", reviews(&app));
         }

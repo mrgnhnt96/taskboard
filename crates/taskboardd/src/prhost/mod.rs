@@ -58,6 +58,7 @@
 pub mod bitbucket;
 pub mod ci;
 pub mod github;
+pub mod limit;
 
 use std::sync::Arc;
 

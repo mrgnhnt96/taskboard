@@ -43,6 +43,7 @@ reader just changed doesn't vanish from under them).
   "master": [break],                            // open master breaks (GET /master): the "Master is red" banner lines
   "pr_builds": {"stopped", "by", "at", "reason", …},  // PR builds stopped (GET /pr-builds): the "PR builds stopped" pill
   "pr_feed": {"on", "healthy", "problem", "why", …},  // the PR feed's health (GET /prs/feed); the app shows a pill while it's unhealthy
+  "rate_limits": [{"host", "label", "limited_until", "text", "calls_last_hour", "max_per_hour", …}],  // each PR host account's rate limit (see "PR host rate limits")
   "projects": [{"name": str, "path": str|null}],// every known project (Midna's list + projects on tasks/goals/sessions), sorted by name
   "sessions": [session_row],                    // live (not gone) Claude terminals, filtered by ?project
   "session_projects": [str],                    // sorted project names of all live Claude terminals (unfiltered); seeds the goals rail
@@ -659,7 +660,7 @@ board reads that one PR again and steps it (`feed.rs` documents the health rules
 |---|---|---|
 | `POST /prs/event` | `{url?, repo?, num?, task?: "T12", kind?: "pr"\|"build"\|"heartbeat", state?, head?, branch?, provider?, build_url?, author?, mine?: bool, source?}` | `tb feed event`. The PR is found by `task`, its link, or `repo` + `num`. Notes the event for the feed's health, then reads a GitHub or Bitbucket PR again. A PR event for no task whose `author` is in `owner_emails` (or with `mine: true`, `tb feed event --mine`) notes it as one of the owner's open PRs (until a `merged`, `declined` or `closed` state), for PR builds. **Response:** `{ok, kind, task: "T12"\|null, refreshed: bool, phase?, read_error?, owner_pr?: {owners, open?}}`. |
 | `POST /prs/heartbeat` | `{active?: bool, idle_until?: iso, connected_at?: iso}` | `tb feed heartbeat [--active\|--idle] [--idle-until <time>] [--connected-at <time>]`: the feed is alive. Once a feed has sent one, missing them for `stuck_secs` makes it stuck. `active` (`activeNow` is read too) and `idle_until` are the listener's own hours: while it says it's idle (until `idle_until`, if given) it's neither stuck nor silent, and once `idle_until` comes it's timed from then. `connected_at`: when the listener last connected. The first heartbeat, a later `connected_at`, and `active` after idle each start the settle window. 400 for a time that isn't one. **Response:** the health. |
-| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null, connected_at, active: bool\|null, idle_until, off_hours: str\|null}` (`settling_secs`: what's left of the settle window; `off_hours`: why the feed is outside its hours); also `state.pr_feed`. |
+| `GET /prs/feed` | | `tb feed`. **Response:** `{on, healthy, problem: "stuck"\|"silent"\|null, why, last_event_at, last_event, last_heartbeat_at, unhealthy_since, restarts: [{at, ok, error?}], listener: bool\|null, holding: str\|null, settling_secs: number\|null, connected_at, active: bool\|null, idle_until, off_hours: str\|null, rate_limits: [...]}` (`rate_limits`: as in `/state`, see "PR host rate limits"; `settling_secs`: what's left of the settle window; `off_hours`: why the feed is outside its hours); also `state.pr_feed`. |
 
 While the feed is unhealthy (only with `[feed] on`): `feed::feed_healthy` is false and `feed::holding` holds
 reviewer asks, nudges and swaps. A stuck feed (down or stale) holds even a PR's first ask, at any hour. Outside the
@@ -674,6 +675,18 @@ still bad 5 minutes after the last one. The alert clears when the feed is health
 
 A request for changes only counts (moves the PR to "Addressing comments", blocks the merge, is asked again by `tb pr
 addressed`) when the reviewer also wrote on the PR: started or spoke on a thread, a review summary included.
+
+### PR host rate limits
+Every call to GitHub (`gh`) and Bitbucket goes through `prhost::limit`, one gate per account, shared by every reader
+(the PR poll, master breaks, CI reads, review sweeps, `tb pr …`). When the host says the account is limited (a 429,
+GitHub's "API rate limit exceeded" or secondary limit, `X-RateLimit-Remaining: 0`), every call on it waits until
+`Retry-After` / `X-RateLimit-Reset` (GitHub's from `gh api rate_limit`), else 5 minutes, doubling up to an hour while
+it keeps coming back; a call meanwhile fails at once with "Bitbucket rate-limited until 3:40pm". Each backoff logs
+one line with the board's own calls on the account in the last hour. The `rate-limit:<host>` alert goes up once a
+limit has lasted 30 minutes inside the work hours, and clears when it ends. `[hosts.<host>] max_per_hour` caps the
+board's calls on the account: the PR poll and the review sweep stretch (up to 30×) to fit 90% of it, and reads past
+it wait (writes still go). `rate_limits` on `/state` and `GET /prs/feed`: `[{host, label, limited_until,
+limited_since, why, text, calls_last_hour, max_per_hour, stretch}]`; `tb feed` prints a line per account.
 
 ### PR builds (`tb pr-builds`)
 A board-wide switch for when CI time is scarce, set only on the owner's word (`prbuilds.rs` documents it).

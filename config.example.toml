@@ -122,6 +122,17 @@ restart_mins = [1.0, 5.0, 15.0]      # minutes after it went bad at which the bo
 poll_while_healthy = false           # keep polling every PR ([intervals] prs) while the feed is healthy too
 settle_secs = 300.0                  # after it comes back or connects, asks, nudges and swaps wait this long while missed events catch up
 
+# A PR host's rate limit: on a 429, `X-RateLimit-Remaining: 0` or GitHub's secondary limit, every
+# call on that account waits until the host's Retry-After / reset (else 5 minutes, doubling up to an
+# hour), `tb feed` and /state say "Bitbucket rate-limited until 3:40pm", and the `rate-limit:<host>`
+# alert goes up when it lasts 30 minutes inside the work hours. max_per_hour caps the board's own
+# calls on the account: the PR poll and the review sweep ([intervals] prs, reviews) stretch to fit
+# it, and reads past it wait. Unset: no cap. `tb feed` shows the board's calls in the last hour.
+# [hosts.bitbucket]
+# max_per_hour = 800
+# [hosts.github]
+# max_per_hour = 4000
+
 # PR builds stopped (`tb pr-builds stop`, on your word): every build of your PRs and your pushes is
 # cancelled when the board hears of it (a build event on the feed, or a running check on a poll), and
 # the PRs' checks count as passed. A cancel that fails is tried again after each of retry_secs, then
