@@ -651,6 +651,15 @@ unset = the `no_checks_after_mins` grace), `failures_cmd` and `merge_strategy`. 
 **`failures_cmd`** runs with `/bin/sh -c` for each failed check, with `TB_PR_URL`, `TB_PR_REPO`, `TB_PR_NUM`,
 `TB_HEAD`, `TB_CHECK` and `TB_CHECK_URL` set, and prints `{"steps": [...], "tests": [...]}` or one failed step per
 line (`test: <name>` for a failing test). It takes over from the built-in CI readers for that project.
+### The work event stream (`tb stream send`)
+One endpoint any work relay pushes PR, review, comment, push, build, Jira and heartbeat events into, in a versioned
+protocol: [STREAM.md](STREAM.md). `POST /prs/event`, `POST /prs/heartbeat` and `POST /jira/comment` stay as the
+older forms.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /stream/events` | `{v: 1, events: [{id, kind, at, source, ...}]}` or one event with `v` | `tb stream send [json]` (stdin when left out). 400 for a missing or other version, no events, or over 500. Each event is answered on its own. **Response:** `{v: 1, accepted, duplicate, rejected, results: [{id, kind, status: "accepted"\|"duplicate"\|"rejected", why?, complete?, result?}]}`. |
+
 ### The PR feed (`tb feed`)
 PR activity can come as events instead of the poll: any listener posts one event per PR change or build, and the
 board reads that one PR again and steps it (`feed.rs` documents the health rules). Events work whether or not

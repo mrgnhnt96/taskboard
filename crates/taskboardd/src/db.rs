@@ -119,6 +119,13 @@ CREATE TABLE IF NOT EXISTS qa_comments(
   author TEXT, verdict TEXT, pr INT, title TEXT, ask TEXT, text TEXT, task_id INT, tries INT DEFAULT 0, error TEXT,
   decided_at TEXT, handled_at TEXT, handled_by TEXT, created_at TEXT, updated_at TEXT);
 
+-- Events a work relay pushed to `POST /stream/events` (`stream.rs`), each kept whole once by its id.
+CREATE TABLE IF NOT EXISTS stream_events(
+  id INTEGER PRIMARY KEY, event_id TEXT UNIQUE NOT NULL, kind TEXT, source TEXT, at TEXT, received_at TEXT,
+  complete INT, data TEXT, result TEXT);
+CREATE INDEX IF NOT EXISTS stream_events_kind ON stream_events(kind, at);
+CREATE INDEX IF NOT EXISTS stream_events_received ON stream_events(received_at);
+
 CREATE TABLE IF NOT EXISTS task_states(
   id INTEGER PRIMARY KEY, task_id INT, at TEXT, status TEXT, needs_reason TEXT, failed INT, project TEXT);
 CREATE INDEX IF NOT EXISTS task_states_at ON task_states(at);

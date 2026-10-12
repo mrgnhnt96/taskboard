@@ -355,6 +355,11 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<FeedCmd>,
     },
+    /// The work event stream (docs/STREAM.md): send events in protocol v1
+    Stream {
+        #[command(subcommand)]
+        action: StreamCmd,
+    },
     /// Stop or resume the board's PR builds, only on the owner's word (no action: whether they're stopped)
     PrBuilds {
         #[command(subcommand)]
@@ -1204,6 +1209,15 @@ enum PrCmd {
         /// The failed check to clear (repeat for more; all of this push's failures when left out)
         #[arg(long)]
         check: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum StreamCmd {
+    /// Send one event or a batch: {"v": 1, "events": [...]}; each is answered accepted, duplicate or rejected
+    Send {
+        /// The JSON (stdin when left out or -)
+        json: Option<String>,
     },
 }
 
@@ -3112,6 +3126,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Device { action } => device_cmd(c, action),
         Cmd::Feed { action } => feed_cmd(c, action),
+        Cmd::Stream { action: StreamCmd::Send { json } } => stream_send(c, json),
         Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
         Cmd::Master { args, why, who, proof } => master_cmd(c, args, why, who, proof),
         Cmd::Bits { goal, t } => {
@@ -4231,6 +4246,23 @@ fn rate_lines(v: &Value) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+fn stream_send(c: &Ctx, json: Option<String>) -> Result<i32, String> {
+    let text = match json.as_deref() {
+        None | Some("-") => read_body("-")?,
+        Some(j) => j.to_string(),
+    };
+    let body: Value = serde_json::from_str(&text).map_err(|e| format!("That isn't JSON: {e}"))?;
+    let v = c.call("POST", "/stream/events", Some(body))?;
+    for r in v["results"].as_array().into_iter().flatten() {
+        let id = r["id"].as_str().unwrap_or("(no id)");
+        match r["why"].as_str() {
+            Some(why) => out(&format!("{id}: rejected: {why}")),
+            None => out(&format!("{id}: {}", r["status"].as_str().unwrap_or("?"))),
+        }
+    }
+    Ok(if v["rejected"].as_i64().unwrap_or(0) > 0 { 1 } else { 0 })
 }
 
 fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
