@@ -234,6 +234,10 @@ impl MainWindow {
         if let Ok(p) = std::env::var("TASKBOARD_PICK") {
             m.backlog.picked = p.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         }
+        // Dev: `TASKBOARD_GOALS=1` turns on the Tasks page's "Show tasks in goals" (screenshots).
+        if std::env::var("TASKBOARD_GOALS").as_deref() == Ok("1") {
+            m.tasks.goals = true;
+        }
         if let Ok(r) = std::env::var("TASKBOARD_OPEN") {
             m.panel = Some(if r.starts_with('B') { Panel::Issue { r } } else { Panel::Task { r, tab: TaskTab::Overview } });
         }
