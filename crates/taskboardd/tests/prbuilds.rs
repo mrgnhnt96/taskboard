@@ -459,3 +459,17 @@ fn the_host_s_cancel_that_stopped_builds_is_recorded() {
     assert_eq!(logged, 1);
     assert!(b.flow(id)["builds_cancelled"]["h1"].is_string());
 }
+
+#[test]
+fn the_old_listener_s_push_is_the_owner_s_build_event() {
+    let b = board_with(|c, dir| {
+        c.pr_builds.cancel.insert("github".into(), format!("echo \"$TB_BRANCH $TB_HEAD\" >> '{}'", dir.join("cancels.log").display()));
+    });
+    b.post("/pr-builds", json!({"stopped": true}));
+    let v = b.post("/pr-builds/event", json!({"repo": "acme/webapp", "host": "github", "branch": "wip", "sha": "p1"}));
+    assert_eq!((v["builds"]["owners"].as_bool(), v["builds"]["cancel"].as_str()), (Some(true), Some("queued")), "{v}");
+    prbuilds::tick(&b.app).unwrap();
+    assert_eq!(std::fs::read_to_string(b.dir.path().join("cancels.log")).unwrap().trim(), "wip p1");
+    let feed: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
+    assert_eq!((feed["last_event"]["kind"].as_str(), feed["last_event"]["source"].as_str()), (Some("build"), Some("pr-builds")), "{feed}");
+}

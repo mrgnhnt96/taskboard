@@ -719,8 +719,19 @@ the `breaks` table.
 | `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, who?, proof?: [url]}` | `tb master M3 ours\|not-ours\|unsure [--proof <url>]…`: the owner's word, never decided again. `not-ours` needs at least one http(s) `proof` link (a build or an issue that shows it; 400 without). `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
 | `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
 
+The old board's listener and tools (docs/CUTOVER.md) keep working: these count as feed events (`last_event_at`, so
+not silent) and answer as the old board did.
+
+| Path | Body | Notes |
+|---|---|---|
+| `POST /master-builds` | `{pipeline, build_id, url, sha, state, ts, last_green}` | A default-branch build started or finished. The project is `project` (if given), else the repo in `url` (or `repo`) matched to a project's repo or name, else `pipeline` as a project's name, else the only watched project. Its branch is read now, as `POST /master/check` does, so a red build opens its break at once. The build goes into the break's `evidence.build` (`{pipeline, build_id, url, sha, state, ts, last_green, at}`) while it's of the head read, and a failing check without a link gets its `url`. Notes the event as `last_event.kind: "master-build"`. **Response:** `{ok, project: str\|null, checked: bool, break: break\|null, why?}` (`break`: the project's open one). |
+| `POST /pr-builds/event` | `{repo, branch, pr?, sha?, host?}` | A push to, or a PR opened or updated on, one of the owner's branches: `POST /prs/event` with `kind: "build"`, `mine: true`, `num: pr`, `head: sha`, `state: "started"`, `source: "pr-builds"`. While PR builds are stopped its builds are cancelled, with the follow-up sweeps. **Response:** as `POST /prs/event`. |
+| `GET /master-breaks?limit=20` | | **Response:** `{breaks: [break]}`: the open breaks, then the closed ones, each newest first, at most `limit` (1–500) in all. |
+| `GET /master-breaks/:ref` | | As `GET /master/:ref`. |
+| `POST /master-breaks/:ref/verdict` | `{verdict: "yours"\|"not_yours"\|"unsure", why?, who?, proof?: [url]}` | As `POST /master/:ref`, `yours` being `ours` and `not_yours` `not-ours` (the new words work too). |
+
 `break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
-checks: [str], evidence: {checks: [{name, url, steps, tests}]}, suspects: [{sha, name, email, message, ours}], verdict:
+checks: [str], evidence: {checks: [{name, url, steps, tests}], build?}, suspects: [{sha, name, email, message, ours}], verdict:
 "ours"|"not_ours"|"unsure"|null, verdict_label, verdict_by: "commits"|"claude"|"fallback"|<who>, verdict_why,
 verdict_at, proof: [url], task: {ref, title, status}|null, opened_at, closed_at, checked_at}`. `state.master` lists the
 open ones that are `ours`: the app's one "Master is red" banner line each, with Open T<n> for the fix task (the app

@@ -309,3 +309,42 @@ fn a_fix_that_finished_without_a_pr_hands_its_break_to_the_open_fix_with_no_aler
     assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M2"), "no 'finished without a fix PR' alert");
     assert_eq!(b.tasks(), 2);
 }
+
+#[test]
+fn the_old_listener_s_routes_read_the_branch_and_answer_as_before() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    *b.ci.read.lock() = BranchRead {
+        head: "c2".into(),
+        checks: vec![Check { name: "build".into(), state: "failed".into(), url: None, at: None }],
+        commits: vec![commit("c2", "bob@acme.dev"), commit("c1", "bob@acme.dev")],
+        queued_at: None,
+    };
+    let url = "https://github.com/acme/webapp/actions/runs/41";
+    let v = b.post("/master-builds", json!({"pipeline": "Pipeline", "build_id": 41, "url": url, "sha": "c2", "state": "finished", "ts": 1700000000}));
+    assert_eq!((v["project"].as_str(), v["checked"].as_bool()), (Some("webapp"), Some(true)), "{v}");
+    assert_eq!(v["break"]["ref"], "M1", "the branch is read at once");
+    let ev = &b.get("/master/M1")["evidence"];
+    assert_eq!((ev["build"]["build_id"].as_i64(), ev["build"]["state"].as_str()), (Some(41), Some("finished")), "{ev}");
+    assert_eq!(ev["checks"][0]["url"], url, "the failing check gets the build's link");
+    let feed: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
+    assert!(feed["last_event_at"].is_string(), "the feed is alive: {feed}");
+    assert_eq!(feed["last_event"]["kind"], "master-build");
+
+    let v = b.post("/master-builds", json!({"pipeline": "Other", "url": "https://github.com/acme/api/actions/runs/2", "project": "nope"}));
+    assert_eq!(v["checked"], true, "the only watched project when nothing names one");
+
+    let list = b.get("/master-breaks");
+    assert_eq!(list["breaks"][0]["ref"], "M1");
+    assert_eq!(b.get("/master-breaks/M1")["ref"], "M1");
+    let mut q = Query::new();
+    q.insert("limit".into(), "0".into());
+    assert_eq!(api::dispatch(&b.app, "GET", "/master-breaks", &q, &json!({})).unwrap()["breaks"].as_array().unwrap().len(), 1, "at least one");
+
+    let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "yours", "who": "Sam"}));
+    assert_eq!(m["verdict"], "ours");
+    assert!(api::dispatch(&b.app, "POST", "/master-breaks/M1/verdict", &Query::new(), &json!({"verdict": "not_yours"})).is_err(), "still needs a proof link");
+    let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "not_yours", "proof": [url]}));
+    assert_eq!(m["verdict"], "not_ours");
+    assert!(api::dispatch(&b.app, "DELETE", "/master-breaks/M1", &Query::new(), &json!({})).is_err());
+}
