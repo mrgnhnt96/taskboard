@@ -82,6 +82,9 @@ fn done_with_open_pr(b: &Board) -> (i64, i64) {
 fn it_parks_while_the_pr_is_open_and_resumes_once_it_merges() {
     let b = new_board();
     let (one, two) = done_with_open_pr(&b);
+    let dir = b.app.cfg.claude_projects.join("-webapp");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("c-s2.jsonl"), "{\"type\":\"user\"}\n").unwrap();
 
     let out = b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{one}")], "merged": true, "why": "Needs it on main"}));
     assert_eq!(out["parked"], true, "{out}");

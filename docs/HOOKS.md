@@ -275,6 +275,11 @@ prompt = "Sign off the screens this task changes."
   file's current text, a comment already in the file or in its HEAD version may move or re-indent, and the refusal
   names the file's line. Opening a PR, `tb pr wait` and `tb done` are refused while
   the branch (committed or not, against origin's default branch) adds one, and the handoff tells the agent the rule.
+- **Headless runs.** A `claude -p` (or Agent SDK) run started inside a Midna terminal inherits its
+  `MIDNA_SESSION`, but Claude Code marks it `CLAUDE_CODE_ENTRYPOINT=sdk-*`: its hooks report nothing for the
+  terminal, so its session id never replaces the task's conversation, and only the app token guard applies to it.
+  A task or PR wake resumes a conversation only when Claude saved its transcript; otherwise it starts fresh
+  from the handoff.
 - **The app token guard.** The plugin's `PreToolUse` hook (also on Read, Grep and Glob, and in every terminal,
   Midna's or not) refuses a tool call that reads the daemon's `app-token` file (see API.md, "The app's own
   requests"; only a daemon without a team signature writes it): one that names it, quoted in pieces or not

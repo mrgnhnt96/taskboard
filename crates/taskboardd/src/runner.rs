@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, jira, jobs, limits, locks, midna, p, prflow, projects, reports, usage, waitsfor, worktrees};
+use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, jira, jobs, limits, locks, midna, p, prflow, projects, reports, transcript, usage, waitsfor, worktrees};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
@@ -98,13 +98,13 @@ pub fn start_task(
 fn start_parked(app: &App, t: &Row) -> Result<()> {
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
-    let cid = t.s("claude_session_id").filter(|c| !c.is_empty());
+    let cwd = match &wt {
+        Some(w) => Some(w.clone()),
+        None => task_cwd(app, t)?,
+    };
+    let cid = t.s("claude_session_id").filter(|c| !c.is_empty() && transcript::conversation_saved(&app.cfg.claude_projects, cwd.as_deref().unwrap_or(""), c));
     let too_big = match cid {
         Some(cid) => {
-            let cwd = match &wt {
-                Some(w) => Some(w.clone()),
-                None => task_cwd(app, t)?,
-            };
             let last = board::get_session(app, t.s("session_id"))?;
             let c = limits::conversation(app, cwd.as_deref().unwrap_or(""), cid, last.as_ref().and_then(|s| s.s("last_activity")));
             limits::fresh_start_why(app, &c)

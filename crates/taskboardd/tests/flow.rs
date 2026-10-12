@@ -66,6 +66,12 @@ impl Board {
         )
         .unwrap();
     }
+    /// Claude's transcript for the conversation `cid`, so it can be resumed.
+    fn saved(&self, cid: &str) {
+        let dir = self.app.cfg.claude_projects.join("-webapp");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{cid}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+    }
 }
 
 fn new_task(b: &Board, title: &str, extra: Value) -> i64 {
@@ -331,6 +337,7 @@ fn a_github_pr_moves_through_its_stages_and_wakes_the_task() {
     b.report("tb.done", "s1", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/9"}));
     let t = b.task(id);
     assert_eq!(t.s("pr_phase"), Some("checks"));
+    b.saved("c-s1");
 
     let rec = |failed: Value, decision: &str, comments: i64| {
         json!({"state": "OPEN", "head": "h1", "checks": [{"name": "ci", "state": if failed.as_array().unwrap().is_empty() { "passed" } else { "failed" }}],
@@ -363,6 +370,27 @@ fn a_github_pr_moves_through_its_stages_and_wakes_the_task() {
     assert!(b.get("/state")["alerts"].as_array().unwrap().iter().any(|a| a["text"].as_str().unwrap().contains("ready to merge")));
     b.post("/tasks/T1/pr/merged", json!({}));
     assert_eq!(b.task(id).s("pr_phase"), Some("merged"));
+}
+
+#[test]
+fn a_pr_wake_starts_fresh_when_claude_never_saved_the_conversation() {
+    let b = board_with(|c| {
+        c.pr.watch = true;
+        c.pr.wake = true;
+    });
+    let id = new_task(&b, "Ship it", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("tb.done", "s1", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/9"}));
+    assert_eq!(b.task(id).s("claude_session_id"), Some("c-s1"), "no transcript for c-s1, as after a `claude -p --no-session-persistence`");
+
+    let rec = json!({"state": "OPEN", "head": "h1", "checks": [{"name": "ci", "state": "failed"}], "failed": ["ci"], "running": 0, "comments": 0, "approvals": 0, "review_decision": ""});
+    b.app.db.tx(|| prflow::step(&b.app, &b.task(id), &rec)).unwrap();
+    let wakes = b.app.db.q("SELECT * FROM jobs WHERE kind = 'agent' AND purpose = 'pr'", p![]).unwrap();
+    assert_eq!(wakes.len(), 1);
+    let a = board::job_args(&wakes[0]);
+    assert!(a.s("flags").is_none(), "nothing to resume: {a:?}");
+    assert!(a.st("prompt").contains("A check failed on its head (ci)"));
 }
 
 #[test]

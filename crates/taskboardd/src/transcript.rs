@@ -49,6 +49,12 @@ pub fn transcript_file(root: &Path, project_path: &str, claude_id: &str) -> Path
     p
 }
 
+/// Whether Claude saved the conversation `claude_id`. A `claude -p --no-session-persistence` run
+/// never does, and `claude --resume` can't open one that wasn't.
+pub fn conversation_saved(root: &Path, project_path: &str, claude_id: &str) -> bool {
+    transcript_file(root, project_path, claude_id).is_file()
+}
+
 /// Background work a transcript started that hasn't reported back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Background {
