@@ -1104,6 +1104,9 @@ enum ProjectCmd {
         /// Agents merge its PRs once they're approved and green (tb pr merge) (default: config.toml's pr.agents_merge)
         #[arg(long = "agents-merge", value_parser = ["on", "off", "default"])]
         agents_merge: Option<String>,
+        /// A green PR waits for your review; off: the board marks it reviewed for you (default: config.toml's pr.owner_review)
+        #[arg(long = "owner-review", value_parser = ["on", "off", "default"])]
+        owner_review: Option<String>,
         /// Busy terminals the project may have before its queued tasks wait for one to free up (default: config.toml's [terminals] project_max)
         #[arg(long = "max-terminals")]
         max_terminals: Option<String>,
@@ -1113,6 +1116,11 @@ enum ProjectCmd {
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
+        #[arg(value_parser = ["on", "off", "default"])]
+        value: Option<String>,
+    },
+    /// Whether green PRs wait for your review on every project that doesn't say; off: the board marks them reviewed (default: config.toml's pr.owner_review)
+    OwnerReview {
         #[arg(value_parser = ["on", "off", "default"])]
         value: Option<String>,
     },
@@ -3915,7 +3923,7 @@ fn project_line(p: &Value) -> String {
         ),
         None => String::new(),
     };
-    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review"), ("agents_merge", "agents merge")]
+    let switches: String = [("ask_stage", "ask stage"), ("swap", "swaps"), ("review", "review"), ("agents_merge", "agents merge"), ("owner_review", "owner review")]
         .iter()
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
@@ -3981,7 +3989,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, max_terminals, waits_on } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
@@ -3998,6 +4006,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             project_switch(&mut body, "swap", swap);
             project_switch(&mut body, "review", review);
             project_switch(&mut body, "agents_merge", agents_merge);
+            project_switch(&mut body, "owner_review", owner_review);
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }
@@ -4020,6 +4029,20 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             let on = if v["agents_merge"] == true { "on" } else { "off" };
             let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.agents_merge" };
             out(&format!("Agents merge: {on} for projects that don't say ({from})."));
+            Ok(0)
+        }
+        ProjectCmd::OwnerReview { value } => {
+            let v = match value {
+                None => c.call("GET", "/projects/owner-review", None)?,
+                Some(s) => {
+                    let mut body = serde_json::Map::new();
+                    project_switch(&mut body, "owner_review", Some(s));
+                    c.call("POST", "/projects/owner-review", Some(Value::Object(body)))?
+                }
+            };
+            let on = if v["owner_review"] == true { "on" } else { "off: the board marks green PRs reviewed" };
+            let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.owner_review" };
+            out(&format!("Owner review: {on} for projects that don't say ({from})."));
             Ok(0)
         }
     }

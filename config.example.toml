@@ -84,6 +84,7 @@ gh = "gh"
 no_checks_after_mins = 15.0
 bitbucket_api = "https://api.bitbucket.org/2.0"
 azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, to read failed steps and tests, when none is stored with `tb ci-token set`
+# owner_review = true                # a green PR waits for your review before it moves on (false: the board marks it reviewed for you; tb project owner-review sets it on the board)
 approvals = 2                        # approvals a PR needs before it's ready to merge, when its project doesn't say (0: the host's decision, or any approval)
 
 # Per-project PR rules, by project name. Every key is optional. `tb project set <name> --approvals N
@@ -98,6 +99,7 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # swap = true                         # swap slow reviewers on this project (unset: [reviewers] swap; tb project set --swap)
 # review = false                      # no Review step: its PRs go to merge without reviewers (unset: on; tb project set --review)
 # agents_merge = true                 # agents merge its approved, green PRs (unset: pr.agents_merge; tb project set --agents-merge)
+# owner_review = false                # its green PRs don't wait for your review (unset: pr.owner_review; tb project set --owner-review)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
 # relay) posts one event per PR change or build to POST /prs/event (`tb feed event <pr link>`) and

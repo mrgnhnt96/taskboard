@@ -174,6 +174,9 @@ pub struct PrConfig {
     /// Agents may merge a PR once it's approved and green. Unset: off, and `taskboardd import` turns
     /// the board-wide switch on; an explicit false is left alone.
     pub agents_merge: Option<bool>,
+    /// A green PR waits for the owner's own look ("Waiting on your review") before it moves on. Off:
+    /// the board marks it reviewed for them. Unset: on.
+    pub owner_review: Option<bool>,
     pub gh: String,
     /// Minutes after the head was pushed with no checks before the checks count as passed.
     pub no_checks_after_mins: f64,
@@ -195,6 +198,7 @@ impl Default for PrConfig {
             watch: true,
             wake: true,
             agents_merge: None,
+            owner_review: None,
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
             bitbucket_api: "https://api.bitbucket.org/2.0".into(),
@@ -214,6 +218,11 @@ impl PrConfig {
     /// `agents_merge`, off when unset.
     pub fn agents_merge_on(&self) -> bool {
         self.agents_merge.unwrap_or(false)
+    }
+
+    /// `owner_review`, on when unset.
+    pub fn owner_review_on(&self) -> bool {
+        self.owner_review.unwrap_or(true)
     }
 }
 
@@ -246,6 +255,8 @@ pub struct PrProject {
     pub review: Option<bool>,
     /// Agents may merge this project's PRs once they're approved and green. Unset: `pr.agents_merge`.
     pub agents_merge: Option<bool>,
+    /// A green PR waits for the owner's review. Off: the board marks it reviewed. Unset: `pr.owner_review`.
+    pub owner_review: Option<bool>,
 }
 
 /// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).
