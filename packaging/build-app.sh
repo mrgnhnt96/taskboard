@@ -93,6 +93,12 @@ $(env_dict)
   </dict>"
 fi
 
+# Midna runs this (with the hovered taskboard:// URL appended) for its link hover card.
+PREVIEW_ARGS="<string>preview</string>"
+for kv in ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}; do
+  case $kv in TASKBOARD_PORT=*) PREVIEW_ARGS="$PREVIEW_ARGS<string>--port</string><string>${kv#*=}</string>" ;; esac
+done
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -122,6 +128,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>© Morgan Hunt</string>
   <key>NSAppleEventsUsageDescription</key><string>The task board asks Midna to open, focus and close Claude terminals.</string>
   <key>TaskboardDaemonLabel</key><string>$LABEL</string>
+  <key>MidnaLinkPreview</key>
+  <array><string>Contents/Resources/plugin/task-board/bin/tb</string>$PREVIEW_ARGS</array>
 $LSENV
 </dict>
 </plist>

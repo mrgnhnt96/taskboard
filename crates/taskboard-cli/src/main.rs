@@ -3,6 +3,7 @@
 mod client;
 mod gitcred;
 mod hook;
+mod preview;
 mod tb;
 
 fn main() {
