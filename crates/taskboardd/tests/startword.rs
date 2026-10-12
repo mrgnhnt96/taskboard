@@ -172,6 +172,19 @@ fn an_unnamed_ask_is_only_for_a_task_this_conversation_made_after_it() {
 }
 
 #[test]
+fn an_unnamed_ask_is_for_the_terminals_own_task() {
+    let b = board();
+    let id = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Mine", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let other = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Other", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    b.said("Start it in a new terminal");
+    // Not yet on this terminal: "it" names nothing.
+    assert_eq!(b.tb_start(id).unwrap_err().0, 403);
+    b.app.db.x("UPDATE tasks SET session_id = 's1' WHERE id = ?", p![id]).unwrap();
+    assert_eq!(b.tb_start(other).unwrap_err().0, 403, "another task isn't it");
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+}
+
+#[test]
 fn a_later_prompt_that_takes_the_start_back_wins() {
     let b = board();
     let id = b.new_task();
