@@ -158,26 +158,56 @@ pub fn tools(app: &App, op: &str, input: &Value) -> Vec<String> {
     }
 }
 
-/// The flags that keep a Jira call to the connector's tools.
-pub fn tool_flags(app: &App, op: &str, input: &Value) -> Vec<String> {
-    vec!["--tools".into(), "".into(), "--allowedTools".into(), tools(app, op, input).join(",")]
+/// The connector's tools that create, change or delete something. An op is denied every one it
+/// doesn't need, so the owner's own allow rules (loaded with the user's settings) can't widen it.
+pub const WRITES: [&str; 14] = [
+    "createJiraIssue",
+    "editJiraIssue",
+    "transitionJiraIssue",
+    "addCommentToJiraIssue",
+    "addOrEditJiraIssueComment",
+    "addWorklogToJiraIssue",
+    "createIssueLink",
+    "executeWrite",
+    "executeDestructive",
+    "createConfluencePage",
+    "updateConfluencePage",
+    "createConfluenceFooterComment",
+    "createConfluenceInlineComment",
+    "deleteConfluencePage",
+];
+
+/// The flags that keep a Jira call to the connector's tools: no built-in tools, no prompt that
+/// approves itself (`-p` denies whatever `--allowedTools` leaves out, whatever the owner's
+/// `defaultMode`), and every write the op doesn't need denied outright.
+pub fn tool_flags(allowed: &[String]) -> Vec<String> {
+    let denied: Vec<String> = WRITES.iter().map(|n| tool(n)).filter(|t| !allowed.contains(t)).collect();
+    vec![
+        "--tools".into(),
+        "".into(),
+        "--permission-mode".into(),
+        "default".into(),
+        "--allowedTools".into(),
+        allowed.join(","),
+        "--disallowedTools".into(),
+        denied.join(","),
+    ]
 }
 
-/// Runs one op through headless Claude.
-pub fn run(app: &App, op: &str, input: &Value) -> std::result::Result<Value, String> {
-    let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
+/// The arguments for one headless call. The user's settings come in because the claude.ai
+/// connectors are theirs: with `--setting-sources ""` the connector's tools aren't there at all.
+fn args(app: &App, prompt: String, allowed: &[String]) -> Vec<String> {
     let j = &app.cfg.jira;
-    // No user or project settings: their allow rules would widen the op's tools.
     let mut args: Vec<String> = vec![
         "-p".into(),
-        prompt(app, op, input),
+        prompt,
         "--model".into(),
         j.claude_model.clone(),
         "--setting-sources".into(),
-        "".into(),
+        "user".into(),
         "--no-session-persistence".into(),
     ];
-    args.extend(tool_flags(app, op, input));
+    args.extend(tool_flags(allowed));
     args.extend([
         "--max-budget-usd".into(),
         j.claude_budget_usd.clone(),
@@ -186,8 +216,61 @@ pub fn run(app: &App, op: &str, input: &Value) -> std::result::Result<Value, Str
         "--output-format".into(),
         "json".into(),
     ]);
-    let out = proc::run(&claude, &args, Some(&app.cfg.data), j.claude_timeout_secs as f64).map_err(|_| "claude didn't answer in time".to_string())?;
+    args
+}
+
+fn call(app: &App, prompt: String, allowed: &[String]) -> std::result::Result<Value, String> {
+    let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
+    let out = proc::run(&claude, &args(app, prompt, allowed), Some(&app.cfg.data), app.cfg.jira.claude_timeout_secs as f64)
+        .map_err(|_| "claude didn't answer in time".to_string())?;
     parse(&out.stdout)
+}
+
+pub const UNREACHABLE: &str = "Jira through Claude can't reach the connector";
+
+/// The boards (by data folder) whose calls have reached the connector: a failing op only checks it until then.
+static REACHED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn reached(app: &App) -> bool {
+    REACHED.lock().map(|r| r.contains(&app.cfg.data)).unwrap_or(false)
+}
+
+fn mark_reached(app: &App) {
+    if let Ok(mut r) = REACHED.lock() {
+        if !r.contains(&app.cfg.data) {
+            r.push(app.cfg.data.clone());
+        }
+    }
+}
+
+/// One read-only call that only lists the connector's sites: an error says the connector's tools
+/// aren't there (a Claude Code change, a signed-out connector), not that one op went wrong.
+pub fn check(app: &App) -> std::result::Result<(), String> {
+    let prompt = format!(
+        "{}\n\nCall getAccessibleAtlassianResources once. Answer ok true if it listed at least one site; else ok false, \
+         and if the tool isn't there at all, say so.",
+        intro(app)
+    );
+    match call(app, prompt, &[tool("getAccessibleAtlassianResources")]) {
+        Ok(_) => {
+            mark_reached(app);
+            Ok(())
+        }
+        Err(e) => Err(format!("{UNREACHABLE}: {}", e.trim_start_matches("Jira through Claude: "))),
+    }
+}
+
+/// Runs one op through headless Claude. Until a call has reached the connector, a failing op
+/// checks it, so a missing connector reads as that instead of as each op's own error.
+pub fn run(app: &App, op: &str, input: &Value) -> std::result::Result<Value, String> {
+    match call(app, prompt(app, op, input), &tools(app, op, input)) {
+        Ok(v) => {
+            mark_reached(app);
+            Ok(v)
+        }
+        Err(e) if !reached(app) && e != "claude isn't installed" => check(app).and(Err(e)),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +308,22 @@ mod tests {
             let t = names(op, json!({"comment": "x"}));
             assert!(!t.iter().any(|n| ["executeWrite", "executeDestructive", "editJiraIssue"].contains(&n.as_str())), "{op}: {t:?}");
         }
+    }
+
+    #[test]
+    fn ops_load_the_users_connectors_and_deny_the_writes_they_dont_need() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        let a = args(&app, "p".into(), &default_tools("comment", &json!({})));
+        let at = |flag: &str| a[a.iter().position(|x| x == flag).unwrap_or_else(|| panic!("no {flag}: {a:?}")) + 1].clone();
+        assert_eq!(at("--setting-sources"), "user", "the claude.ai connectors are the user's");
+        assert_eq!(at("--tools"), "");
+        assert_eq!(at("--permission-mode"), "default", "never the owner's bypassPermissions");
+        let denied = at("--disallowedTools");
+        assert!(denied.contains(&tool("createJiraIssue")) && denied.contains(&tool("executeWrite")), "{denied}");
+        assert!(!denied.contains(&tool("addOrEditJiraIssueComment")), "the op's own write stays: {denied}");
+        let status = tool_flags(&default_tools("status", &json!({})));
+        assert_eq!(status[7].split(',').count(), WRITES.len(), "a read denies every write: {status:?}");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::{Config, JiraProduct};
 use taskboardd::util::{Row, RowExt};
-use taskboardd::{board, fields, handoff, jira, jira_desk, midna, ops, projects};
+use taskboardd::{board, fields, handoff, jira, jira_claude, jira_desk, midna, ops, projects};
 
 struct Board {
     app: Arc<App>,
@@ -93,7 +93,9 @@ fn claude_runs_jira_ops_with_the_connector_tools() {
     assert!(args.contains("Read the status of PROJ-7"), "{args}");
     assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP__getJiraIssue,mcp__claude_ai_Atlassian_MCP__executeRead\n"), "{args}");
     assert!(args.contains("--model\nhaiku"), "{args}");
-    assert!(args.contains("--setting-sources\n\n"), "no user or project allow rules: {args}");
+    assert!(args.contains("--setting-sources\nuser\n"), "the claude.ai connectors are the user's: {args}");
+    assert!(args.contains("--permission-mode\ndefault\n"), "the owner's allow rules or mode can't widen it: {args}");
+    assert!(args.contains("__createJiraIssue,"), "a read denies the writes: {args}");
     assert!(args.contains("Never create, edit or delete anything else."), "{args}");
 
     // A move it can't make fails the job with Claude's reason.
@@ -119,6 +121,45 @@ fn claude_runs_jira_ops_with_the_connector_tools() {
     b.tick();
     assert_eq!(b.task(t).st("jira_status"), "To Do");
     assert!(b.claude_args().contains("--allowedTools\nmcp__atlassian\n"), "{}", b.claude_args());
+}
+
+#[test]
+fn a_missing_connector_says_so_instead_of_each_ops_own_error() {
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        fake_claude(c, d);
+    });
+    b.answer(json!({"ok": false, "error": "The Atlassian connector tools are not available in this session"}));
+    let e = jira_claude::run(&b.app, "status", &json!({"key": "PROJ-7"})).unwrap_err();
+    assert!(e.starts_with("Jira through Claude can't reach the connector: The Atlassian connector tools"), "{e}");
+    let args = b.claude_args();
+    assert!(args.contains("Call getAccessibleAtlassianResources once"), "the check is one read: {args}");
+    assert!(args.contains("--allowedTools\nmcp__claude_ai_Atlassian_MCP__getAccessibleAtlassianResources\n"), "{args}");
+    assert_eq!(jira_claude::check(&b.app).unwrap_err(), e);
+
+    // Once a call reaches it, an op's own error is just that.
+    b.answer(json!({"ok": true}));
+    jira_claude::check(&b.app).unwrap();
+    b.answer(json!({"ok": false, "error": "PROJ-7 can't go to Done"}));
+    let calls = std::fs::read_to_string(b.dir.path().join("all-args.txt")).unwrap().matches("\n-p\n").count();
+    assert_eq!(jira_claude::run(&b.app, "status", &json!({"key": "PROJ-7"})).unwrap_err(), "Jira through Claude: PROJ-7 can't go to Done");
+    let after = std::fs::read_to_string(b.dir.path().join("all-args.txt")).unwrap().matches("\n-p\n").count();
+    assert_eq!(after, calls + 1, "no second check");
+}
+
+/// A live read through the real `claude` and the owner's connector: `TB_JIRA_LIVE_SITE=acme.atlassian.net
+/// cargo test -p taskboardd --test jira -- --ignored the_connector_is_reachable`. A Claude Code change that
+/// drops the connector fails here with "Jira through Claude can't reach the connector".
+#[test]
+#[ignore]
+fn the_connector_is_reachable() {
+    let site = std::env::var("TB_JIRA_LIVE_SITE").expect("set TB_JIRA_LIVE_SITE to your Jira site");
+    let b = board_with(|c, _| {
+        c.jira.via = "claude".into();
+        c.jira.site = site;
+        c.claude = "claude".into();
+    });
+    jira_claude::check(&b.app).unwrap();
 }
 
 #[test]
