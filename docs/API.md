@@ -170,6 +170,20 @@ Query: `project=<name|all>`. The home page: what needs you, and the goals with w
 In flight or queued only: a goal with nothing of either (planned, finished, archived or deprioritized) isn't
 listed. Ordered by project, then goals that need you, then working ones, newest goal first.
 
+### `GET /lanes`
+
+Query: `goals=0|1` (default 0). The Tasks page: tasks outside any goal (with `goals=1`, every task) in four lanes.
+```
+{
+  "queued": [task_card],    // queued, in the runner's order: starting ones first, then high priority, then oldest
+  "running": [task_card],   // working, most recently started first
+  "needs": [task_card],     // needs you
+  "done": [task_card],      // finished today (local time), or done with its PR still open; newest first
+  "projects": [{"name": str, "count": int}]   // the projects with a card in any lane, by name
+}
+```
+Planned tasks never show: nothing runs them until the owner starts them.
+
 ### `GET /goals`
 
 No query. Returns `{"goals": [goal_summary]}` for every non-archived goal (all projects). The goals rail, goal

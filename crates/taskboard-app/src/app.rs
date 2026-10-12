@@ -22,6 +22,8 @@ const TOAST_ERR: Duration = Duration::from_secs(6);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
     Board,
+    /// The tasks outside goals, in status lanes.
+    Tasks,
     /// A goal ref, `G3`.
     Goal(String),
     /// The backlog: triage it by making goals from untriaged issues.
@@ -64,6 +66,8 @@ pub struct Data {
     /// `GET /home` and today's `GET /days` for the home page.
     pub home: Option<Value>,
     pub today: Option<Value>,
+    /// `GET /lanes` for the Tasks page.
+    pub lanes: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -170,6 +174,7 @@ pub struct MainWindow {
     pub issue_panel: ui::issue_panel::State,
     pub hours: ui::hours::State,
     pub days: ui::days::State,
+    pub tasks: ui::tasks::State,
     pub sidebar: ui::sidebar::State,
     /// The sidebar's width while it's being dragged.
     pub sidebar_width: f32,
@@ -207,6 +212,7 @@ impl MainWindow {
             issue_panel: Default::default(),
             hours: Default::default(),
             days: Default::default(),
+            tasks: Default::default(),
             sidebar: Default::default(),
             sidebar_width: ui::sidebar::rail_width(),
             goals_loaded: false,
@@ -219,6 +225,7 @@ impl MainWindow {
                 "backlog" | "plan" => Page::Backlog,
                 "sessions" => Page::Sessions,
                 "days" => Page::Days,
+                "tasks" => Page::Tasks,
                 g if g.starts_with('G') => Page::Goal(g.into()),
                 _ => Page::Board,
             };
@@ -226,6 +233,10 @@ impl MainWindow {
         // Dev: `TASKBOARD_PICK=B2,B3` checks those issues on the Backlog page (screenshots).
         if let Ok(p) = std::env::var("TASKBOARD_PICK") {
             m.backlog.picked = p.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+        }
+        // Dev: `TASKBOARD_GOALS=1` turns on the Tasks page's "Show tasks in goals" (screenshots).
+        if std::env::var("TASKBOARD_GOALS").as_deref() == Ok("1") {
+            m.tasks.goals = true;
         }
         if let Ok(r) = std::env::var("TASKBOARD_OPEN") {
             m.panel = Some(if r.starts_with('B') { Panel::Issue { r } } else { Panel::Task { r, tab: TaskTab::Overview } });
@@ -356,6 +367,7 @@ impl MainWindow {
             ("backlog" | "plan", _) => self.go(Page::Backlog, cx),
             ("sessions", _) => self.go(Page::Sessions, cx),
             ("days", _) => self.go(Page::Days, cx),
+            ("tasks", _) => self.go(Page::Tasks, cx),
             _ => self.go(Page::Board, cx),
         }
     }
@@ -600,6 +612,8 @@ struct Wants {
     days_q: Option<Vec<(&'static str, String)>>,
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
+    /// Whether the Tasks page shows the tasks in goals too, for `GET /lanes`.
+    lanes: Option<bool>,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -617,6 +631,7 @@ struct Got {
     days: Option<Answer>,
     home: Option<Value>,
     today: Option<Value>,
+    lanes: Option<Value>,
 }
 
 impl Wants {
@@ -640,6 +655,7 @@ impl Wants {
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
+            lanes: (m.page == Page::Tasks).then_some(m.tasks.goals),
         }
     }
 
@@ -659,6 +675,7 @@ impl Wants {
             days: self.days_q.and_then(|q| get("days", &q)),
             today: if self.home.is_some() { get("days", &[]).and_then(Result::ok) } else { None },
             home: self.home.and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
+            lanes: self.lanes.and_then(|g| get("lanes", &[("goals", if g { "1" } else { "0" }.into())]).and_then(Result::ok)),
             state,
         }
     }
@@ -728,6 +745,9 @@ impl Got {
         if self.today.is_some() {
             d.today = self.today;
         }
+        if self.lanes.is_some() && m.page == Page::Tasks {
+            d.lanes = self.lanes;
+        }
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
                 // `sessionsLoads`: a failed fetch for another terminal than the one shown clears it.
@@ -757,7 +777,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, Refresh]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, Refresh]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -766,6 +786,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-2", GoBacklog, Some("MainWindow")),
         KeyBinding::new("cmd-3", GoSessions, Some("MainWindow")),
         KeyBinding::new("cmd-4", GoDays, Some("MainWindow")),
+        KeyBinding::new("cmd-5", GoTasks, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
     ]);
 }
@@ -776,10 +797,11 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
-        let tabs = matches!(self.page, Page::Board | Page::Backlog | Page::Days | Page::Sessions);
+        let tabs = matches!(self.page, Page::Board | Page::Tasks | Page::Backlog | Page::Days | Page::Sessions);
 
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
+            Page::Tasks => ui::tasks::render(self, window, cx),
             Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
@@ -819,6 +841,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &GoBacklog, _, cx| m.go(Page::Backlog, cx)))
             .on_action(cx.listener(|m, _: &GoSessions, _, cx| m.go(Page::Sessions, cx)))
             .on_action(cx.listener(|m, _: &GoDays, _, cx| m.go(Page::Days, cx)))
+            .on_action(cx.listener(|m, _: &GoTasks, _, cx| m.go(Page::Tasks, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .relative()
             .flex()
@@ -867,6 +890,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Backlog => "Backlog",
         Page::Sessions => "Sessions",
         Page::Days => "Days",
+        Page::Tasks => "Tasks",
         Page::Board => "Task board",
     };
     if needs > 0 { format!("({needs}) {base}") } else { base.to_string() }
