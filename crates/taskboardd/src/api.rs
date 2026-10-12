@@ -403,6 +403,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["prs", "feed"]) => Ok(crate::feed::health(app)),
         ("POST", ["prs", "event"]) => crate::feed::intake(app, body),
         ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app, body)),
+        ("POST", ["stream", "events"]) => crate::stream::ingest(app, body),
         (_, ["master", rest @ ..]) => crate::breaks::route(app, method, rest, body),
         // The old board's listener and tools (docs/CUTOVER.md).
         ("POST", ["master-builds"]) => crate::breaks::posted(app, body),
