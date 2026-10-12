@@ -11,21 +11,39 @@ use gpui_kit::*;
 /// `.h3`: 12px semibold uppercase muted section label.
 pub fn h3(t: &Theme, text: impl Into<SharedString>) -> Div {
     let text: SharedString = text.into();
-    div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
+    div()
+        .text_size(px(11.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.muted)
+        .whitespace_nowrap()
+        .child(text.to_uppercase())
 }
 
 /// `.help`: 12.5px muted.
 pub fn help(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().text_size(px(12.5)).text_color(t.muted).child(text.into())
+    div()
+        .text_size(px(12.5))
+        .text_color(t.muted)
+        .child(text.into())
 }
 
 /// `.empty`: centered muted placeholder.
 pub fn empty(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().py(px(20.)).px(px(8.)).flex().justify_center().text_size(px(13.)).text_color(t.muted).child(text.into())
+    div()
+        .py(px(20.))
+        .px(px(8.))
+        .flex()
+        .justify_center()
+        .text_size(px(13.))
+        .text_color(t.muted)
+        .child(text.into())
 }
 
 pub fn mono(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().font_family(t.mono_font.clone()).text_size(px(12.)).child(text.into())
+    div()
+        .font_family(t.mono_font.clone())
+        .text_size(px(12.))
+        .child(text.into())
 }
 
 // ------------------------------------------------------------------ marks
@@ -119,25 +137,54 @@ pub fn btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) 
 }
 
 /// `.btn.primary`: accent filled.
-pub fn btn_primary(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    btn_base(t, id, label).bg(t.accent_btn).border_color(t.accent_btn).text_color(t.on_accent).hover(|s| s.opacity(0.9))
+pub fn btn_primary(
+    t: &Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    btn_base(t, id, label)
+        .bg(t.accent_btn)
+        .border_color(t.accent_btn)
+        .text_color(t.on_accent)
+        .hover(|s| s.opacity(0.9))
 }
 
 /// `.btn.danger`: red outlined.
-pub fn btn_danger(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn btn_danger(
+    t: &Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
     let soft = t.down_soft;
-    btn_base(t, id, label).text_color(t.down).border_color(t.down_line).hover(move |s| s.bg(soft))
+    btn_base(t, id, label)
+        .text_color(t.down)
+        .border_color(t.down_line)
+        .hover(move |s| s.bg(soft))
 }
 
 /// A small 24px button (row actions).
-pub fn btn_small(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    btn(t, id, label).h(px(24.)).px(px(8.)).rounded(px(6.)).text_size(px(12.))
+pub fn btn_small(
+    t: &Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    btn(t, id, label)
+        .h(px(24.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .text_size(px(12.))
 }
 
 /// A borderless text button (links inside rows).
 pub fn link(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let fg = t.accent;
-    div().id(id).flex_none().cursor_pointer().text_color(fg).hover(|s| s.underline()).child(label.into())
+    div()
+        .id(id)
+        .flex_none()
+        .cursor_pointer()
+        .text_color(fg)
+        .hover(|s| s.underline())
+        .child(label.into())
 }
 
 /// Disabled look for any button (the caller simply doesn't attach `on_click`).
@@ -150,7 +197,14 @@ pub fn seg<F>(t: &Theme, id: &str, labels: &[&str], on: usize, mut f: F) -> Div
 where
     F: FnMut(usize, Stateful<Div>) -> Stateful<Div>,
 {
-    let mut row = div().flex().flex_none().items_center().gap(px(2.)).p(px(2.)).rounded(px(8.)).bg(t.seg);
+    let mut row = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .p(px(2.))
+        .rounded(px(8.))
+        .bg(t.seg);
     for (i, l) in labels.iter().enumerate() {
         let sel = i == on;
         let hover = t.text;
@@ -178,13 +232,26 @@ where
 
 /// `.card`: white rounded box with a border.
 pub fn card(t: &Theme) -> Div {
-    div().flex().flex_col().rounded(px(10.)).border_1().border_color(t.border).bg(t.card)
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(10.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
 }
 
 /// The dimmed full-window backdrop behind a modal or panel; clicks on it call `on_close`. It occludes
 /// what's behind it, so wheel and hover over the overlay never reach the board underneath.
 pub fn scrim(t: &Theme, id: &str) -> Stateful<Div> {
-    div().id(SharedString::from(id.to_string())).absolute().top_0().left_0().size_full().bg(t.backdrop).occlude()
+    div()
+        .id(SharedString::from(id.to_string()))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(t.backdrop)
+        .occlude()
 }
 
 /// The modal dialog box (centered by the caller's scrim).
@@ -205,11 +272,25 @@ pub fn modal_box(t: &Theme, width: f32) -> Div {
 
 /// A popover menu box (anchored by the caller).
 pub fn menu_box(t: &Theme, width: f32) -> Div {
-    div().flex().flex_col().w(px(width)).p(px(4.)).rounded(px(10.)).border_1().border_color(t.border).bg(t.card).shadow_lg()
+    div()
+        .flex()
+        .flex_col()
+        .w(px(width))
+        .p(px(4.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .shadow_lg()
 }
 
 /// One row in a popover menu.
-pub fn menu_item(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+pub fn menu_item(
+    t: &Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> Stateful<Div> {
     let h = t.panel_2;
     div()
         .id(id)
@@ -229,7 +310,14 @@ pub fn menu_item(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStr
 
 /// A popover anchored under the element that opened it, drawn above everything.
 pub fn popover(at: Point<Pixels>, child: impl IntoElement) -> AnyElement {
-    deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(child)).with_priority(3).into_any_element()
+    deferred(
+        anchored()
+            .position(at)
+            .snap_to_window_with_margin(px(8.))
+            .child(child),
+    )
+    .with_priority(3)
+    .into_any_element()
 }
 
 // ------------------------------------------------------------------ text fields
@@ -264,7 +352,12 @@ impl Input {
         Input { field, focus }
     }
 
-    pub fn with_text(cx: &mut App, placeholder: impl Into<SharedString>, multi: bool, text: &str) -> Input {
+    pub fn with_text(
+        cx: &mut App,
+        placeholder: impl Into<SharedString>,
+        multi: bool,
+        text: &str,
+    ) -> Input {
         let i = Input::new(cx, placeholder, multi);
         i.set_text(text, cx);
         i
@@ -404,17 +497,31 @@ pub enum Icon {
 /// (the outer arc outside the bite, then the bite's arc back inside the disc).
 pub fn crescent(c: (f32, f32), r: f32, bite: (f32, f32), br: f32) -> Vec<(f32, f32)> {
     let n = 48;
-    let inside = |p: (f32, f32), o: (f32, f32), rr: f32| (p.0 - o.0).powi(2) + (p.1 - o.1).powi(2) < rr * rr;
+    let inside =
+        |p: (f32, f32), o: (f32, f32), rr: f32| (p.0 - o.0).powi(2) + (p.1 - o.1).powi(2) < rr * rr;
     let ring = |o: (f32, f32), rr: f32| -> Vec<(f32, f32)> {
-        (0..n).map(|i| std::f32::consts::TAU * i as f32 / n as f32).map(|a| (o.0 + rr * a.cos(), o.1 + rr * a.sin())).collect()
+        (0..n)
+            .map(|i| std::f32::consts::TAU * i as f32 / n as f32)
+            .map(|a| (o.0 + rr * a.cos(), o.1 + rr * a.sin()))
+            .collect()
     };
     let outer = ring(c, r);
     let inner = ring(bite, br);
     // Start the outer walk just after a point the bite covers, so the kept points come out in one run.
-    let start = (0..n).find(|&i| inside(outer[i], bite, br) && !inside(outer[(i + 1) % n], bite, br)).map_or(0, |i| i + 1);
-    let mut pts: Vec<(f32, f32)> = (0..n).map(|k| outer[(start + k) % n]).filter(|p| !inside(*p, bite, br)).collect();
-    let istart = (0..n).find(|&i| !inside(inner[i], c, r) && inside(inner[(i + 1) % n], c, r)).map_or(0, |i| i + 1);
-    let back: Vec<(f32, f32)> = (0..n).map(|k| inner[(istart + k) % n]).filter(|p| inside(*p, c, r)).collect();
+    let start = (0..n)
+        .find(|&i| inside(outer[i], bite, br) && !inside(outer[(i + 1) % n], bite, br))
+        .map_or(0, |i| i + 1);
+    let mut pts: Vec<(f32, f32)> = (0..n)
+        .map(|k| outer[(start + k) % n])
+        .filter(|p| !inside(*p, bite, br))
+        .collect();
+    let istart = (0..n)
+        .find(|&i| !inside(inner[i], c, r) && inside(inner[(i + 1) % n], c, r))
+        .map_or(0, |i| i + 1);
+    let back: Vec<(f32, f32)> = (0..n)
+        .map(|k| inner[(istart + k) % n])
+        .filter(|p| inside(*p, c, r))
+        .collect();
     // The outer arc runs one way round; the bite's arc must come back the other way.
     pts.extend(back.into_iter().rev());
     pts
@@ -455,7 +562,12 @@ pub fn icon(kind: Icon, size: f32, color: Hsla) -> impl IntoElement {
             // A stroked rounded rectangle.
             let rect = |x: f32, y: f32, w: f32, h: f32, rx: f32, sw: f32, window: &mut Window| {
                 let mut pts = Vec::new();
-                for (cx0, cy0, a0) in [(x + w - rx, y + rx, -90f32), (x + w - rx, y + h - rx, 0.), (x + rx, y + h - rx, 90.), (x + rx, y + rx, 180.)] {
+                for (cx0, cy0, a0) in [
+                    (x + w - rx, y + rx, -90f32),
+                    (x + w - rx, y + h - rx, 0.),
+                    (x + rx, y + h - rx, 90.),
+                    (x + rx, y + rx, 180.),
+                ] {
                     for i in 0..=4 {
                         let a = (a0 + 22.5 * i as f32).to_radians();
                         pts.push((cx0 + rx * a.cos(), cy0 + rx * a.sin()));
@@ -508,11 +620,23 @@ mod tests {
         let pts = super::crescent((11.5, 12.5), 5., (14., 10.), 4.);
         // Its area (shoelace) is the disc less the overlap, so the two arcs run opposite ways.
         let n = pts.len();
-        let area = (0..n).map(|i| pts[i].0 * pts[(i + 1) % n].1 - pts[(i + 1) % n].0 * pts[i].1).sum::<f32>().abs() / 2.;
-        let (r, br, d) = (5f32, 4f32, ((14f32 - 11.5).powi(2) + (10f32 - 12.5).powi(2)).sqrt());
-        let lens = r * r * ((d * d + r * r - br * br) / (2. * d * r)).acos() + br * br * ((d * d + br * br - r * r) / (2. * d * br)).acos()
+        let area = (0..n)
+            .map(|i| pts[i].0 * pts[(i + 1) % n].1 - pts[(i + 1) % n].0 * pts[i].1)
+            .sum::<f32>()
+            .abs()
+            / 2.;
+        let (r, br, d) = (
+            5f32,
+            4f32,
+            ((14f32 - 11.5).powi(2) + (10f32 - 12.5).powi(2)).sqrt(),
+        );
+        let lens = r * r * ((d * d + r * r - br * br) / (2. * d * r)).acos()
+            + br * br * ((d * d + br * br - r * r) / (2. * d * br)).acos()
             - 0.5 * ((-d + r + br) * (d + r - br) * (d - r + br) * (d + r + br)).sqrt();
         let want = std::f32::consts::PI * r * r - lens;
-        assert!((area - want).abs() < want * 0.08, "area {area}, want {want}");
+        assert!(
+            (area - want).abs() < want * 0.08,
+            "area {area}, want {want}"
+        );
     }
 }

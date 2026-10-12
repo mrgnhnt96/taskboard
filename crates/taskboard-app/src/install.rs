@@ -42,7 +42,10 @@ pub fn in_the_way() -> Vec<String> {
 /// behind the usual tool folders, as `taskboardd serve` widens it.
 fn agent_path() -> String {
     let home = taskboardd::util::expand_home("~");
-    let mut parts: Vec<String> = [".local/bin", ".cargo/bin"].iter().map(|d| home.join(d).to_string_lossy().to_string()).collect();
+    let mut parts: Vec<String> = [".local/bin", ".cargo/bin"]
+        .iter()
+        .map(|d| home.join(d).to_string_lossy().to_string())
+        .collect();
     parts.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(String::from));
     parts.push(std::env::var("PATH").unwrap_or_default());
     parts.join(":")
@@ -50,8 +53,15 @@ fn agent_path() -> String {
 
 /// Looks for another board in the way (`taskboardd::cutover`).
 fn check_in_the_way() {
-    let Ok(cfg) = taskboardd::config::Config::load() else { return };
-    let found = taskboardd::cutover::problems(&cfg.host, cfg.port, &agent_path(), &crate::hooks::claude_dir());
+    let Ok(cfg) = taskboardd::config::Config::load() else {
+        return;
+    };
+    let found = taskboardd::cutover::problems(
+        &cfg.host,
+        cfg.port,
+        &agent_path(),
+        &crate::hooks::claude_dir(),
+    );
     for p in &found {
         eprintln!("taskboard-app: {p}");
     }
@@ -62,7 +72,10 @@ fn check_in_the_way() {
 
 /// The daemon's login item, as last checked.
 pub fn status() -> LoginItem {
-    STATUS.lock().map(|s| s.clone()).unwrap_or(LoginItem::Checking)
+    STATUS
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or(LoginItem::Checking)
 }
 
 fn set_status(s: LoginItem) {
@@ -76,7 +89,10 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let app = contents.parent()?;
-    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then(|| app.to_path_buf())
 }
 
 /// The bundle we run from, unless in dev mode.
@@ -90,7 +106,12 @@ pub fn installed_bundle() -> Option<PathBuf> {
 /// The LaunchAgent plist shipped in the bundle (the first one in `Contents/Library/LaunchAgents`).
 fn bundled_agent_plist(bundle: &Path) -> Option<PathBuf> {
     let dir = bundle.join("Contents/Library/LaunchAgents");
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "plist")).collect();
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "plist"))
+        .collect();
     v.sort();
     v.into_iter().next()
 }
@@ -105,14 +126,20 @@ fn from_status(s: SMAppServiceStatus) -> LoginItem {
         SMAppServiceStatus::Enabled => LoginItem::Enabled,
         SMAppServiceStatus::RequiresApproval => LoginItem::RequiresApproval,
         SMAppServiceStatus::NotRegistered => LoginItem::NotRegistered,
-        SMAppServiceStatus::NotFound => LoginItem::Failed("The launch agent isn't in the app bundle.".into()),
+        SMAppServiceStatus::NotFound => {
+            LoginItem::Failed("The launch agent isn't in the app bundle.".into())
+        }
         _ => LoginItem::Failed("macOS reported an unknown login item status.".into()),
     }
 }
 
 /// The agent's launchd label (`Label` in its plist).
 fn agent_label(plist: &Path) -> Option<String> {
-    let out = std::process::Command::new("/usr/bin/plutil").args(["-extract", "Label", "raw", "-o", "-"]).arg(plist).output().ok()?;
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", "Label", "raw", "-o", "-"])
+        .arg(plist)
+        .output()
+        .ok()?;
     let label = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !label.is_empty()).then_some(label)
 }
@@ -121,13 +148,30 @@ fn agent_label(plist: &Path) -> Option<String> {
 /// no longer matches the one recorded when it was registered (each ad-hoc dev build has a new one),
 /// so every spawn fails with EX_CONFIG (78).
 fn stale_registration(launchctl_print: &str) -> bool {
-    launchctl_print.lines().map(str::trim).any(|l| l == "job state = spawn failed" || l.starts_with("last exit code = 78"))
+    launchctl_print
+        .lines()
+        .map(str::trim)
+        .any(|l| l == "job state = spawn failed" || l.starts_with("last exit code = 78"))
 }
 
 fn launchd_job(label: &str) -> Option<String> {
-    let uid = String::from_utf8_lossy(&std::process::Command::new("/usr/bin/id").arg("-u").output().ok()?.stdout).trim().to_string();
-    let out = std::process::Command::new("/bin/launchctl").arg("print").arg(format!("gui/{uid}/{label}")).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let uid = String::from_utf8_lossy(
+        &std::process::Command::new("/usr/bin/id")
+            .arg("-u")
+            .output()
+            .ok()?
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    let out = std::process::Command::new("/bin/launchctl")
+        .arg("print")
+        .arg(format!("gui/{uid}/{label}"))
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Register the bundled LaunchAgent (idempotent). Returns the resulting state. A registration
@@ -138,9 +182,13 @@ pub fn register(bundle: &Path) -> LoginItem {
     };
     let svc = agent_service(&plist);
     let stale = matches!(unsafe { svc.status() }, SMAppServiceStatus::Enabled)
-        && agent_label(&plist).and_then(|l| launchd_job(&l)).is_some_and(|p| stale_registration(&p));
+        && agent_label(&plist)
+            .and_then(|l| launchd_job(&l))
+            .is_some_and(|p| stale_registration(&p));
     if stale {
-        eprintln!("taskboard-app: launchd can't start the daemon under its old registration; registering it again");
+        eprintln!(
+            "taskboard-app: launchd can't start the daemon under its old registration; registering it again"
+        );
         let _ = unsafe { svc.unregisterAndReturnError() };
         // macOS drops the registration in the background; registering before it's gone is a no-op.
         for _ in 0..50 {
@@ -167,7 +215,8 @@ pub fn register(bundle: &Path) -> LoginItem {
 
 pub fn unregister(bundle: &Path) -> Result<(), String> {
     let plist = bundled_agent_plist(bundle).ok_or("The launch agent isn't in the app bundle.")?;
-    unsafe { agent_service(&plist).unregisterAndReturnError() }.map_err(|e| e.localizedDescription().to_string())
+    unsafe { agent_service(&plist).unregisterAndReturnError() }
+        .map_err(|e| e.localizedDescription().to_string())
 }
 
 /// Open System Settings ▸ General ▸ Login Items (where a RequiresApproval agent is switched on).
@@ -184,7 +233,10 @@ fn tb_link() -> PathBuf {
 /// A symlink to some Taskboard bundle's `tb` (this one, an older copy, Taskboard Dev): ours to
 /// replace. Anything else called `tb` is someone else's.
 fn is_our_link(link: &Path) -> bool {
-    std::fs::read_link(link).is_ok_and(|t| t.ends_with("Contents/MacOS/tb") && bundle_of(&t).is_some_and(|b| b.to_string_lossy().contains("Taskboard")))
+    std::fs::read_link(link).is_ok_and(|t| {
+        t.ends_with("Contents/MacOS/tb")
+            && bundle_of(&t).is_some_and(|b| b.to_string_lossy().contains("Taskboard"))
+    })
 }
 
 /// Link `~/.local/bin/tb` to the bundle's copy, leaving any file we didn't make alone
@@ -204,10 +256,12 @@ pub fn link_tb(bundle: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!(".tb.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(&target, &tmp).and_then(|_| std::fs::rename(&tmp, &link)).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e.to_string()
-    })
+    std::os::unix::fs::symlink(&target, &tmp)
+        .and_then(|_| std::fs::rename(&tmp, &link))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e.to_string()
+        })
 }
 
 // ------------------------------------------------------------------ entry points
@@ -277,12 +331,18 @@ mod tests {
         assert!(stale_registration(failed));
         assert!(stale_registration(retrying));
         assert!(!stale_registration(running));
-        assert!(!stale_registration(exited), "an ordinary crash isn't a registration problem");
+        assert!(
+            !stale_registration(exited),
+            "an ordinary crash isn't a registration problem"
+        );
     }
 
     #[test]
     fn bundle_detection() {
-        assert_eq!(bundle_of(Path::new("/A/Taskboard.app/Contents/MacOS/taskboard-app")), Some(PathBuf::from("/A/Taskboard.app")));
+        assert_eq!(
+            bundle_of(Path::new("/A/Taskboard.app/Contents/MacOS/taskboard-app")),
+            Some(PathBuf::from("/A/Taskboard.app"))
+        );
         assert_eq!(bundle_of(Path::new("/x/target/debug/taskboard-app")), None);
     }
 

@@ -50,7 +50,9 @@ impl Lens {
         match self {
             Lens::Similar => "Claude groups issues that touch the same code or the same problem.",
             Lens::Area => "Grouped by the part of the app each issue touches.",
-            Lens::Impact => "How much fixing it helps: fewer wasted agent turns, problems you see sooner.",
+            Lens::Impact => {
+                "How much fixing it helps: fewer wasted agent turns, problems you see sooner."
+            }
             Lens::Priority => "P1 first. Claude suggests one when an issue is reported.",
         }
     }
@@ -181,12 +183,22 @@ fn impact_label(i: &str) -> &'static str {
 
 /// Created in the last two days.
 fn is_new(b: &Value) -> bool {
-    fmt::parse(s(b, "created_at")).is_some_and(|t| chrono::Utc::now().signed_duration_since(t).num_hours() < 48)
+    fmt::parse(s(b, "created_at"))
+        .is_some_and(|t| chrono::Utc::now().signed_duration_since(t).num_hours() < 48)
 }
 
 /// The issues shown, grouped by the lens: groups by size (Similar), name (Area), or rank.
 pub fn groups(issues: &[Value], lens: Lens, kinds: [bool; 4], picked: &[String]) -> Vec<GroupView> {
-    let shown: Vec<&Value> = issues.iter().filter(|b| KINDS.iter().position(|k| *k == s(b, "kind")).map(|i| kinds[i]).unwrap_or(true)).collect();
+    let shown: Vec<&Value> = issues
+        .iter()
+        .filter(|b| {
+            KINDS
+                .iter()
+                .position(|k| *k == s(b, "kind"))
+                .map(|i| kinds[i])
+                .unwrap_or(true)
+        })
+        .collect();
     let mut keys: Vec<String> = vec![];
     for b in &shown {
         let k = key_of(lens, b);
@@ -198,7 +210,12 @@ pub fn groups(issues: &[Value], lens: Lens, kinds: [bool; 4], picked: &[String])
     match lens {
         Lens::Similar => keys.sort_by(|a, b| count(b).cmp(&count(a))),
         Lens::Area => keys.sort_by(|a, b| crate::ui::modals::locale_cmp(a, b)),
-        Lens::Impact => keys.sort_by_key(|k| ["high", "med", "low"].iter().position(|x| x == k).unwrap_or(9)),
+        Lens::Impact => keys.sort_by_key(|k| {
+            ["high", "med", "low"]
+                .iter()
+                .position(|x| x == k)
+                .unwrap_or(9)
+        }),
         Lens::Priority => keys.sort(),
     }
     keys.into_iter()
@@ -221,14 +238,32 @@ pub fn groups(issues: &[Value], lens: Lens, kinds: [bool; 4], picked: &[String])
                 })
                 .collect();
             let n = rows.iter().filter(|r| r.picked).count();
-            let check = if n == 0 { Check::None } else if n == rows.len() { Check::All } else { Check::Some };
-            let about = if lens == Lens::Similar { rows.first().and_then(|r| issues.iter().find(|b| fmt::ref_of(b, "B") == r.r)).map(|b| s(b, "group_about").to_string()).unwrap_or_default() } else { String::new() };
+            let check = if n == 0 {
+                Check::None
+            } else if n == rows.len() {
+                Check::All
+            } else {
+                Check::Some
+            };
+            let about = if lens == Lens::Similar {
+                rows.first()
+                    .and_then(|r| issues.iter().find(|b| fmt::ref_of(b, "B") == r.r))
+                    .map(|b| s(b, "group_about").to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             let label = match lens {
                 Lens::Impact => impact_label(&k).to_string(),
                 Lens::Priority => k.to_uppercase(),
                 _ => k,
             };
-            GroupView { label, about, rows, check }
+            GroupView {
+                label,
+                about,
+                rows,
+                check,
+            }
         })
         .collect()
 }
@@ -239,12 +274,28 @@ pub fn draft(issues: &[Value], plan: Option<&Value>, picked: &[String]) -> Draft
     let find = |r: &str| issues.iter().find(|b| fmt::ref_of(b, "B") == r);
     let item = |r: &str, after: Vec<String>| {
         let b = find(r);
-        Item { r: r.to_string(), title: b.map(|b| s(b, "title").to_string()).unwrap_or_default(), priority: b.map(|b| s(b, "priority").to_string()).unwrap_or_default(), after }
+        Item {
+            r: r.to_string(),
+            title: b.map(|b| s(b, "title").to_string()).unwrap_or_default(),
+            priority: b.map(|b| s(b, "priority").to_string()).unwrap_or_default(),
+            after,
+        }
     };
     let picks: Vec<&String> = picked.iter().filter(|r| find(r).is_some()).collect();
-    let projects: Vec<&str> = picks.iter().filter_map(|r| find(r)).map(|b| s(b, "project")).collect();
+    let projects: Vec<&str> = picks
+        .iter()
+        .filter_map(|r| find(r))
+        .map(|b| s(b, "project"))
+        .collect();
     let mixed = projects.iter().any(|p| *p != projects[0]);
-    let covered: Vec<String> = plan.map(|p| arr(p, "ids").iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let covered: Vec<String> = plan
+        .map(|p| {
+            arr(p, "ids")
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     let state = plan.map(|p| s(p, "state")).unwrap_or("none");
     let planning = state == "planning" && picks.iter().any(|r| covered.contains(r));
     let mut waves = vec![];
@@ -253,24 +304,52 @@ pub fn draft(issues: &[Value], plan: Option<&Value>, picked: &[String]) -> Draft
             let items: Vec<Item> = arr(&w, "items")
                 .iter()
                 .map(|i| s(i, "ref").to_string())
-                .zip(arr(&w, "items").iter().map(|i| arr(i, "after").iter().filter_map(|a| a.as_str().map(str::to_string)).collect::<Vec<_>>()))
+                .zip(arr(&w, "items").iter().map(|i| {
+                    arr(i, "after")
+                        .iter()
+                        .filter_map(|a| a.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                }))
                 .filter(|(r, _)| picks.contains(&r))
-                .map(|(r, after)| item(&r, after.into_iter().filter(|a| picks.contains(&a)).collect()))
+                .map(|(r, after)| {
+                    item(
+                        &r,
+                        after.into_iter().filter(|a| picks.contains(&a)).collect(),
+                    )
+                })
                 .collect();
             if !items.is_empty() {
-                waves.push(WaveView { name: format!("Wave {}", waves.len() + 1), why: s(&w, "why").to_string(), items });
+                waves.push(WaveView {
+                    name: format!("Wave {}", waves.len() + 1),
+                    why: s(&w, "why").to_string(),
+                    items,
+                });
             }
         }
     }
-    let planned: Vec<String> = waves.iter().flat_map(|w| w.items.iter().map(|i| i.r.clone())).collect();
-    let unplanned: Vec<Item> = if planning { vec![] } else { picks.iter().filter(|r| !planned.contains(r)).map(|r| item(r, vec![])).collect() };
+    let planned: Vec<String> = waves
+        .iter()
+        .flat_map(|w| w.items.iter().map(|i| i.r.clone()))
+        .collect();
+    let unplanned: Vec<Item> = if planning {
+        vec![]
+    } else {
+        picks
+            .iter()
+            .filter(|r| !planned.contains(r))
+            .map(|r| item(r, vec![]))
+            .collect()
+    };
     DraftView {
         count: picks.len(),
         never_planned: planned.is_empty(),
         waves,
         unplanned,
         planning,
-        note: plan.and_then(|p| fmt::opt_s(p, "note")).filter(|_| state == "ready").map(str::to_string),
+        note: plan
+            .and_then(|p| fmt::opt_s(p, "note"))
+            .filter(|_| state == "ready")
+            .map(str::to_string),
         suggest: plan.map(|p| s(p, "name").to_string()).unwrap_or_default(),
         mixed,
     }
@@ -294,17 +373,30 @@ pub fn enter(m: &mut MainWindow) {
 }
 
 fn issues(m: &MainWindow) -> Vec<Value> {
-    m.backlog.data.as_ref().map(|d| arr(d, "issues").to_vec()).unwrap_or_default()
+    m.backlog
+        .data
+        .as_ref()
+        .map(|d| arr(d, "issues").to_vec())
+        .unwrap_or_default()
 }
 
 /// The checked issues still on the page.
 fn selected(m: &MainWindow) -> Vec<String> {
     let have = issues(m);
-    m.backlog.picked.iter().filter(|r| have.iter().any(|b| fmt::ref_of(b, "B") == **r)).cloned().collect()
+    m.backlog
+        .picked
+        .iter()
+        .filter(|r| have.iter().any(|b| fmt::ref_of(b, "B") == **r))
+        .cloned()
+        .collect()
 }
 
 fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let planning = m.backlog.plan.as_ref().is_some_and(|p| s(p, "state") == "planning");
+    let planning = m
+        .backlog
+        .plan
+        .as_ref()
+        .is_some_and(|p| s(p, "state") == "planning");
     let every = if planning { PLAN_EVERY } else { SYNC_EVERY };
     if m.backlog.synced.is_some_and(|t| t.elapsed() < every) {
         return;
@@ -317,7 +409,12 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     cx.spawn(async move |this, cx| {
         let got = cx
             .background_executor()
-            .spawn(async move { (backend.get("backlog/triage", &[("project", project)]), backend.get("backlog/plan", &[])) })
+            .spawn(async move {
+                (
+                    backend.get("backlog/triage", &[("project", project)]),
+                    backend.get("backlog/plan", &[]),
+                )
+            })
             .await;
         let _ = this.update(cx, |m, cx| {
             if m.backlog.generation != generation {
@@ -332,7 +429,11 @@ fn sync(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
                 Err(e) => m.backlog.err = Some(e.message),
             }
             if let Ok(p) = plan {
-                let was_planning = m.backlog.plan.as_ref().is_some_and(|p| s(p, "state") == "planning");
+                let was_planning = m
+                    .backlog
+                    .plan
+                    .as_ref()
+                    .is_some_and(|p| s(p, "state") == "planning");
                 m.backlog.plan = Some(p);
                 if was_planning {
                     // Poll again soon until the plan lands.
@@ -374,7 +475,11 @@ fn clear(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 /// Esc on the Backlog page: close its menu and uncheck everything. False when there was nothing to
 /// do, or a task or issue panel (or a dialog) is open: Esc closes that first.
 pub fn escape(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> bool {
-    if m.page != Page::Backlog || m.backlog.picked.is_empty() || m.panel.is_some() || m.modal.is_some() {
+    if m.page != Page::Backlog
+        || m.backlog.picked.is_empty()
+        || m.panel.is_some()
+        || m.modal.is_some()
+    {
         return false;
     }
     clear(m, cx);
@@ -438,7 +543,11 @@ fn create(m: &mut MainWindow, d: &DraftView, cx: &mut Context<MainWindow>) {
         return;
     }
     // Goals from the backlog are named by the plan (Claude's name, else the main group's).
-    let name = if d.suggest.trim().is_empty() { "Backlog goal".to_string() } else { d.suggest.trim().to_string() };
+    let name = if d.suggest.trim().is_empty() {
+        "Backlog goal".to_string()
+    } else {
+        d.suggest.trim().to_string()
+    };
     m.backlog.busy = true;
     m.post_or(
         "backlog/goal",
@@ -446,7 +555,11 @@ fn create(m: &mut MainWindow, d: &DraftView, cx: &mut Context<MainWindow>) {
         cx,
         move |m, v, cx| {
             m.backlog.busy = false;
-            let g = if v["goal"].is_object() { v["goal"].clone() } else { v };
+            let g = if v["goal"].is_object() {
+                v["goal"].clone()
+            } else {
+                v
+            };
             let r = fmt::ref_of(&g, "G");
             m.backlog.picked.clear();
             m.backlog.plan = None;
@@ -466,7 +579,12 @@ fn create(m: &mut MainWindow, d: &DraftView, cx: &mut Context<MainWindow>) {
 }
 
 /// Keys while issues are checked: M move, P priority (1 2 3 set it), D defer, X drop.
-fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
+fn on_key(
+    m: &mut MainWindow,
+    ev: &KeyDownEvent,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) {
     let _ = window;
     if m.modal.is_some() || m.panel.is_some() {
         return;
@@ -479,7 +597,12 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
     match ks.key.as_str() {
         "m" => m.toggle_menu(MENU_MOVE, at, cx),
         "p" => m.toggle_menu(MENU_PRIO, at, cx),
-        "1" | "2" | "3" => bulk(m, "priority", json!({"priority": format!("p{}", ks.key)}), cx),
+        "1" | "2" | "3" => bulk(
+            m,
+            "priority",
+            json!({"priority": format!("p{}", ks.key)}),
+            cx,
+        ),
         "d" => bulk(m, "defer", json!({}), cx),
         "x" => bulk(m, "drop", json!({}), cx),
         _ => return,
@@ -491,7 +614,11 @@ fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut C
 
 /// Text on the goal color: light purple in the dark theme takes dark text.
 fn on_goal(t: &Theme) -> Hsla {
-    if t.mode == crate::theme::ThemeMode::Dark { t.bg } else { t.on_accent }
+    if t.mode == crate::theme::ThemeMode::Dark {
+        t.bg
+    } else {
+        t.on_accent
+    }
 }
 
 fn check_box(t: &Theme, id: SharedString, c: Check) -> Stateful<Div> {
@@ -519,7 +646,14 @@ fn check_box(t: &Theme, id: SharedString, c: Check) -> Stateful<Div> {
 }
 
 fn kbd(t: &Theme, k: &str) -> Div {
-    div().px(px(5.)).rounded(px(4.)).bg(t.seg).text_color(t.muted).font_family(t.mono_font.clone()).text_size(px(10.5)).child(k.to_string())
+    div()
+        .px(px(5.))
+        .rounded(px(4.))
+        .bg(t.seg)
+        .text_color(t.muted)
+        .font_family(t.mono_font.clone())
+        .text_size(px(10.5))
+        .child(k.to_string())
 }
 
 fn prio_pill(t: &Theme, p: &str) -> Div {
@@ -538,9 +672,20 @@ fn impact_bars(t: &Theme, id: SharedString, impact: &str) -> Stateful<Div> {
         "med" => (2, t.accent),
         _ => (1, t.muted),
     };
-    let mut d = div().id(id).flex().flex_none().items_end().gap(px(2.)).h(px(12.)).tooltip(kit::tip(impact_label(impact)));
+    let mut d = div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_end()
+        .gap(px(2.))
+        .h(px(12.))
+        .tooltip(kit::tip(impact_label(impact)));
     for (i, h) in [5., 8., 12.].into_iter().enumerate() {
-        d = d.child(div().w(px(3.)).h(px(h)).rounded(px(1.)).bg(if i < n { color } else { t.border_2 }));
+        d = d.child(div().w(px(3.)).h(px(h)).rounded(px(1.)).bg(if i < n {
+            color
+        } else {
+            t.border_2
+        }));
     }
     d
 }
@@ -572,25 +717,50 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let groups = groups(&list, m.backlog.lens, m.backlog.kinds, &m.backlog.picked);
     let d = draft(&list, m.backlog.plan.as_ref(), &m.backlog.picked);
     let data = m.backlog.data.clone().unwrap_or(Value::Null);
-    let (untriaged, triaged, total) = (fmt::i(&data, "untriaged"), fmt::i(&data, "triaged"), fmt::i(&data, "total"));
+    let (untriaged, triaged, total) = (
+        fmt::i(&data, "untriaged"),
+        fmt::i(&data, "triaged"),
+        fmt::i(&data, "total"),
+    );
     let sel = selected(m);
 
     // ---- header: how much is triaged, the project, the lens
-    let pct = if total > 0 { triaged as f32 / total as f32 } else { 1. };
+    let pct = if total > 0 {
+        triaged as f32 / total as f32
+    } else {
+        1.
+    };
     let meter = div()
         .flex()
         .flex_col()
         .gap(px(5.))
         .child(
-            div().flex().items_baseline().gap(px(8.)).child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Plan from the backlog")).child(
-                div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(if untriaged > 0 { t.warn_fg } else { t.up_fg }).child(if m.backlog.data.is_none() {
-                    m.backlog.err.clone().unwrap_or_else(|| "Loading…".into())
-                } else if untriaged > 0 {
-                    format!("{} not in a goal yet", fmt::plural(untriaged, "issue", "issues"))
-                } else {
-                    "Backlog triaged".into()
-                }),
-            ),
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(22.))
+                        .font_weight(FontWeight::BOLD)
+                        .child("Plan from the backlog"),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if untriaged > 0 { t.warn_fg } else { t.up_fg })
+                        .child(if m.backlog.data.is_none() {
+                            m.backlog.err.clone().unwrap_or_else(|| "Loading…".into())
+                        } else if untriaged > 0 {
+                            format!(
+                                "{} not in a goal yet",
+                                fmt::plural(untriaged, "issue", "issues")
+                            )
+                        } else {
+                            "Backlog triaged".into()
+                        }),
+                ),
         )
         .child(
             div()
@@ -599,18 +769,35 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .h(px(6.))
                 .rounded_full()
                 .bg(t.seg)
-                .tooltip(kit::tip(format!("{triaged} of {total} issues triaged: in a goal, deferred or dropped")))
-                .child(div().h_full().rounded_full().w(relative(pct)).bg(if untriaged > 0 { t.warn } else { t.up })),
+                .tooltip(kit::tip(format!(
+                    "{triaged} of {total} issues triaged: in a goal, deferred or dropped"
+                )))
+                .child(
+                    div()
+                        .h_full()
+                        .rounded_full()
+                        .w(relative(pct))
+                        .bg(if untriaged > 0 { t.warn } else { t.up }),
+                ),
         );
     let projects: Vec<Value> = arr(&data, "projects").to_vec();
     let project_btn = (projects.len() > 1 || m.backlog.project != "all").then(|| {
-        let label = if m.backlog.project == "all" { "All projects".to_string() } else { m.backlog.project.clone() };
-        kit::btn_small(&t, "plan-project-btn", format!("{label}  ▾")).on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
-            let p = e.position();
-            m.toggle_menu(MENU_PROJECT, point(p.x - px(10.), p.y + px(14.)), cx);
-        }))
+        let label = if m.backlog.project == "all" {
+            "All projects".to_string()
+        } else {
+            m.backlog.project.clone()
+        };
+        kit::btn_small(&t, "plan-project-btn", format!("{label}  ▾")).on_click(cx.listener(
+            |m, e: &ClickEvent, _, cx| {
+                let p = e.position();
+                m.toggle_menu(MENU_PROJECT, point(p.x - px(10.), p.y + px(14.)), cx);
+            },
+        ))
     });
-    let lens_on = Lens::ALL.iter().position(|l| *l == m.backlog.lens).unwrap_or(0);
+    let lens_on = Lens::ALL
+        .iter()
+        .position(|l| *l == m.backlog.lens)
+        .unwrap_or(0);
     let labels: Vec<&str> = Lens::ALL.iter().map(|l| l.label()).collect();
     let lenses = kit::seg(&t, "plan-lens", &labels, lens_on, |i, item| {
         item.on_click(cx.listener(move |m, _, _, cx| {
@@ -618,7 +805,15 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             cx.notify();
         }))
     });
-    let header = div().flex().flex_wrap().items_center().gap(px(16.)).child(meter).child(div().flex_1()).children(project_btn).child(lenses);
+    let header = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(16.))
+        .child(meter)
+        .child(div().flex_1())
+        .children(project_btn)
+        .child(lenses);
 
     // ---- kinds and the selection bar
     let mut kinds = div().flex().flex_wrap().gap(px(6.));
@@ -637,7 +832,9 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .when(on, |d| d.bg(bg).text_color(fg))
-                .when(!on, |d| d.border_1().border_color(t.border).text_color(t.faint))
+                .when(!on, |d| {
+                    d.border_1().border_color(t.border).text_color(t.faint)
+                })
                 .child(ip::kind_label(k))
                 .on_click(cx.listener(move |m, _, _, cx| {
                     m.backlog.kinds[i] = !m.backlog.kinds[i];
@@ -651,13 +848,41 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         let move_open = m.menu_open(MENU_MOVE).is_some();
         let prio_open = m.menu_open(MENU_PRIO).is_some();
         let sep = || div().w(px(1.)).h(px(18.)).bg(t.goal_line);
-        let mut move_wrap = div().relative().child(bar_btn(&t, "plan-move-btn", "Move to goal", "M").on_click(cx.listener(|m, _, _, cx| m.toggle_menu(MENU_MOVE, point(px(0.), px(0.)), cx))));
+        let mut move_wrap =
+            div()
+                .relative()
+                .child(bar_btn(&t, "plan-move-btn", "Move to goal", "M").on_click(
+                    cx.listener(|m, _, _, cx| m.toggle_menu(MENU_MOVE, point(px(0.), px(0.)), cx)),
+                ));
         if move_open {
-            move_wrap = move_wrap.child(deferred(div().absolute().top(px(32.)).left_0().child(move_menu(m, &t, &sel, cx))).with_priority(3));
+            move_wrap = move_wrap.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(32.))
+                        .left_0()
+                        .child(move_menu(m, &t, &sel, cx)),
+                )
+                .with_priority(3),
+            );
         }
-        let mut prio_wrap = div().relative().child(bar_btn(&t, "plan-prio-btn", "Set priority", "P").on_click(cx.listener(|m, _, _, cx| m.toggle_menu(MENU_PRIO, point(px(0.), px(0.)), cx))));
+        let mut prio_wrap =
+            div()
+                .relative()
+                .child(bar_btn(&t, "plan-prio-btn", "Set priority", "P").on_click(
+                    cx.listener(|m, _, _, cx| m.toggle_menu(MENU_PRIO, point(px(0.), px(0.)), cx)),
+                ));
         if prio_open {
-            prio_wrap = prio_wrap.child(deferred(div().absolute().top(px(32.)).left_0().child(prio_menu(m, &t, &list, &sel, cx))).with_priority(3));
+            prio_wrap = prio_wrap.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(32.))
+                        .left_0()
+                        .child(prio_menu(m, &t, &list, &sel, cx)),
+                )
+                .with_priority(3),
+            );
         }
         div()
             .flex()
@@ -670,21 +895,52 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .border_1()
             .border_color(t.goal_line)
             .bg(t.goal_tint)
-            .child(div().mr(px(6.)).text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.goal).child(format!("{} selected", sel.len())))
+            .child(
+                div()
+                    .mr(px(6.))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(t.goal)
+                    .child(format!("{} selected", sel.len())),
+            )
             .child(move_wrap)
             .child(sep())
             .child(prio_wrap)
             .child(sep())
-            .child(bar_btn(&t, "plan-defer", "Defer", "D").on_click(cx.listener(|m, _, _, cx| bulk(m, "defer", json!({}), cx))))
-            .child(bar_btn(&t, "plan-drop", "Drop", "X").text_color(t.down).on_click(cx.listener(|m, _, _, cx| bulk(m, "drop", json!({}), cx))))
-            .child(bar_btn(&t, "plan-clear", "Clear", "Esc").text_color(t.muted).on_click(cx.listener(|m, _, _, cx| clear(m, cx))))
+            .child(
+                bar_btn(&t, "plan-defer", "Defer", "D")
+                    .on_click(cx.listener(|m, _, _, cx| bulk(m, "defer", json!({}), cx))),
+            )
+            .child(
+                bar_btn(&t, "plan-drop", "Drop", "X")
+                    .text_color(t.down)
+                    .on_click(cx.listener(|m, _, _, cx| bulk(m, "drop", json!({}), cx))),
+            )
+            .child(
+                bar_btn(&t, "plan-clear", "Clear", "Esc")
+                    .text_color(t.muted)
+                    .on_click(cx.listener(|m, _, _, cx| clear(m, cx))),
+            )
             .into_any_element()
     };
-    let toolbar = div().flex().flex_wrap().items_center().justify_between().gap(px(10.)).min_h(px(36.)).child(kinds).child(bar);
+    let toolbar = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .gap(px(10.))
+        .min_h(px(36.))
+        .child(kinds)
+        .child(bar);
 
     // ---- the grouped list
     let mut col = div().flex().flex_col().gap(px(14.)).flex_1().min_w_0();
-    col = col.child(div().text_size(px(12.5)).text_color(t.muted).child(m.backlog.lens.help()));
+    col = col.child(
+        div()
+            .text_size(px(12.5))
+            .text_color(t.muted)
+            .child(m.backlog.lens.help()),
+    );
     if m.backlog.data.is_some() && groups.is_empty() {
         col = col.child(
             div()
@@ -696,11 +952,20 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .justify_center()
                 .text_size(px(13.))
                 .text_color(if untriaged == 0 { t.up_fg } else { t.muted })
-                .child(if untriaged == 0 { "Backlog is triaged. Every open issue is in a goal, deferred or dropped." } else { "No issues of the kinds shown." }),
+                .child(if untriaged == 0 {
+                    "Backlog is triaged. Every open issue is in a goal, deferred or dropped."
+                } else {
+                    "No issues of the kinds shown."
+                }),
         );
     }
     if fmt::b(&data, "grouping") {
-        col = col.child(div().text_size(px(12.5)).text_color(t.goal).child("Claude is grouping new issues…"));
+        col = col.child(
+            div()
+                .text_size(px(12.5))
+                .text_color(t.goal)
+                .child("Claude is grouping new issues…"),
+        );
     }
     for (gi, g) in groups.iter().enumerate() {
         let refs: Vec<String> = g.rows.iter().map(|r| r.r.clone()).collect();
@@ -710,10 +975,31 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .items_center()
             .gap(px(10.))
             .px(px(10.))
-            .child(check_box(&t, SharedString::from(format!("plan-gcheck-{gi}")), g.check).tooltip(kit::tip(if all { "Deselect all" } else { "Select all" })).on_click(cx.listener(move |m, _, _, cx| toggle(m, &refs, !all, cx))))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(g.label.clone()))
-            .child(div().text_size(px(12.)).text_color(t.faint).child(g.rows.len().to_string()))
-            .child(div().min_w_0().truncate().text_size(px(12.5)).text_color(t.muted).child(g.about.clone()));
+            .child(
+                check_box(&t, SharedString::from(format!("plan-gcheck-{gi}")), g.check)
+                    .tooltip(kit::tip(if all { "Deselect all" } else { "Select all" }))
+                    .on_click(cx.listener(move |m, _, _, cx| toggle(m, &refs, !all, cx))),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(g.label.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(t.faint)
+                    .child(g.rows.len().to_string()),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.5))
+                    .text_color(t.muted)
+                    .child(g.about.clone()),
+            );
         let mut rows = div().flex().flex_col().gap(px(6.));
         for row in &g.rows {
             rows = rows.child(row_el(&t, row, m.backlog.lens, cx));
@@ -728,28 +1014,42 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     if let Some(at) = m.menu_open(MENU_PROJECT) {
         let mut list = kit::menu_box(&t, 220.).id("plan-project-menu");
         let mut opts = vec![("all".to_string(), "All projects".to_string())];
-        opts.extend(projects.iter().map(|p| (s(p, "name").to_string(), format!("{} · {}", s(p, "name"), fmt::i(p, "untriaged")))));
+        opts.extend(projects.iter().map(|p| {
+            (
+                s(p, "name").to_string(),
+                format!("{} · {}", s(p, "name"), fmt::i(p, "untriaged")),
+            )
+        }));
         for (n, (v, l)) in opts.into_iter().enumerate() {
             let cur = m.backlog.project == v;
-            list = list.child(kit::menu_item(&t, SharedString::from(format!("plan-project-{n}")), l, cur).on_click(cx.listener(move |m, _, _, cx| {
-                m.menu = None;
-                m.backlog.project = v.clone();
-                m.backlog.data = None;
-                resync(m, cx);
-            })));
+            list = list.child(
+                kit::menu_item(&t, SharedString::from(format!("plan-project-{n}")), l, cur)
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        m.menu = None;
+                        m.backlog.project = v.clone();
+                        m.backlog.data = None;
+                        resync(m, cx);
+                    })),
+            );
         }
-        menus.push(kit::popover(at, list.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
+        menus.push(kit::popover(
+            at,
+            list.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+        ));
     }
 
     let focus = m.backlog.focus.clone().unwrap();
     div()
         .id("plan-page")
         .track_focus(&focus)
-        .on_mouse_down(MouseButton::Left, cx.listener(|m, _, window, cx| {
-            if let Some(f) = m.backlog.focus.as_ref() {
-                window.focus(f, cx);
-            }
-        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|m, _, window, cx| {
+                if let Some(f) = m.backlog.focus.as_ref() {
+                    window.focus(f, cx);
+                }
+            }),
+        )
         .on_key_down(cx.listener(on_key))
         .flex()
         .flex_col()
@@ -769,7 +1069,14 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .pb(px(40.))
                 .child(header)
                 .child(toolbar)
-                .child(div().flex().items_start().gap(px(20.)).child(col).child(div().flex_none().w(px(380.)).child(aside))),
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(20.))
+                        .child(col)
+                        .child(div().flex_none().w(px(380.)).child(aside)),
+                ),
         )
         .children(menus)
         .into_any_element()
@@ -790,7 +1097,14 @@ fn row_el(t: &Theme, v: &RowView, lens: Lens, cx: &mut Context<MainWindow>) -> S
         .border_1()
         .border_color(if on { t.goal_line } else { t.border })
         .bg(if on { t.goal_tint } else { t.card })
-        .child(check_box(t, SharedString::from(format!("plan-check-{}", v.r)), if on { Check::All } else { Check::None }).on_click(cx.listener(move |m, _, _, cx| toggle(m, std::slice::from_ref(&r), !on, cx))))
+        .child(
+            check_box(
+                t,
+                SharedString::from(format!("plan-check-{}", v.r)),
+                if on { Check::All } else { Check::None },
+            )
+            .on_click(cx.listener(move |m, _, _, cx| toggle(m, std::slice::from_ref(&r), !on, cx))),
+        )
         .child(kit::pill(fg, bg, ip::kind_label(&v.kind)))
         .child(kit::mono(t, v.r.clone()).flex_none().text_color(t.faint))
         .child({
@@ -804,61 +1118,150 @@ fn row_el(t: &Theme, v: &RowView, lens: Lens, cx: &mut Context<MainWindow>) -> S
                 .cursor_pointer()
                 .text_size(px(13.5))
                 .hover(move |s| s.text_color(hover))
-                .tooltip(kit::tip("Open the issue: what was said, its history, reopen"))
+                .tooltip(kit::tip(
+                    "Open the issue: what was said, its history, reopen",
+                ))
                 .child(v.title.clone())
                 .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
         })
-        .children(v.is_new.then(|| kit::pill(t.warn_fg, t.warn_soft, "NEW").h(px(18.)).px(px(6.))))
-        .children((lens != Lens::Area).then(|| div().flex_none().max_w(px(140.)).truncate().text_size(px(12.)).text_color(t.muted).child(v.area.clone())))
-        .child(impact_bars(t, SharedString::from(format!("plan-impact-{}", v.r)), &v.impact))
+        .children(v.is_new.then(|| {
+            kit::pill(t.warn_fg, t.warn_soft, "NEW")
+                .h(px(18.))
+                .px(px(6.))
+        }))
+        .children((lens != Lens::Area).then(|| {
+            div()
+                .flex_none()
+                .max_w(px(140.))
+                .truncate()
+                .text_size(px(12.))
+                .text_color(t.muted)
+                .child(v.area.clone())
+        }))
+        .child(impact_bars(
+            t,
+            SharedString::from(format!("plan-impact-{}", v.r)),
+            &v.impact,
+        ))
         .child(prio_pill(t, &v.priority))
 }
 
-fn move_menu(m: &MainWindow, t: &Theme, sel: &[String], cx: &mut Context<MainWindow>) -> impl IntoElement {
+fn move_menu(
+    m: &MainWindow,
+    t: &Theme,
+    sel: &[String],
+    cx: &mut Context<MainWindow>,
+) -> impl IntoElement {
     let list = issues(m);
-    let projects: Vec<String> = sel.iter().filter_map(|r| list.iter().find(|b| fmt::ref_of(b, "B") == *r)).map(|b| s(b, "project").to_string()).collect();
-    let one = projects.first().filter(|p| projects.iter().all(|x| x == *p)).cloned();
-    let mut goals: Vec<&Value> = ip::live_goals(&m.data.goals).into_iter().filter(|g| one.as_deref().is_none_or(|p| s(g, "project") == p)).collect();
+    let projects: Vec<String> = sel
+        .iter()
+        .filter_map(|r| list.iter().find(|b| fmt::ref_of(b, "B") == *r))
+        .map(|b| s(b, "project").to_string())
+        .collect();
+    let one = projects
+        .first()
+        .filter(|p| projects.iter().all(|x| x == *p))
+        .cloned();
+    let mut goals: Vec<&Value> = ip::live_goals(&m.data.goals)
+        .into_iter()
+        .filter(|g| one.as_deref().is_none_or(|p| s(g, "project") == p))
+        .collect();
     goals.sort_by(|a, b| s(a, "name").cmp(s(b, "name")));
-    let mut box_ = kit::menu_box(t, 280.).id("plan-move-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    let mut box_ = kit::menu_box(t, 280.)
+        .id("plan-move-menu")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     if goals.is_empty() {
-        box_ = box_.child(div().p(px(8.)).text_size(px(12.5)).text_color(t.muted).child("No goals in this project yet. Make one on the right."));
+        box_ = box_.child(
+            div()
+                .p(px(8.))
+                .text_size(px(12.5))
+                .text_color(t.muted)
+                .child("No goals in this project yet. Make one on the right."),
+        );
     }
     for (n, g) in goals.into_iter().enumerate() {
         let id = fmt::i(g, "id");
         let label = format!("{} {}", fmt::ref_of(g, "G"), s(g, "name"));
-        box_ = box_.child(kit::menu_item(t, SharedString::from(format!("plan-move-{n}")), label, false).on_click(cx.listener(move |m, _, _, cx| bulk(m, "goal", json!({"goal_id": id}), cx))));
-    }
-    box_
-}
-
-fn prio_menu(m: &MainWindow, t: &Theme, list: &[Value], sel: &[String], cx: &mut Context<MainWindow>) -> impl IntoElement {
-    let _ = m;
-    let mut box_ = kit::menu_box(t, 230.).id("plan-prio-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    for (n, (p, what)) in [("p1", "Do first"), ("p2", "Normal"), ("p3", "When there’s time")].into_iter().enumerate() {
-        let all = !sel.is_empty() && sel.iter().all(|r| list.iter().find(|b| fmt::ref_of(b, "B") == *r).is_some_and(|b| s(b, "priority") == p));
         box_ = box_.child(
-            kit::menu_item(t, SharedString::from(format!("plan-prio-{n}")), "", all)
-                .child(prio_pill(t, p))
-                .child(div().flex_1().child(what))
-                .child(kbd(t, &(n + 1).to_string()))
-                .on_click(cx.listener(move |m, _, _, cx| bulk(m, "priority", json!({"priority": p}), cx))),
+            kit::menu_item(
+                t,
+                SharedString::from(format!("plan-move-{n}")),
+                label,
+                false,
+            )
+            .on_click(cx.listener(move |m, _, _, cx| bulk(m, "goal", json!({"goal_id": id}), cx))),
         );
     }
     box_
 }
 
-fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+fn prio_menu(
+    m: &MainWindow,
+    t: &Theme,
+    list: &[Value],
+    sel: &[String],
+    cx: &mut Context<MainWindow>,
+) -> impl IntoElement {
+    let _ = m;
+    let mut box_ = kit::menu_box(t, 230.)
+        .id("plan-prio-menu")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for (n, (p, what)) in [
+        ("p1", "Do first"),
+        ("p2", "Normal"),
+        ("p3", "When there’s time"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let all = !sel.is_empty()
+            && sel.iter().all(|r| {
+                list.iter()
+                    .find(|b| fmt::ref_of(b, "B") == *r)
+                    .is_some_and(|b| s(b, "priority") == p)
+            });
+        box_ = box_.child(
+            kit::menu_item(t, SharedString::from(format!("plan-prio-{n}")), "", all)
+                .child(prio_pill(t, p))
+                .child(div().flex_1().child(what))
+                .child(kbd(t, &(n + 1).to_string()))
+                .on_click(
+                    cx.listener(move |m, _, _, cx| bulk(m, "priority", json!({"priority": p}), cx)),
+                ),
+        );
+    }
+    box_
+}
+
+fn draft_el(
+    m: &mut MainWindow,
+    t: &Theme,
+    d: &DraftView,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) -> AnyElement {
     let count = if d.count == 0 {
         String::new()
     } else if d.waves.is_empty() {
-        format!("{} · not planned", fmt::plural(d.count as i64, "issue", "issues"))
+        format!(
+            "{} · not planned",
+            fmt::plural(d.count as i64, "issue", "issues")
+        )
     } else {
-        format!("{} · {}", fmt::plural(d.count as i64, "issue", "issues"), fmt::plural(d.waves.len() as i64, "wave", "waves"))
+        format!(
+            "{} · {}",
+            fmt::plural(d.count as i64, "issue", "issues"),
+            fmt::plural(d.waves.len() as i64, "wave", "waves")
+        )
     };
     let _ = window;
     // The plan names the goal; until there's a plan it has none.
-    let name = (!d.waves.is_empty() && !d.suggest.is_empty()).then(|| div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(d.suggest.clone()));
+    let name = (!d.waves.is_empty() && !d.suggest.is_empty()).then(|| {
+        div()
+            .text_size(px(16.))
+            .font_weight(FontWeight::BOLD)
+            .child(d.suggest.clone())
+    });
     let mut col = div()
         .flex()
         .flex_col()
@@ -868,19 +1271,55 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
         .border_1()
         .border_color(t.goal_line)
         .bg(t.card)
-        .child(div().flex().items_center().justify_between().child(kit::h3(t, "New backlog goal").text_color(t.goal)).child(div().text_size(px(12.)).text_color(t.faint).child(count)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(kit::h3(t, "New backlog goal").text_color(t.goal))
+                .child(div().text_size(px(12.)).text_color(t.faint).child(count)),
+        )
         .children(name);
     if d.count == 0 {
-        col = col.child(div().p(px(18.)).rounded(px(10.)).border_1().border_color(t.border_2).text_size(px(13.)).text_color(t.muted).flex().justify_center().child("Check issues on the left to add them to this goal."));
+        col = col.child(
+            div()
+                .p(px(18.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(t.border_2)
+                .text_size(px(13.))
+                .text_color(t.muted)
+                .flex()
+                .justify_center()
+                .child("Check issues on the left to add them to this goal."),
+        );
     }
     if d.mixed {
-        col = col.child(div().text_size(px(12.5)).text_color(t.down).child("A goal holds one project's work. Check issues from one project."));
+        col = col.child(
+            div()
+                .text_size(px(12.5))
+                .text_color(t.down)
+                .child("A goal holds one project's work. Check issues from one project."),
+        );
     }
     if d.planning {
-        col = col.child(div().p(px(12.)).rounded(px(10.)).bg(t.goal_tint).text_size(px(13.)).text_color(t.goal).child("Claude is planning the waves…"));
+        col = col.child(
+            div()
+                .p(px(12.))
+                .rounded(px(10.))
+                .bg(t.goal_tint)
+                .text_size(px(13.))
+                .text_color(t.goal)
+                .child("Claude is planning the waves…"),
+        );
     }
     if let Some(note) = &d.note {
-        col = col.child(div().text_size(px(12.)).text_color(t.warn_fg).child(note.clone()));
+        col = col.child(
+            div()
+                .text_size(px(12.))
+                .text_color(t.warn_fg)
+                .child(note.clone()),
+        );
     }
     for (wi, w) in d.waves.iter().enumerate() {
         let mut wave = div()
@@ -892,15 +1331,40 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
             .border_1()
             .border_color(t.border)
             .bg(t.tint)
-            .child(div().flex().justify_between().child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(w.name.clone())).child(div().text_size(px(11.5)).text_color(t.faint).child(fmt::plural(w.items.len() as i64, "issue", "issues"))))
-            .children((!w.why.is_empty()).then(|| div().text_size(px(12.)).text_color(t.muted).child(w.why.clone())));
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::BOLD)
+                            .child(w.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(t.faint)
+                            .child(fmt::plural(w.items.len() as i64, "issue", "issues")),
+                    ),
+            )
+            .children((!w.why.is_empty()).then(|| {
+                div()
+                    .text_size(px(12.))
+                    .text_color(t.muted)
+                    .child(w.why.clone())
+            }));
         for it in &w.items {
             wave = wave.child(item_el(t, it, &format!("w{wi}"), cx));
         }
         col = col.child(wave);
     }
     if !d.unplanned.is_empty() {
-        let title = if d.never_planned { "Not planned yet" } else { "Added since the last plan" };
+        let title = if d.never_planned {
+            "Not planned yet"
+        } else {
+            "Added since the last plan"
+        };
         let mut box_ = div()
             .flex()
             .flex_col()
@@ -911,16 +1375,50 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
             .border_dashed()
             .border_color(t.goal_line)
             .bg(t.goal_tint)
-            .child(div().flex().justify_between().child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.goal).child(title)).child(div().text_size(px(11.5)).text_color(t.muted).child(fmt::plural(d.unplanned.len() as i64, "issue", "issues"))));
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(t.goal)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(t.muted)
+                            .child(fmt::plural(d.unplanned.len() as i64, "issue", "issues")),
+                    ),
+            );
         if d.never_planned {
             box_ = box_.child(div().text_size(px(12.)).text_color(t.muted).child("Claude splits these into waves: what goes first, what can run side by side, and what has to wait so terminals don't edit the same files."));
         }
         for it in &d.unplanned {
             box_ = box_.child(item_el(t, it, "u", cx));
         }
-        let label = if d.never_planned { "Plan waves with Claude" } else { "Re-plan with Claude" };
-        let b = if d.never_planned { kit::btn_primary(t, "plan-plan", label).bg(t.goal).border_color(t.goal).text_color(on_goal(t)) } else { kit::btn(t, "plan-plan", label).text_color(t.goal).border_color(t.goal_line) };
-        box_ = box_.child(b.mt(px(4.)).h(px(34.)).on_click(cx.listener(|m, _, _, cx| plan_waves(m, cx))));
+        let label = if d.never_planned {
+            "Plan waves with Claude"
+        } else {
+            "Re-plan with Claude"
+        };
+        let b = if d.never_planned {
+            kit::btn_primary(t, "plan-plan", label)
+                .bg(t.goal)
+                .border_color(t.goal)
+                .text_color(on_goal(t))
+        } else {
+            kit::btn(t, "plan-plan", label)
+                .text_color(t.goal)
+                .border_color(t.goal_line)
+        };
+        box_ = box_.child(
+            b.mt(px(4.))
+                .h(px(34.))
+                .on_click(cx.listener(|m, _, _, cx| plan_waves(m, cx))),
+        );
         col = col.child(box_);
     }
     let label = if d.can_create() {
@@ -932,7 +1430,11 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
     } else {
         "Create goal".into()
     };
-    let mut btn = kit::btn_primary(t, "plan-create", label).h(px(38.)).bg(t.goal).border_color(t.goal).text_color(on_goal(t));
+    let mut btn = kit::btn_primary(t, "plan-create", label)
+        .h(px(38.))
+        .bg(t.goal)
+        .border_color(t.goal)
+        .text_color(on_goal(t));
     if d.can_create() && !m.backlog.busy {
         let dd = d.clone();
         btn = btn.on_click(cx.listener(move |m, _, _, cx| create(m, &dd, cx)));
@@ -956,7 +1458,10 @@ fn draft_el(m: &mut MainWindow, t: &Theme, d: &DraftView, window: &mut Window, c
                 .text_size(px(13.))
                 .text_color(t.up_fg)
                 .child(div().flex_1().child(format!("{r} · {name} created.")))
-                .child(kit::link(t, "plan-open-goal", "Open it").on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(rr.clone()), cx)))),
+                .child(
+                    kit::link(t, "plan-open-goal", "Open it")
+                        .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(rr.clone()), cx))),
+                ),
         );
     }
     col.into_any_element()
@@ -969,9 +1474,27 @@ fn item_el(t: &Theme, it: &Item, prefix: &str, cx: &mut Context<MainWindow>) -> 
         .items_center()
         .gap(px(8.))
         .text_size(px(12.5))
-        .child(kit::mono(t, it.r.clone()).flex_none().w(px(36.)).text_color(t.faint))
-        .child(div().flex_1().min_w_0().truncate().text_color(t.text_2).child(it.title.clone()))
-        .children((!it.after.is_empty()).then(|| div().flex_none().text_size(px(11.5)).text_color(t.muted).child(format!("after {}", it.after.join(", ")))))
+        .child(
+            kit::mono(t, it.r.clone())
+                .flex_none()
+                .w(px(36.))
+                .text_color(t.faint),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(t.text_2)
+                .child(it.title.clone()),
+        )
+        .children((!it.after.is_empty()).then(|| {
+            div()
+                .flex_none()
+                .text_size(px(11.5))
+                .text_color(t.muted)
+                .child(format!("after {}", it.after.join(", ")))
+        }))
         .children((!it.priority.is_empty()).then(|| prio_pill(t, &it.priority)))
         .child(
             div()
@@ -987,14 +1510,19 @@ fn item_el(t: &Theme, it: &Item, prefix: &str, cx: &mut Context<MainWindow>) -> 
                 .cursor_pointer()
                 .tooltip(kit::tip("Remove from this goal"))
                 .child("×")
-                .on_click(cx.listener(move |m, _, _, cx| toggle(m, std::slice::from_ref(&r), false, cx))),
+                .on_click(
+                    cx.listener(move |m, _, _, cx| toggle(m, std::slice::from_ref(&r), false, cx)),
+                ),
         )
 }
 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Check, Item, Lens, create, draft, goal_waves, groups, issues, plan_waves, sync, toggle, bulk};
+    use super::{
+        Check, Item, Lens, bulk, create, draft, goal_waves, groups, issues, plan_waves, sync,
+        toggle,
+    };
     use crate::app::Page;
     use crate::backend::Backend;
     use crate::fmt;
@@ -1018,13 +1546,25 @@ mod tests {
     fn groups_follow_the_lens_and_the_checks() {
         let picked = vec!["B1".to_string()];
         let g = groups(&list(), Lens::Similar, [true; 4], &picked);
-        assert_eq!(g.iter().map(|g| (g.label.as_str(), g.rows.len(), g.check)).collect::<Vec<_>>(), [("Runner", 2, Check::Some), ("Tidy", 1, Check::None)]);
+        assert_eq!(
+            g.iter()
+                .map(|g| (g.label.as_str(), g.rows.len(), g.check))
+                .collect::<Vec<_>>(),
+            [("Runner", 2, Check::Some), ("Tidy", 1, Check::None)]
+        );
         assert_eq!(g[0].about, "Runner about");
         let g = groups(&list(), Lens::Impact, [true; 4], &picked);
-        assert_eq!(g.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(), ["High impact", "Medium impact", "Low impact"]);
+        assert_eq!(
+            g.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(),
+            ["High impact", "Medium impact", "Low impact"]
+        );
         assert_eq!(g[0].check, Check::All);
         let g = groups(&list(), Lens::Priority, [true, false, true, true], &[]);
-        assert_eq!(g.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(), ["P1", "P3"], "test gaps hidden");
+        assert_eq!(
+            g.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(),
+            ["P1", "P3"],
+            "test gaps hidden"
+        );
     }
 
     #[::core::prelude::v1::test]
@@ -1038,17 +1578,34 @@ mod tests {
             {"why": "First", "items": [{"ref": "B1", "after": []}]},
             {"why": "Then", "items": [{"ref": "B3", "after": []}, {"ref": "B2", "after": ["B3"]}]}]});
         let d = draft(&list(), Some(&plan), &picked);
-        assert!(d.can_create(), "B3 unchecked: it drops out, no re-plan needed");
+        assert!(
+            d.can_create(),
+            "B3 unchecked: it drops out, no re-plan needed"
+        );
         assert_eq!(d.waves.len(), 2);
-        assert_eq!(d.waves[1].items, vec![Item { r: "B2".into(), title: "B2 title".into(), priority: "p2".into(), after: vec![] }]);
-        assert_eq!(goal_waves(&d)[1]["items"][0], json!({"ref": "B2", "after": []}));
+        assert_eq!(
+            d.waves[1].items,
+            vec![Item {
+                r: "B2".into(),
+                title: "B2 title".into(),
+                priority: "p2".into(),
+                after: vec![]
+            }]
+        );
+        assert_eq!(
+            goal_waves(&d)[1]["items"][0],
+            json!({"ref": "B2", "after": []})
+        );
 
         // Checking one more after planning asks for a re-plan.
         let more: Vec<String> = ["B1", "B2"].iter().map(|s| s.to_string()).collect();
         let plan2 = json!({"id": 2, "state": "ready", "ids": ["B1"], "waves": [{"why": "", "items": [{"ref": "B1"}]}]});
         let d = draft(&list(), Some(&plan2), &more);
         assert!(d.stale() && !d.can_create());
-        assert_eq!(d.unplanned.iter().map(|i| i.r.as_str()).collect::<Vec<_>>(), ["B2"]);
+        assert_eq!(
+            d.unplanned.iter().map(|i| i.r.as_str()).collect::<Vec<_>>(),
+            ["B2"]
+        );
 
         let planning = json!({"id": 3, "state": "planning", "ids": ["B1", "B2"]});
         let d = draft(&list(), Some(&planning), &more);
@@ -1068,8 +1625,21 @@ mod tests {
     #[gpui_kit::test]
     fn checking_planning_and_creating_send_what_the_board_needs(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = parity::window(cx);
-        let mk = |title: &str, kind: &str| fmt::ref_of(&rec.board().post("backlog", json!({"title": title, "kind": kind, "project": "webapp"})).unwrap(), "B");
-        let (a, b) = (mk("Restarts ignore the cap", "bug"), mk("No test for spool replay", "gap"));
+        let mk = |title: &str, kind: &str| {
+            fmt::ref_of(
+                &rec.board()
+                    .post(
+                        "backlog",
+                        json!({"title": title, "kind": kind, "project": "webapp"}),
+                    )
+                    .unwrap(),
+                "B",
+            )
+        };
+        let (a, b) = (
+            mk("Restarts ignore the cap", "bug"),
+            mk("No test for spool replay", "gap"),
+        );
         let later = mk("Old prefs keys", "clean");
         w.update(cx, |m, _, cx| {
             m.go(Page::Backlog, cx);
@@ -1078,7 +1648,10 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         w.update(cx, |m, _, cx| {
-            assert!(issues(m).iter().any(|x| fmt::ref_of(x, "B") == a), "untriaged issues are listed");
+            assert!(
+                issues(m).iter().any(|x| fmt::ref_of(x, "B") == a),
+                "untriaged issues are listed"
+            );
             toggle(m, &[a.clone(), b.clone()], true, cx);
             plan_waves(m, cx);
         })
@@ -1093,12 +1666,29 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         let body = rec.last("backlog/goal").expect("made a goal");
-        assert!(!body["name"].as_str().unwrap().is_empty(), "the goal takes the plan's name");
-        let sent: Vec<String> = body["waves"].as_array().unwrap().iter().flat_map(|w| w["items"].as_array().unwrap().iter().map(|i| i["ref"].as_str().unwrap().to_string())).collect();
+        assert!(
+            !body["name"].as_str().unwrap().is_empty(),
+            "the goal takes the plan's name"
+        );
+        let sent: Vec<String> = body["waves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|w| {
+                w["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i["ref"].as_str().unwrap().to_string())
+            })
+            .collect();
         assert_eq!(sent.len(), 2);
         w.update(cx, |m, _, cx| {
             assert!(m.backlog.picked.is_empty() && m.backlog.just_made.is_some());
-            assert!(matches!(&m.page, Page::Goal(r) if r.starts_with('G')), "the new goal opens");
+            assert!(
+                matches!(&m.page, Page::Goal(r) if r.starts_with('G')),
+                "the new goal opens"
+            );
             m.go(Page::Backlog, cx);
             // Then the selection bar: defer what's left.
             m.backlog.synced = None;
@@ -1107,12 +1697,18 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         w.update(cx, |m, _, cx| {
-            assert!(!issues(m).iter().any(|x| fmt::ref_of(x, "B") == a), "in a goal now: triaged");
+            assert!(
+                !issues(m).iter().any(|x| fmt::ref_of(x, "B") == a),
+                "in a goal now: triaged"
+            );
             toggle(m, std::slice::from_ref(&later), true, cx);
             bulk(m, "defer", json!({}), cx);
         })
         .unwrap();
         parity::settle(cx);
-        assert_eq!(rec.last("backlog/bulk"), Some(json!({"ids": [later], "action": "defer"})));
+        assert_eq!(
+            rec.last("backlog/bulk"),
+            Some(json!({"ids": [later], "action": "defer"}))
+        );
     }
 }

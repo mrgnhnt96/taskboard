@@ -52,7 +52,9 @@ pub enum Look {
     /// An icon button (`.icon-btn`): close, back, focus, the attachment menu, remove a field.
     Icon(Icon),
     /// A tab / log chip / attachment-kind segment.
-    Tab { on: bool },
+    Tab {
+        on: bool,
+    },
     /// A menu item (`role=menuitem`).
     Menu,
     /// A task ref shown as a link (blocked-by refs).
@@ -107,8 +109,18 @@ pub struct Act {
 }
 
 impl Act {
-    pub fn new(act: &'static str, arg: impl Into<String>, id: impl Into<String>, grp: impl Into<String>) -> Act {
-        Act { act, arg: arg.into(), id: id.into(), grp: grp.into() }
+    pub fn new(
+        act: &'static str,
+        arg: impl Into<String>,
+        id: impl Into<String>,
+        grp: impl Into<String>,
+    ) -> Act {
+        Act {
+            act,
+            arg: arg.into(),
+            id: id.into(),
+            grp: grp.into(),
+        }
     }
 
     /// The web's `busyKey`: act, arg and id.
@@ -175,7 +187,9 @@ pub enum K {
     PrHead,
     Steps,
     Step(StepSt),
-    PrBar { warn: bool },
+    PrBar {
+        warn: bool,
+    },
     Atts,
     Att,
     AttMeta,
@@ -260,15 +274,47 @@ pub enum Dot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
-    Text { s: String, st: St, tip: Option<String> },
-    Pill { s: String, tone: Tone, tip: Option<String> },
-    Btn { label: String, act: Act, look: Look, disabled: bool, tip: Option<String> },
-    Link { s: String, go: Go, tip: Option<String>, look: LinkLook },
+    Text {
+        s: String,
+        st: St,
+        tip: Option<String>,
+    },
+    Pill {
+        s: String,
+        tone: Tone,
+        tip: Option<String>,
+    },
+    Btn {
+        label: String,
+        act: Act,
+        look: Look,
+        disabled: bool,
+        tip: Option<String>,
+    },
+    Link {
+        s: String,
+        go: Go,
+        tip: Option<String>,
+        look: LinkLook,
+    },
     /// An input (one line) or textarea (`multi`); `key` is the web's `data-k` / field name.
-    Field { key: String, value: String, placeholder: &'static str, multi: bool, mono: bool },
-    Note { s: String, err: bool },
+    Field {
+        key: String,
+        value: String,
+        placeholder: &'static str,
+        multi: bool,
+        mono: bool,
+    },
+    Note {
+        s: String,
+        err: bool,
+    },
     Dot(Dot),
-    El { k: K, tip: Option<String>, kids: Vec<Node> },
+    El {
+        k: K,
+        tip: Option<String>,
+        kids: Vec<Node>,
+    },
 }
 
 fn el(k: K, kids: Vec<Node>) -> Node {
@@ -276,15 +322,27 @@ fn el(k: K, kids: Vec<Node>) -> Node {
 }
 
 fn txt(s: impl Into<String>, st: St) -> Node {
-    Node::Text { s: s.into(), st, tip: None }
+    Node::Text {
+        s: s.into(),
+        st,
+        tip: None,
+    }
 }
 
 fn txt_tip(s: impl Into<String>, st: St, tip: impl Into<String>) -> Node {
-    Node::Text { s: s.into(), st, tip: Some(tip.into()) }
+    Node::Text {
+        s: s.into(),
+        st,
+        tip: Some(tip.into()),
+    }
 }
 
 fn pill(s: impl Into<String>, tone: Tone) -> Node {
-    Node::Pill { s: s.into(), tone, tip: None }
+    Node::Pill {
+        s: s.into(),
+        tone,
+        tip: None,
+    }
 }
 
 // ------------------------------------------------------------------ what the panel reads
@@ -307,7 +365,11 @@ pub struct Ui {
 
 impl Ui {
     pub fn log_filter(&self) -> &str {
-        if self.log_filter.is_empty() { "all" } else { &self.log_filter }
+        if self.log_filter.is_empty() {
+            "all"
+        } else {
+            &self.log_filter
+        }
     }
 }
 
@@ -345,7 +407,10 @@ impl Ctx<'_> {
 
     /// The web's `note(grp)`.
     fn note(&self, grp: &str) -> Option<Node> {
-        self.ui.notes.get(grp).map(|(s, err)| Node::Note { s: s.clone(), err: *err })
+        self.ui.notes.get(grp).map(|(s, err)| Node::Note {
+            s: s.clone(),
+            err: *err,
+        })
     }
 
     fn draft(&self, k: &str) -> String {
@@ -356,7 +421,11 @@ impl Ctx<'_> {
     fn btn(&self, label: &str, act: Act, look: Look, disabled: bool, tip: Option<&str>) -> Node {
         let busy = self.ui.busy.contains(&act.busy_key());
         Node::Btn {
-            label: if busy { "Sending…".into() } else { label.to_string() },
+            label: if busy {
+                "Sending…".into()
+            } else {
+                label.to_string()
+            },
             act,
             look,
             disabled: disabled || busy,
@@ -429,7 +498,9 @@ fn pr_stopped(t: &Value) -> Option<&Value> {
     if !awaiting_merge(t) {
         return None;
     }
-    pr_of(t).and_then(|p| obj(p, "stage")).and_then(|st| obj(st, "stopped"))
+    pr_of(t)
+        .and_then(|p| obj(p, "stage"))
+        .and_then(|st| obj(st, "stopped"))
 }
 
 /// `PR_STAGE_CLS`.
@@ -487,7 +558,17 @@ fn js_string(v: &Value) -> String {
     match v {
         Value::Null => "null".into(),
         Value::String(x) => x.clone(),
-        Value::Array(a) => a.iter().map(|x| if x.is_null() { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
+        Value::Array(a) => a
+            .iter()
+            .map(|x| {
+                if x.is_null() {
+                    String::new()
+                } else {
+                    js_string(x)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
         Value::Object(_) => "[object Object]".into(),
         other => other.to_string(),
     }
@@ -495,7 +576,11 @@ fn js_string(v: &Value) -> String {
 
 /// `esc(x)` of a possibly missing field: "" for null/undefined.
 fn or_empty(v: &Value) -> String {
-    if v.is_null() { String::new() } else { js_string(v) }
+    if v.is_null() {
+        String::new()
+    } else {
+        js_string(v)
+    }
 }
 
 /// `savedLine`.
@@ -506,7 +591,11 @@ fn saved_line(t: &Value) -> String {
             "Saved at {} · {} · {}",
             fmt::hhmm(at),
             fmt::plural(c["turns"].as_i64().unwrap_or(0), "turn", "turns"),
-            fmt::plural(c["checkpoints"].as_i64().unwrap_or(0), "checkpoint", "checkpoints")
+            fmt::plural(
+                c["checkpoints"].as_i64().unwrap_or(0),
+                "checkpoint",
+                "checkpoints"
+            )
         ),
         None => String::new(),
     }
@@ -518,12 +607,18 @@ pub fn hours_open_at(state: &Value) -> String {
     if !h.is_object() || !b(h, "on") || b(h, "open") {
         return String::new();
     }
-    opt_s(h, "next_open").map(fmt::day_clock).unwrap_or_default()
+    opt_s(h, "next_open")
+        .map(fmt::day_clock)
+        .unwrap_or_default()
 }
 
 /// `sentNote`.
 pub fn sent_note(state: &Value) -> &'static str {
-    if state["midna"]["up"] == Value::Bool(false) { "Saved. It runs once Midna is back." } else { "Sent to Midna" }
+    if state["midna"]["up"] == Value::Bool(false) {
+        "Saved. It runs once Midna is back."
+    } else {
+        "Sent to Midna"
+    }
 }
 
 /// `ref(x, p)`.
@@ -533,7 +628,10 @@ fn rf(v: &Value, p: &str) -> String {
 
 /// `who` in `overviewTab`.
 fn who(t: &Value) -> String {
-    opt_s(t, "who").or_else(|| obj(t, "session").and_then(|x| opt_s(x, "name"))).unwrap_or("The terminal").to_string()
+    opt_s(t, "who")
+        .or_else(|| obj(t, "session").and_then(|x| opt_s(x, "name")))
+        .unwrap_or("The terminal")
+        .to_string()
 }
 
 // ------------------------------------------------------------------ status pill
@@ -544,14 +642,30 @@ pub fn status_pill(t: &Value) -> Node {
         let p = pr_of(t).unwrap_or(&Value::Null);
         let num = or_empty(&p["num"]);
         if let Some(st) = pr_stopped(t) {
-            let tip = if b(st, "asked") { format!("Its terminal asked you about PR #{num}") } else { format!("Its terminal stopped on PR #{num} before it was finished") };
-            return Node::Pill { s: "Needs you".into(), tone: Tone::Needs, tip: Some(tip) };
+            let tip = if b(st, "asked") {
+                format!("Its terminal asked you about PR #{num}")
+            } else {
+                format!("Its terminal stopped on PR #{num} before it was finished")
+            };
+            return Node::Pill {
+                s: "Needs you".into(),
+                tone: Tone::Needs,
+                tip: Some(tip),
+            };
         }
         let tip = format!("The work is done; PR #{num} isn’t merged yet");
         if let Some(stage) = obj(p, "stage") {
-            return Node::Pill { s: or_empty(&stage["label"]), tone: stage_tone(s(stage, "phase")), tip: Some(tip) };
+            return Node::Pill {
+                s: or_empty(&stage["label"]),
+                tone: stage_tone(s(stage, "phase")),
+                tip: Some(tip),
+            };
         }
-        return Node::Pill { s: "Awaiting merge".into(), tone: Tone::Working, tip: Some(tip) };
+        return Node::Pill {
+            s: "Awaiting merge".into(),
+            tone: Tone::Working,
+            tip: Some(tip),
+        };
     }
     let k = st_key(t);
     if k == "queued" && b(t, "starting") {
@@ -564,11 +678,23 @@ pub fn status_pill(t: &Value) -> Node {
 
 fn back_btn(c: &Ctx) -> Option<Node> {
     let prev = c.trail.last()?;
-    Some(c.btn("", Act::new("task-back", "", "", ""), Look::Icon(Icon::Back), false, Some(&format!("Back to {prev}"))))
+    Some(c.btn(
+        "",
+        Act::new("task-back", "", "", ""),
+        Look::Icon(Icon::Back),
+        false,
+        Some(&format!("Back to {prev}")),
+    ))
 }
 
 fn close_btn(c: &Ctx) -> Node {
-    c.btn("", Act::new("close-panel", "", "", ""), Look::Icon(Icon::Close), false, None)
+    c.btn(
+        "",
+        Act::new("close-panel", "", "", ""),
+        Look::Icon(Icon::Close),
+        false,
+        None,
+    )
 }
 
 /// `taskPanel()`.
@@ -579,20 +705,31 @@ pub fn panel(c: &Ctx) -> Node {
         top.push(pill(c.r, Tone::Ref));
         top.push(close_btn(c));
         let msg = match c.err {
-            Some(e) => Node::Note { s: e.to_string(), err: true },
+            Some(e) => Node::Note {
+                s: e.to_string(),
+                err: true,
+            },
             None => txt("Loading…", St::Muted),
         };
         return el(K::Col, vec![el(K::Top, top), msg]);
     };
     let r = rf(t, "T");
     let alert = arr(c.state, "alerts").iter().find(|a| s(a, "task") == r);
-    let tab = if matches!(c.tab, "context" | "log") { c.tab } else { "overview" };
+    let tab = if matches!(c.tab, "context" | "log") {
+        c.tab
+    } else {
+        "overview"
+    };
 
     let mut top = Vec::new();
     top.extend(back_btn(c));
     top.push(status_pill(t));
     if let Some(a) = alert {
-        top.push(Node::Pill { s: "Needs you".into(), tone: Tone::Needs, tip: Some(or_empty(&a["text"])) });
+        top.push(Node::Pill {
+            s: "Needs you".into(),
+            tone: Tone::Needs,
+            tip: Some(or_empty(&a["text"])),
+        });
     }
     if s(t, "priority") == "high" {
         top.push(pill("High priority", Tone::High));
@@ -600,7 +737,10 @@ pub fn panel(c: &Ctx) -> Node {
     top.push(pill(&r, Tone::Ref));
     top.push(close_btn(c));
 
-    let mut sub = vec![pill(or_empty(&t["project"]), Tone::Repo), txt(fmt::when_line(t), St::Sub)];
+    let mut sub = vec![
+        pill(or_empty(&t["project"]), Tone::Repo),
+        txt(fmt::when_line(t), St::Sub),
+    ];
     let took = fmt::took_line(t);
     if !took.is_empty() {
         sub.push(txt(took, St::Sub));
@@ -614,17 +754,38 @@ pub fn panel(c: &Ctx) -> Node {
 
     let mut kids = vec![el(K::Top, top)];
     if let Some(e) = c.err {
-        kids.push(Node::Note { s: e.to_string(), err: true });
+        kids.push(Node::Note {
+            s: e.to_string(),
+            err: true,
+        });
     }
     kids.push(txt(or_empty(&t["title"]), St::Title));
     kids.push(el(K::Sub, sub));
     if let Some(a) = alert {
-        kids.push(el(K::Box(BoxTone::Ask), vec![txt("Needs you", St::BoxLabel), txt(or_empty(&a["text"]), St::Plain)]));
+        kids.push(el(
+            K::Box(BoxTone::Ask),
+            vec![
+                txt("Needs you", St::BoxLabel),
+                txt(or_empty(&a["text"]), St::Plain),
+            ],
+        ));
     }
-    let tabs = [("overview", "Overview"), ("context", "Context"), ("log", "Log")]
-        .iter()
-        .map(|(id, label)| c.btn(label, Act::new("tab", *id, "", ""), Look::Tab { on: tab == *id }, false, None))
-        .collect();
+    let tabs = [
+        ("overview", "Overview"),
+        ("context", "Context"),
+        ("log", "Log"),
+    ]
+    .iter()
+    .map(|(id, label)| {
+        c.btn(
+            label,
+            Act::new("tab", *id, "", ""),
+            Look::Tab { on: tab == *id },
+            false,
+            None,
+        )
+    })
+    .collect();
     kids.push(el(K::Tabs, tabs));
     let body = match tab {
         "context" => context_tab(c, t),
@@ -639,7 +800,13 @@ pub fn panel(c: &Ctx) -> Node {
 fn answer_btns(c: &Ctx, r: &str) -> Vec<Node> {
     let at = hours_open_at(c.state);
     let grp = format!("ask:{r}");
-    let mut out = vec![c.btn("Send answer", Act::new("answer", "", r, &grp), Look::Primary, false, None)];
+    let mut out = vec![c.btn(
+        "Send answer",
+        Act::new("answer", "", r, &grp),
+        Look::Primary,
+        false,
+        None,
+    )];
     if !at.is_empty() {
         out.push(c.btn(
             &format!("Send at {at}"),
@@ -654,7 +821,13 @@ fn answer_btns(c: &Ctx, r: &str) -> Vec<Node> {
 
 fn answer_field(c: &Ctx, r: &str) -> Node {
     let k = format!("answer:{r}");
-    Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false }
+    Node::Field {
+        value: c.draft(&k),
+        key: k,
+        placeholder: "",
+        multi: true,
+        mono: false,
+    }
 }
 
 /// `overviewTab(t)`.
@@ -669,14 +842,26 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         let saved = saved_line(t);
         let claude = opt_s(t, "claude_session_id").is_some();
         let grp = format!("lost:{r}");
-        let mut bx = vec![txt("Terminal lost", St::BoxLabel), txt(opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."), St::Plain)];
+        let mut bx = vec![
+            txt("Terminal lost", St::BoxLabel),
+            txt(
+                opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."),
+                St::Plain,
+            ),
+        ];
         if !saved.is_empty() {
             bx.push(txt(saved, St::Small));
         }
         bx.push(el(
             K::Row,
             vec![
-                c.btn("Resume in a new terminal", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
+                c.btn(
+                    "Resume in a new terminal",
+                    Act::new("resume", "fresh", &r, &grp),
+                    Look::Primary,
+                    false,
+                    None,
+                ),
                 c.btn(
                     "Reopen the old conversation",
                     Act::new("resume", "reopen", &r, &grp),
@@ -687,17 +872,38 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             ],
         ));
         bx.extend(c.note(&grp));
-        bx.push(c.btn("See what the new terminal gets", Act::new("tab", "context", "", ""), Look::Link, false, None));
+        bx.push(c.btn(
+            "See what the new terminal gets",
+            Act::new("tab", "context", "", ""),
+            Look::Link,
+            false,
+            None,
+        ));
         out.push(el(K::Box(BoxTone::Lost), bx));
     } else if status == "needs" && s(t, "needs_reason") == "start_failed" {
         let mut bx = vec![
             txt("Couldn’t start in Midna", St::BoxLabel),
-            txt(opt_s(t, "latest").unwrap_or("Midna didn’t start a terminal for this task."), St::Plain),
+            txt(
+                opt_s(t, "latest").unwrap_or("Midna didn’t start a terminal for this task."),
+                St::Plain,
+            ),
             el(
                 K::Row,
                 vec![
-                    c.btn("New Midna terminal", Act::new("start", "new", &r, &act), Look::Primary, false, None),
-                    c.btn("Queue in Midna", Act::new("start", "queue", &r, &act), Look::Plain, false, None),
+                    c.btn(
+                        "New Midna terminal",
+                        Act::new("start", "new", &r, &act),
+                        Look::Primary,
+                        false,
+                        None,
+                    ),
+                    c.btn(
+                        "Queue in Midna",
+                        Act::new("start", "queue", &r, &act),
+                        Look::Plain,
+                        false,
+                        None,
+                    ),
                 ],
             ),
         ];
@@ -709,14 +915,34 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         let mut row = step_btns(c, t, &r, &grp);
         row.extend(answer_btns(c, &r));
         if q.is_none() && session_live(t) {
-            row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
+            row.push(c.btn(
+                "Focus in Midna",
+                Act::new("focus", "", &r, &grp),
+                Look::Plain,
+                false,
+                None,
+            ));
         }
         row.extend(c.note(&grp));
         out.push(el(
             K::Box(BoxTone::Ask),
             vec![
-                txt(format!("{who} {}", if q.is_some() { "is asking" } else { "needs you" }), St::BoxLabel),
-                txt(q.or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::Plain),
+                txt(
+                    format!(
+                        "{who} {}",
+                        if q.is_some() {
+                            "is asking"
+                        } else {
+                            "needs you"
+                        }
+                    ),
+                    St::BoxLabel,
+                ),
+                txt(
+                    q.or(opt_s(t, "latest"))
+                        .unwrap_or("It’s waiting for you in Midna."),
+                    St::Plain,
+                ),
                 answer_field(c, &r),
                 el(K::Row, row),
             ],
@@ -728,20 +954,38 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             Some(a) => format!("It starts there by itself once {a} is done."),
             None => "It starts there by itself next.".to_string(),
         };
-        out.push(el(K::Box(BoxTone::Info), vec![txt(label, St::BoxLabel), txt(when, St::Plain)]));
+        out.push(el(
+            K::Box(BoxTone::Info),
+            vec![txt(label, St::BoxLabel), txt(when, St::Plain)],
+        ));
     }
 
     if starts_by_hand(t) {
         let mut st = vec![el(
             K::Row,
             vec![
-                c.btn("Start", Act::new("start", "new", &r, &act), Look::PrimaryWide, false, None),
-                c.btn("Start when the repo’s free", Act::new("start", "queue", &r, &act), Look::SoftWide, false, None),
+                c.btn(
+                    "Start",
+                    Act::new("start", "new", &r, &act),
+                    Look::PrimaryWide,
+                    false,
+                    None,
+                ),
+                c.btn(
+                    "Start when the repo’s free",
+                    Act::new("start", "queue", &r, &act),
+                    Look::SoftWide,
+                    false,
+                    None,
+                ),
             ],
         )];
         st.extend(c.note(&act));
         if let Some(w) = opt_s(t, "waiting") {
-            st.push(txt(format!("Not starting yet: {w}. Start runs it now anyway."), St::WarnHelp));
+            st.push(txt(
+                format!("Not starting yet: {w}. Start runs it now anyway."),
+                St::WarnHelp,
+            ));
         }
         out.push(el(K::Stack, st));
     } else if status == "planned" {
@@ -752,7 +996,9 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                 Act::new("queue-planned", "", &r, &act),
                 Look::Soft,
                 false,
-                Some("Take it out of the plan and queue it; the goal’s rules decide when it starts"),
+                Some(
+                    "Take it out of the plan and queue it; the goal’s rules decide when it starts",
+                ),
             )],
         )];
         st.extend(c.note(&act));
@@ -761,15 +1007,35 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
 
     if let Some(stopped) = pr_stopped(t) {
         let p = pr_of(t).unwrap_or(&Value::Null);
-        let term = arr(t, "terminals").iter().find(|x| js_eq(field(x, "id"), field(&p["stage"], "session"))).and_then(|x| opt_s(x, "name")).unwrap_or("Its terminal");
+        let term = arr(t, "terminals")
+            .iter()
+            .find(|x| js_eq(field(x, "id"), field(&p["stage"], "session")))
+            .and_then(|x| opt_s(x, "name"))
+            .unwrap_or("Its terminal");
         let grp = format!("ask:{r}");
         let mut row = answer_btns(c, &r);
-        row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
+        row.push(c.btn(
+            "Focus in Midna",
+            Act::new("focus", "", &r, &grp),
+            Look::Plain,
+            false,
+            None,
+        ));
         row.extend(c.note(&grp));
         out.push(el(
             K::Box(BoxTone::Ask),
             vec![
-                txt(format!("{term} {}", if b(stopped, "asked") { "asks you about the PR" } else { "stopped on the PR" }), St::BoxLabel),
+                txt(
+                    format!(
+                        "{term} {}",
+                        if b(stopped, "asked") {
+                            "asks you about the PR"
+                        } else {
+                            "stopped on the PR"
+                        }
+                    ),
+                    St::BoxLabel,
+                ),
                 txt(or_empty(&stopped["message"]), St::Plain),
                 answer_field(c, &r),
                 el(K::Row, row),
@@ -783,26 +1049,71 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             Fold::Summary,
             c.fold_open(Fold::Summary, true),
             txt(format!("Summary from {who}"), St::BoxLabel),
-            vec![txt(opt_s(t, "summary").or(opt_s(t, "latest")).unwrap_or("No summary was given."), St::Plain)],
+            vec![txt(
+                opt_s(t, "summary")
+                    .or(opt_s(t, "latest"))
+                    .unwrap_or("No summary was given."),
+                St::Plain,
+            )],
         );
-        let mut row = vec![c.btn(if failed { "Try again" } else { "Queue again" }, Act::new("requeue", "", &r, &act), Look::Plain, false, None)];
+        let mut row = vec![c.btn(
+            if failed { "Try again" } else { "Queue again" },
+            Act::new("requeue", "", &r, &act),
+            Look::Plain,
+            false,
+            None,
+        )];
         if session_live(t) {
-            row.push(c.btn("Close its terminal", Act::new("close-term", "", &r, &act), Look::Danger, false, None));
+            row.push(c.btn(
+                "Close its terminal",
+                Act::new("close-term", "", &r, &act),
+                Look::Danger,
+                false,
+                None,
+            ));
         }
         let mut bx = vec![summary, el(K::Row, row)];
         bx.extend(c.note(&act));
-        out.push(el(K::Box(if failed { BoxTone::Failed } else { BoxTone::Done }), bx));
+        out.push(el(
+            K::Box(if failed {
+                BoxTone::Failed
+            } else {
+                BoxTone::Done
+            }),
+            bx,
+        ));
     } else if status != "planned" {
         out.push(manage_box(c, t));
     }
 
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
-    out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
+    let linked: Vec<Node> = [
+        blocked_row(c, t),
+        goal_row(c, t),
+        Some(terminal_row(c, t)),
+        jira_row(c, t),
+        Some(pr_row(c, t)),
+        steps_row(c, t),
+        Some(attach_row(c, t)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    out.push(fold(
+        Fold::Linked,
+        c.linked_open(),
+        txt("Details", St::Strong),
+        vec![el(K::Linked, linked)],
+    ));
     let what = match opt_s(t, "detail") {
         Some(d) => note_body(d),
         None => txt("Nothing written yet.", St::Plain),
     };
-    out.push(fold(Fold::What, c.fold_open(Fold::What, true), txt("What to do", St::Strong), vec![what]));
+    out.push(fold(
+        Fold::What,
+        c.fold_open(Fold::What, true),
+        txt("What to do", St::Strong),
+        vec![what],
+    ));
     out
 }
 
@@ -820,14 +1131,36 @@ fn manage_box(c: &Ctx, t: &Value) -> Node {
     let live = session_live(t);
     let mut buttons = Vec::new();
     if live && s(t, "status") == "working" {
-        buttons.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Small, false, None));
+        buttons.push(c.btn(
+            "Focus in Midna",
+            Act::new("focus", "", &r, &grp),
+            Look::Small,
+            false,
+            None,
+        ));
     }
     if opt_s(t, "session_id").is_some() || live {
-        buttons.push(c.btn("Detach", Act::new("detach", "", &r, &grp), Look::Small, false, Some("Take it off its terminal and put it back in the queue")));
+        buttons.push(c.btn(
+            "Detach",
+            Act::new("detach", "", &r, &grp),
+            Look::Small,
+            false,
+            Some("Take it off its terminal and put it back in the queue"),
+        ));
     }
     if live {
-        let arg = if s(&t["session"], "status") == "idle" { "" } else { "force" };
-        buttons.push(c.btn("Close its terminal", Act::new("close-term", arg, &r, &grp), Look::DangerSmall, false, Some("Close the terminal; a busy one is stopped")));
+        let arg = if s(&t["session"], "status") == "idle" {
+            ""
+        } else {
+            "force"
+        };
+        buttons.push(c.btn(
+            "Close its terminal",
+            Act::new("close-term", arg, &r, &grp),
+            Look::DangerSmall,
+            false,
+            Some("Close the terminal; a busy one is stopped"),
+        ));
     }
     let mut kids = vec![el(K::Row, buttons)];
     kids.extend(c.note(&grp));
@@ -848,7 +1181,19 @@ fn blocked_row(c: &Ctx, t: &Value) -> Option<Node> {
     let mut body = Vec::new();
     for x in bs {
         let br = or_empty(&x["ref"]);
-        body.push(el(K::Line, vec![c.btn(&br, Act::new("open-task", "", &br, ""), Look::Ref, false, None), status_pill(x)]));
+        body.push(el(
+            K::Line,
+            vec![
+                c.btn(
+                    &br,
+                    Act::new("open-task", "", &br, ""),
+                    Look::Ref,
+                    false,
+                    None,
+                ),
+                status_pill(x),
+            ],
+        ));
         body.push(txt(or_empty(&x["title"]), St::Plain));
     }
     Some(lrow("Blocked by", body))
@@ -862,22 +1207,40 @@ fn goal_row(c: &Ctx, t: &Value) -> Option<Node> {
             return None;
         }
         let total = g["total"].as_f64().unwrap_or(0.);
-        let pos = g["position"].as_i64().filter(|_| g["position"].is_i64() || g["position"].is_u64()).filter(|p| total != 0. && (*p as f64) <= total);
-        let mut line = vec![Node::Link { s: or_empty(&g["name"]), go: Go::Goal(gr.clone()), tip: None, look: LinkLook::GoalName }];
+        let pos = g["position"]
+            .as_i64()
+            .filter(|_| g["position"].is_i64() || g["position"].is_u64())
+            .filter(|p| total != 0. && (*p as f64) <= total);
+        let mut line = vec![Node::Link {
+            s: or_empty(&g["name"]),
+            go: Go::Goal(gr.clone()),
+            tip: None,
+            look: LinkLook::GoalName,
+        }];
         if let Some(p) = pos {
-            line.push(txt(format!("Task {p} of {}", or_empty(&g["total"])), St::Small));
+            line.push(txt(
+                format!("Task {p} of {}", or_empty(&g["total"])),
+                St::Small,
+            ));
         }
         let n = g["open_issues"].as_i64().unwrap_or(0);
         return Some(lrow(
             "Goal",
             vec![
                 el(K::Line, line),
-                txt(match opt_s(g, "next_title") {
-                    Some(x) => format!("Next in this goal: {x}"),
-                    None => "Last task in this goal".into(),
-                }, St::Small),
+                txt(
+                    match opt_s(g, "next_title") {
+                        Some(x) => format!("Next in this goal: {x}"),
+                        None => "Last task in this goal".into(),
+                    },
+                    St::Small,
+                ),
                 Node::Link {
-                    s: if n != 0 { format!("{n} open in the goal’s backlog") } else { "Nothing in the goal’s backlog".into() },
+                    s: if n != 0 {
+                        format!("{n} open in the goal’s backlog")
+                    } else {
+                        "Nothing in the goal’s backlog".into()
+                    },
                     go: Go::GoalBacklog(gr),
                     tip: None,
                     look: LinkLook::Small,
@@ -907,11 +1270,17 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
     };
     let stage = &cur["pr"]["stage"];
     // `waitsOnYou`
-    let waiting = raw != "gone" && obj(stage, "stopped").is_some() && js_eq(field(stage, "session"), field(x, "id"));
+    let waiting = raw != "gone"
+        && obj(stage, "stopped").is_some()
+        && js_eq(field(stage, "session"), field(x, "id"));
     let st = if waiting { "needs" } else { raw };
     let live = st != "gone";
     let why = if waiting {
-        if b(&stage["stopped"], "asked") { "Asked you a question".to_string() } else { "Stopped before it was finished".to_string() }
+        if b(&stage["stopped"], "asked") {
+            "Asked you a question".to_string()
+        } else {
+            "Stopped before it was finished".to_string()
+        }
     } else {
         match s(x, "why") {
             "Worked on the task" => "Task".into(),
@@ -920,21 +1289,39 @@ fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
         }
     };
     let id = opt_s(x, "id").map(str::to_string);
-    let name = opt_s(x, "name").map(str::to_string).unwrap_or_else(|| or_empty(&x["id"]));
+    let name = opt_s(x, "name")
+        .map(str::to_string)
+        .unwrap_or_else(|| or_empty(&x["id"]));
     let state = if live {
         sess_label(st, &x["background"])
-    } else if b(cur, "lost") && js_eq(field(x, "id"), cur.get("session").and_then(|ss| field(ss, "id"))) {
+    } else if b(cur, "lost")
+        && js_eq(
+            field(x, "id"),
+            cur.get("session").and_then(|ss| field(ss, "id")),
+        )
+    {
         "Gone".into()
     } else {
         "Closed".into()
     };
     let mut head = Vec::new();
     match &id {
-        Some(sid) => head.push(Node::Link { s: name.clone(), go: Go::Session(sid.clone()), tip: Some("Open this terminal".into()), look: LinkLook::Term }),
+        Some(sid) => head.push(Node::Link {
+            s: name.clone(),
+            go: Go::Session(sid.clone()),
+            tip: Some("Open this terminal".into()),
+            look: LinkLook::Term,
+        }),
         None => head.push(txt(name.clone(), St::Plain)),
     }
     if let (true, Some(sid)) = (live, &id) {
-        head.push(c.btn("", Act::new("term-focus", "", sid, format!("term:{}", rf(cur, "T"))), Look::Icon(Icon::External), false, Some("Focus in Midna")));
+        head.push(c.btn(
+            "",
+            Act::new("term-focus", "", sid, format!("term:{}", rf(cur, "T"))),
+            Look::Icon(Icon::External),
+            false,
+            Some("Focus in Midna"),
+        ));
     }
     let mut sub = vec![pill(state, st_tone(if live { st } else { "closed" }))];
     if !why.is_empty() {
@@ -963,10 +1350,16 @@ fn terminal_row(c: &Ctx, t: &Value) -> Node {
     let sess = &t["session"];
     let mut all: Vec<Value> = arr(t, "terminals").to_vec();
     if all.is_empty() && session_live(t) {
-        let name = opt_s(sess, "name").or(opt_s(t, "who")).map(Value::from).unwrap_or_else(|| sess["id"].clone());
+        let name = opt_s(sess, "name")
+            .or(opt_s(t, "who"))
+            .map(Value::from)
+            .unwrap_or_else(|| sess["id"].clone());
         all.push(serde_json::json!({"id": sess["id"], "name": name, "status": sess["status"], "why": "Attached", "at": t["started_at"]}));
     }
-    if all.is_empty() && opt_s(t, "who").is_some() && !matches!(s(t, "status"), "queued" | "planned") {
+    if all.is_empty()
+        && opt_s(t, "who").is_some()
+        && !matches!(s(t, "status"), "queued" | "planned")
+    {
         all.push(serde_json::json!({"name": t["who"], "status": "gone"}));
     }
     if all.is_empty() {
@@ -995,18 +1388,31 @@ fn terminal_row(c: &Ctx, t: &Value) -> Node {
     ranked.sort_by_key(|(k, x)| (rank(x), *k));
     let all: Vec<Value> = ranked.into_iter().map(|(_, x)| x).collect();
     let shown = if all.len() > 2 { 1 } else { all.len() };
-    let mut body = vec![el(K::Tl, all[..shown].iter().map(|x| term_item(c, x, t)).collect())];
+    let mut body = vec![el(
+        K::Tl,
+        all[..shown].iter().map(|x| term_item(c, x, t)).collect(),
+    )];
     let rest = &all[shown..];
     if !rest.is_empty() {
         body.push(fold(
             Fold::Terms,
             c.fold_open(Fold::Terms, true),
-            txt(fmt::plural(rest.len() as i64, "earlier terminal", "earlier terminals"), St::Small),
+            txt(
+                fmt::plural(rest.len() as i64, "earlier terminal", "earlier terminals"),
+                St::Small,
+            ),
             vec![el(K::Tl, rest.iter().map(|x| term_item(c, x, t)).collect())],
         ));
     }
     body.extend(c.note(&grp));
-    lrow(if all.len() > 1 { "Terminals" } else { "Terminal" }, body)
+    lrow(
+        if all.len() > 1 {
+            "Terminals"
+        } else {
+            "Terminal"
+        },
+        body,
+    )
 }
 
 /// `jiraRow(t)`.
@@ -1020,7 +1426,12 @@ fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
     let v = match (j, key) {
         (Some(j), Some(key)) => {
             let mut line = vec![match opt_s(j, "url") {
-                Some(url) => Node::Link { s: key.to_string(), go: Go::Url(url.to_string()), tip: Some(format!("Open {key} in Jira")), look: LinkLook::Jkey },
+                Some(url) => Node::Link {
+                    s: key.to_string(),
+                    go: Go::Url(url.to_string()),
+                    tip: Some(format!("Open {key} in Jira")),
+                    look: LinkLook::Jkey,
+                },
                 None => txt(key, St::Jkey),
             }];
             if let Some(st) = opt_s(j, "status") {
@@ -1029,7 +1440,10 @@ fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
             el(K::Line, line)
         }
         // A ticket that couldn't be made reads as a warning (`tb task set --jira new` tries again).
-        (Some(j), None) if b(j, "failed") => txt(opt_s(j, "status").unwrap_or("Ticket asked for"), St::WarnHelp),
+        (Some(j), None) if b(j, "failed") => txt(
+            opt_s(j, "status").unwrap_or("Ticket asked for"),
+            St::WarnHelp,
+        ),
         (Some(j), None) => txt(opt_s(j, "status").unwrap_or("Ticket asked for"), St::Small),
         _ => txt("No ticket.", St::Small),
     };
@@ -1039,18 +1453,38 @@ fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
 /// One PR step: name, state, sub (`checksStep` / `reviewStep` / `mergeStep`).
 pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
     let stage = &p["stage"];
-    let phase = if stage.is_object() { s(stage, "phase") } else { "" };
+    let phase = if stage.is_object() {
+        s(stage, "phase")
+    } else {
+        ""
+    };
     let c = js_lower(&p["checks"]);
     let checks = match c.as_str() {
         "none" => (StepSt::Done, Some("None".to_string())),
         "pass" => (StepSt::Done, Some("Passed".into())),
         "fail" if phase == "fix" => (
             StepSt::Fail,
-            Some(if obj(stage, "stopped").is_some() { "Fix stopped" } else if !stage["session"].is_null() && stage["session"] != "" { "Being fixed" } else { "Fix starting" }.into()),
+            Some(
+                if obj(stage, "stopped").is_some() {
+                    "Fix stopped"
+                } else if !stage["session"].is_null() && stage["session"] != "" {
+                    "Being fixed"
+                } else {
+                    "Fix starting"
+                }
+                .into(),
+            ),
         ),
         "fail" => (StepSt::Fail, Some("Failed".into())),
         "pending" => (StepSt::Now, Some("Running".into())),
-        _ => (if pr_open(p) { StepSt::Wait } else { StepSt::Todo }, Some("Waiting".into())),
+        _ => (
+            if pr_open(p) {
+                StepSt::Wait
+            } else {
+                StepSt::Todo
+            },
+            Some("Waiting".into()),
+        ),
     };
     let rv = js_lower(&p["review"]);
     let review = if phase == "rereview" {
@@ -1061,7 +1495,10 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
         (StepSt::Ask, Some("New comments".into()))
     } else if rv == "approved" {
         (StepSt::Done, Some("Approved".into()))
-    } else if let (Some(have), Some(need)) = (p["approvals"]["have"].as_i64().filter(|n| *n > 0), p["approvals"]["need"].as_i64().filter(|n| *n > 0)) {
+    } else if let (Some(have), Some(need)) = (
+        p["approvals"]["have"].as_i64().filter(|n| *n > 0),
+        p["approvals"]["need"].as_i64().filter(|n| *n > 0),
+    ) {
         // Short of the approvals it needs ("approved" says it has them): "1 of 2".
         (StepSt::Wait, Some(format!("{} of {need}", have.min(need))))
     } else if rv == "pending" {
@@ -1079,7 +1516,11 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
     } else {
         (StepSt::Todo, None)
     };
-    [("Checks", checks.0, checks.1), ("Review", review.0, review.1), ("Merge", merge.0, merge.1)]
+    [
+        ("Checks", checks.0, checks.1),
+        ("Review", review.0, review.1),
+        ("Merge", merge.0, merge.1),
+    ]
 }
 
 /// One step of the PR bar: its name, state, the state's words and where they link.
@@ -1091,14 +1532,24 @@ pub struct PrStep {
 }
 
 fn step(name: impl Into<String>, st: StepSt, sub: Option<&str>, link: Option<String>) -> PrStep {
-    PrStep { name: name.into(), st, sub: sub.map(str::to_string), link: link.map(Go::Url) }
+    PrStep {
+        name: name.into(),
+        st,
+        sub: sub.map(str::to_string),
+        link: link.map(Go::Url),
+    }
 }
 
 /// The author-side review step (`wd`: its `bar` name, like WD, and its latest round's headline, which
 /// opens its findings); "Not reviewed by WD yet" before its first round (`pending`).
 pub fn wd_step(wd: &Value) -> PrStep {
     if b(wd, "pending") {
-        return step(s(wd, "bar"), StepSt::Todo, Some(&format!("Not reviewed by {} yet", s(wd, "bar"))), None);
+        return step(
+            s(wd, "bar"),
+            StepSt::Todo,
+            Some(&format!("Not reviewed by {} yet", s(wd, "bar"))),
+            None,
+        );
     }
     let mut out = wd_round(wd);
     if out.sub.is_some() {
@@ -1121,7 +1572,12 @@ fn wd_round(wd: &Value) -> PrStep {
     } else {
         (StepSt::Fail, headline.to_string())
     };
-    step(s(wd, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None)
+    step(
+        s(wd, "bar"),
+        st,
+        Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()),
+        None,
+    )
 }
 
 /// The steps row's nodes: each step's name, and its state's words (a link when it has one).
@@ -1130,7 +1586,12 @@ fn step_nodes(list: Vec<PrStep>) -> Node {
     for step in list {
         let mut kids = vec![txt(step.name, St::StepName)];
         match (step.sub, step.link) {
-            (Some(x), Some(go)) => kids.push(Node::Link { s: x, go, tip: None, look: LinkLook::Small }),
+            (Some(x), Some(go)) => kids.push(Node::Link {
+                s: x,
+                go,
+                tip: None,
+                look: LinkLook::Small,
+            }),
             (Some(x), None) => kids.push(txt(x, St::StepSub)),
             _ => {}
         }
@@ -1144,17 +1605,32 @@ fn step_nodes(list: Vec<PrStep>) -> Node {
 pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
     let [checks, review, merge] = pr_steps(p);
     let stage = &p["stage"];
-    let phase = if stage.is_object() { s(stage, "phase") } else { "" };
+    let phase = if stage.is_object() {
+        s(stage, "phase")
+    } else {
+        ""
+    };
     let mut out = Vec::new();
     if let Some(wd) = obj(bar, "wd") {
         out.push(wd_step(wd));
     }
-    let build = opt_s(bar, "build_url").filter(|u| is_web(u)).map(str::to_string);
+    let build = opt_s(bar, "build_url")
+        .filter(|u| is_web(u))
+        .map(str::to_string);
     out.push(match s(bar, "checks") {
         "not_ours" => step("Checks", StepSt::Done, Some("Not this PR's"), None),
         "skipped" => step("Checks", StepSt::Done, Some("Skipped"), None),
         "not_needed" => step("Checks", StepSt::Done, Some("Not needed"), None),
-        _ => step(checks.0, checks.1, checks.2.as_deref(), if checks.1 == StepSt::Todo { None } else { build }),
+        _ => step(
+            checks.0,
+            checks.1,
+            checks.2.as_deref(),
+            if checks.1 == StepSt::Todo {
+                None
+            } else {
+                build
+            },
+        ),
     });
     out.push(match s(bar, "you") {
         "waiting" => step("You", StepSt::Ask, Some("Waiting on you"), None),
@@ -1172,25 +1648,55 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         step("Review", StepSt::Done, Some("Off"), None)
     } else if phase == "comments" || (new_comments > 0 && rv != "changes" && phase != "rereview") {
         // "2 new comments", linking to the first unread thread.
-        let words = if new_comments > 0 { fmt::plural(new_comments, "new comment", "new comments") } else { "New comments".to_string() };
-        let go = opt_s(bar, "comments_url").filter(|u| is_web(u)).map(str::to_string).or(url);
+        let words = if new_comments > 0 {
+            fmt::plural(new_comments, "new comment", "new comments")
+        } else {
+            "New comments".to_string()
+        };
+        let go = opt_s(bar, "comments_url")
+            .filter(|u| is_web(u))
+            .map(str::to_string)
+            .or(url);
         step("Review", StepSt::Ask, Some(&words), go)
     } else if need.is_none() && rv == "approved" && phase != "rereview" {
         // No count set: the host decides, and it has approved, however few of the reviewers have.
         step("Review", StepSt::Done, Some("Approved"), url)
-    } else if (reviewers > 0 || approvals > 0) && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo) && phase != "rereview" {
+    } else if (reviewers > 0 || approvals > 0)
+        && matches!(review.1, StepSt::Done | StepSt::Wait | StepSt::Todo)
+        && phase != "rereview"
+    {
         // "1 of 2": out of the approvals it needs, else (the host decides) the reviewers on it; more than
         // needed still reads "2 of 2".
         let of = need.unwrap_or(reviewers);
-        let st = if approvals >= of { StepSt::Done } else if approvals > 0 || rv == "pending" { StepSt::Wait } else { review.1 };
-        step("Review", st, Some(&format!("{} of {of}", approvals.min(of))), url)
+        let st = if approvals >= of {
+            StepSt::Done
+        } else if approvals > 0 || rv == "pending" {
+            StepSt::Wait
+        } else {
+            review.1
+        };
+        step(
+            "Review",
+            st,
+            Some(&format!("{} of {of}", approvals.min(of))),
+            url,
+        )
     } else if s(bar, "review") == "setup" && review.1 == StepSt::Todo {
         step("Review", StepSt::Ask, Some("Needs setup"), None)
     } else {
         // "Not asked" has nowhere to go.
-        step(review.0, review.1, review.2.as_deref(), if review.1 == StepSt::Todo { None } else { url })
+        step(
+            review.0,
+            review.1,
+            review.2.as_deref(),
+            if review.1 == StepSt::Todo { None } else { url },
+        )
     });
-    out.push(if phase == "waits" && pr_open(p) { step("Merge", StepSt::Wait, Some("Waits on base"), None) } else { step(merge.0, merge.1, merge.2.as_deref(), None) });
+    out.push(if phase == "waits" && pr_open(p) {
+        step("Merge", StepSt::Wait, Some("Waits on base"), None)
+    } else {
+        step(merge.0, merge.1, merge.2.as_deref(), None)
+    });
     out
 }
 
@@ -1198,11 +1704,29 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
 fn stacks_line(c: &Ctx, so: &Value) -> Node {
     let r = s(so, "ref");
     let merged = b(so, "merged");
-    let mut kids = vec![txt(if merged { "Stacked on" } else { "Stacks on" }, St::Small), c.btn(r, Act::new("open-task", "", r, ""), Look::Ref, false, Some(&format!("Open {r}")))];
+    let mut kids = vec![
+        txt(if merged { "Stacked on" } else { "Stacks on" }, St::Small),
+        c.btn(
+            r,
+            Act::new("open-task", "", r, ""),
+            Look::Ref,
+            false,
+            Some(&format!("Open {r}")),
+        ),
+    ];
     if let Some(n) = so.get("num").filter(|n| !n.is_null()) {
-        let label = format!("PR #{}{}", or_empty(n), if merged { " · merged" } else { "" });
+        let label = format!(
+            "PR #{}{}",
+            or_empty(n),
+            if merged { " · merged" } else { "" }
+        );
         kids.push(match opt_s(so, "url").filter(|u| is_web(u)) {
-            Some(u) => Node::Link { s: label, go: Go::Url(u.to_string()), tip: Some("Open its pull request".into()), look: LinkLook::Small },
+            Some(u) => Node::Link {
+                s: label,
+                go: Go::Url(u.to_string()),
+                tip: Some("Open its pull request".into()),
+                look: LinkLook::Small,
+            },
             None => txt(label, St::Small),
         });
     } else if let Some(br) = opt_s(so, "branch") {
@@ -1220,11 +1744,22 @@ fn comments_line(p: &Value, bar: &Value) -> Option<Node> {
         return None;
     }
     let words = format!("{} ›", fmt::plural(n, "new comment", "new comments"));
-    let go = opt_s(bar, "comments_url").or_else(|| opt_s(p, "url")).filter(|u| is_web(u)).map(|u| Go::Url(u.to_string()));
-    Some(el(K::Line, vec![match go {
-        Some(go) => Node::Link { s: words, go, tip: None, look: LinkLook::Small },
-        None => txt(words, St::Small),
-    }]))
+    let go = opt_s(bar, "comments_url")
+        .or_else(|| opt_s(p, "url"))
+        .filter(|u| is_web(u))
+        .map(|u| Go::Url(u.to_string()));
+    Some(el(
+        K::Line,
+        vec![match go {
+            Some(go) => Node::Link {
+                s: words,
+                go,
+                tip: None,
+                look: LinkLook::Small,
+            },
+            None => txt(words, St::Small),
+        }],
+    ))
 }
 
 /// One row per reviewer (`pr.bar.reviewer_rows`: name, state, link), when the board sends them.
@@ -1246,13 +1781,31 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
                 kids.push(pill(label, tone));
             }
             if let Some(n) = r["swaps"].as_i64().filter(|n| *n > 0) {
-                kids.push(txt(format!("Swapped {}", if n == 1 { "once".to_string() } else { format!("{n} times") }), St::Small));
+                kids.push(txt(
+                    format!(
+                        "Swapped {}",
+                        if n == 1 {
+                            "once".to_string()
+                        } else {
+                            format!("{n} times")
+                        }
+                    ),
+                    St::Small,
+                ));
             }
-            if let Some(at) = opt_s(r, "asked_at").map(crate::fmt::hhmm).filter(|a| !a.is_empty()) {
+            if let Some(at) = opt_s(r, "asked_at")
+                .map(crate::fmt::hhmm)
+                .filter(|a| !a.is_empty())
+            {
                 kids.push(txt(format!("Asked {at}"), St::Small));
             }
             if let Some(u) = opt_s(r, "url").filter(|u| is_web(u)) {
-                kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
+                kids.push(Node::Link {
+                    s: "Open ›".into(),
+                    go: Go::Url(u.to_string()),
+                    tip: None,
+                    look: LinkLook::Small,
+                });
             }
             Some(el(K::Line, kids))
         })
@@ -1261,7 +1814,10 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
 
 /// A done task's reason, its task refs as buttons that open them and its ticket keys as links.
 pub fn linkify(c: &Ctx, text: &str) -> Vec<Node> {
-    let site = c.state["jira"]["site"].as_str().map(str::trim).filter(|x| !x.is_empty());
+    let site = c.state["jira"]["site"]
+        .as_str()
+        .map(str::trim)
+        .filter(|x| !x.is_empty());
     let mut out = Vec::new();
     let mut buf = String::new();
     let flush = |buf: &mut String, out: &mut Vec<Node>| {
@@ -1289,11 +1845,22 @@ pub fn linkify(c: &Ctx, text: &str) -> Vec<Node> {
     for (is_word, w) in words {
         if is_word && is_task_ref(&w) {
             flush(&mut buf, &mut out);
-            out.push(c.btn(&w, Act::new("open-task", "", &w, ""), Look::Ref, false, Some(&format!("Open {w}"))));
+            out.push(c.btn(
+                &w,
+                Act::new("open-task", "", &w, ""),
+                Look::Ref,
+                false,
+                Some(&format!("Open {w}")),
+            ));
         } else if is_word && is_ticket(&w) {
             flush(&mut buf, &mut out);
             out.push(match site {
-                Some(site) => Node::Link { s: w.clone(), go: Go::Url(format!("https://{site}/browse/{w}")), tip: Some(format!("Open {w} in Jira")), look: LinkLook::Jkey },
+                Some(site) => Node::Link {
+                    s: w.clone(),
+                    go: Go::Url(format!("https://{site}/browse/{w}")),
+                    tip: Some(format!("Open {w} in Jira")),
+                    look: LinkLook::Jkey,
+                },
                 None => txt(w, St::Jkey),
             });
         } else {
@@ -1310,10 +1877,14 @@ fn is_task_ref(w: &str) -> bool {
 
 /// `ABC-12`: a Jira key.
 fn is_ticket(w: &str) -> bool {
-    let Some((key, n)) = w.split_once('-') else { return false };
+    let Some((key, n)) = w.split_once('-') else {
+        return false;
+    };
     key.len() >= 2
         && key.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-        && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && key
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
         && !n.is_empty()
         && n.chars().all(|c| c.is_ascii_digit())
 }
@@ -1327,7 +1898,13 @@ fn no_pr_row(c: &Ctx, t: &Value) -> Node {
         body.push(el(K::Line, line));
     } else if t["ships_pr"].is_boolean() {
         body.push(if t["ships_pr"] == true {
-            el(K::Line, vec![pill("Ends in a PR", Tone::Review), txt("No PR yet.", St::Small)])
+            el(
+                K::Line,
+                vec![
+                    pill("Ends in a PR", Tone::Review),
+                    txt("No PR yet.", St::Small),
+                ],
+            )
         } else {
             el(K::Line, vec![pill("No PR", Tone::Neutral)])
         });
@@ -1336,7 +1913,11 @@ fn no_pr_row(c: &Ctx, t: &Value) -> Node {
     }
     // The review step (WD) runs before the PR opens, on a task that ends in one ("Not reviewed by WD yet"
     // before its first round).
-    let wd = obj(t, "wd").or_else(|| arr(t, "step_results").iter().find(|r| opt_s(r, "bar").is_some()));
+    let wd = obj(t, "wd").or_else(|| {
+        arr(t, "step_results")
+            .iter()
+            .find(|r| opt_s(r, "bar").is_some())
+    });
     if let Some(wd) = wd.filter(|_| opt_s(t, "no_pr").is_none() && t["ships_pr"] != false) {
         body.push(step_nodes(vec![wd_step(wd)]));
     }
@@ -1359,7 +1940,10 @@ fn steps_row(c: &Ctx, t: &Value) -> Option<Node> {
     }
     let mut body = Vec::new();
     for r in results {
-        let mut line = vec![txt(s(r, "name"), St::Strong), txt(s(r, "headline"), St::Plain)];
+        let mut line = vec![
+            txt(s(r, "name"), St::Strong),
+            txt(s(r, "headline"), St::Plain),
+        ];
         if b(r, "stale") {
             line.push(pill("Moved since", Tone::Needs));
         }
@@ -1369,9 +1953,21 @@ fn steps_row(c: &Ctx, t: &Value) -> Option<Node> {
             continue;
         }
         let open = r["open"].as_i64().unwrap_or(0);
-        let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
+        let summary = if open > 0 {
+            format!(
+                "{} · Findings ›",
+                fmt::plural(open, "open finding", "open findings")
+            )
+        } else {
+            "Findings ›".to_string()
+        };
         let items = findings.iter().map(finding_item).collect();
-        body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, items)]));
+        body.push(fold(
+            Fold::Findings,
+            c.fold_open(Fold::Findings, true),
+            txt(summary, St::Small),
+            vec![el(K::List, items)],
+        ));
     }
     Some(lrow("Steps", body))
 }
@@ -1391,13 +1987,24 @@ fn finding_item(f: &Value) -> Node {
     }
     kids.push(txt(s(f, "title"), St::Plain));
     if let Some(file) = opt_s(f, "file") {
-        kids.push(txt(match f["line"].as_i64() { Some(l) => format!("{file}:{l}"), None => file.to_string() }, St::Small));
+        kids.push(txt(
+            match f["line"].as_i64() {
+                Some(l) => format!("{file}:{l}"),
+                None => file.to_string(),
+            },
+            St::Small,
+        ));
     }
     if let Some(n) = opt_s(f, "note") {
         kids.push(txt(n, St::Small));
     }
     if let Some(u) = opt_s(f, "url").filter(|u| is_web(u)) {
-        kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
+        kids.push(Node::Link {
+            s: "Open ›".into(),
+            go: Go::Url(u.to_string()),
+            tip: None,
+            look: LinkLook::Small,
+        });
     }
     el(K::Line, kids)
 }
@@ -1419,64 +2026,150 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
     let key = obj(t, "jira").and_then(|j| opt_s(j, "key"));
     let raw = opt_s(p, "title");
     let title: Option<String> = match (key, raw) {
-        (Some(k), Some(x)) if x.starts_with(k) => Some(x[k.len()..].trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '–' | '-')).to_string()),
+        (Some(k), Some(x)) if x.starts_with(k) => Some(
+            x[k.len()..]
+                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '–' | '-'))
+                .to_string(),
+        ),
         (_, x) => x.map(str::to_string),
     };
-    let shown = title.clone().filter(|x| !x.is_empty()).or_else(|| opt_s(p, "repo").map(str::to_string)).unwrap_or_default();
+    let shown = title
+        .clone()
+        .filter(|x| !x.is_empty())
+        .or_else(|| opt_s(p, "repo").map(str::to_string))
+        .unwrap_or_default();
     let label = format!("#{} {shown}", or_empty(&p["num"]));
     let head = match opt_s(p, "url").filter(|u| is_web(u)) {
-        Some(url) => Node::Link { s: label, go: Go::Url(url.to_string()), tip: Some("Open the pull request".into()), look: LinkLook::Plain },
+        Some(url) => Node::Link {
+            s: label,
+            go: Go::Url(url.to_string()),
+            tip: Some("Open the pull request".into()),
+            look: LinkLook::Plain,
+        },
         None => {
             // safeUrl('') → '#': a url that isn't http(s) still renders as a link that goes nowhere.
             match opt_s(p, "url") {
-                Some(_) => Node::Link { s: label, go: Go::Url(String::new()), tip: Some("Open the pull request".into()), look: LinkLook::Plain },
+                Some(_) => Node::Link {
+                    s: label,
+                    go: Go::Url(String::new()),
+                    tip: Some("Open the pull request".into()),
+                    look: LinkLook::Plain,
+                },
                 None => txt(label, St::Strong),
             }
         }
     };
-    let repo = if title.as_deref().is_some_and(|x| !x.is_empty()) { or_empty(&p["repo"]) } else { String::new() };
+    let repo = if title.as_deref().is_some_and(|x| !x.is_empty()) {
+        or_empty(&p["repo"])
+    } else {
+        String::new()
+    };
     let bar = obj(p, "bar");
     let list: Vec<PrStep> = match bar {
         Some(bar) => pr_steps_full(p, bar),
-        None => pr_steps(p).into_iter().map(|(name, st, sub)| PrStep { name: name.to_string(), st, sub, link: None }).collect(),
+        None => pr_steps(p)
+            .into_iter()
+            .map(|(name, st, sub)| PrStep {
+                name: name.to_string(),
+                st,
+                sub,
+                link: None,
+            })
+            .collect(),
     };
-    let mut body = vec![el(K::PrHead, vec![head, txt(repo, St::Small)]), step_nodes(list)];
+    let mut body = vec![
+        el(K::PrHead, vec![head, txt(repo, St::Small)]),
+        step_nodes(list),
+    ];
     if let Some(n) = not_ours_box(p) {
         body.push(n);
     }
-    if let Some(line) = bar.and_then(|bar| obj(bar, "stacks_on")).map(|so| stacks_line(c, so)) {
+    if let Some(line) = bar
+        .and_then(|bar| obj(bar, "stacks_on"))
+        .map(|so| stacks_line(c, so))
+    {
         body.push(line);
     }
     body.extend(bar.map(reviewer_rows).unwrap_or_default());
     body.extend(bar.and_then(|bar| comments_line(p, bar)));
     // `prBar`
-    if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge" | "ask")) {
+    if let Some(stage) = obj(p, "stage")
+        .filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge" | "ask"))
+    {
         let stopped = obj(stage, "stopped").is_some();
         let label = or_empty(&stage["label"]);
-        let text = if stopped { format!("Needs you · {label}") } else { label };
-        let mut kids = vec![Node::Dot(if stopped { Dot::Warn } else { Dot::Accent }), txt(text, St::Plain)];
+        let text = if stopped {
+            format!("Needs you · {label}")
+        } else {
+            label
+        };
+        let mut kids = vec![
+            Node::Dot(if stopped { Dot::Warn } else { Dot::Accent }),
+            txt(text, St::Plain),
+        ];
         let (tip, go) = match opt_s(stage, "session") {
             Some(sid) => {
-                kids.push(Node::Link { s: "Terminal ›".into(), go: Go::Session(sid.to_string()), tip: None, look: LinkLook::Plain });
-                (if stopped { "Its terminal stopped before it was finished" } else { "Open the terminal doing this" }, true)
+                kids.push(Node::Link {
+                    s: "Terminal ›".into(),
+                    go: Go::Session(sid.to_string()),
+                    tip: None,
+                    look: LinkLook::Plain,
+                });
+                (
+                    if stopped {
+                        "Its terminal stopped before it was finished"
+                    } else {
+                        "Open the terminal doing this"
+                    },
+                    true,
+                )
             }
             None => ("Waiting for its terminal to open", false),
         };
         let _ = go;
-        body.push(Node::El { k: K::PrBar { warn: stopped && opt_s(stage, "session").is_some() }, tip: Some(tip.into()), kids });
+        body.push(Node::El {
+            k: K::PrBar {
+                warn: stopped && opt_s(stage, "session").is_some(),
+            },
+            tip: Some(tip.into()),
+            kids,
+        });
     }
     // The owner's own look at a green PR (the You step): "Waiting on your review · Mark reviewed ›".
     if bar.is_some_and(|bar| s(bar, "you") == "waiting") {
         let r = rf(t, "T");
         let grp = format!("pr:{r}");
-        let mark = c.btn("Mark reviewed ›", Act::new("pr-reviewed", "", &r, &grp), Look::Link, false, Some("Tell the board you've looked at this PR"));
-        body.push(Node::El { k: K::PrBar { warn: false }, tip: None, kids: vec![Node::Dot(Dot::Accent), txt("Waiting on your review", St::Plain), mark] });
+        let mark = c.btn(
+            "Mark reviewed ›",
+            Act::new("pr-reviewed", "", &r, &grp),
+            Look::Link,
+            false,
+            Some("Tell the board you've looked at this PR"),
+        );
+        body.push(Node::El {
+            k: K::PrBar { warn: false },
+            tip: None,
+            kids: vec![
+                Node::Dot(Dot::Accent),
+                txt("Waiting on your review", St::Plain),
+                mark,
+            ],
+        });
         body.extend(c.note(&grp));
     } else if bar.is_none() && obj(p, "stage").is_some_and(|st| b(st, "awaiting_you")) {
         // Native: the owner's one-click "I reviewed it" while a green PR waits for them.
         let r = rf(t, "T");
         let grp = format!("pr:{r}");
-        body.push(el(K::Row, vec![c.btn("I reviewed it", Act::new("pr-reviewed", "", &r, &grp), Look::SoftSmall, false, Some("Tell the board you've looked at this PR"))]));
+        body.push(el(
+            K::Row,
+            vec![c.btn(
+                "I reviewed it",
+                Act::new("pr-reviewed", "", &r, &grp),
+                Look::SoftSmall,
+                false,
+                Some("Tell the board you've looked at this PR"),
+            )],
+        ));
         body.extend(c.note(&grp));
     }
     lrow("Pull request", body)
@@ -1502,14 +2195,30 @@ fn not_ours_box(p: &Value) -> Option<Node> {
     }
     let links = arr(n, "links");
     if links.is_empty() {
-        for u in arr(n, "proof").iter().filter_map(|u| u.as_str()).filter(|u| is_web(u)) {
-            kids.push(Node::Link { s: u.to_string(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Plain });
+        for u in arr(n, "proof")
+            .iter()
+            .filter_map(|u| u.as_str())
+            .filter(|u| is_web(u))
+        {
+            kids.push(Node::Link {
+                s: u.to_string(),
+                go: Go::Url(u.to_string()),
+                tip: None,
+                look: LinkLook::Plain,
+            });
         }
     }
     for l in links {
-        let Some(u) = opt_s(l, "url").filter(|u| is_web(u)) else { continue };
+        let Some(u) = opt_s(l, "url").filter(|u| is_web(u)) else {
+            continue;
+        };
         let label = opt_s(l, "label").filter(|x| !x.is_empty()).unwrap_or(u);
-        kids.push(Node::Link { s: label.to_string(), go: Go::Url(u.to_string()), tip: Some(u.to_string()), look: LinkLook::Plain });
+        kids.push(Node::Link {
+            s: label.to_string(),
+            go: Go::Url(u.to_string()),
+            tip: Some(u.to_string()),
+            look: LinkLook::Plain,
+        });
     }
     if let Some(at) = opt_s(n, "at").map(fmt::ago).filter(|a| !a.is_empty()) {
         kids.push(txt(format!("Checked {at}"), St::Small));
@@ -1540,7 +2249,11 @@ pub const ATT_KINDS: [&str; 6] = ["design", "proposal", "doc", "evidence", "resu
 /// What clicking an attachment's name opens (`attHref`): a web URL, a local path, or nothing.
 pub fn att_href(a: &Value) -> Option<String> {
     let url = s(a, "url");
-    if is_web(url) || url.starts_with('~') || url.starts_with('/') { Some(url.to_string()) } else { None }
+    if is_web(url) || url.starts_with('~') || url.starts_with('/') {
+        Some(url.to_string())
+    } else {
+        None
+    }
 }
 
 /// `attachList(list, 'tasks', r)` items (with `attSrc`, `attMenuHtml`, `attEditHtml`).
@@ -1556,11 +2269,28 @@ fn attach_items(c: &Ctx, list: &[Value], owner: &str, r: &str) -> Vec<Node> {
         let url = or_empty(&a["url"]);
         let web = is_web(&url);
         let href = att_href(a);
-        let kind = if att_kind_label(s(a, "kind")).is_empty() { "other" } else { s(a, "kind") };
+        let kind = if att_kind_label(s(a, "kind")).is_empty() {
+            "other"
+        } else {
+            s(a, "kind")
+        };
         let title = or_empty(&a["title"]);
         let name = match &href {
-            Some(h) => Node::Link { s: title.clone(), go: Go::Url(h.clone()), tip: Some(if web { title.clone() } else { format!("{title}\n{url}") }), look: LinkLook::AttName },
-            None => Node::Text { s: title.clone(), st: St::Mono, tip: Some(url.clone()) },
+            Some(h) => Node::Link {
+                s: title.clone(),
+                go: Go::Url(h.clone()),
+                tip: Some(if web {
+                    title.clone()
+                } else {
+                    format!("{title}\n{url}")
+                }),
+                look: LinkLook::AttName,
+            },
+            None => Node::Text {
+                s: title.clone(),
+                st: St::Mono,
+                tip: Some(url.clone()),
+            },
         };
         let mut meta = vec![txt(att_kind_label(kind), St::Small)];
         // `attSrc`
@@ -1568,24 +2298,69 @@ fn attach_items(c: &Ctx, list: &[Value], owner: &str, r: &str) -> Vec<Node> {
         if let Some(x) = src.filter(|x| !(owner == "goals" && *x == r)) {
             meta.push(txt("·", St::Small));
             if opt_s(a, "task").is_some() {
-                meta.push(c.btn(x, Act::new("open-task", "", x, ""), Look::Src, false, Some(&format!("Open {x}"))));
+                meta.push(c.btn(
+                    x,
+                    Act::new("open-task", "", x, ""),
+                    Look::Src,
+                    false,
+                    Some(&format!("Open {x}")),
+                ));
             } else {
-                meta.push(Node::Link { s: x.to_string(), go: Go::Goal(x.to_string()), tip: Some(format!("Open {x}")), look: LinkLook::SrcGoal });
+                meta.push(Node::Link {
+                    s: x.to_string(),
+                    go: Go::Goal(x.to_string()),
+                    tip: Some(format!("Open {x}")),
+                    look: LinkLook::SrcGoal,
+                });
             }
         }
         if let Some(at) = opt_s(a, "at") {
             meta.push(txt("·", St::Small));
             meta.push(txt(fmt::ago(at), St::Small));
         }
-        let mut kids = vec![name, el(K::AttMeta, meta), c.btn("", Act::new("att-menu", "", &aid, ""), Look::Icon(Icon::More), false, None)];
+        let mut kids = vec![
+            name,
+            el(K::AttMeta, meta),
+            c.btn(
+                "",
+                Act::new("att-menu", "", &aid, ""),
+                Look::Icon(Icon::More),
+                false,
+                None,
+            ),
+        ];
         if c.ui.att_menu.as_deref() == Some(aid.as_str()) {
             let mut menu = Vec::new();
             if href.is_some() {
-                menu.push(c.btn("Open", Act::new("att-menu-close", "", &aid, ""), Look::Menu, false, None));
+                menu.push(c.btn(
+                    "Open",
+                    Act::new("att-menu-close", "", &aid, ""),
+                    Look::Menu,
+                    false,
+                    None,
+                ));
             }
-            menu.push(c.btn(if web { "Copy link" } else { "Copy path" }, Act::new("att-copy", "", &aid, &fk), Look::Menu, false, None));
-            menu.push(c.btn("Edit", Act::new("att-edit", "", &aid, &fk), Look::Menu, false, None));
-            menu.push(c.btn("Remove", Act::new("att-remove", "", &aid, &fk), Look::Menu, false, None));
+            menu.push(c.btn(
+                if web { "Copy link" } else { "Copy path" },
+                Act::new("att-copy", "", &aid, &fk),
+                Look::Menu,
+                false,
+                None,
+            ));
+            menu.push(c.btn(
+                "Edit",
+                Act::new("att-edit", "", &aid, &fk),
+                Look::Menu,
+                false,
+                None,
+            ));
+            menu.push(c.btn(
+                "Remove",
+                Act::new("att-remove", "", &aid, &fk),
+                Look::Menu,
+                false,
+                None,
+            ));
             kids.push(el(K::AttMenu, menu));
         }
         out.push(el(K::Att, kids));
@@ -1597,19 +2372,67 @@ fn attach_items(c: &Ctx, list: &[Value], owner: &str, r: &str) -> Vec<Node> {
 fn att_edit(c: &Ctx, a: &Value) -> Node {
     let aid = or_empty(&a["id"]);
     let k = format!("attedit:{aid}");
-    let kind = c.ui.drafts.get(&format!("{k}:kind")).cloned().or(opt_s(a, "kind").map(str::to_string)).unwrap_or_else(|| "other".into());
-    let seg = ATT_KINDS.iter().map(|id| c.btn(att_kind_label(id), Act::new("att-ekind", *id, &aid, ""), Look::Tab { on: kind == *id }, false, None)).collect();
-    let title = c.ui.drafts.get(&format!("{k}:title")).cloned().unwrap_or_else(|| or_empty(&a["title"]));
-    let url = c.ui.drafts.get(&format!("{k}:url")).cloned().unwrap_or_else(|| or_empty(&a["url"]));
+    let kind =
+        c.ui.drafts
+            .get(&format!("{k}:kind"))
+            .cloned()
+            .or(opt_s(a, "kind").map(str::to_string))
+            .unwrap_or_else(|| "other".into());
+    let seg = ATT_KINDS
+        .iter()
+        .map(|id| {
+            c.btn(
+                att_kind_label(id),
+                Act::new("att-ekind", *id, &aid, ""),
+                Look::Tab { on: kind == *id },
+                false,
+                None,
+            )
+        })
+        .collect();
+    let title =
+        c.ui.drafts
+            .get(&format!("{k}:title"))
+            .cloned()
+            .unwrap_or_else(|| or_empty(&a["title"]));
+    let url =
+        c.ui.drafts
+            .get(&format!("{k}:url"))
+            .cloned()
+            .unwrap_or_else(|| or_empty(&a["url"]));
     let mut kids = vec![
         el(K::Seg, seg),
-        Node::Field { key: format!("{k}:title"), value: title, placeholder: "Title", multi: false, mono: false },
-        Node::Field { key: format!("{k}:url"), value: url, placeholder: "https://… or /path/to/file", multi: false, mono: true },
+        Node::Field {
+            key: format!("{k}:title"),
+            value: title,
+            placeholder: "Title",
+            multi: false,
+            mono: false,
+        },
+        Node::Field {
+            key: format!("{k}:url"),
+            value: url,
+            placeholder: "https://… or /path/to/file",
+            multi: false,
+            mono: true,
+        },
         el(
             K::Row,
             vec![
-                c.btn("Save", Act::new("att-esave", "", &aid, &k), Look::SoftSmall, false, None),
-                c.btn("Cancel", Act::new("att-ecancel", "", &aid, ""), Look::Ghost, false, None),
+                c.btn(
+                    "Save",
+                    Act::new("att-esave", "", &aid, &k),
+                    Look::SoftSmall,
+                    false,
+                    None,
+                ),
+                c.btn(
+                    "Cancel",
+                    Act::new("att-ecancel", "", &aid, ""),
+                    Look::Ghost,
+                    false,
+                    None,
+                ),
             ],
         ),
     ];
@@ -1620,7 +2443,11 @@ fn att_edit(c: &Ctx, a: &Value) -> Node {
 /// `attachRow(t)`.
 fn attach_row(c: &Ctx, t: &Value) -> Node {
     let r = rf(t, "T");
-    let list: Vec<Value> = arr(t, "attachments").iter().chain(arr(t, "goal_attachments")).cloned().collect();
+    let list: Vec<Value> = arr(t, "attachments")
+        .iter()
+        .chain(arr(t, "goal_attachments"))
+        .cloned()
+        .collect();
     let fk = format!("att:tasks:{r}");
     let items = attach_items(c, &list, "tasks", &r);
     let mut head = vec![txt("Attached", St::Strong)];
@@ -1629,7 +2456,10 @@ fn attach_row(c: &Ctx, t: &Value) -> Node {
     }
     let mut kids = vec![el(K::Row, head)];
     if items.is_empty() {
-        kids.push(txt("Nothing yet. Designs, proposals, docs and results go here.", St::Small));
+        kids.push(txt(
+            "Nothing yet. Designs, proposals, docs and results go here.",
+            St::Small,
+        ));
     } else {
         kids.push(el(K::Atts, items));
     }
@@ -1643,7 +2473,9 @@ fn attach_row(c: &Ctx, t: &Value) -> Node {
 pub fn handoff_text(t: &Value, ui: &Ui) -> Option<String> {
     match t.get("handoff") {
         Some(Value::String(x)) => return Some(x.clone()),
-        Some(h) if h.get("text").and_then(Value::as_str).is_some() => return Some(s(h, "text").to_string()),
+        Some(h) if h.get("text").and_then(Value::as_str).is_some() => {
+            return Some(s(h, "text").to_string());
+        }
         _ => {}
     }
     ui.handoffs.get(&rf(t, "T")).cloned()
@@ -1658,10 +2490,21 @@ pub fn meta_rows(t: &Value, ui: &Ui) -> Vec<(String, String)> {
     arr(t, "meta")
         .iter()
         .map(|p| match p {
-            Value::Array(a) => (a.first().map(or_empty).unwrap_or_default(), a.get(1).map(or_empty).unwrap_or_default()),
+            Value::Array(a) => (
+                a.first().map(or_empty).unwrap_or_default(),
+                a.get(1).map(or_empty).unwrap_or_default(),
+            ),
             o => {
-                let k = if !o["name"].is_null() { or_empty(&o["name"]) } else { or_empty(&o["k"]) };
-                let v = if !o["value"].is_null() { or_empty(&o["value"]) } else { or_empty(&o["v"]) };
+                let k = if !o["name"].is_null() {
+                    or_empty(&o["name"])
+                } else {
+                    or_empty(&o["k"])
+                };
+                let v = if !o["value"].is_null() {
+                    or_empty(&o["value"])
+                } else {
+                    or_empty(&o["v"])
+                };
                 (k, v)
             }
         })
@@ -1671,10 +2514,25 @@ pub fn meta_rows(t: &Value, ui: &Ui) -> Vec<(String, String)> {
 /// `originRow(t)`: where the task came from ("From Backlog B3: Flaky test · You"), linked when it has a URL.
 fn origin_row(t: &Value) -> Option<Node> {
     let o = obj(t, "origin")?;
-    let from = opt_s(o, "from").or_else(|| crate::fmt::from_review_log(opt_s(o, "source").unwrap_or("")).then_some("the Review log"))?;
-    let by = opt_s(o, "by").map(|b| format!(" · {b}")).unwrap_or_default();
+    let from = opt_s(o, "from").or_else(|| {
+        crate::fmt::from_review_log(opt_s(o, "source").unwrap_or("")).then_some("the Review log")
+    })?;
+    let by = opt_s(o, "by")
+        .map(|b| format!(" · {b}"))
+        .unwrap_or_default();
     let value = match opt_s(o, "url") {
-        Some(url) => el(K::Line, vec![Node::Link { s: from.to_string(), go: Go::Url(url.to_string()), tip: None, look: LinkLook::Plain }, txt(by, St::Plain)]),
+        Some(url) => el(
+            K::Line,
+            vec![
+                Node::Link {
+                    s: from.to_string(),
+                    go: Go::Url(url.to_string()),
+                    tip: None,
+                    look: LinkLook::Plain,
+                },
+                txt(by, St::Plain),
+            ],
+        ),
         None => txt(format!("{from}{by}"), St::Plain),
     };
     Some(el(K::KvRow, vec![txt("From", St::LrowKey), value]))
@@ -1687,25 +2545,54 @@ fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
     let mut out = vec![];
     let d = &t["devices"];
     // Each with its kind and target ("dev-a (Android emulator, emulator-5554)") when the board gives them.
-    let mut lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
+    let mut lent: Vec<&str> = arr(d, "lent_labels")
+        .iter()
+        .filter_map(|x| x.as_str())
+        .collect();
     if lent.is_empty() {
         lent = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
     }
-    let devices = if !lent.is_empty() { Some(lent.join(", ")) } else { opt_s(d, "needs_text").map(|n| format!("Needs {n}")) };
+    let devices = if !lent.is_empty() {
+        Some(lent.join(", "))
+    } else {
+        opt_s(d, "needs_text").map(|n| format!("Needs {n}"))
+    };
     if let Some(v) = devices {
-        out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));
+        out.push(el(
+            K::KvRow,
+            vec![txt("Devices", St::LrowKey), txt(v, St::Plain)],
+        ));
     }
     let mut bits: Vec<Node> = vec![];
     for (ix, x) in arr(t, "bits").iter().enumerate() {
-        let state = if s(x, "kind") == "local" { "local" } else if b(x, "made") { "created" } else { "not created" };
-        let sep = if ix + 1 < arr(t, "bits").len() { ", " } else { "" };
+        let state = if s(x, "kind") == "local" {
+            "local"
+        } else if b(x, "made") {
+            "created"
+        } else {
+            "not created"
+        };
+        let sep = if ix + 1 < arr(t, "bits").len() {
+            ", "
+        } else {
+            ""
+        };
         bits.push(txt(format!("⚑ {} ({state}){sep}", s(x, "name")), St::Plain));
         if s(x, "kind") != "local" && !b(x, "made") {
-            bits.push(c.btn("Mark created", Act::new("bit-made", s(x, "name"), &r, ""), Look::SoftSmall, false, Some(&format!("Tell the board {} is made", s(x, "name")))));
+            bits.push(c.btn(
+                "Mark created",
+                Act::new("bit-made", s(x, "name"), &r, ""),
+                Look::SoftSmall,
+                false,
+                Some(&format!("Tell the board {} is made", s(x, "name"))),
+            ));
         }
     }
     if !bits.is_empty() {
-        out.push(el(K::KvRow, vec![txt("Bits", St::LrowKey), el(K::Line, bits)]));
+        out.push(el(
+            K::KvRow,
+            vec![txt("Bits", St::LrowKey), el(K::Line, bits)],
+        ));
     }
     out
 }
@@ -1715,13 +2602,28 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let cx = &t["context"];
     let w = &cx["where"];
-    let truthy = |v: &Value| !matches!(v, Value::Null | Value::Bool(false)) && v != "" && v.as_f64() != Some(0.);
+    let truthy = |v: &Value| {
+        !matches!(v, Value::Null | Value::Bool(false)) && v != "" && v.as_f64() != Some(0.)
+    };
     let mut wh: Vec<(&str, String)> = vec![
         (
             "Branch",
-            opt_s(w, "branch").map(str::to_string).unwrap_or_else(|| if truthy(&t["started_at"]) || truthy(&t["who"]) { "Not reported yet".into() } else { "Not started".into() }),
+            opt_s(w, "branch").map(str::to_string).unwrap_or_else(|| {
+                if truthy(&t["started_at"]) || truthy(&t["who"]) {
+                    "Not reported yet".into()
+                } else {
+                    "Not started".into()
+                }
+            }),
         ),
-        ("Worktree", opt_s(w, "worktree").or(opt_s(t, "repo_path")).or(opt_s(t, "project")).unwrap_or("").to_string()),
+        (
+            "Worktree",
+            opt_s(w, "worktree")
+                .or(opt_s(t, "repo_path"))
+                .or(opt_s(t, "project"))
+                .unwrap_or("")
+                .to_string(),
+        ),
     ];
     if let Some(lc) = opt_s(w, "last_commit") {
         wh.push(("Last commit", lc.to_string()));
@@ -1737,16 +2639,32 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     if !saved.is_empty() {
         out.push(txt(saved, St::Muted));
     }
-    let mut kv: Vec<Node> = wh.into_iter().map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)])).collect();
+    let mut kv: Vec<Node> = wh
+        .into_iter()
+        .map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)]))
+        .collect();
     kv.extend(origin_row(t));
     kv.extend(pool_rows(c, t));
     out.push(el(K::Kv, kv));
-    for (title, key, glyph, dot) in [("Done so far", "done", "✓", Dot::Up), ("Next", "next", "→", Dot::Accent), ("Decisions", "decisions", "•", Dot::Faint), ("Your answers", "answers", "•", Dot::Warn)] {
+    for (title, key, glyph, dot) in [
+        ("Done so far", "done", "✓", Dot::Up),
+        ("Next", "next", "→", Dot::Accent),
+        ("Decisions", "decisions", "•", Dot::Faint),
+        ("Your answers", "answers", "•", Dot::Warn),
+    ] {
         let items = arr(cx, key);
         if items.is_empty() {
             continue;
         }
-        let list = items.iter().map(|x| el(K::Li, vec![txt(glyph, St::Glyph(dot)), txt(or_empty(x), St::Plain)])).collect();
+        let list = items
+            .iter()
+            .map(|x| {
+                el(
+                    K::Li,
+                    vec![txt(glyph, St::Glyph(dot)), txt(or_empty(x), St::Plain)],
+                )
+            })
+            .collect();
         out.push(el(K::Stack, vec![txt(title, St::H3), el(K::List, list)]));
     }
     let found = arr(t, "found");
@@ -1759,13 +2677,24 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                     K::Li,
                     vec![
                         txt("!", St::Glyph(Dot::Warn)),
-                        Node::Link { s: or_empty(&f["title"]), go: Go::Issue(rf(f, "B")), tip: None, look: LinkLook::Plain },
-                        txt(format!("(in the {}backlog)", if goal { "goal’s " } else { "" }), St::Muted),
+                        Node::Link {
+                            s: or_empty(&f["title"]),
+                            go: Go::Issue(rf(f, "B")),
+                            tip: None,
+                            look: LinkLook::Plain,
+                        },
+                        txt(
+                            format!("(in the {}backlog)", if goal { "goal’s " } else { "" }),
+                            St::Muted,
+                        ),
                     ],
                 )
             })
             .collect();
-        out.push(el(K::Stack, vec![txt("Found, not fixed here", St::H3), el(K::List, list)]));
+        out.push(el(
+            K::Stack,
+            vec![txt("Found, not fixed here", St::H3), el(K::List, list)],
+        ));
     }
     let files = arr(cx, "files");
     let mut fl = vec![txt("Files touched", St::H3)];
@@ -1778,7 +2707,11 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                 .iter()
                 .map(|f| {
                     let full = js_string(f);
-                    txt_tip(full.rsplit('/').next().unwrap_or("").to_string(), St::Mono, full)
+                    txt_tip(
+                        full.rsplit('/').next().unwrap_or("").to_string(),
+                        St::Mono,
+                        full,
+                    )
                 })
                 .collect(),
         ));
@@ -1791,9 +2724,27 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             kids.push(el(
                 K::MetaRow,
                 vec![
-                    Node::Field { key: format!("meta:{r}:{i}:0"), value: k.clone(), placeholder: "Name", multi: false, mono: false },
-                    Node::Field { key: format!("meta:{r}:{i}:1"), value: v.clone(), placeholder: "Value", multi: false, mono: false },
-                    c.btn("", Act::new("meta-del", i.to_string(), &r, ""), Look::Icon(Icon::Remove), false, None),
+                    Node::Field {
+                        key: format!("meta:{r}:{i}:0"),
+                        value: k.clone(),
+                        placeholder: "Name",
+                        multi: false,
+                        mono: false,
+                    },
+                    Node::Field {
+                        key: format!("meta:{r}:{i}:1"),
+                        value: v.clone(),
+                        placeholder: "Value",
+                        multi: false,
+                        mono: false,
+                    },
+                    c.btn(
+                        "",
+                        Act::new("meta-del", i.to_string(), &r, ""),
+                        Look::Icon(Icon::Remove),
+                        false,
+                        None,
+                    ),
                 ],
             ));
         }
@@ -1801,13 +2752,27 @@ fn context_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(el(K::Stack, kids));
     }
     let text = handoff_text(t, c.ui).unwrap_or_else(|| "Loading…".into());
-    out.push(el(K::Box(BoxTone::Info), vec![txt("What a new terminal gets", St::H3), txt(text, St::Handoff)]));
+    out.push(el(
+        K::Box(BoxTone::Info),
+        vec![
+            txt("What a new terminal gets", St::H3),
+            txt(text, St::Handoff),
+        ],
+    ));
     out
 }
 
 // ------------------------------------------------------------------ log
 
-pub const LOG_FILTERS: [(&str, &str); 7] = [("all", "All"), ("status", "Status"), ("turn", "Turns"), ("checkpoint", "Checkpoints"), ("question", "Questions"), ("found", "Found"), ("jira", "Jira")];
+pub const LOG_FILTERS: [(&str, &str); 7] = [
+    ("all", "All"),
+    ("status", "Status"),
+    ("turn", "Turns"),
+    ("checkpoint", "Checkpoints"),
+    ("question", "Questions"),
+    ("found", "Found"),
+    ("jira", "Jira"),
+];
 
 /// `LOG_GROUP`.
 fn log_group(kind: &str) -> &'static str {
@@ -1856,11 +2821,32 @@ fn log_dot(kind: &str) -> Dot {
 fn log_tab(c: &Ctx, t: &Value) -> Vec<Node> {
     let f = c.ui.log_filter();
     let all = arr(t, "log");
-    let list: Vec<&Value> = all.iter().filter(|e| f == "all" || log_group(s(e, "kind")) == f).collect();
-    let chips = LOG_FILTERS.iter().map(|(id, label)| c.btn(label, Act::new("log-filter", *id, "", ""), Look::Tab { on: f == *id }, false, None)).collect();
+    let list: Vec<&Value> = all
+        .iter()
+        .filter(|e| f == "all" || log_group(s(e, "kind")) == f)
+        .collect();
+    let chips = LOG_FILTERS
+        .iter()
+        .map(|(id, label)| {
+            c.btn(
+                label,
+                Act::new("log-filter", *id, "", ""),
+                Look::Tab { on: f == *id },
+                false,
+                None,
+            )
+        })
+        .collect();
     let mut out = vec![el(K::Chips, chips)];
     if list.is_empty() {
-        out.push(txt(if all.is_empty() { "Nothing logged yet." } else { "Nothing of this kind yet." }, St::Empty));
+        out.push(txt(
+            if all.is_empty() {
+                "Nothing logged yet."
+            } else {
+                "Nothing of this kind yet."
+            },
+            St::Empty,
+        ));
     } else {
         let items = list
             .iter()
@@ -1881,13 +2867,19 @@ fn log_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             .collect();
         out.push(el(K::Log, items));
     }
-    out.push(txt("The log is saved as it happens, so it survives a closed terminal or a restart.", St::Help));
+    out.push(txt(
+        "The log is saved as it happens, so it survives a closed terminal or a restart.",
+        St::Help,
+    ));
     out
 }
 
 // ------------------------------------------------------------------ noteBody (pages.js)
 
-const EXTS: [&str; 22] = ["dart", "kt", "kts", "java", "swift", "py", "js", "mjs", "ts", "tsx", "jsx", "json", "yaml", "yml", "md", "sh", "gradle", "xml", "html", "css", "toml", "lock"];
+const EXTS: [&str; 22] = [
+    "dart", "kt", "kts", "java", "swift", "py", "js", "mjs", "ts", "tsx", "jsx", "json", "yaml",
+    "yml", "md", "sh", "gradle", "xml", "html", "css", "toml", "lock",
+];
 
 fn is_word(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
@@ -1904,7 +2896,9 @@ fn inline_at(ch: &[char], i: usize) -> Option<(usize, u8, String)> {
             while end < ch.len() && !ch[end].is_whitespace() && ch[end] != '<' {
                 end += 1;
             }
-            while end > start && matches!(ch[end - 1], '.' | ',' | ';' | ':' | ')' | ']' | '\'' | '"') {
+            while end > start
+                && matches!(ch[end - 1], '.' | ',' | ';' | ':' | ')' | ']' | '\'' | '"')
+            {
                 end -= 1;
             }
             if end - start >= 2 {
@@ -1980,7 +2974,10 @@ fn inline_at(ch: &[char], i: usize) -> Option<(usize, u8, String)> {
                 for e in EXTS {
                     let ext: Vec<char> = e.chars().collect();
                     let end = k + 1 + ext.len();
-                    if end <= ch.len() && ch[k + 1..end] == ext[..] && (end == ch.len() || !is_word(ch[end])) {
+                    if end <= ch.len()
+                        && ch[k + 1..end] == ext[..]
+                        && (end == ch.len() || !is_word(ch[end]))
+                    {
                         return Some((end, b'p', ch[i..end].iter().collect()));
                     }
                 }
@@ -2018,7 +3015,12 @@ fn inline_text(line: &str) -> Vec<Node> {
                 out.push(txt(std::mem::take(&mut plain), St::Plain));
             }
             out.push(match kind {
-                b'u' => Node::Link { s: text.clone(), go: Go::Url(text), tip: None, look: LinkLook::Plain },
+                b'u' => Node::Link {
+                    s: text.clone(),
+                    go: Go::Url(text),
+                    tip: None,
+                    look: LinkLook::Plain,
+                },
                 _ => txt(text, St::Code),
             });
             i = end;
@@ -2049,7 +3051,10 @@ pub fn note_body(text: &str) -> Node {
             return;
         }
         match kind {
-            Some("li") => out.push(el(K::MdUl, buf.iter().map(|l| el(K::MdLi, inline_text(l))).collect())),
+            Some("li") => out.push(el(
+                K::MdUl,
+                buf.iter().map(|l| el(K::MdLi, inline_text(l))).collect(),
+            )),
             Some("code") => out.push(txt(buf.join("\n"), St::Pre)),
             _ => {
                 let mut kids = Vec::new();
@@ -2066,7 +3071,10 @@ pub fn note_body(text: &str) -> Node {
         let trimmed = line.trim_start();
         let k = if line.trim().is_empty() {
             None
-        } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("• ") {
+        } else if trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("• ")
+        {
             Some("li")
         } else if two_ws(line) || line.starts_with('\t') {
             Some("code")
@@ -2084,7 +3092,11 @@ pub fn note_body(text: &str) -> Node {
         kind = k;
         match k {
             Some("li") => buf.push(trimmed.chars().skip(2).collect()),
-            Some("code") => buf.push(if two_ws(line) { line.chars().skip(2).collect() } else { line.chars().skip(1).collect() }),
+            Some("code") => buf.push(if two_ws(line) {
+                line.chars().skip(2).collect()
+            } else {
+                line.chars().skip(1).collect()
+            }),
             Some(_) => buf.push(line.trim().to_string()),
             None => {}
         }
@@ -2100,13 +3112,20 @@ pub fn note_body(text: &str) -> Node {
 pub fn text(n: &Node) -> String {
     let mut parts = Vec::new();
     walk_text(n, &mut parts);
-    parts.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+    parts
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
 fn walk_text(n: &Node, out: &mut Vec<String>) {
     match n {
-        Node::Text { s, .. } | Node::Pill { s, .. } | Node::Link { s, .. } | Node::Note { s, .. } => out.push(s.clone()),
+        Node::Text { s, .. }
+        | Node::Pill { s, .. }
+        | Node::Link { s, .. }
+        | Node::Note { s, .. } => out.push(s.clone()),
         Node::Btn { label, .. } => out.push(label.clone()),
         Node::Field { .. } | Node::Dot(_) => {}
         Node::El { .. } => shown(n).for_each(|k| walk_text(k, out)),
@@ -2143,7 +3162,11 @@ fn walk_acts(n: &Node, out: &mut Vec<String>) {
 /// The kids the reader sees: a closed fold shows only its summary.
 pub fn shown(n: &Node) -> impl Iterator<Item = &Node> {
     let (kids, closed): (&[Node], bool) = match n {
-        Node::El { k: K::Fold(_, open), kids, .. } => (kids, !open),
+        Node::El {
+            k: K::Fold(_, open),
+            kids,
+            ..
+        } => (kids, !open),
         Node::El { kids, .. } => (kids, false),
         _ => (&[], false),
     };
@@ -2161,7 +3184,10 @@ pub fn titles(n: &Node) -> Vec<String> {
 #[cfg(test)]
 fn walk_titles(n: &Node, out: &mut Vec<String>) {
     match n {
-        Node::Text { tip: Some(t), .. } | Node::Pill { tip: Some(t), .. } | Node::Btn { tip: Some(t), .. } | Node::Link { tip: Some(t), .. } => out.push(t.clone()),
+        Node::Text { tip: Some(t), .. }
+        | Node::Pill { tip: Some(t), .. }
+        | Node::Btn { tip: Some(t), .. }
+        | Node::Link { tip: Some(t), .. } => out.push(t.clone()),
         Node::El { tip, .. } => {
             if let Some(t) = tip {
                 out.push(t.clone());
@@ -2202,15 +3228,35 @@ pub fn find_act<'a>(n: &'a Node, act: &str, arg: Option<&str>) -> Option<&'a Act
 /// can't pass can be skipped.
 fn step_btns(c: &Ctx, t: &Value, r: &str, grp: &str) -> Vec<Node> {
     let st = &t["step"];
-    let Some(name) = opt_s(st, "name") else { return Vec::new() };
+    let Some(name) = opt_s(st, "name") else {
+        return Vec::new();
+    };
     let mut row = Vec::new();
     if let Some(url) = opt_s(st, "open") {
-        row.push(c.btn("Open", Act::new("open-url", url, r, grp), Look::Plain, false, Some(url)));
+        row.push(c.btn(
+            "Open",
+            Act::new("open-url", url, r, grp),
+            Look::Plain,
+            false,
+            Some(url),
+        ));
     }
     if b(st, "failed") {
-        row.push(c.btn("Skip this step", Act::new("step", "skip", r, grp), Look::Plain, false, Some(&format!("Count “{name}” as done and carry on"))));
+        row.push(c.btn(
+            "Skip this step",
+            Act::new("step", "skip", r, grp),
+            Look::Plain,
+            false,
+            Some(&format!("Count “{name}” as done and carry on")),
+        ));
     } else {
-        row.push(c.btn("Done", Act::new("step", "done", r, grp), Look::Primary, false, Some(&format!("“{name}” is done; the agent carries on"))));
+        row.push(c.btn(
+            "Done",
+            Act::new("step", "done", r, grp),
+            Look::Primary,
+            false,
+            Some(&format!("“{name}” is done; the agent carries on")),
+        ));
     }
     row
 }

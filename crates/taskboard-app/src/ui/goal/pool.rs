@@ -25,7 +25,10 @@ pub struct DeviceRow {
 }
 
 pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
-    let ours: Vec<String> = arr(g, "tasks").iter().map(|t| fmt::ref_of(t, "T")).collect();
+    let ours: Vec<String> = arr(g, "tasks")
+        .iter()
+        .map(|t| fmt::ref_of(t, "T"))
+        .collect();
     arr(&g["devices"], "devices")
         .iter()
         .map(|d| {
@@ -48,7 +51,11 @@ pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
                 pool: pool.join(", "),
                 name: s(d, "name").to_string(),
                 label: fmt::opt_s(d, "label").unwrap_or(s(d, "name")).to_string(),
-                tags: arr(d, "tags").iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "),
+                tags: arr(d, "tags")
+                    .iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 ours: held_by.as_ref().is_some_and(|r| ours.contains(r)),
                 held_by,
                 state,
@@ -91,12 +98,20 @@ pub fn bit_rows(g: &Value) -> Vec<BitRow> {
             } else {
                 ("Not created".to_string(), "warn")
             };
-            let uses: Vec<&str> = ["tasks", "goals"].iter().flat_map(|k| arr(x, k).iter().filter_map(|v| v.as_str())).collect();
+            let uses: Vec<&str> = ["tasks", "goals"]
+                .iter()
+                .flat_map(|k| arr(x, k).iter().filter_map(|v| v.as_str()))
+                .collect();
             BitRow {
                 name: s(x, "name").to_string(),
                 state,
                 tone,
-                create: (!local && !made).then(|| fmt::opt_s(x, "create_url").map(|u| (format!("Create in {tool}"), u.to_string()))).flatten(),
+                create: (!local && !made)
+                    .then(|| {
+                        fmt::opt_s(x, "create_url")
+                            .map(|u| (format!("Create in {tool}"), u.to_string()))
+                    })
+                    .flatten(),
                 can_mark: !local && !made,
                 can_unmark: !local && made,
                 note: fmt::opt_s(x, "note").map(str::to_string),
@@ -114,24 +129,54 @@ pub fn bits_summary(g: &Value) -> Option<String> {
 
 fn focus_device(m: &mut MainWindow, name: &str, cx: &mut Context<MainWindow>) {
     let n = name.to_string();
-    run(m, format!("device-focus:{name}"), None, true, format!("devices/{name}/focus"), json!({}), cx, move |_, _, _| format!("Raising {n}"));
+    run(
+        m,
+        format!("device-focus:{name}"),
+        None,
+        true,
+        format!("devices/{name}/focus"),
+        json!({}),
+        cx,
+        move |_, _, _| format!("Raising {n}"),
+    );
 }
 
-pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+pub fn devices_aside(
+    m: &MainWindow,
+    t: &Theme,
+    g: &Value,
+    cx: &mut Context<MainWindow>,
+) -> Option<Div> {
     if !g["devices"].is_object() {
         return None;
     }
     let rows = device_rows(g);
-    let mut head = div().flex().items_center().gap(px(8.)).child(h3(t, 12.5, "Devices"));
+    let mut head = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(h3(t, 12.5, "Devices"));
     if let Some(n) = fmt::opt_s(&g["devices"], "needs_text") {
-        head = head.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}")));
+        head = head.child(div().flex_1()).child(
+            div()
+                .text_size(px(12.))
+                .text_color(t.muted)
+                .child(format!("Each task: {n}")),
+        );
     }
     let mut list = div().flex().flex_col();
     for (ix, d) in rows.into_iter().enumerate() {
-        let busy = m.goal_page.busy.contains(&format!("device-focus:{}", d.name));
+        let busy = m
+            .goal_page
+            .busy
+            .contains(&format!("device-focus:{}", d.name));
         let holder: AnyElement = match d.held_by.clone() {
             Some(r) => {
-                let (fg, bg) = if d.ours { (t.accent_fg, t.accent_soft) } else { (t.text_2, t.col) };
+                let (fg, bg) = if d.ours {
+                    (t.accent_fg, t.accent_soft)
+                } else {
+                    (t.text_2, t.col)
+                };
                 let target = r.clone();
                 div()
                     .id(SharedString::from(format!("dev-holder-{ix}")))
@@ -151,7 +196,12 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                     .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx)))
                     .into_any_element()
             }
-            None => div().flex_none().text_size(px(12.)).text_color(if d.state == "Off" { t.faint } else { t.up_fg }).child(d.state.clone()).into_any_element(),
+            None => div()
+                .flex_none()
+                .text_size(px(12.))
+                .text_color(if d.state == "Off" { t.faint } else { t.up_fg })
+                .child(d.state.clone())
+                .into_any_element(),
         };
         let name = d.name.clone();
         list = list.child(
@@ -168,14 +218,44 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(d.label.clone()))
-                        .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone())))
-                        .when(!d.pool.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.accent_fg).truncate().child(d.pool.clone()))),
+                        .child(
+                            div()
+                                .font_family(t.mono_font.clone())
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(d.label.clone()),
+                        )
+                        .when(!d.tags.is_empty(), |x| {
+                            x.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(t.muted)
+                                    .truncate()
+                                    .child(d.tags.clone()),
+                            )
+                        })
+                        .when(!d.pool.is_empty(), |x| {
+                            x.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(t.accent_fg)
+                                    .truncate()
+                                    .child(d.pool.clone()),
+                            )
+                        }),
                 )
                 .child(holder)
                 .when(d.can_focus, |x| {
-                    let b = kit::btn_small(t, SharedString::from(format!("dev-focus-{ix}")), if busy { "Focusing…" } else { "Focus" });
-                    x.child(if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| focus_device(m, &name, cx))) })
+                    let b = kit::btn_small(
+                        t,
+                        SharedString::from(format!("dev-focus-{ix}")),
+                        if busy { "Focusing…" } else { "Focus" },
+                    );
+                    x.child(if busy {
+                        kit::disabled(b)
+                    } else {
+                        b.on_click(cx.listener(move |m, _, _, cx| focus_device(m, &name, cx)))
+                    })
                 }),
         );
     }
@@ -186,19 +266,43 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
 /// not created" takes it back (`undo`).
 fn mark_made(m: &mut MainWindow, name: &str, undo: bool, cx: &mut Context<MainWindow>) {
     let n = name.to_string();
-    run(m, format!("bit-made:{name}"), None, true, format!("bits/{name}/made"), json!({"undo": undo}), cx, move |_, _, _| {
-        if undo { format!("Marked {n} not created") } else { format!("Marked {n} created") }
-    });
+    run(
+        m,
+        format!("bit-made:{name}"),
+        None,
+        true,
+        format!("bits/{name}/made"),
+        json!({"undo": undo}),
+        cx,
+        move |_, _, _| {
+            if undo {
+                format!("Marked {n} not created")
+            } else {
+                format!("Marked {n} created")
+            }
+        },
+    );
 }
 
-pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+pub fn bits_aside(
+    m: &MainWindow,
+    t: &Theme,
+    g: &Value,
+    cx: &mut Context<MainWindow>,
+) -> Option<Div> {
     let rows = bit_rows(g);
     if rows.is_empty() {
         return None;
     }
-    let mut head = div().flex().items_center().gap(px(8.)).child(h3(t, 12.5, "Bits"));
+    let mut head = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(h3(t, 12.5, "Bits"));
     if let Some(sum) = bits_summary(g) {
-        head = head.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(sum));
+        head = head
+            .child(div().flex_1())
+            .child(div().text_size(px(12.)).text_color(t.muted).child(sum));
     }
     let mut list = div().flex().flex_col();
     for (ix, x) in rows.into_iter().enumerate() {
@@ -214,7 +318,15 @@ pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWin
             .gap(px(8.))
             .min_w_0()
             .child(div().flex_none().text_color(t.warn_fg).child("⚑"))
-            .child(div().flex_1().min_w_0().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(x.name.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .font_family(t.mono_font.clone())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .truncate()
+                    .child(x.name.clone()),
+            )
             .child(
                 kit::btn_small(t, SharedString::from(format!("bit-copy-{ix}")), "Copy")
                     .tooltip(kit::tip(format!("Copy {}", x.name)))
@@ -227,16 +339,27 @@ pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWin
             let link = url.clone();
             line = line
                 .child(
-                    kit::btn_small(t, SharedString::from(format!("bit-link-{ix}")), "Copy link").tooltip(kit::tip(url.clone())).on_click(cx.listener(move |m, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                        m.toast("Copied the link", false, cx);
-                    })),
+                    kit::btn_small(t, SharedString::from(format!("bit-link-{ix}")), "Copy link")
+                        .tooltip(kit::tip(url.clone()))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                            m.toast("Copied the link", false, cx);
+                        })),
                 )
-                .child(kit::btn_small(t, SharedString::from(format!("bit-create-{ix}")), label).on_click(move |_, _, cx| cx.open_url(&url)));
+                .child(
+                    kit::btn_small(t, SharedString::from(format!("bit-create-{ix}")), label)
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                );
         }
         if let Some(note) = x.note.clone().filter(|_| x.can_mark) {
             line = line.child(
-                kit::btn_small(t, SharedString::from(format!("bit-note-{ix}")), "Copy description").tooltip(kit::tip(note.clone())).on_click(cx.listener(move |m, _, _, cx| {
+                kit::btn_small(
+                    t,
+                    SharedString::from(format!("bit-note-{ix}")),
+                    "Copy description",
+                )
+                .tooltip(kit::tip(note.clone()))
+                .on_click(cx.listener(move |m, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(note.clone()));
                     m.toast("Copied the description", false, cx);
                 })),
@@ -251,15 +374,38 @@ pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWin
                 (false, true) => "Mark not created",
             };
             let b = kit::btn_small(t, SharedString::from(format!("bit-made-{ix}")), label);
-            line = line.child(if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| mark_made(m, &name, undo, cx))) });
+            line = line.child(if busy {
+                kit::disabled(b)
+            } else {
+                b.on_click(cx.listener(move |m, _, _, cx| mark_made(m, &name, undo, cx)))
+            });
         }
-        let mut meta = div().flex().items_center().gap(px(8.)).pl(px(18.)).text_size(px(12.)).child(chip(fg, bg, x.state.clone()));
+        let mut meta = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(18.))
+            .text_size(px(12.))
+            .child(chip(fg, bg, x.state.clone()));
         if !x.uses.is_empty() {
             meta = meta.child(div().text_color(t.muted).truncate().child(x.uses.clone()));
         }
-        let mut row = div().flex().flex_col().gap(px(4.)).py(px(6.)).when(ix > 0, |d| d.border_t_1().border_color(t.divider)).child(line).child(meta);
+        let mut row = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .py(px(6.))
+            .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
+            .child(line)
+            .child(meta);
         if let Some(note) = x.note.clone() {
-            row = row.child(div().pl(px(18.)).text_size(px(12.)).text_color(t.muted).child(note));
+            row = row.child(
+                div()
+                    .pl(px(18.))
+                    .text_size(px(12.))
+                    .text_color(t.muted)
+                    .child(note),
+            );
         }
         list = list.child(row);
     }
@@ -285,19 +431,52 @@ mod tests {
                 {"name": "oldCheckout", "kind": "backend", "made": true, "create_url": null, "tasks": [], "goals": []}]},
         });
         let d = device_rows(&g);
-        assert_eq!(d[0], DeviceRow { name: "sim-a".into(), label: "sim-a (iOS simulator, iOS 17.5)".into(), tags: "ios".into(), held_by: Some("T4".into()), state: "Sim test".into(), ours: true, can_focus: true, pool: String::new() });
-        assert_eq!((d[1].state.as_str(), d[1].tags.as_str(), d[1].pool.as_str()), ("Off", "android, phone", "for measure, reserved"));
+        assert_eq!(
+            d[0],
+            DeviceRow {
+                name: "sim-a".into(),
+                label: "sim-a (iOS simulator, iOS 17.5)".into(),
+                tags: "ios".into(),
+                held_by: Some("T4".into()),
+                state: "Sim test".into(),
+                ours: true,
+                can_focus: true,
+                pool: String::new()
+            }
+        );
+        assert_eq!(
+            (d[1].state.as_str(), d[1].tags.as_str(), d[1].pool.as_str()),
+            ("Off", "android, phone", "for measure, reserved")
+        );
         assert_eq!(d[2].pool, "reserved for G4");
         assert!(!d[3].ours);
         assert_eq!(d[3].label, "pixel-8", "no kind or target: just the name");
         let b = bit_rows(&g);
-        assert_eq!((b[0].state.as_str(), b[0].create.clone(), b[0].can_mark), ("Local, not in Flagsmith", None, false));
-        assert!(b[1].can_mark && !b[2].can_mark, "only a backend bit not made yet can be marked created");
-        assert!(b[2].can_unmark && !b[1].can_unmark && !b[0].can_unmark, "only a made backend bit can be marked not created");
+        assert_eq!(
+            (b[0].state.as_str(), b[0].create.clone(), b[0].can_mark),
+            ("Local, not in Flagsmith", None, false)
+        );
+        assert!(
+            b[1].can_mark && !b[2].can_mark,
+            "only a backend bit not made yet can be marked created"
+        );
+        assert!(
+            b[2].can_unmark && !b[1].can_unmark && !b[0].can_unmark,
+            "only a made backend bit can be marked not created"
+        );
         assert_eq!(b[1].note.as_deref(), Some("Gate the new checkout"));
         assert_eq!(b[0].note, None);
-        assert_eq!(b[1].create, Some(("Create in Flagsmith".into(), "https://f.example/new?key=newCheckout".into())));
-        assert_eq!((b[1].state.as_str(), b[1].uses.as_str()), ("Not created", "T4, G1"));
+        assert_eq!(
+            b[1].create,
+            Some((
+                "Create in Flagsmith".into(),
+                "https://f.example/new?key=newCheckout".into()
+            ))
+        );
+        assert_eq!(
+            (b[1].state.as_str(), b[1].uses.as_str()),
+            ("Not created", "T4, G1")
+        );
         assert_eq!((b[2].state.as_str(), b[2].tone), ("Created", "up"));
         assert_eq!(bits_summary(&g).as_deref(), Some("1 of 2 created"));
     }
@@ -313,4 +492,3 @@ mod tests {
         assert_eq!(goal_state(&g), ("Waiting on 1 bit".to_string(), "warn"));
     }
 }
-

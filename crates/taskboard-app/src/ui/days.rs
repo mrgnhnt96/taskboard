@@ -25,7 +25,13 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         let hidden = crate::prefs::get(PREF_HIDDEN)
-            .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()))
+            .and_then(|v| {
+                v.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+            })
             .unwrap_or_default();
         State { date: None, hidden }
     }
@@ -65,17 +71,27 @@ fn hours(min: f64) -> String {
 }
 
 fn signed(x: f64, f: impl Fn(f64) -> String) -> String {
-    if x >= 0.0 { format!("+{}", f(x)) } else { format!("−{}", f(-x)) }
+    if x >= 0.0 {
+        format!("+{}", f(x))
+    } else {
+        format!("−{}", f(-x))
+    }
 }
 
 fn count(x: f64) -> String {
     let r = (x * 10.0).round() / 10.0;
-    if r.fract() == 0.0 { format!("{}", r as i64) } else { format!("{r}") }
+    if r.fract() == 0.0 {
+        format!("{}", r as i64)
+    } else {
+        format!("{r}")
+    }
 }
 
 /// "3:12 PM" in the reader's zone.
 fn clock(iso: &str) -> String {
-    fmt::parse(iso).map(|t| fmt::local(t).format("%-I:%M %p").to_string()).unwrap_or_default()
+    fmt::parse(iso)
+        .map(|t| fmt::local(t).format("%-I:%M %p").to_string())
+        .unwrap_or_default()
 }
 
 fn hour_label(h: i64) -> String {
@@ -224,27 +240,71 @@ impl View {
         let today = date_of(v, "today").unwrap_or(date);
         let day = &v["day"];
         let usual = &v["usual"];
-        let all: Vec<String> = arr(v, "projects").iter().filter_map(|p| p.as_str().map(String::from)).collect();
-        let hidden: Vec<String> = arr(v, "hidden").iter().filter_map(|p| p.as_str().map(String::from)).collect();
+        let all: Vec<String> = arr(v, "projects")
+            .iter()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
+        let hidden: Vec<String> = arr(v, "hidden")
+            .iter()
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
         let slot = |p: &str| all.iter().position(|x| x == p).unwrap_or(usize::MAX);
-        let projects = all.iter().enumerate().map(|(i, p)| (p.clone(), i, !hidden.contains(p))).collect();
+        let projects = all
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.clone(), i, !hidden.contains(p)))
+            .collect();
         let is_today = date == today;
         let start = fmt::parse(s(v, "day_start"));
 
         // Key numbers, against the median of the two weeks before.
         let have_usual = f(usual, "days") > 0.0;
-        let vs = |cur: f64, k: &str, f: fn(f64) -> String| if have_usual { format!("{} vs usual", signed(cur - self::f(usual, k), f)) } else { String::new() };
-        let (agent, human, est) = (f(day, "agent_min"), f(day, "human_min"), f(day, "est_agent_min"));
+        let vs = |cur: f64, k: &str, f: fn(f64) -> String| {
+            if have_usual {
+                format!("{} vs usual", signed(cur - self::f(usual, k), f))
+            } else {
+                String::new()
+            }
+        };
+        let (agent, human, est) = (
+            f(day, "agent_min"),
+            f(day, "human_min"),
+            f(day, "est_agent_min"),
+        );
         let kpis = vec![
-            Kpi { label: "Agent time", value: dur(agent), delta: vs(agent, "agent_min", dur) },
+            Kpi {
+                label: "Agent time",
+                value: dur(agent),
+                delta: vs(agent, "agent_min", dur),
+            },
             Kpi {
                 label: "Human estimate",
-                value: if human > 0.0 { dur(human) } else { "—".into() },
-                delta: if human > 0.0 && est > 0.0 { format!("{:.1}× agent time", human / est) } else { String::new() },
+                value: if human > 0.0 {
+                    dur(human)
+                } else {
+                    "—".into()
+                },
+                delta: if human > 0.0 && est > 0.0 {
+                    format!("{:.1}× agent time", human / est)
+                } else {
+                    String::new()
+                },
             },
-            Kpi { label: "Tasks done", value: count(f(day, "done")), delta: vs(f(day, "done"), "done", count) },
-            Kpi { label: "PRs opened", value: count(f(day, "prs")), delta: vs(f(day, "prs"), "prs", count) },
-            Kpi { label: "Waiting on you", value: dur(f(day, "wait_min")), delta: vs(f(day, "wait_min"), "wait_min", dur) },
+            Kpi {
+                label: "Tasks done",
+                value: count(f(day, "done")),
+                delta: vs(f(day, "done"), "done", count),
+            },
+            Kpi {
+                label: "PRs opened",
+                value: count(f(day, "prs")),
+                delta: vs(f(day, "prs"), "prs", count),
+            },
+            Kpi {
+                label: "Waiting on you",
+                value: dur(f(day, "wait_min")),
+                delta: vs(f(day, "wait_min"), "wait_min", dur),
+            },
         ];
 
         // The week, from the first weekday the daemon starts it on (config.toml's first_weekday).
@@ -254,7 +314,13 @@ impl View {
             .iter()
             .filter_map(|w| {
                 let d = date_of(w, "date")?;
-                let mut segs: Vec<(usize, f64)> = w["by_project"].as_object().into_iter().flatten().map(|(p, m)| (slot(p), m.as_f64().unwrap_or(0.0))).filter(|(_, m)| *m > 0.0).collect();
+                let mut segs: Vec<(usize, f64)> = w["by_project"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(p, m)| (slot(p), m.as_f64().unwrap_or(0.0)))
+                    .filter(|(_, m)| *m > 0.0)
+                    .collect();
                 segs.sort_by_key(|(i, _)| *i);
                 let total = f(w, "agent_min");
                 let done = f(w, "done");
@@ -262,10 +328,23 @@ impl View {
                     date: d,
                     dow: d.format("%a").to_string(),
                     num: d.day(),
-                    done: if done > 0.0 { format!("{} done", count(done)) } else { String::new() },
+                    done: if done > 0.0 {
+                        format!("{} done", count(done))
+                    } else {
+                        String::new()
+                    },
                     selected: d == date,
                     future: w["future"].as_bool().unwrap_or(false),
-                    tip: format!("{}: {} agent time{}", d.format("%A, %B %-d"), dur(total), if done > 0.0 { format!(", {} done", count(done)) } else { String::new() }),
+                    tip: format!(
+                        "{}: {} agent time{}",
+                        d.format("%A, %B %-d"),
+                        dur(total),
+                        if done > 0.0 {
+                            format!(", {} done", count(done))
+                        } else {
+                            String::new()
+                        }
+                    ),
                     segs,
                     total,
                 })
@@ -276,16 +355,27 @@ impl View {
             ((top / 4.0).ceil() * 4.0).max(4.0)
         };
         let week_label = match (cols.first(), cols.last()) {
-            (Some(a), Some(b)) => format!("{} – {}", a.date.format("%b %-d"), b.date.format("%b %-d")),
+            (Some(a), Some(b)) => {
+                format!("{} – {}", a.date.format("%b %-d"), b.date.format("%b %-d"))
+            }
             _ => String::new(),
         };
 
         // The timeline.
-        let (from_hour, to_hour) = (v["from_hour"].as_i64().unwrap_or(9), v["to_hour"].as_i64().unwrap_or(17).max(v["from_hour"].as_i64().unwrap_or(9) + 1));
+        let (from_hour, to_hour) = (
+            v["from_hour"].as_i64().unwrap_or(9),
+            v["to_hour"]
+                .as_i64()
+                .unwrap_or(17)
+                .max(v["from_hour"].as_i64().unwrap_or(9) + 1),
+        );
         let span = ((to_hour - from_hour) * 3600) as f64;
         let x_of = |iso: &str| -> Option<f32> {
             let (t, s0) = (fmt::parse(iso)?, start?);
-            Some((((t - s0).num_seconds() as f64 - (from_hour * 3600) as f64) / span).clamp(0.0, 1.0) as f32)
+            Some(
+                (((t - s0).num_seconds() as f64 - (from_hour * 3600) as f64) / span).clamp(0.0, 1.0)
+                    as f32,
+            )
         };
         let lanes: Vec<Lane> = arr(day, "lanes")
             .iter()
@@ -308,7 +398,17 @@ impl View {
                             row: 0,
                             task: s(b, "ref").to_string(),
                             label: format!("{} {}", s(b, "ref"), s(b, "title")),
-                            tip: format!("{} {} · {} to {} · {what}", s(b, "ref"), s(b, "title"), clock(s(b, "from")), if b["open"].as_bool() == Some(true) && is_today { "now".into() } else { clock(s(b, "to")) }),
+                            tip: format!(
+                                "{} {} · {} to {} · {what}",
+                                s(b, "ref"),
+                                s(b, "title"),
+                                clock(s(b, "from")),
+                                if b["open"].as_bool() == Some(true) && is_today {
+                                    "now".into()
+                                } else {
+                                    clock(s(b, "to"))
+                                }
+                            ),
                             kind,
                             x0,
                             x1: x1.max(x0 + 0.002),
@@ -320,10 +420,25 @@ impl View {
                     .iter()
                     .filter_map(|mk| {
                         let x = x_of(s(mk, "at"))?;
-                        Some(Mark { kind: s(mk, "kind").to_string(), x, tip: format!("{} · {} · {}", clock(s(mk, "at")), s(mk, "ref"), s(mk, "text")) })
+                        Some(Mark {
+                            kind: s(mk, "kind").to_string(),
+                            x,
+                            tip: format!(
+                                "{} · {} · {}",
+                                clock(s(mk, "at")),
+                                s(mk, "ref"),
+                                s(mk, "text")
+                            ),
+                        })
                     })
                     .collect();
-                Lane { color: slot(&project), project, rows, bars, marks }
+                Lane {
+                    color: slot(&project),
+                    project,
+                    rows,
+                    bars,
+                    marks,
+                }
             })
             .collect();
         let now_x = if is_today { x_of(s(v, "now")) } else { None };
@@ -336,7 +451,9 @@ impl View {
         } else {
             SLOTS
         };
-        let running = ((from_hour * 6) as usize..(to_hour * 6) as usize).map(|k| (k <= now_slot).then(|| run.get(k).and_then(|x| x.as_i64()).unwrap_or(0))).collect();
+        let running = ((from_hour * 6) as usize..(to_hour * 6) as usize)
+            .map(|k| (k <= now_slot).then(|| run.get(k).and_then(|x| x.as_i64()).unwrap_or(0)))
+            .collect();
         let peak = day["peak"].as_i64().unwrap_or(0);
 
         // How long tasks took this week: working, then waiting on you.
@@ -361,7 +478,18 @@ impl View {
                         _ if live => "so far".into(),
                         _ => String::new(),
                     },
-                    tip: format!("{} {} · {} · working {}{}", s(t, "ref"), s(t, "title"), s(t, "project"), dur(work), if wait > 0.0 { format!(", waiting on you {}", dur(wait)) } else { String::new() }),
+                    tip: format!(
+                        "{} {} · {} · working {}{}",
+                        s(t, "ref"),
+                        s(t, "title"),
+                        s(t, "project"),
+                        dur(work),
+                        if wait > 0.0 {
+                            format!(", waiting on you {}", dur(wait))
+                        } else {
+                            String::new()
+                        }
+                    ),
                 }
             })
             .collect();
@@ -372,10 +500,18 @@ impl View {
         // Notable.
         let mut notes = Vec::new();
         let waits_json = arr(day, "waits");
-        if let Some(w) = waits_json.iter().max_by(|a, b| f(a, "min").total_cmp(&f(b, "min"))) {
-            notes.push((dur(f(w, "min")), format!("longest wait on you · {}", s(w, "ref"))));
+        if let Some(w) = waits_json
+            .iter()
+            .max_by(|a, b| f(a, "min").total_cmp(&f(b, "min")))
+        {
+            notes.push((
+                dur(f(w, "min")),
+                format!("longest wait on you · {}", s(w, "ref")),
+            ));
         }
-        if let Some(t) = arr(day, "tasks").iter().max_by(|a, b| (f(a, "work_min") + f(a, "wait_min")).total_cmp(&(f(b, "work_min") + f(b, "wait_min")))) {
+        if let Some(t) = arr(day, "tasks").iter().max_by(|a, b| {
+            (f(a, "work_min") + f(a, "wait_min")).total_cmp(&(f(b, "work_min") + f(b, "wait_min")))
+        }) {
             let m = f(t, "work_min") + f(t, "wait_min");
             if m > 0.0 {
                 notes.push((dur(m), format!("longest task · {}", s(t, "ref"))));
@@ -383,12 +519,32 @@ impl View {
         }
         if peak > 1 {
             let first = day["peak_first"].as_i64().unwrap_or(0);
-            let at = start.map(|s0| fmt::local(s0 + Duration::minutes(first * 10)).format("%-I:%M %p").to_string()).unwrap_or_default();
-            notes.push((format!("{peak} at once"), format!("{} in all, first at {at}", dur(f(day, "peak_slots") * 10.0))));
+            let at = start
+                .map(|s0| {
+                    fmt::local(s0 + Duration::minutes(first * 10))
+                        .format("%-I:%M %p")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            notes.push((
+                format!("{peak} at once"),
+                format!("{} in all, first at {at}", dur(f(day, "peak_slots") * 10.0)),
+            ));
         }
-        let hourly: Vec<i64> = arr(day, "hourly").iter().map(|x| x.as_i64().unwrap_or(0)).collect();
-        if let Some((h, n)) = hourly.iter().enumerate().max_by_key(|(i, n)| (**n, -(*i as i64))).filter(|(_, n)| **n > 0) {
-            notes.push((hour_label(h as i64), format!("busiest hour · {}", fmt::plural(*n, "event", "events"))));
+        let hourly: Vec<i64> = arr(day, "hourly")
+            .iter()
+            .map(|x| x.as_i64().unwrap_or(0))
+            .collect();
+        if let Some((h, n)) = hourly
+            .iter()
+            .enumerate()
+            .max_by_key(|(i, n)| (**n, -(*i as i64)))
+            .filter(|(_, n)| **n > 0)
+        {
+            notes.push((
+                hour_label(h as i64),
+                format!("busiest hour · {}", fmt::plural(*n, "event", "events")),
+            ));
         }
 
         // Hours saved: the human estimate less the agents' time on the same tasks, added up
@@ -405,13 +561,36 @@ impl View {
                 this.push(a);
             }
         }
-        let (hw, aw) = (week.iter().map(|w| f(w, "human_min")).sum::<f64>(), week.iter().map(|w| f(w, "est_agent_min")).sum::<f64>());
+        let (hw, aw) = (
+            week.iter().map(|w| f(w, "human_min")).sum::<f64>(),
+            week.iter().map(|w| f(w, "est_agent_min")).sum::<f64>(),
+        );
         let any = hw > 0.0 || last_week.iter().any(|w| f(w, "human_min") > 0.0);
         let at_k = this.len().saturating_sub(1);
         let saved = Saved {
             total: hours(a),
-            vs_last: if this.is_empty() { String::new() } else { format!("{} on last week", signed(a - last.get(at_k).copied().unwrap_or(0.0), hours)) },
-            breakdown: if hw > 0.0 { format!("{} human estimate − {} agent{}", hours(hw), hours(aw), if aw > 0.0 { format!(" · {:.1}×", hw / aw) } else { String::new() }) } else { String::new() },
+            vs_last: if this.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "{} on last week",
+                    signed(a - last.get(at_k).copied().unwrap_or(0.0), hours)
+                )
+            },
+            breakdown: if hw > 0.0 {
+                format!(
+                    "{} human estimate − {} agent{}",
+                    hours(hw),
+                    hours(aw),
+                    if aw > 0.0 {
+                        format!(" · {:.1}×", hw / aw)
+                    } else {
+                        String::new()
+                    }
+                )
+            } else {
+                String::new()
+            },
             selected: cols.iter().position(|c| c.selected),
             this,
             last,
@@ -423,13 +602,28 @@ impl View {
         let usual_each = f(usual, "wait_each");
         let mut waits: Vec<Wait> = waits_json
             .iter()
-            .map(|w| Wait { min: dur(f(w, "min")), task: s(w, "ref").to_string(), text: if s(w, "text").is_empty() { s(w, "title").to_string() } else { s(w, "text").to_string() }, x: (f(w, "min").min(60.0) / 60.0) as f32 })
+            .map(|w| Wait {
+                min: dur(f(w, "min")),
+                task: s(w, "ref").to_string(),
+                text: if s(w, "text").is_empty() {
+                    s(w, "title").to_string()
+                } else {
+                    s(w, "text").to_string()
+                },
+                x: (f(w, "min").min(60.0) / 60.0) as f32,
+            })
             .collect();
         waits.sort_by(|a, b| b.x.total_cmp(&a.x));
         let mid = {
             let mut e = wait_each.clone();
             e.sort_by(f64::total_cmp);
-            if e.is_empty() { 0.0 } else if e.len() % 2 == 1 { e[e.len() / 2] } else { (e[e.len() / 2 - 1] + e[e.len() / 2]) / 2.0 }
+            if e.is_empty() {
+                0.0
+            } else if e.len() % 2 == 1 {
+                e[e.len() / 2]
+            } else {
+                (e[e.len() / 2 - 1] + e[e.len() / 2]) / 2.0
+            }
         };
         let wait_sub = match (wait_each.is_empty(), usual_each > 0.0) {
             (true, _) => String::new(),
@@ -438,14 +632,26 @@ impl View {
         };
 
         // Tasks done.
-        let (dn, dl) = (week.iter().map(|w| f(w, "done")).sum::<f64>(), last_week.iter().map(|w| f(w, "done")).sum::<f64>());
-        let (pn, pl) = (week.iter().map(|w| f(w, "prs")).sum::<f64>(), last_week.iter().map(|w| f(w, "prs")).sum::<f64>());
+        let (dn, dl) = (
+            week.iter().map(|w| f(w, "done")).sum::<f64>(),
+            last_week.iter().map(|w| f(w, "done")).sum::<f64>(),
+        );
+        let (pn, pl) = (
+            week.iter().map(|w| f(w, "prs")).sum::<f64>(),
+            last_week.iter().map(|w| f(w, "prs")).sum::<f64>(),
+        );
         let done_bars = week
             .iter()
             .enumerate()
             .map(|(k, w)| {
                 let d = date_of(w, "date");
-                (d.map(|d| d.format("%a").to_string()[..2].to_string()).unwrap_or_default(), f(w, "done"), last_week.get(k).map(|l| f(l, "done")).unwrap_or(0.0), d == Some(date))
+                (
+                    d.map(|d| d.format("%a").to_string()[..2].to_string())
+                        .unwrap_or_default(),
+                    f(w, "done"),
+                    last_week.get(k).map(|l| f(l, "done")).unwrap_or(0.0),
+                    d == Some(date),
+                )
             })
             .collect();
 
@@ -456,12 +662,23 @@ impl View {
             .flatten()
             .map(|(p, m)| (p.clone(), slot(p), m.as_f64().unwrap_or(0.0)))
             .filter(|(_, _, m)| *m > 0.0)
-            .map(|(p, i, m)| (p, i, m, format!("{}%", (m / agent.max(1.0) * 100.0).round() as i64)))
+            .map(|(p, i, m)| {
+                (
+                    p,
+                    i,
+                    m,
+                    format!("{}%", (m / agent.max(1.0) * 100.0).round() as i64),
+                )
+            })
             .collect();
         split.sort_by_key(|x| x.1);
 
         Some(View {
-            title: if is_today { "Today".into() } else { date.format("%A, %B %-d").to_string() },
+            title: if is_today {
+                "Today".into()
+            } else {
+                date.format("%A, %B %-d").to_string()
+            },
             live: is_today.then(|| clock(s(v, "now"))),
             date,
             today,
@@ -488,7 +705,12 @@ impl View {
             waits,
             wait_usual_x: (usual_each > 0.0).then(|| (usual_each.min(60.0) / 60.0) as f32),
             done_week: count(dn),
-            done_sub: format!("last week {} · {} PRs, last week {}", count(dl), count(pn), count(pl)),
+            done_sub: format!(
+                "last week {} · {} PRs, last week {}",
+                count(dl),
+                count(pn),
+                count(pl)
+            ),
             done_bars,
             split,
         })
@@ -544,19 +766,42 @@ fn toggle(m: &mut MainWindow, p: &str, all: &[String], cx: &mut Context<MainWind
 // ------------------------------------------------------------------ render
 
 fn card(t: &Theme) -> Div {
-    div().flex().flex_col().gap(px(10.)).p(px(14.)).bg(t.card).border_1().border_color(t.border).rounded(px(12.))
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .p(px(14.))
+        .bg(t.card)
+        .border_1()
+        .border_color(t.border)
+        .rounded(px(12.))
 }
 
 fn h2(text: impl Into<SharedString>) -> Div {
-    div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(text.into())
+    div()
+        .text_size(px(13.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text.into())
 }
 
 fn swatch(c: Hsla, size: f32) -> Div {
-    div().flex_none().w(px(size)).h(px(size)).rounded(px(2.)).bg(c)
+    div()
+        .flex_none()
+        .w(px(size))
+        .h(px(size))
+        .rounded(px(2.))
+        .bg(c)
 }
 
 fn legend_item(t: &Theme, mark: Div, label: impl Into<SharedString>) -> Div {
-    div().flex().items_center().gap(px(6.)).text_size(px(12.)).text_color(t.text_2).child(mark).child(label.into())
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(12.))
+        .text_color(t.text_2)
+        .child(mark)
+        .child(label.into())
 }
 
 /// The fill and text of a timeline bar.
@@ -582,42 +827,82 @@ fn mark_el(t: &Theme, kind: &str, size: f32) -> Div {
     }
 }
 
-const MARKS: &[(&str, &str)] = &[("commit", "Commit"), ("question", "Question"), ("pr", "PR"), ("done", "Done"), ("found", "Issue found")];
+const MARKS: &[(&str, &str)] = &[
+    ("commit", "Commit"),
+    ("question", "Question"),
+    ("pr", "PR"),
+    ("done", "Done"),
+    ("found", "Issue found"),
+];
 
-pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(
+    m: &mut MainWindow,
+    _window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let shell = div().id("days-page").flex().flex_col().flex_1().min_w_0().size_full().overflow_y_scroll();
+    let shell = div()
+        .id("days-page")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .size_full()
+        .overflow_y_scroll();
     let Some(v) = m.data.days.as_ref().and_then(View::of) else {
-        let msg = m.data.errs.days.clone().unwrap_or_else(|| "Loading…".into());
-        return shell.child(div().p(px(28.)).child(kit::empty(&t, msg))).into_any_element();
+        let msg = m
+            .data
+            .errs
+            .days
+            .clone()
+            .unwrap_or_else(|| "Loading…".into());
+        return shell
+            .child(div().p(px(28.)).child(kit::empty(&t, msg)))
+            .into_any_element();
     };
     let mode = t.mode;
     let pc = move |i: usize| project_color(mode, i);
 
     // ---- header
     let all: Vec<String> = v.projects.iter().map(|(p, _, _)| p.clone()).collect();
-    let toggles = div().flex().flex_wrap().gap(px(6.)).children(v.projects.iter().map(|(p, i, on)| {
-        let (p2, all2, on) = (p.clone(), all.clone(), *on);
-        let c = pc(*i);
-        div()
-            .id(SharedString::from(format!("days-proj-{p}")))
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .h(px(30.))
-            .px(px(11.))
-            .rounded_full()
-            .border_1()
-            .border_color(t.border_2)
-            .cursor_pointer()
-            .text_size(px(12.5))
-            .text_color(if on { t.text } else { t.faint })
-            .when(on, |d| d.bg(t.panel_2))
-            .child(div().w(px(10.)).h(px(10.)).rounded(px(3.)).border_2().border_color(c).when(on, |d| d.bg(c)))
-            .child(p.clone())
-            .tooltip(kit::tip(if on { format!("Hide {p}") } else { format!("Show {p}") }))
-            .on_click(cx.listener(move |m, _, _, cx| toggle(m, &p2, &all2, cx)))
-    }));
+    let toggles = div()
+        .flex()
+        .flex_wrap()
+        .gap(px(6.))
+        .children(v.projects.iter().map(|(p, i, on)| {
+            let (p2, all2, on) = (p.clone(), all.clone(), *on);
+            let c = pc(*i);
+            div()
+                .id(SharedString::from(format!("days-proj-{p}")))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .h(px(30.))
+                .px(px(11.))
+                .rounded_full()
+                .border_1()
+                .border_color(t.border_2)
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .text_color(if on { t.text } else { t.faint })
+                .when(on, |d| d.bg(t.panel_2))
+                .child(
+                    div()
+                        .w(px(10.))
+                        .h(px(10.))
+                        .rounded(px(3.))
+                        .border_2()
+                        .border_color(c)
+                        .when(on, |d| d.bg(c)),
+                )
+                .child(p.clone())
+                .tooltip(kit::tip(if on {
+                    format!("Hide {p}")
+                } else {
+                    format!("Show {p}")
+                }))
+                .on_click(cx.listener(move |m, _, _, cx| toggle(m, &p2, &all2, cx)))
+        }));
     let (prev, next) = (v.date - Duration::days(1), v.date + Duration::days(1));
     let at_oldest = v.oldest.is_some_and(|o| v.date <= o);
     let at_today = v.date >= v.today;
@@ -625,24 +910,55 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .flex()
         .items_center()
         .gap(px(6.))
-        .child(kit::btn(&t, "days-prev", "‹").w(px(36.)).when(at_oldest, kit::disabled).tooltip(kit::tip("Earlier day")).on_click(cx.listener(move |m, _, _, cx| {
-            if !at_oldest {
-                set_date(m, Some(prev), cx)
-            }
-        })))
-        .child(kit::btn(&t, "days-next", "›").w(px(36.)).when(at_today, kit::disabled).tooltip(kit::tip("Later day")).on_click(cx.listener(move |m, _, _, cx| {
-            if !at_today {
-                set_date(m, Some(next), cx)
-            }
-        })))
-        .child(kit::btn(&t, "days-today", "Today").when(at_today, kit::disabled).on_click(cx.listener(|m, _, _, cx| set_date(m, None, cx))));
+        .child(
+            kit::btn(&t, "days-prev", "‹")
+                .w(px(36.))
+                .when(at_oldest, kit::disabled)
+                .tooltip(kit::tip("Earlier day"))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    if !at_oldest {
+                        set_date(m, Some(prev), cx)
+                    }
+                })),
+        )
+        .child(
+            kit::btn(&t, "days-next", "›")
+                .w(px(36.))
+                .when(at_today, kit::disabled)
+                .tooltip(kit::tip("Later day"))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    if !at_today {
+                        set_date(m, Some(next), cx)
+                    }
+                })),
+        )
+        .child(
+            kit::btn(&t, "days-today", "Today")
+                .when(at_today, kit::disabled)
+                .on_click(cx.listener(|m, _, _, cx| set_date(m, None, cx))),
+        );
     let header = div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(px(14.))
-        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(v.title.clone()))
-        .children(v.live.clone().map(|c| div().flex().items_center().gap(px(6.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.up_fg).child(kit::dot(t.up, 8.)).child(c)))
+        .child(
+            div()
+                .text_size(px(22.))
+                .font_weight(FontWeight::BOLD)
+                .child(v.title.clone()),
+        )
+        .children(v.live.clone().map(|c| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.up_fg)
+                .child(kit::dot(t.up, 8.))
+                .child(c)
+        }))
         .child(div().flex_1())
         .child(toggles)
         .child(nav);
@@ -655,8 +971,19 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             .gap(px(2.))
             .py(px(10.))
             .child(div().text_size(px(12.)).text_color(t.muted).child(k.label))
-            .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(k.value.clone()))
-            .child(div().text_size(px(12.)).text_color(t.text_2).min_h(px(16.)).child(k.delta.clone()))
+            .child(
+                div()
+                    .text_size(px(22.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(k.value.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(t.text_2)
+                    .min_h(px(16.))
+                    .child(k.delta.clone()),
+            )
     }));
 
     let left = div()
@@ -692,50 +1019,102 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
                 .py(px(22.))
                 .child(header)
                 .child(kpis)
-                .child(div().flex().items_start().gap(px(16.)).child(left).child(rail)),
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(16.))
+                        .child(left)
+                        .child(rail),
+                ),
         )
         .into_any_element()
 }
 
 fn project_legend(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
-    div().flex().flex_wrap().gap(px(14.)).children(v.projects.iter().filter(|(_, _, on)| *on).map(|(p, i, _)| legend_item(t, swatch(pc(*i), 9.), p.clone())))
+    div().flex().flex_wrap().gap(px(14.)).children(
+        v.projects
+            .iter()
+            .filter(|(_, _, on)| *on)
+            .map(|(p, i, _)| legend_item(t, swatch(pc(*i), 9.), p.clone())),
+    )
 }
 
-fn week_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<MainWindow>) -> Div {
+fn week_card(
+    v: &View,
+    t: &Theme,
+    pc: &impl Fn(usize) -> Hsla,
+    cx: &mut Context<MainWindow>,
+) -> Div {
     const H: f32 = 170.;
     let ticks: Vec<f64> = (0..=4).map(|k| v.y_max / 4.0 * k as f64).collect();
-    let axis = div().relative().w(px(30.)).h(px(H)).flex_none().children(ticks.iter().map(|y| {
-        div()
-            .absolute()
-            .right(px(4.))
-            .bottom(px((y / v.y_max) as f32 * H - 7.))
-            .text_size(px(11.))
-            .text_color(t.muted)
-            .child(if *y == 0.0 { "0".to_string() } else { format!("{}h", *y as i64) })
-    }));
-    let grid = ticks.iter().map(|y| div().absolute().left_0().right_0().bottom(px((y / v.y_max) as f32 * H)).h(px(1.)).bg(t.divider)).collect::<Vec<_>>();
-    let columns = div().absolute().inset_0().flex().gap(px(10.)).children(v.cols.iter().map(|c| {
-        let d = c.date;
-        let n = c.segs.len();
-        let stack = div().flex().flex_col_reverse().gap(px(2.)).w_full().children(c.segs.iter().enumerate().map(|(k, (i, min))| {
-            let h = ((min / 60.0 / v.y_max) as f32 * H).max(2.);
-            div().h(px(h)).bg(pc(*i)).when(k + 1 == n, |d| d.rounded_t(px(4.)))
+    let axis = div()
+        .relative()
+        .w(px(30.))
+        .h(px(H))
+        .flex_none()
+        .children(ticks.iter().map(|y| {
+            div()
+                .absolute()
+                .right(px(4.))
+                .bottom(px((y / v.y_max) as f32 * H - 7.))
+                .text_size(px(11.))
+                .text_color(t.muted)
+                .child(if *y == 0.0 {
+                    "0".to_string()
+                } else {
+                    format!("{}h", *y as i64)
+                })
         }));
-        div()
-            .id(SharedString::from(format!("days-col-{}", c.num)))
-            .flex_1()
-            .h(px(H))
-            .flex()
-            .flex_col()
-            .justify_end()
-            .px(px(10.))
-            .rounded_t(px(6.))
-            .when(c.selected, |x| x.bg(t.accent_soft))
-            .when(!c.future, |x| x.cursor_pointer())
-            .child(stack)
-            .tooltip(kit::tip(c.tip.clone()))
-            .when(!c.future, |x| x.on_click(cx.listener(move |m, _, _, cx| set_date(m, Some(d), cx))))
-    }));
+    let grid = ticks
+        .iter()
+        .map(|y| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px((y / v.y_max) as f32 * H))
+                .h(px(1.))
+                .bg(t.divider)
+        })
+        .collect::<Vec<_>>();
+    let columns = div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .gap(px(10.))
+        .children(v.cols.iter().map(|c| {
+            let d = c.date;
+            let n = c.segs.len();
+            let stack = div()
+                .flex()
+                .flex_col_reverse()
+                .gap(px(2.))
+                .w_full()
+                .children(c.segs.iter().enumerate().map(|(k, (i, min))| {
+                    let h = ((min / 60.0 / v.y_max) as f32 * H).max(2.);
+                    div()
+                        .h(px(h))
+                        .bg(pc(*i))
+                        .when(k + 1 == n, |d| d.rounded_t(px(4.)))
+                }));
+            div()
+                .id(SharedString::from(format!("days-col-{}", c.num)))
+                .flex_1()
+                .h(px(H))
+                .flex()
+                .flex_col()
+                .justify_end()
+                .px(px(10.))
+                .rounded_t(px(6.))
+                .when(c.selected, |x| x.bg(t.accent_soft))
+                .when(!c.future, |x| x.cursor_pointer())
+                .child(stack)
+                .tooltip(kit::tip(c.tip.clone()))
+                .when(!c.future, |x| {
+                    x.on_click(cx.listener(move |m, _, _, cx| set_date(m, Some(d), cx)))
+                })
+        }));
     let tiles = div().flex().gap(px(10.)).children(v.cols.iter().map(|c| {
         let d = c.date;
         div()
@@ -750,32 +1129,96 @@ fn week_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<
             .border_color(if c.selected { t.accent } else { t.border })
             .when(c.selected, |x| x.border_2().bg(t.accent_soft))
             .when(c.future, |x| x.text_color(t.faint))
-            .when(!c.future, |x| x.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| set_date(m, Some(d), cx))))
-            .child(div().text_size(px(11.)).text_color(t.muted).child(c.dow.clone()))
-            .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(c.num.to_string()))
-            .child(div().text_size(px(11.)).text_color(t.text_2).min_h(px(15.)).child(c.done.clone()))
+            .when(!c.future, |x| {
+                x.cursor_pointer()
+                    .on_click(cx.listener(move |m, _, _, cx| set_date(m, Some(d), cx)))
+            })
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(t.muted)
+                    .child(c.dow.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(c.num.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(t.text_2)
+                    .min_h(px(15.))
+                    .child(c.done.clone()),
+            )
     }));
     card(t)
-        .child(div().flex().flex_wrap().items_center().justify_between().gap(px(12.)).child(h2(format!("Agent time · {}", v.week_label))).child(project_legend(v, t, pc)))
         .child(
             div()
                 .flex()
-                .gap(px(8.))
-                .child(axis)
-                .child(div().flex().flex_col().gap(px(6.)).flex_1().min_w_0().child(div().relative().h(px(H)).children(grid).child(columns)).child(tiles)),
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(h2(format!("Agent time · {}", v.week_label)))
+                .child(project_legend(v, t, pc)),
+        )
+        .child(
+            div().flex().gap(px(8.)).child(axis).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().relative().h(px(H)).children(grid).child(columns))
+                    .child(tiles),
+            ),
         )
 }
 
-fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<MainWindow>) -> Div {
+fn timeline_card(
+    v: &View,
+    t: &Theme,
+    pc: &impl Fn(usize) -> Hsla,
+    cx: &mut Context<MainWindow>,
+) -> Div {
     const LABEL: f32 = 104.;
     let hours: Vec<i64> = (v.from_hour..=v.to_hour).collect();
     let span = (v.to_hour - v.from_hour) as f32;
-    let axis = div().flex().child(div().w(px(LABEL)).flex_none()).child(div().relative().flex_1().h(px(18.)).children(hours.iter().map(|h| {
-        let x = (*h - v.from_hour) as f32 / span;
-        div().absolute().left(relative(x)).ml(px(-16.)).w(px(32.)).flex().justify_center().text_size(px(11.)).text_color(t.muted).child(hour_label(*h))
-    })));
+    let axis = div().flex().child(div().w(px(LABEL)).flex_none()).child(
+        div()
+            .relative()
+            .flex_1()
+            .h(px(18.))
+            .children(hours.iter().map(|h| {
+                let x = (*h - v.from_hour) as f32 / span;
+                div()
+                    .absolute()
+                    .left(relative(x))
+                    .ml(px(-16.))
+                    .w(px(32.))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(11.))
+                    .text_color(t.muted)
+                    .child(hour_label(*h))
+            })),
+    );
     let gridlines = |h: f32| {
-        hours.iter().map(move |hh| (*hh - v.from_hour) as f32 / span).map(move |x| div().absolute().top_0().h(px(h)).left(relative(x)).w(px(1.))).collect::<Vec<_>>()
+        hours
+            .iter()
+            .map(move |hh| (*hh - v.from_hour) as f32 / span)
+            .map(move |x| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .h(px(h))
+                    .left(relative(x))
+                    .w(px(1.))
+            })
+            .collect::<Vec<_>>()
     };
     let lanes = v.lanes.iter().map(|l| {
         const ROW: f32 = 32.;
@@ -784,7 +1227,11 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
             let (bg, fg) = bar_colors(t, &b.kind);
             let r = b.task.clone();
             div()
-                .id(SharedString::from(format!("days-bar-{}-{}", b.task, (b.x0 * 10000.) as i64)))
+                .id(SharedString::from(format!(
+                    "days-bar-{}-{}",
+                    b.task,
+                    (b.x0 * 10000.) as i64
+                )))
                 .absolute()
                 .top(px(8. + b.row as f32 * ROW))
                 .h(px(26.))
@@ -826,7 +1273,20 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
             .flex()
             .border_t_1()
             .border_color(t.divider)
-            .child(div().w(px(LABEL)).flex_none().flex().items_start().pt(px(12.)).gap(px(8.)).h(px(lane_h)).font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child(swatch(pc(l.color), 8.)).child(div().truncate().child(l.project.clone())))
+            .child(
+                div()
+                    .w(px(LABEL))
+                    .flex_none()
+                    .flex()
+                    .items_start()
+                    .pt(px(12.))
+                    .gap(px(8.))
+                    .h(px(lane_h))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(13.))
+                    .child(swatch(pc(l.color), 8.))
+                    .child(div().truncate().child(l.project.clone())),
+            )
             .child(
                 div()
                     .relative()
@@ -835,7 +1295,15 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
                     .children(lines)
                     .children(bars)
                     .children(marks)
-                    .children(v.now_x.map(|x| div().absolute().top_0().bottom_0().left(relative(x)).w(px(2.)).bg(t.accent))),
+                    .children(v.now_x.map(|x| {
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(relative(x))
+                            .w(px(2.))
+                            .bg(t.accent)
+                    })),
             )
     });
     let peak = v.peak.max(3) as f32;
@@ -851,26 +1319,67 @@ fn timeline_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
                 .flex()
                 .flex_col()
                 .text_size(px(12.))
-                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child("Running"))
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.text_2)
+                        .child("Running"),
+                )
                 .child(div().text_color(t.muted).child(format!("peak {}", v.peak))),
         )
-        .child(div().flex_1().flex().items_end().gap(px(1.)).h(px(40.)).border_b_1().border_color(t.border_2).children(v.running.iter().enumerate().map(|(k, n)| {
-            let n = n.unwrap_or(0);
-            let at = (v.from_hour * 60 + k as i64 * 10) as f64;
-            let label = format!("{}: {}", hour_clock(at), if v.running[k].is_none() { "still to come".to_string() } else { fmt::plural(n, "terminal working", "terminals working") });
+        .child(
             div()
-                .id(SharedString::from(format!("days-run-{k}")))
                 .flex_1()
-                .h(px((n as f32 / peak * 38.).max(0.)))
-                .rounded_t(px(2.))
-                .bg(if n == v.peak && n > 0 { t.accent } else { t.accent_line })
-                .tooltip(kit::tip(label))
-        })));
-    let legend = div().flex().flex_wrap().gap(px(16.)).children(MARKS.iter().map(|(k, label)| legend_item(t, mark_el(t, k, 8.), *label)));
+                .flex()
+                .items_end()
+                .gap(px(1.))
+                .h(px(40.))
+                .border_b_1()
+                .border_color(t.border_2)
+                .children(v.running.iter().enumerate().map(|(k, n)| {
+                    let n = n.unwrap_or(0);
+                    let at = (v.from_hour * 60 + k as i64 * 10) as f64;
+                    let label = format!(
+                        "{}: {}",
+                        hour_clock(at),
+                        if v.running[k].is_none() {
+                            "still to come".to_string()
+                        } else {
+                            fmt::plural(n, "terminal working", "terminals working")
+                        }
+                    );
+                    div()
+                        .id(SharedString::from(format!("days-run-{k}")))
+                        .flex_1()
+                        .h(px((n as f32 / peak * 38.).max(0.)))
+                        .rounded_t(px(2.))
+                        .bg(if n == v.peak && n > 0 {
+                            t.accent
+                        } else {
+                            t.accent_line
+                        })
+                        .tooltip(kit::tip(label))
+                })),
+        );
+    let legend = div().flex().flex_wrap().gap(px(16.)).children(
+        MARKS
+            .iter()
+            .map(|(k, label)| legend_item(t, mark_el(t, k, 8.), *label)),
+    );
     let body = if v.lanes.is_empty() {
-        div().py(px(28.)).flex().justify_center().text_color(t.muted).child("No agent work")
+        div()
+            .py(px(28.))
+            .flex()
+            .justify_center()
+            .text_color(t.muted)
+            .child("No agent work")
     } else {
-        div().flex().flex_col().child(axis).children(lanes).child(running)
+        div()
+            .flex()
+            .flex_col()
+            .child(axis)
+            .children(lanes)
+            .child(running)
     };
     card(t).child(legend).child(body)
 }
@@ -882,11 +1391,20 @@ fn hour_clock(min: f64) -> String {
     format!("{h12}:{mm:02} {}", if h % 24 < 12 { "AM" } else { "PM" })
 }
 
-fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<MainWindow>) -> Div {
+fn tasks_card(
+    v: &View,
+    t: &Theme,
+    pc: &impl Fn(usize) -> Hsla,
+    cx: &mut Context<MainWindow>,
+) -> Div {
     let rows = v.tasks.iter().map(|r| {
         let (work, wait) = ((r.work / v.task_max) as f32, (r.wait / v.task_max) as f32);
         let task = r.task.clone();
-        let state_c = if r.state == "needs you" { t.warn_fg } else { t.muted };
+        let state_c = if r.state == "needs you" {
+            t.warn_fg
+        } else {
+            t.muted
+        };
         div()
             .id(SharedString::from(format!("days-task-{}", r.task)))
             .flex()
@@ -906,7 +1424,14 @@ fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context
                     .items_baseline()
                     .text_size(px(13.))
                     .overflow_hidden()
-                    .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.task.clone()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(t.mono_font.clone())
+                            .text_size(px(11.))
+                            .text_color(t.muted)
+                            .child(r.task.clone()),
+                    )
                     .child(div().truncate().child(r.title.clone())),
             )
             .child(
@@ -914,12 +1439,57 @@ fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context
                     .relative()
                     .flex_1()
                     .h(px(14.))
-                    .child(div().absolute().top_0().bottom_0().left_0().w(relative(work)).rounded_l(px(3.)).when(wait == 0., |d| d.rounded_r(px(3.))).bg(pc(r.color)))
-                    .child(div().absolute().top_0().bottom_0().left(relative(work)).w(relative(wait)).rounded_r(px(3.)).bg(t.warn))
-                    .when(v.task_median_x > 0., |d| d.child(div().absolute().top(px(-3.)).bottom(px(-3.)).left(relative(v.task_median_x)).w(px(2.)).bg(t.text))),
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .w(relative(work))
+                            .rounded_l(px(3.))
+                            .when(wait == 0., |d| d.rounded_r(px(3.)))
+                            .bg(pc(r.color)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(relative(work))
+                            .w(relative(wait))
+                            .rounded_r(px(3.))
+                            .bg(t.warn),
+                    )
+                    .when(v.task_median_x > 0., |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(-3.))
+                                .bottom(px(-3.))
+                                .left(relative(v.task_median_x))
+                                .w(px(2.))
+                                .bg(t.text),
+                        )
+                    }),
             )
-            .child(div().w(px(64.)).flex_none().flex().justify_end().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(r.total.clone()))
-            .child(div().w(px(70.)).flex_none().text_size(px(12.)).text_color(state_c).child(r.state.clone()))
+            .child(
+                div()
+                    .w(px(64.))
+                    .flex_none()
+                    .flex()
+                    .justify_end()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(r.total.clone()),
+            )
+            .child(
+                div()
+                    .w(px(70.))
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(state_c)
+                    .child(r.state.clone()),
+            )
             .tooltip(kit::tip(r.tip.clone()))
             .on_click(cx.listener(move |m, _, _, cx| m.open_task(task.clone(), cx)))
     });
@@ -927,33 +1497,82 @@ fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context
         .flex()
         .flex_wrap()
         .gap(px(14.))
-        .child(legend_item(t, div().flex().gap(px(1.)).children(v.projects.iter().filter(|p| p.2).take(3).map(|(_, i, _)| div().w(px(5.)).h(px(9.)).rounded(px(1.)).bg(pc(*i)))), "agent working"))
+        .child(legend_item(
+            t,
+            div().flex().gap(px(1.)).children(
+                v.projects
+                    .iter()
+                    .filter(|p| p.2)
+                    .take(3)
+                    .map(|(_, i, _)| div().w(px(5.)).h(px(9.)).rounded(px(1.)).bg(pc(*i))),
+            ),
+            "agent working",
+        ))
         .child(legend_item(t, swatch(t.warn, 9.), "waiting on you"))
-        .children((!v.task_median.is_empty()).then(|| legend_item(t, div().w(px(2.)).h(px(12.)).bg(t.text), format!("median {}", v.task_median))));
-    let body = if v.tasks.is_empty() { div().text_color(t.muted).child("No tasks this week") } else { div().flex().flex_col().gap(px(2.)).children(rows) };
-    card(t).child(div().flex().flex_wrap().items_center().justify_between().gap(px(12.)).child(h2(format!("How long tasks took · {}", v.week_label))).child(legend)).child(body)
+        .children((!v.task_median.is_empty()).then(|| {
+            legend_item(
+                t,
+                div().w(px(2.)).h(px(12.)).bg(t.text),
+                format!("median {}", v.task_median),
+            )
+        }));
+    let body = if v.tasks.is_empty() {
+        div().text_color(t.muted).child("No tasks this week")
+    } else {
+        div().flex().flex_col().gap(px(2.)).children(rows)
+    };
+    card(t)
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(h2(format!("How long tasks took · {}", v.week_label)))
+                .child(legend),
+        )
+        .child(body)
 }
 
 fn notes_card(v: &View, t: &Theme) -> Div {
-    card(t).child(h2("Notable")).children(v.notes.iter().map(|(lead, text)| {
-        div()
-            .flex()
-            .gap(px(10.))
-            .items_baseline()
-            .text_size(px(13.))
-            .child(div().min_w(px(76.)).font_weight(FontWeight::BOLD).child(lead.clone()))
-            .child(div().text_color(t.text_2).child(text.clone()))
-    }))
+    card(t)
+        .child(h2("Notable"))
+        .children(v.notes.iter().map(|(lead, text)| {
+            div()
+                .flex()
+                .gap(px(10.))
+                .items_baseline()
+                .text_size(px(13.))
+                .child(
+                    div()
+                        .min_w(px(76.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(lead.clone()),
+                )
+                .child(div().text_color(t.text_2).child(text.clone()))
+        }))
 }
 
 fn saved_card(v: &View, t: &Theme) -> Div {
     let s = v.saved.clone();
     if !s.any {
-        return card(t).child(h2("Hours saved")).child(div().text_size(px(13.)).text_color(t.muted).child("No human estimates yet"));
+        return card(t).child(h2("Hours saved")).child(
+            div()
+                .text_size(px(13.))
+                .text_color(t.muted)
+                .child("No human estimates yet"),
+        );
     }
     let (line, dash, grid, sel) = (t.accent, t.faint, t.divider, s.selected);
     let top = {
-        let mx = s.this.iter().chain(s.last.iter()).copied().fold(0.0, f64::max) / 60.0;
+        let mx = s
+            .this
+            .iter()
+            .chain(s.last.iter())
+            .copied()
+            .fold(0.0, f64::max)
+            / 60.0;
         ((mx / 20.0).ceil() * 20.0).max(20.0)
     };
     let (this, last) = (s.this.clone(), s.last.clone());
@@ -1021,11 +1640,76 @@ fn saved_card(v: &View, t: &Theme) -> Div {
     card(t)
         .gap(px(8.))
         .child(h2("Hours saved"))
-        .child(div().flex().items_baseline().gap(px(8.)).child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(s.total.clone())).child(div().text_size(px(13.)).text_color(t.text_2).child(s.vs_last.clone())))
-        .children((!s.breakdown.is_empty()).then(|| div().text_size(px(12.)).text_color(t.muted).child(s.breakdown.clone())))
-        .child(div().flex().gap(px(6.)).child(div().flex().flex_col().justify_between().h(px(110.)).text_size(px(10.)).text_color(t.muted).child(format!("{}h", top as i64)).child(format!("{}h", (top / 2.0) as i64)).child("0")).child(chart))
-        .child(div().flex().justify_between().pl(px(26.)).children(days.iter().enumerate().map(|(k, d)| div().text_size(px(11.)).text_color(if Some(k) == sel { t.text } else { t.muted }).when(Some(k) == sel, |x| x.font_weight(FontWeight::BOLD)).child(*d))))
-        .child(div().flex().gap(px(12.)).child(legend_item(t, div().w(px(14.)).h(px(2.)).bg(t.accent), "this week")).child(legend_item(t, div().w(px(14.)).h(px(2.)).bg(t.faint), "last week")))
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(24.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(s.total.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(t.text_2)
+                        .child(s.vs_last.clone()),
+                ),
+        )
+        .children((!s.breakdown.is_empty()).then(|| {
+            div()
+                .text_size(px(12.))
+                .text_color(t.muted)
+                .child(s.breakdown.clone())
+        }))
+        .child(
+            div()
+                .flex()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .justify_between()
+                        .h(px(110.))
+                        .text_size(px(10.))
+                        .text_color(t.muted)
+                        .child(format!("{}h", top as i64))
+                        .child(format!("{}h", (top / 2.0) as i64))
+                        .child("0"),
+                )
+                .child(chart),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .pl(px(26.))
+                .children(days.iter().enumerate().map(|(k, d)| {
+                    div()
+                        .text_size(px(11.))
+                        .text_color(if Some(k) == sel { t.text } else { t.muted })
+                        .when(Some(k) == sel, |x| x.font_weight(FontWeight::BOLD))
+                        .child(*d)
+                })),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(12.))
+                .child(legend_item(
+                    t,
+                    div().w(px(14.)).h(px(2.)).bg(t.accent),
+                    "this week",
+                ))
+                .child(legend_item(
+                    t,
+                    div().w(px(14.)).h(px(2.)).bg(t.faint),
+                    "last week",
+                )),
+        )
 }
 
 fn waits_card(v: &View, t: &Theme) -> Div {
@@ -1049,52 +1733,192 @@ fn waits_card(v: &View, t: &Theme) -> Div {
                 .border_color(t.card)
                 .tooltip(kit::tip(format!("{} · {}", w.task, w.min)))
         }))
-        .children(v.wait_usual_x.map(|x| div().absolute().top_0().bottom_0().left(relative(x)).w(px(2.)).bg(t.text_2)));
+        .children(v.wait_usual_x.map(|x| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(x))
+                .w(px(2.))
+                .bg(t.text_2)
+        }));
     card(t)
         .gap(px(8.))
-        .child(div().flex().justify_between().items_baseline().gap(px(8.)).child(h2("Waiting on you")).child(div().text_size(px(12.)).text_color(t.muted).child(v.wait_sub.clone())))
-        .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(v.wait_total.clone()))
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .items_baseline()
+                .gap(px(8.))
+                .child(h2("Waiting on you"))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(t.muted)
+                        .child(v.wait_sub.clone()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(24.))
+                .font_weight(FontWeight::BOLD)
+                .child(v.wait_total.clone()),
+        )
         .child(strip)
-        .child(div().flex().justify_between().text_size(px(11.)).text_color(t.muted).child("0").child("30m").child("60m+"))
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .text_size(px(11.))
+                .text_color(t.muted)
+                .child("0")
+                .child("30m")
+                .child("60m+"),
+        )
         .children(v.waits.iter().map(|w| {
             div()
                 .flex()
                 .gap(px(8.))
                 .text_size(px(12.))
-                .child(div().w(px(48.)).flex_none().font_weight(FontWeight::BOLD).child(w.min.clone()))
-                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(w.task.clone()))
+                .child(
+                    div()
+                        .w(px(48.))
+                        .flex_none()
+                        .font_weight(FontWeight::BOLD)
+                        .child(w.min.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(t.mono_font.clone())
+                        .text_size(px(11.))
+                        .text_color(t.muted)
+                        .child(w.task.clone()),
+                )
                 .child(div().text_color(t.text_2).truncate().child(w.text.clone()))
         }))
 }
 
 fn done_card(v: &View, t: &Theme) -> Div {
-    let max = v.done_bars.iter().map(|(_, a, b, _)| a.max(*b)).fold(1.0, f64::max);
+    let max = v
+        .done_bars
+        .iter()
+        .map(|(_, a, b, _)| a.max(*b))
+        .fold(1.0, f64::max);
     card(t)
         .gap(px(8.))
         .child(h2("Tasks done this week"))
-        .child(div().flex().items_baseline().gap(px(8.)).child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(v.done_week.clone())).child(div().text_size(px(12.)).text_color(t.muted).child(v.done_sub.clone())))
-        .child(div().flex().items_end().gap(px(6.)).h(px(44.)).border_b_1().border_color(t.border_2).children(v.done_bars.iter().enumerate().map(|(k, (d, now, last, sel))| {
-            let (h, lh) = ((now / max) as f32 * 40., (last / max) as f32 * 40.);
+        .child(
             div()
-                .id(SharedString::from(format!("days-done-{k}")))
-                .relative()
-                .flex_1()
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(24.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(v.done_week.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(t.muted)
+                        .child(v.done_sub.clone()),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_end()
+                .gap(px(6.))
                 .h(px(44.))
-                .rounded_t(px(3.))
-                .when(*sel, |x| x.bg(t.accent_soft))
-                .child(div().absolute().left(px(3.)).right(px(3.)).bottom_0().h(px(h)).rounded_t(px(2.)).bg(t.accent))
-                .when(*last > 0., |x| x.child(div().absolute().left_0().right_0().bottom(px(lh - 1.)).h(px(2.)).bg(t.text)))
-                .tooltip(kit::tip(format!("{d} · this week {} · last week {}", count(*now), count(*last))))
-        })))
-        .child(div().flex().gap(px(6.)).children(v.done_bars.iter().map(|(d, ..)| div().flex_1().flex().justify_center().text_size(px(11.)).text_color(t.muted).child(d.clone()))))
-        .child(div().flex().gap(px(12.)).child(legend_item(t, swatch(t.accent, 9.), "this week")).child(legend_item(t, div().w(px(12.)).h(px(2.)).bg(t.text), "last week")))
+                .border_b_1()
+                .border_color(t.border_2)
+                .children(
+                    v.done_bars
+                        .iter()
+                        .enumerate()
+                        .map(|(k, (d, now, last, sel))| {
+                            let (h, lh) = ((now / max) as f32 * 40., (last / max) as f32 * 40.);
+                            div()
+                                .id(SharedString::from(format!("days-done-{k}")))
+                                .relative()
+                                .flex_1()
+                                .h(px(44.))
+                                .rounded_t(px(3.))
+                                .when(*sel, |x| x.bg(t.accent_soft))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(3.))
+                                        .right(px(3.))
+                                        .bottom_0()
+                                        .h(px(h))
+                                        .rounded_t(px(2.))
+                                        .bg(t.accent),
+                                )
+                                .when(*last > 0., |x| {
+                                    x.child(
+                                        div()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .bottom(px(lh - 1.))
+                                            .h(px(2.))
+                                            .bg(t.text),
+                                    )
+                                })
+                                .tooltip(kit::tip(format!(
+                                    "{d} · this week {} · last week {}",
+                                    count(*now),
+                                    count(*last)
+                                )))
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(6.))
+                .children(v.done_bars.iter().map(|(d, ..)| {
+                    div()
+                        .flex_1()
+                        .flex()
+                        .justify_center()
+                        .text_size(px(11.))
+                        .text_color(t.muted)
+                        .child(d.clone())
+                })),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(12.))
+                .child(legend_item(t, swatch(t.accent, 9.), "this week"))
+                .child(legend_item(
+                    t,
+                    div().w(px(12.)).h(px(2.)).bg(t.text),
+                    "last week",
+                )),
+        )
 }
 
 fn split_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
     let total: f64 = v.split.iter().map(|x| x.2).sum::<f64>().max(1.0);
     card(t)
         .child(h2("Agent time by project"))
-        .child(div().flex().gap(px(2.)).h(px(12.)).children(v.split.iter().map(|(_, i, m, _)| div().w(relative((m / total) as f32)).rounded(px(3.)).bg(pc(*i)))))
+        .child(
+            div()
+                .flex()
+                .gap(px(2.))
+                .h(px(12.))
+                .children(v.split.iter().map(|(_, i, m, _)| {
+                    div()
+                        .w(relative((m / total) as f32))
+                        .rounded(px(3.))
+                        .bg(pc(*i))
+                })),
+        )
         .children(v.split.iter().map(|(p, i, m, share)| {
             div()
                 .flex()
@@ -1104,7 +1928,14 @@ fn split_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
                 .child(swatch(pc(*i), 9.))
                 .child(div().flex_1().truncate().child(p.clone()))
                 .child(div().text_color(t.text_2).child(dur(*m)))
-                .child(div().w(px(40.)).flex().justify_end().text_color(t.muted).child(share.clone()))
+                .child(
+                    div()
+                        .w(px(40.))
+                        .flex()
+                        .justify_end()
+                        .text_color(t.muted)
+                        .child(share.clone()),
+                )
         }))
 }
 
@@ -1177,12 +2008,18 @@ mod tests {
         assert_eq!(v.cols[0].done, "7 done");
         assert_eq!(v.y_max, 16.0);
         assert_eq!(v.lanes[0].bars[0].kind, "done");
-        assert!((v.lanes[0].bars[0].x0 - 0.0292).abs() < 0.001, "9:14 is just after 9");
+        assert!(
+            (v.lanes[0].bars[0].x0 - 0.0292).abs() < 0.001,
+            "9:14 is just after 9"
+        );
         assert_eq!(v.running.len(), 48);
         assert_eq!(v.running[47], None, "after now is still to come");
         assert_eq!(v.tasks[0].state, "needs you");
         assert_eq!(v.tasks[0].total, "4h 02m");
-        assert_eq!(v.notes[0], ("58m".to_string(), "longest wait on you · T241".to_string()));
+        assert_eq!(
+            v.notes[0],
+            ("58m".to_string(), "longest wait on you · T241".to_string())
+        );
         assert!(v.notes.iter().any(|n| n.0 == "10 AM"));
         assert!(v.notes.iter().any(|n| n.0 == "3 at once"));
     }
@@ -1200,11 +2037,32 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn overlapping_bars_take_their_own_rows() {
-        let bar = |task: &str, x0: f32, x1: f32| super::Bar { task: task.into(), row: 0, label: String::new(), kind: "working".into(), x0, x1, tip: String::new() };
-        let (bars, rows) = super::stack(vec![bar("T1", 0.1, 0.3), bar("T2", 0.2, 0.4), bar("T1", 0.3, 0.35), bar("T3", 0.36, 0.5)]);
+        let bar = |task: &str, x0: f32, x1: f32| super::Bar {
+            task: task.into(),
+            row: 0,
+            label: String::new(),
+            kind: "working".into(),
+            x0,
+            x1,
+            tip: String::new(),
+        };
+        let (bars, rows) = super::stack(vec![
+            bar("T1", 0.1, 0.3),
+            bar("T2", 0.2, 0.4),
+            bar("T1", 0.3, 0.35),
+            bar("T3", 0.36, 0.5),
+        ]);
         let at: Vec<(String, usize)> = bars.iter().map(|b| (b.task.clone(), b.row)).collect();
         assert_eq!(rows, 2);
-        assert_eq!(at, vec![("T1".into(), 0), ("T2".into(), 1), ("T1".into(), 0), ("T3".into(), 0)]);
+        assert_eq!(
+            at,
+            vec![
+                ("T1".into(), 0),
+                ("T2".into(), 1),
+                ("T1".into(), 0),
+                ("T3".into(), 0)
+            ]
+        );
     }
 
     #[::core::prelude::v1::test]
