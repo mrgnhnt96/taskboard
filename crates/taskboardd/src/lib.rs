@@ -33,6 +33,7 @@ pub mod jira_desk;
 pub mod jira_status;
 pub mod jobs;
 pub mod keep_awake;
+pub mod lanes;
 pub mod limits;
 pub mod lines;
 pub mod locks;
