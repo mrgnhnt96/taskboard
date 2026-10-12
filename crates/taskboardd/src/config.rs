@@ -240,6 +240,11 @@ pub struct PrProject {
     pub expected: Option<Vec<String>>,
     /// How long to wait for the expected checks to post, in minutes.
     pub expected_wait_mins: Option<f64>,
+    /// A command that says, per push, which checks that push starts (`prflow::note_expected`): run with
+    /// `/bin/sh -c` once per new head with TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD, TB_BASE, TB_BRANCH
+    /// and TB_WORKTREE (when the task has one). A JSON list takes the place of `expected` for that push
+    /// (`[]`: none); `null`, nothing or a non-zero exit: can't tell (as if `expected` were unset).
+    pub expected_cmd: Option<String>,
     /// A command that prints a failed check's steps and tests (for CI the board can't read itself).
     /// It gets TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD, TB_CHECK and TB_CHECK_URL, and prints JSON
     /// (`{"steps": [...], "tests": [...]}`) or one step per line (`test: <name>` for a test).

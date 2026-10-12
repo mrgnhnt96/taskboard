@@ -441,6 +441,8 @@ pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, Str
         Ok(r) => r,
         Err(e) => return Ok(Err(e)),
     };
+    note_expected(app, &t, &rec)?;
+    let t = board::get_task(app, id)?;
     gate(app, &t, &rec)?;
     let t = board::get_task(app, id)?;
     app.db.tx(|| step(app, &t, &rec))?;
@@ -500,11 +502,94 @@ pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
     str_list(&rec["failed"]).into_iter().filter(|c| !cleared.iter().any(|x| x.eq_ignore_ascii_case(c))).collect()
 }
 
-/// Expected checks (`[pr.projects.<name>] expected`) that haven't posted on this push.
+/// The checks a push is expected to post, and where that came from: `"command"` (the project's
+/// `expected_cmd`, its answer for this head) or `"list"` (`expected`). No checks: no word (the
+/// `no_checks_after_mins` grace), with the source still `"command"` when the command couldn't tell.
+pub struct Expected {
+    pub checks: Option<Vec<String>>,
+    pub source: Option<&'static str>,
+    /// Why the command couldn't tell, when it failed.
+    pub error: Option<String>,
+}
+
+/// What this push is expected to post: `expected_cmd`'s answer for its head once `note_expected` has it,
+/// else the project's `expected` list.
+pub fn expected_for(app: &App, t: &Row, rec: &Value) -> Expected {
+    let rules = crate::projects::pr_rules(app, t.s("project"));
+    let head = rec["head"].as_str().unwrap_or("");
+    let has_cmd = rules.expected_cmd.as_deref().is_some_and(|c| !c.trim().is_empty());
+    let f = flow(t);
+    if let Some(e) = f.get("expected_by_head").and_then(|m| m.get(head)).filter(|_| has_cmd && !head.is_empty()) {
+        let checks = e["checks"].as_array().map(|_| str_list(&e["checks"]));
+        return Expected { checks, source: Some("command"), error: e["error"].as_str().map(|s| s.to_string()) };
+    }
+    let source = rules.expected.is_some().then_some("list");
+    Expected { checks: rules.expected, source, error: None }
+}
+
+/// Expected checks (`[pr.projects.<name>] expected`, or `expected_cmd`'s answer for this push) that
+/// haven't posted on this push.
 pub fn expected_missing(app: &App, t: &Row, rec: &Value) -> Option<Vec<String>> {
-    let want = crate::projects::pr_rules(app, t.s("project")).expected?;
+    let want = expected_for(app, t, rec).checks?;
     let posted: Vec<String> = rec["checks"].as_array().cloned().unwrap_or_default().iter().filter_map(|c| c["name"].as_str().map(|s| s.to_lowercase())).collect();
     Some(want.into_iter().filter(|w| !posted.contains(&w.to_lowercase())).collect())
+}
+
+/// Runs the project's `expected_cmd` for a head it hasn't answered for yet and keeps the answer in the
+/// flow (`expected_by_head`). Outside any transaction: the command may take up to a minute.
+pub fn note_expected(app: &App, t: &Row, rec: &Value) -> Result<()> {
+    let Some(cmd) = crate::projects::pr_rules(app, t.s("project")).expected_cmd.filter(|c| !c.trim().is_empty()) else { return Ok(()) };
+    let head = rec["head"].as_str().unwrap_or("");
+    let Some(pr) = crate::prhost::PrRef::of(t) else { return Ok(()) };
+    if head.is_empty() || flow(t).get("expected_by_head").and_then(|m| m.get(head)).is_some() {
+        return Ok(());
+    }
+    let ctx = board::task_context(t);
+    let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
+    let mut env: Vec<(String, String)> = [
+        ("TB_PR_URL", pr.url.clone()),
+        ("TB_PR_REPO", pr.repo.clone()),
+        ("TB_PR_NUM", pr.num.to_string()),
+        ("TB_HEAD", head.to_string()),
+        ("TB_BASE", rec["base"].as_str().unwrap_or("").to_string()),
+        ("TB_BRANCH", rec["branch"].as_str().unwrap_or("").to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    if let Some(w) = &wt {
+        env.push(("TB_WORKTREE".into(), w.clone()));
+    }
+    let cmd = crate::util::expand_home(cmd.trim()).to_string_lossy().to_string();
+    let ran = crate::proc::run_with(Path::new("/bin/sh"), &["-c".into(), cmd], wt.as_deref().map(Path::new), 60.0, &env, None);
+    let (checks, error) = match ran {
+        Ok(o) if o.code == Some(0) => match parse_expected(&o.stdout) {
+            Ok(c) => (c, None),
+            Err(e) => (None, Some(e)),
+        },
+        Ok(o) => (None, Some(format!("expected_cmd failed: {}", o.stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("no output")))),
+        Err(_) => (None, Some("expected_cmd didn't finish in 60 seconds".to_string())),
+    };
+    let entry = json!({"checks": checks, "error": error, "at": now_iso()});
+    // Read the flow again: the command ran outside the transaction.
+    app.db.tx(|| {
+        let mut all = flow(&board::get_task(app, t.id())?).get("expected_by_head").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        all.insert(head.to_string(), entry.clone());
+        merge_flow(app, t.id(), fields!["expected_by_head" => Value::Object(all)]).map(|_| ())
+    })
+}
+
+/// `expected_cmd`'s output: a JSON list of check names (`[]`: none), or null or nothing (can't tell).
+pub fn parse_expected(out: &str) -> std::result::Result<Option<Vec<String>>, String> {
+    let out = out.trim();
+    if out.is_empty() {
+        return Ok(None);
+    }
+    match serde_json::from_str::<Value>(out) {
+        Ok(Value::Null) => Ok(None),
+        Ok(v @ Value::Array(_)) if v.as_array().is_some_and(|a| a.iter().all(|x| x.is_string())) => Ok(Some(str_list(&v))),
+        _ => Err(format!("expected_cmd printed something other than a JSON list of check names: {}", out.lines().next().unwrap_or(""))),
+    }
 }
 
 /// The base branch moved since this push was first seen.
@@ -1003,6 +1088,7 @@ pub fn refresh(app: &App) -> Result<i64> {
     for t in tasks {
         match read(app, &t) {
             Ok(rec) => {
+                note_expected(app, &t, &rec)?;
                 gate(app, &board::get_task(app, t.id())?, &rec)?;
                 let t = board::get_task(app, t.id())?;
                 if app.db.tx(|| step(app, &t, &rec))? {

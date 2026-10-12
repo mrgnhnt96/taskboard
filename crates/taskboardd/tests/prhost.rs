@@ -357,6 +357,89 @@ fn an_empty_expected_list_doesn_t_wait() {
     assert_eq!(b.phase(id), "review", "no checks and none expected: no grace wait");
 }
 
+/// An `expected_cmd` that answers by head (h1: build and E2E; h2: none; h3: can't tell; h4: fails) and
+/// counts its runs in `runs`.
+fn expected_cmd_board() -> (Board, tempfile::TempDir) {
+    let runs = tempfile::tempdir().unwrap();
+    let log = runs.path().join("runs").to_string_lossy().to_string();
+    let b = board_with(|c| {
+        let cmd = format!("echo \"$TB_HEAD $TB_BASE $TB_BRANCH $TB_PR_NUM\" >> '{log}'; ") + "case $TB_HEAD in h1) echo '[\"build\", \"E2E\"]';; h2) echo '[]';; h3) echo null;; *) echo nope >&2; exit 3;; esac";
+        c.pr.projects.insert(
+            "webapp".into(),
+            PrProject { expected: Some(vec!["lint".into()]), expected_cmd: Some(cmd), expected_wait_mins: Some(30.0), ..Default::default() },
+        );
+    });
+    (b, runs)
+}
+
+#[test]
+fn expected_cmd_says_per_push_which_checks_hold_the_stage() {
+    let (b, runs_dir) = expected_cmd_board();
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "h1 expects e2e, which hasn't posted");
+    poll(&b);
+    let runs = std::fs::read_to_string(runs_dir.path().join("runs")).unwrap();
+    assert_eq!(runs, "h1 main feat 9\n", "run once per head, with the PR's env");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!(live["expected"]["checks"], json!(["build", "E2E"]));
+    assert_eq!(live["expected"]["source"], "command");
+    assert_eq!(live["expected_missing"], json!(["E2E"]));
+    h.rec.lock().checks.push(check("e2e", "passed"));
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    // h2 starts no pipeline: it doesn't wait, not even for the fixed list's lint.
+    {
+        let mut r = h.rec.lock();
+        r.head = "h2".into();
+        r.checks.clear();
+    }
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "[]: none expected, no grace wait");
+    // h3 can't tell: the no_checks_after grace, as with no list.
+    h.rec.lock().head = "h3".into();
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "null: nothing posted yet, within the grace");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert!(live["expected"]["checks"].is_null());
+    assert_eq!(live["expected"]["source"], "command");
+    h.rec.lock().checks.push(check("build", "passed"));
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "can't tell: whatever posted counts");
+    // h4's command fails: can't tell too, with why.
+    h.rec.lock().head = "h4".into();
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert!(live["expected"]["checks"].is_null());
+    assert!(live["expected"]["error"].as_str().unwrap().contains("nope"), "{live}");
+    let runs = std::fs::read_to_string(runs_dir.path().join("runs")).unwrap();
+    assert_eq!(runs.lines().count(), 4, "once per head: {runs}");
+}
+
+#[test]
+fn expected_cmd_checks_wait_out_expected_wait_mins() {
+    let (b, _runs) = expected_cmd_board();
+    let id = b.pr_task(BB);
+    fake(&b, green());
+    poll(&b);
+    assert_eq!(b.phase(id), "checks");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 31.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "review", "E2E never posted within the 30 minutes");
+}
+
+#[test]
+fn expected_cmd_output_parses_as_a_list_or_can_t_tell() {
+    assert_eq!(prflow::parse_expected("[\"a\", \"b\"]\n"), Ok(Some(vec!["a".into(), "b".into()])));
+    assert_eq!(prflow::parse_expected("[]"), Ok(Some(vec![])));
+    assert_eq!(prflow::parse_expected("null"), Ok(None));
+    assert_eq!(prflow::parse_expected("  \n"), Ok(None));
+    assert!(prflow::parse_expected("build").is_err());
+    assert!(prflow::parse_expected("[1]").is_err());
+}
+
 #[test]
 fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the_merge() {
     let b = board_with(|c| {

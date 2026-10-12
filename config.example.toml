@@ -92,7 +92,12 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # [pr.projects.webapp]
 # approvals = 2                       # approvals needed before it's ready to merge (unset: pr.approvals; 0: the host's decision)
 # expected = ["build", "test"]        # checks that must post on every push ([] = don't wait; unset = the no_checks_after_mins grace)
-# expected_wait_mins = 90             # how long to wait for them
+# expected_wait_mins = 90             # how long to wait for them (for expected_cmd's checks too)
+# expected_cmd = "~/bin/push-checks"  # says per push which checks it starts, for pipelines with path filters: run with
+#                                     # /bin/sh -c once per new head with TB_PR_URL, TB_PR_REPO, TB_PR_NUM, TB_HEAD,
+#                                     # TB_BASE, TB_BRANCH and TB_WORKTREE (when there is one). It prints a JSON list
+#                                     # of check names, which takes the place of `expected` for that push ([] = none);
+#                                     # null, nothing or a non-zero exit = can't tell (as if `expected` were unset)
 # failures_cmd = "~/bin/ci-failures"  # prints a failed check's steps and tests for CI the board can't read (see docs/API.md)
 # merge_strategy = "squash"           # how tb pr merge merges (unset: the repository's default)
 # ask_stage = true                    # the ask stage for this project (unset: [reviewers] ask_stage; tb project set --ask-stage)
