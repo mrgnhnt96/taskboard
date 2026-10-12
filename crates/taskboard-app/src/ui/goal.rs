@@ -136,7 +136,7 @@ fn stage_tone(phase: &str) -> &'static str {
 }
 
 /// `prOpen`: a PR with no state counts as open.
-fn pr_open(pr: &Value) -> bool {
+pub(crate) fn pr_open(pr: &Value) -> bool {
     fmt::opt_s(pr, "state").unwrap_or("OPEN").eq_ignore_ascii_case("open")
 }
 

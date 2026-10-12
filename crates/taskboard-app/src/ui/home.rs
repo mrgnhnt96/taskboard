@@ -290,7 +290,8 @@ pub fn tile_vm(c: &Value) -> Tile {
         "working" => ("Working", "working", busy(c)),
         "queued" if b(c, "starting") => ("Starting", "working", opt_s(c, "waiting").unwrap_or("Opening a terminal").to_string()),
         "queued" => ("Queued", "queued", opt_s(c, "waiting").unwrap_or("When a terminal is free").to_string()),
-        "done" if pr.is_some() => {
+        // A merged or closed PR has nothing left to wait on: the task is plain Done.
+        "done" if pr.is_some_and(crate::ui::goal::pr_open) => {
             let p = pr.unwrap_or(&Value::Null);
             let stage = obj(p, "stage");
             let label = stage.map(|st| s(st, "label")).filter(|l| !l.is_empty());
@@ -961,6 +962,14 @@ mod tests {
         assert_eq!((t.status.as_str(), t.line.as_str()), ("In review", "PR #119 · 1 of 2 approved"));
         assert_eq!(tile_vm(&pr(0, json!(2))).line, "PR #119", "none yet");
         assert_eq!(tile_vm(&pr(1, Value::Null)).line, "PR #119", "no count: the host decides");
+    }
+
+    #[test]
+    fn a_merged_pr_tile_is_done_not_in_review() {
+        let merged = tile_vm(&card(json!({"status": "done", "pr": {"num": 195, "state": "MERGED", "stage": {"phase": "review"}}})));
+        assert_eq!((merged.status.as_str(), merged.tone), ("Done", "up"));
+        let closed = tile_vm(&card(json!({"status": "done", "pr": {"num": 195, "state": "CLOSED"}})));
+        assert_eq!(closed.status, "Done");
     }
 
     #[test]
