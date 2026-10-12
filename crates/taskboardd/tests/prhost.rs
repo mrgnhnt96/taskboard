@@ -226,6 +226,24 @@ fn an_agent_can_t_merge_when_the_owner_merges() {
 }
 
 #[test]
+fn the_owners_word_in_the_terminal_merges_one_pr_and_its_approved_counts() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    let said = |p: &str| b.report("hook.prompt", "s1", json!({"prompt": p}));
+    let merge = || b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true, "via_session": "s1"}));
+    said("merge PR #12");
+    assert!(merge().unwrap_err().contains("merges this project's PRs"), "another PR's word");
+    said("merge PR #9");
+    assert!(merge().unwrap_err().contains("approv"), "the word allows the merge, not a missing approval");
+    said("merge PR #9, approved");
+    merge().unwrap();
+    assert!(h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
 fn a_project_with_no_review_step_and_agents_merge_on_merges_without_anyone() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);
