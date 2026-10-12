@@ -14,7 +14,8 @@ fn schema() -> Value {
         "ok": {"type": "boolean"}, "error": s, "key": s, "status": s, "found": {"type": "boolean"}, "product": s,
         "author": s, "author_account_id": s, "author_email": s, "text": s,
         "comments": {"type": "array", "items": {"type": "object", "properties": {
-            "key": s, "id": s, "created": s, "author": s, "author_account_id": s, "author_email": s, "text": s}}}}})
+            "key": s, "id": s, "created": s, "author": s, "author_account_id": s, "author_email": s, "text": s}}},
+        "statuses": {"type": "array", "items": {"type": "object", "properties": {"key": s, "status": s, "status_category": s}}}}})
 }
 
 /// The `cloudId` the connector's tools take: `[jira] cloud_id`, else the site's host name.
@@ -68,16 +69,28 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
         }
         "comment" => format!("Add this comment to {key}, as it is:\n{}", s("comment")),
         "create" => format!("{}\n\nAnswer key: the ticket's key, status: its status's name, found: true when it was already there, product: the product you picked (if you picked one).", s("brief")),
-        "comments" => format!(
-            "Make exactly one JQL search, with this query as it is: {}\nThen, for each ticket it finds, read its comments with {} \
-             (getJiraIssue doesn't return them), and keep the ones created at or after {} (it's {} UTC now; none is fine). Don't \
-             read any other ticket. Answer comments: one each, with key, id (the comment's id), created (its ISO time), author \
-             (display name), author_account_id, author_email (when shown) and text (the comment as plain text).",
-            s("jql"),
-            comments_read(app, "<its key>"),
-            s("after"),
-            s("now")
-        ),
+        "comments" => {
+            // QA's check: the comments and, with `statuses` (the jira source in board mode), each ticket's status.
+            let mut t = format!("Make exactly one JQL search, with this query as it is: {}\n", s("jql"));
+            if input["comments"] != false {
+                t += &format!(
+                    "Then, for each ticket it finds, read its comments with {} (getJiraIssue doesn't return them), and keep the \
+                     ones created at or after {} (it's {} UTC now; none is fine). Don't read any other ticket. Answer comments: \
+                     one each, with key, id (the comment's id), created (its ISO time), author (display name), \
+                     author_account_id, author_email (when shown) and text (the comment as plain text).",
+                    comments_read(app, "<its key>"),
+                    s("after"),
+                    s("now")
+                );
+            } else {
+                t += "Don't read any ticket's comments, or any other ticket.";
+            }
+            if input["statuses"] == true {
+                t += " Answer statuses: one for each ticket the search finds, with key, status (its status's name, from the \
+                      search) and status_category (its status category's key: new, indeterminate or done).";
+            }
+            t
+        }
         "comment_get" => format!(
             "Read comment {id} on {key}: list its comments with {} (getJiraIssue doesn't return them) and take the one whose id is \
              {id}. Answer author (display name), author_account_id, author_email (when shown) and text (the comment as plain text).",

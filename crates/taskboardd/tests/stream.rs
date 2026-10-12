@@ -168,7 +168,7 @@ fn each_event_is_answered_on_its_own_and_kept_once() {
 }
 
 #[test]
-fn review_comment_and_jira_issue_events_are_kept_for_later() {
+fn review_comment_and_jira_issue_events_are_kept() {
     let b = board();
     let pr = json!({"provider": "bitbucket", "repo": "acme/webapp", "num": 9});
     let r = b.send(batch(vec![
@@ -179,9 +179,10 @@ fn review_comment_and_jira_issue_events_are_kept_for_later() {
     ]));
     assert_eq!(r["accepted"], 3, "{r}");
     for id in ["r1", "c1", "j1"] {
-        let kept = b.kept(id).unwrap();
-        assert_eq!(kept.i("complete"), Some(1));
-        assert_eq!(kept.st("result"), "null");
+        assert_eq!(b.kept(id).unwrap().i("complete"), Some(1));
+    }
+    for id in ["r1", "c1"] {
+        assert_eq!(b.kept(id).unwrap().st("result"), "null");
     }
 }
 
@@ -364,4 +365,96 @@ fn a_stream_mode_source_s_poll_rests_while_its_stream_is_healthy() {
     b.feed_state("qa", json!({"since": ago(10.0)}));
     assert!(!feed::poll_rests(&b.app, "qa"));
     assert_eq!(b.source("qa")["polling"], true);
+}
+
+// --- jira.issue (#78) ---
+
+fn jira_ev(id: &str, key: &str, status: &str, category: &str, by: &str) -> Value {
+    ev(id, "jira.issue", json!({"key": key, "status": status, "status_category": category, "assignee": "me", "changed_by": by}))
+}
+
+impl Board {
+    fn ticket_task(&self, key: &str, jira_status: &str) -> i64 {
+        let id = self.post("/tasks", json!({"title": "Ticketed", "detail": "Do it.", "project": "webapp"}))["id"].as_i64().unwrap();
+        board::update_task(&self.app, id, taskboardd::fields!["jira_key" => key, "jira_status" => jira_status]).unwrap();
+        id
+    }
+    fn log(&self, id: i64) -> String {
+        self.get(&format!("/tasks/T{id}/log")).to_string()
+    }
+    fn alerts(&self) -> Vec<Value> {
+        taskboardd::dispatch::alerts(&self.app)
+    }
+}
+
+#[test]
+fn a_jira_issue_event_updates_the_task_epic_or_issue_with_its_key() {
+    let b = board();
+    let t = b.ticket_task("PROJ-7", "In Progress");
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE goals SET epic_key = 'PROJ-1', epic_status = 'To Do' WHERE id = ?", taskboardd::p![g]).unwrap();
+    let i = b.app.db.insert("issues", taskboardd::fields!["kind" => "bug", "title" => "Grey button", "project" => "webapp", "jira_key" => "PROJ-9"]).unwrap();
+
+    let r = b.send(batch(vec![
+        jira_ev("j1", "proj-7", "In Review", "indeterminate", "Sam Lee"),
+        jira_ev("j2", "PROJ-1", "In Progress", "indeterminate", "Pat"),
+        jira_ev("j3", "PROJ-9", "Selected", "new", ""),
+        jira_ev("j4", "PROJ-404", "Done", "done", "Sam Lee"),
+    ]));
+    assert_eq!(r["accepted"], 4, "{r}");
+    assert_eq!(board::get_task(&b.app, t).unwrap().st("jira_status"), "In Review");
+    assert!(b.log(t).contains("Sam Lee moved PROJ-7 to In Review"), "{}", b.log(t));
+    let goal = b.app.db.q1("SELECT epic_status FROM goals WHERE id = ?", taskboardd::p![g]).unwrap().unwrap();
+    assert_eq!(goal.st("epic_status"), "In Progress");
+    let issue = b.app.db.q1("SELECT jira_status FROM issues WHERE id = ?", taskboardd::p![i]).unwrap().unwrap();
+    assert_eq!(issue.st("jira_status"), "Selected");
+    let e = b.app.db.q1("SELECT who, text FROM issue_events WHERE issue_id = ? AND kind = 'jira'", taskboardd::p![i]).unwrap().unwrap();
+    assert_eq!((e.st("who").as_str(), e.st("text").as_str()), ("Jira", "PROJ-9 moved to Selected"));
+    assert!(b.kept("j4").unwrap().st("result").contains("\"tasks\":[]"), "an unknown key is kept and matches nothing");
+    assert!(b.alerts().is_empty(), "no task changed its done-ness");
+
+    b.send(batch(vec![jira_ev("j5", "PROJ-7", "In Review", "indeterminate", "Sam Lee")]));
+    assert_eq!(b.log(t).matches("moved PROJ-7").count(), 1, "the same status again isn't logged twice");
+}
+
+#[test]
+fn a_status_the_board_just_moved_the_ticket_to_is_skipped() {
+    let b = board();
+    let t = b.ticket_task("PROJ-7", "In Progress");
+    taskboardd::jira::request(&b.app, "transition", t, "PROJ-7", Some("In Review"), None).unwrap();
+    let r = b.send(batch(vec![jira_ev("j1", "PROJ-7", "In Review", "indeterminate", "Morgan")]));
+    assert_eq!(r["accepted"], 1, "{r}");
+    assert!(b.kept("j1").unwrap().st("result").contains("the board moved it"));
+    assert!(!b.log(t).contains("moved PROJ-7"), "{}", b.log(t));
+
+    b.send(batch(vec![jira_ev("j2", "PROJ-7", "Blocked", "indeterminate", "Sam")]));
+    assert_eq!(board::get_task(&b.app, t).unwrap().st("jira_status"), "Blocked", "another status is someone else's move");
+
+    b.app.db.x("UPDATE jobs SET updated_at = ?", taskboardd::p![ago(3600.0)]).unwrap();
+    b.send(batch(vec![jira_ev("j3", "PROJ-7", "In Review", "indeterminate", "Sam")]));
+    assert!(b.log(t).contains("Sam moved PROJ-7 to In Review"), "an old board move doesn't hide a new one");
+}
+
+#[test]
+fn a_ticket_done_under_an_open_task_or_reopened_under_a_done_one_raises_an_alert() {
+    let b = board();
+    let open = b.ticket_task("PROJ-7", "In Progress");
+    b.send(batch(vec![jira_ev("j1", "PROJ-7", "Done", "done", "Sam")]));
+    let task = board::get_task(&b.app, open).unwrap();
+    assert_ne!(task.st("status"), "done", "the task isn't changed");
+    assert_eq!(task.st("jira_status"), "Done");
+    let alerts = b.alerts();
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert!(alerts[0]["text"].as_str().unwrap().contains(&format!("Sam moved PROJ-7 to Done, but T{open} is still open")), "{alerts:?}");
+
+    let done = b.ticket_task("PROJ-8", "Done");
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", taskboardd::p![done]).unwrap();
+    b.send(batch(vec![jira_ev("j2", "PROJ-8", "In Progress", "indeterminate", "Pat")]));
+    assert_eq!(board::get_task(&b.app, done).unwrap().st("status"), "done");
+    let alerts = b.alerts();
+    assert_eq!(alerts.len(), 2, "{alerts:?}");
+    assert!(alerts.iter().any(|a| a["text"].as_str().unwrap().contains(&format!("reopening it, but T{done} is done"))), "{alerts:?}");
+
+    b.send(batch(vec![jira_ev("j3", "PROJ-8", "In Review", "indeterminate", "Pat")]));
+    assert_eq!(b.alerts().len(), 2, "moving between open statuses isn't a reopen");
 }

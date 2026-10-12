@@ -181,6 +181,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "grp", "TEXT"),
     ("issues", "grp_about", "TEXT"),
     ("issues", "grouped_at", "TEXT"),
+    ("issues", "jira_status", "TEXT"),
     ("tasks", "wave", "INT"),
     ("tasks", "origin", "TEXT"),
     ("tasks", "locks", "TEXT"),

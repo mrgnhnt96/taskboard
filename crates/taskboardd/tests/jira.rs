@@ -176,6 +176,40 @@ fn qa_checks_jira_through_claude_with_one_batched_search() {
 }
 
 #[test]
+fn in_board_mode_the_qa_poll_also_reads_open_tickets_statuses() {
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        fake_claude(c, d);
+    });
+    let open = b.new_task(json!({}));
+    board::update_task(&b.app, open, fields!["jira_key" => "PROJ-7", "jira_status" => "In Progress"]).unwrap();
+    let done = b.new_task(json!({}));
+    board::update_task(&b.app, done, fields!["jira_key" => "PROJ-8", "status" => "done"]).unwrap();
+    b.answer(json!({"ok": true, "comments": [], "statuses": [
+        {"key": "PROJ-7", "status": "Blocked", "status_category": "indeterminate"},
+        {"key": "PROJ-99", "status": "Done", "status_category": "done"},
+    ]}));
+    assert_eq!(taskboardd::qa::poll(&b.app).unwrap(), 0, "QA is off: statuses only");
+    let args = b.claude_args();
+    assert!(args.contains("key in (PROJ-7) AND updated >= -"), "open tasks' tickets only: {args}");
+    assert!(args.contains("Answer statuses") && args.contains("Don't read any ticket's comments"), "{args}");
+    assert_eq!(b.task(open).st("jira_status"), "Blocked");
+    assert!(b.get(&format!("/tasks/T{open}/log")).to_string().contains("PROJ-7 moved to Blocked"));
+
+    // In stream mode with a healthy jira stream, the events carry statuses and the read rests.
+    let s = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        fake_claude(c, d);
+        c.stream.sources.insert("jira".into(), taskboardd::stream::SourceConfig { mode: "stream".into(), ..Default::default() });
+    });
+    let t = s.new_task(json!({}));
+    board::update_task(&s.app, t, fields!["jira_key" => "PROJ-7"]).unwrap();
+    s.app.db.set_setting("stream_feed_jira", Some(&json!({"since": taskboardd::util::iso(taskboardd::util::now_ts() - 10.0)}).to_string())).unwrap();
+    assert_eq!(taskboardd::qa::poll(&s.app).unwrap(), 0);
+    assert_eq!(s.claude_args(), "", "no Jira call");
+}
+
+#[test]
 fn rest_without_a_token_says_how_to_fix_it() {
     let b = board_with(|c, _| c.jira.keychain_item = String::new());
     let t = b.new_task(json!({"jira": {"mode": "link", "key": "PROJ-7"}}));

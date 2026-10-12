@@ -420,19 +420,26 @@ pub fn resolve(app: &App, c: &Row, action: &str, who: &str, note: Option<&str>, 
     }
 }
 
-/// Each runner tick: ask Jira for new comments every `qa_poll_mins` (not while the qa stream drives
-/// and is healthy), and retry comments that couldn't be read.
+/// What this check asks Jira for: comments (QA on, and not while the qa stream drives and is
+/// healthy) and ticket statuses (the jira source in board mode, or its stream stuck or silent).
+fn wanted(app: &App) -> (bool, bool) {
+    let comments = on(app) && !crate::feed::poll_rests(app, "qa");
+    let statuses = app.cfg.jira_on() && !crate::feed::poll_rests(app, "jira");
+    (comments, statuses)
+}
+
+/// Each runner tick: ask Jira for new comments and open tickets' statuses every `qa_poll_mins`
+/// (`wanted`), and retry comments that couldn't be read.
 pub fn tick(app: &App) -> Result<()> {
-    if !on(app) {
-        return Ok(());
-    }
-    for c in app.db.q("SELECT * FROM qa_comments WHERE verdict IS NULL AND tries < ?", p![TRIES])? {
-        let wait = if c.i0("tries") > 0 { age_secs(c.s("updated_at")).unwrap_or(0.0) < RETRY_SECS } else { age_secs(c.s("created_at")).unwrap_or(0.0) < 60.0 };
-        if !wait && !app.shared.lock().qa_reading.contains(&c.id()) {
-            read_later(app, c.id());
+    if on(app) {
+        for c in app.db.q("SELECT * FROM qa_comments WHERE verdict IS NULL AND tries < ?", p![TRIES])? {
+            let wait = if c.i0("tries") > 0 { age_secs(c.s("updated_at")).unwrap_or(0.0) < RETRY_SECS } else { age_secs(c.s("created_at")).unwrap_or(0.0) < 60.0 };
+            if !wait && !app.shared.lock().qa_reading.contains(&c.id()) {
+                read_later(app, c.id());
+            }
         }
     }
-    if crate::feed::poll_rests(app, "qa") {
+    if wanted(app) == (false, false) {
         return Ok(());
     }
     let checked = app.db.get_setting(CHECKED_KEY)?;
@@ -442,16 +449,23 @@ pub fn tick(app: &App) -> Result<()> {
     app.db.set_setting(CHECKED_KEY, Some(&now_iso()))?;
     app.queue_ai(Box::new(move |a: &App| {
         if let Err(e) = poll(a) {
-            a.info(format!("qa: couldn't check Jira for comments: {e}"));
+            a.info(format!("qa: couldn't check Jira for comments and statuses: {e}"));
         }
     }));
     Ok(())
 }
 
-/// Board tickets updated since the last check, and their comments left since QA was switched on.
+/// Board tickets updated since the last check: their comments left since QA was switched on, and
+/// (`wanted`) their statuses, which `jira_status` applies. Answers how many new comments came in.
 pub fn poll(app: &App) -> std::result::Result<usize, String> {
+    let (comments, statuses) = wanted(app);
+    if !comments && !statuses {
+        return Ok(0);
+    }
     let since = app.db.get_setting(SINCE_KEY).map_err(|e| e.message)?.unwrap_or_else(now_iso);
-    let cutoff = iso(now_ts() - WATCH_DAYS * 86400.0);
+    // Comments are watched on recently finished tasks' tickets too; a status read alone is open tasks'
+    // (no finish time is after "9999").
+    let cutoff = if comments { iso(now_ts() - WATCH_DAYS * 86400.0) } else { "9999".to_string() };
     let keys: Vec<String> = app
         .db
         .q(
@@ -467,10 +481,15 @@ pub fn poll(app: &App) -> std::result::Result<usize, String> {
         return Ok(0);
     }
     // Jira's JQL takes minutes, not seconds: look back a little past the last check.
-    let comments = jira::recent_comments(app, &keys, (app.cfg.qa_poll_secs() / 60.0) as i64 * 2 + 5)?;
+    let found = jira::recent(app, &keys, (app.cfg.qa_poll_secs() / 60.0) as i64 * 2 + 5, comments, statuses)?;
+    for st in &found.statuses {
+        if let Err(e) = crate::jira_status::apply(app, st) {
+            app.info(format!("jira: couldn't take {}'s status: {}", body_str(st, "key"), e.message));
+        }
+    }
     let since = parse_iso(&since).unwrap_or(0.0);
     let mut new = 0;
-    for cm in comments {
+    for cm in found.comments {
         let older = cm["created"].as_str().and_then(jira::comment_time).map(|t| t < since).unwrap_or(false);
         if older || is_owner(app, &cm["author"]) {
             continue;

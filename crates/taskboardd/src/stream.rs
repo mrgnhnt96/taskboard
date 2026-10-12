@@ -7,7 +7,8 @@
 //! Each event is checked on its own and answered on its own: `accepted`, `duplicate` (its `id` came
 //! before) or `rejected` with why. An accepted event is kept in `stream_events` (its whole payload, so
 //! later work can apply it) and routed: pr and build to the PR feed ([`feed::intake_from`]), heartbeat
-//! to each source it names, jira.comment to QA comments ([`qa::intake`]); every kind counts for its
+//! to each source it names, jira.issue to the ticket's task, epic or issue ([`crate::jira_status::apply`]),
+//! jira.comment to QA comments ([`qa::intake`]); every kind counts for its
 //! source's health. An event whose route refuses it is rejected and not kept, so the relay can send it
 //! again.
 //!
@@ -353,6 +354,10 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
             let hb = json!({"active": ev["active"], "idle_until": ev["idle_until"], "connected_at": ev["connected_at"]});
             app.db.tx(|| feed::heartbeat_for(app, &hb, &sources))?;
             Ok(json!({"sources": sources}))
+        }
+        "jira.issue" => {
+            feed::note_event_for(app, "jira", kind, ev, None)?;
+            crate::jira_status::apply(app, ev)
         }
         "jira.comment" => {
             feed::note_event_for(app, "qa", kind, ev, None)?;

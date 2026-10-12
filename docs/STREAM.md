@@ -114,7 +114,21 @@ doesn't count it as stuck or silent.
 | `build` | builds | the PR feed, as `POST /prs/event` does, and the owner's PR builds are run |
 | `heartbeat` | each in `sources` (all when left out) | that source's health, as `POST /prs/heartbeat` does for prs |
 | `jira.comment` | qa | QA comments, as `POST /jira/comment` does |
-| `review`, `comment`, `push`, `jira.issue` | prs, prs, builds, jira | the source's health; kept only, for now |
+| `jira.issue` | jira | the task, goal epic and backlog issue with that key, see below |
+| `review`, `comment`, `push` | prs, prs, builds | the source's health; kept only, for now |
+
+### Ticket statuses
+
+A `jira.issue` event, in either mode, sets the Jira status of every task, goal epic and backlog issue with that
+key, and logs who moved it (`changed_by`, else "Jira") in the task's or issue's log. A status that's already the
+stored one changes nothing. The board skips a status it caused itself: a Jira job in the last 15 minutes that
+moved that ticket to that status. It never changes a task: when an open task's ticket moves to done, or a done
+task's ticket is reopened, it raises an alert instead. Done means `status_category` is `done`, or, without one,
+a status named like `[jira] done`, `merged` or `canceled`, or Jira's usual done names (Done, Closed, Resolved…).
+
+With the jira source in board mode (or its stream stuck or silent), the QA poll's one JQL search
+(`updated >= -Nm`) also reads the statuses of open tasks' tickets and applies them the same way, so changes
+people make in Jira are seen without a stream. It runs whenever Jira is set up, even with QA off.
 
 ## Modes
 
