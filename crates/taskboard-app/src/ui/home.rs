@@ -332,6 +332,7 @@ pub fn tile_vm(c: &Value) -> Tile {
 pub struct GoalCard {
     /// None for a project's tasks outside any goal.
     pub r: Option<String>,
+    pub project: String,
     pub name: String,
     pub count: String,
     /// Done share, 0..1.
@@ -384,6 +385,7 @@ pub fn goal_card_vm(e: &Value) -> GoalCard {
     if g.is_null() {
         return GoalCard {
             r: None,
+            project: s(e, "project").to_string(),
             name: "Not in a goal".into(),
             count: String::new(),
             done: 0.,
@@ -398,6 +400,7 @@ pub fn goal_card_vm(e: &Value) -> GoalCard {
     let (total, done) = (i(g, "total"), i(g, "done"));
     GoalCard {
         r: Some(fmt::ref_of(g, "G")),
+        project: s(e, "project").to_string(),
         name: s(g, "name").to_string(),
         count: format!("{done} of {total} done"),
         done: if total > 0 { done as f32 / total as f32 } else { 0. },
@@ -452,7 +455,7 @@ pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
 
 // ================================================================== render
 
-/// The header over the Board, Backlog, Days and Sessions pages in place of the sidebar: the brand
+/// The header over the Board, Tasks, Backlog, Days and Sessions pages in place of the sidebar: the brand
 /// and those pages as tabs. It is the window's title bar too (drag to move, double click to zoom),
 /// clear of the traffic lights.
 pub fn header(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -508,6 +511,7 @@ pub fn header(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyEle
                 // A press on the tabs is a click, not a window drag.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(tab("tab-board", "Board", Page::Board, page == Page::Board))
+                .child(tab("tab-tasks", "Tasks", Page::Tasks, page == Page::Tasks))
                 .child(tab("tab-backlog", "Backlog", Page::Backlog, page == Page::Backlog))
                 .child(tab("tab-days", "Days", Page::Days, page == Page::Days))
                 .child(tab("tab-sessions", "Sessions", Page::Sessions, page == Page::Sessions)),
@@ -758,7 +762,18 @@ fn goal_card(t: &Theme, c: &GoalCard, w: f32, cx: &mut Context<MainWindow>) -> D
                     .child(c.count.clone()),
             );
     } else {
-        title = title.child(div().text_size(px(15.5)).font_weight(FontWeight::BOLD).child(c.name.clone()));
+        let project = c.project.clone();
+        title = title.child(
+            div()
+                .id(SharedString::from(format!("loose-{}", c.project)))
+                .text_size(px(15.5))
+                .font_weight(FontWeight::BOLD)
+                .line_height(relative(1.25))
+                .cursor_pointer()
+                .hover(|s| s.underline())
+                .on_click(cx.listener(move |m, _, _, cx| crate::ui::tasks::open_for(m, &project, cx)))
+                .child(c.name.clone()),
+        );
     }
     head = head.child(title);
     if let Some((label, tone)) = &c.state {
@@ -772,11 +787,12 @@ fn goal_card(t: &Theme, c: &GoalCard, w: f32, cx: &mut Context<MainWindow>) -> D
         card = card.child(tiles(t, c.left_label.clone(), &c.left, tile_w, cx));
     }
     if let Some(q) = &c.queued {
-        let link = kit::link(t, SharedString::from(format!("queued-{}", c.r.clone().unwrap_or_else(|| c.name.clone()))), q.clone()).text_size(px(12.5));
-        card = card.child(match c.r.clone() {
-            Some(g) => link.on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(g.clone()), cx))).into_any_element(),
-            None => div().text_size(px(12.5)).text_color(t.muted).child(q.clone()).into_any_element(),
-        });
+        let link = kit::link(t, SharedString::from(format!("queued-{}", c.r.clone().unwrap_or_else(|| format!("loose-{}", c.project)))), q.clone()).text_size(px(12.5));
+        let (goal, project) = (c.r.clone(), c.project.clone());
+        card = card.child(link.on_click(cx.listener(move |m, _, _, cx| match &goal {
+            Some(g) => m.go(Page::Goal(g.clone()), cx),
+            None => crate::ui::tasks::open_for(m, &project, cx),
+        })));
     }
     card
 }
