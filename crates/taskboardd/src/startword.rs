@@ -1211,6 +1211,14 @@ pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
     }
+    let prompts = prompts_of(app, sid)?;
+    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    Ok(word_in_own(&prompts, id, own).map(|i| prompts[i].text.clone()))
+}
+
+/// The prompts of terminal `sid` since its Claude conversation began, newest first, each with the end of
+/// the agent's message before it and the tasks made in reply to it.
+fn prompts_of(app: &App, sid: &str) -> Result<Vec<Prompt>> {
     // Every prompt (the board's too, so a task made in reply to one isn't put on the prompt before it)
     // and every task the conversation made, oldest first.
     let rows = app.db.q(
@@ -1236,8 +1244,96 @@ pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
         }
     }
     prompts.reverse();
+    Ok(prompts)
+}
+
+/// The words for a merge ("merge", "land", "squash and merge").
+const MERGE_VERB: &str = r"(?:squash\s+and\s+merge|squash[- ]merge|merge|land)";
+/// The PR a merge ask doesn't name: "it", "this", "the PR".
+const UNNAMED_PR: &str = r"(?:(?:the|this|that|your|its)\s+(?:pr|pull\s+request)|it|this|that)";
+/// Merges of a task's PR (`tb pr merge`), read with its PR named as the task ([`as_task_refs`]): "merge
+/// T8", "merge it", "land the PR", "get it merged".
+pub static MERGES: Lazy<Kind> = Lazy::new(|| {
+    let on = format!(
+        r"(?:\b{MERGE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_PR}))|\bget\s+(?:(?P<named6>{NAMED})|(?P<unnamed6>{UNNAMED_PR}))\s+(?:merged|landed|in\b))"
+    );
+    Kind { ask: Regex::new(&format!(r"(?i){EDGE}\s*{LEAD}{on}{TAIL}")).unwrap(), mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
+});
+/// A PR named by its number: "PR #194", "the PR 194", "pull request 194", "#194".
+static PR_REF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)(?:\b(?:the|this|that)\s+)?\b(?:pr|pull\s+request)\s*#?\s*(\d+)\b|\B#(\d+)\b").unwrap());
+/// The owner approving the PR ("approved", "I approve it", "lgtm").
+static APPROVED_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:approved|i\s+approve|approve\s+(?:it|this|that|the\s+pr)|lgtm|looks\s+good\s+to\s+me)\b").unwrap());
+
+/// The PR numbers `text` names.
+fn prs_in(text: &str) -> Vec<i64> {
+    PR_REF_RE.captures_iter(text).filter_map(|c| c.get(1).or(c.get(2))?.as_str().parse().ok()).collect()
+}
+
+/// `text` with PR #`num` named as task `id`, and every other PR as `T0`, a task that isn't one.
+fn as_task_refs(text: &str, id: i64, num: i64) -> String {
+    PR_REF_RE
+        .replace_all(text, |c: &regex::Captures| {
+            let n: i64 = c.get(1).or(c.get(2)).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            format!("T{}", if n == num { id } else { 0 })
+        })
+        .into_owned()
+}
+
+/// Whether `text` approves the PR, in a clause that doesn't say no and a sentence that doesn't ask.
+fn approves(text: &str) -> bool {
+    let own = owners_text(text);
+    SENTENCE_RE.captures_iter(&own).any(|c| {
+        let Some(s) = c.name("s").map(|m| m.as_str()) else { return false };
+        let asked = c.name("end").is_some_and(|m| m.as_str().contains('?'));
+        !asked
+            && APPROVED_RE.find_iter(s).any(|m| {
+                let from = clauses(s).into_iter().find(|(a, b)| *a <= m.start() && m.start() < *b).map_or(0, |(a, _)| a);
+                negs_in(&s[from..m.start()]).is_empty()
+            })
+    })
+}
+
+/// The owner's word to merge one PR: the prompt, and whether it approves the PR too ("get it merged,
+/// approved"), which stands in for the approval the author's own account can't give.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeWord {
+    pub text: String,
+    pub approved: bool,
+}
+
+/// Which prompt, newest first, is the word to merge task `id`'s PR #`num`, read as [`word_in`] reads a
+/// start: the latest prompt that speaks of the merge decides, and a no, a question, a time or condition
+/// ("merge it once CI is green") or a take-back is no word. An unnamed "merge it" means this PR when the
+/// agent's message just before it names this PR and no other, or, in the latest prompt, when the
+/// terminal's task is `id` (`own`) and that message names no PR.
+pub fn merge_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
+    for (i, p) in prompts.iter().enumerate() {
+        if p.boards() {
+            continue;
+        }
+        let r = read_of(&MERGES, &as_task_refs(&p.text, id, num));
+        let named = p.reply.as_deref().map(prs_in).unwrap_or_default();
+        let unnamed = |a: &Ask| *a == Ask::Unnamed && if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) };
+        match r.word_for(id, unnamed) {
+            Some(true) if p.clipped => {}
+            Some(true) => return Some(i),
+            Some(false) => return None,
+            None => {}
+        }
+    }
+    None
+}
+
+/// The owner's word in terminal `sid` to merge task `id`'s PR #`num`, if there's one ([`merge_word_in`]).
+pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<MergeWord>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    let prompts = prompts_of(app, sid)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
-    Ok(word_in_own(&prompts, id, own).map(|i| prompts[i].text.clone()))
+    Ok(merge_word_in(&prompts, id, num, own).map(|i| MergeWord { text: prompts[i].text.clone(), approved: approves(&prompts[i].text) }))
 }
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
@@ -3257,5 +3353,33 @@ mod tests {
         assert_eq!(asked_tasks_past_choice("Want me to start T8 now? Or should I wait?", 8), [8]);
         assert!(asks_to_run("Ready for G4?", 4, false, false));
         assert!(asks_to_run("Should I run G4? Also, do you want me to update the docs?", 4, false, false));
+    }
+
+    #[test]
+    fn the_owners_word_merges_one_pr() {
+        let after = |reply: &str, text: &str| vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }];
+        let linked = "T89 is marked done again, linked to PR #194.";
+        // How it was found: in T89's terminal, on T95's PR #194.
+        assert_eq!(merge_word_in(&after(linked, "Get it merged, approved"), 95, 194, false), Some(0));
+        assert!(approves("Get it merged, approved"));
+        for ask in ["merge PR #194", "merge #194", "please merge pull request 194", "land T95", "squash and merge the PR", "ok, merge it"] {
+            assert_eq!(merge_word_in(&after(linked, ask), 95, 194, false), Some(0), "{ask}");
+        }
+        for no in ["don't merge it", "merge it once CI is green", "should I merge it?", "merge PR #200", "merge it tomorrow", "merge it. jk", "the PR merged", "rebase it"] {
+            assert_eq!(merge_word_in(&after(linked, no), 95, 194, false), None, "{no}");
+        }
+        // "It" with no PR to mean: the terminal's own task, and only that.
+        assert_eq!(merge_word_in(&prompts(&["merge it"], None), 95, 194, true), Some(0));
+        assert_eq!(merge_word_in(&prompts(&["merge it"], None), 95, 194, false), None);
+        assert_eq!(merge_word_in(&after("PR #194 and PR #196 are green.", "merge it"), 95, 194, true), None, "two PRs: no telling which");
+        // The latest prompt on the merge decides; a board prompt is no one's word.
+        assert_eq!(merge_word_in(&prompts(&["thanks", "merge #194"], None), 95, 194, false), Some(1));
+        assert_eq!(merge_word_in(&prompts(&["hold off on merging, actually don't merge it", "merge #194"], None), 95, 194, false), None);
+        assert_eq!(merge_word_in(&prompts(&["[task-board:T95] merge PR #194"], None), 95, 194, false), None);
+        // The approval is the owner's only when said plainly.
+        assert!(!approves("merge it"));
+        assert!(!approves("merge it, it isn't approved yet"));
+        assert!(!approves("is it approved?"));
+        assert!(approves("lgtm, merge it"));
     }
 }

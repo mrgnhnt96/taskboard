@@ -182,8 +182,9 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     after(app, id, json!({"asked": asked}))
 }
 
-/// Why the PR can't merge right now (empty: it can). Checks the record as just read.
-pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
+/// Why the PR can't merge right now (empty: it can). Checks the record as just read. `owner_approved`: the
+/// owner's word to merge it approves it too, which stands in for the approvals it needs.
+pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> Result<Vec<String>> {
     let f = flow(t);
     let mut out = vec![];
     let state = rec["state"].as_str().unwrap_or("OPEN").to_uppercase();
@@ -221,7 +222,7 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value) -> Result<Vec<String>> {
         if review.changes {
             let who: Vec<String> = review.requesters.iter().map(|(u, n)| if n.is_empty() { u.clone() } else { n.clone() }).collect();
             out.push(if who.is_empty() { "a reviewer asked for changes".into() } else { format!("{} asked for changes", who.join(", ")) });
-        } else if !prflow::approved(app, t, &review) {
+        } else if !owner_approved && !prflow::approved(app, t, &review) {
             out.push(match prflow::approvals_needed(app, t) {
                 Some(n) => format!("it has {} of the {n} approval{} it needs", review.approvals, if n == 1 { "" } else { "s" }),
                 None => "it isn't approved".into(),
@@ -261,12 +262,23 @@ fn stacked_base(app: &App, t: &Row, rec: &Value) -> Result<Option<String>> {
 
 /// `tb pr merge`: checks the PR once more through its host, then merges it and deletes its branch.
 pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
-    if as_bool(body.get("agent"), false) && !prflow::agents_merge_on(app, board::get_task(app, id)?.s("project")) {
-        return err(403, format!("{} merges this project's PRs (agents_merge is off). Run tb pr wait and leave it to them.", app.cfg.owner));
+    let agent = as_bool(body.get("agent"), false);
+    let via = body_str(body, "via_session");
+    // The owner telling the agent in its terminal to merge this PR: a one-off merge where agents don't
+    // merge on their own, and an "approved" in it stands in for the approvals.
+    let word = match PrRef::of(&board::get_task(app, id)?) {
+        Some(pr) if agent => crate::startword::owners_merge_word(app, &via, id, pr.num)?,
+        _ => None,
+    };
+    if agent && word.is_none() && !prflow::agents_merge_on(app, board::get_task(app, id)?.s("project")) {
+        return err(
+            403,
+            format!("{} merges this project's PRs (agents_merge is off), and hasn't told you to merge this one in this terminal. Run tb pr wait and leave it to them.", app.cfg.owner),
+        );
     }
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;
-    let blockers = merge_blockers(app, &t, &rec)?;
+    let blockers = merge_blockers(app, &t, &rec, word.as_ref().is_some_and(|w| w.approved))?;
     if !blockers.is_empty() {
         return err(409, format!("PR #{} can't merge yet: {}.", pr.num, blockers.join("; ")));
     }
@@ -276,7 +288,11 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     let rules = crate::projects::pr_rules(app, t.s("project"));
     let opts = MergeOpts { strategy: rules.merge_strategy.clone().filter(|s| !s.trim().is_empty()), close_source_branch: true };
     host(app, &pr)?.merge(&pr, &opts).map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
-    app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who_of(body)))?;
+    let who = match &word {
+        Some(_) => format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)),
+        None => who_of(body),
+    };
+    app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who))?;
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
 }
@@ -520,7 +536,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     live["open_threads"] = json!(prflow::open_threads(&f, &rec));
     live["tasks_open"] = rec["tasks_open"].clone();
     live["tasks_error"] = rec["tasks_error"].clone();
-    live["blockers"] = json!(merge_blockers(app, &t, &rec)?);
+    live["blockers"] = json!(merge_blockers(app, &t, &rec, false)?);
     Ok(live)
 }
 

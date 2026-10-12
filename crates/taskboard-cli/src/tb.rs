@@ -3889,7 +3889,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Merge { task } => {
                 let t = c.pr_task(task)?;
-                c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"who": c.pr_who(), "agent": !c.session.is_empty()})))?;
+                c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"who": c.pr_who(), "agent": !c.session.is_empty(), "via_session": c.session})))?;
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
                 Ok(0)
             }
