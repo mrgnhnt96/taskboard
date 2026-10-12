@@ -107,6 +107,7 @@ fn status_label(k: &str) -> &'static str {
         "needs" => "Needs you",
         "done" => "Done",
         "failed" => "Failed",
+        "merge" => "Awaiting merge",
         _ => "Queued",
     }
 }
@@ -115,7 +116,7 @@ fn status_label(k: &str) -> &'static str {
 fn status_tone(k: &str) -> &'static str {
     match k {
         "planned" => "planned",
-        "working" => "accent",
+        "working" | "merge" => "accent",
         "needs" | "blocked" => "warn",
         "done" => "up",
         "failed" => "down",
@@ -694,7 +695,14 @@ pub fn meta_bits(meta: &str) -> Vec<MetaBit> {
 
 /// One row of `goalTasks`.
 pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskRow {
-    let key = status_key(t);
+    // Finished work whose PR is still open isn't done yet (the task panel's `statusPill`).
+    let key = if pr_stopped(t) {
+        "needs"
+    } else if awaiting_merge(t) {
+        "merge"
+    } else {
+        status_key(t)
+    };
     let jira_tip = t.get("jira").and_then(|j| fmt::opt_s(j, "key").map(|k| format!("{k}{}", fmt::opt_s(j, "status").map(|x| format!(" · {x}")).unwrap_or_default())));
     let (pr_text, pr_tip, pr_phase) = if has_pr(t) {
         let pr = &t["pr"];
@@ -3537,5 +3545,16 @@ mod pr_plan_tests {
         // The wave rail has a chip for it.
         assert!(waves::wtask(&canceled).facts.iter().any(|(c, x)| *c == "quiet" && x == "PR canceled: not needed"));
         assert!(!waves::wtask(&open).facts.iter().any(|(_, x)| x.starts_with("PR canceled")));
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_task_waiting_on_its_merge_is_not_done() {
+        let row = |t: &Value| task_row_view(t, 0, std::slice::from_ref(t), &json!({}));
+        let open = json!({"status": "done", "pr": {"num": 3, "state": "OPEN"}});
+        assert_eq!((row(&open).key, row(&open).chip), ("merge", "Awaiting merge"));
+        let stopped = json!({"status": "done", "pr": {"num": 3, "state": "OPEN", "stage": {"stopped": {"asked": true}}}});
+        assert_eq!(row(&stopped).chip, "Needs you");
+        let merged = json!({"status": "done", "pr": {"num": 3, "state": "MERGED"}});
+        assert_eq!(row(&merged).chip, "Done");
     }
 }
