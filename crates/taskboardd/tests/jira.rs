@@ -282,6 +282,9 @@ fn the_desk_finds_or_makes_tickets_and_stays_open() {
     b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s9"}).to_string(), opened[0].id()]).unwrap();
     midna::sync(&b.app, &[json!({"id": "s9", "name": "TB Jira desk", "agent": "claude", "cwd": b.dir.path().to_string_lossy(), "status": {"state": "idle"}})], &[]).unwrap();
     b.tick();
+    assert!(b.jobs("kind = 'message' AND purpose = 'jira_desk'").is_empty(), "not before its agent answered the intro");
+    board::session_event(&b.app, "s9", "reply", "Ready for the first job.", None).unwrap();
+    b.tick();
     let sent = b.jobs("kind = 'message' AND purpose = 'jira_desk'");
     assert_eq!(sent.len(), 1);
     let text = board::job_args(&sent[0]).st("text");
@@ -303,6 +306,57 @@ fn the_desk_finds_or_makes_tickets_and_stays_open() {
     assert_eq!(desk["role"], jira_desk::ROLE);
     assert!(desk["close"].is_null());
     assert_eq!(b.post_err("/sessions/s9/close", json!({})).0, 409);
+    assert_eq!(b.get("/jira")["desk_session"], "s9");
+}
+
+#[test]
+fn the_desk_opens_once_while_midna_syncs_and_keeps_one_desk() {
+    let b = board_with(|c, _| c.jira.desk = true);
+    b.new_task(json!({"jira": "create"}));
+    b.tick();
+    let desk_jobs = || b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
+    assert_eq!(desk_jobs().len(), 1);
+
+    // Midna opened it at once, but no sync has seen the terminal yet: ticks don't open another.
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s9"}).to_string(), desk_jobs()[0].id()]).unwrap();
+    for _ in 0..5 {
+        b.tick();
+    }
+    assert_eq!(desk_jobs().len(), 1, "opened once");
+    assert!(b.jobs("kind = 'message' AND purpose = 'jira_desk'").is_empty());
+
+    // Long after, with the terminal never seen, it opens a new one.
+    let old = taskboardd::util::iso(taskboardd::util::now_ts() - jira_desk::SYNC_WAIT_SECS - 5.0);
+    b.app.db.x("UPDATE jobs SET updated_at = ? WHERE id = ?", taskboardd::p![old, desk_jobs()[0].id()]).unwrap();
+    b.tick();
+    assert_eq!(desk_jobs().len(), 2);
+
+    // Both turn up: the board keeps the first, closes the other, and sends the job once the kept one answered.
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s10"}).to_string(), desk_jobs()[1].id()]).unwrap();
+    let cwd = b.dir.path().to_string_lossy().to_string();
+    midna::sync(
+        &b.app,
+        &[
+            json!({"id": "s9", "name": "TB Jira desk", "agent": "claude", "cwd": cwd, "status": {"state": "idle"}}),
+            json!({"id": "s10", "name": "TB Jira desk", "agent": "claude", "cwd": cwd, "status": {"state": "idle"}}),
+        ],
+        &[],
+    )
+    .unwrap();
+    b.tick();
+    let closes = b.jobs("kind = 'close'");
+    assert_eq!(closes.len(), 1);
+    assert_eq!(board::job_args(&closes[0]).st("session"), "s10");
+    assert!(b.jobs("kind = 'message' AND purpose = 'jira_desk'").is_empty());
+    b.tick();
+    assert_eq!(b.jobs("kind = 'close'").len(), 1, "closed once");
+    assert_eq!(desk_jobs().len(), 2, "no new desk while one is open");
+
+    board::session_event(&b.app, "s9", "reply", "Ready.", None).unwrap();
+    b.tick();
+    let sent = b.jobs("kind = 'message' AND purpose = 'jira_desk'");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(board::job_args(&sent[0]).st("to"), "s9");
     assert_eq!(b.get("/jira")["desk_session"], "s9");
 }
 
@@ -391,6 +445,7 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     let intro = a.st("prompt");
     b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s9"}).to_string(), opened[0].id()]).unwrap();
     midna::sync(&b.app, &[json!({"id": "s9", "name": "TB Jira desk", "agent": "claude", "cwd": b.dir.path().to_string_lossy(), "status": {"state": "idle"}})], &[]).unwrap();
+    board::session_event(&b.app, "s9", "reply", "Ready for the first job.", None).unwrap();
     b.tick();
     let job = board::job_args(&b.jobs("kind = 'message' AND purpose = 'jira_desk'")[0]).st("text");
     for text in [intro.as_str(), job.as_str()] {
