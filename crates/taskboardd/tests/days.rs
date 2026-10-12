@@ -99,6 +99,16 @@ fn a_day_is_worked_out_kept_and_survives_the_cleanup() {
     assert_eq!(d["waits"][0]["text"], "Which colour?");
     assert_eq!(d["waits"][0]["min"], 20.0);
 
+    // What finished that day, in order, with the PR each task has now.
+    app.db.x("UPDATE tasks SET pr_num = 7, pr_url = 'https://github.com/acme/webapp/pull/7', pr_state = 'MERGED' WHERE id = ?", p![a]).unwrap();
+    let fin = get(&app, "days", &[("date", &ds)])["day"]["finished"].clone();
+    let refs: Vec<&str> = fin.as_array().unwrap().iter().map(|x| x["ref"].as_str().unwrap()).collect();
+    assert_eq!(refs, vec!["T1", "T2"]);
+    assert_eq!(fin[0]["project"], "webapp");
+    assert_eq!(fin[0]["title"], "Add login");
+    assert_eq!(fin[0]["pr"], json!({"num": 7, "url": "https://github.com/acme/webapp/pull/7", "state": "merged"}));
+    assert!(fin[1]["pr"].is_null(), "no PR, none shown");
+
     // The week has the day; the week before is empty; a hidden project drops out everywhere.
     let k = page["week"].as_array().unwrap().iter().position(|w| w["date"] == ds.as_str()).unwrap();
     assert_eq!(page["week"][k]["agent_min"], 240.0);
@@ -112,6 +122,7 @@ fn a_day_is_worked_out_kept_and_survives_the_cleanup() {
     assert_eq!(hidden["day"]["agent_min"], 100.0);
     assert_eq!(hidden["week"][k]["done"], 1.0);
     assert_eq!(hidden["day"]["lanes"].as_array().unwrap().len(), 1);
+    assert_eq!(hidden["day"]["finished"].as_array().unwrap().len(), 1);
     assert_eq!(hidden["projects"], json!(["api", "webapp"]), "hidden projects can still be shown again");
 
     // The past day is kept.

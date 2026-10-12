@@ -160,6 +160,18 @@ pub struct TaskRow {
     pub tip: String,
 }
 
+/// A task finished on the day shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Finished {
+    pub task: String,
+    pub title: String,
+    pub color: usize,
+    /// "#195", and the PR's state now: `merged`, `open` or `declined`.
+    pub pr: Option<(String, String)>,
+    pub at: String,
+    pub tip: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Saved {
     pub total: String,
@@ -204,6 +216,7 @@ pub struct View {
     pub task_median: String,
     pub task_median_x: f32,
     pub task_max: f64,
+    pub finished: Vec<Finished>,
     pub notes: Vec<(String, String)>,
     pub saved: Saved,
     pub wait_total: String,
@@ -369,6 +382,22 @@ impl View {
         tasks.retain(|t| t.work + t.wait > 0.0);
         let med = f(v, "week_task_median");
 
+        // What finished on the day.
+        let finished = arr(day, "finished")
+            .iter()
+            .map(|x| {
+                let pr = x["pr"]["num"].as_i64().map(|n| (format!("#{n}"), s(&x["pr"], "state").to_string()));
+                Finished {
+                    task: s(x, "ref").to_string(),
+                    title: s(x, "title").to_string(),
+                    color: slot(s(x, "project")),
+                    at: clock(s(x, "at")),
+                    tip: format!("{} {} · {}{}", s(x, "ref"), s(x, "title"), s(x, "project"), pr.as_ref().map(|(n, st)| format!(" · PR {n} {st}")).unwrap_or_default()),
+                    pr,
+                }
+            })
+            .collect();
+
         // Notable.
         let mut notes = Vec::new();
         let waits_json = arr(day, "waits");
@@ -481,6 +510,7 @@ impl View {
             task_median: if med > 0.0 { dur(med) } else { String::new() },
             task_median_x: (med / task_max) as f32,
             task_max,
+            finished,
             notes,
             saved,
             wait_total: dur(f(day, "wait_min")),
@@ -667,6 +697,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .min_w(px(560.))
         .child(week_card(&v, &t, &pc, cx))
         .child(timeline_card(&v, &t, &pc, cx))
+        .child(finished_card(&v, &t, &pc, cx))
         .child(tasks_card(&v, &t, &pc, cx));
     let rail = div()
         .flex()
@@ -934,6 +965,40 @@ fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context
     card(t).child(div().flex().flex_wrap().items_center().justify_between().gap(px(12.)).child(h2(format!("How long tasks took · {}", v.week_label))).child(legend)).child(body)
 }
 
+fn finished_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<MainWindow>) -> Div {
+    let rows = v.finished.iter().map(|r| {
+        let task = r.task.clone();
+        div()
+            .id(SharedString::from(format!("days-finished-{}", r.task)))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(6.))
+            .py(px(5.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(|s| s.bg(t.panel_2))
+            .text_size(px(13.))
+            .child(swatch(pc(r.color), 9.))
+            .child(div().w(px(52.)).flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.task.clone()))
+            .child(div().flex_1().min_w_0().truncate().child(r.title.clone()))
+            .children(r.pr.as_ref().map(|(n, st)| {
+                let (fg, bg) = match st.as_str() {
+                    "merged" => (t.up_fg, t.up_soft),
+                    "declined" => (t.down, t.down_soft),
+                    _ => (t.text_2, t.seg),
+                };
+                kit::pill(fg, bg, format!("{n} {st}"))
+            }))
+            .child(div().w(px(70.)).flex_none().flex().justify_end().text_color(t.text_2).child(r.at.clone()))
+            .tooltip(kit::tip(r.tip.clone()))
+            .on_click(cx.listener(move |m, _, _, cx| m.open_task(task.clone(), cx)))
+    });
+    let title = if v.date == v.today { "Done today".to_string() } else { format!("Done on {}", v.date.format("%A, %B %-d")) };
+    let body = if v.finished.is_empty() { div().text_color(t.muted).child("No tasks finished") } else { div().flex().flex_col().gap(px(2.)).children(rows) };
+    card(t).child(div().flex().items_baseline().gap(px(8.)).child(h2(title)).child(div().text_size(px(12.)).text_color(t.muted).child(count(v.finished.len() as f64)))).child(body)
+}
+
 fn notes_card(v: &View, t: &Theme) -> Div {
     card(t).child(h2("Notable")).children(v.notes.iter().map(|(lead, text)| {
         div()
@@ -1152,6 +1217,9 @@ mod tests {
         d["waits"] = waits;
         d["tasks"] = json!([{"ref": "T241", "work_min": 184.0, "wait_min": 58.0}]);
         d["lanes"] = lanes;
+        d["finished"] = json!([{"task": 238, "ref": "T238", "title": "Scrollback", "project": "webapp", "at": "2026-10-08T11:02:00Z",
+                                "pr": {"num": 195, "url": "u", "state": "merged"}},
+                               {"task": 240, "ref": "T240", "title": "Docs", "project": "api", "at": "2026-10-08T13:30:00Z"}]);
         let tasks = json!([{"ref": "T241", "title": "Retry cap", "project": "webapp", "work_min": 184.0, "wait_min": 58.0, "state": "needs", "date": "2026-10-08"},
                            {"ref": "T238", "title": "Scrollback", "project": "webapp", "work_min": 108.0, "wait_min": 0.0, "state": "done", "date": "2026-10-08"}]);
         let mut v = json!({"date": "2026-10-08", "today": "2026-10-08", "is_today": true, "now": "2026-10-08T15:12:00Z", "day_start": "2026-10-08T00:00:00Z",
@@ -1185,6 +1253,11 @@ mod tests {
         assert_eq!(v.notes[0], ("58m".to_string(), "longest wait on you · T241".to_string()));
         assert!(v.notes.iter().any(|n| n.0 == "10 AM"));
         assert!(v.notes.iter().any(|n| n.0 == "3 at once"));
+        assert_eq!(v.finished.len(), 2);
+        assert_eq!((v.finished[0].task.as_str(), v.finished[0].color), ("T238", 1));
+        assert_eq!(v.finished[0].pr, Some(("#195".to_string(), "merged".to_string())));
+        assert_eq!(v.finished[1].pr, None);
+        assert!(v.finished[0].at.ends_with("AM") || v.finished[0].at.ends_with("PM"));
     }
 
     #[::core::prelude::v1::test]
