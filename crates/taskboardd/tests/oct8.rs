@@ -1110,6 +1110,43 @@ fn stop_check_rows() -> Vec<Row> {
     transcript.extend(ran("t2", "Bash", cmd("python3 fix.py")));
     rows.push(row("#160 a call after the slash command, its start lost", Warm, "", transcript, vec![start("t1", CLEAN), end("t1", CLEAN), Step::Prompt(CLEAN), blocks(SAVED, &["a.rs"])]));
     rows.extend(rows_164());
+    rows.extend(rows_167());
+    rows
+}
+
+/// #167: a hook's reason on two lines, starting with a symbol or over 300 characters is a refusal;
+/// a program's own one-line error with a deny word is a call that ran; so is a sibling call's error.
+fn rows_167() -> Vec<Row> {
+    use Hooks::*;
+    let cmd = |c: &str| json!({"command": c});
+    let mut rows = vec![];
+    // 1 and 3: refusals, Bash warm and cold, and Agent.
+    let long = format!("Blocked: {}", "rm -rf is not allowed here. ".repeat(12));
+    for refusal in [
+        "Blocked: rm -rf is not allowed here.\nUse trash instead.",
+        "Denied by guard.\n(see docs/guard.md)",
+        "`rm -rf` is not allowed in this repo",
+        "[guard] blocked: rm -rf",
+        "⛔ Blocked: force push",
+        &long,
+        "<tool_use_error>Sibling tool call errored</tool_use_error>",
+    ] {
+        for (tool, input) in [("Bash", cmd("rm -rf build")), ("Agent", json!({"prompt": "fix it"}))] {
+            for hooks in [Warm, Cold] {
+                rows.push(row(format!("#167 refused, {tool} {}: {refusal}", if hooks == Warm { "warm" } else { "cold" }), hooks, "", failed("t1", tool, input.clone(), refusal).to_vec(), vec![Step::Start(tool, "t1".into(), Some(CLEAN)), pass(SAVED)]));
+            }
+        }
+    }
+    // 2. A program's own one-line error with a deny word, from a call that edited first (its end lost).
+    for (command, error) in [
+        ("python3 fix.py && npm publish", "npm error code E403: publishing is not allowed for this package"),
+        ("python3 fix.py && npm publish", "npm error 403 403 Forbidden - PUT https://registry.npmjs.org/pkg"),
+        ("python3 fix.py && mysql -u x < seed.sql", "Access denied for user 'x'@'localhost' (using password: YES)"),
+        ("python3 fix.py && git push", "Push rejected: protected branch main"),
+        ("python3 fix.py && gh pr merge 1", "gh: request blocked (HTTP 403)"),
+    ] {
+        rows.push(row(format!("#167 ran, then failed: {error}"), Warm, "", failed("t1", "Bash", cmd(command), error).to_vec(), vec![start("t1", CLEAN), blocks(SAVED, &["a.rs"])]));
+    }
     rows
 }
 
@@ -1182,7 +1219,7 @@ fn rows_164() -> Vec<Row> {
 }
 
 #[test]
-fn the_stop_check_keeps_every_scenario_from_141_to_164() {
+fn the_stop_check_keeps_every_scenario_from_141_to_167() {
     let mut wrong: Vec<String> = vec![];
     for r in stop_check_rows() {
         let b = new_board();
