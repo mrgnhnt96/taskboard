@@ -29,6 +29,9 @@ const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
 const MERGE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+/// A merge refused for checks still running on the host holds the stage at `checks` for at most this
+/// long while the feed doesn't show them finished; then the merge is tried afresh.
+const RUNNING_ON_HOST_RECHECK: f64 = 1800.0;
 
 pub fn label(phase: &str) -> &str {
     match phase {
@@ -234,8 +237,13 @@ fn wake_key(phase: &str, rec: &Value) -> String {
     if phase != "merge" {
         return key;
     }
-    // A change in the reviews wakes the merge again.
-    format!("{key}:{}:{}", rec["review_decision"].as_str().unwrap_or(""), rec["approvals"].as_i64().unwrap_or(0))
+    // A change in the reviews or the builds wakes the merge again.
+    let mut builds: Vec<String> = rec["checks"]
+        .as_array()
+        .map(|a| a.iter().map(|c| format!("{}={}", c["name"].as_str().unwrap_or(""), c["state"].as_str().unwrap_or(""))).collect())
+        .unwrap_or_default();
+    builds.sort();
+    format!("{key}:{}:{}:{}", rec["review_decision"].as_str().unwrap_or(""), rec["approvals"].as_i64().unwrap_or(0), builds.join(","))
 }
 
 fn since_handled(f: &Row) -> f64 {
@@ -726,7 +734,7 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if !stopped && !skip_hides_failures(&f, rec) && !failing(&f, rec).is_empty() {
         return "fix".into();
     }
-    if !skipped && checks_waiting(app, t, &f, rec) {
+    if !skipped && (checks_waiting(app, t, &f, rec) || running_on_host(&f, rec)) {
         return "checks".into();
     }
     let seen = f.i0("comments_seen");
@@ -768,6 +776,39 @@ pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
         Some(missing) => !missing.is_empty() && !expected_wait_over(app, t, f, rec),
         None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && head_waited(f, rec) < app.cfg.pr.no_checks_after_mins * 60.0,
     }
+}
+
+/// `tb pr merge` was refused on this head while checks ran on the host (`checks_running`), and the record
+/// doesn't show all of them finished yet: the checks are still going, for at most `RUNNING_ON_HOST_RECHECK`.
+fn running_on_host(f: &Row, rec: &Value) -> bool {
+    let Some(noted) = f.get("checks_running").filter(|v| v.is_object()) else { return false };
+    let head = rec["head"].as_str().unwrap_or("");
+    let at = noted["head"].as_str().unwrap_or("");
+    if head.is_empty() || at.is_empty() || !(head.starts_with(at) || at.starts_with(head)) {
+        return false;
+    }
+    if now_ts() - noted["at"].as_str().and_then(parse_iso).unwrap_or(0.0) >= RUNNING_ON_HOST_RECHECK {
+        return false;
+    }
+    let checks = rec["checks"].as_array().cloned().unwrap_or_default();
+    let finished = |name: &str| checks.iter().any(|c| c["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)) && c["state"] != "running");
+    str_list(&noted["checks"]).iter().any(|n| !finished(n))
+}
+
+/// A merge was refused because these checks are still running on the host: the stage watches the build
+/// (`running_on_host`) instead of counting the visit as a stalled merge.
+pub fn note_checks_running(app: &App, t: &Row, head: &str, checks: &[String], who: &str) -> Result<()> {
+    let head: String = head.chars().take(12).collect();
+    merge_flow(app, t.id(), fields!["checks_running" => json!({"head": head, "checks": checks, "at": now_iso()})])?;
+    let host = crate::prhost::PrRef::of(t).map(|p| crate::prhost::limit::label(&p.host)).unwrap_or_else(|| "its host".into());
+    board::log_event(
+        app,
+        t.id(),
+        who,
+        "status",
+        &format!("PR #{} can't merge yet: {} still running on {host}, so the board watches the build", t.i0("pr_num"), checks.join(", ")),
+    )?;
+    Ok(())
 }
 
 /// Seconds (awake) since this push was first seen.
@@ -1026,6 +1067,8 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             changes.extend(fields!["woke" => key, "stopped" => null]);
             if stalled {
                 changes.extend(fields!["handled" => null, "merge_tries" => tries]);
+            } else {
+                changes.extend(fields!["merge_tries" => null, "merge_gave_up" => null]);
             }
         }
     } else if may_wake && phase == "merge" && t.s("status") == Some("done") && merge_given_up(&now_flow, &key) {

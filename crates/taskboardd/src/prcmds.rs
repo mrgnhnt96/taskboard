@@ -199,7 +199,7 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
     }
     if prflow::checks_skipped(&f, rec).is_none() {
         let checks = rec["checks"].as_array().cloned().unwrap_or_default();
-        let running: Vec<String> = checks.iter().filter(|c| c["state"] == "running").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect();
+        let running = running_checks(t, rec);
         if !running.is_empty() {
             out.push(format!("checks are still running: {}", running.join(", ")));
         }
@@ -247,6 +247,40 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
     Ok(out)
 }
 
+/// The checks still running on this push, unless its checks are skipped.
+fn running_checks(t: &Row, rec: &Value) -> Vec<String> {
+    if prflow::checks_skipped(&flow(t), rec).is_some() {
+        return vec![];
+    }
+    let checks = rec["checks"].as_array().cloned().unwrap_or_default();
+    checks.iter().filter(|c| c["state"] == "running").filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect()
+}
+
+/// `POST /tasks/:id/pr/checks-running`: a merge was refused while these checks ran on the host (the
+/// old board's `tb pr merge` posts it). A note for an older head is ignored.
+pub fn checks_running(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let head = body_str(body, "head");
+    let checks: Vec<String> = body["checks"].as_array().map(|a| a.iter().filter_map(|c| c.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+    if head.is_empty() || checks.is_empty() {
+        return err(400, "checks-running needs a head and the running checks' names.");
+    }
+    let t = board::get_task(app, id)?;
+    let rec = flow(&t).get("rec").cloned().unwrap_or(Value::Null);
+    let current = rec["head"].as_str().unwrap_or("");
+    let short: String = head.chars().take(12).collect();
+    if !current.is_empty() && !current.starts_with(&short) {
+        return Ok(json!({"task": rf("task", id), "noted": false}));
+    }
+    app.db.tx(|| {
+        prflow::note_checks_running(app, &t, &head, &checks, &who_of(body))?;
+        if rec.is_object() {
+            prflow::step(app, &board::get_task(app, id)?, &rec)?;
+        }
+        Ok(())
+    })?;
+    Ok(json!({"task": rf("task", id), "noted": true}))
+}
+
 /// A base branch that is another task's PR, still unmerged.
 fn stacked_base(app: &App, t: &Row, rec: &Value) -> Result<Option<String>> {
     let Some(base) = rec["base"].as_str().filter(|b| !b.is_empty()) else { return Ok(None) };
@@ -280,6 +314,10 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     let pr = pr_of(&t)?;
     let blockers = merge_blockers(app, &t, &rec, word.as_ref().is_some_and(|w| w.approved))?;
     if !blockers.is_empty() {
+        let running = running_checks(&t, &rec);
+        if !running.is_empty() {
+            app.db.tx(|| prflow::note_checks_running(app, &t, rec["head"].as_str().unwrap_or(""), &running, board::BOARD))?;
+        }
         return err(409, format!("PR #{} can't merge yet: {}.", pr.num, blockers.join("; ")));
     }
     // The merge deletes this PR's branch, and a host may close a PR that goes into a deleted branch: move

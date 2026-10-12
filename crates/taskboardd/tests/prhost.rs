@@ -203,7 +203,7 @@ fn merge_checks_everything_first_then_merges_and_closes_the_branch() {
     }
     {
         let mut r = h.rec.lock();
-        r.checks.pop();
+        r.checks.last_mut().unwrap().state = "passed".into();
         r.reviewers.push(reviewer("b", "approved"));
         r.threads.clear();
         r.tasks_open = 0;
