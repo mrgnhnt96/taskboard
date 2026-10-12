@@ -23,6 +23,8 @@ pub struct BasicHttp {
     auth: String,
     agent: ureq::Agent,
     service: &'static str,
+    /// The account's rate limit and budget (`prhost::limit`), shared with every other reader on it.
+    gate: super::limit::Gate,
 }
 
 impl BasicHttp {
@@ -32,37 +34,57 @@ impl BasicHttp {
 
     pub fn for_service(service: &'static str, user: &str, token: &str) -> BasicHttp {
         let auth = format!("Basic {}", crate::jira::base64_lite::encode(format!("{user}:{token}").as_bytes()));
-        BasicHttp { auth, agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build(), service }
+        let host = service.to_lowercase();
+        let gate = super::limit::Gate::new(&host, super::account_key(&host, &[user, token]));
+        BasicHttp { auth, agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build(), service, gate }
     }
+}
+
+/// What a response's headers say about the rate limit: a `Retry-After` (seconds), or
+/// `X-RateLimit-Remaining: 0` with its `X-RateLimit-Reset` (epoch seconds).
+fn limit_headers(r: &ureq::Response, limited: bool, why: &str) -> Option<super::limit::Hit> {
+    let num = |h: &str| r.header(h).and_then(|v| v.trim().parse::<f64>().ok());
+    let spent = num("X-RateLimit-Remaining").is_some_and(|n| n <= 0.0);
+    if !limited && !spent {
+        return None;
+    }
+    Some(super::limit::Hit { retry_after: num("Retry-After"), reset_at: num("X-RateLimit-Reset"), why: why.to_string() })
 }
 
 impl Http for BasicHttp {
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> HostResult<Value> {
-        let req = self.agent.request(method, url).set("Authorization", &self.auth).set("Accept", "application/json");
-        let res = match body {
-            Some(b) => req.send_json(b.clone()),
-            None => req.call(),
-        };
-        match res {
-            Ok(r) => {
-                let text = r.into_string().unwrap_or_default();
-                if text.trim().is_empty() {
-                    return Ok(Value::Null);
+        let svc = self.service;
+        self.gate.call(method != "GET", || {
+            let req = self.agent.request(method, url).set("Authorization", &self.auth).set("Accept", "application/json");
+            let res = match body {
+                Some(b) => req.send_json(b.clone()),
+                None => req.call(),
+            };
+            match res {
+                Ok(r) => {
+                    let hit = limit_headers(&r, false, &format!("{svc} said the account has no calls left this hour"));
+                    let text = r.into_string().unwrap_or_default();
+                    if text.trim().is_empty() {
+                        return Ok((Value::Null, hit));
+                    }
+                    Ok((serde_json::from_str(&text).unwrap_or(Value::Null), hit))
                 }
-                Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+                Err(ureq::Error::Status(code, r)) => {
+                    let hit = limit_headers(&r, code == 429, &format!("{svc} answered {code}"));
+                    let v: Value = r.into_json().unwrap_or(Value::Null);
+                    let why = v["error"]["message"].as_str().unwrap_or("").to_string();
+                    Err((
+                        match code {
+                            401 if svc == "Bitbucket" => "Bitbucket answered 401: it didn't accept Taskboard's Bitbucket token; sign in again in Settings ▸ Accounts".to_string(),
+                            _ if why.is_empty() => format!("{svc} answered {code}"),
+                            _ => format!("{svc} answered {code}: {why}"),
+                        },
+                        hit,
+                    ))
+                }
+                Err(_) => Err((format!("Can't reach {svc}"), None)),
             }
-            Err(ureq::Error::Status(code, r)) => {
-                let v: Value = r.into_json().unwrap_or(Value::Null);
-                let why = v["error"]["message"].as_str().unwrap_or("").to_string();
-                let svc = self.service;
-                Err(match code {
-                    401 if svc == "Bitbucket" => "Bitbucket answered 401: it didn't accept Taskboard's Bitbucket token; sign in again in Settings ▸ Accounts".to_string(),
-                    _ if why.is_empty() => format!("{svc} answered {code}"),
-                    _ => format!("{svc} answered {code}: {why}"),
-                })
-            }
-            Err(_) => Err(format!("Can't reach {}", self.service)),
-        }
+        })
     }
 }
 
@@ -594,6 +616,16 @@ pub(crate) mod tests {
     use super::*;
     use parking_lot::Mutex;
     use std::sync::Arc;
+
+    #[test]
+    fn rate_limit_headers_say_until_when() {
+        let r = |raw: &str| raw.parse::<ureq::Response>().unwrap();
+        let limited = r("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\n\r\n");
+        assert_eq!(limit_headers(&limited, true, "Bitbucket answered 429").map(|h| h.retry_after), Some(Some(120.0)));
+        let spent = r("HTTP/1.1 200 OK\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 1800000900\r\n\r\n{}");
+        assert_eq!(limit_headers(&spent, false, "x").map(|h| h.reset_at), Some(Some(1_800_000_900.0)));
+        assert_eq!(limit_headers(&r("HTTP/1.1 200 OK\r\nX-RateLimit-Remaining: 12\r\n\r\n{}"), false, "x"), None);
+    }
 
     /// Every call: method, URL and body.
     pub type Calls = Arc<Mutex<Vec<(String, String, Option<Value>)>>>;

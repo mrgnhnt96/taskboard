@@ -4210,11 +4210,37 @@ fn feed_line(v: &Value) -> String {
     line
 }
 
+/// `GET /prs/feed`'s `rate_limits`: one line per account the board has called, saying whether the
+/// host has it rate-limited and how many calls the board made on it in the last hour.
+fn rate_lines(v: &Value) -> Vec<String> {
+    let mut lines = vec![];
+    for a in v.as_array().into_iter().flatten() {
+        let label = a["label"].as_str().unwrap_or("");
+        let mut line = a["text"].as_str().map(str::to_string).unwrap_or_else(|| format!("{label} isn't rate-limited"));
+        let calls = a["calls_last_hour"].as_u64().unwrap_or(0);
+        line += &match a["max_per_hour"].as_u64() {
+            Some(b) => format!(" · the board's calls in the last hour: {calls} of {b}"),
+            None => format!(" · the board's calls in the last hour: {calls}"),
+        };
+        if let Some(f) = a["stretch"].as_f64() {
+            line += &format!(" · polling {f:.1}× slower to fit");
+        }
+        if let Some(why) = a["why"].as_str() {
+            line += &format!("\n  {why}");
+        }
+        lines.push(line);
+    }
+    lines
+}
+
 fn feed_cmd(c: &Ctx, action: Option<FeedCmd>) -> Result<i32, String> {
     match action {
         None => {
             let v = c.call("GET", "/prs/feed", None)?;
             out(&feed_line(&v));
+            for line in rate_lines(&v["rate_limits"]) {
+                out(&line);
+            }
         }
         Some(FeedCmd::Heartbeat { active, idle, idle_until, connected_at }) => {
             let mut body = json!({"idle_until": idle_until, "connected_at": connected_at});
@@ -4418,6 +4444,22 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_feed_says_who_is_rate_limited_and_the_board_s_calls() {
+        let v = json!([
+            {"label": "Bitbucket", "text": "Bitbucket rate-limited until 3:40pm", "why": "Bitbucket answered 429", "calls_last_hour": 812, "max_per_hour": 900, "stretch": 1.5},
+            {"label": "GitHub", "text": null, "why": null, "calls_last_hour": 40, "max_per_hour": null, "stretch": null},
+        ]);
+        assert_eq!(
+            rate_lines(&v),
+            vec![
+                "Bitbucket rate-limited until 3:40pm · the board's calls in the last hour: 812 of 900 · polling 1.5× slower to fit\n  Bitbucket answered 429".to_string(),
+                "GitHub isn't rate-limited · the board's calls in the last hour: 40".to_string(),
+            ]
+        );
+        assert!(rate_lines(&Value::Null).is_empty());
+    }
 
     #[test]
     fn tb_start_says_what_the_board_did() {

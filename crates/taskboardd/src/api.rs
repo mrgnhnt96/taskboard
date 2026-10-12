@@ -552,6 +552,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         "accounts": accounts::attention(&app.cfg),
         "prs_checked_at": app.shared.lock().prs_checked_at,
         "pr_feed": crate::feed::health(app),
+        "rate_limits": crate::prhost::limit::status(),
         "pr_builds": crate::prbuilds::status(app),
         "master": crate::breaks::banner(app)?,
         "projects": projects::list_projects(app)?, "sessions": sessions, "session_projects": sp, "goals": goals,
