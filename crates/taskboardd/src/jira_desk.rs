@@ -21,20 +21,76 @@ pub fn on(app: &App) -> bool {
     app.cfg.jira_on() && app.cfg.jira.desk
 }
 
-/// The desk's terminal, while it's open.
-pub fn session(app: &App) -> Result<Option<String>> {
+/// A desk agent job that's done still counts as opening for this long while Midna's sync hasn't seen
+/// its terminal: Midna answers "Opened …" at once, and the board only knows the terminal after a sync.
+pub const SYNC_WAIT_SECS: f64 = 120.0;
+
+/// The desk terminals that are open, oldest first, and whether one Midna opened isn't synced yet.
+fn desks(app: &App) -> Result<(Vec<String>, bool)> {
+    let (mut live, mut unsynced) = (Vec::<String>::new(), false);
     for j in app.db.q(
-        "SELECT target FROM jobs WHERE kind = 'agent' AND purpose = ? AND state = 'done' ORDER BY id DESC LIMIT 5",
+        "SELECT target, updated_at FROM jobs WHERE kind = 'agent' AND purpose = ? AND state = 'done' ORDER BY id DESC LIMIT 50",
         p![PURPOSE],
     )? {
         let Some(sid) = jloads_obj(j.s("target")).s("session").map(|s| s.to_string()) else { continue };
-        if let Some(s) = board::get_session(app, Some(&sid))? {
-            if s.s("status") != Some("gone") {
-                return Ok(Some(sid));
-            }
+        if live.contains(&sid) {
+            continue;
+        }
+        match board::get_session(app, Some(&sid))? {
+            Some(s) if s.s("status") != Some("gone") => live.push(sid),
+            Some(_) => {}
+            None => unsynced |= age_secs(j.s("updated_at")).is_some_and(|a| a < SYNC_WAIT_SECS),
         }
     }
-    Ok(None)
+    live.reverse();
+    Ok((live, unsynced))
+}
+
+/// Of several open desks, the one the board keeps: the one working on a job, else the oldest.
+fn keep(app: &App, live: &[String]) -> Result<Option<String>> {
+    for j in app.db.q("SELECT target FROM jobs WHERE kind = 'jira' AND state = 'running' AND json_extract(target, '$.desk') IS NOT NULL", p![])? {
+        if let Some(sid) = jloads_obj(j.s("target")).s("desk").filter(|s| live.iter().any(|l| l == s)) {
+            return Ok(Some(sid.to_string()));
+        }
+    }
+    Ok(live.first().cloned())
+}
+
+/// The desk's terminal, while it's open.
+pub fn session(app: &App) -> Result<Option<String>> {
+    keep(app, &desks(app)?.0)
+}
+
+/// The desk answered its intro (or has had a job before), so a job sent now reaches its agent and
+/// isn't lost while Claude is still starting.
+fn ready(app: &App, sid: &str) -> Result<bool> {
+    Ok(app.db.q1("SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'reply' LIMIT 1", p![sid])?.is_some()
+        || app
+            .db
+            .q1("SELECT 1 FROM jobs WHERE kind = 'message' AND purpose = ? AND json_extract(args, '$.to') = ? LIMIT 1", p![PURPOSE, sid])?
+            .is_some())
+}
+
+/// Closes every open desk but the one kept: the board opened them all.
+fn close_extra(app: &App, live: &[String], kept: &str) -> Result<()> {
+    for sid in live.iter().filter(|s| *s != kept) {
+        if crate::jobs::closing(app, sid)? {
+            continue;
+        }
+        let force = board::close_rule(board::get_session(app, Some(sid))?.as_ref()) == Some("force");
+        app.db.tx(|| {
+            board::create_job(
+                app,
+                "close",
+                json!({"session": sid, "force": force, "reason": "Task board: a second Jira desk; the board keeps one"}),
+                None,
+                PURPOSE,
+                None,
+            )
+        })?;
+        app.info(format!("jira desk: closing an extra desk ({sid}), keeping {kept}"));
+    }
+    Ok(())
 }
 
 /// This terminal is the desk's (it ever was: an old desk is still the desk).
@@ -126,11 +182,17 @@ fn open(app: &App) -> Result<i64> {
     Ok(id)
 }
 
-/// Sends the desk its next job, opening its terminal first when it isn't open. One job at a time,
-/// oldest first, so a goal's epic is there before its tickets.
+/// Sends the desk its next job, opening its terminal first when it isn't open, and only once its agent
+/// has answered the intro. One job at a time, oldest first, so a goal's epic is there before its
+/// tickets. Extra desks (opened before a sync saw the first) are closed.
 pub fn tick(app: &App) -> Result<()> {
     if !on(app) {
         return Ok(());
+    }
+    let (live, unsynced) = desks(app)?;
+    let kept = keep(app, &live)?;
+    if let Some(k) = &kept {
+        close_extra(app, &live, k)?;
     }
     let busy = app.db.q1("SELECT id FROM jobs WHERE kind = 'jira' AND state = 'running' AND json_extract(target, '$.desk') IS NOT NULL", p![])?;
     if busy.is_some() {
@@ -138,12 +200,15 @@ pub fn tick(app: &App) -> Result<()> {
     }
     let pending = app.db.q("SELECT * FROM jobs WHERE kind = 'jira' AND state = 'pending' ORDER BY id", p![])?;
     let Some(j) = pending.into_iter().find(|j| jira::for_desk(app, j)) else { return Ok(()) };
-    let Some(sid) = session(app)? else {
-        if !opening(app)? {
+    let Some(sid) = kept else {
+        if !unsynced && !opening(app)? {
             app.db.tx(|| open(app))?;
         }
         return Ok(());
     };
+    if !ready(app, &sid)? {
+        return Ok(());
+    }
     app.db.tx(|| {
         let text = job_text(app, &j)?;
         board::create_job(app, "message", json!({"to": sid, "text": text}), j.i("task_id"), PURPOSE, None)?;
