@@ -581,6 +581,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
     day_json["lanes"] = json!(lanes);
     day_json["waits"] = json!(waits);
     day_json["tasks"] = json!(rows.iter().filter(|(p, _)| !hide.contains(*p)).flat_map(|(_, v)| v["tasks"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>());
+    day_json["finished"] = json!(finished_on(app, &rows, &hide)?);
 
     Ok(json!({
         "date": date_str(date),
@@ -601,6 +602,43 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         "usual": usual,
         "oldest": oldest(app)?.map(date_str),
     }))
+}
+
+/// The tasks finished on the day, in the order they finished (a task finished twice counts at its
+/// last), each with its project and the PR it has now.
+fn finished_on(app: &App, rows: &BTreeMap<String, Value>, hide: &HashSet<String>) -> Result<Vec<Value>> {
+    let mut last: BTreeMap<i64, Value> = BTreeMap::new();
+    for (proj, v) in rows.iter().filter(|(p, _)| !hide.contains(*p)) {
+        for x in v["finished"].as_array().into_iter().flatten() {
+            let Some(id) = x["task"].as_i64() else { continue };
+            let mut x = x.clone();
+            x["project"] = json!(proj);
+            last.insert(id, x);
+        }
+    }
+    let ids: Vec<i64> = last.keys().copied().collect();
+    for chunk in ids.chunks(400) {
+        let qs = vec!["?"; chunk.len()].join(", ");
+        let rows = app.db.q(&format!("SELECT id, pr_num, pr_url, pr_state, pr_phase FROM tasks WHERE id IN ({qs})"), chunk.iter().map(|i| json!(i)).collect())?;
+        for t in rows {
+            let Some(x) = last.get_mut(&t.id()) else { continue };
+            if t.i("pr_num").is_none() && !has(t.s("pr_url")) {
+                continue;
+            }
+            let st = t.st("pr_state").to_uppercase();
+            let state = if st == "MERGED" || t.s("pr_phase") == Some("merged") {
+                "merged"
+            } else if matches!(st.as_str(), "DECLINED" | "CLOSED" | "SUPERSEDED") || t.s("pr_phase") == Some("declined") {
+                "declined"
+            } else {
+                "open"
+            };
+            x["pr"] = json!({"num": t.v("pr_num"), "url": t.st("pr_url"), "state": state});
+        }
+    }
+    let mut out: Vec<Value> = last.into_values().collect();
+    out.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
+    Ok(out)
 }
 
 /// The first day the board has anything for.

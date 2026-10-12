@@ -426,7 +426,9 @@ the backlog, and kept in `day_stats` (one row per project), so it outlives the c
                         "kind": "working"|"needs"|"done"|"failed"|"lost"|"stopped"}],
               "marks": [{"at": iso, "kind": "commit"|"question"|"pr"|"done"|"found", "task": int, "ref": str, "text": str}]}],
    "waits": [{"task": int, "ref": str, "at": iso, "min": float, "open": bool, "reason": str, "text": str, "title": str, "project": str}],
-   "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}]},
+   "tasks": [{"task": int, "ref": str, "title": str, "work_min": float, "wait_min": float, "state": str}],
+   "finished": [{"task": int, "ref": str, "title": str, "project": str, "at": iso,      // finished that day, in order
+                 "pr": {"num": int|null, "url": str, "state": "merged"|"open"|"declined"}|absent}]},   // the task's PR now
  "week": [totals + {"date": "YYYY-MM-DD", "future": bool}],      // 7, from config.toml's first_weekday (Sunday by default)
  "first_weekday": "sun"|"mon"|…,
  "last_week": [same],
