@@ -1,10 +1,10 @@
 //! Text helpers ported from the web board (`app.js`): refs, relative times, durations, clocks,
 //! and reading fields out of the API's JSON.
-#[cfg(not(test))]
-use chrono::Local;
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDateTime, Utc};
 #[cfg(test)]
 use chrono::{Offset, TimeZone};
+#[cfg(not(test))]
+use chrono::Local;
 use serde_json::Value;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -39,9 +39,7 @@ fn from_local(n: NaiveDateTime) -> Option<DateTime<Utc>> {
     #[cfg(test)]
     return Some(Utc.from_utc_datetime(&n));
     #[cfg(not(test))]
-    n.and_local_timezone(Local)
-        .single()
-        .map(|t| t.with_timezone(&Utc))
+    n.and_local_timezone(Local).single().map(|t| t.with_timezone(&Utc))
 }
 
 /// Same calendar day as now, in the reader's zone.
@@ -68,9 +66,7 @@ fn minutes_since(iso: &str) -> Option<i64> {
 
 /// "just now", "5m ago", "3h ago", "2d ago".
 pub fn ago(iso: &str) -> String {
-    let Some(m) = minutes_since(iso) else {
-        return String::new();
-    };
+    let Some(m) = minutes_since(iso) else { return String::new() };
     if m < 1 {
         "just now".into()
     } else if m < 60 {
@@ -84,23 +80,15 @@ pub fn ago(iso: &str) -> String {
 
 /// A time today as "3:05 PM", any other day as "Oct 7" (the web's `hhmm`).
 pub fn hhmm(iso: &str) -> String {
-    let Some(t) = parse(iso) else {
-        return String::new();
-    };
+    let Some(t) = parse(iso) else { return String::new() };
     let l = local(t);
-    if is_today(t) {
-        l.format("%-I:%M %p").to_string()
-    } else {
-        l.format("%b %-d").to_string()
-    }
+    if is_today(t) { l.format("%-I:%M %p").to_string() } else { l.format("%b %-d").to_string() }
 }
 
 /// A log entry's time: "3:05 PM" today; on an older day the day, then the time on the line
 /// below: "Yesterday\n3:05 PM", "Oct 7\n3:05 PM", "Oct 7, 2025\n3:05 PM" in another year.
 pub fn log_time(iso: &str) -> String {
-    let Some(t) = parse(iso) else {
-        return String::new();
-    };
+    let Some(t) = parse(iso) else { return String::new() };
     let (l, today) = (local(t), local(now()).date_naive());
     let clock = l.format("%-I:%M %p");
     match l.date_naive() {
@@ -113,9 +101,7 @@ pub fn log_time(iso: &str) -> String {
 
 /// "10/7/2026, 3:05:00 PM" (the web's `fullTime`: `toLocaleString()` in en-US).
 pub fn full_time(iso: &str) -> String {
-    parse(iso)
-        .map(|t| local(t).format("%-m/%-d/%Y, %-I:%M:%S %p").to_string())
-        .unwrap_or_default()
+    parse(iso).map(|t| local(t).format("%-m/%-d/%Y, %-I:%M:%S %p").to_string()).unwrap_or_default()
 }
 
 /// A duration in minutes: "under a minute", "12m", "2h 5m", "1d 3h".
@@ -125,17 +111,9 @@ pub fn span(m: i64) -> String {
     } else if m < 60 {
         format!("{m}m")
     } else if m < 60 * 24 {
-        if m % 60 > 0 {
-            format!("{}h {}m", m / 60, m % 60)
-        } else {
-            format!("{}h", m / 60)
-        }
+        if m % 60 > 0 { format!("{}h {}m", m / 60, m % 60) } else { format!("{}h", m / 60) }
     } else {
-        format!(
-            "{}d {}h",
-            m / 1440,
-            ((m % 1440) as f64 / 60.).round() as i64
-        )
+        format!("{}d {}h", m / 1440, ((m % 1440) as f64 / 60.).round() as i64)
     }
 }
 
@@ -149,15 +127,9 @@ pub fn running_for(t: &Value) -> String {
 
 /// "Took 1h" on a done task.
 pub fn took_line(t: &Value) -> String {
-    let (Some(a), Some(b)) = (parse(s(t, "started_at")), parse(s(t, "finished_at"))) else {
-        return String::new();
-    };
+    let (Some(a), Some(b)) = (parse(s(t, "started_at")), parse(s(t, "finished_at"))) else { return String::new() };
     let m = ((b - a).num_seconds() as f64 / 60.).round() as i64;
-    if s(t, "status") != "done" || m < 0 {
-        String::new()
-    } else {
-        format!("Took {}", span(m))
-    }
+    if s(t, "status") != "done" || m < 0 { String::new() } else { format!("Took {}", span(m)) }
 }
 
 /// "Added 5m ago" / "Updated …" / "Asked …" / "Lost …" / "Finished …" / "Stopped …".
@@ -184,25 +156,15 @@ pub fn clock12(hhmm: &str) -> String {
     let mut it = hhmm.split(':').map(|p| p.parse::<u32>().unwrap_or(0));
     let (h, m) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
     let h12 = if h % 12 == 0 { 12 } else { h % 12 };
-    let mm = if m > 0 {
-        format!(":{m:02}")
-    } else {
-        String::new()
-    };
+    let mm = if m > 0 { format!(":{m:02}") } else { String::new() };
     format!("{h12}{mm}{}", if h < 12 { "am" } else { "pm" })
 }
 
 /// A time as "3pm" today or "Thu 6am" another day.
 pub fn day_clock(iso: &str) -> String {
-    let Some(t) = parse(iso) else {
-        return String::new();
-    };
+    let Some(t) = parse(iso) else { return String::new() };
     let l = local(t);
-    let day = if is_today(t) {
-        String::new()
-    } else {
-        format!("{} ", l.format("%a"))
-    };
+    let day = if is_today(t) { String::new() } else { format!("{} ", l.format("%a")) };
     format!("{day}{}", clock12(&l.format("%H:%M").to_string()))
 }
 
@@ -223,11 +185,7 @@ pub fn background_label(background: &Value) -> String {
         (0, 0) => "Running in background".into(),
         (a, 0) => format!("{} running", plural(a, "agent", "agents")),
         (0, c) => format!("{} running", plural(c, "command", "commands")),
-        (a, c) => format!(
-            "{}, {}",
-            plural(a, "agent", "agents"),
-            plural(c, "command", "commands")
-        ),
+        (a, c) => format!("{}, {}", plural(a, "agent", "agents"), plural(c, "command", "commands")),
     }
 }
 
@@ -252,11 +210,7 @@ pub fn ref_of(v: &Value, prefix: &str) -> String {
     match v.get("id").unwrap_or(v) {
         Value::Number(n) => format!("{prefix}{n}"),
         Value::String(s) if !s.is_empty() => {
-            if s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
-                s.to_uppercase()
-            } else {
-                format!("{prefix}{s}")
-            }
+            if s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) { s.to_uppercase() } else { format!("{prefix}{s}") }
         }
         _ => String::new(),
     }
@@ -289,16 +243,14 @@ pub fn i(v: &Value, k: &str) -> i64 {
 
 /// An array field, empty when missing.
 pub fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
-    v.get(k)
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+    v.get(k).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
 }
 
 /// An object field that isn't null.
 pub fn obj<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
     v.get(k).filter(|x| x.is_object())
 }
+
 
 /// The reader's own clock, without the board's skew correction (the web's bare `Date.now()`).
 pub fn device_now() -> DateTime<Utc> {
@@ -316,18 +268,9 @@ mod tests {
 
     #[test]
     fn background_labels_name_what_is_running() {
-        assert_eq!(
-            background_label(&json!({"agents": 2, "commands": 0})),
-            "2 agents running"
-        );
-        assert_eq!(
-            background_label(&json!({"agents": 0, "commands": 1})),
-            "1 command running"
-        );
-        assert_eq!(
-            background_label(&json!({"agents": 1, "commands": 1})),
-            "1 agent, 1 command"
-        );
+        assert_eq!(background_label(&json!({"agents": 2, "commands": 0})), "2 agents running");
+        assert_eq!(background_label(&json!({"agents": 0, "commands": 1})), "1 command running");
+        assert_eq!(background_label(&json!({"agents": 1, "commands": 1})), "1 agent, 1 command");
         assert_eq!(background_label(&json!(null)), "Running in background");
     }
 

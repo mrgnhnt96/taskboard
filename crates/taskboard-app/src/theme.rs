@@ -167,6 +167,7 @@ impl Theme {
             },
         }
     }
+
 }
 
 /// The mode to start in: `TASKBOARD_THEME=dark|light`, else the system appearance.
@@ -184,15 +185,9 @@ pub fn startup_mode(system_dark: bool) -> ThemeMode {
 pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
     use std::borrow::Cow;
     let fonts: Vec<Cow<'static, [u8]>> = vec![
-        Cow::Borrowed(include_bytes!(
-            "../assets/fonts/AtkinsonHyperlegibleNext-Regular.ttf"
-        )),
-        Cow::Borrowed(include_bytes!(
-            "../assets/fonts/AtkinsonHyperlegibleNext-Medium.ttf"
-        )),
-        Cow::Borrowed(include_bytes!(
-            "../assets/fonts/AtkinsonHyperlegibleNext-Bold.ttf"
-        )),
+        Cow::Borrowed(include_bytes!("../assets/fonts/AtkinsonHyperlegibleNext-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/AtkinsonHyperlegibleNext-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/AtkinsonHyperlegibleNext-Bold.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf")),
     ];
@@ -202,10 +197,6 @@ pub fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
     let names = cx.text_system().all_font_names();
     let has = |n: &str| names.iter().any(|x| x == n);
     let ui = if has(UI_FONT) { UI_FONT } else { UI_FALLBACK };
-    let mono = if has(MONO_FONT) {
-        MONO_FONT
-    } else {
-        MONO_FALLBACK
-    };
+    let mono = if has(MONO_FONT) { MONO_FONT } else { MONO_FALLBACK };
     (ui.into(), mono.into())
 }

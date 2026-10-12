@@ -17,20 +17,17 @@ mod backend;
 mod fmt;
 mod hooks;
 mod install;
-#[cfg(test)]
-mod parity;
 mod prefs;
 mod settings;
+#[cfg(test)]
+mod parity;
 mod theme;
 mod ui;
 
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(
-    taskboard,
-    [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings]
-);
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings]);
 
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
@@ -40,16 +37,8 @@ fn main() {
     let backend = backend::from_env();
     // The reader's UI state (the web board's localStorage); the sample board keeps it in memory.
     prefs::init(backend.label() != "fake");
-    let size_env = |k: &str, d: f32| {
-        std::env::var(k)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(d)
-    };
-    let (w, h) = (
-        size_env("TASKBOARD_W", 1360.),
-        size_env("TASKBOARD_H", 860.),
-    );
+    let size_env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (w, h) = (size_env("TASKBOARD_W", 1360.), size_env("TASKBOARD_H", 860.));
     // `taskboard://…` links (clicked notifications) can arrive before the window exists, so
     // they wait in a channel.
     let (link_tx, link_rx) = async_channel::unbounded::<Vec<String>>();
@@ -57,15 +46,8 @@ fn main() {
     application.on_open_urls(move |urls| drop(link_tx.try_send(urls)));
     application.run(move |cx| {
         let (ui_font, mono_font) = theme::load_fonts(cx);
-        let system_dark = matches!(
-            cx.window_appearance(),
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
-        cx.set_global(Theme::new(
-            theme::startup_mode(system_dark),
-            ui_font,
-            mono_font,
-        ));
+        let system_dark = matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+        cx.set_global(Theme::new(theme::startup_mode(system_dark), ui_font, mono_font));
         app::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
@@ -103,7 +85,9 @@ fn main() {
             },
             Menu {
                 name: "File".into(),
-                items: vec![MenuItem::action("Close Window", CloseWindow)],
+                items: vec![
+                    MenuItem::action("Close Window", CloseWindow),
+                ],
                 disabled: false,
             },
             Menu {
@@ -130,22 +114,14 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
         let opts = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Task board".into()),
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(16.), px(16.))),
-            }),
+            titlebar: Some(TitlebarOptions { title: Some("Task board".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(16.))) }),
             window_min_size: Some(size(px(900.), px(560.))),
             app_id: Some("com.mrgnhnt.taskboard".into()),
             focus: std::env::var("TASKBOARD_NO_ACTIVATE").is_err(),
             ..Default::default()
         };
         let b = backend.clone();
-        let handle = cx
-            .open_window(opts, |window, cx| {
-                cx.new(|cx| app::MainWindow::new(b, window, cx))
-            })
-            .expect("open main window");
+        let handle = cx.open_window(opts, |window, cx| cx.new(|cx| app::MainWindow::new(b, window, cx))).expect("open main window");
         cx.spawn(async move |cx| {
             while let Ok(urls) = link_rx.recv().await {
                 cx.update(|cx| {
@@ -158,9 +134,7 @@ fn main() {
         })
         .detach();
         let settings_page = std::env::var("TASKBOARD_PAGE").as_deref() == Ok("settings");
-        let settings = settings_page
-            .then(|| settings::open(backend.clone(), cx))
-            .flatten();
+        let settings = settings_page.then(|| settings::open(backend.clone(), cx)).flatten();
         #[cfg(feature = "snapshot")]
         snapshot(settings.map_or(handle.into(), Into::into), cx);
         let _ = settings;
@@ -178,22 +152,15 @@ fn snapshot(any: AnyWindowHandle, cx: &mut App) {
     let Ok(path) = std::env::var("TASKBOARD_SNAPSHOT") else {
         return;
     };
-    let delay: u64 = std::env::var("TASKBOARD_SNAPSHOT_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1500);
+    let delay: u64 = std::env::var("TASKBOARD_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
     cx.spawn(async move |cx| {
-        cx.background_executor()
-            .timer(std::time::Duration::from_millis(delay))
-            .await;
+        cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
         for _ in 0..2 {
             let _ = cx.update_window(any, |_, window, cx| {
                 window.refresh();
                 window.draw(cx).clear(cx);
             });
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(300))
-                .await;
+            cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
         }
         let _ = cx.update_window(any, |_, window, cx| {
             window.refresh();

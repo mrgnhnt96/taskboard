@@ -28,35 +28,17 @@ pub fn open(backend: Arc<dyn Backend>, cx: &mut App) -> Option<WindowHandle<Sett
     {
         return Some(h);
     }
-    let w: f32 = std::env::var("TASKBOARD_SETTINGS_W")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(900.);
-    let h: f32 = std::env::var("TASKBOARD_SETTINGS_H")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(680.);
+    let w: f32 = std::env::var("TASKBOARD_SETTINGS_W").ok().and_then(|v| v.parse().ok()).unwrap_or(900.);
+    let h: f32 = std::env::var("TASKBOARD_SETTINGS_H").ok().and_then(|v| v.parse().ok()).unwrap_or(680.);
     let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(w), px(h)),
-            cx,
-        ))),
-        titlebar: Some(TitlebarOptions {
-            title: Some("Settings".into()),
-            appears_transparent: true,
-            traffic_light_position: Some(point(px(16.), px(17.))),
-        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx))),
+        titlebar: Some(TitlebarOptions { title: Some("Settings".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
         window_min_size: Some(size(px(720.), px(460.))),
         app_id: Some("com.mrgnhnt.taskboard".into()),
         focus: std::env::var("TASKBOARD_NO_ACTIVATE").is_err(),
         ..Default::default()
     };
-    let h = cx
-        .open_window(opts, |window, cx| {
-            cx.new(|cx| SettingsWindow::new(backend, window, cx))
-        })
-        .ok()?;
+    let h = cx.open_window(opts, |window, cx| cx.new(|cx| SettingsWindow::new(backend, window, cx))).ok()?;
     cx.set_global(SettingsHandle(Some(h)));
     Some(h)
 }
@@ -84,18 +66,10 @@ impl Sec {
 
     fn about(self) -> &'static str {
         match self {
-            Sec::Accounts => {
-                "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers."
-            }
-            Sec::History => {
-                "How far back the Days page goes, and when the board cleans up old work."
-            }
-            Sec::Qa => {
-                "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on."
-            }
-            Sec::Reviewers => {
-                "Who reviews each project's PRs. Agents and tb reviewers change the roster."
-            }
+            Sec::Accounts => "Sign in once. The board and its agents use these to check PRs, comment, push and assign reviewers.",
+            Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
+            Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
+            Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
         }
     }
 
@@ -111,35 +85,16 @@ impl Sec {
 
 /// Each account's card: id, a short mark and its color, and what it's used for.
 const CARDS: [(&str, &str, u32, &str); 3] = [
-    (
-        "github",
-        "GH",
-        0x24292f,
-        "PR checks and reviews, comments, reviewers and git push",
-    ),
-    (
-        "bitbucket",
-        "BB",
-        0x2684ff,
-        "Pull requests, comments, reviewers and git push over HTTPS",
-    ),
-    (
-        "slack",
-        "S",
-        0x4a154b,
-        "Posting and reading messages for the board and its agents",
-    ),
+    ("github", "GH", 0x24292f, "PR checks and reviews, comments, reviewers and git push"),
+    ("bitbucket", "BB", 0x2684ff, "Pull requests, comments, reviewers and git push over HTTPS"),
+    ("slack", "S", 0x4a154b, "Posting and reading messages for the board and its agents"),
 ];
 
 /// What a row's agent line shows, per account.
 fn agent_cli(id: &str) -> &'static str {
     match id {
-        "github" => {
-            "gh pr view 12 --comments   # or: tb api github repos/OWNER/REPO/pulls/12/requested_reviewers -d '{\"reviewers\":[\"sam\"]}'"
-        }
-        "bitbucket" => {
-            "tb api bitbucket repositories/WORKSPACE/REPO/pullrequests/12/comments -d '{\"content\":{\"raw\":\"Looks good\"}}'"
-        }
+        "github" => "gh pr view 12 --comments   # or: tb api github repos/OWNER/REPO/pulls/12/requested_reviewers -d '{\"reviewers\":[\"sam\"]}'",
+        "bitbucket" => "tb api bitbucket repositories/WORKSPACE/REPO/pullrequests/12/comments -d '{\"content\":{\"raw\":\"Looks good\"}}'",
         _ => "tb api slack chat.postMessage -d '{\"channel\":\"#dev\",\"text\":\"PR is ready\"}'",
     }
 }
@@ -229,9 +184,7 @@ impl SettingsWindow {
             loop {
                 cx.background_executor().timer(POLL).await;
                 tick += 1;
-                let Ok(waiting) = this.update(cx, |s, _| s.login().is_some()) else {
-                    break;
-                };
+                let Ok(waiting) = this.update(cx, |s, _| s.login().is_some()) else { break };
                 if waiting || tick % IDLE_TICKS == 0 {
                     if this.update(cx, |s, cx| s.load(false, cx)).is_err() {
                         break;
@@ -246,10 +199,7 @@ impl SettingsWindow {
     fn load_history(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.get("history", &[]) })
-                .await;
+            let r = cx.background_executor().spawn(async move { backend.get("history", &[]) }).await;
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.history = Some(v);
@@ -263,10 +213,7 @@ impl SettingsWindow {
     fn load_reviewers(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.get("reviewers", &[("project", "all".to_string())]) })
-                .await;
+            let r = cx.background_executor().spawn(async move { backend.get("reviewers", &[("project", "all".to_string())]) }).await;
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.reviewers = Some(v);
@@ -280,10 +227,7 @@ impl SettingsWindow {
     fn load_qa(&self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.get("qa", &[]) })
-                .await;
+            let r = cx.background_executor().spawn(async move { backend.get("qa", &[]) }).await;
             let _ = this.update(cx, |s, cx| {
                 if let Ok(v) = r {
                     s.qa = Some(v);
@@ -304,10 +248,7 @@ impl SettingsWindow {
         cx.notify();
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.post("qa", json!({"on": on})) })
-                .await;
+            let r = cx.background_executor().spawn(async move { backend.post("qa", json!({"on": on})) }).await;
             let _ = this.update(cx, |s, cx| {
                 s.qa_busy = false;
                 match r {
@@ -330,26 +271,16 @@ impl SettingsWindow {
         cx.notify();
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.post(path, body) })
-                .await;
+            let r = cx.background_executor().spawn(async move { backend.post(path, body) }).await;
             let _ = this.update(cx, |s, cx| {
                 s.history_busy = false;
                 match r {
                     Ok(v) if path == "history/cleanup" => {
                         let n = &v["removed"];
-                        let total = ["events", "status_changes", "terminal_lines"]
-                            .iter()
-                            .map(|k| n[k].as_i64().unwrap_or(0))
-                            .sum::<i64>();
+                        let total = ["events", "status_changes", "terminal_lines"].iter().map(|k| n[k].as_i64().unwrap_or(0)).sum::<i64>();
                         let days = n["day_rows"].as_i64().unwrap_or(0);
                         s.history_note = Some((
-                            if total + days == 0 {
-                                "Nothing was old enough to remove.".into()
-                            } else {
-                                format!("Removed {total} old events and {days} day summaries.")
-                            },
+                            if total + days == 0 { "Nothing was old enough to remove.".into() } else { format!("Removed {total} old events and {days} day summaries.") },
                             false,
                         ));
                         s.history = Some(v["history"].clone());
@@ -364,37 +295,20 @@ impl SettingsWindow {
     }
 
     fn account(&self, id: &str) -> Value {
-        self.accounts
-            .iter()
-            .find(|a| a["id"] == id)
-            .cloned()
-            .unwrap_or(Value::Null)
+        self.accounts.iter().find(|a| a["id"] == id).cloned().unwrap_or(Value::Null)
     }
 
     /// GitHub's browser sign-in, while it waits: (code, url).
     fn login(&self) -> Option<(String, String)> {
         let l = &self.account("github")["login"];
-        Some((
-            l["code"].as_str()?.to_string(),
-            l["url"]
-                .as_str()
-                .unwrap_or(taskboardd::accounts::GITHUB_DEVICE_URL)
-                .to_string(),
-        ))
+        Some((l["code"].as_str()?.to_string(), l["url"].as_str().unwrap_or(taskboardd::accounts::GITHUB_DEVICE_URL).to_string()))
     }
 
     fn load(&self, fresh: bool, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let q: Vec<(&str, String)> = if fresh {
-                vec![("fresh", "1".into())]
-            } else {
-                vec![]
-            };
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.get("accounts", &q) })
-                .await;
+            let q: Vec<(&str, String)> = if fresh { vec![("fresh", "1".into())] } else { vec![] };
+            let r = cx.background_executor().spawn(async move { backend.get("accounts", &q) }).await;
             let _ = this.update(cx, |s, cx| {
                 match r {
                     Ok(v) => s.got(v, cx),
@@ -416,13 +330,7 @@ impl SettingsWindow {
         self.error = None;
         let gh = self.account("github");
         if !before && gh["connected"] == true && self.opened_code.take().is_some() {
-            self.notes.insert(
-                "github",
-                (
-                    format!("Signed in as @{}.", gh["user"].as_str().unwrap_or("")),
-                    false,
-                ),
-            );
+            self.notes.insert("github", (format!("Signed in as @{}.", gh["user"].as_str().unwrap_or("")), false));
         }
         if let Some((code, _)) = self.login().filter(|(c, _)| !c.is_empty())
             && self.opened_code.as_deref() != Some(code.as_str())
@@ -434,14 +342,7 @@ impl SettingsWindow {
     }
 
     /// `POST accounts/<path>` for an account; the answer is every account's state.
-    fn post(
-        &mut self,
-        id: &'static str,
-        path: String,
-        body: Value,
-        cx: &mut Context<Self>,
-        ok: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
-    ) {
+    fn post(&mut self, id: &'static str, path: String, body: Value, cx: &mut Context<Self>, ok: impl FnOnce(&mut Self, &mut Context<Self>) + 'static) {
         if self.busy.is_some() {
             return;
         }
@@ -450,10 +351,7 @@ impl SettingsWindow {
         cx.notify();
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .background_executor()
-                .spawn(async move { backend.post(&path, body) })
-                .await;
+            let r = cx.background_executor().spawn(async move { backend.post(&path, body) }).await;
             let _ = this.update(cx, |s, cx| {
                 s.busy = None;
                 match r {
@@ -474,44 +372,21 @@ impl SettingsWindow {
     fn sign_in(&mut self, cx: &mut Context<Self>) {
         self.opened_code = None;
         self.browser_opened = false;
-        self.post(
-            "github",
-            "accounts/github/login".into(),
-            json!({}),
-            cx,
-            |_, _| {},
-        );
+        self.post("github", "accounts/github/login".into(), json!({}), cx, |_, _| {});
     }
 
     /// Copies the token `gh` already uses; gh's own sign-in isn't changed.
     fn import_gh(&mut self, cx: &mut Context<Self>) {
-        self.post(
-            "github",
-            "accounts/github/import".into(),
-            json!({}),
-            cx,
-            |s, _| {
-                let a = s.account("github");
-                s.notes.insert(
-                    "github",
-                    (
-                        format!(
-                            "Using gh's sign-in: {}.",
-                            a["detail"].as_str().unwrap_or("connected")
-                        ),
-                        false,
-                    ),
-                );
-            },
-        );
+        self.post("github", "accounts/github/import".into(), json!({}), cx, |s, _| {
+            let a = s.account("github");
+            s.notes.insert("github", (format!("Using gh's sign-in: {}.", a["detail"].as_str().unwrap_or("connected")), false));
+        });
     }
 
     fn connect(&mut self, id: &'static str, cx: &mut Context<Self>) {
         let body = match id {
             "github" => json!({"token": self.gh_token.text(cx)}),
-            "bitbucket" => {
-                json!({"email": self.bb_email.text(cx), "token": self.bb_token.text(cx)})
-            }
+            "bitbucket" => json!({"email": self.bb_email.text(cx), "token": self.bb_token.text(cx)}),
             _ => json!({"token": self.slack_token.text(cx)}),
         };
         self.post(id, format!("accounts/{id}"), body, cx, move |s, cx| {
@@ -524,16 +399,7 @@ impl SettingsWindow {
             s.gh_form = false;
             s.bb_form = false;
             let a = s.account(id);
-            s.notes.insert(
-                id,
-                (
-                    format!(
-                        "Connected as {}.",
-                        a["detail"].as_str().or(a["user"].as_str()).unwrap_or("you")
-                    ),
-                    false,
-                ),
-            );
+            s.notes.insert(id, (format!("Connected as {}.", a["detail"].as_str().or(a["user"].as_str()).unwrap_or("you")), false));
         });
     }
 
@@ -542,14 +408,9 @@ impl SettingsWindow {
         self.copied = Some((text, Instant::now()));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(1500))
-                .await;
+            cx.background_executor().timer(Duration::from_millis(1500)).await;
             let _ = this.update(cx, |s, cx| {
-                if s.copied
-                    .as_ref()
-                    .is_some_and(|(_, at)| at.elapsed() >= Duration::from_millis(1400))
-                {
+                if s.copied.as_ref().is_some_and(|(_, at)| at.elapsed() >= Duration::from_millis(1400)) {
                     s.copied = None;
                     cx.notify();
                 }
@@ -559,12 +420,7 @@ impl SettingsWindow {
     }
 
     /// ↩ connects, esc clears the field.
-    fn field_keys(
-        &self,
-        id: &'static str,
-        field: &Input,
-        cx: &mut Context<Self>,
-    ) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
+    fn field_keys(&self, id: &'static str, field: &Input, cx: &mut Context<Self>) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
         let entity = cx.entity().downgrade();
         let input = field.field.clone();
         move |ev, _, cx| {
@@ -628,18 +484,7 @@ impl Render for SettingsWindow {
                     .flex_col()
                     .child(self.page_header(&t, cx))
                     .when_some(self.error.clone(), |d, e| {
-                        d.child(
-                            div()
-                                .mx(px(28.))
-                                .mb(px(10.))
-                                .px(px(12.))
-                                .py(px(8.))
-                                .rounded(px(8.))
-                                .bg(t.warn_soft)
-                                .text_color(t.warn_fg)
-                                .text_size(px(12.))
-                                .child(format!("taskboardd: {e}")),
-                        )
+                        d.child(div().mx(px(28.)).mb(px(10.)).px(px(12.)).py(px(8.)).rounded(px(8.)).bg(t.warn_soft).text_color(t.warn_fg).text_size(px(12.)).child(format!("taskboardd: {e}")))
                     })
                     .child(body),
             )
@@ -648,30 +493,15 @@ impl Render for SettingsWindow {
 
 impl SettingsWindow {
     fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div()
-            .id("sections")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(1.))
-            .px(px(10.));
+        let mut list = div().id("sections").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(1.)).px(px(10.));
         for sec in SECS {
             let on = self.view == sec;
             // amber count: accounts whose sign-in stopped working or lacks scopes
-            let n = if sec == Sec::Accounts {
-                self.accounts.iter().filter(|a| needs_owner(a)).count()
-            } else {
-                0
-            };
+            let n = if sec == Sec::Accounts { self.accounts.iter().filter(|a| needs_owner(a)).count() } else { 0 };
             let hover = t.panel_2;
             list = list.child(
                 div()
-                    .id(SharedString::from(format!(
-                        "sec-{}",
-                        sec.label().to_lowercase()
-                    )))
+                    .id(SharedString::from(format!("sec-{}", sec.label().to_lowercase())))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -682,31 +512,11 @@ impl SettingsWindow {
                     .cursor_pointer()
                     .when(on, |d| d.bg(t.panel_2).font_weight(FontWeight::SEMIBOLD))
                     .when(!on, |d| d.hover(move |s| s.bg(hover.opacity(0.6))))
-                    .child(
-                        div()
-                            .w(px(15.))
-                            .flex()
-                            .justify_center()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(if on { t.accent } else { t.muted })
-                            .child(sec.glyph()),
-                    )
+                    .child(div().w(px(15.)).flex().justify_center().font_weight(FontWeight::BOLD).text_color(if on { t.accent } else { t.muted }).child(sec.glyph()))
                     .child(div().flex_1().min_w_0().truncate().child(sec.label()))
                     .when(n > 0, |d| {
                         d.child(
-                            div()
-                                .min_w(px(18.))
-                                .h(px(18.))
-                                .px(px(5.))
-                                .rounded(px(9.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::BOLD)
-                                .bg(t.warn)
-                                .text_color(t.on_accent)
-                                .child(n.to_string()),
+                            div().min_w(px(18.)).h(px(18.)).px(px(5.)).rounded(px(9.)).flex().items_center().justify_center().text_size(px(11.)).font_weight(FontWeight::BOLD).bg(t.warn).text_color(t.on_accent).child(n.to_string()),
                         )
                     })
                     .on_click(cx.listener(move |s, _, _, cx| {
@@ -726,13 +536,7 @@ impl SettingsWindow {
             .border_r_1()
             .border_color(t.border)
             // room for the traffic lights; drags the window like a title bar
-            .child(
-                div()
-                    .id("sidebar-drag")
-                    .h(px(48.))
-                    .flex_none()
-                    .on_mouse_down(MouseButton::Left, drag_window),
-            )
+            .child(div().id("sidebar-drag").h(px(48.)).flex_none().on_mouse_down(MouseButton::Left, drag_window))
             .child(list)
             .child(
                 div()
@@ -745,16 +549,8 @@ impl SettingsWindow {
                     .text_size(px(12.))
                     .text_color(t.muted)
                     .child(kit::dot(if live { t.up } else { t.warn }, 7.))
-                    .child(div().flex_1().child(if live {
-                        "Live"
-                    } else if self.loaded {
-                        "Not connected"
-                    } else {
-                        "Connecting…"
-                    }))
-                    .when(self.backend.label() == "fake", |d| {
-                        d.child(kit::tone_pill(t, "goal", "Sample"))
-                    }),
+                    .child(div().flex_1().child(if live { "Live" } else if self.loaded { "Not connected" } else { "Connecting…" }))
+                    .when(self.backend.label() == "fake", |d| d.child(kit::tone_pill(t, "goal", "Sample"))),
             )
     }
 
@@ -778,83 +574,36 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap(px(3.))
-                    .child(
-                        div()
-                            .text_size(px(20.))
-                            .line_height(px(26.))
-                            .font_weight(FontWeight::BOLD)
-                            .truncate()
-                            .child(self.view.label()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.5))
-                            .line_height(px(17.))
-                            .text_color(t.muted)
-                            .child(self.view.about()),
-                    ),
+                    .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::BOLD).truncate().child(self.view.label()))
+                    .child(div().text_size(px(12.5)).line_height(px(17.)).text_color(t.muted).child(self.view.about())),
             )
-            .when(self.view == Sec::Accounts, |d| {
-                d.child(
-                    div()
-                        .id("agent-commands")
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(6.))
-                        .h(px(28.))
-                        .px(px(10.))
-                        .rounded(px(7.))
-                        .border_1()
-                        .text_size(px(12.))
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .map(|d| {
-                            if on {
-                                d.border_color(t.accent)
-                                    .bg(t.accent_soft)
-                                    .text_color(t.text)
-                            } else {
-                                d.border_color(t.border)
-                                    .bg(t.card)
-                                    .text_color(t.muted)
-                                    .hover(move |s| s.text_color(text))
-                            }
-                        })
-                        .tooltip(kit::tip("Show the commands agents run with these accounts"))
-                        .on_click(cx.listener(|s, _, _, cx| {
-                            s.cli = !s.cli;
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .font_family(t.mono_font.clone())
-                                .text_color(if on { t.accent } else { t.muted })
-                                .child("</>"),
-                        )
-                        .child("Agent commands"),
-                )
-            })
+            .when(self.view == Sec::Accounts, |d| d.child(
+                div()
+                    .id("agent-commands")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(6.))
+                    .h(px(28.))
+                    .px(px(10.))
+                    .rounded(px(7.))
+                    .border_1()
+                    .text_size(px(12.))
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .map(|d| if on { d.border_color(t.accent).bg(t.accent_soft).text_color(t.text) } else { d.border_color(t.border).bg(t.card).text_color(t.muted).hover(move |s| s.text_color(text)) })
+                    .tooltip(kit::tip("Show the commands agents run with these accounts"))
+                    .on_click(cx.listener(|s, _, _, cx| {
+                        s.cli = !s.cli;
+                        cx.notify();
+                    }))
+                    .child(div().font_family(t.mono_font.clone()).text_color(if on { t.accent } else { t.muted }).child("</>"))
+                    .child("Agent commands"),
+            ))
     }
 
-    fn accounts_page(
-        &self,
-        t: &Theme,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let mut list = div()
-            .id("settings-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .px(px(28.))
-            .pt(px(4.))
-            .pb(px(28.));
+    fn accounts_page(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div().id("settings-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll).flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         if !self.loaded && self.error.is_none() {
             return list.child(kit::empty(t, "Asking the board…"));
         }
@@ -870,18 +619,10 @@ impl SettingsWindow {
                 card = card.child(r);
             }
             if let Some((text, bad)) = self.notes.get(id) {
-                card = card.child(
-                    row(t, &format!("{id}-note"), false)
-                        .bg(if *bad { t.down_soft } else { t.up_soft })
-                        .text_color(if *bad { t.down } else { t.up_fg })
-                        .text_size(px(12.))
-                        .child(text.clone()),
-                );
+                card = card.child(row(t, &format!("{id}-note"), false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
             }
             if self.cli {
-                card = card
-                    .child(self.cli_line(t, id, "tb accounts", cx))
-                    .child(self.cli_line(t, &format!("{id}-use"), agent_cli(id), cx));
+                card = card.child(self.cli_line(t, id, "tb accounts", cx)).child(self.cli_line(t, &format!("{id}-use"), agent_cli(id), cx));
             }
             let label = a["label"].as_str().unwrap_or(id).to_string();
             let heading = div()
@@ -907,21 +648,8 @@ impl SettingsWindow {
                         .child(mark),
                 )
                 .child(div().text_color(t.text).child(label))
-                .child(
-                    div()
-                        .font_weight(FontWeight::NORMAL)
-                        .text_size(px(11.5))
-                        .truncate()
-                        .child(format!("· {about}")),
-                );
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(heading)
-                    .child(card),
-            );
+                .child(div().font_weight(FontWeight::NORMAL).text_size(px(11.5)).truncate().child(format!("· {about}")));
+            list = list.child(div().flex().flex_col().gap(px(8.)).child(heading).child(card));
         }
         list.child(
             div()
@@ -935,13 +663,7 @@ impl SettingsWindow {
 
     // -------------------------------------------------------------- accounts
 
-    fn github_rows(
-        &self,
-        t: &Theme,
-        a: &Value,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    fn github_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let busy = self.busy == Some("github");
         let has_gh = a["gh"] != false;
         let mut rows = vec![];
@@ -950,57 +672,25 @@ impl SettingsWindow {
             return rows;
         }
         if a["connected"] == true {
-            rows.push(self.signed_in_row(
-                t,
-                "github",
-                a,
-                "Taskboard's own token",
-                "Disconnect",
-                cx,
-            ));
+            rows.push(self.signed_in_row(t, "github", a, "Taskboard's own token", "Disconnect", cx));
             if a["reauth"] == true {
                 let btn = if !has_gh {
-                    kit::btn_primary(t, "gh-reauth", "Use a new token")
-                        .h(px(26.))
-                        .text_size(px(12.))
-                        .on_click(cx.listener(|s, _, window, cx| {
-                            s.gh_form = true;
-                            window.focus(&s.gh_token.focus, cx);
-                            cx.notify();
-                        }))
+                    kit::btn_primary(t, "gh-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
+                        s.gh_form = true;
+                        window.focus(&s.gh_token.focus, cx);
+                        cx.notify();
+                    }))
                 } else if busy {
-                    kit::disabled(
-                        kit::btn_primary(t, "gh-reauth", "Starting…")
-                            .h(px(26.))
-                            .text_size(px(12.)),
-                    )
+                    kit::disabled(kit::btn_primary(t, "gh-reauth", "Starting…").h(px(26.)).text_size(px(12.)))
                 } else {
-                    kit::btn_primary(t, "gh-reauth", "Sign in again")
-                        .h(px(26.))
-                        .text_size(px(12.))
-                        .on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
+                    kit::btn_primary(t, "gh-reauth", "Sign in again").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
                 };
-                rows.push(reauth_row(
-                    t,
-                    "github",
-                    a,
-                    "Sign in again (or use a token that has them).",
-                    btn.into_any_element(),
-                ));
+                rows.push(reauth_row(t, "github", a, "Sign in again (or use a token that has them).", btn.into_any_element()));
             }
             rows.push(push_row(t, "github", "github.com"));
         } else {
-            let sign_in = if busy {
-                kit::disabled(
-                    kit::btn_primary(t, "gh-sign-in", "Starting…")
-                        .h(px(26.))
-                        .text_size(px(12.)),
-                )
-            } else {
-                kit::btn_primary(t, "gh-sign-in", "Sign in with GitHub")
-                    .h(px(26.))
-                    .text_size(px(12.))
-                    .on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
+            let sign_in = if busy { kit::disabled(kit::btn_primary(t, "gh-sign-in", "Starting…").h(px(26.)).text_size(px(12.))) } else {
+                kit::btn_primary(t, "gh-sign-in", "Sign in with GitHub").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, _, cx| s.sign_in(cx)))
             };
             let note = if has_gh {
                 "Opens GitHub in your browser with a one-time code. Taskboard keeps its own token; gh's sign-in isn't changed."
@@ -1037,64 +727,26 @@ impl SettingsWindow {
         rows
     }
 
-    fn bitbucket_rows(
-        &self,
-        t: &Theme,
-        a: &Value,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    fn bitbucket_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![];
         let connected = a["connected"] == true;
         if connected {
-            rows.push(self.signed_in_row(
-                t,
-                "bitbucket",
-                a,
-                "API token in the Keychain (taskboard-bitbucket)",
-                "Disconnect",
-                cx,
-            ));
+            rows.push(self.signed_in_row(t, "bitbucket", a, "API token in the Keychain (taskboard-bitbucket)", "Disconnect", cx));
             if a["reauth"] == true && !self.bb_form {
-                let btn = kit::btn_primary(t, "bb-reauth", "Use a new token")
-                    .h(px(26.))
-                    .text_size(px(12.))
-                    .on_click(cx.listener(|s, _, window, cx| {
-                        s.bb_form = true;
-                        window.focus(&s.bb_email.focus, cx);
-                        cx.notify();
-                    }));
-                rows.push(reauth_row(
-                    t,
-                    "bitbucket",
-                    a,
-                    "Make a new API token with them and connect it.",
-                    btn.into_any_element(),
-                ));
+                let btn = kit::btn_primary(t, "bb-reauth", "Use a new token").h(px(26.)).text_size(px(12.)).on_click(cx.listener(|s, _, window, cx| {
+                    s.bb_form = true;
+                    window.focus(&s.bb_email.focus, cx);
+                    cx.notify();
+                }));
+                rows.push(reauth_row(t, "bitbucket", a, "Make a new API token with them and connect it.", btn.into_any_element()));
             } else if let Some(note) = a["note"].as_str() {
                 rows.push(off_row(t, "bitbucket", a, note));
             }
             rows.push(push_row(t, "bitbucket", "bitbucket.org"));
         }
         if !connected || self.bb_form {
-            let email = self
-                .bb_email
-                .render(t, "bb-email", window)
-                .w(px(260.))
-                .on_key_down(self.field_keys("bitbucket", &self.bb_email, cx));
-            rows.push(
-                line(
-                    t,
-                    "bb-email-row",
-                    !connected,
-                    false,
-                    "Atlassian email",
-                    "The email you sign in to Bitbucket with.",
-                    None,
-                )
-                .child(email)
-                .into_any_element(),
-            );
+            let email = self.bb_email.render(t, "bb-email", window).w(px(260.)).on_key_down(self.field_keys("bitbucket", &self.bb_email, cx));
+            rows.push(line(t, "bb-email-row", !connected, false, "Atlassian email", "The email you sign in to Bitbucket with.", None).child(email).into_any_element());
             rows.push(self.token_row(
                 t,
                 "bitbucket",
@@ -1105,35 +757,16 @@ impl SettingsWindow {
                 cx,
                 false,
             ));
-            rows.push(link_row(
-                t,
-                "bb-create",
-                "Create an API token",
-                taskboardd::accounts::BITBUCKET_TOKEN_URL,
-                cx,
-            ));
+            rows.push(link_row(t, "bb-create", "Create an API token", taskboardd::accounts::BITBUCKET_TOKEN_URL, cx));
         }
         rows.extend(error_row(t, "bitbucket", a));
         rows
     }
 
-    fn slack_rows(
-        &self,
-        t: &Theme,
-        a: &Value,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    fn slack_rows(&self, t: &Theme, a: &Value, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![];
         if a["connected"] == true {
-            rows.push(self.signed_in_row(
-                t,
-                "slack",
-                a,
-                "Token in the Keychain (taskboard-slack)",
-                "Disconnect",
-                cx,
-            ));
+            rows.push(self.signed_in_row(t, "slack", a, "Token in the Keychain (taskboard-slack)", "Disconnect", cx));
         } else {
             rows.push(self.token_row(
                 t,
@@ -1145,13 +778,7 @@ impl SettingsWindow {
                 cx,
                 true,
             ));
-            rows.push(link_row(
-                t,
-                "slack-apps",
-                "Open your Slack apps",
-                taskboardd::accounts::SLACK_APPS_URL,
-                cx,
-            ));
+            rows.push(link_row(t, "slack-apps", "Open your Slack apps", taskboardd::accounts::SLACK_APPS_URL, cx));
         }
         rows.extend(error_row(t, "slack", a));
         rows
@@ -1159,26 +786,9 @@ impl SettingsWindow {
 
     /// GitHub's browser sign-in: the code (already on the clipboard, and it says so), then a button
     /// that opens github.com/login/device, then what happens next.
-    fn github_code(
-        &self,
-        t: &Theme,
-        code: String,
-        url: String,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn github_code(&self, t: &Theme, code: String, url: String, cx: &mut Context<Self>) -> AnyElement {
         // 1 is done as soon as the code is copied; 2 is what's left.
-        let done = div()
-            .size(px(22.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .bg(t.up_soft)
-            .text_color(t.up_fg)
-            .text_size(px(12.))
-            .font_weight(FontWeight::BOLD)
-            .child("✓");
+        let done = div().size(px(22.)).flex().flex_none().items_center().justify_center().rounded_full().bg(t.up_soft).text_color(t.up_fg).text_size(px(12.)).font_weight(FontWeight::BOLD).child("✓");
         let step = |n: &str, on: bool| {
             div()
                 .size(px(22.))
@@ -1189,60 +799,22 @@ impl SettingsWindow {
                 .rounded_full()
                 .text_size(px(12.))
                 .font_weight(FontWeight::BOLD)
-                .map(|d| {
-                    if on {
-                        d.bg(t.accent_btn).text_color(t.on_accent)
-                    } else {
-                        d.bg(t.card)
-                            .border_1()
-                            .border_color(t.accent_line)
-                            .text_color(t.accent_fg)
-                    }
-                })
+                .map(|d| if on { d.bg(t.accent_btn).text_color(t.on_accent) } else { d.bg(t.card).border_1().border_color(t.accent_line).text_color(t.accent_fg) })
                 .child(n.to_string())
         };
         let head = div()
             .flex()
             .items_center()
             .gap(px(12.))
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Finish signing in on GitHub"),
-            )
-            .child(
-                kit::btn_small(t, "gh-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| {
-                    s.opened_code = None;
-                    s.browser_opened = false;
-                    s.post(
-                        "github",
-                        "accounts/github/cancel".into(),
-                        json!({}),
-                        cx,
-                        |_, _| {},
-                    );
-                })),
-            );
-        let panel = div()
-            .id("gh-code")
-            .flex()
-            .flex_col()
-            .gap(px(14.))
-            .px(px(16.))
-            .py(px(14.))
-            .bg(t.accent_soft)
-            .child(head);
+            .child(div().flex_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Finish signing in on GitHub"))
+            .child(kit::btn_small(t, "gh-cancel", "Cancel").on_click(cx.listener(|s, _, _, cx| {
+                s.opened_code = None;
+                s.browser_opened = false;
+                s.post("github", "accounts/github/cancel".into(), json!({}), cx, |_, _| {});
+            })));
+        let panel = div().id("gh-code").flex().flex_col().gap(px(14.)).px(px(16.)).py(px(14.)).bg(t.accent_soft).child(head);
         if code.is_empty() {
-            return panel
-                .child(
-                    div()
-                        .text_size(px(12.5))
-                        .text_color(t.muted)
-                        .child("Getting a code from GitHub…"),
-                )
-                .into_any_element();
+            return panel.child(div().text_size(px(12.5)).text_color(t.muted).child("Getting a code from GitHub…")).into_any_element();
         }
         let flashed = self.copied.as_ref().is_some_and(|(c, _)| *c == code);
         let c = code.clone();
@@ -1262,29 +834,9 @@ impl SettingsWindow {
             .tooltip(kit::tip("Copy it again"))
             .on_click(cx.listener(move |s, _, _, cx| s.copy(c.clone(), cx)))
             .child(code.clone());
-        let copied = kit::pill(
-            t.up_fg,
-            t.up_soft,
-            if flashed {
-                "✓ Copied again"
-            } else {
-                "✓ Copied to your clipboard"
-            },
-        )
-        .h(px(26.))
-        .px(px(11.))
-        .text_size(px(12.5));
+        let copied = kit::pill(t.up_fg, t.up_soft, if flashed { "✓ Copied again" } else { "✓ Copied to your clipboard" }).h(px(26.)).px(px(11.)).text_size(px(12.5));
         let opened = self.browser_opened;
-        let open = kit::btn_primary(
-            t,
-            "gh-open",
-            if opened {
-                "Open GitHub again ↗"
-            } else {
-                "Open GitHub and paste it ↗"
-            },
-        )
-        .on_click(cx.listener(move |s, _, _, cx| {
+        let open = kit::btn_primary(t, "gh-open", if opened { "Open GitHub again ↗" } else { "Open GitHub and paste it ↗" }).on_click(cx.listener(move |s, _, _, cx| {
             if let Some((code, _)) = s.login() {
                 cx.write_to_clipboard(ClipboardItem::new_string(code));
             }
@@ -1292,176 +844,48 @@ impl SettingsWindow {
             s.browser_opened = true;
             cx.notify();
         }));
-        let line1 = div()
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .child(done)
-            .child(chip)
-            .child(copied);
+        let line1 = div().flex().items_center().gap(px(12.)).child(done).child(chip).child(copied);
         let line2 = div()
             .flex()
             .items_center()
             .gap(px(12.))
             .child(step("2", true))
             .child(open)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(12.5))
-                    .text_color(t.text_2)
-                    .child("Press ⌘V in the code boxes, then Continue and Authorize."),
-            );
+            .child(div().flex_1().min_w_0().text_size(px(12.5)).text_color(t.text_2).child("Press ⌘V in the code boxes, then Continue and Authorize."));
         let after = if opened {
             "Waiting for you to approve on GitHub. This updates by itself. Page didn't load? Open it again: the code works for 15 minutes."
         } else {
             "Nothing to type: the code is already copied, so you only paste it."
         };
-        panel
-            .child(line1)
-            .child(line2)
-            .child(
-                div()
-                    .text_size(px(11.5))
-                    .line_height(px(15.))
-                    .text_color(t.muted)
-                    .child(after),
-            )
-            .into_any_element()
+        panel.child(line1).child(line2).child(div().text_size(px(11.5)).line_height(px(15.)).text_color(t.muted).child(after)).into_any_element()
     }
 
     /// "Name · detail · scopes" with Check and Sign out / Disconnect.
-    fn signed_in_row(
-        &self,
-        t: &Theme,
-        id: &'static str,
-        a: &Value,
-        how: &str,
-        out: &str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn signed_in_row(&self, t: &Theme, id: &'static str, a: &Value, how: &str, out: &str, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.busy == Some(id);
-        let name = a["name"]
-            .as_str()
-            .or(a["user"].as_str())
-            .unwrap_or("Connected")
-            .to_string();
-        let scopes: Vec<&str> = a["scopes"]
-            .as_array()
-            .map(|s| s.iter().filter_map(|x| x.as_str()).collect())
-            .unwrap_or_default();
+        let name = a["name"].as_str().or(a["user"].as_str()).unwrap_or("Connected").to_string();
+        let scopes: Vec<&str> = a["scopes"].as_array().map(|s| s.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
         let detail = a["detail"].as_str().unwrap_or("");
-        let note = [detail, how]
-            .iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let check = kit::btn_small(
-            t,
-            SharedString::from(format!("{id}-check")),
-            if busy { "Checking…" } else { "Check" },
-        );
-        let check = if busy {
-            kit::disabled(check)
-        } else {
-            check
-                .tooltip(kit::tip("Ask the service whether the token still works"))
-                .on_click(cx.listener(move |s, _, _, cx| {
-                    s.post(id, format!("accounts/{id}/check"), json!({}), cx, |_, _| {})
-                }))
-        };
-        let out_btn = kit::btn_small(t, SharedString::from(format!("{id}-out")), out.to_string())
-            .text_color(t.down);
-        let out_btn = if busy {
-            kit::disabled(out_btn)
-        } else {
-            out_btn.on_click(cx.listener(move |s, _, _, cx| {
-                s.post(
-                    id,
-                    format!("accounts/{id}/disconnect"),
-                    json!({}),
-                    cx,
-                    |_, _| {},
-                )
-            }))
-        };
+        let note = [detail, how].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+        let check = kit::btn_small(t, SharedString::from(format!("{id}-check")), if busy { "Checking…" } else { "Check" });
+        let check = if busy { kit::disabled(check) } else { check.tooltip(kit::tip("Ask the service whether the token still works")).on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/check"), json!({}), cx, |_, _| {}))) };
+        let out_btn = kit::btn_small(t, SharedString::from(format!("{id}-out")), out.to_string()).text_color(t.down);
+        let out_btn = if busy { kit::disabled(out_btn) } else { out_btn.on_click(cx.listener(move |s, _, _, cx| s.post(id, format!("accounts/{id}/disconnect"), json!({}), cx, |_, _| {}))) };
         let tip = "Forgets Taskboard's token. gh and git on this Mac aren't touched.";
-        line(
-            t,
-            &format!("{id}-in"),
-            true,
-            false,
-            "",
-            &note,
-            Some((&name, true)),
-        )
-        .when(!scopes.is_empty(), |d| {
-            d.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(4.))
-                    .max_w(px(260.))
-                    .justify_end()
-                    .children(
-                        scopes
-                            .into_iter()
-                            .take(6)
-                            .map(|s| kit::chip(t, s.to_string())),
-                    ),
-            )
-        })
-        .child(
-            controls()
-                .child(check)
-                .child(out_btn.tooltip(kit::tip(tip))),
-        )
-        .into_any_element()
+        line(t, &format!("{id}-in"), true, false, "", &note, Some((&name, true)))
+            .when(!scopes.is_empty(), |d| d.child(div().flex().flex_wrap().gap(px(4.)).max_w(px(260.)).justify_end().children(scopes.into_iter().take(6).map(|s| kit::chip(t, s.to_string())))))
+            .child(controls().child(check).child(out_btn.tooltip(kit::tip(tip))))
+            .into_any_element()
     }
 
     /// A secret field with Connect (↩).
     #[allow(clippy::too_many_arguments)]
-    fn token_row(
-        &self,
-        t: &Theme,
-        id: &'static str,
-        label: &str,
-        note: &str,
-        field: &Input,
-        window: &Window,
-        cx: &mut Context<Self>,
-        first: bool,
-    ) -> AnyElement {
+    fn token_row(&self, t: &Theme, id: &'static str, label: &str, note: &str, field: &Input, window: &Window, cx: &mut Context<Self>, first: bool) -> AnyElement {
         let busy = self.busy == Some(id);
-        let input = field
-            .render(t, SharedString::from(format!("{id}-token")), window)
-            .w(px(260.))
-            .on_key_down(self.field_keys(id, field, cx));
-        let btn = kit::btn_primary(
-            t,
-            SharedString::from(format!("{id}-connect")),
-            if busy { "Checking…" } else { "Connect" },
-        )
-        .h(px(32.))
-        .text_size(px(12.5));
-        let btn = if busy {
-            kit::disabled(btn)
-        } else {
-            btn.on_click(cx.listener(move |s, _, _, cx| s.connect(id, cx)))
-        };
-        line(
-            t,
-            &format!("{id}-token-row"),
-            first,
-            false,
-            label,
-            note,
-            None,
-        )
-        .child(controls().child(input).child(btn))
-        .into_any_element()
+        let input = field.render(t, SharedString::from(format!("{id}-token")), window).w(px(260.)).on_key_down(self.field_keys(id, field, cx));
+        let btn = kit::btn_primary(t, SharedString::from(format!("{id}-connect")), if busy { "Checking…" } else { "Connect" }).h(px(32.)).text_size(px(12.5));
+        let btn = if busy { kit::disabled(btn) } else { btn.on_click(cx.listener(move |s, _, _, cx| s.connect(id, cx))) };
+        line(t, &format!("{id}-token-row"), first, false, label, note, None).child(controls().child(input).child(btn)).into_any_element()
     }
 
     fn cli_line(&self, t: &Theme, id: &str, cli: &str, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1518,70 +942,29 @@ fn days_label(n: i64) -> String {
 
 /// "4.2 MB", "820 KB".
 fn bytes_label(b: i64) -> String {
-    if b >= 1_000_000 {
-        format!("{:.1} MB", b as f64 / 1_000_000.0)
-    } else {
-        format!("{} KB", (b as f64 / 1000.0).ceil() as i64)
-    }
+    if b >= 1_000_000 { format!("{:.1} MB", b as f64 / 1_000_000.0) } else { format!("{} KB", (b as f64 / 1000.0).ceil() as i64) }
 }
 
 impl SettingsWindow {
     fn history_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let list = div()
-            .id("history-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .px(px(28.))
-            .pt(px(4.))
-            .pb(px(28.));
+        let list = div().id("history-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         let Some(h) = self.history.clone() else {
             return list.child(kit::empty(t, "Asking the board…"));
         };
-        let pick =
-            |key: &'static str, label: &str, note: &str, first: bool, cx: &mut Context<Self>| {
-                let choices: Vec<i64> = h[format!("{key}_choices")]
-                    .as_array()
-                    .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
-                    .unwrap_or_default();
-                let cur = h[key].as_i64().unwrap_or(0);
-                let labels: Vec<String> = choices.iter().map(|n| days_label(*n)).collect();
-                let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
-                let on = choices.iter().position(|n| *n == cur).unwrap_or(usize::MAX);
-                let control = kit::seg(t, &format!("hist-{key}"), &refs, on, |i, item| {
-                    let n = choices[i];
-                    item.on_click(cx.listener(move |s, _, _, cx| {
-                        s.post_history("history", json!({key: n}), cx)
-                    }))
-                });
-                line(
-                    t,
-                    &format!("hist-{key}-row"),
-                    first,
-                    false,
-                    label,
-                    note,
-                    None,
-                )
-                .child(controls().child(control))
-            };
-        let detail = pick(
-            "detail_days",
-            "Keep every event for",
-            "Commits, questions, checkpoints and status changes of finished tasks: the marks on a day's timeline and its task log.",
-            true,
-            cx,
-        );
-        let summary = pick(
-            "summary_days",
-            "Keep day summaries for",
-            "One small record per day and project: the timeline bars and totals the week views use.",
-            false,
-            cx,
-        );
+        let pick = |key: &'static str, label: &str, note: &str, first: bool, cx: &mut Context<Self>| {
+            let choices: Vec<i64> = h[format!("{key}_choices")].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default();
+            let cur = h[key].as_i64().unwrap_or(0);
+            let labels: Vec<String> = choices.iter().map(|n| days_label(*n)).collect();
+            let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            let on = choices.iter().position(|n| *n == cur).unwrap_or(usize::MAX);
+            let control = kit::seg(t, &format!("hist-{key}"), &refs, on, |i, item| {
+                let n = choices[i];
+                item.on_click(cx.listener(move |s, _, _, cx| s.post_history("history", json!({key: n}), cx)))
+            });
+            line(t, &format!("hist-{key}-row"), first, false, label, note, None).child(controls().child(control))
+        };
+        let detail = pick("detail_days", "Keep every event for", "Commits, questions, checkpoints and status changes of finished tasks: the marks on a day's timeline and its task log.", true, cx);
+        let summary = pick("summary_days", "Keep day summaries for", "One small record per day and project: the timeline bars and totals the week views use.", false, cx);
         let i = |k: &str| h[k].as_i64().unwrap_or(0);
         let used = line(
             t,
@@ -1589,50 +972,19 @@ impl SettingsWindow {
             false,
             false,
             "Space used",
-            &format!(
-                "{} events ({}) and {} day summaries ({})",
-                i("events"),
-                bytes_label(i("events_bytes")),
-                i("summaries"),
-                bytes_label(i("summaries_bytes"))
-            ),
+            &format!("{} events ({}) and {} day summaries ({})", i("events"), bytes_label(i("events_bytes")), i("summaries"), bytes_label(i("summaries_bytes"))),
             None,
         );
-        let last = h["last_cleanup"]
-            .as_str()
-            .map(crate::fmt::full_time)
-            .unwrap_or_else(|| "not yet".into());
+        let last = h["last_cleanup"].as_str().map(crate::fmt::full_time).unwrap_or_else(|| "not yet".into());
         let button = if self.history_busy {
             kit::disabled(kit::btn_small(t, "hist-clean", "Cleaning up…"))
         } else {
-            kit::btn_small(t, "hist-clean", "Clean up now").on_click(
-                cx.listener(|s, _, _, cx| s.post_history("history/cleanup", json!({}), cx)),
-            )
+            kit::btn_small(t, "hist-clean", "Clean up now").on_click(cx.listener(|s, _, _, cx| s.post_history("history/cleanup", json!({}), cx)))
         };
-        let clean = line(
-            t,
-            "hist-clean-row",
-            false,
-            false,
-            "Cleanup",
-            &format!("Runs every night after 3 AM. Last run: {last}."),
-            None,
-        )
-        .child(controls().child(button));
-        let mut card = kit::card(t)
-            .overflow_hidden()
-            .child(detail)
-            .child(summary)
-            .child(used)
-            .child(clean);
+        let clean = line(t, "hist-clean-row", false, false, "Cleanup", &format!("Runs every night after 3 AM. Last run: {last}."), None).child(controls().child(button));
+        let mut card = kit::card(t).overflow_hidden().child(detail).child(summary).child(used).child(clean);
         if let Some((text, bad)) = &self.history_note {
-            card = card.child(
-                row(t, "hist-note", false)
-                    .bg(if *bad { t.down_soft } else { t.up_soft })
-                    .text_color(if *bad { t.down } else { t.up_fg })
-                    .text_size(px(12.))
-                    .child(text.clone()),
-            );
+            card = card.child(row(t, "hist-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
         }
         list.child(card)
     }
@@ -1642,17 +994,7 @@ impl SettingsWindow {
 
 impl SettingsWindow {
     fn qa_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let list = div()
-            .id("qa-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .px(px(28.))
-            .pt(px(4.))
-            .pb(px(28.));
+        let list = div().id("qa-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         let Some(q) = self.qa.clone() else {
             return list.child(kit::empty(t, "Asking the board…"));
         };
@@ -1664,50 +1006,30 @@ impl SettingsWindow {
         } else {
             "Needs Jira: set up [jira] in ~/.config/taskboard/config.toml first."
         };
-        let control = kit::seg(
-            t,
-            "qa-on",
-            &["Off", "On"],
-            if on { 1 } else { 0 },
-            |i, item| {
-                if jira && !self.qa_busy {
-                    item.on_click(cx.listener(move |s, _, _, cx| s.post_qa(i == 1, cx)))
-                } else {
-                    item
-                }
-            },
-        );
-        let switch = line(t, "qa-on-row", true, !jira, "Read QA comments", note, None)
-            .child(controls().child(control));
+        let control = kit::seg(t, "qa-on", &["Off", "On"], if on { 1 } else { 0 }, |i, item| {
+            if jira && !self.qa_busy {
+                item.on_click(cx.listener(move |s, _, _, cx| s.post_qa(i == 1, cx)))
+            } else {
+                item
+            }
+        });
+        let switch = line(t, "qa-on-row", true, !jira, "Read QA comments", note, None).child(controls().child(control));
         let mut card = kit::card(t).overflow_hidden().child(switch);
         if on {
             let i = |k: &str| q[k].as_i64().unwrap_or(0);
-            let checked = q["checked_at"]
-                .as_str()
-                .map(crate::fmt::full_time)
-                .unwrap_or_else(|| "not yet".into());
+            let checked = q["checked_at"].as_str().map(crate::fmt::full_time).unwrap_or_else(|| "not yet".into());
             card = card.child(line(
                 t,
                 "qa-state",
                 false,
                 false,
                 "Comments",
-                &format!(
-                    "{} read, {} waiting on you. Last checked Jira: {checked}.",
-                    i("comments"),
-                    i("waiting")
-                ),
+                &format!("{} read, {} waiting on you. Last checked Jira: {checked}.", i("comments"), i("waiting")),
                 None,
             ));
         }
         if let Some((text, bad)) = &self.qa_note {
-            card = card.child(
-                row(t, "qa-note", false)
-                    .bg(if *bad { t.down_soft } else { t.up_soft })
-                    .text_color(if *bad { t.down } else { t.up_fg })
-                    .text_size(px(12.))
-                    .child(text.clone()),
-            );
+            card = card.child(row(t, "qa-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
         }
         list.child(card)
     }
@@ -1718,30 +1040,15 @@ impl SettingsWindow {
 /// What a reviewer's row says about them: their accounts, pin, bot, pace and asks.
 pub(crate) fn reviewer_note(r: &Value) -> String {
     let mut bits: Vec<String> = vec![];
-    let mut ids: Vec<String> = r["user"]
-        .as_str()
-        .map(|u| vec![u.to_string()])
-        .unwrap_or_default();
+    let mut ids: Vec<String> = r["user"].as_str().map(|u| vec![u.to_string()]).unwrap_or_default();
     for k in ["emails", "aliases"] {
-        ids.extend(
-            r[k].as_array()
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|x| x.as_str().map(|s| s.to_string())),
-        );
+        ids.extend(r[k].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x.as_str().map(|s| s.to_string())));
     }
     if !ids.is_empty() {
         bits.push(ids.join(", "));
     }
     if r["bot"].is_object() {
-        bits.push(format!(
-            "Bot every {}h",
-            r["bot"]["every_h"]
-                .as_f64()
-                .map(|h| format!("{h}"))
-                .unwrap_or_default()
-        ));
+        bits.push(format!("Bot every {}h", r["bot"]["every_h"].as_f64().map(|h| format!("{h}")).unwrap_or_default()));
     }
     if let Some(a) = r["automation"].as_f64().filter(|a| (*a - 1.0).abs() > 1e-9) {
         bits.push(format!("Automation {a}"));
@@ -1757,29 +1064,14 @@ pub(crate) fn reviewer_note(r: &Value) -> String {
         bits.push(format!("Last asked {}", crate::fmt::full_time(at)));
     }
     if r["removed"] == true {
-        bits.push(
-            r["removed_why"]
-                .as_str()
-                .map(|w| format!("Removed: {w}"))
-                .unwrap_or_else(|| "Removed".into()),
-        );
+        bits.push(r["removed_why"].as_str().map(|w| format!("Removed: {w}")).unwrap_or_else(|| "Removed".into()));
     }
     bits.join(" · ")
 }
 
 impl SettingsWindow {
     fn reviewers_page(&self, t: &Theme) -> impl IntoElement {
-        let mut list = div()
-            .id("reviewer-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .px(px(28.))
-            .pt(px(4.))
-            .pb(px(28.));
+        let mut list = div().id("reviewer-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
         let Some(v) = self.reviewers.clone() else {
             return list.child(kit::empty(t, "Asking the board…"));
         };
@@ -1790,25 +1082,10 @@ impl SettingsWindow {
         for p in projects {
             let name = p["name"].as_str().unwrap_or("").to_string();
             let mut card = kit::card(t).overflow_hidden();
-            for (i, r) in p["reviewers"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-            {
+            for (i, r) in p["reviewers"].as_array().cloned().unwrap_or_default().iter().enumerate() {
                 let id = format!("rev-{}", r["id"]);
                 let removed = r["removed"] == true;
-                let mut l = line(
-                    t,
-                    &id,
-                    i == 0,
-                    false,
-                    r["name"].as_str().unwrap_or(""),
-                    &reviewer_note(r),
-                    None,
-                )
-                .when(removed, |d| d.text_color(t.muted));
+                let mut l = line(t, &id, i == 0, false, r["name"].as_str().unwrap_or(""), &reviewer_note(r), None).when(removed, |d| d.text_color(t.muted));
                 if r["pinned"] == true {
                     l = l.child(kit::tone_pill(t, "review", "Pinned"));
                 }
@@ -1817,20 +1094,8 @@ impl SettingsWindow {
                 }
                 card = card.child(l);
             }
-            let heading = div()
-                .px(px(4.))
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t.text)
-                .child(name);
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(heading)
-                    .child(card),
-            );
+            let heading = div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(name);
+            list = list.child(div().flex().flex_col().gap(px(8.)).child(heading).child(card));
         }
         list
     }
@@ -1840,27 +1105,11 @@ impl SettingsWindow {
 
 /// A row's shell: padding and the line above every row but the first.
 fn row(t: &Theme, id: &str, first: bool) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(id.to_string()))
-        .flex()
-        .items_center()
-        .gap(px(16.))
-        .px(px(16.))
-        .py(px(9.))
-        .min_h(px(46.))
-        .when(!first, |d| d.border_t_1().border_color(t.border))
+    div().id(SharedString::from(id.to_string())).flex().items_center().gap(px(16.)).px(px(16.)).py(px(9.)).min_h(px(46.)).when(!first, |d| d.border_t_1().border_color(t.border))
 }
 
 /// A row with a name (or `title`, bold) and what it means; the caller adds its controls.
-fn line(
-    t: &Theme,
-    id: &str,
-    first: bool,
-    warn: bool,
-    label: &str,
-    note: &str,
-    title: Option<(&str, bool)>,
-) -> Stateful<Div> {
+fn line(t: &Theme, id: &str, first: bool, warn: bool, label: &str, note: &str, title: Option<(&str, bool)>) -> Stateful<Div> {
     let label = title.map_or(label.to_string(), |(s, _)| s.to_string());
     row(t, id, first).when(warn, |d| d.bg(t.warn_soft)).child(
         div()
@@ -1868,22 +1117,8 @@ fn line(
             .min_w(px(150.))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .when(title.is_some_and(|(_, b)| b), |d| {
-                        d.font_weight(FontWeight::SEMIBOLD)
-                    })
-                    .child(label),
-            )
-            .when(!note.is_empty(), |d| {
-                d.child(
-                    div()
-                        .text_size(px(11.5))
-                        .line_height(px(15.))
-                        .text_color(if warn { t.warn_fg } else { t.muted })
-                        .child(note.to_string()),
-                )
-            }),
+            .child(div().when(title.is_some_and(|(_, b)| b), |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
+            .when(!note.is_empty(), |d| d.child(div().text_size(px(11.5)).line_height(px(15.)).text_color(if warn { t.warn_fg } else { t.muted }).child(note.to_string()))),
     )
 }
 
@@ -1898,49 +1133,19 @@ fn needs_owner(a: &Value) -> bool {
 
 /// Amber: the scopes Taskboard now needs that this sign-in lacks, and how to give them.
 fn reauth_row(t: &Theme, id: &str, a: &Value, how: &str, button: AnyElement) -> AnyElement {
-    let missing: Vec<&str> = a["missing"]
-        .as_array()
-        .map(|m| m.iter().filter_map(|x| x.as_str()).collect())
-        .unwrap_or_default();
-    line(
-        t,
-        &format!("{id}-reauth"),
-        false,
-        true,
-        "Needs a new sign-in",
-        &format!("Taskboard now needs {}. {how}", missing.join(", ")),
-        None,
-    )
-    .child(
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(px(4.))
-            .max_w(px(200.))
-            .justify_end()
-            .children(missing.iter().map(|s| kit::chip(t, s.to_string()))),
-    )
-    .child(controls().child(button))
-    .into_any_element()
+    let missing: Vec<&str> = a["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    line(t, &format!("{id}-reauth"), false, true, "Needs a new sign-in", &format!("Taskboard now needs {}. {how}", missing.join(", ")), None)
+        .child(div().flex().flex_wrap().gap(px(4.)).max_w(px(200.)).justify_end().children(missing.iter().map(|s| kit::chip(t, s.to_string()))))
+        .child(controls().child(button))
+        .into_any_element()
 }
 
 /// What the token's scopes leave off ("Can read PRs; add read:user:bitbucket to show your Bitbucket
 /// name."), with the scopes it lacks. Read-only: a new token is made on the service.
 fn off_row(t: &Theme, id: &str, a: &Value, note: &str) -> AnyElement {
-    let lacks: Vec<&str> = a["missing_scopes"]
-        .as_array()
-        .map(|m| m.iter().filter_map(|x| x.as_str()).collect())
-        .unwrap_or_default();
+    let lacks: Vec<&str> = a["missing_scopes"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     line(t, &format!("{id}-off"), false, false, note, "", None)
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(4.))
-                .max_w(px(260.))
-                .justify_end()
-                .children(lacks.iter().map(|s| kit::chip(t, s.to_string()))),
-        )
+        .child(div().flex().flex_wrap().gap(px(4.)).max_w(px(260.)).justify_end().children(lacks.iter().map(|s| kit::chip(t, s.to_string()))))
         .into_any_element()
 }
 
@@ -1954,48 +1159,15 @@ fn push_row(t: &Theme, id: &str, host: &str) -> AnyElement {
 
 fn error_row(t: &Theme, id: &str, a: &Value) -> Option<AnyElement> {
     let e = a["error"].as_str()?;
-    Some(
-        row(t, &format!("{id}-error"), false)
-            .bg(t.warn_soft)
-            .child(kit::dot(t.warn, 7.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(12.))
-                    .text_color(t.warn_fg)
-                    .child(e.to_string()),
-            )
-            .into_any_element(),
-    )
+    Some(row(t, &format!("{id}-error"), false).bg(t.warn_soft).child(kit::dot(t.warn, 7.)).child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.warn_fg).child(e.to_string())).into_any_element())
 }
 
-fn link_row(
-    t: &Theme,
-    id: &str,
-    label: &str,
-    url: &'static str,
-    cx: &mut Context<SettingsWindow>,
-) -> AnyElement {
+fn link_row(t: &Theme, id: &str, label: &str, url: &'static str, cx: &mut Context<SettingsWindow>) -> AnyElement {
     row(t, id, false)
         .min_h(px(34.))
         .text_size(px(12.))
-        .child(
-            kit::link(
-                t,
-                SharedString::from(format!("{id}-link")),
-                format!("{label} ↗"),
-            )
-            .on_click(cx.listener(move |_, _, _, cx| cx.open_url(url))),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(t.faint)
-                .child(url.trim_start_matches("https://").to_string()),
-        )
+        .child(kit::link(t, SharedString::from(format!("{id}-link")), format!("{label} ↗")).on_click(cx.listener(move |_, _, _, cx| cx.open_url(url))))
+        .child(div().flex_1().min_w_0().truncate().text_color(t.faint).child(url.trim_start_matches("https://").to_string()))
         .into_any_element()
 }
 
@@ -2011,13 +1183,7 @@ mod tests {
 
     fn window(cx: &mut gpui_kit::TestAppContext) -> (WindowHandle<SettingsWindow>, Arc<Recording>) {
         let rec = Recording::new();
-        cx.update(|cx| {
-            cx.set_global(Theme::new(
-                crate::theme::ThemeMode::Light,
-                "Helvetica Neue".into(),
-                "Menlo".into(),
-            ))
-        });
+        cx.update(|cx| cx.set_global(Theme::new(crate::theme::ThemeMode::Light, "Helvetica Neue".into(), "Menlo".into())));
         let be: Arc<dyn Backend> = rec.clone();
         let w = cx.add_window(|window, cx| SettingsWindow::new(be, window, cx));
         settle(cx);
@@ -2036,17 +1202,10 @@ mod tests {
         })
         .unwrap();
         settle(cx);
-        assert_eq!(
-            rec.last("accounts/bitbucket"),
-            Some(json!({"email": "sam@acme.com", "token": "ATATT-x"}))
-        );
+        assert_eq!(rec.last("accounts/bitbucket"), Some(json!({"email": "sam@acme.com", "token": "ATATT-x"})));
         w.update(cx, |s, _, cx| {
             assert_eq!(s.account("bitbucket")["connected"], true);
-            assert_eq!(
-                s.bb_token.text(cx),
-                "",
-                "the token doesn't stay in the field"
-            );
+            assert_eq!(s.bb_token.text(cx), "", "the token doesn't stay in the field");
             assert!(s.notes.get("bitbucket").is_some_and(|(_, bad)| !bad));
             s.slack_token.set_text("bad", cx);
             s.connect("slack", cx);
@@ -2055,15 +1214,8 @@ mod tests {
         settle(cx);
         w.update(cx, |s, _, cx| {
             assert_eq!(s.account("slack")["connected"], false);
-            assert!(
-                s.notes.get("slack").is_some_and(|(_, bad)| *bad),
-                "the board's sentence shows under the card"
-            );
-            assert_eq!(
-                s.slack_token.text(cx),
-                "bad",
-                "a refused token stays to fix"
-            );
+            assert!(s.notes.get("slack").is_some_and(|(_, bad)| *bad), "the board's sentence shows under the card");
+            assert_eq!(s.slack_token.text(cx), "bad", "a refused token stays to fix");
         })
         .unwrap();
     }
@@ -2075,32 +1227,14 @@ mod tests {
         settle(cx);
         w.update(cx, |s, _, cx| {
             assert_eq!(s.login().map(|(c, _)| c).as_deref(), Some("SAMP-1234"));
-            assert_eq!(
-                s.opened_code.as_deref(),
-                Some("SAMP-1234"),
-                "the code is copied once"
-            );
-            assert!(
-                !s.browser_opened,
-                "GitHub opens from the button, after the code is seen"
-            );
-            s.post(
-                "github",
-                "accounts/github/cancel".into(),
-                json!({}),
-                cx,
-                |_, _| {},
-            );
+            assert_eq!(s.opened_code.as_deref(), Some("SAMP-1234"), "the code is copied once");
+            assert!(!s.browser_opened, "GitHub opens from the button, after the code is seen");
+            s.post("github", "accounts/github/cancel".into(), json!({}), cx, |_, _| {});
         })
         .unwrap();
         settle(cx);
-        assert!(
-            rec.posts()
-                .iter()
-                .any(|(p, _)| p == "accounts/github/cancel")
-        );
-        w.update(cx, |s, _, _| assert!(s.login().is_none()))
-            .unwrap();
+        assert!(rec.posts().iter().any(|(p, _)| p == "accounts/github/cancel"));
+        w.update(cx, |s, _, _| assert!(s.login().is_none())).unwrap();
     }
 
     #[gpui_kit::test]
@@ -2121,10 +1255,7 @@ mod tests {
         })
         .unwrap();
         let st = rec.get("state", &[]).unwrap();
-        assert_eq!(
-            st["accounts"][0]["id"], "github",
-            "the board's status bar hears about it"
-        );
+        assert_eq!(st["accounts"][0]["id"], "github", "the board's status bar hears about it");
         assert_eq!(st["accounts"][0]["reauth"], true);
 
         w.update(cx, |s, _, cx| {
@@ -2133,17 +1264,12 @@ mod tests {
         })
         .unwrap();
         settle(cx);
-        w.update(cx, |s, _, _| {
-            assert_eq!(s.account("github")["reauth"], false)
-        })
-        .unwrap();
+        w.update(cx, |s, _, _| assert_eq!(s.account("github")["reauth"], false)).unwrap();
         assert_eq!(rec.get("state", &[]).unwrap()["accounts"], json!([]));
     }
 
     #[gpui_kit::test]
-    fn a_bitbucket_token_without_read_user_is_kept_and_says_what_is_off(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
+    fn a_bitbucket_token_without_read_user_is_kept_and_says_what_is_off(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = window(cx);
         w.update(cx, |s, _, cx| {
             s.bb_email.set_text("a@b.co", cx);
@@ -2154,22 +1280,9 @@ mod tests {
         settle(cx);
         w.update(cx, |s, _, _| {
             let bb = s.account("bitbucket");
-            assert_eq!(
-                (bb["connected"].clone(), bb["reauth"].clone()),
-                (json!(true), json!(false))
-            );
-            assert!(
-                bb["missing_scopes"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("read:user:bitbucket"))
-            );
-            assert!(
-                bb["note"]
-                    .as_str()
-                    .unwrap()
-                    .contains("add read:user:bitbucket to show your Bitbucket name")
-            );
+            assert_eq!((bb["connected"].clone(), bb["reauth"].clone()), (json!(true), json!(false)));
+            assert!(bb["missing_scopes"].as_array().unwrap().contains(&json!("read:user:bitbucket")));
+            assert!(bb["note"].as_str().unwrap().contains("add read:user:bitbucket to show your Bitbucket name"));
             assert!(!super::needs_owner(&bb), "nothing for the owner to fix");
         })
         .unwrap();
@@ -2181,18 +1294,10 @@ mod tests {
         let (w, rec) = window(cx);
         w.update(cx, |s, _, cx| s.import_gh(cx)).unwrap();
         settle(cx);
-        assert!(
-            rec.posts()
-                .iter()
-                .any(|(p, _)| p == "accounts/github/import")
-        );
+        assert!(rec.posts().iter().any(|(p, _)| p == "accounts/github/import"));
         w.update(cx, |s, _, _| {
             assert_eq!(s.account("github")["connected"], true);
-            assert!(
-                s.notes
-                    .get("github")
-                    .is_some_and(|(n, bad)| !bad && n.starts_with("Using gh's sign-in"))
-            );
+            assert!(s.notes.get("github").is_some_and(|(n, bad)| !bad && n.starts_with("Using gh's sign-in")));
         })
         .unwrap();
     }
@@ -2206,9 +1311,6 @@ mod reviewer_tests {
     fn a_reviewer_row_says_their_accounts_bot_pace_and_why_they_are_removed() {
         let r = json!({"name": "Ana", "user": "ana", "emails": ["ana@acme.com"], "aliases": [], "bot": {"every_h": 4.0}, "automation": 2.0,
                        "median_work_mins": 75.0, "open_asks": 1, "removed": true, "removed_why": "left the team"});
-        assert_eq!(
-            super::reviewer_note(&r),
-            "ana, ana@acme.com · Bot every 4h · Automation 2 · Reviews in 1h 15m · 1 open · Removed: left the team"
-        );
+        assert_eq!(super::reviewer_note(&r), "ana, ana@acme.com · Bot every 4h · Automation 2 · Reviews in 1h 15m · 1 open · Removed: left the team");
     }
 }
