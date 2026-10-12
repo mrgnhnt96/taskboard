@@ -30,6 +30,7 @@ pub mod cutover;
 pub mod jira;
 pub mod jira_claude;
 pub mod jira_desk;
+pub mod jira_status;
 pub mod jobs;
 pub mod keep_awake;
 pub mod limits;

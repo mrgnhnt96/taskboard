@@ -678,42 +678,62 @@ pub fn recent_jql(keys: &[String], minutes: i64) -> String {
     format!("key in ({}) AND updated >= -{minutes}m", keys.join(","))
 }
 
-/// QA: the comments on these tickets made in the last `minutes` (one search, then the comments of
-/// the tickets it finds; through Claude, all of it in one call), each as {key, id, created, author:
-/// {displayName, accountId, emailAddress}, text}.
-pub fn recent_comments(app: &App, keys: &[String], minutes: i64) -> std::result::Result<Vec<Value>, String> {
+/// What QA's one search found: the tickets' new comments and, when asked, their statuses.
+#[derive(Debug, Default)]
+pub struct Recent {
+    /// Each as {key, id, created, author: {displayName, accountId, emailAddress}, text}.
+    pub comments: Vec<Value>,
+    /// Each as {key, status, status_category} (`jira_status::apply`'s input).
+    pub statuses: Vec<Value>,
+}
+
+/// QA: the comments on these tickets made in the last `minutes` (when `comments`) and the statuses of
+/// the ones updated then (when `statuses`): one search, then the comments of the tickets it finds;
+/// through Claude, all of it in one call.
+pub fn recent(app: &App, keys: &[String], minutes: i64, comments: bool, statuses: bool) -> std::result::Result<Recent, String> {
     if !app.cfg.jira_on() {
         return Err("Jira isn't set up".into());
     }
     let jql = recent_jql(keys, minutes);
+    let on_board = |k: &Value| k.as_str().is_some_and(|k| keys.iter().any(|x| x.eq_ignore_ascii_case(k)));
+    let mut out = Recent::default();
     if app.cfg.jira_via_claude() {
         let now = now_ts();
-        let input = json!({"jql": jql, "now": iso(now), "after": iso(now - minutes as f64 * 60.0)});
+        let input = json!({"jql": jql, "now": iso(now), "after": iso(now - minutes as f64 * 60.0), "comments": comments, "statuses": statuses});
         let d = crate::jira_claude::run(app, "comments", &input)?;
         let after = now - minutes as f64 * 60.0;
-        let asked = |c: &&Value| {
-            let on_board = c["key"].as_str().is_some_and(|k| keys.iter().any(|x| x.eq_ignore_ascii_case(k)));
-            on_board && !c["created"].as_str().and_then(comment_time).is_some_and(|t| t < after)
-        };
-        return Ok(d["comments"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter(asked)
-            .map(|c| {
-                let author = json!({"displayName": c["author"], "accountId": c["author_account_id"], "emailAddress": c["author_email"]});
-                comment_row(c["key"].as_str().unwrap_or(""), &c["id"], &c["created"], author, c["text"].as_str().unwrap_or("").to_string())
-            })
-            .collect());
+        let asked = |c: &&Value| on_board(&c["key"]) && !c["created"].as_str().and_then(comment_time).is_some_and(|t| t < after);
+        if comments {
+            out.comments = d["comments"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter(asked)
+                .map(|c| {
+                    let author = json!({"displayName": c["author"], "accountId": c["author_account_id"], "emailAddress": c["author_email"]});
+                    comment_row(c["key"].as_str().unwrap_or(""), &c["id"], &c["created"], author, c["text"].as_str().unwrap_or("").to_string())
+                })
+                .collect();
+        }
+        if statuses {
+            out.statuses = d["statuses"].as_array().cloned().unwrap_or_default().into_iter().filter(|s| on_board(&s["key"])).collect();
+        }
+        return Ok(out);
     }
-    let found = api(app, "POST", "search/jql", Some(json!({"jql": jql, "fields": ["summary"], "maxResults": 100})))?;
-    let mut out = vec![];
+    let found = api(app, "POST", "search/jql", Some(json!({"jql": jql, "fields": ["summary", "status"], "maxResults": 100})))?;
     for issue in found["issues"].as_array().cloned().unwrap_or_default() {
         let key = issue["key"].as_str().unwrap_or("").to_string();
+        if statuses {
+            let st = &issue["fields"]["status"];
+            out.statuses.push(json!({"key": key, "status": st["name"], "status_category": st["statusCategory"]["key"]}));
+        }
+        if !comments {
+            continue;
+        }
         let d = api(app, "GET", &format!("issue/{key}/comment?orderBy=-created&maxResults=50"), None)?;
         for cm in d["comments"].as_array().cloned().unwrap_or_default() {
-            out.push(comment_row(&key, &cm["id"], &cm["created"], cm["author"].clone(), adf_text(&cm["body"])));
+            out.comments.push(comment_row(&key, &cm["id"], &cm["created"], cm["author"].clone(), adf_text(&cm["body"])));
         }
     }
     Ok(out)
