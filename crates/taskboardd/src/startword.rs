@@ -88,12 +88,14 @@ static PRONOUN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:it|this|that|
 static TASK_SUBJECT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:^|[.!?;\n,:(—–]\s*|\b(?:and|so|but|ok(?:ay)?|i\s+(?:think|guess|reckon|feel\s+like))\s+)(?:task\s+)?[Tt](\d+)\s*(?:(?:is|[’']s|looks|seems|sounds|has\s+been)\b|[:—–]|-+\s)").unwrap()
 });
-/// A prompt that's nothing but an unnamed ask ("queue it", "ok, start them", "great, kick it off"): its
-/// "it" can only be what the conversation just made. Asking to hear back ("queue it and let me know when
-/// it's done") says nothing more about "it".
+/// Where an ask may say to run it ("in a new terminal", "in its own tab"): it says nothing more about "it".
+const WHERE: &str = r"(?:in|on)\s+(?:a\s+|the\s+)?(?:new|fresh|separate|another|different|its\s+own|their\s+own)\s+(?:terminal|tab|window|session|pane)";
+/// A prompt that's nothing but an unnamed ask ("queue it", "ok, start them", "great, kick it off", "start
+/// it in a new terminal"): its "it" can only be what the conversation just made, or the terminal's own
+/// task. Asking to hear back ("queue it and let me know when it's done") says nothing more about "it".
 static BARE_ASK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
-        r"(?i)^(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|yup|sure|great|cool|nice|perfect|awesome|good|thanks|thank\s+you|ty|please|pls|looks\s+good|lgtm|sounds\s+good|go\s+ahead(?:\s+and)?|now|then|so|and|just|you\s+can|can\s+you|could\s+you|let[’']?s|that[’']?s\s+(?:fine|great|good|perfect))[\s,.!]*)*(?:{VERB}\s+(?:{UNNAMED})|kick\s+(?:{UNNAMED})\s+off|get\s+(?:{UNNAMED})\s+going|(?:spin|fire)\s+(?:{UNNAMED})\s+up)(?:\s+(?:up|off|now|please|pls|too|for\s+me|right\s+away|right\s+now|asap))*(?:[\s,]*(?:and\s+)?(?:let\s+me\s+know|tell\s+me|ping\s+me|lmk)\b[^.!?;\n]*)?[\s.!]*(?:(?:thanks|thank\s+you|ty|please|pls)[\s.!]*)?$"
+        r"(?i)^(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|yup|sure|great|cool|nice|perfect|awesome|good|thanks|thank\s+you|ty|please|pls|looks\s+good|lgtm|sounds\s+good|go\s+ahead(?:\s+and)?|now|then|so|and|just|you\s+can|can\s+you|could\s+you|let[’']?s|that[’']?s\s+(?:fine|great|good|perfect))[\s,.!]*)*(?:{VERB}\s+(?:{UNNAMED})|kick\s+(?:{UNNAMED})\s+off|get\s+(?:{UNNAMED})\s+going|(?:spin|fire)\s+(?:{UNNAMED})\s+up)(?:\s+(?:up|off|now|please|pls|too|for\s+me|right\s+away|right\s+now|asap|{WHERE}))*(?:[\s,]*(?:and\s+)?(?:let\s+me\s+know|tell\s+me|ping\s+me|lmk)\b[^.!?;\n]*)?[\s.!]*(?:(?:thanks|thank\s+you|ty|please|pls)[\s.!]*)?$"
     ))
     .unwrap()
 });
@@ -258,9 +260,10 @@ static NAME_AFTER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^\s+[a-z]").un
 /// …unless it says when ("the Monday after next", "the Monday morning").
 static TIME_AFTER_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^\s+(?:after|before|following|morning|afternoon|evening|night|at|by|then)\b").unwrap());
-/// A time that's said not to be the time ("start T8 now, not later"), and "as soon as possible".
+/// A time that's said not to be the time ("start T8 now, not later"), "as soon as possible", and where to
+/// run it ("in a new terminal"), which isn't "in a few minutes".
 static NOT_A_TIME_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(concat!(
+    Regex::new(&format!(r"{}|\b{WHERE}\b", concat!(
         r"(?i)\b(?:not|rather\s+than|instead\s+of)\s+(?:later|tomorrow|tonight|afterwards?|next\s+\w+|waiting)\b|\bas\s+soon\s+as\s+possible\b|",
         // "Start T8 during the standup is fine": the time is said to be fine, now included.
         r"\bduring\s+(?:the\s+|my\s+|your\s+|our\s+|this\s+)?[a-z-]+\s+(?:is|[’']s)\s+(?:fine|ok(?:ay)?|good)\b|",
@@ -268,7 +271,7 @@ static NOT_A_TIME_RE: Lazy<Regex> = Lazy::new(|| {
         // Only with nothing after it but the clause's end: "when you can confirm T9 passes" is a condition.
         r"\bwhen(?:ever)?\s+(?:you\s+(?:get\s+a\s+(?:chance|sec(?:ond)?|moment|minute)|can|have\s+(?:a\s+)?(?:sec(?:ond)?|moment|minute|chance))|you[’']?re\s+(?:ready|free)|you\s+are\s+(?:ready|free))",
         r"(?:\s+(?:please|pls|thanks|thank\s+you|thx|ty))*\s*(?:$|[.!?,;:()\[\]—–]|\s-)"
-    ))
+    )))
     .unwrap()
 });
 /// What may come before the time or condition in a clause that's only that ("on the 15th", "only
@@ -1066,6 +1069,13 @@ fn unnamed_tasks(prompts: &[Prompt], r: &Reading, ask: &Ask) -> Vec<i64> {
 /// [`unnamed_tasks`] says it means. A prompt whose end never reached the board ([`Prompt::clipped`]) is
 /// no word, since its end may take the ask back, but it takes back only what it says.
 pub fn word_in(prompts: &[Prompt], id: i64) -> Option<usize> {
+    word_in_own(prompts, id, false)
+}
+
+/// [`word_in`] for a task that may be the terminal's own (`own`): there, a prompt that's only an unnamed
+/// ask for one ("start it", "start this in a new terminal") is the word for it when the conversation
+/// gives "it" nothing else to mean (no task just made, no question about another start).
+pub fn word_in_own(prompts: &[Prompt], id: i64, own: bool) -> Option<usize> {
     for (i, p) in prompts.iter().enumerate() {
         if p.boards() {
             continue;
@@ -1101,7 +1111,10 @@ pub fn word_in(prompts: &[Prompt], id: i64) -> Option<usize> {
             Ask::First => named_asked.first() == Some(&id),
             _ => named_asked == [id],
         };
-        let unnamed = |a: &Ask| i == 0 && (unnamed_tasks(prompts, &r, a).contains(&id) || (answers(a) && bare()));
+        let ours = |a: &Ask| {
+            own && *a == Ask::Unnamed && named_asked.is_empty() && unnamed_tasks(prompts, &r, a).is_empty() && bare()
+        };
+        let unnamed = |a: &Ask| i == 0 && (unnamed_tasks(prompts, &r, a).contains(&id) || (answers(a) && bare()) || ours(a));
         match r.word_for(id, unnamed) {
             Some(true) if p.clipped => {}
             Some(true) => return Some(i),
@@ -1192,7 +1205,8 @@ fn typed(row: &Row) -> (String, bool) {
 }
 
 /// The prompt a human typed in terminal `sid`, since its Claude conversation began, that asks for task
-/// `id` to start, if there's one and no later prompt takes it back.
+/// `id` to start, if there's one and no later prompt takes it back. When `id` is the terminal's own task,
+/// "start it" can mean it ([`word_in_own`]).
 pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
@@ -1222,7 +1236,8 @@ pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
         }
     }
     prompts.reverse();
-    Ok(word_in(&prompts, id).map(|i| prompts[i].text.clone()))
+    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    Ok(word_in_own(&prompts, id, own).map(|i| prompts[i].text.clone()))
 }
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
@@ -2807,6 +2822,25 @@ mod tests {
         assert_eq!(word_in(&convo(&[("the dev server won't come up; start it", &[9])]), 9), None);
         assert_eq!(word_in(&convo(&[("the dev server won't come up. Start it.", &[9])]), 9), None);
         assert_eq!(word_in(&convo(&[("start it", &[9])]), 9), None);
+    }
+
+    #[test]
+    fn an_unnamed_ask_is_the_word_for_the_terminals_own_task() {
+        for ask in ["start it", "Start it in a new terminal", "start this in a new terminal", "ok, start the task", "kick it off in its own tab please"] {
+            assert_eq!(word_in_own(&prompts(&[ask], None), 91, true), Some(0), "{ask}");
+            assert_eq!(word_in(&prompts(&[ask], None), 91), None, "{ask} on a terminal with no task");
+        }
+        for no in ["start it?", "don't start it", "start it tomorrow", "the dev server won't come up; start it", "start them"] {
+            assert_eq!(word_in_own(&prompts(&[no], None), 91, true), None, "{no}");
+        }
+        assert_eq!(word_in_own(&prompts(&["thanks", "start it"], None), 91, true), None, "only the latest prompt");
+        // A task the conversation just made is what "it" means, not the terminal's own.
+        let c = convo(&[("queue it", &[]), ("make a task for the footer", &[9])]);
+        assert_eq!(word_in_own(&c, 91, true), None);
+        // So is the task the agent just asked about.
+        let c = vec![Prompt { reply: Some("Should I start T8?".into()), ..Prompt::new("start it") }];
+        assert_eq!(word_in_own(&c, 91, true), None);
+        assert_eq!(word_in_own(&c, 8, false), Some(0));
     }
 
     #[test]
