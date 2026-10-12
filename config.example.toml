@@ -133,6 +133,24 @@ settle_secs = 300.0                  # after it comes back or connects, asks, nu
 # [hosts.github]
 # max_per_hour = 4000
 
+# The work event stream (docs/STREAM.md): per source, whether the board polls it (board, the default)
+# or its stream drives it (stream: events are applied as they are, and the source's own poll rests
+# while its stream is healthy). `tb stream mode <source> board|stream|default` overrides this on the
+# board; `tb stream` shows each source's mode and health. prs keeps [feed]'s health settings; builds,
+# jira and qa take their own here (the same defaults as [feed]).
+[stream.sources.prs]
+mode = "board"                       # stream: a complete pr event is the PR's state; the PR poll rests while healthy
+[stream.sources.builds]
+mode = "board"                       # stream: the owner-PR read (pr_builds.owner_prs_secs) rests while healthy
+restart_cmd = ""                     # restarts the stream when it's stuck or silent
+# stuck_secs = 180.0
+# silent_secs = 3600.0
+# restart_mins = [1.0, 5.0, 15.0]
+[stream.sources.jira]
+mode = "board"
+[stream.sources.qa]
+mode = "board"                       # stream: the Jira comment poll (qa_poll_mins) rests while healthy
+
 # PR builds stopped (`tb pr-builds stop`, on your word): every build of your PRs and your pushes is
 # cancelled when the board hears of it (a build event on the feed, or a running check on a poll), and
 # the PRs' checks count as passed. A cancel that fails is tried again after each of retry_secs, then

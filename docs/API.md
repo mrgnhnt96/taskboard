@@ -659,6 +659,12 @@ older forms.
 | Path | Body | Notes |
 |---|---|---|
 | `POST /stream/events` | `{v: 1, events: [{id, kind, at, source, ...}]}` or one event with `v` | `tb stream send [json]` (stdin when left out). 400 for a missing or other version, no events, or over 500. Each event is answered on its own. **Response:** `{v: 1, accepted, duplicate, rejected, results: [{id, kind, status: "accepted"\|"duplicate"\|"rejected", why?, complete?, result?}]}`. |
+| `GET /stream` | | `tb stream`. Each source's mode and health. **Response:** `{v: 1, sources: [{source: "prs"\|"builds"\|"jira"\|"qa", mode: "board"\|"stream", mode_from: "override"\|"config"\|"default", watched, healthy, problem?, why?, polling, last_event_at?, last_event?, last_heartbeat_at?, unhealthy_since?, restarts, settling_secs?, connected_at?, active?, idle_until?, off_hours?}]}`. |
+| `POST /stream/mode` | `{source, mode: "board"\|"stream"\|"default"}` | `tb stream mode <source> <mode>`. Overrides config.toml's `[stream.sources.<source>] mode`; `default` drops the override. 400 for another source or mode. Answers as `GET /stream`. |
+
+Each source's mode says whether the board polls it (board, the default) or its stream drives it (stream): see
+[STREAM.md](STREAM.md#modes). A stream-mode source that goes stuck or silent raises `pr-feed` (prs) or
+`stream-<source>`, and its poll runs until it's healthy again.
 
 ### The PR feed (`tb feed`)
 PR activity can come as events instead of the poll: any listener posts one event per PR change or build, and the

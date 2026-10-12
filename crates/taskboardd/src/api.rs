@@ -404,6 +404,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["prs", "event"]) => crate::feed::intake(app, body),
         ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app, body)),
         ("POST", ["stream", "events"]) => crate::stream::ingest(app, body),
+        ("GET", ["stream"]) => Ok(crate::stream::overview(app)),
+        ("POST", ["stream", "mode"]) => crate::stream::set_mode(app, body),
         (_, ["master", rest @ ..]) => crate::breaks::route(app, method, rest, body),
         // The old board's listener and tools (docs/CUTOVER.md).
         ("POST", ["master-builds"]) => crate::breaks::posted(app, body),

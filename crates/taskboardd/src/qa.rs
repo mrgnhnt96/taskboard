@@ -420,7 +420,8 @@ pub fn resolve(app: &App, c: &Row, action: &str, who: &str, note: Option<&str>, 
     }
 }
 
-/// Each runner tick: ask Jira for new comments every `qa_poll_mins`, and retry comments that couldn't be read.
+/// Each runner tick: ask Jira for new comments every `qa_poll_mins` (not while the qa stream drives
+/// and is healthy), and retry comments that couldn't be read.
 pub fn tick(app: &App) -> Result<()> {
     if !on(app) {
         return Ok(());
@@ -430,6 +431,9 @@ pub fn tick(app: &App) -> Result<()> {
         if !wait && !app.shared.lock().qa_reading.contains(&c.id()) {
             read_later(app, c.id());
         }
+    }
+    if crate::feed::poll_rests(app, "qa") {
+        return Ok(());
     }
     let checked = app.db.get_setting(CHECKED_KEY)?;
     if checked.as_deref().map(|c| age_secs(Some(c)).unwrap_or(f64::MAX) < app.cfg.qa_poll_secs()).unwrap_or(false) {

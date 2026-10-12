@@ -29,6 +29,15 @@
 //! Without `[feed] on` the feed is never unhealthy and the poll runs as before; events still refresh
 //! their PR.
 //!
+//! # Sources
+//!
+//! The work event stream (`stream.rs`) has four sources, prs, builds, jira and qa, and health is kept
+//! per source ([`source`]): prs is the PR feed above (watched with `[feed] on` or in stream mode),
+//! the others are watched in stream mode with their `[stream.sources.<name>]` settings, keep their
+//! state in `stream_feed_<name>` and raise `stream-<name>`. A heartbeat names the sources it covers
+//! ([`heartbeat_for`]). While a stream-mode source is healthy its own poll rests ([`poll_rests`]): prs
+//! is the PR poll, builds the owner-PR read (`prbuilds.rs`), qa the Jira comment poll (`qa.rs`).
+//!
 //! # State
 //!
 //! The setting `pr_feed` keeps `{since, last_event_at, last_event, last_heartbeat_at, heartbeats,
@@ -94,12 +103,70 @@ pub const ALERT_KEY: &str = "pr-feed";
 const ALERT_AFTER_LAST_SECS: f64 = 300.0;
 const RESTART_TIMEOUT_SECS: f64 = 60.0;
 
-fn state(app: &App) -> Row {
-    jloads_obj(app.db.get_setting(KEY).ok().flatten().as_deref())
+/// One source's feed (`stream::SOURCES`) as its health is kept: prs is the PR feed, set by `[feed]`;
+/// builds, jira and qa by their `[stream.sources.<name>]`. A source is watched (`on`) while its mode is
+/// stream, and prs also with `[feed] on`.
+pub struct Source {
+    pub name: String,
+    key: String,
+    alert: String,
+    label: String,
+    pub on: bool,
+    stuck_secs: f64,
+    silent_secs: f64,
+    restart_mins: Vec<f64>,
+    restart_cmd: String,
+    listener: String,
+    settle_secs: f64,
+    poll_while_healthy: bool,
 }
 
-fn save(app: &App, st: &Row) -> Result<()> {
-    app.db.set_setting(KEY, Some(&jdumps(&Value::Object(st.clone()))))
+pub fn source(app: &App, name: &str) -> Source {
+    let streams = crate::stream::streams(app, name);
+    if name == "prs" {
+        let c = &app.cfg.feed;
+        return Source {
+            name: name.into(),
+            key: KEY.into(),
+            alert: ALERT_KEY.into(),
+            label: "the PR feed".into(),
+            on: c.on || streams,
+            stuck_secs: c.stuck_secs,
+            silent_secs: c.silent_secs,
+            restart_mins: c.restart_mins.clone(),
+            restart_cmd: c.restart_cmd.clone(),
+            listener: c.listener.clone(),
+            settle_secs: c.settle_secs,
+            poll_while_healthy: c.poll_while_healthy && !streams,
+        };
+    }
+    let c = crate::stream::source_config(app, name);
+    Source {
+        name: name.into(),
+        key: format!("stream_feed_{name}"),
+        alert: format!("stream-{name}"),
+        label: format!("the {} stream", crate::stream::label(name)),
+        on: streams,
+        stuck_secs: c.stuck_secs,
+        silent_secs: c.silent_secs,
+        restart_mins: c.restart_mins,
+        restart_cmd: c.restart_cmd,
+        listener: String::new(),
+        settle_secs: c.settle_secs,
+        poll_while_healthy: false,
+    }
+}
+
+fn prs(app: &App) -> Source {
+    source(app, "prs")
+}
+
+fn state(app: &App, src: &Source) -> Row {
+    jloads_obj(app.db.get_setting(&src.key).ok().flatten().as_deref())
+}
+
+fn save(app: &App, src: &Source, st: &Row) -> Result<()> {
+    app.db.set_setting(&src.key, Some(&jdumps(&Value::Object(st.clone()))))
 }
 
 fn ts(st: &Row, k: &str) -> Option<f64> {
@@ -117,48 +184,56 @@ fn listener_idle(st: &Row, now: f64) -> bool {
     st.get("active").and_then(|v| v.as_bool()) == Some(false) && ts(st, "idle_until").is_none_or(|u| u > now)
 }
 
-/// Why the feed is outside its hours now, if it is: the listener says it's idle, or (for a listener
-/// that doesn't say) the work hours are closed. The feed may miss events then.
+/// Why the PR feed is outside its hours now, if it is: the listener says it's idle, or (for a
+/// listener that doesn't say) the work hours are closed. The feed may miss events then.
 pub fn off_hours(app: &App) -> Option<String> {
-    if !app.cfg.feed.on {
+    off_hours_of(app, &prs(app))
+}
+
+fn off_hours_of(app: &App, src: &Source) -> Option<String> {
+    if !src.on {
         return None;
     }
-    let st = state(app);
+    let st = state(app, src);
     if listener_idle(&st, now_ts()) {
         return Some(match st.s("idle_until") {
-            Some(u) => format!("the PR feed's listener is idle until {}", local_clock(Some(u))),
-            None => "the PR feed's listener is idle".to_string(),
+            Some(u) => format!("{}'s listener is idle until {}", src.label, local_clock(Some(u))),
+            None => format!("{}'s listener is idle", src.label),
         });
     }
     if !says_hours(&st) && !hours::is_open(app) {
-        return Some("it's outside the work hours, when the PR feed may miss events".to_string());
+        return Some(format!("it's outside the work hours, when {} may miss events", src.label));
     }
     None
 }
 
-/// What's wrong with the feed, if anything: (`stuck` or `silent`, a sentence). An idle listener is
-/// neither; once its `idle_until` has come, it's timed from then.
+/// What's wrong with the PR feed, if anything: (`stuck` or `silent`, a sentence).
 pub fn problem(app: &App) -> Option<(&'static str, String)> {
-    if !app.cfg.feed.on {
+    problem_of(app, &prs(app))
+}
+
+/// What's wrong with a source's feed, if anything: (`stuck` or `silent`, a sentence). An idle
+/// listener is neither; once its `idle_until` has come, it's timed from then.
+pub fn problem_of(app: &App, src: &Source) -> Option<(&'static str, String)> {
+    if !src.on {
         return None;
     }
-    let st = state(app);
+    let st = state(app, src);
     let now = now_ts();
-    let c = &app.cfg.feed;
     if listener_idle(&st, now) {
         return None;
     }
     let woke = ts(&st, "idle_until").filter(|_| says_hours(&st));
     if let Some(hb) = ts(&st, "last_heartbeat_at") {
         let from = woke.map_or(hb, |w| w.max(hb));
-        if c.stuck_secs > 0.0 && now - from > c.stuck_secs {
-            return Some(("stuck", format!("the PR feed hasn't sent a heartbeat for {}", span(now - hb))));
+        if src.stuck_secs > 0.0 && now - from > src.stuck_secs {
+            return Some(("stuck", format!("{} hasn't sent a heartbeat for {}", src.label, span(now - hb))));
         }
     }
     let heard = [ts(&st, "last_event_at"), ts(&st, "last_heartbeat_at"), ts(&st, "since"), woke].into_iter().flatten().fold(f64::MIN, f64::max);
     let in_hours = says_hours(&st) || hours::is_open(app);
-    if c.silent_secs > 0.0 && heard > f64::MIN && now - heard > c.silent_secs && in_hours {
-        return Some(("silent", format!("nothing has come from the PR feed for {}", span(now - heard))));
+    if src.silent_secs > 0.0 && heard > f64::MIN && now - heard > src.silent_secs && in_hours {
+        return Some(("silent", format!("nothing has come from {} for {}", src.label, span(now - heard))));
     }
     None
 }
@@ -174,31 +249,35 @@ fn span(secs: f64) -> String {
     }
 }
 
-/// The gate for the review loop: the feed is healthy (always, without `[feed] on`). Reviewer asks,
-/// nudges and swaps check it through [`holding`].
+/// The gate for the review loop: the PR feed is healthy (always while it isn't watched). Reviewer
+/// asks, nudges and swaps check it through [`holding`].
 pub fn feed_healthy(app: &App) -> bool {
     problem(app).is_none()
 }
 
-/// Seconds left of the settle window after the feed came back or the listener connected
+/// Seconds left of the PR feed's settle window, if it's in one.
+pub fn settling(app: &App) -> Option<f64> {
+    settling_of(app, &prs(app))
+}
+
+/// Seconds left of a source's settle window after its feed came back or the listener connected
 /// (`settle_secs`), if it's in one. A feed that's healthy again before [`check`] has noticed is in it
 /// too.
-pub fn settling(app: &App) -> Option<f64> {
-    let c = &app.cfg.feed;
-    if !c.on || c.settle_secs <= 0.0 || problem(app).is_some() {
+fn settling_of(app: &App, src: &Source) -> Option<f64> {
+    if !src.on || src.settle_secs <= 0.0 || problem_of(app, src).is_some() {
         return None;
     }
-    let st = state(app);
+    let st = state(app, src);
     if st.contains_key("unhealthy_since") {
-        return Some(c.settle_secs);
+        return Some(src.settle_secs);
     }
     let from = [ts(&st, "healthy_at"), ts(&st, "connected_at")].into_iter().flatten().reduce(f64::max)?;
-    let left = c.settle_secs - (now_ts() - from);
+    let left = src.settle_secs - (now_ts() - from);
     (left > 0.0).then_some(left)
 }
 
-/// Why the reviewer ask, nudge or swap logic should wait now, if it should: the feed is unhealthy, it
-/// came back or connected less than `settle_secs` ago, or it's outside its hours ([`off_hours`]).
+/// Why the reviewer ask, nudge or swap logic should wait now, if it should: the PR feed is unhealthy,
+/// it came back or connected less than `settle_secs` ago, or it's outside its hours ([`off_hours`]).
 /// `first_ask` is the first request for review on a PR: it still goes out outside the feed's hours,
 /// but not when the feed is stuck (down or stale) or settling.
 pub fn holding(app: &App, first_ask: bool) -> Option<String> {
@@ -212,34 +291,51 @@ pub fn holding(app: &App, first_ask: bool) -> Option<String> {
     (!first_ask).then(|| format!("Holding reviewer asks, nudges and swaps: {why}; a PR's first ask still goes out."))
 }
 
+/// Whether a source's own poll rests this round: its feed is watched and healthy (and, for prs,
+/// without `poll_while_healthy`). prs is the PR poll, builds the owner-PR poll, qa the QA comment
+/// poll; jira has none.
+pub fn poll_rests(app: &App, name: &str) -> bool {
+    let src = source(app, name);
+    src.on && !src.poll_while_healthy && problem_of(app, &src).is_none()
+}
+
 /// Whether the PR poll runs this round: always without the feed, else while it's unhealthy (or with
 /// `poll_while_healthy`).
 pub fn poll_due(app: &App) -> bool {
-    !app.cfg.feed.on || app.cfg.feed.poll_while_healthy || !feed_healthy(app)
+    !poll_rests(app, "prs")
 }
 
 /// `GET /prs/feed` (`tb feed`).
 pub fn health(app: &App) -> Value {
-    let st = state(app);
-    let p = problem(app);
+    let src = prs(app);
+    let mut h = health_of(app, &src);
+    h["on"] = json!(src.on);
+    h["listener"] = if src.listener.trim().is_empty() { Value::Null } else { json!(listener_running()) };
+    h["holding"] = json!(holding(app, false));
+    h["rate_limits"] = json!(crate::prhost::limit::status());
+    h
+}
+
+/// One source's feed health, as `GET /stream` and `GET /prs/feed` show it.
+pub fn health_of(app: &App, src: &Source) -> Value {
+    let st = state(app, src);
+    let p = problem_of(app, src);
     json!({
-        "on": app.cfg.feed.on,
+        "watched": src.on,
         "healthy": p.is_none(),
         "problem": p.as_ref().map(|(k, _)| *k),
         "why": p.as_ref().map(|(_, w)| w.clone()),
+        "polling": !poll_rests(app, &src.name),
         "last_event_at": st.v("last_event_at"),
         "last_event": st.v("last_event"),
         "last_heartbeat_at": st.v("last_heartbeat_at"),
         "unhealthy_since": st.v("unhealthy_since"),
         "restarts": st.get("restarts").cloned().unwrap_or(json!([])),
-        "listener": if app.cfg.feed.listener.trim().is_empty() { Value::Null } else { json!(listener_running()) },
-        "holding": holding(app, false),
-        "settling_secs": settling(app).map(|s| s.round()),
+        "settling_secs": settling_of(app, src).map(|s| s.round()),
         "connected_at": st.v("connected_at"),
         "active": st.v("active"),
         "idle_until": st.v("idle_until"),
-        "off_hours": off_hours(app),
-        "rate_limits": crate::prhost::limit::status(),
+        "off_hours": off_hours_of(app, src),
     })
 }
 
@@ -255,45 +351,55 @@ fn when_of(body: &Value, key: &str) -> Result<Option<String>> {
     }
 }
 
-/// `POST /prs/heartbeat` (`tb feed heartbeat`): the feed is alive. `{active?, idle_until?,
+/// `POST /prs/heartbeat` (`tb feed heartbeat`): the PR feed is alive. `{active?, idle_until?,
 /// connected_at?}`: the listener's own hours (`active: false` while it's off, until `idle_until`;
 /// `activeNow` is read too) and when it last connected. The first heartbeat, one with a later
 /// `connected_at` and one that says it's active after it was idle are each a connect: the settle
 /// window starts again.
 pub fn heartbeat(app: &App, body: &Value) -> Result<Value> {
-    let mut st = state(app);
-    let now = now_iso();
+    heartbeat_for(app, body, &["prs"])?;
+    Ok(health(app))
+}
+
+/// A heartbeat for each of `sources`, as [`heartbeat`] takes it.
+pub fn heartbeat_for(app: &App, body: &Value, sources: &[&str]) -> Result<()> {
     let active = body.get("active").or_else(|| body.get("activeNow")).filter(|v| !v.is_null()).map(|v| as_bool(Some(v), true));
     let idle_until = when_of(body, "idle_until")?;
     let connected_at = when_of(body, "connected_at")?;
-    let mut connect = !st.contains_key("last_heartbeat_at");
-    if let Some(c) = connected_at.as_deref().and_then(parse_iso) {
-        connect |= ts(&st, "connected_at").is_none_or(|old| c > old);
+    let now = now_iso();
+    for name in sources {
+        let src = source(app, name);
+        let mut st = state(app, &src);
+        let mut connect = !st.contains_key("last_heartbeat_at");
+        if let Some(c) = connected_at.as_deref().and_then(parse_iso) {
+            connect |= ts(&st, "connected_at").is_none_or(|old| c > old);
+        }
+        if let Some(a) = active {
+            connect |= a && st.get("active").and_then(|v| v.as_bool()) == Some(false);
+            st.insert("active".into(), json!(a));
+            match &idle_until {
+                Some(u) if !a => st.insert("idle_until".into(), json!(u)),
+                _ => st.remove("idle_until"),
+            };
+        } else if let Some(u) = &idle_until {
+            st.insert("idle_until".into(), json!(u));
+        }
+        if connect {
+            st.insert("connected_at".into(), json!(connected_at.clone().unwrap_or_else(|| now.clone())));
+        }
+        st.insert("last_heartbeat_at".into(), json!(now));
+        st.insert("heartbeats".into(), json!(st.i0("heartbeats") + 1));
+        save(app, &src, &st)?;
     }
-    if let Some(a) = active {
-        connect |= a && st.get("active").and_then(|v| v.as_bool()) == Some(false);
-        st.insert("active".into(), json!(a));
-        match &idle_until {
-            Some(u) if !a => st.insert("idle_until".into(), json!(u)),
-            _ => st.remove("idle_until"),
-        };
-    } else if let Some(u) = &idle_until {
-        st.insert("idle_until".into(), json!(u));
-    }
-    if connect {
-        st.insert("connected_at".into(), json!(connected_at.unwrap_or_else(|| now.clone())));
-    }
-    st.insert("last_heartbeat_at".into(), json!(now));
-    st.insert("heartbeats".into(), json!(st.i0("heartbeats") + 1));
-    save(app, &st)?;
-    Ok(health(app))
+    Ok(())
 }
 
 /// The board started its own `listener`: a connect, so the settle window starts again.
 fn note_connect(app: &App) {
-    let mut st = state(app);
+    let src = prs(app);
+    let mut st = state(app, &src);
     st.insert("connected_at".into(), json!(now_iso()));
-    let _ = save(app, &st);
+    let _ = save(app, &src, &st);
 }
 
 /// The task a PR event is about: `task`, else the PR's link (`url`), else `repo` and `num` (and `host`).
@@ -323,9 +429,15 @@ pub fn task_of_event(app: &App, body: &Value) -> Result<Option<Row>> {
     Ok(None)
 }
 
-/// One event came from the feed: it's alive (for the silent check), and `last_event` says what it was.
+/// One event came from the PR feed: it's alive (for the silent check), and `last_event` says what it was.
 pub fn note_event(app: &App, kind: &str, body: &Value, task: Option<i64>) -> Result<()> {
-    let mut st = state(app);
+    note_event_for(app, "prs", kind, body, task)
+}
+
+/// One event came from a source's feed.
+pub fn note_event_for(app: &App, name: &str, kind: &str, body: &Value, task: Option<i64>) -> Result<()> {
+    let src = source(app, name);
+    let mut st = state(app, &src);
     let now = now_iso();
     st.insert("last_event_at".into(), json!(now));
     st.insert(
@@ -333,7 +445,7 @@ pub fn note_event(app: &App, kind: &str, body: &Value, task: Option<i64>) -> Res
         json!({"kind": kind, "at": now, "task": task.map(|t| rf("task", t)), "url": body.get("url"), "state": body.get("state"),
                "source": body.get("source")}),
     );
-    save(app, &st)
+    save(app, &src, &st)
 }
 
 /// `POST /pr-builds/event {repo, branch, pr?}` (the old board's listener): a push to, or a new or
@@ -361,17 +473,29 @@ pub fn old_push(app: &App, body: &Value) -> Result<Value> {
 }
 
 /// `POST /prs/event` (`tb feed event`): one PR changed (`kind: pr`, the default) or one of its builds
-/// did (`kind: build`, with `state`). The board notes it for the feed's health and reads that PR again.
+/// did (`kind: build`, with `state`). The board notes it for the PR feed's health (a build for the
+/// builds source's too) and reads that PR again.
 pub fn intake(app: &App, body: &Value) -> Result<Value> {
-    let kind = { let k = body_str(body, "kind"); if k.is_empty() { "pr".to_string() } else { k.to_lowercase() } };
+    let kind = body_str(body, "kind").to_lowercase();
     if kind == "heartbeat" {
         return heartbeat(app, body);
     }
+    let sources: &[&str] = if kind == "build" { &["prs", "builds"] } else { &["prs"] };
+    intake_from(app, body, sources, None)
+}
+
+/// A PR or build event for `sources`' health. `pr`: a stream pr event to apply as the PR's state
+/// without reading the host ([`prflow::apply_event`]); without it, or when it can't be applied, the
+/// board reads the PR again.
+pub fn intake_from(app: &App, body: &Value, sources: &[&str], pr: Option<&Value>) -> Result<Value> {
+    let kind = { let k = body_str(body, "kind"); if k.is_empty() { "pr".to_string() } else { k.to_lowercase() } };
     if !matches!(kind.as_str(), "pr" | "build") {
         return err(400, "An event's kind is pr, build or heartbeat.");
     }
     let t = task_of_event(app, body)?;
-    note_event(app, &kind, body, t.as_ref().map(|t| t.id()))?;
+    for name in sources {
+        note_event_for(app, name, &kind, body, t.as_ref().map(|t| t.id()))?;
+    }
     let mut out = json!({"ok": true, "kind": kind, "task": t.as_ref().map(|t| rf("task", t.id()))});
     let Some(t) = t else {
         if kind == "build" {
@@ -385,7 +509,16 @@ pub fn intake(app: &App, body: &Value) -> Result<Value> {
         out["builds"] = crate::prbuilds::on_build_event(app, &t, body)?;
     }
     if crate::prhost::watched(t.s("pr_host")) && t.i("pr_num").is_some() && !matches!(t.s("pr_phase"), Some("merged" | "declined")) {
-        match prflow::refresh_task(app, t.id())? {
+        let applied = match pr {
+            Some(ev) => prflow::apply_event(app, t.id(), ev)?,
+            None => None,
+        };
+        out["applied"] = json!(applied.is_some());
+        let r = match applied {
+            Some(rec) => Ok(rec),
+            None => prflow::refresh_task(app, t.id())?,
+        };
+        match r {
             Ok(_) => {
                 out["refreshed"] = json!(true);
                 out["phase"] = board::get_task(app, t.id())?.v("pr_phase");
@@ -401,74 +534,84 @@ pub fn intake(app: &App, body: &Value) -> Result<Value> {
     Ok(out)
 }
 
-/// Runs on every runner tick: notices the feed going bad or coming back, restarts it on schedule and
-/// tells the owner when restarting doesn't help.
+/// Runs on every runner tick: for each watched source, notices its feed going bad or coming back,
+/// restarts it on schedule and tells the owner when restarting doesn't help.
 pub fn check(app: &App) -> Result<()> {
-    if !app.cfg.feed.on {
-        return Ok(());
+    for name in crate::stream::SOURCES {
+        let src = source(app, name);
+        if src.on {
+            check_one(app, &src)?;
+        }
     }
-    let mut st = state(app);
+    Ok(())
+}
+
+fn check_one(app: &App, src: &Source) -> Result<()> {
+    let mut st = state(app, src);
     if !st.contains_key("since") {
         st.insert("since".into(), json!(now_iso()));
-        save(app, &st)?;
+        save(app, src, &st)?;
     }
-    let Some((kind, why)) = problem(app) else {
+    let Some((kind, why)) = problem_of(app, src) else {
         if st.contains_key("unhealthy_since") {
             for k in ["unhealthy_since", "problem", "restarts", "alerted_at"] {
                 st.remove(k);
             }
             st.insert("healthy_at".into(), json!(now_iso()));
-            save(app, &st)?;
-            app.info("feed: the PR feed is healthy again");
-            dispatch::clear_alert_key(app, ALERT_KEY)?;
+            save(app, src, &st)?;
+            app.info(format!("feed: {} is healthy again", src.label));
+            dispatch::clear_alert_key(app, &src.alert)?;
         }
         return Ok(());
     };
     let Some(since) = ts(&st, "unhealthy_since") else {
         st.insert("unhealthy_since".into(), json!(now_iso()));
         st.insert("problem".into(), json!(kind));
-        save(app, &st)?;
+        save(app, src, &st)?;
         app.info(format!("feed: {why}"));
         return Ok(());
     };
     let bad_for = now_ts() - since;
     let mut restarts = st.get("restarts").and_then(|r| r.as_array()).cloned().unwrap_or_default();
-    let plan = &app.cfg.feed.restart_mins;
+    let plan = &src.restart_mins;
     let n = restarts.len();
+    let label = capitalized(&src.label);
+    let meanwhile = if src.name == "prs" { "Reviewer asks, nudges and swaps wait until it's back." } else { "The board polls instead until it's back." };
     if n < plan.len() && bad_for >= plan[n] * 60.0 {
-        let r = restart(app);
-        app.info(format!("feed: restart {} of {}: {}", n + 1, plan.len(), r.as_ref().err().map(|e| e.as_str()).unwrap_or("done")));
+        let r = restart(src);
+        app.info(format!("feed: {} restart {} of {}: {}", src.name, n + 1, plan.len(), r.as_ref().err().map(|e| e.as_str()).unwrap_or("done")));
         restarts.push(json!({"at": now_iso(), "ok": r.is_ok(), "error": r.as_ref().err()}));
         st.insert("restarts".into(), Value::Array(restarts));
-        save(app, &st)?;
+        save(app, src, &st)?;
         if let Err(e) = r {
-            raise(app, &mut st, &format!("The PR feed is {kind}: {why}. Restarting it failed: {e}. Reviewer asks, nudges and swaps wait until it's back."))?;
+            raise(app, src, &mut st, &format!("{label} is {kind}: {why}. Restarting it failed: {e}. {meanwhile}"))?;
         }
         return Ok(());
     }
     let last = plan.last().copied().unwrap_or(0.0);
     if n >= plan.len() && !st.contains_key("alerted_at") && bad_for >= last * 60.0 + ALERT_AFTER_LAST_SECS {
-        raise(
-            app,
-            &mut st,
-            &format!("The PR feed is still {kind} after {}: {why}. Reviewer asks, nudges and swaps wait until it's back.", plural(n as i64, "restart")),
-        )?;
+        raise(app, src, &mut st, &format!("{label} is still {kind} after {}: {why}. {meanwhile}", plural(n as i64, "restart")))?;
     }
     Ok(())
 }
 
-fn raise(app: &App, st: &mut Row, text: &str) -> Result<()> {
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+fn raise(app: &App, src: &Source, st: &mut Row, text: &str) -> Result<()> {
     if st.contains_key("alerted_at") {
         return Ok(());
     }
-    dispatch::raise(app, text, None, None, Some(ALERT_KEY), false)?;
+    dispatch::raise(app, text, None, None, Some(&src.alert), false)?;
     st.insert("alerted_at".into(), json!(now_iso()));
-    save(app, st)
+    save(app, src, st)
 }
 
-/// Restarts the feed: `restart_cmd`, or the board's own listener.
-fn restart(app: &App) -> std::result::Result<(), String> {
-    let cmd = app.cfg.feed.restart_cmd.trim();
+/// Restarts a source's feed: its `restart_cmd`, or (prs) the board's own listener.
+fn restart(src: &Source) -> std::result::Result<(), String> {
+    let cmd = src.restart_cmd.trim();
     if !cmd.is_empty() {
         let out = crate::proc::run(std::path::Path::new("/bin/sh"), &["-c".into(), cmd.to_string()], None, RESTART_TIMEOUT_SECS)
             .map_err(|_| format!("restart_cmd didn't finish in {RESTART_TIMEOUT_SECS} seconds"))?;
@@ -478,11 +621,14 @@ fn restart(app: &App) -> std::result::Result<(), String> {
         }
         return Ok(());
     }
-    if !app.cfg.feed.listener.trim().is_empty() {
+    if !src.listener.trim().is_empty() {
         stop_listener();
         return Ok(());
     }
-    Err("there's no restart_cmd (or listener) in [feed] to restart it with".into())
+    if src.name == "prs" {
+        return Err("there's no restart_cmd (or listener) in [feed] to restart it with".into());
+    }
+    Err(format!("there's no restart_cmd in [stream.sources.{}] to restart it with", src.name))
 }
 
 static LISTENER: Mutex<Option<Child>> = Mutex::new(None);
@@ -524,7 +670,7 @@ pub fn listener_loop(app: Arc<App>) {
                 Ok(c) => {
                     *LISTENER.lock() = Some(c);
                     fails = 0;
-                    if app.cfg.feed.on {
+                    if prs(&app).on {
                         note_connect(&app);
                     }
                 }

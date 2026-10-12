@@ -62,7 +62,8 @@ A field marked `?` may be left out or set to null. Times are ISO 8601. A PR refe
 
 A pr event is **complete** only when it carries every field in this table; null counts as present. An
 incomplete pr event is still accepted, but it's kept with `complete: false`, and the board reads that PR from its
-host instead of trusting the event.
+host instead of trusting the event. In board mode (see Modes) every pr event is only a hint: the board reads the PR
+from its host either way.
 
 ### `review`
 
@@ -107,12 +108,43 @@ doesn't count it as stuck or silent.
 
 ## Routing (v1)
 
-| Kind | Goes to |
+| Kind | Source | Goes to |
+|---|---|---|
+| `pr` | prs | the PR feed, as `POST /prs/event` does: the task's PR is read and stepped (in stream mode a complete event is applied instead, see Modes) |
+| `build` | builds | the PR feed, as `POST /prs/event` does, and the owner's PR builds are run |
+| `heartbeat` | each in `sources` (all when left out) | that source's health, as `POST /prs/heartbeat` does for prs |
+| `jira.comment` | qa | QA comments, as `POST /jira/comment` does |
+| `review`, `comment`, `push`, `jira.issue` | prs, prs, builds, jira | the source's health; kept only, for now |
+
+## Modes
+
+Each source, `prs`, `builds`, `jira` and `qa`, has a mode:
+
+- `board` (the default, today's behaviour): the board polls the source itself. Events are hints; a pr event makes
+  the board read that PR from its host.
+- `stream`: the stream is the source of truth. A complete pr event is turned into the PR's record and stepped
+  through the PR flow without reading the host; a jira.comment goes to QA as it is. A pr event missing fields, or
+  one for a PR the board hasn't read yet (the board's own account and the base branch's head come from that first
+  read), falls back to one host read.
+
+config.toml sets it (`[stream.sources.<source>] mode`); `tb stream mode <source> board|stream|default` overrides it
+on the board (`default` drops the override). `tb stream` (`GET /stream`) prints each source's mode and health.
+
+### Health
+
+The board keeps each source's health on its own. A stream-mode source (and prs with `[feed] on`) is *stuck* when
+it has sent heartbeats before and none came in `stuck_secs`, and *silent* when nothing came in `silent_secs`; then
+the board runs its `restart_cmd` on the `restart_mins` schedule and raises an alert (`pr-feed` for prs,
+`stream-<source>` for the others) when that doesn't help. prs takes these settings from `[feed]`, the others from
+`[stream.sources.<source>]`.
+
+While a stream-mode source is healthy its own poll rests, and it resumes as soon as the stream is stuck or silent:
+
+| Source | Poll |
 |---|---|
-| `pr`, `build` | the PR feed, as `POST /prs/event` does: the task's PR is read and stepped, and the owner's PR builds are run |
-| `heartbeat` | the PR feed's health, as `POST /prs/heartbeat` does |
-| `jira.comment` | QA comments, as `POST /jira/comment` does |
-| `review`, `comment`, `push`, `jira.issue` | kept only, for now |
+| `prs` | the PR poll (`[intervals] prs`) |
+| `builds` | the read of the owner's open PRs while PR builds are stopped (`pr_builds.owner_prs_secs`) |
+| `qa` | the Jira comment poll (`qa_poll_mins`) |
 
 Every accepted event's whole payload is kept in `stream_events` for 30 days, with its kind, source, time,
 whether it was complete, and what its route answered.
