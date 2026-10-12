@@ -57,11 +57,7 @@ pub fn kind_colors(t: &Theme, kind: &str) -> (Hsla, Hsla) {
 
 /// The goal an issue belongs to: `goal_id`, else `goal.id` (`issueGoalId`).
 pub fn goal_id(b: &Value) -> Option<i64> {
-    b.get("goal_id").and_then(Value::as_i64).or_else(|| {
-        b.get("goal")
-            .and_then(|g| g.get("id"))
-            .and_then(Value::as_i64)
-    })
+    b.get("goal_id").and_then(Value::as_i64).or_else(|| b.get("goal").and_then(|g| g.get("id")).and_then(Value::as_i64))
 }
 
 /// Every goal that isn't archived (`allGoals`).
@@ -79,23 +75,12 @@ pub fn found_task(b: &Value) -> Option<String> {
 
 /// `issueState`: (short, text) for an issue that isn't open; None while open.
 pub fn issue_state(b: &Value) -> Option<(String, String)> {
-    let tr = b
-        .get("task_id")
-        .and_then(Value::as_i64)
-        .map(|n| format!("T{n}"));
+    let tr = b.get("task_id").and_then(Value::as_i64).map(|n| format!("T{n}"));
     match s(b, "state") {
-        "task" => Some((
-            "Now a task".into(),
-            tr.map(|r| format!("Made into task {r}"))
-                .unwrap_or_else(|| "Made into a task".into()),
-        )),
+        "task" => Some(("Now a task".into(), tr.map(|r| format!("Made into task {r}")).unwrap_or_else(|| "Made into a task".into()))),
         "ticket" => {
             let key = fmt::opt_s(b, "jira_key");
-            Some((
-                key.unwrap_or("Ticket asked for").to_string(),
-                key.map(|k| format!("Jira {k}"))
-                    .unwrap_or_else(|| "Jira ticket being created".into()),
-            ))
+            Some((key.unwrap_or("Ticket asked for").to_string(), key.map(|k| format!("Jira {k}")).unwrap_or_else(|| "Jira ticket being created".into())))
         }
         "drop" => Some(("Won’t do".into(), "Closed as won’t do".into())),
         "defer" => Some(("Deferred".into(), "Deferred: not for now".into())),
@@ -120,11 +105,7 @@ pub fn issue_from(b: &Value, long: bool) -> String {
     } else {
         name.unwrap_or("Found by a terminal").to_string()
     };
-    [who, fmt::hhmm(s(b, "created_at"))]
-        .into_iter()
-        .filter(|x| !x.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ")
+    [who, fmt::hhmm(s(b, "created_at"))].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
 }
 
 /// `issueHow`: one sentence on how it was reported.
@@ -136,30 +117,14 @@ pub fn issue_how(b: &Value) -> String {
         "you" => "You added it.".into(),
         "answer" => "It came from one of your answers.".into(),
         _ => {
-            let who = fmt::opt_s(b, "found_by_name")
-                .map(|n| format!("The {n} terminal"))
-                .unwrap_or_else(|| "A terminal".into());
-            let on = found_task(b)
-                .map(|r| format!(" while working on {r}"))
-                .unwrap_or_default();
+            let who = fmt::opt_s(b, "found_by_name").map(|n| format!("The {n} terminal")).unwrap_or_else(|| "A terminal".into());
+            let on = found_task(b).map(|r| format!(" while working on {r}")).unwrap_or_default();
             format!("{who} reported it{on}.")
         }
     }
 }
 
-const SNAP_ORDER: [&str; 11] = [
-    "from",
-    "task",
-    "step",
-    "branch",
-    "worktree",
-    "last_commit",
-    "commit",
-    "uncommitted",
-    "file",
-    "last_turn",
-    "output",
-];
+const SNAP_ORDER: [&str; 11] = ["from", "task", "step", "branch", "worktree", "last_commit", "commit", "uncommitted", "file", "last_turn", "output"];
 
 fn snap_label(k: &str) -> String {
     match k {
@@ -198,18 +163,7 @@ pub fn snap_rows(snap: Option<&Value>) -> Vec<(String, String)> {
         Value::Array(a) => a
             .iter()
             .filter_map(Value::as_array)
-            .map(|x| {
-                (
-                    x.first()
-                        .map(|k| {
-                            k.as_str()
-                                .map(str::to_string)
-                                .unwrap_or_else(|| k.to_string())
-                        })
-                        .unwrap_or_default(),
-                    x.get(1).cloned().unwrap_or(Value::Null),
-                )
-            })
+            .map(|x| (x.first().map(|k| k.as_str().map(str::to_string).unwrap_or_else(|| k.to_string())).unwrap_or_default(), x.get(1).cloned().unwrap_or(Value::Null)))
             .collect(),
         _ => vec![],
     };
@@ -223,16 +177,10 @@ pub fn snap_rows(snap: Option<&Value>) -> Vec<(String, String)> {
         .map(|(k, v)| {
             let val = match (&*k, &v) {
                 ("uncommitted", Value::Number(n)) if n.as_f64() == Some(0.) => "Nothing".into(),
-                ("uncommitted", Value::Number(n)) => {
-                    fmt::plural(n.as_i64().unwrap_or(0), "file", "files")
-                }
+                ("uncommitted", Value::Number(n)) => fmt::plural(n.as_i64().unwrap_or(0), "file", "files"),
                 (_, Value::String(x)) => x.clone(),
                 (_, Value::Object(_)) if !s(&v, "ref").is_empty() || !s(&v, "title").is_empty() => {
-                    [s(&v, "ref"), s(&v, "title")]
-                        .into_iter()
-                        .filter(|x| !x.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" · ")
+                    [s(&v, "ref"), s(&v, "title")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
                 }
                 _ => v.to_string(),
             };
@@ -263,12 +211,7 @@ pub struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     pub fn of(m: &'a MainWindow) -> Ctx<'a> {
         let st = &m.issue_panel;
-        Ctx {
-            jira: m.jira_on(),
-            goals: &m.data.goals,
-            notes: &st.notes,
-            busy: &st.busy,
-        }
+        Ctx { jira: m.jira_on(), goals: &m.data.goals, notes: &st.notes, busy: &st.busy, }
     }
 
     pub fn note(&self, grp: &str) -> Option<(String, bool)> {
@@ -278,16 +221,7 @@ impl<'a> Ctx<'a> {
     /// `btn()`: label, or "Sending…" while `act:arg:id` runs.
     fn act(&self, act: &'static str, label: &str, arg: &'static str, id: &str) -> Act {
         let busy = self.busy.contains(&format!("{act}:{arg}:{id}"));
-        Act {
-            act,
-            label: if busy {
-                "Sending…".into()
-            } else {
-                label.into()
-            },
-            arg,
-            busy,
-        }
+        Act { act, label: if busy { "Sending…".into() } else { label.into() }, arg, busy }
     }
 }
 
@@ -327,15 +261,7 @@ pub struct DetailView {
 pub fn detail_view(b: &Value) -> DetailView {
     let r = fmt::ref_of(b, "B");
     let mut hist: Vec<&Value> = arr(b, "history").iter().collect();
-    let at = |h: &Value| {
-        h.get("at")
-            .map(|a| {
-                a.as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| a.to_string())
-            })
-            .unwrap_or_else(|| "undefined".into())
-    };
+    let at = |h: &Value| h.get("at").map(|a| a.as_str().map(str::to_string).unwrap_or_else(|| a.to_string())).unwrap_or_else(|| "undefined".into());
     hist.sort_by(|x, y| locale_cmp(&at(x), &at(y)));
     DetailView {
         how: issue_how(b),
@@ -343,9 +269,7 @@ pub fn detail_view(b: &Value) -> DetailView {
         detail: fmt::opt_s(b, "detail").map(str::to_string),
         snap: snap_rows(b.get("snapshot")),
         found_log: found_task(b).map(|fr| {
-            let at = fmt::opt_s(b, "created_at")
-                .map(|c| format!(" at {}", fmt::hhmm(c)))
-                .unwrap_or_default();
+            let at = fmt::opt_s(b, "created_at").map(|c| format!(" at {}", fmt::hhmm(c))).unwrap_or_default();
             (fr.clone(), format!("Open {fr}’s log{at}"))
         }),
         history: hist
@@ -410,24 +334,16 @@ pub struct PanelView {
 
 pub fn panel_view(cx: &Ctx, b: &Value) -> PanelView {
     let r = fmt::ref_of(b, "B");
-    let state_line = issue_state(b)
-        .map(|x| x.1)
-        .unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at"))));
+    let state_line = issue_state(b).map(|x| x.1).unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at"))));
     let open = matches!(s(b, "state"), "" | "open");
     PanelView {
         kind: kind_label(s(b, "kind")),
         title: s(b, "title").to_string(),
         project: s(b, "project").to_string(),
         state_line,
-        open_task: (s(b, "state") == "task")
-            .then(|| b.get("task_id").and_then(Value::as_i64))
-            .flatten()
-            .map(|n| format!("T{n}")),
+        open_task: (s(b, "state") == "task").then(|| b.get("task_id").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}")),
         open_box: open.then(|| {
-            let what = format!(
-                "Not part of any task yet. Make it a task to queue it{}.",
-                if cx.jira { ", or send it to Jira" } else { "" }
-            );
+            let what = format!("Not part of any task yet. Make it a task to queue it{}.", if cx.jira { ", or send it to Jira" } else { "" });
             (what, issue_actions(cx, &r, "board"))
         }),
         note: cx.note(&format!("issue:{r}")),
@@ -477,14 +393,9 @@ pub fn aside_view(b: &Value) -> AsideView {
     AsideView {
         r: fmt::ref_of(b, "B"),
         kind: kind_label(s(b, "kind")),
-        help: issue_state(b)
-            .map(|x| x.1)
-            .unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at")))),
+        help: issue_state(b).map(|x| x.1).unwrap_or_else(|| format!("Open · reported at {}", fmt::hhmm(s(b, "created_at")))),
         title: s(b, "title").to_string(),
-        open_task: (s(b, "state") == "task")
-            .then(|| b.get("task_id").and_then(Value::as_i64))
-            .flatten()
-            .map(|n| format!("T{n}")),
+        open_task: (s(b, "state") == "task").then(|| b.get("task_id").and_then(Value::as_i64)).flatten().map(|n| format!("T{n}")),
         detail: detail_view(b),
     }
 }
@@ -492,12 +403,7 @@ pub fn aside_view(b: &Value) -> AsideView {
 impl AsideView {
     #[cfg(test)]
     pub fn text_and_acts(&self, err: Option<&str>) -> (String, Vec<&'static str>) {
-        let mut out = vec![
-            self.kind.clone(),
-            self.help.clone(),
-            self.r.clone(),
-            self.title.clone(),
-        ];
+        let mut out = vec![self.kind.clone(), self.help.clone(), self.r.clone(), self.title.clone()];
         out.extend(self.open_task.as_ref().map(|t| format!("Open task {t}")));
         out.extend(err.map(str::to_string));
         self.detail.parts(&mut out);
@@ -508,27 +414,15 @@ impl AsideView {
 /// Visible text as the browser shows it: parts joined, whitespace collapsed.
 #[cfg(test)]
 pub fn flat(parts: &[String]) -> String {
-    parts
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    parts.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ------------------------------------------------------------------ actions
 
 /// `setNote`: an inline note under the buttons of `grp`, gone after 5 s (15 s for an error).
-pub fn set_note(
-    m: &mut MainWindow,
-    grp: &str,
-    text: impl Into<String>,
-    err: bool,
-    cx: &mut Context<MainWindow>,
-) {
+pub fn set_note(m: &mut MainWindow, grp: &str, text: impl Into<String>, err: bool, cx: &mut Context<MainWindow>) {
     let at = Instant::now();
-    m.issue_panel
-        .notes
-        .insert(grp.to_string(), (text.into(), err, at));
+    m.issue_panel.notes.insert(grp.to_string(), (text.into(), err, at));
     let grp = grp.to_string();
     let wait = Duration::from_secs(if err { 15 } else { 5 });
     cx.spawn(async move |this, cx| {
@@ -589,69 +483,32 @@ pub fn keep_issue(m: &mut MainWindow, r: &str) {
 /// `promote`: `POST /backlog/:id/promote {where}`. On the Board the new task opens.
 pub fn promote(m: &mut MainWindow, r: &str, place: &'static str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
-    run(
-        m,
-        format!("promote:{place}:{r}"),
-        format!("issue:{r}"),
-        format!("backlog/{r}/promote"),
-        json!({"where": place}),
-        cx,
-        |m, res, cx| {
-            let t = res
-                .get("task")
-                .filter(|t| t.is_object())
-                .or_else(|| (s(res, "ref").starts_with('T')).then_some(res));
-            let tr = t
-                .map(|t| fmt::ref_of(t, "T"))
-                .or_else(|| {
-                    res.get("task_id")
-                        .and_then(Value::as_i64)
-                        .map(|n| format!("T{n}"))
-                })
-                .unwrap_or_default();
-            if m.page == Page::Board && !tr.is_empty() {
-                m.open_task(tr, cx);
-                return None;
-            }
-            (m.page == Page::Board).then(|| "Made into a task".to_string())
-        },
-    );
+    run(m, format!("promote:{place}:{r}"), format!("issue:{r}"), format!("backlog/{r}/promote"), json!({"where": place}), cx, |m, res, cx| {
+        let t = res.get("task").filter(|t| t.is_object()).or_else(|| (s(res, "ref").starts_with('T')).then_some(res));
+        let tr = t.map(|t| fmt::ref_of(t, "T")).or_else(|| res.get("task_id").and_then(Value::as_i64).map(|n| format!("T{n}"))).unwrap_or_default();
+        if m.page == Page::Board && !tr.is_empty() {
+            m.open_task(tr, cx);
+            return None;
+        }
+        (m.page == Page::Board).then(|| "Made into a task".to_string())
+    });
 }
 
 pub fn ticket(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
-    run(
-        m,
-        format!("ticket::{r}"),
-        format!("issue:{r}"),
-        format!("backlog/{r}/ticket"),
-        json!({}),
-        cx,
-        |_, _, _| Some("Asked Jira for a ticket".into()),
-    );
+    run(m, format!("ticket::{r}"), format!("issue:{r}"), format!("backlog/{r}/ticket"), json!({}), cx, |_, _, _| Some("Asked Jira for a ticket".into()));
 }
 
 pub fn drop_issue(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
-    run(
-        m,
-        format!("drop::{r}"),
-        format!("issue:{r}"),
-        format!("backlog/{r}/drop"),
-        json!({}),
-        cx,
-        |_, _, _| Some("Closed as won’t do".into()),
-    );
+    run(m, format!("drop::{r}"), format!("issue:{r}"), format!("backlog/{r}/drop"), json!({}), cx, |_, _, _| Some("Closed as won’t do".into()));
 }
 
 /// "Open T4’s log": the Board, with that task's Log tab.
 pub fn open_log(m: &mut MainWindow, tr: &str, cx: &mut Context<MainWindow>) {
     m.go(Page::Board, cx);
     m.open_task(tr.to_string(), cx);
-    m.panel = Some(Panel::Task {
-        r: tr.to_string(),
-        tab: TaskTab::Log,
-    });
+    m.panel = Some(Panel::Task { r: tr.to_string(), tab: TaskTab::Log });
 }
 
 /// "See every backlog issue": the Backlog page.
@@ -693,15 +550,7 @@ pub fn project_names(state: &Value, goals: &[Value]) -> Vec<String> {
 
 /// `pickerBase` + `pickerItems`: specials first (without a query), then goals / projects; a
 /// query filters and ranks (starts with, a word starts with, contains).
-pub fn picker_items(
-    goal: bool,
-    value: &str,
-    specials: &[(String, String)],
-    proj: &str,
-    q: &str,
-    state: &Value,
-    goals: &[Value],
-) -> Vec<PickItem> {
+pub fn picker_items(goal: bool, value: &str, specials: &[(String, String)], proj: &str, q: &str, state: &Value, goals: &[Value]) -> Vec<PickItem> {
     let mut items: Vec<PickItem> = if goal {
         let mut v: Vec<PickItem> = live_goals(goals)
             .into_iter()
@@ -709,11 +558,7 @@ pub fn picker_items(
             .map(|g| PickItem {
                 v: fmt::ref_of(g, "G"),
                 name: s(g, "name").to_string(),
-                sub: [s(g, "project"), s(g, "epic_key")]
-                    .into_iter()
-                    .filter(|x| !x.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" · "),
+                sub: [s(g, "project"), s(g, "epic_key")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · "),
                 special: false,
             })
             .collect();
@@ -721,30 +566,11 @@ pub fn picker_items(
         v
     } else {
         let mut names = project_names(state, goals);
-        if !value.is_empty()
-            && !specials.iter().any(|(v, _)| v == value)
-            && !names.iter().any(|n| n == value)
-        {
+        if !value.is_empty() && !specials.iter().any(|(v, _)| v == value) && !names.iter().any(|n| n == value) {
             names.push(value.to_string());
         }
-        let paths: HashMap<String, String> = arr(state, "projects")
-            .iter()
-            .filter_map(|p| {
-                Some((
-                    fmt::opt_s(p, "name")?.to_string(),
-                    fmt::opt_s(p, "path")?.to_string(),
-                ))
-            })
-            .collect();
-        names
-            .into_iter()
-            .map(|n| PickItem {
-                sub: paths.get(&n).map(|p| home_tilde(p)).unwrap_or_default(),
-                v: n.clone(),
-                name: n,
-                special: false,
-            })
-            .collect()
+        let paths: HashMap<String, String> = arr(state, "projects").iter().filter_map(|p| Some((fmt::opt_s(p, "name")?.to_string(), fmt::opt_s(p, "path")?.to_string()))).collect();
+        names.into_iter().map(|n| PickItem { sub: paths.get(&n).map(|p| home_tilde(p)).unwrap_or_default(), v: n.clone(), name: n, special: false }).collect()
     };
     let q = q.trim().to_lowercase();
     if !q.is_empty() {
@@ -752,10 +578,7 @@ pub fn picker_items(
             let l = it.name.to_lowercase();
             if l.starts_with(&q) {
                 0
-            } else if l
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|w| w.starts_with(&q))
-            {
+            } else if l.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w.starts_with(&q)) {
                 1
             } else if l.contains(&q) {
                 2
@@ -763,25 +586,11 @@ pub fn picker_items(
                 3
             }
         };
-        items.retain(|it| {
-            it.name.to_lowercase().contains(&q) || (goal && it.sub.to_lowercase().contains(&q))
-        });
-        items.sort_by(|a, b| {
-            rank(a)
-                .cmp(&rank(b))
-                .then_with(|| locale_cmp(&a.name, &b.name))
-        });
+        items.retain(|it| it.name.to_lowercase().contains(&q) || (goal && it.sub.to_lowercase().contains(&q)));
+        items.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| locale_cmp(&a.name, &b.name)));
         return items;
     }
-    let mut out: Vec<PickItem> = specials
-        .iter()
-        .map(|(v, n)| PickItem {
-            v: v.clone(),
-            name: n.clone(),
-            sub: String::new(),
-            special: true,
-        })
-        .collect();
+    let mut out: Vec<PickItem> = specials.iter().map(|(v, n)| PickItem { v: v.clone(), name: n.clone(), sub: String::new(), special: true }).collect();
     out.extend(items);
     out
 }
@@ -800,27 +609,14 @@ fn home_tilde(p: &str) -> String {
 /// `pickerButton`'s label: a special's name, the goal's name ("Choose a goal" when unknown) or
 /// the project ("Choose a project" when empty).
 #[cfg(test)]
-pub fn picker_label(
-    goal: bool,
-    value: &str,
-    specials: &[(String, String)],
-    goals: &[Value],
-) -> String {
+pub fn picker_label(goal: bool, value: &str, specials: &[(String, String)], goals: &[Value]) -> String {
     if let Some((_, n)) = specials.iter().find(|(v, _)| v == value) {
         return n.clone();
     }
     if goal {
-        return live_goals(goals)
-            .into_iter()
-            .find(|g| fmt::ref_of(g, "G") == value)
-            .map(|g| s(g, "name").to_string())
-            .unwrap_or_else(|| "Choose a goal".into());
+        return live_goals(goals).into_iter().find(|g| fmt::ref_of(g, "G") == value).map(|g| s(g, "name").to_string()).unwrap_or_else(|| "Choose a goal".into());
     }
-    if value.is_empty() {
-        "Choose a project".into()
-    } else {
-        value.to_string()
-    }
+    if value.is_empty() { "Choose a project".into() } else { value.to_string() }
 }
 
 /// Open a picker under the click. `on_pick` runs only when the choice changes (`pickItem`).
@@ -837,28 +633,11 @@ pub fn open_picker(
     cx: &mut Context<MainWindow>,
     on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + 'static,
 ) {
-    let q = kit::Input::new(
-        cx,
-        if goal {
-            "Search goals by name, project or epic"
-        } else {
-            "Search projects"
-        },
-        false,
-    );
+    let q = kit::Input::new(cx, if goal { "Search goals by name, project or epic" } else { "Search projects" }, false);
     window.focus(&q.focus, cx);
     let items = picker_items(goal, &value, &specials, &proj, "", m.state(), &m.data.goals);
     let active = items.iter().position(|it| it.v == value).unwrap_or(0);
-    m.issue_panel.picker = Some(Picker {
-        key: key.to_string(),
-        goal,
-        value,
-        specials,
-        proj,
-        q,
-        active,
-        on_pick: std::rc::Rc::new(on_pick),
-    });
+    m.issue_panel.picker = Some(Picker { key: key.to_string(), goal, value, specials, proj, q, active, on_pick: std::rc::Rc::new(on_pick) });
     m.menu = Some((key.to_string(), at));
     cx.notify();
 }
@@ -870,9 +649,7 @@ fn close_picker(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 }
 
 fn pick(m: &mut MainWindow, v: String, cx: &mut Context<MainWindow>) {
-    let Some(p) = m.issue_panel.picker.take() else {
-        return;
-    };
+    let Some(p) = m.issue_panel.picker.take() else { return };
     m.menu = None;
     if v != p.value {
         (p.on_pick)(m, v, cx);
@@ -881,45 +658,16 @@ fn pick(m: &mut MainWindow, v: String, cx: &mut Context<MainWindow>) {
 }
 
 /// The open picker, if its menu is open.
-pub fn render_picker(
-    m: &mut MainWindow,
-    t: &Theme,
-    window: &mut Window,
-    cx: &mut Context<MainWindow>,
-) -> Option<AnyElement> {
+pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let p = m.issue_panel.picker.as_ref()?;
     let at = m.menu_open(&p.key)?;
     let q = p.q.text(cx);
-    let items = picker_items(
-        p.goal,
-        &p.value,
-        &p.specials,
-        &p.proj,
-        &q,
-        m.state(),
-        &m.data.goals,
-    );
+    let items = picker_items(p.goal, &p.value, &p.specials, &p.proj, &q, m.state(), &m.data.goals);
     let active = p.active.min(items.len().saturating_sub(1));
-    let (title, none) = if p.goal {
-        ("Choose a goal", "No goal matches")
-    } else {
-        ("Choose a project", "No project matches")
-    };
-    let mut list = div()
-        .id("picker-list")
-        .flex()
-        .flex_col()
-        .max_h(px(320.))
-        .overflow_y_scroll()
-        .p(px(4.));
+    let (title, none) = if p.goal { ("Choose a goal", "No goal matches") } else { ("Choose a project", "No project matches") };
+    let mut list = div().id("picker-list").flex().flex_col().max_h(px(320.)).overflow_y_scroll().p(px(4.));
     if items.is_empty() {
-        list = list.child(
-            div()
-                .p(px(10.))
-                .text_size(px(13.))
-                .text_color(t.muted)
-                .child(format!("{none} “{}”.", q.trim())),
-        );
+        list = list.child(div().p(px(10.)).text_size(px(13.)).text_color(t.muted).child(format!("{none} “{}”.", q.trim())));
     }
     for (i, it) in items.iter().enumerate() {
         let v = it.v.clone();
@@ -939,101 +687,52 @@ pub fn render_picker(
                 .when(i != active, |d| d.hover(move |s| s.bg(hover)))
                 .when(it.special, |d| d.text_color(t.muted))
                 .child(div().flex_1().min_w_0().truncate().child(it.name.clone()))
-                .when(!it.sub.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .flex_none()
-                            .max_w(px(180.))
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(t.faint)
-                            .child(it.sub.clone()),
-                    )
-                })
-                .when(it.v == p.value, |d| {
-                    d.child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.5))
-                            .text_color(t.accent_fg)
-                            .child("Current"),
-                    )
-                })
+                .when(!it.sub.is_empty(), |d| d.child(div().flex_none().max_w(px(180.)).truncate().text_size(px(12.)).text_color(t.faint).child(it.sub.clone())))
+                .when(it.v == p.value, |d| d.child(div().flex_none().text_size(px(11.5)).text_color(t.accent_fg).child("Current")))
                 .on_click(cx.listener(move |m, _, _, cx| pick(m, v.clone(), cx))),
         );
     }
-    let field = p.q.render(t, "picker-q", window).on_key_down(cx.listener(
-        |m, ev: &KeyDownEvent, _, cx| {
-            let Some(p) = m.issue_panel.picker.as_ref() else {
-                return;
-            };
-            let q = p.q.text(cx);
-            let items = picker_items(
-                p.goal,
-                &p.value,
-                &p.specials,
-                &p.proj,
-                &q,
-                m.state(),
-                &m.data.goals,
-            );
-            let n = items.len();
-            match ev.keystroke.key.as_str() {
-                "escape" => {
-                    cx.stop_propagation();
-                    close_picker(m, cx);
+    let field = p.q.render(t, "picker-q", window).on_key_down(cx.listener(|m, ev: &KeyDownEvent, _, cx| {
+        let Some(p) = m.issue_panel.picker.as_ref() else { return };
+        let q = p.q.text(cx);
+        let items = picker_items(p.goal, &p.value, &p.specials, &p.proj, &q, m.state(), &m.data.goals);
+        let n = items.len();
+        match ev.keystroke.key.as_str() {
+            "escape" => {
+                cx.stop_propagation();
+                close_picker(m, cx);
+            }
+            "down" | "up" if n > 0 => {
+                cx.stop_propagation();
+                let down = ev.keystroke.key == "down";
+                if let Some(p) = m.issue_panel.picker.as_mut() {
+                    p.active = (p.active.min(n - 1) + if down { 1 } else { n - 1 }) % n;
                 }
-                "down" | "up" if n > 0 => {
-                    cx.stop_propagation();
-                    let down = ev.keystroke.key == "down";
-                    if let Some(p) = m.issue_panel.picker.as_mut() {
-                        p.active = (p.active.min(n - 1) + if down { 1 } else { n - 1 }) % n;
-                    }
-                    cx.notify();
-                }
-                "enter" => {
-                    cx.stop_propagation();
-                    let a = p.active.min(n.saturating_sub(1));
-                    if let Some(it) = items.get(a) {
-                        let v = it.v.clone();
-                        pick(m, v, cx);
-                    }
-                }
-                "tab" => cx.stop_propagation(),
-                _ => {
-                    // Typing changes the query: back to the first item.
-                    if let Some(p) = m.issue_panel.picker.as_mut() {
-                        p.active = 0;
-                    }
+                cx.notify();
+            }
+            "enter" => {
+                cx.stop_propagation();
+                let a = p.active.min(n.saturating_sub(1));
+                if let Some(it) = items.get(a) {
+                    let v = it.v.clone();
+                    pick(m, v, cx);
                 }
             }
-        },
-    ));
-    let foot = div()
-        .flex()
-        .gap(px(14.))
-        .px(px(12.))
-        .py(px(8.))
-        .border_t_1()
-        .border_color(t.divider)
-        .text_size(px(11.5))
-        .text_color(t.faint)
-        .child("↑ ↓ to move")
-        .child("↩ to choose")
-        .child("esc to close");
+            "tab" => cx.stop_propagation(),
+            _ => {
+                // Typing changes the query: back to the first item.
+                if let Some(p) = m.issue_panel.picker.as_mut() {
+                    p.active = 0;
+                }
+            }
+        }
+    }));
+    let foot = div().flex().gap(px(14.)).px(px(12.)).py(px(8.)).border_t_1().border_color(t.divider).text_size(px(11.5)).text_color(t.faint).child("↑ ↓ to move").child("↩ to choose").child("esc to close");
     let card = kit::menu_box(t, 360.)
         .id("picker")
         .p(px(0.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            div()
-                .px(px(12.))
-                .pt(px(10.))
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t.muted)
-                .child(title),
-        )
+        .child(div().px(px(12.)).pt(px(10.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(title))
         .child(div().p(px(8.)).child(field))
         .child(list)
         .child(foot);
@@ -1041,44 +740,22 @@ pub fn render_picker(
 }
 
 /// The button that opens a picker: a search glyph and the label (`pickerButton`).
-pub fn picker_button(
-    t: &Theme,
-    id: impl Into<ElementId>,
-    label: String,
-    empty: bool,
-) -> Stateful<Div> {
-    kit::btn_small(t, id, format!("⌕  {label}"))
-        .max_w(px(320.))
-        .overflow_hidden()
-        .when(empty, |d| d.text_color(t.muted))
+pub fn picker_button(t: &Theme, id: impl Into<ElementId>, label: String, empty: bool) -> Stateful<Div> {
+    kit::btn_small(t, id, format!("⌕  {label}")).max_w(px(320.)).overflow_hidden().when(empty, |d| d.text_color(t.muted))
 }
 
 // ------------------------------------------------------------------ render
 
 /// Inline note text (`.note.ok` / `.note.err`).
 pub fn note_el(t: &Theme, n: &Option<(String, bool)>) -> Option<Div> {
-    n.as_ref().map(|(text, err)| {
-        div()
-            .text_size(px(12.5))
-            .text_color(if *err { t.down } else { t.up_fg })
-            .child(text.clone())
-    })
+    n.as_ref().map(|(text, err)| div().text_size(px(12.5)).text_color(if *err { t.down } else { t.up_fg }).child(text.clone()))
 }
 
 /// A button for an [`Act`]: `primary` / plain / `ghost` styles as the web board's classes.
-pub fn act_button(
-    t: &Theme,
-    id: impl Into<ElementId>,
-    a: &Act,
-    style: &str,
-    small: bool,
-) -> Stateful<Div> {
+pub fn act_button(t: &Theme, id: impl Into<ElementId>, a: &Act, style: &str, small: bool) -> Stateful<Div> {
     let b = match style {
         "primary" => kit::btn_primary(t, id, a.label.clone()),
-        "soft" => kit::btn(t, id, a.label.clone())
-            .bg(t.accent_soft)
-            .border_color(t.accent_line)
-            .text_color(t.accent_fg),
+        "soft" => kit::btn(t, id, a.label.clone()).bg(t.accent_soft).border_color(t.accent_line).text_color(t.accent_fg),
         "ghost" => {
             let h = t.panel_2;
             div()
@@ -1104,11 +781,7 @@ pub fn act_button(
     let b = if small {
         b.h(px(26.)).px(px(10.)).rounded(px(7.)).text_size(px(12.5))
     } else {
-        let b = b
-            .h(px(36.))
-            .px(px(if style == "ghost" { 10. } else { 14. }))
-            .rounded(px(8.))
-            .text_size(px(13.));
+        let b = b.h(px(36.)).px(px(if style == "ghost" { 10. } else { 14. })).rounded(px(8.)).text_size(px(13.));
         match style {
             "primary" => b.font_weight(FontWeight::SEMIBOLD),
             "ghost" => b,
@@ -1119,19 +792,8 @@ pub fn act_button(
 }
 
 /// Buttons for [`issue_actions`], wired.
-pub fn action_row(
-    t: &Theme,
-    r: &str,
-    acts: &[Act],
-    small: bool,
-    id: &str,
-    cx: &mut Context<MainWindow>,
-) -> Div {
-    let mut row = div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(if small { 6. } else { 8. }));
+pub fn action_row(t: &Theme, r: &str, acts: &[Act], small: bool, id: &str, cx: &mut Context<MainWindow>) -> Div {
+    let mut row = div().flex().flex_wrap().items_center().gap(px(if small { 6. } else { 8. }));
     for a in acts {
         let style = match (a.act, small) {
             ("promote", true) => "soft",
@@ -1139,13 +801,7 @@ pub fn action_row(
             ("drop", _) => "ghost",
             _ => "",
         };
-        let b = act_button(
-            t,
-            SharedString::from(format!("{id}-{}-{r}", a.act)),
-            a,
-            style,
-            small,
-        );
+        let b = act_button(t, SharedString::from(format!("{id}-{}-{r}", a.act)), a, style, small);
         let (rr, act, arg) = (r.to_string(), a.act, a.arg);
         row = row.child(if a.busy {
             b
@@ -1164,23 +820,17 @@ pub fn action_row(
 }
 
 fn section(t: &Theme, title: &str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .child(kit::h3(t, title.to_string()))
+    div().flex().flex_col().gap(px(8.)).child(kit::h3(t, title.to_string()))
 }
 
 /// The panel's `.stack` (gap 6px) under a 13px `.h3`.
 fn panel_section(t: &Theme, title: &str, gap: f32) -> Div {
-    div().flex().flex_col().gap(px(gap)).min_w_0().child(
-        div()
-            .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(t.muted)
-            .whitespace_nowrap()
-            .child(title.to_uppercase()),
-    )
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(gap))
+        .min_w_0()
+        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(title.to_uppercase()))
 }
 
 fn hist_color(t: &Theme, kind: &str) -> Hsla {
@@ -1195,39 +845,13 @@ fn hist_color(t: &Theme, kind: &str) -> Hsla {
 }
 
 /// `issueDetail`, drawn. `compact` is the aside's smaller text.
-pub fn render_detail(
-    t: &Theme,
-    v: &DetailView,
-    compact: bool,
-    cx: &mut Context<MainWindow>,
-) -> Div {
+pub fn render_detail(t: &Theme, v: &DetailView, compact: bool, cx: &mut Context<MainWindow>) -> Div {
     let r = v.r.clone();
     let mut col = div().flex().flex_col().gap(px(18.));
-    let sec = |title: &str, gap: f32| {
-        if compact {
-            section(t, title)
-        } else {
-            panel_section(t, title, gap)
-        }
-    };
-    let mut how = sec("How it was reported", 6.).child(
-        div()
-            .text_size(px(if compact { 13. } else { 14. }))
-            .child(v.how.clone()),
-    );
+    let sec = |title: &str, gap: f32| if compact { section(t, title) } else { panel_section(t, title, gap) };
+    let mut how = sec("How it was reported", 6.).child(div().text_size(px(if compact { 13. } else { 14. })).child(v.how.clone()));
     if let Some(said) = &v.said {
-        how = how.child(
-            div()
-                .text_size(px(14.))
-                .text_color(t.text_2)
-                .bg(t.bg)
-                .border_l(px(3.))
-                .border_color(t.border_2)
-                .rounded_r(px(8.))
-                .px(px(12.))
-                .py(px(8.))
-                .child(said.clone()),
-        );
+        how = how.child(div().text_size(px(14.)).text_color(t.text_2).bg(t.bg).border_l(px(3.)).border_color(t.border_2).rounded_r(px(8.)).px(px(12.)).py(px(8.)).child(said.clone()));
     }
     if let Some(d) = &v.detail {
         // `.what`: plain text, line breaks kept.
@@ -1243,12 +867,7 @@ pub fn render_detail(
     if v.snap.is_empty() {
         happening = happening.child(kit::help(t, "No snapshot was saved with this issue."));
     } else {
-        let mut kv = div()
-            .flex()
-            .flex_col()
-            .rounded(px(if compact { 10. } else { 12. }))
-            .border_1()
-            .border_color(t.border);
+        let mut kv = div().flex().flex_col().rounded(px(if compact { 10. } else { 12. })).border_1().border_color(t.border);
         for (i, (k, val)) in v.snap.iter().enumerate() {
             kv = kv.child(
                 div()
@@ -1257,34 +876,14 @@ pub fn render_detail(
                     .px(px(if compact { 12. } else { 16. }))
                     .py(px(if compact { 7. } else { 9. }))
                     .when(i > 0, |d| d.border_t_1().border_color(t.divider))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(if compact { 96. } else { 110. }))
-                            .text_size(px(if compact { 12. } else { 12.5 }))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(t.muted)
-                            .child(k.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(if compact { 12.5 } else { 13. }))
-                            .child(val.clone()),
-                    ),
+                    .child(div().flex_none().w(px(if compact { 96. } else { 110. })).text_size(px(if compact { 12. } else { 12.5 })).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(k.clone()))
+                    .child(div().flex_1().min_w_0().text_size(px(if compact { 12.5 } else { 13. })).child(val.clone())),
             );
         }
         happening = happening.child(kv);
     }
     if let Some((fr, label)) = v.found_log.clone() {
-        happening = happening.child(
-            div().flex().text_size(px(13.)).child(
-                kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label)
-                    .when(!compact, |d| d.underline())
-                    .on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx))),
-            ),
-        );
+        happening = happening.child(div().flex().text_size(px(13.)).child(kit::link(t, SharedString::from(format!("issue-found-log-{r}")), label).when(!compact, |d| d.underline()).on_click(cx.listener(move |m, _, _, cx| open_log(m, &fr, cx)))));
     }
     col = col.child(happening);
 
@@ -1297,43 +896,17 @@ pub fn render_detail(
             // `.hist li`: 52px time · 10px dot · text, gap 8px.
             let text = match &h.who {
                 Some(w) => div().flex_1().min_w_0().text_size(px(13.5)).child(
-                    StyledText::new(format!("{w} · {}", h.what)).with_highlights([(
-                        0..w.len(),
-                        HighlightStyle {
-                            font_weight: Some(FontWeight::SEMIBOLD),
-                            ..Default::default()
-                        },
-                    )]),
+                    StyledText::new(format!("{w} · {}", h.what)).with_highlights([(0..w.len(), HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })]),
                 ),
-                None => div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(px(13.5))
-                    .child(h.what.clone()),
+                None => div().flex_1().min_w_0().text_size(px(13.5)).child(h.what.clone()),
             };
             history = history.child(
                 div()
                     .flex()
                     .items_start()
                     .gap(px(8.))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("issue-hist-{r}-{n}")))
-                            .flex_none()
-                            .w(px(52.))
-                            .whitespace_nowrap()
-                            .text_color(t.muted)
-                            .text_size(px(12.5))
-                            .child(h.time.clone())
-                            .tooltip(kit::tip(h.full.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(10.))
-                            .pt(px(6.))
-                            .child(kit::dot(hist_color(t, &h.kind), 8.)),
-                    )
+                    .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(52.)).whitespace_nowrap().text_color(t.muted).text_size(px(12.5)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
+                    .child(div().flex_none().w(px(10.)).pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 8.)))
                     .child(text),
             );
             continue;
@@ -1344,22 +917,8 @@ pub fn render_detail(
                 .items_start()
                 .gap(px(10.))
                 .text_size(px(13.))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("issue-hist-{r}-{n}")))
-                        .flex_none()
-                        .w(px(64.))
-                        .text_color(t.muted)
-                        .text_size(px(12.))
-                        .child(h.time.clone())
-                        .tooltip(kit::tip(h.full.clone())),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .pt(px(6.))
-                        .child(kit::dot(hist_color(t, &h.kind), 7.)),
-                )
+                .child(div().id(SharedString::from(format!("issue-hist-{r}-{n}"))).flex_none().w(px(64.)).text_color(t.muted).text_size(px(12.)).child(h.time.clone()).tooltip(kit::tip(h.full.clone())))
+                .child(div().flex_none().pt(px(6.)).child(kit::dot(hist_color(t, &h.kind), 7.)))
                 .child(div().flex_1().min_w_0().child(h.text.clone())),
         );
     }
@@ -1386,15 +945,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .px(px(24.))
             .pt(px(24.))
             .line_height(relative(1.5))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(web_pill(&t, t.text_2, t.col, "Backlog", false))
-                    .child(div().flex_1())
-                    .child(close),
-            )
+            .child(div().flex().items_center().gap(px(8.)).child(web_pill(&t, t.text_2, t.col, "Backlog", false)).child(div().flex_1()).child(close))
             .child(kit::help(&t, "Loading…")),
     };
     let picker = render_picker(m, &t, window, cx);
@@ -1402,10 +953,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         // The web's `.panel` sits over the board without dimming it; a click outside still closes it.
         kit::scrim(&t, "issue-scrim")
             .bg(transparent_black())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|m, _, _, cx| m.close_panel(cx)),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(|m, _, _, cx| m.close_panel(cx)))
             .child(
                 div()
                     .id("issue-panel")
@@ -1428,13 +976,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     .into_any_element()
 }
 
-fn panel_body(
-    m: &mut MainWindow,
-    t: &Theme,
-    b: &Value,
-    close: Stateful<Div>,
-    cx: &mut Context<MainWindow>,
-) -> Stateful<Div> {
+fn panel_body(m: &mut MainWindow, t: &Theme, b: &Value, close: Stateful<Div>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let v = panel_view(&Ctx::of(m), b);
     let r = v.r.clone();
     let (kfg, kbg) = kind_colors(t, s(b, "kind"));
@@ -1454,13 +996,7 @@ fn panel_body(
         .flex()
         .flex_col()
         .gap(px(4.))
-        .child(
-            div()
-                .text_size(px(20.))
-                .font_weight(FontWeight::BOLD)
-                .line_height(relative(1.3))
-                .child(v.title.clone()),
-        )
+        .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).line_height(relative(1.3)).child(v.title.clone()))
         .child(
             div()
                 .flex()
@@ -1470,26 +1006,10 @@ fn panel_body(
                 .gap_y(px(6.))
                 .text_size(px(13.))
                 .text_color(t.muted)
-                .child(
-                    div()
-                        .font_family(t.mono_font.clone())
-                        .child(v.project.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(4.))
-                        .child(v.state_line.clone())
-                        .when_some(v.open_task.clone(), |d, tr| {
-                            d.child("·").child(
-                                kit::link(t, "issue-open-task", "Open it")
-                                    .underline()
-                                    .on_click(
-                                        cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx)),
-                                    ),
-                            )
-                        }),
-                ),
+                .child(div().font_family(t.mono_font.clone()).child(v.project.clone()))
+                .child(div().flex().gap(px(4.)).child(v.state_line.clone()).when_some(v.open_task.clone(), |d, tr| {
+                    d.child("·").child(kit::link(t, "issue-open-task", "Open it").underline().on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx))))
+                })),
         );
     let mut col = div()
         .id("issue-panel-body")
@@ -1526,13 +1046,7 @@ fn panel_body(
     }
     col = col.child(render_detail(t, &v.detail, false, cx));
     let rr = r.clone();
-    col.child(
-        div().flex().text_size(px(13.)).child(
-            kit::link(t, "issue-all", "See every backlog issue")
-                .underline()
-                .on_click(cx.listener(move |m, _, _, cx| see_all(m, &rr, cx))),
-        ),
-    )
+    col.child(div().flex().text_size(px(13.)).child(kit::link(t, "issue-all", "See every backlog issue").underline().on_click(cx.listener(move |m, _, _, cx| see_all(m, &rr, cx)))))
 }
 
 /// `.pill` (12px semibold, padding 2px 10px); `mono` is `.pill.ref`.
@@ -1548,11 +1062,7 @@ fn web_pill(t: &Theme, fg: Hsla, bg: Hsla, text: impl Into<SharedString>, mono: 
         .text_color(fg)
         .text_size(px(12.))
         .line_height(relative(1.5))
-        .font_weight(if mono {
-            FontWeight::MEDIUM
-        } else {
-            FontWeight::SEMIBOLD
-        })
+        .font_weight(if mono { FontWeight::MEDIUM } else { FontWeight::SEMIBOLD })
         .when(mono, |d| d.font_family(t.mono_font.clone()))
         .whitespace_nowrap()
         .child(text.into())
@@ -1580,39 +1090,15 @@ fn close_btn(t: &Theme) -> Stateful<Div> {
 
 /// `--accent-tint` (#f5f8ff light, #172036 dark), which the theme doesn't carry.
 fn accent_tint(t: &Theme) -> Hsla {
-    if matches!(t.mode, crate::theme::ThemeMode::Dark) {
-        rgb(0x172036).into()
-    } else {
-        rgb(0xf5f8ff).into()
-    }
+    if matches!(t.mode, crate::theme::ThemeMode::Dark) { rgb(0x172036).into() } else { rgb(0xf5f8ff).into() }
 }
 
 /// `issueAside`: the issue (and its view) beside the Backlog page's list. None = still loading
 /// (or `err`).
-pub fn render_aside(
-    t: &Theme,
-    issue: Option<(&Value, &AsideView)>,
-    err: Option<&str>,
-    cx: &mut Context<MainWindow>,
-) -> AnyElement {
-    let card = div()
-        .flex()
-        .flex_col()
-        .gap(px(16.))
-        .p(px(18.))
-        .rounded(px(14.))
-        .border_1()
-        .border_color(t.border)
-        .bg(t.card);
+pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<&str>, cx: &mut Context<MainWindow>) -> AnyElement {
+    let card = div().flex().flex_col().gap(px(16.)).p(px(18.)).rounded(px(14.)).border_1().border_color(t.border).bg(t.card);
     let Some((b, v)) = issue else {
-        return card
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(if err.is_some() { t.down } else { t.muted })
-                    .child(err.unwrap_or("Loading…").to_string()),
-            )
-            .into_any_element();
+        return card.child(div().text_size(px(13.)).text_color(if err.is_some() { t.down } else { t.muted }).child(err.unwrap_or("Loading…").to_string())).into_any_element();
     };
     let head = div()
         .flex()
@@ -1627,39 +1113,16 @@ pub fn render_aside(
                     let (fg, bg) = kind_colors(t, s(b, "kind"));
                     kit::pill(fg, bg, v.kind.clone())
                 })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(px(12.5))
-                        .text_color(t.muted)
-                        .child(v.help.clone()),
-                )
+                .child(div().flex_1().min_w_0().text_size(px(12.5)).text_color(t.muted).child(v.help.clone()))
                 .child(kit::chip(t, v.r.clone())),
         )
-        .child(
-            div()
-                .text_size(px(17.))
-                .font_weight(FontWeight::BOLD)
-                .line_height(px(23.))
-                .child(v.title.clone()),
-        )
+        .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).line_height(px(23.)).child(v.title.clone()))
         .when_some(v.open_task.clone(), |d, tr| {
             let label = format!("Open task {tr}");
-            d.child(
-                div().flex().text_size(px(12.5)).child(
-                    kit::link(t, "aside-open-task", label)
-                        .on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx))),
-                ),
-            )
+            d.child(div().flex().text_size(px(12.5)).child(kit::link(t, "aside-open-task", label).on_click(cx.listener(move |m, _, _, cx| m.open_task(tr.clone(), cx)))))
         });
     card.child(head)
-        .children(err.map(|e| {
-            div()
-                .text_size(px(12.5))
-                .text_color(t.down)
-                .child(e.to_string())
-        }))
+        .children(err.map(|e| div().text_size(px(12.5)).text_color(t.down).child(e.to_string())))
         .child(render_detail(t, &v.detail, true, cx))
         .into_any_element()
 }
@@ -1667,10 +1130,7 @@ pub fn render_aside(
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{
-        Ctx, drop_issue, issue_from, issue_how, issue_state, kind_label, panel_view, picker_items,
-        picker_label, promote, snap_rows, ticket,
-    };
+    use super::{Ctx, drop_issue, issue_from, issue_how, issue_state, kind_label, panel_view, picker_items, picker_label, promote, snap_rows, ticket};
     use crate::app::Panel;
     use crate::backend::Backend;
     use crate::fmt::{self, arr, s};
@@ -1690,56 +1150,26 @@ mod tests {
         fn of(i: &Value) -> Fix {
             let now = Instant::now();
             Fix {
-                notes: i["notes"]
-                    .as_object()
-                    .map(|o| {
-                        o.iter()
-                            .map(|(k, n)| {
-                                (k.clone(), (s(n, "text").to_string(), fmt::b(n, "err"), now))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                busy: arr(i, "busy")
-                    .iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect(),
+                notes: i["notes"].as_object().map(|o| o.iter().map(|(k, n)| (k.clone(), (s(n, "text").to_string(), fmt::b(n, "err"), now))).collect()).unwrap_or_default(),
+                busy: arr(i, "busy").iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
                 goals: arr(i, "goals").to_vec(),
                 jira: fmt::b(i, "jira"),
             }
         }
         fn ctx(&self) -> Ctx<'_> {
-            Ctx {
-                jira: self.jira,
-                goals: &self.goals,
-                notes: &self.notes,
-                busy: &self.busy,
-            }
+            Ctx { jira: self.jira, goals: &self.goals, notes: &self.notes, busy: &self.busy }
         }
     }
 
     #[::core::prelude::v1::test]
     fn issue_labels_match_web() {
         let g = golden("backlog");
-        for f in [
-            "issueState",
-            "issueFrom",
-            "issueHow",
-            "snapRows",
-            "kindLabel",
-        ] {
+        for f in ["issueState", "issueFrom", "issueHow", "snapRows", "kindLabel"] {
             g.only(f).check(|i| match f {
-                "issueState" => issue_state(&i["issue"])
-                    .map(|(a, b)| json!({"short": a, "text": b}))
-                    .unwrap_or(Value::Null),
+                "issueState" => issue_state(&i["issue"]).map(|(a, b)| json!({"short": a, "text": b})).unwrap_or(Value::Null),
                 "issueFrom" => json!(issue_from(&i["issue"], fmt::b(i, "long"))),
                 "issueHow" => json!(issue_how(&i["issue"])),
-                "snapRows" => json!(
-                    snap_rows(Some(&i["snapshot"]))
-                        .into_iter()
-                        .map(|(k, v)| vec![k, v])
-                        .collect::<Vec<_>>()
-                ),
+                "snapRows" => json!(snap_rows(Some(&i["snapshot"])).into_iter().map(|(k, v)| vec![k, v]).collect::<Vec<_>>()),
                 _ => json!(kind_label(s(i, "kind"))),
             });
         }
@@ -1765,36 +1195,13 @@ mod tests {
         let state = json!({"projects": [{"name": "webapp", "path": "/Users/alex/code/webapp"}, {"name": "api"}]});
         let none = vec![("none".to_string(), "Not in a goal".to_string())];
         let all = picker_items(true, "G2", &none, "", "", &state, &goals);
-        assert_eq!(
-            all.iter().map(|x| x.v.as_str()).collect::<Vec<_>>(),
-            ["none", "G2", "G1"]
-        );
+        assert_eq!(all.iter().map(|x| x.v.as_str()).collect::<Vec<_>>(), ["none", "G2", "G1"]);
         assert_eq!(all[2].sub, "webapp · PROJ-9");
-        assert_eq!(
-            picker_items(true, "", &none, "api", "", &state, &goals).len(),
-            2
-        );
+        assert_eq!(picker_items(true, "", &none, "api", "", &state, &goals).len(), 2);
         // A query drops the specials and searches the project / epic too.
-        assert_eq!(
-            picker_items(true, "", &none, "", "proj-9", &state, &goals)
-                .iter()
-                .map(|x| x.v.as_str())
-                .collect::<Vec<_>>(),
-            ["G1"]
-        );
-        let p = picker_items(
-            false,
-            "mobile",
-            &[("all".into(), "All projects".into())],
-            "",
-            "",
-            &state,
-            &goals,
-        );
-        assert_eq!(
-            p.iter().map(|x| x.v.as_str()).collect::<Vec<_>>(),
-            ["all", "api", "webapp", "mobile"]
-        );
+        assert_eq!(picker_items(true, "", &none, "", "proj-9", &state, &goals).iter().map(|x| x.v.as_str()).collect::<Vec<_>>(), ["G1"]);
+        let p = picker_items(false, "mobile", &[("all".into(), "All projects".into())], "", "", &state, &goals);
+        assert_eq!(p.iter().map(|x| x.v.as_str()).collect::<Vec<_>>(), ["all", "api", "webapp", "mobile"]);
         assert_eq!(p[2].sub, "~/code/webapp");
         assert_eq!(picker_label(true, "G9", &none, &goals), "Choose a goal");
         assert_eq!(picker_label(false, "", &[], &goals), "Choose a project");
@@ -1810,10 +1217,7 @@ mod tests {
     #[gpui_kit::test]
     fn panel_actions_send_what_the_web_sent(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = parity::window(cx);
-        let r = add_issue(
-            &rec,
-            json!({"title": "Flaky test", "kind": "gap", "project": "webapp", "goal_id": null}),
-        );
+        let r = add_issue(&rec, json!({"title": "Flaky test", "kind": "gap", "project": "webapp", "goal_id": null}));
         w.update(cx, |m, _, cx| {
             m.open_issue(r.clone(), cx);
             ticket(m, &r, cx);
@@ -1822,46 +1226,24 @@ mod tests {
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/ticket")), Some(json!({})));
         // The Board keeps the changed issue in its Backlog column (`keepIssue`).
-        w.update(cx, |m, _, _| assert!(m.board.keep.contains(&r)))
-            .unwrap();
+        w.update(cx, |m, _, _| assert!(m.board.keep.contains(&r))).unwrap();
         w.update(cx, |m, _, cx| drop_issue(m, &r, cx)).unwrap();
         parity::settle(cx);
         assert_eq!(rec.last(&format!("backlog/{r}/drop")), Some(json!({})));
-        w.update(cx, |m, _, _| {
-            assert_eq!(
-                m.issue_panel
-                    .notes
-                    .get(&format!("issue:{r}"))
-                    .map(|n| n.0.clone()),
-                Some("Closed as won’t do".into())
-            )
-        })
-        .unwrap();
+        w.update(cx, |m, _, _| assert_eq!(m.issue_panel.notes.get(&format!("issue:{r}")).map(|n| n.0.clone()), Some("Closed as won’t do".into()))).unwrap();
     }
 
     #[gpui_kit::test]
     fn promoting_on_the_board_opens_the_new_task(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = parity::window(cx);
-        let r = add_issue(
-            &rec,
-            json!({"title": "Add retries", "kind": "follow", "project": "webapp"}),
-        );
+        let r = add_issue(&rec, json!({"title": "Add retries", "kind": "follow", "project": "webapp"}));
         w.update(cx, |m, _, cx| {
             m.open_issue(r.clone(), cx);
             promote(m, &r, "board", cx);
         })
         .unwrap();
         parity::settle(cx);
-        assert_eq!(
-            rec.last(&format!("backlog/{r}/promote")),
-            Some(json!({"where": "board"}))
-        );
-        w.update(cx, |m, _, _| {
-            assert!(
-                matches!(&m.panel, Some(Panel::Task { .. })),
-                "the new task's panel opens"
-            )
-        })
-        .unwrap();
+        assert_eq!(rec.last(&format!("backlog/{r}/promote")), Some(json!({"where": "board"})));
+        w.update(cx, |m, _, _| assert!(matches!(&m.panel, Some(Panel::Task { .. })), "the new task's panel opens")).unwrap();
     }
 }

@@ -54,11 +54,7 @@ pub struct Counts {
 /// `awaitingMerge`: a done, not failed task whose PR is still open.
 fn awaiting_merge(t: &Value) -> bool {
     let pr = &t["pr"];
-    s(t, "status") == "done"
-        && !b(t, "failed")
-        && pr.is_object()
-        && !pr["num"].is_null()
-        && pr["state"].as_str().unwrap_or("OPEN").to_uppercase() == "OPEN"
+    s(t, "status") == "done" && !b(t, "failed") && pr.is_object() && !pr["num"].is_null() && pr["state"].as_str().unwrap_or("OPEN").to_uppercase() == "OPEN"
 }
 
 /// `goalCounts`: from the goal's task list when it has one (goal detail), else its summary.
@@ -67,28 +63,15 @@ pub fn goal_counts(g: &Value) -> Counts {
         Some(tasks) => Counts {
             n: tasks.len() as i64,
             done: tasks.iter().filter(|t| s(t, "status") == "done").count() as i64,
-            active: tasks
-                .iter()
-                .filter(|t| matches!(s(t, "status"), "working" | "needs"))
-                .count() as i64,
+            active: tasks.iter().filter(|t| matches!(s(t, "status"), "working" | "needs")).count() as i64,
             queued: tasks.iter().filter(|t| s(t, "status") == "queued").count() as i64,
             prs: tasks.iter().filter(|t| awaiting_merge(t)).count() as i64,
             finished: false,
         },
-        None => Counts {
-            n: i(g, "total"),
-            done: i(g, "done"),
-            active: i(g, "active"),
-            queued: 0,
-            prs: arr(g, "prs_open").len() as i64,
-            finished: false,
-        },
+        None => Counts { n: i(g, "total"), done: i(g, "done"), active: i(g, "active"), queued: 0, prs: arr(g, "prs_open").len() as i64, finished: false },
     };
     // A backend bit not made yet holds back a finished goal ("Waiting on N bits").
-    Counts {
-        finished: c.n > 0 && c.done == c.n && c.prs == 0 && i(g, "bits_waiting") == 0,
-        ..c
-    }
+    Counts { finished: c.n > 0 && c.done == c.n && c.prs == 0 && i(g, "bits_waiting") == 0, ..c }
 }
 
 /// `goalDone`.
@@ -99,9 +82,7 @@ pub fn finished(g: &Value) -> bool {
 /// `agentsHeldWhy`: why no agent may start now ("After hours", "Out of usage"), or "".
 pub fn held_why(state: &Value) -> &'static str {
     let h = &state["work_hours"];
-    let five = arr(&state["usage"], "windows")
-        .iter()
-        .find(|w| s(w, "key") == "five_hour");
+    let five = arr(&state["usage"], "windows").iter().find(|w| s(w, "key") == "five_hour");
     if h.is_object() && b(h, "on") && !b(h, "open") {
         return "After hours";
     }
@@ -124,14 +105,7 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
         return None;
     }
     if c.n > 0 && c.done == c.n && c.prs > 0 {
-        return st(
-            "queued",
-            if c.prs > 1 {
-                format!("{} PRs awaiting merge", c.prs)
-            } else {
-                "Awaiting merge".into()
-            },
-        );
+        return st("queued", if c.prs > 1 { format!("{} PRs awaiting merge", c.prs) } else { "Awaiting merge".into() });
     }
     if c.n > 0 && c.done == c.n && i(g, "bits_waiting") > 0 {
         return st("blocked", bits_waiting(g));
@@ -139,14 +113,7 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
     let queued = g.get("queued").and_then(Value::as_i64).unwrap_or(c.queued);
     let needs = i(g, "needs");
     if needs > 0 {
-        return st(
-            "needs",
-            format!(
-                "{} need{} you",
-                fmt::plural(needs, "task", "tasks"),
-                if needs == 1 { "s" } else { "" }
-            ),
-        );
+        return st("needs", format!("{} need{} you", fmt::plural(needs, "task", "tasks"), if needs == 1 { "s" } else { "" }));
     }
     if c.active > 0 {
         return st("working", "Running".into());
@@ -175,10 +142,7 @@ pub fn status_of(g: &Value, c: &Counts, held: bool) -> Option<Status> {
 }
 
 fn bits_waiting(g: &Value) -> String {
-    format!(
-        "Waiting on {}",
-        fmt::plural(i(g, "bits_waiting"), "bit", "bits")
-    )
+    format!("Waiting on {}", fmt::plural(i(g, "bits_waiting"), "bit", "bits"))
 }
 
 /// Some queued task is blocked by another task's work, and every queued task is blocked or held
@@ -195,14 +159,7 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     let needs = i(g, "needs");
     if c.n > 0 && c.done == c.n {
         return if c.prs > 0 {
-            (
-                "run",
-                if c.prs > 1 {
-                    format!("{} PRs awaiting merge", c.prs)
-                } else {
-                    "Awaiting merge".into()
-                },
-            )
+            ("run", if c.prs > 1 { format!("{} PRs awaiting merge", c.prs) } else { "Awaiting merge".into() })
         } else if i(g, "bits_waiting") > 0 {
             ("warn", bits_waiting(g))
         } else {
@@ -210,14 +167,7 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
         };
     }
     if needs > 0 {
-        return (
-            "warn",
-            if needs > 1 {
-                format!("{needs} need you")
-            } else {
-                "Needs you".into()
-            },
-        );
+        return ("warn", if needs > 1 { format!("{needs} need you") } else { "Needs you".into() });
     }
     if b(g, "paused") {
         return ("warn", "Paused".into());
@@ -228,57 +178,34 @@ pub fn nav_status(g: &Value, c: &Counts) -> (&'static str, String) {
     }
     let running = c.active - needs;
     if running != 0 {
-        return (
-            "run",
-            if running > 1 {
-                format!("{running} running")
-            } else {
-                "Running".into()
-            },
-        );
+        return ("run", if running > 1 { format!("{running} running") } else { "Running".into() });
     }
     if i(g, "queued") > 0 {
-        return if i(g, "blocked") > 0 {
-            ("warn", "Blocked".into())
-        } else {
-            ("queued", "Queued".into())
-        };
+        return if i(g, "blocked") > 0 { ("warn", "Blocked".into()) } else { ("queued", "Queued".into()) };
     }
     if c.n == 0 {
         return ("idle", "No tasks yet".into());
     }
-    (
-        "idle",
-        if c.done > 0 {
-            "Not running".into()
-        } else {
-            "Not started".into()
-        },
-    )
+    ("idle", if c.done > 0 { "Not running".into() } else { "Not started".into() })
 }
 
 const STOPPED_LABEL: &str = "Waiting on you";
 
 /// The goal list line's tooltip: a stopped goal's stopped line ("Wave 2 is done. Review it, then continue").
 pub fn nav_tip(g: &Value, kind: &str, label: &str) -> Option<String> {
-    (kind == "warn" && label == STOPPED_LABEL)
-        .then(|| fmt::opt_s(g, "stopped").map(|s| s.to_string()))
-        .flatten()
+    (kind == "warn" && label == STOPPED_LABEL).then(|| fmt::opt_s(g, "stopped").map(|s| s.to_string())).flatten()
 }
 
 /// Kept for other pages: the goal list's (label, tone) for a goal summary.
 #[allow(dead_code)]
 pub fn goal_status(g: &Value) -> (String, &'static str) {
     let (kind, label) = nav_status(g, &goal_counts(g));
-    (
-        label,
-        match kind {
-            "run" | "queued" => "accent",
-            "warn" => "warn",
-            "done" => "up",
-            _ => "muted",
-        },
-    )
+    (label, match kind {
+        "run" | "queued" => "accent",
+        "warn" => "warn",
+        "done" => "up",
+        _ => "muted",
+    })
 }
 
 /// `goalRing`: the done and done+active fractions of the circle, and the glyph inside it.
@@ -292,33 +219,13 @@ pub struct Ring {
 
 pub fn ring(c: &Counts, st: Option<&Status>) -> Ring {
     let n = c.n.max(0) as f32;
-    let (d, a) = if c.n > 0 {
-        (c.done as f32 / n, (c.done + c.active) as f32 / n)
-    } else {
-        (0., 0.)
-    };
+    let (d, a) = if c.n > 0 { (c.done as f32 / n, (c.done + c.active) as f32 / n) } else { (0., 0.) };
     let glyph = if c.finished {
         Some("tick")
     } else {
-        st.map(|s| s.key).filter(|k| {
-            matches!(
-                *k,
-                "working"
-                    | "starting"
-                    | "needs"
-                    | "stopped"
-                    | "paused"
-                    | "held"
-                    | "blocked"
-                    | "queued"
-            )
-        })
+        st.map(|s| s.key).filter(|k| matches!(*k, "working" | "starting" | "needs" | "stopped" | "paused" | "held" | "blocked" | "queued"))
     };
-    Ring {
-        done: d,
-        active: a,
-        glyph,
-    }
+    Ring { done: d, active: a, glyph }
 }
 
 // ------------------------------------------------------------------ recently completed
@@ -333,12 +240,7 @@ pub fn recent_since(now: DateTime<Utc>) -> DateTime<Utc> {
     }
     let since_friday = (wd + 2) % 7;
     let date = l.date_naive() - Duration::days(since_friday);
-    let friday = l
-        .offset()
-        .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap_or_default())
-        .single()
-        .map(|t| t.with_timezone(&Utc))
-        .unwrap_or(day_ago);
+    let friday = l.offset().from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap_or_default()).single().map(|t| t.with_timezone(&Utc)).unwrap_or(day_ago);
     friday.min(day_ago)
 }
 
@@ -418,40 +320,13 @@ fn row(g: &Value, f: &Filters, held: bool) -> Row {
 }
 
 /// `goalsRailHtml`, as data. `goals` is None before the goal list first answered.
-pub fn rail_view(
-    state: Option<&Value>,
-    goals: Option<&[Value]>,
-    f: &Filters,
-    shut: &[String],
-    recent_open: bool,
-) -> Rail {
+pub fn rail_view(state: Option<&Value>, goals: Option<&[Value]>, f: &Filters, shut: &[String], recent_open: bool) -> Rail {
     let every = all_goals(state, goals);
     let held = state.is_some_and(|s| !held_why(s).is_empty());
-    let active: Vec<&Value> = every
-        .iter()
-        .copied()
-        .filter(|g| !finished(g) && !b(g, "deprioritized"))
-        .collect();
-    let mut recent: Vec<&Value> = every
-        .iter()
-        .copied()
-        .filter(|g| finished(g) && recently_done(g))
-        .collect();
-    recent.sort_by_key(|g| {
-        std::cmp::Reverse(
-            fmt::parse(s(g, "finished_at"))
-                .map(|t| t.timestamp_millis())
-                .unwrap_or(0),
-        )
-    });
-    let mut seen: Vec<String> = state
-        .map(|s| {
-            arr(s, "session_projects")
-                .iter()
-                .filter_map(|p| p.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+    let active: Vec<&Value> = every.iter().copied().filter(|g| !finished(g) && !b(g, "deprioritized")).collect();
+    let mut recent: Vec<&Value> = every.iter().copied().filter(|g| finished(g) && recently_done(g)).collect();
+    recent.sort_by_key(|g| std::cmp::Reverse(fmt::parse(s(g, "finished_at")).map(|t| t.timestamp_millis()).unwrap_or(0)));
+    let mut seen: Vec<String> = state.map(|s| arr(s, "session_projects").iter().filter_map(|p| p.as_str().map(str::to_string)).collect()).unwrap_or_default();
     for g in &active {
         if let Some(p) = fmt::opt_s(g, "project") {
             seen.push(p.to_string());
@@ -465,11 +340,7 @@ pub fn rail_view(
     let groups = seen
         .iter()
         .map(|p| {
-            let gs: Vec<&Value> = active
-                .iter()
-                .copied()
-                .filter(|g| s(g, "project") == p)
-                .collect();
+            let gs: Vec<&Value> = active.iter().copied().filter(|g| s(g, "project") == p).collect();
             let closed = shut.iter().any(|x| x == p) && !gs.iter().any(|g| same_ref(g, &f.goal));
             let needs: i64 = gs.iter().map(|g| i(g, "needs")).sum();
             Group {
@@ -478,42 +349,19 @@ pub fn rail_view(
                 on: f.project == *p,
                 dot: closed && needs > 0,
                 count: gs.len(),
-                rows: if closed {
-                    Vec::new()
-                } else {
-                    gs.iter().map(|g| row(g, f, held)).collect()
-                },
+                rows: if closed { Vec::new() } else { gs.iter().map(|g| row(g, f, held)).collect() },
             }
         })
         // Unlike the web, a project with no active goals is left out, unless the board is
         // filtered to it (its header is the way back to every project).
         .filter(|g| g.count > 0 || g.on)
         .collect::<Vec<_>>();
-    let none = groups
-        .is_empty()
-        .then_some(if goals.is_some() || state.is_some() {
-            "No goals yet"
-        } else {
-            "Loading…"
-        });
+    let none = groups.is_empty().then_some(if goals.is_some() || state.is_some() { "No goals yet" } else { "Loading…" });
     let recent = (!recent.is_empty()).then(|| {
         let open = recent_open || recent.iter().any(|g| same_ref(g, &f.goal));
-        (
-            open,
-            recent.len(),
-            if open {
-                recent.iter().map(|g| row(g, f, held)).collect()
-            } else {
-                Vec::new()
-            },
-        )
+        (open, recent.len(), if open { recent.iter().map(|g| row(g, f, held)).collect() } else { Vec::new() })
     });
-    Rail {
-        count: active.len(),
-        groups,
-        none,
-        recent,
-    }
+    Rail { count: active.len(), groups, none, recent }
 }
 
 /// `String.prototype.localeCompare` (the forms' node-verified port).
@@ -529,29 +377,19 @@ pub fn pick_project(f: &Filters, p: &str) -> Filters {
         f.goal = "all".into();
         f.project = p.to_string();
     } else {
-        f.project = if f.project == p {
-            "all".into()
-        } else {
-            p.to_string()
-        };
+        f.project = if f.project == p { "all".into() } else { p.to_string() };
     }
     f
 }
 
 /// `railClear`.
 pub fn rail_clear(f: &Filters) -> Filters {
-    Filters {
-        goal: "all".into(),
-        project: "all".into(),
-        done: f.done.clone(),
-    }
+    Filters { goal: "all".into(), project: "all".into(), done: f.done.clone() }
 }
 
 /// `railShut` (`tb.rail.shut`, a JSON array in a string).
 pub fn rail_shut() -> Vec<String> {
-    crate::prefs::get_str("tb.rail.shut")
-        .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
-        .unwrap_or_default()
+    crate::prefs::get_str("tb.rail.shut").and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default()
 }
 
 /// `rail-fold`.
@@ -562,10 +400,7 @@ pub fn toggle_shut(p: &str) {
     } else {
         set.push(p.to_string());
     }
-    crate::prefs::set(
-        "tb.rail.shut",
-        json!(serde_json::to_string(&set).unwrap_or_default()),
-    );
+    crate::prefs::set("tb.rail.shut", json!(serde_json::to_string(&set).unwrap_or_default()));
 }
 
 /// `railRecentOpen` (`tb.rail.recent`).
@@ -575,10 +410,7 @@ pub fn recent_open() -> bool {
 
 /// `rail-recent`.
 pub fn toggle_recent() {
-    crate::prefs::set(
-        "tb.rail.recent",
-        json!(if recent_open() { "closed" } else { "open" }),
-    );
+    crate::prefs::set("tb.rail.recent", json!(if recent_open() { "closed" } else { "open" }));
 }
 
 /// `railWidth` (`tb.rail.w`): the saved width clamped to 220–600, else 300.
@@ -589,21 +421,13 @@ pub fn rail_width() -> f32 {
         Some(Value::Number(n)) => n.as_f64().unwrap_or(0.),
         _ => 0.,
     };
-    if n == 0. || n.is_nan() {
-        RAIL_DEFAULT
-    } else {
-        (n as f32).clamp(RAIL_MIN, RAIL_MAX)
-    }
+    if n == 0. || n.is_nan() { RAIL_DEFAULT } else { (n as f32).clamp(RAIL_MIN, RAIL_MAX) }
 }
 
 /// JS `Number(str)` for the values the web saved ("" is 0, junk is NaN).
 fn js_number(t: &str) -> f64 {
     let t = t.trim();
-    if t.is_empty() {
-        0.
-    } else {
-        t.parse::<f64>().unwrap_or(f64::NAN)
-    }
+    if t.is_empty() { 0. } else { t.parse::<f64>().unwrap_or(f64::NAN) }
 }
 
 /// `setRailWidth(…, save)`: rounded and clamped.
@@ -634,37 +458,16 @@ pub struct PeekView {
     pub groups: Vec<(&'static str, &'static str, Vec<PeekTask>)>,
 }
 
-const PEEK_GROUPS: [(&str, &str, &str); 5] = [
-    ("needs", "Needs you", "needs"),
-    ("working", "Running", "working"),
-    ("failed", "Failed", "failed"),
-    ("starting", "Starting", "working"),
-    ("blocked", "Blocked", "blocked"),
-];
+const PEEK_GROUPS: [(&str, &str, &str); 5] =
+    [("needs", "Needs you", "needs"), ("working", "Running", "working"), ("failed", "Failed", "failed"), ("starting", "Starting", "working"), ("blocked", "Blocked", "blocked")];
 
 /// `goalPeekHtml`, as data.
 pub fn peek_view(g: &Value, state: &Value) -> PeekView {
     let c = goal_counts(g);
     let why = held_why(state);
     let st = status_of(g, &c, !why.is_empty());
-    let planned = if i(g, "planned") > 0 {
-        format!(" · {} planned", i(g, "planned"))
-    } else {
-        String::new()
-    };
-    let st_part = st
-        .as_ref()
-        .map(|st| {
-            format!(
-                "{} · ",
-                if st.key == "held" {
-                    "Queued"
-                } else {
-                    st.label.as_str()
-                }
-            )
-        })
-        .unwrap_or_default();
+    let planned = if i(g, "planned") > 0 { format!(" · {} planned", i(g, "planned")) } else { String::new() };
+    let st_part = st.as_ref().map(|st| format!("{} · ", if st.key == "held" { "Queued" } else { st.label.as_str() })).unwrap_or_default();
     let held = (st.is_some() && !why.is_empty()).then_some(why);
     PeekView {
         title: format!("{} {}", fmt::ref_of(g, "G"), s(g, "name")),
@@ -676,11 +479,7 @@ pub fn peek_view(g: &Value, state: &Value) -> PeekView {
                 let ts: Vec<PeekTask> = arr(g, "peek")
                     .iter()
                     .filter(|t| s(t, "status") == *k)
-                    .map(|t| PeekTask {
-                        r: s(t, "ref").to_string(),
-                        title: s(t, "title").to_string(),
-                        why: fmt::opt_s(t, "why").map(str::to_string),
-                    })
+                    .map(|t| PeekTask { r: s(t, "ref").to_string(), title: s(t, "title").to_string(), why: fmt::opt_s(t, "why").map(str::to_string) })
                     .collect();
                 (!ts.is_empty()).then_some((*label, *chip, ts))
             })
@@ -716,11 +515,7 @@ pub struct NavView {
     pub empty: Option<&'static str>,
 }
 
-const NAV_VIEWS: [(&str, &str); 3] = [
-    ("active", "Active"),
-    ("deprio", "Deprioritized"),
-    ("done", "Finished"),
-];
+const NAV_VIEWS: [(&str, &str); 3] = [("active", "Active"), ("deprio", "Deprioritized"), ("done", "Finished")];
 
 /// `gnavView`.
 pub fn nav_kind(g: &Value) -> &'static str {
@@ -735,11 +530,7 @@ pub fn nav_kind(g: &Value) -> &'static str {
 
 /// The view the list shows (the web's `P.gnav` rule): the current goal's own view when the
 /// current goal changed since the view was chosen, else the chosen view, else Active.
-pub fn nav_view_for(
-    goals: &[&Value],
-    cur: Option<&str>,
-    chosen: Option<&(String, String)>,
-) -> &'static str {
+pub fn nav_view_for(goals: &[&Value], cur: Option<&str>, chosen: Option<&(String, String)>) -> &'static str {
     let g = cur.and_then(|c| goals.iter().find(|g| same_ref(g, c)));
     if let Some(g) = g {
         let r = fmt::ref_of(g, "G");
@@ -748,42 +539,19 @@ pub fn nav_view_for(
         }
     }
     let v = chosen.map(|(v, _)| v.as_str()).unwrap_or("active");
-    NAV_VIEWS
-        .iter()
-        .map(|(k, _)| *k)
-        .find(|k| *k == v)
-        .unwrap_or("active")
+    NAV_VIEWS.iter().map(|(k, _)| *k).find(|k| *k == v).unwrap_or("active")
 }
 
 /// `goalNavList`, as data.
 pub fn nav_view(goals: &[&Value], cur: Option<&str>, view: &'static str) -> NavView {
     let set = |k: &str| -> Vec<&Value> {
-        let mut v: Vec<&Value> = goals
-            .iter()
-            .copied()
-            .filter(|g| {
-                if k == "done" {
-                    finished(g)
-                } else {
-                    nav_kind(g) == k
-                }
-            })
-            .collect();
+        let mut v: Vec<&Value> = goals.iter().copied().filter(|g| if k == "done" { finished(g) } else { nav_kind(g) == k }).collect();
         if k == "done" {
-            v.sort_by_key(|g| {
-                std::cmp::Reverse(
-                    fmt::parse(s(g, "finished_at"))
-                        .map(|t| t.timestamp_millis())
-                        .unwrap_or(0),
-                )
-            });
+            v.sort_by_key(|g| std::cmp::Reverse(fmt::parse(s(g, "finished_at")).map(|t| t.timestamp_millis()).unwrap_or(0)));
         }
         v
     };
-    let tabs = NAV_VIEWS
-        .iter()
-        .map(|(k, l)| (*k, *l, set(k).len()))
-        .collect();
+    let tabs = NAV_VIEWS.iter().map(|(k, l)| (*k, *l, set(k).len())).collect();
     let list = set(view);
     let mut projects: Vec<String> = list.iter().map(|g| s(g, "project").to_string()).collect();
     projects.sort_by(|a, b| locale_cmp(a, b));
@@ -811,14 +579,7 @@ pub fn nav_view(goals: &[&Value], cur: Option<&str>, view: &'static str) -> NavV
                     }
                 })
                 .collect();
-            (
-                if p.is_empty() {
-                    "No project".to_string()
-                } else {
-                    p.clone()
-                },
-                items,
-            )
+            (if p.is_empty() { "No project".to_string() } else { p.clone() }, items)
         })
         .collect::<Vec<_>>();
     let empty = list.is_empty().then_some(match view {
@@ -826,12 +587,7 @@ pub fn nav_view(goals: &[&Value], cur: Option<&str>, view: &'static str) -> NavV
         "done" => "No finished goals yet",
         _ => "No active goals",
     });
-    NavView {
-        view,
-        tabs,
-        groups,
-        empty,
-    }
+    NavView { view, tabs, groups, empty }
 }
 
 /// The goal "Goals" opens (the web's `#/goals` with no id): the board's goal filter, else the
@@ -842,10 +598,7 @@ pub fn landing(goals: &[&Value], filter_goal: &str) -> Option<String> {
     }
     let mut active: Vec<&&Value> = goals.iter().filter(|g| nav_kind(g) == "active").collect();
     active.sort_by(|a, b| locale_cmp(s(a, "project"), s(b, "project")));
-    active
-        .first()
-        .map(|g| fmt::ref_of(g, "G"))
-        .or_else(|| goals.first().map(|g| fmt::ref_of(g, "G")))
+    active.first().map(|g| fmt::ref_of(g, "G")).or_else(|| goals.first().map(|g| fmt::ref_of(g, "G")))
 }
 
 // ------------------------------------------------------------------ drawing
@@ -883,12 +636,7 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
             arc(1., track, window);
             arc(r.active, act, window);
             arc(r.done, done, window);
-            let u = |x: f32, y: f32| {
-                point(
-                    bounds.origin.x + px(x * scale),
-                    bounds.origin.y + px(y * scale),
-                )
-            };
+            let u = |x: f32, y: f32| point(bounds.origin.x + px(x * scale), bounds.origin.y + px(y * scale));
             let line = |pts: &[(f32, f32)], w: f32, color: Hsla, window: &mut Window| {
                 let mut p = PathBuilder::stroke(px(w * scale));
                 p.move_to(u(pts[0].0, pts[0].1));
@@ -912,9 +660,7 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
             };
             match r.glyph {
                 Some("tick") => line(&[(5.5, 9.2), (7.8, 11.5), (12.3, 6.7)], 2., tick_c, window),
-                Some("working" | "starting") => {
-                    fill_poly(&[(7.7, 6.4), (7.7, 11.6), (11.8, 9.)], glyph_c, window)
-                }
+                Some("working" | "starting") => fill_poly(&[(7.7, 6.4), (7.7, 11.6), (11.8, 9.)], glyph_c, window),
                 Some("needs") => {
                     line(&[(9., 5.8), (9., 9.5)], 1.8, glyph_c, window);
                     line(&[(9., 12.), (9., 12.4)], 1.8, glyph_c, window);
@@ -923,40 +669,12 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
                     line(&[(7.6, 6.6), (7.6, 11.4)], 1.8, glyph_c, window);
                     line(&[(10.4, 6.6), (10.4, 11.4)], 1.8, glyph_c, window);
                 }
-                Some("stopped") => fill_poly(
-                    &[(6.6, 6.6), (11.4, 6.6), (11.4, 11.4), (6.6, 11.4)],
-                    glyph_c,
-                    window,
-                ),
+                Some("stopped") => fill_poly(&[(6.6, 6.6), (11.4, 6.6), (11.4, 11.4), (6.6, 11.4)], glyph_c, window),
                 Some("blocked") => {
-                    line(
-                        &[(6.6, 8.6), (11.4, 8.6), (11.4, 12.), (6.6, 12.), (6.6, 8.6)],
-                        1.1,
-                        glyph_c,
-                        window,
-                    );
-                    line(
-                        &[(7.6, 8.6), (7.6, 7.7), (9., 6.3), (10.4, 7.7), (10.4, 8.6)],
-                        1.1,
-                        glyph_c,
-                        window,
-                    );
+                    line(&[(6.6, 8.6), (11.4, 8.6), (11.4, 12.), (6.6, 12.), (6.6, 8.6)], 1.1, glyph_c, window);
+                    line(&[(7.6, 8.6), (7.6, 7.7), (9., 6.3), (10.4, 7.7), (10.4, 8.6)], 1.1, glyph_c, window);
                 }
-                Some("held") => fill_poly(
-                    &[
-                        (10.6, 6.1),
-                        (8., 6.6),
-                        (6.6, 9.),
-                        (8., 11.6),
-                        (10.8, 12.),
-                        (12.6, 11.),
-                        (10.6, 10.4),
-                        (9.6, 9.),
-                        (10.6, 6.1),
-                    ],
-                    glyph_c,
-                    window,
-                ),
+                Some("held") => fill_poly(&[(10.6, 6.1), (8., 6.6), (6.6, 9.), (8., 11.6), (10.8, 12.), (12.6, 11.), (10.6, 10.4), (9.6, 9.), (10.6, 6.1)], glyph_c, window),
                 Some("queued") => {
                     let mut p = PathBuilder::stroke(px(1.4 * scale));
                     let cc = u(9., 9.);
@@ -981,13 +699,7 @@ fn ring_el(t: &Theme, r: Ring) -> impl IntoElement {
 
 /// The hover peek: after 300 ms on a goal (at once when a card already shows); away for 150 ms
 /// hides it unless the pointer moved onto the card.
-fn on_goal_hover(
-    m: &mut MainWindow,
-    r: String,
-    hovered: bool,
-    window: &mut Window,
-    cx: &mut Context<MainWindow>,
-) {
+fn on_goal_hover(m: &mut MainWindow, r: String, hovered: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
     m.sidebar.hover_gen += 1;
     let seq = m.sidebar.hover_gen;
     if hovered {
@@ -999,9 +711,7 @@ fn on_goal_hover(
             return;
         }
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(PEEK_DELAY_MS))
-                .await;
+            cx.background_executor().timer(std::time::Duration::from_millis(PEEK_DELAY_MS)).await;
             let _ = this.update(cx, |m, cx| {
                 if m.sidebar.hover_gen == seq {
                     m.sidebar.peek = Some((r, at));
@@ -1018,9 +728,7 @@ fn on_goal_hover(
 fn hide_peek_soon(m: &mut MainWindow, seq: u64, cx: &mut Context<MainWindow>) {
     let _ = m;
     cx.spawn(async move |this, cx| {
-        cx.background_executor()
-            .timer(std::time::Duration::from_millis(PEEK_HIDE_MS))
-            .await;
+        cx.background_executor().timer(std::time::Duration::from_millis(PEEK_HIDE_MS)).await;
         let _ = this.update(cx, |m, cx| {
             if m.sidebar.hover_gen == seq && !m.sidebar.over_peek {
                 m.sidebar.peek = None;
@@ -1032,11 +740,7 @@ fn hide_peek_soon(m: &mut MainWindow, seq: u64, cx: &mut Context<MainWindow>) {
 }
 
 fn rail_width_now(m: &MainWindow) -> f32 {
-    if matches!(m.page, Page::Goal(_)) {
-        GNAV_WIDTH
-    } else {
-        rail_width()
-    }
+    if matches!(m.page, Page::Goal(_)) { GNAV_WIDTH } else { rail_width() }
 }
 
 /// `.bg-item` / `.bg-pick`: ring, "G3 name" (the ref in mono, faint), done/n; the picked goal
@@ -1044,11 +748,7 @@ fn rail_width_now(m: &MainWindow) -> f32 {
 fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.col;
     let rid = r.r.clone();
-    let name = r
-        .name
-        .strip_prefix(&format!("{} ", r.r))
-        .unwrap_or(&r.name)
-        .to_string();
+    let name = r.name.strip_prefix(&format!("{} ", r.r)).unwrap_or(&r.name).to_string();
     let pick = div()
         .id(SharedString::from(format!("goal-pick-{}", r.r)))
         .flex()
@@ -1069,30 +769,12 @@ fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
                 .items_baseline()
                 .gap(px(4.))
                 .text_size(px(13.))
-                .font_weight(if r.on {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::MEDIUM
-                })
+                .font_weight(if r.on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .text_color(if r.dim { t.muted } else { t.text })
-                .child(
-                    div()
-                        .flex_none()
-                        .font_family(t.mono_font.clone())
-                        .text_size(px(11.7))
-                        .text_color(t.faint)
-                        .child(r.r.clone()),
-                )
+                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.7)).text_color(t.faint).child(r.r.clone()))
                 .child(div().flex_1().min_w_0().truncate().child(name)),
         )
-        .child(
-            div()
-                .flex_none()
-                .text_size(px(12.))
-                .font_weight(FontWeight::NORMAL)
-                .text_color(t.faint)
-                .child(r.count.clone()),
-        )
+        .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(t.faint).child(r.count.clone()))
         .when_some(r.status.clone(), |d, st| d.tooltip(kit::tip(st.label)))
         .on_hover(cx.listener({
             let rid = rid.clone();
@@ -1134,23 +816,7 @@ fn rail_row(t: &Theme, r: &Row, cx: &mut Context<MainWindow>) -> Div {
 
 /// `.bg-fold`: the 28×30 chevron cell (down when open, right when folded).
 fn fold_cell(t: &Theme, open: bool) -> Div {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .w(px(28.))
-        .h(px(30.))
-        .rounded(px(8.))
-        .child(kit::icon(
-            if open {
-                kit::Icon::Chev
-            } else {
-                kit::Icon::Fwd
-            },
-            14.,
-            t.faint,
-        ))
+    div().flex().flex_none().items_center().justify_center().w(px(28.)).h(px(30.)).rounded(px(8.)).child(kit::icon(if open { kit::Icon::Chev } else { kit::Icon::Fwd }, 14., t.faint))
 }
 
 /// `.bg-pname`'s text: 11px semibold uppercase.
@@ -1167,12 +833,7 @@ fn pname(t: &Theme, text: &str, on: bool) -> Div {
 
 /// `.bg-n`: 12px faint count.
 fn bg_n(t: &Theme, n: impl ToString) -> Div {
-    div()
-        .flex_none()
-        .text_size(px(12.))
-        .font_weight(FontWeight::NORMAL)
-        .text_color(t.faint)
-        .child(n.to_string())
+    div().flex_none().text_size(px(12.)).font_weight(FontWeight::NORMAL).text_color(t.faint).child(n.to_string())
 }
 
 /// `.bg-proj`: fold chevron, project name (filters the board), needs dot when folded, count.
@@ -1190,11 +851,7 @@ fn group_head(t: &Theme, g: &Group, first: bool, cx: &mut Context<MainWindow>) -
             fold_cell(t, g.open)
                 .id(SharedString::from(format!("rail-fold-{}", g.project)))
                 .cursor_pointer()
-                .tooltip(kit::tip(format!(
-                    "{} {} goals",
-                    if g.open { "Hide" } else { "Show" },
-                    g.project
-                )))
+                .tooltip(kit::tip(format!("{} {} goals", if g.open { "Hide" } else { "Show" }, g.project)))
                 .on_click(cx.listener(move |m, _, _, cx| {
                     toggle_shut(&p1);
                     cx.notify();
@@ -1215,42 +872,20 @@ fn group_head(t: &Theme, g: &Group, first: bool, cx: &mut Context<MainWindow>) -
                 .child(pname(t, &g.project, g.on))
                 .when(g.dot, |d| d.child(kit::dot(t.warn, 7.)))
                 .child(bg_n(t, g.count))
-                .tooltip(kit::tip(if g.on {
-                    "Show every project".to_string()
-                } else {
-                    format!("Show only {}", g.project)
-                }))
+                .tooltip(kit::tip(if g.on { "Show every project".to_string() } else { format!("Show only {}", g.project) }))
                 .on_click(cx.listener(move |m, _, _, cx| m.rail_pick_project(&p2, cx))),
         )
 }
 
 /// `.count`: 12px semibold muted on `--col`, fully rounded (`.hot`: warn).
 fn count_pill(t: &Theme, n: impl ToString, hot: bool) -> Div {
-    let (fg, bg) = if hot {
-        (t.warn_fg, t.warn_soft)
-    } else {
-        (t.muted, t.col)
-    };
-    div()
-        .flex_none()
-        .px(px(7.))
-        .rounded_full()
-        .text_size(px(12.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(fg)
-        .bg(bg)
-        .child(n.to_string())
+    let (fg, bg) = if hot { (t.warn_fg, t.warn_soft) } else { (t.muted, t.col) };
+    div().flex_none().px(px(7.)).rounded_full().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(fg).bg(bg).child(n.to_string())
 }
 
 fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let goals = (m.goals_loaded()).then_some(m.data.goals.as_slice());
-    let view = rail_view(
-        m.data.state.as_ref(),
-        goals,
-        &m.filters,
-        &rail_shut(),
-        recent_open(),
-    );
+    let view = rail_view(m.data.state.as_ref(), goals, &m.filters, &rail_shut(), recent_open());
     let mut out: Vec<AnyElement> = Vec::new();
     let goal_c = t.goal;
     out.push(
@@ -1273,27 +908,14 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
                     .text_color(t.muted)
                     .hover(move |s| s.text_color(goal_c))
                     .child("GOALS")
-                    .child(
-                        div()
-                            .opacity(0.6)
-                            .child(kit::icon(kit::Icon::Fwd, 12., t.muted)),
-                    )
-                    .tooltip(kit::tip(
-                        "See every goal: active, deprioritized and finished",
-                    ))
+                    .child(div().opacity(0.6).child(kit::icon(kit::Icon::Fwd, 12., t.muted)))
+                    .tooltip(kit::tip("See every goal: active, deprioritized and finished"))
                     .on_click(cx.listener(|m, _, _, cx| m.open_goals(cx))),
             )
             .child(count_pill(t, view.count, false))
             .into_any_element(),
     );
-    let mut list = div()
-        .id("goals-rail")
-        .flex()
-        .flex_col()
-        .gap(px(1.))
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll();
+    let mut list = div().id("goals-rail").flex().flex_col().gap(px(1.)).flex_1().min_h_0().overflow_y_scroll();
     for (ix, g) in view.groups.iter().enumerate() {
         list = list.child(group_head(t, g, ix == 0, cx));
         for r in &g.rows {
@@ -1301,50 +923,25 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
         }
     }
     if let Some(none) = view.none {
-        list = list.child(
-            div()
-                .px(px(8.))
-                .text_size(px(12.5))
-                .text_color(t.muted)
-                .child(none),
-        );
+        list = list.child(div().px(px(8.)).text_size(px(12.5)).text_color(t.muted).child(none));
     }
     out.push(list.into_any_element());
     if let Some((open, n, rows)) = view.recent {
-        let mut rec = div()
-            .flex()
-            .flex_none()
-            .flex_col()
-            .gap(px(1.))
-            .pt(px(10.))
-            .border_t_1()
-            .border_color(t.border)
-            .child(
-                div()
-                    .id("rail-recent")
-                    .flex()
-                    .items_center()
-                    .mb(px(4.))
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .child(fold_cell(t, open))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w_0()
-                            .items_center()
-                            .gap(px(8.))
-                            .h(px(30.))
-                            .pr(px(8.))
-                            .child(pname(t, "Recently completed", false))
-                            .child(bg_n(t, n)),
-                    )
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        toggle_recent();
-                        cx.notify();
-                    })),
-            );
+        let mut rec = div().flex().flex_none().flex_col().gap(px(1.)).pt(px(10.)).border_t_1().border_color(t.border).child(
+            div()
+                .id("rail-recent")
+                .flex()
+                .items_center()
+                .mb(px(4.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .child(fold_cell(t, open))
+                .child(div().flex().flex_1().min_w_0().items_center().gap(px(8.)).h(px(30.)).pr(px(8.)).child(pname(t, "Recently completed", false)).child(bg_n(t, n)))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    toggle_recent();
+                    cx.notify();
+                })),
+        );
         for r in &rows {
             rec = rec.child(rail_row(t, r, cx));
         }
@@ -1355,40 +952,14 @@ fn rail_list(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec
 
 /// `goalNavList` on the goal page: "Goals", the Active / Deprioritized / Finished tabs
 /// (`.seg.sm.gn-views`), then the goals by project (`.gn-group`, `.gitem`).
-fn nav_list(
-    m: &mut MainWindow,
-    t: &Theme,
-    cur: &str,
-    cx: &mut Context<MainWindow>,
-) -> Vec<AnyElement> {
+fn nav_list(m: &mut MainWindow, t: &Theme, cur: &str, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
     let goals: Vec<&Value> = m.data.goals.iter().filter(|g| !b(g, "archived")).collect();
     let view = nav_view_for(&goals, Some(cur), m.sidebar.gnav.as_ref());
     m.sidebar.gnav = Some((view.to_string(), cur.to_string()));
     let nv = nav_view(&goals, Some(cur), view);
     let mut out: Vec<AnyElement> = Vec::new();
-    out.push(
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child("Goals"),
-            )
-            .into_any_element(),
-    );
-    let mut tabs = div()
-        .flex()
-        .flex_none()
-        .gap(px(2.))
-        .p(px(3.))
-        .mt(px(-2.))
-        .rounded(px(9.))
-        .bg(t.seg);
+    out.push(div().flex().flex_none().items_center().gap(px(8.)).child(div().flex_1().text_size(px(20.)).font_weight(FontWeight::BOLD).child("Goals")).into_any_element());
+    let mut tabs = div().flex().flex_none().gap(px(2.)).p(px(3.)).mt(px(-2.)).rounded(px(9.)).bg(t.seg);
     for (k, label, n) in nv.tabs.iter().copied() {
         let sel = k == nv.view;
         let c = cur.to_string();
@@ -1412,12 +983,7 @@ fn nav_list(
                 .when(sel, |d| d.bg(t.card).shadow(shadow_seg(t)))
                 .hover(move |s| s.text_color(hover))
                 .child(label)
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(t.muted)
-                        .child(n.to_string()),
-                )
+                .child(div().font_weight(FontWeight::MEDIUM).text_color(t.muted).child(n.to_string()))
                 .on_click(cx.listener(move |m, _, _, cx| {
                     m.sidebar.gnav = Some((k.to_string(), c.clone()));
                     cx.notify();
@@ -1425,14 +991,7 @@ fn nav_list(
         );
     }
     out.push(tabs.into_any_element());
-    let mut list = div()
-        .id("goal-nav")
-        .flex()
-        .flex_col()
-        .gap(px(14.))
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll();
+    let mut list = div().id("goal-nav").flex().flex_col().gap(px(14.)).flex_1().min_h_0().overflow_y_scroll();
     for (p, items) in &nv.groups {
         let mut grp = div().flex().flex_col().gap(px(4.)).child(
             div()
@@ -1465,9 +1024,7 @@ fn nav_list(
                     .py(px(8.))
                     .rounded(px(8.))
                     .cursor_pointer()
-                    .when(it.current, |d| {
-                        d.bg(t.goal_tint).shadow(inset_line(t.goal_line))
-                    })
+                    .when(it.current, |d| d.bg(t.goal_tint).shadow(inset_line(t.goal_line)))
                     .when(!it.current, |d| d.hover(move |s| s.bg(hover)))
                     .child(div().mt(px(1.)).child(ring_el(t, it.ring)))
                     .child(
@@ -1483,19 +1040,8 @@ fn nav_list(
                                     .items_baseline()
                                     .gap(px(6.))
                                     .text_size(px(13.))
-                                    .font_weight(if it.current {
-                                        FontWeight::SEMIBOLD
-                                    } else {
-                                        FontWeight::MEDIUM
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(t.faint)
-                                            .font_family(t.mono_font.clone())
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(it.r.clone()),
-                                    )
+                                    .font_weight(if it.current { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                                    .child(div().flex_none().text_color(t.faint).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(it.r.clone()))
                                     .child(div().min_w_0().truncate().child(it.name.clone())),
                             )
                             .child(
@@ -1512,19 +1058,10 @@ fn nav_list(
                                     .text_color(color)
                                     .when(it.dot, |d| d.child(kit::dot(color, 7.)))
                                     .child(it.label.clone())
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(t.faint)
-                                            .font_weight(FontWeight::NORMAL)
-                                            .child(it.n.clone()),
-                                    ),
+                                    .child(div().min_w_0().truncate().text_color(t.faint).font_weight(FontWeight::NORMAL).child(it.n.clone())),
                             ),
                     )
-                    .on_hover(cx.listener(move |m, h: &bool, window, cx| {
-                        on_goal_hover(m, r1.clone(), *h, window, cx)
-                    }))
+                    .on_hover(cx.listener(move |m, h: &bool, window, cx| on_goal_hover(m, r1.clone(), *h, window, cx)))
                     .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(r2.clone()), cx))),
             );
         }
@@ -1547,71 +1084,30 @@ fn status_chip(t: &Theme, kind: &str, label: &str) -> Div {
         "done" => (t.up_fg, t.up_soft),
         _ => (t.text_2, t.col),
     };
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .px(px(6.))
-        .py(px(1.))
-        .rounded(px(5.))
-        .text_size(px(11.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(fg)
-        .bg(bg)
-        .child(label.to_string())
+    div().flex().flex_none().items_center().px(px(6.)).py(px(1.)).rounded(px(5.)).text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(fg).bg(bg).child(label.to_string())
 }
 
 /// `box-shadow: inset 0 0 0 1px <color>` (an outline that takes no room).
 fn inset_line(color: Hsla) -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color,
-        offset: point(px(0.), px(0.)),
-        blur_radius: px(0.),
-        spread_radius: px(1.),
-        inset: true,
-    }]
+    vec![BoxShadow { color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: true }]
 }
 
 /// `--shadow-modal`: 0 24px 64px.
 pub fn shadow_modal(t: &Theme) -> Vec<BoxShadow> {
     let dark = t.mode == crate::theme::ThemeMode::Dark;
-    let color: Hsla = if dark {
-        rgba(0x00000099).into()
-    } else {
-        rgba(0x10182840).into()
-    };
-    vec![BoxShadow {
-        color,
-        offset: point(px(0.), px(24.)),
-        blur_radius: px(64.),
-        spread_radius: px(0.),
-        inset: false,
-    }]
+    let color: Hsla = if dark { rgba(0x00000099).into() } else { rgba(0x10182840).into() };
+    vec![BoxShadow { color, offset: point(px(0.), px(24.)), blur_radius: px(64.), spread_radius: px(0.), inset: false }]
 }
 
 /// `--shadow-seg`: the selected segment's lift.
 pub fn shadow_seg(t: &Theme) -> Vec<BoxShadow> {
     let dark = t.mode == crate::theme::ThemeMode::Dark;
-    let color: Hsla = if dark {
-        rgba(0x00000066).into()
-    } else {
-        rgba(0x1018281a).into()
-    };
-    vec![BoxShadow {
-        color,
-        offset: point(px(0.), px(1.)),
-        blur_radius: px(2.),
-        spread_radius: px(0.),
-        inset: false,
-    }]
+    let color: Hsla = if dark { rgba(0x00000066).into() } else { rgba(0x1018281a).into() };
+    vec![BoxShadow { color, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]
 }
 
 /// The peek card for the hovered goal (drawn above everything, next to the sidebar).
-pub fn render_peek(
-    m: &mut MainWindow,
-    _window: &mut Window,
-    cx: &mut Context<MainWindow>,
-) -> Option<AnyElement> {
+pub fn render_peek(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let (r, at) = m.sidebar.peek.clone()?;
     let g = m.data.goals.iter().find(|g| same_ref(g, &r))?.clone();
     let t = cx.global::<Theme>().clone();
@@ -1638,26 +1134,14 @@ pub fn render_peek(
                 .gap(px(2.))
                 .child({
                     let gr = fmt::ref_of(&g, "G");
-                    let name = pv
-                        .title
-                        .strip_prefix(&gr)
-                        .unwrap_or(&pv.title)
-                        .trim_start()
-                        .to_string();
+                    let name = pv.title.strip_prefix(&gr).unwrap_or(&pv.title).trim_start().to_string();
                     div()
                         .flex()
                         .items_baseline()
                         .gap(px(6.))
                         .text_size(px(13.5))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_family(t.mono_font.clone())
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(t.faint)
-                                .child(gr),
-                        )
+                        .child(div().flex_none().font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).text_color(t.faint).child(gr))
                         .child(div().min_w_0().child(name))
                 })
                 .child(
@@ -1666,112 +1150,59 @@ pub fn render_peek(
                         .flex_wrap()
                         .text_size(px(12.))
                         .text_color(t.faint)
-                        .when_some(pv.held, |d, h| {
-                            d.child(
-                                div()
-                                    .text_color(t.warn_fg)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(h),
-                            )
-                            .child("\u{a0}·\u{a0}")
-                        })
+                        .when_some(pv.held, |d, h| d.child(div().text_color(t.warn_fg).font_weight(FontWeight::MEDIUM).child(h)).child("\u{a0}·\u{a0}"))
                         .child(pv.sub.clone()),
                 ),
         );
     for (label, chip, tasks) in &pv.groups {
-        let mut grp = div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .pt(px(8.))
-            .border_t_1()
-            .border_color(t.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .mb(px(2.))
-                    .child(status_chip(&t, chip, *label))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(t.faint)
-                            .child(tasks.len().to_string()),
-                    ),
-            );
+        let mut grp = div().flex().flex_col().gap(px(2.)).pt(px(8.)).border_t_1().border_color(t.border).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .mb(px(2.))
+                .child(status_chip(&t, chip, *label))
+                .child(div().text_size(px(12.)).text_color(t.faint).child(tasks.len().to_string())),
+        );
         for tk in tasks {
             let tr = tk.r.clone();
             let hover = t.col;
-            grp =
-                grp.child(
-                    div()
-                        .id(SharedString::from(format!("peek-{}", tk.r)))
-                        .flex()
-                        .items_baseline()
-                        .gap(px(8.))
-                        .px(px(6.))
-                        .mx(px(-6.))
-                        .py(px(4.))
-                        .rounded(px(6.))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .child(
-                            div()
-                                .flex_none()
-                                .min_w(px(30.))
-                                .font_family(t.mono_font.clone())
-                                .text_size(px(12.))
-                                .text_color(t.faint)
-                                .child(tk.r.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .min_w_0()
-                                .gap(px(1.))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(13.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(tk.title.clone()),
-                                )
-                                .children(tk.why.clone().map(|w| {
-                                    div().text_size(px(12.)).text_color(t.muted).child(w)
-                                })),
-                        )
-                        .on_click(cx.listener(move |m, _, _, cx| {
-                            m.sidebar.peek = None;
-                            m.open_task(tr.clone(), cx);
-                        })),
-                );
+            grp = grp.child(
+                div()
+                    .id(SharedString::from(format!("peek-{}", tk.r)))
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .px(px(6.))
+                    .mx(px(-6.))
+                    .py(px(4.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .child(div().flex_none().min_w(px(30.)).font_family(t.mono_font.clone()).text_size(px(12.)).text_color(t.faint).child(tk.r.clone()))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .gap(px(1.))
+                            .child(div().truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(tk.title.clone()))
+                            .children(tk.why.clone().map(|w| div().text_size(px(12.)).text_color(t.muted).child(w))),
+                    )
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        m.sidebar.peek = None;
+                        m.open_task(tr.clone(), cx);
+                    })),
+            );
         }
         card = card.child(grp);
     }
-    Some(
-        deferred(
-            anchored()
-                .position(at)
-                .snap_to_window_with_margin(px(8.))
-                .child(card),
-        )
-        .with_priority(3)
-        .into_any_element(),
-    )
+    Some(deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(card)).with_priority(3).into_any_element())
 }
 
 /// A page entry (native: the web reached these through links). Drawn like the rail's goal rows
 /// (`.bg-pick`: 13px medium, 8px radius, `--col` hover), with the web's `.count` pill.
-fn nav_item(
-    t: &Theme,
-    id: &str,
-    label: &str,
-    count: Option<i64>,
-    alert: bool,
-    on: bool,
-) -> Stateful<Div> {
+fn nav_item(t: &Theme, id: &str, label: &str, count: Option<i64>, alert: bool, on: bool) -> Stateful<Div> {
     let hover = t.col;
     div()
         .id(SharedString::from(format!("nav-{id}")))
@@ -1785,11 +1216,7 @@ fn nav_item(
         .rounded(px(8.))
         .cursor_pointer()
         .text_size(px(13.))
-        .font_weight(if on {
-            FontWeight::SEMIBOLD
-        } else {
-            FontWeight::MEDIUM
-        })
+        .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
         .text_color(if on { t.accent_fg } else { t.text })
         .when(on, |d| d.bg(t.accent_soft))
         .when(!on, |d| d.hover(move |s| s.bg(hover)))
@@ -1805,14 +1232,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let sessions = arr(&st, "sessions").len() as i64;
     let goal_page = matches!(page, Page::Goal(_));
     // The goal page's list is the web's fixed 340px `.gnav`; elsewhere the resizable rail.
-    let width = if goal_page {
-        GNAV_WIDTH
-    } else {
-        m.sidebar
-            .drag
-            .map(|_| m.sidebar_width)
-            .unwrap_or_else(rail_width)
-    };
+    let width = if goal_page { GNAV_WIDTH } else { m.sidebar.drag.map(|_| m.sidebar_width).unwrap_or_else(rail_width) };
     let _ = window;
 
     // `.bg-brand`: the logo and "Task board".
@@ -1838,56 +1258,16 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 .tooltip(kit::tip("Task board"))
                 .on_click(cx.listener(|m, _, _, cx| m.go_home(cx))),
         )
-        .child(
-            div()
-                .flex_1()
-                .whitespace_nowrap()
-                .text_size(px(18.))
-                .font_weight(FontWeight::BOLD)
-                .child("Task board"),
-        );
+        .child(div().flex_1().whitespace_nowrap().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Task board"));
     let nav = div()
         .flex()
         .flex_none()
         .flex_col()
         .gap(px(1.))
-        .child(
-            nav_item(
-                &t,
-                "board",
-                "Board",
-                Some(i(counts, "needs")),
-                true,
-                page == Page::Board,
-            )
-            .on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))),
-        )
-        .child(
-            nav_item(
-                &t,
-                "backlog",
-                "Backlog",
-                Some(i(counts, "open_issues")),
-                false,
-                page == Page::Backlog,
-            )
-            .on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx))),
-        )
-        .child(
-            nav_item(
-                &t,
-                "sessions",
-                "Sessions",
-                Some(sessions),
-                false,
-                page == Page::Sessions,
-            )
-            .on_click(cx.listener(|m, _, _, cx| m.go(Page::Sessions, cx))),
-        )
-        .child(
-            nav_item(&t, "days", "Days", None, false, page == Page::Days)
-                .on_click(cx.listener(|m, _, _, cx| m.go(Page::Days, cx))),
-        );
+        .child(nav_item(&t, "board", "Board", Some(i(counts, "needs")), true, page == Page::Board).on_click(cx.listener(|m, _, _, cx| m.go(Page::Board, cx))))
+        .child(nav_item(&t, "backlog", "Backlog", Some(i(counts, "open_issues")), false, page == Page::Backlog).on_click(cx.listener(|m, _, _, cx| m.go(Page::Backlog, cx))))
+        .child(nav_item(&t, "sessions", "Sessions", Some(sessions), false, page == Page::Sessions).on_click(cx.listener(|m, _, _, cx| m.go(Page::Sessions, cx))))
+        .child(nav_item(&t, "days", "Days", None, false, page == Page::Days).on_click(cx.listener(|m, _, _, cx| m.go(Page::Days, cx))));
     let body = match &page {
         Page::Goal(cur) => nav_list(m, &t, &cur.clone(), cx),
         _ => rail_list(m, &t, cx),
@@ -1901,15 +1281,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .right(px(-4.))
         .w(px(8.))
         .cursor_col_resize()
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(3.))
-                .w(px(2.))
-                .when(m.sidebar.drag.is_some(), |d| d.bg(accent)),
-        )
+        .child(div().absolute().top_0().bottom_0().left(px(3.)).w(px(2.)).when(m.sidebar.drag.is_some(), |d| d.bg(accent)))
         .hover(move |s| s.bg(gpui_kit::transparent_black()))
         .tooltip(kit::tip("Drag to resize · double-click to reset"))
         .on_mouse_down(
@@ -1939,12 +1311,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .border_color(t.border)
         // `.bgoals`: 32 10 24 12; the goal page's `.gnav`: 32 20 32 32.
         .pt(px(32.))
-        .when(goal_page, |d| {
-            d.pl(px(32.)).pr(px(20.)).pb(px(32.)).gap(px(14.))
-        })
-        .when(!goal_page, |d| {
-            d.pl(px(12.)).pr(px(10.)).pb(px(24.)).gap(px(12.))
-        })
+        .when(goal_page, |d| d.pl(px(32.)).pr(px(20.)).pb(px(32.)).gap(px(14.)))
+        .when(!goal_page, |d| d.pl(px(12.)).pr(px(10.)).pb(px(24.)).gap(px(12.)))
         .child(brand)
         .child(nav)
         .children(body)
@@ -1955,8 +1323,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 #[cfg(test)]
 mod tests {
     use super::{
-        Filters, Row, Status, goal_counts, held_why, landing, nav_status, nav_tip, nav_view,
-        nav_view_for, peek_view, pick_project, rail_clear, rail_shut, rail_view, rail_width,
+        Filters, Row, Status, goal_counts, pick_project, held_why, landing, nav_status, nav_tip, nav_view, nav_view_for, peek_view, rail_clear, rail_shut, rail_view, rail_width,
         recent_open, recent_since, ring, status_of, toggle_recent, toggle_shut,
     };
     use crate::fmt::{self, b, s};
@@ -1964,16 +1331,11 @@ mod tests {
     use serde_json::{Value, json};
 
     fn filters(v: &Value) -> Filters {
-        Filters {
-            project: s(v, "project").into(),
-            goal: s(v, "goal").into(),
-            done: s(v, "done").into(),
-        }
+        Filters { project: s(v, "project").into(), goal: s(v, "goal").into(), done: s(v, "done").into() }
     }
 
     fn st_json(st: Option<Status>) -> Value {
-        st.map(|s| json!({"key": s.key, "label": s.label}))
-            .unwrap_or(Value::Null)
+        st.map(|s| json!({"key": s.key, "label": s.label})).unwrap_or(Value::Null)
     }
 
     fn row_json(r: &Row) -> Value {
@@ -1984,11 +1346,7 @@ mod tests {
     /// The web's dasharray lengths (`(frac * 2π7).toFixed(1)`).
     fn dash(frac: f32) -> Value {
         let v = ((frac as f64 * 2. * std::f64::consts::PI * 7.) * 10.).round() / 10.;
-        if v.fract() == 0. {
-            json!(v as i64)
-        } else {
-            json!(v)
-        }
+        if v.fract() == 0. { json!(v as i64) } else { json!(v) }
     }
 
     fn set_prefs(p: &Value) {
@@ -2003,14 +1361,9 @@ mod tests {
         let g = golden("chrome");
         g.only("goalStatus").check(|i| {
             let goal = &i["goal"];
-            st_json(status_of(
-                goal,
-                &goal_counts(goal),
-                !held_why(&i["state"]).is_empty(),
-            ))
+            st_json(status_of(goal, &goal_counts(goal), !held_why(&i["state"]).is_empty()))
         });
-        g.only("agentsHeldWhy")
-            .check(|i| json!(held_why(&i["state"])));
+        g.only("agentsHeldWhy").check(|i| json!(held_why(&i["state"])));
         g.only("goalCounts").check(|i| {
             let c = goal_counts(&i["goal"]);
             json!({"n": c.n, "done": c.done, "active": c.active, "queued": c.queued, "prs": c.prs, "finished": c.finished})
@@ -2031,11 +1384,7 @@ mod tests {
     fn recent_window_matches_web() {
         golden("chrome").only("recentSince").check(|i| {
             let now = fmt::parse(i["now"].as_str().unwrap()).unwrap();
-            json!(
-                recent_since(now)
-                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                    .to_string()
-            )
+            json!(recent_since(now).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
         });
     }
 
@@ -2073,14 +1422,7 @@ mod tests {
     #[::core::prelude::v1::test]
     fn rail_actions_match_web() {
         let g = golden("chrome");
-        let not_pick = crate::parity::Golden {
-            cases: g
-                .only("railAction")
-                .cases
-                .into_iter()
-                .filter(|c| c["input"]["act"] != "goal-pick")
-                .collect(),
-        };
+        let not_pick = crate::parity::Golden { cases: g.only("railAction").cases.into_iter().filter(|c| c["input"]["act"] != "goal-pick").collect() };
         not_pick.check(|i| {
             set_prefs(&i["prefs"]);
             let f = filters(&i["filter"]);
@@ -2117,24 +1459,13 @@ mod tests {
                 crate::prefs::set("tb.rail.w", json!(v));
             }
             let w = rail_width();
-            if w.fract() == 0. {
-                json!(w as i64)
-            } else {
-                json!((w as f64 * 10.).round() / 10.)
-            }
+            if w.fract() == 0. { json!(w as i64) } else { json!((w as f64 * 10.).round() / 10.) }
         });
     }
 
     /// The goals the rail action cases were run with (the same fixture as the rail cases).
     fn g_goals() -> Vec<Value> {
-        golden("chrome")
-            .cases
-            .iter()
-            .find(|c| c["name"] == "rail default")
-            .unwrap()["input"]["goals"]
-            .as_array()
-            .unwrap()
-            .clone()
+        golden("chrome").cases.iter().find(|c| c["name"] == "rail default").unwrap()["input"]["goals"].as_array().unwrap().clone()
     }
 
     #[::core::prelude::v1::test]
@@ -2167,12 +1498,7 @@ mod tests {
             })
         });
         g.only("goalsLanding").check(|i| {
-            let goals: Vec<&Value> = i["goals"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|g| !b(g, "archived"))
-                .collect();
+            let goals: Vec<&Value> = i["goals"].as_array().unwrap().iter().filter(|g| !b(g, "archived")).collect();
             json!(landing(&goals, i["filterGoal"].as_str().unwrap()))
         });
     }
@@ -2182,14 +1508,7 @@ mod tests {
     fn goal_pick_matches_web(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = crate::parity::window(cx);
         let g = golden("chrome");
-        let picks = crate::parity::Golden {
-            cases: g
-                .only("railAction")
-                .cases
-                .into_iter()
-                .filter(|c| c["input"]["act"] == "goal-pick")
-                .collect(),
-        };
+        let picks = crate::parity::Golden { cases: g.only("railAction").cases.into_iter().filter(|c| c["input"]["act"] == "goal-pick").collect() };
         assert!(!picks.cases.is_empty());
         let goals = g_goals();
         picks.check(|i| {
@@ -2216,20 +1535,11 @@ mod tests {
         w.update(cx, |m, _, cx| {
             m.board.keep = vec!["B1".into()];
             m.rail_pick_goal("G1", cx);
-            assert_eq!(
-                (m.filters.goal.as_str(), m.filters.project.as_str()),
-                ("G1", "webapp")
-            );
+            assert_eq!((m.filters.goal.as_str(), m.filters.project.as_str()), ("G1", "webapp"));
             assert!(m.board.keep.is_empty(), "keepIssues cleared");
-            assert_eq!(
-                crate::prefs::get("taskboard.filter"),
-                Some(json!({"project": "webapp", "goal": "G1", "done": "24h"}))
-            );
+            assert_eq!(crate::prefs::get("taskboard.filter"), Some(json!({"project": "webapp", "goal": "G1", "done": "24h"})));
             m.rail_pick_goal("G1", cx);
-            assert_eq!(
-                (m.filters.goal.as_str(), m.filters.project.as_str()),
-                ("all", "all")
-            );
+            assert_eq!((m.filters.goal.as_str(), m.filters.project.as_str()), ("all", "all"));
             m.rail_pick_project("webapp", cx);
             assert_eq!(m.filters.project, "webapp");
         })
@@ -2240,89 +1550,37 @@ mod tests {
     fn a_stopped_goal_waits_on_you_and_held_tasks_count_as_blocked() {
         let stopped = json!({"tasks": [{"status": "done"}, {"status": "queued"}], "queued": 1, "stopped": "Wave 1 is done. Review it, then continue"});
         let st = status_of(&stopped, &goal_counts(&stopped), false).unwrap();
-        assert_eq!(
-            (st.key, st.label.as_str()),
-            ("stopped", "Wave 1 is done. Review it, then continue")
-        );
-        assert_eq!(
-            ring(&goal_counts(&stopped), Some(&st)).glyph,
-            Some("stopped")
-        );
+        assert_eq!((st.key, st.label.as_str()), ("stopped", "Wave 1 is done. Review it, then continue"));
+        assert_eq!(ring(&goal_counts(&stopped), Some(&st)).glyph, Some("stopped"));
         let (k, l) = nav_status(&stopped, &goal_counts(&stopped));
         assert_eq!((k, l.as_str()), ("warn", "Waiting on you"));
-        assert_eq!(
-            nav_tip(&stopped, k, &l).as_deref(),
-            Some("Wave 1 is done. Review it, then continue")
-        );
+        assert_eq!(nav_tip(&stopped, k, &l).as_deref(), Some("Wave 1 is done. Review it, then continue"));
         // On the rail, working, starting and paused show first; stopped only once nothing runs.
         // The goal list puts stopped before running and starting.
         let running = json!({"tasks": [{"status": "working"}, {"status": "queued"}], "queued": 1, "stopped": "Wave 1 is done. Review it, then continue"});
-        assert_eq!(
-            status_of(&running, &goal_counts(&running), false)
-                .unwrap()
-                .key,
-            "working"
-        );
-        assert_eq!(
-            nav_status(&running, &goal_counts(&running)).1,
-            "Waiting on you"
-        );
-        let starting =
-            json!({"tasks": [{"status": "queued"}], "queued": 1, "starting": 1, "stopped": "x"});
-        assert_eq!(
-            status_of(&starting, &goal_counts(&starting), false)
-                .unwrap()
-                .key,
-            "starting"
-        );
-        assert_eq!(
-            nav_status(&starting, &goal_counts(&starting)).1,
-            "Waiting on you"
-        );
-        let paused =
-            json!({"tasks": [{"status": "queued"}], "queued": 1, "paused": true, "stopped": "x"});
-        assert_eq!(
-            status_of(&paused, &goal_counts(&paused), false)
-                .unwrap()
-                .key,
-            "paused"
-        );
+        assert_eq!(status_of(&running, &goal_counts(&running), false).unwrap().key, "working");
+        assert_eq!(nav_status(&running, &goal_counts(&running)).1, "Waiting on you");
+        let starting = json!({"tasks": [{"status": "queued"}], "queued": 1, "starting": 1, "stopped": "x"});
+        assert_eq!(status_of(&starting, &goal_counts(&starting), false).unwrap().key, "starting");
+        assert_eq!(nav_status(&starting, &goal_counts(&starting)).1, "Waiting on you");
+        let paused = json!({"tasks": [{"status": "queued"}], "queued": 1, "paused": true, "stopped": "x"});
+        assert_eq!(status_of(&paused, &goal_counts(&paused), false).unwrap().key, "paused");
         assert_eq!(nav_status(&paused, &goal_counts(&paused)).1, "Paused");
         assert_eq!(nav_tip(&paused, "warn", "Paused"), None);
 
         let held = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "blocked": 1, "held": 1});
-        assert_eq!(
-            status_of(&held, &goal_counts(&held), false).unwrap().key,
-            "blocked"
-        );
+        assert_eq!(status_of(&held, &goal_counts(&held), false).unwrap().key, "blocked");
         assert_eq!(nav_status(&held, &goal_counts(&held)).1, "Blocked");
         let one = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "blocked": 1});
-        assert_eq!(
-            status_of(&one, &goal_counts(&one), false).unwrap().key,
-            "queued"
-        );
-        assert_eq!(
-            nav_status(&one, &goal_counts(&one)).1,
-            "Blocked",
-            "the nav's Blocked is blocked > 0"
-        );
+        assert_eq!(status_of(&one, &goal_counts(&one), false).unwrap().key, "queued");
+        assert_eq!(nav_status(&one, &goal_counts(&one)).1, "Blocked", "the nav's Blocked is blocked > 0");
         // Tasks only waiting their turn (held by waves, locks, bits, devices) aren't Blocked.
-        let turn =
-            json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "held": 2});
-        assert_eq!(
-            status_of(&turn, &goal_counts(&turn), false).unwrap().key,
-            "queued"
-        );
+        let turn = json!({"tasks": [{"status": "queued"}, {"status": "queued"}], "queued": 2, "held": 2});
+        assert_eq!(status_of(&turn, &goal_counts(&turn), false).unwrap().key, "queued");
         assert_eq!(nav_status(&turn, &goal_counts(&turn)).1, "Queued");
         let bits = json!({"tasks": [{"status": "done"}], "bits_waiting": 2});
         assert!(!goal_counts(&bits).finished);
-        assert_eq!(
-            nav_status(&bits, &goal_counts(&bits)),
-            ("warn", "Waiting on 2 bits".to_string())
-        );
-        assert_eq!(
-            status_of(&bits, &goal_counts(&bits), false).unwrap().label,
-            "Waiting on 2 bits"
-        );
+        assert_eq!(nav_status(&bits, &goal_counts(&bits)), ("warn", "Waiting on 2 bits".to_string()));
+        assert_eq!(status_of(&bits, &goal_counts(&bits), false).unwrap().label, "Waiting on 2 bits");
     }
 }
