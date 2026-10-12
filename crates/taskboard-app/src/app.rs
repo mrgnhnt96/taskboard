@@ -90,7 +90,11 @@ pub struct Filters {
 
 impl Default for Filters {
     fn default() -> Self {
-        Filters { project: "all".into(), goal: "all".into(), done: "24h".into() }
+        Filters {
+            project: "all".into(),
+            goal: "all".into(),
+            done: "24h".into(),
+        }
     }
 }
 
@@ -105,7 +109,10 @@ impl Filters {
         if let Some(g) = v["goal"].as_str().filter(|g| *g == "all" || is_goal_ref(g)) {
             f.goal = g.to_string();
         }
-        if let Some(d) = v["done"].as_str().filter(|d| ["24h", "7d", "all"].contains(d)) {
+        if let Some(d) = v["done"]
+            .as_str()
+            .filter(|d| ["24h", "7d", "all"].contains(d))
+        {
             f.done = d.to_string();
         }
         f
@@ -113,7 +120,10 @@ impl Filters {
 
     /// `saveFilter`.
     pub fn save(&self) {
-        crate::prefs::set("taskboard.filter", json!({"project": self.project, "goal": self.goal, "done": self.done}));
+        crate::prefs::set(
+            "taskboard.filter",
+            json!({"project": self.project, "goal": self.goal, "done": self.done}),
+        );
     }
 }
 
@@ -183,7 +193,11 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    pub fn new(backend: Arc<dyn Backend>, window: &mut Window, cx: &mut Context<Self>) -> MainWindow {
+    pub fn new(
+        backend: Arc<dyn Backend>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> MainWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut m = MainWindow {
@@ -191,7 +205,11 @@ impl MainWindow {
             data: Data::default(),
             // The rail that showed and cleared a project or goal filter is gone, so a saved one
             // would hide work with nothing on screen to say so: start unfiltered.
-            filters: Filters { project: "all".into(), goal: "all".into(), ..Filters::load() },
+            filters: Filters {
+                project: "all".into(),
+                goal: "all".into(),
+                ..Filters::load()
+            },
             page: Page::Board,
             panel: None,
             modal: None,
@@ -211,7 +229,11 @@ impl MainWindow {
             sidebar_width: ui::sidebar::rail_width(),
             goals_loaded: false,
             generation: 0,
-            hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
+            hooks: if crate::hooks::target().is_some() {
+                crate::hooks::Hooks::Checking
+            } else {
+                crate::hooks::Hooks::Hidden
+            },
             hooks_busy: false,
         };
         if let Ok(p) = std::env::var("TASKBOARD_PAGE") {
@@ -225,14 +247,28 @@ impl MainWindow {
         }
         // Dev: `TASKBOARD_PICK=B2,B3` checks those issues on the Backlog page (screenshots).
         if let Ok(p) = std::env::var("TASKBOARD_PICK") {
-            m.backlog.picked = p.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+            m.backlog.picked = p
+                .split(',')
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty())
+                .collect();
         }
         if let Ok(r) = std::env::var("TASKBOARD_OPEN") {
-            m.panel = Some(if r.starts_with('B') { Panel::Issue { r } } else { Panel::Task { r, tab: TaskTab::Overview } });
+            m.panel = Some(if r.starts_with('B') {
+                Panel::Issue { r }
+            } else {
+                Panel::Task {
+                    r,
+                    tab: TaskTab::Overview,
+                }
+            });
         }
         // Follow the system's light / dark switch (unless TASKBOARD_THEME pins one).
         cx.observe_window_appearance(window, |_, window, cx| {
-            let dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
+            let dark = matches!(
+                window.appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            );
             let t = cx.global::<Theme>();
             let mode = crate::theme::startup_mode(dark);
             if t.mode != mode {
@@ -282,7 +318,12 @@ impl MainWindow {
 
     /// "Goals" (the web's `#/goals`): the goal page of the board's goal, else the first active one.
     pub fn open_goals(&mut self, cx: &mut Context<Self>) {
-        let goals: Vec<&Value> = self.data.goals.iter().filter(|g| !b(g, "archived")).collect();
+        let goals: Vec<&Value> = self
+            .data
+            .goals
+            .iter()
+            .filter(|g| !b(g, "archived"))
+            .collect();
         if let Some(r) = ui::sidebar::landing(&goals, &self.filters.goal) {
             self.go(Page::Goal(r), cx);
         }
@@ -325,7 +366,10 @@ impl MainWindow {
             self.data.errs.task = None;
             self.task_panel = Default::default();
         }
-        self.panel = Some(Panel::Task { r, tab: TaskTab::Overview });
+        self.panel = Some(Panel::Task {
+            r,
+            tab: TaskTab::Overview,
+        });
         self.refresh(cx);
     }
 
@@ -342,7 +386,11 @@ impl MainWindow {
 
     /// A `taskboard://task/T12` / `goal/G3` / `session/<id>` link (a clicked notification).
     pub fn open_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url).trim_matches('/');
+        let rest = url
+            .split_once("://")
+            .map(|(_, r)| r)
+            .unwrap_or(url)
+            .trim_matches('/');
         let (kind, arg) = rest.split_once('/').unwrap_or((rest, ""));
         match (kind, arg) {
             ("task", r) if !r.is_empty() => self.open_task(r.to_uppercase(), cx),
@@ -373,7 +421,12 @@ impl MainWindow {
         self.close_panel(cx);
     }
 
-    pub fn set_modal(&mut self, modal: Option<ui::modals::Modal>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_modal(
+        &mut self,
+        modal: Option<ui::modals::Modal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.modal = modal;
         window.focus(&self.focus, cx);
         cx.notify();
@@ -388,7 +441,10 @@ impl MainWindow {
     }
 
     pub fn menu_open(&self, key: &str) -> Option<Point<Pixels>> {
-        self.menu.as_ref().filter(|(k, _)| k == key).map(|(_, p)| *p)
+        self.menu
+            .as_ref()
+            .filter(|(k, _)| k == key)
+            .map(|(_, p)| *p)
     }
 
     // -------------------------------------------------------------- toasts
@@ -397,7 +453,11 @@ impl MainWindow {
     /// for an error).
     pub fn toast(&mut self, text: impl Into<String>, err: bool, cx: &mut Context<Self>) {
         let at = Instant::now();
-        self.toasts = vec![Toast { text: text.into(), err, at }];
+        self.toasts = vec![Toast {
+            text: text.into(),
+            err,
+            at,
+        }];
         let stay = if err { TOAST_ERR } else { TOAST_OK };
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(stay).await;
@@ -436,10 +496,15 @@ impl MainWindow {
         }
         match &self.panel {
             Some(Panel::Task { .. }) => return self.close_panel(cx),
-            Some(Panel::Issue { .. }) if matches!(self.page, Page::Board | Page::Backlog) => return self.close_panel(cx),
+            Some(Panel::Issue { .. }) if matches!(self.page, Page::Board | Page::Backlog) => {
+                return self.close_panel(cx);
+            }
             _ => {}
         }
-        if self.page == Page::Board && self.focus.is_focused(window) && (self.filters.goal != "all" || self.filters.project != "all") {
+        if self.page == Page::Board
+            && self.focus.is_focused(window)
+            && (self.filters.goal != "all" || self.filters.project != "all")
+        {
             self.rail_clear(cx);
         }
     }
@@ -469,7 +534,10 @@ impl MainWindow {
     ) {
         let (backend, path) = (self.backend.clone(), path.into());
         cx.spawn(async move |this, cx| {
-            let r = cx.background_executor().spawn(async move { backend.post(&path, body) }).await;
+            let r = cx
+                .background_executor()
+                .spawn(async move { backend.post(&path, body) })
+                .await;
             let _ = this.update(cx, |m, cx| {
                 match r {
                     Ok(v) => ok(m, v, cx),
@@ -505,12 +573,17 @@ impl MainWindow {
 
     /// Re-read Claude Code's config for the hooks' state (it can change outside the app).
     fn check_hooks(&mut self, cx: &mut Context<Self>) {
-        let Some((want, _)) = crate::hooks::target() else { return };
+        let Some((want, _)) = crate::hooks::target() else {
+            return;
+        };
         if self.hooks_busy {
             return;
         }
         cx.spawn(async move |this, cx| {
-            let h = cx.background_executor().spawn(async move { crate::hooks::check(&crate::hooks::claude_dir(), &want) }).await;
+            let h = cx
+                .background_executor()
+                .spawn(async move { crate::hooks::check(&crate::hooks::claude_dir(), &want) })
+                .await;
             let _ = this.update(cx, |m, cx| {
                 if m.hooks != h && !m.hooks_busy {
                     m.hooks = h;
@@ -523,7 +596,9 @@ impl MainWindow {
 
     /// The status bar's "Install hooks" / "Reinstall hooks".
     pub fn install_hooks(&mut self, cx: &mut Context<Self>) {
-        let Some((want, true)) = crate::hooks::target() else { return };
+        let Some((want, true)) = crate::hooks::target() else {
+            return;
+        };
         if self.hooks_busy {
             return;
         }
@@ -531,13 +606,23 @@ impl MainWindow {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let w = want.clone();
-            let r = cx.background_executor().spawn(async move { crate::hooks::install(&w) }).await;
-            let h = cx.background_executor().spawn(async move { crate::hooks::check(&crate::hooks::claude_dir(), &want) }).await;
+            let r = cx
+                .background_executor()
+                .spawn(async move { crate::hooks::install(&w) })
+                .await;
+            let h = cx
+                .background_executor()
+                .spawn(async move { crate::hooks::check(&crate::hooks::claude_dir(), &want) })
+                .await;
             let _ = this.update(cx, |m, cx| {
                 m.hooks_busy = false;
                 m.hooks = h;
                 match r {
-                    Ok(()) => m.toast("Hooks installed. New Claude sessions report to the board.", false, cx),
+                    Ok(()) => m.toast(
+                        "Hooks installed. New Claude sessions report to the board.",
+                        false,
+                        cx,
+                    ),
                     Err(e) => m.toast(e, true, cx),
                 }
                 cx.notify();
@@ -553,7 +638,10 @@ impl MainWindow {
         let backend = self.backend.clone();
         let want = Wants::of(self);
         cx.spawn(async move |this, cx| {
-            let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
+            let got = cx
+                .background_executor()
+                .spawn(async move { want.fetch(&*backend) })
+                .await;
             let _ = this.update(cx, |m, cx| {
                 if m.generation == generation {
                     got.apply(m);
@@ -582,9 +670,14 @@ impl MainWindow {
     /// `projectNames` over this window's goals (`allGoals`: non-archived).
     #[cfg(test)]
     pub fn project_names(&self) -> Vec<String> {
-        project_names(self.state(), ui::sidebar::all_goals(self.data.state.as_ref(), self.goals_loaded.then_some(self.data.goals.as_slice())))
+        project_names(
+            self.state(),
+            ui::sidebar::all_goals(
+                self.data.state.as_ref(),
+                self.goals_loaded.then_some(self.data.goals.as_slice()),
+            ),
+        )
     }
-
 }
 
 // ------------------------------------------------------------------ fetching
@@ -637,7 +730,11 @@ impl Wants {
                 _ => None,
             },
             sessions: m.page == Page::Sessions,
-            session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
+            session: if m.page == Page::Sessions {
+                m.sessions.selected.clone()
+            } else {
+                None
+            },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
         }
@@ -647,25 +744,54 @@ impl Wants {
         let state = Some(be.get("state", &self.state_q));
         // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
         let up = state.as_ref().is_some_and(|r| r.is_ok());
-        let get = |p: &str, q: &[(&str, String)]| -> Option<Answer> { up.then(|| be.get(p, q).map_err(|e| e.message)) };
+        let get = |p: &str, q: &[(&str, String)]| -> Option<Answer> {
+            up.then(|| be.get(p, q).map_err(|e| e.message))
+        };
         Got {
             goals: get("goals", &[]).and_then(Result::ok),
-            task: self.task.and_then(|r| get(&format!("tasks/{r}"), &[]).map(|v| (r, v))),
-            issue: self.issue.and_then(|r| get(&format!("backlog/{r}"), &[]).map(|v| (r, v))),
-            goal: self.goal.and_then(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))),
-            sessions: if self.sessions { get("sessions", &[("project", "all".into())]) } else { None },
-            closed: if self.sessions { get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok) } else { None },
-            session: self.session.and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
+            task: self
+                .task
+                .and_then(|r| get(&format!("tasks/{r}"), &[]).map(|v| (r, v))),
+            issue: self
+                .issue
+                .and_then(|r| get(&format!("backlog/{r}"), &[]).map(|v| (r, v))),
+            goal: self
+                .goal
+                .and_then(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))),
+            sessions: if self.sessions {
+                get("sessions", &[("project", "all".into())])
+            } else {
+                None
+            },
+            closed: if self.sessions {
+                get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok)
+            } else {
+                None
+            },
+            session: self
+                .session
+                .and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
             days: self.days_q.and_then(|q| get("days", &q)),
-            today: if self.home.is_some() { get("days", &[]).and_then(Result::ok) } else { None },
-            home: self.home.and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
+            today: if self.home.is_some() {
+                get("days", &[]).and_then(Result::ok)
+            } else {
+                None
+            },
+            home: self
+                .home
+                .and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
             state,
         }
     }
 }
 
 /// Swap in a good answer (clearing its error) or keep what's shown and remember why it failed.
-fn land(slot: &mut Option<Value>, err: &mut Option<String>, answer: Answer, map: impl FnOnce(Value) -> Value) {
+fn land(
+    slot: &mut Option<Value>,
+    err: &mut Option<String>,
+    answer: Answer,
+    map: impl FnOnce(Value) -> Value,
+) {
     match answer {
         Ok(v) => {
             *slot = Some(map(v));
@@ -680,7 +806,9 @@ impl Got {
         match self.state {
             Some(Ok(v)) => {
                 fmt::set_server_now(s(&v, "now"));
-                if arr(&v, "alerts").is_empty() && matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
+                if arr(&v, "alerts").is_empty()
+                    && matches!(m.modal, Some(ui::modals::Modal::Alerts))
+                {
                     m.modal = None;
                 }
                 m.data.state = Some(v);
@@ -690,7 +818,11 @@ impl Got {
             None => {}
         }
         if let Some(g) = self.goals {
-            m.data.goals = if g.is_array() { g.as_array().cloned().unwrap_or_default() } else { arr(&g, "goals").to_vec() };
+            m.data.goals = if g.is_array() {
+                g.as_array().cloned().unwrap_or_default()
+            } else {
+                arr(&g, "goals").to_vec()
+            };
             m.goals_loaded = true;
         }
         // Only keep answers for what is still open.
@@ -703,7 +835,13 @@ impl Got {
         if let Some((r, v)) = self.issue {
             if matches!(&m.panel, Some(Panel::Issue { r: cur }) if *cur == r) {
                 // The board may wrap it: `b.issue || b`.
-                land(&mut d.issue, &mut d.errs.issue, v, |v| if v["issue"].is_object() { v["issue"].clone() } else { v });
+                land(&mut d.issue, &mut d.errs.issue, v, |v| {
+                    if v["issue"].is_object() {
+                        v["issue"].clone()
+                    } else {
+                        v
+                    }
+                });
             }
         }
         if let Some((r, v)) = self.goal {
@@ -731,7 +869,9 @@ impl Got {
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
                 // `sessionsLoads`: a failed fetch for another terminal than the one shown clears it.
-                if v.is_err() && d.session.as_ref().and_then(|x| x["id"].as_str()) != Some(id.as_str()) {
+                if v.is_err()
+                    && d.session.as_ref().and_then(|x| x["id"].as_str()) != Some(id.as_str())
+                {
                     d.session = None;
                 }
                 land(&mut d.session, &mut d.errs.session, v, |v| v);
@@ -757,7 +897,17 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, Refresh]);
+actions!(
+    taskboard,
+    [
+        CloseOverlay,
+        GoBoard,
+        GoBacklog,
+        GoSessions,
+        GoDays,
+        Refresh
+    ]
+);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -776,7 +926,10 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
-        let tabs = matches!(self.page, Page::Board | Page::Backlog | Page::Days | Page::Sessions);
+        let tabs = matches!(
+            self.page,
+            Page::Board | Page::Backlog | Page::Days | Page::Sessions
+        );
 
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
@@ -790,7 +943,10 @@ impl Render for MainWindow {
             Some(Panel::Issue { .. }) => Some(ui::issue_panel::render(self, window, cx)),
             None => None,
         };
-        let modal = self.modal.is_some().then(|| ui::modals::render(self, window, cx));
+        let modal = self
+            .modal
+            .is_some()
+            .then(|| ui::modals::render(self, window, cx));
         let hours_menu = ui::hours::render_menu(self, window, cx);
         let peek = ui::sidebar::render_peek(self, window, cx);
 
@@ -802,7 +958,8 @@ impl Render for MainWindow {
             // The sidebar's width drag (the rail grip).
             .on_mouse_move(cx.listener(|m, e: &MouseMoveEvent, _, cx| {
                 if let Some((x0, w0)) = m.sidebar.drag {
-                    m.sidebar_width = (w0 + e.position.x.as_f32() - x0).clamp(ui::sidebar::RAIL_MIN, ui::sidebar::RAIL_MAX);
+                    m.sidebar_width = (w0 + e.position.x.as_f32() - x0)
+                        .clamp(ui::sidebar::RAIL_MIN, ui::sidebar::RAIL_MAX);
                     cx.notify();
                 }
             }))
@@ -837,7 +994,15 @@ impl Render for MainWindow {
                     .flex_1()
                     .min_h_0()
                     .when(!tabs, |d| d.child(ui::sidebar::render(self, window, cx)))
-                    .child(div().flex().flex_col().flex_1().min_w_0().children(banner(self, &t, cx)).child(div().flex().flex_1().min_h_0().child(page))),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .children(banner(self, &t, cx))
+                            .child(div().flex().flex_1().min_h_0().child(page)),
+                    ),
             )
             .child(status_bar(self, &t, cx))
             .children(panel)
@@ -847,13 +1012,24 @@ impl Render for MainWindow {
             .children(toasts(self, &t))
             .when(self.menu.is_some(), |d| {
                 // A click anywhere outside an open menu closes it.
-                d.child(deferred(div().id("menu-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|m, _, _, cx| {
-                        m.menu = None;
-                        cx.notify();
-                    }),
-                )).with_priority(2))
+                d.child(
+                    deferred(
+                        div()
+                            .id("menu-dismiss")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|m, _, _, cx| {
+                                    m.menu = None;
+                                    cx.notify();
+                                }),
+                            ),
+                    )
+                    .with_priority(2),
+                )
             })
     }
 }
@@ -869,7 +1045,11 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Days => "Days",
         Page::Board => "Task board",
     };
-    if needs > 0 { format!("({needs}) {base}") } else { base.to_string() }
+    if needs > 0 {
+        format!("({needs}) {base}")
+    } else {
+        base.to_string()
+    }
 }
 
 /// One banner line (`renderBanner`) or alerts-dialog row: what it says and its buttons.
@@ -901,7 +1081,11 @@ fn alert_buttons(a: &Value) -> Vec<(&'static str, String)> {
 }
 
 fn alert_kind(a: &Value) -> &'static str {
-    if a["urgent"] == true { "urgent" } else { "alert" }
+    if a["urgent"] == true {
+        "urgent"
+    } else {
+        "alert"
+    }
 }
 
 /// `renderBanner`: the "isn't answering" line, a line for each urgent alert, then either one line per other
@@ -909,22 +1093,41 @@ fn alert_kind(a: &Value) -> &'static str {
 pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
     let mut out = Vec::new();
     if let Some(e) = down.filter(|e| !e.is_empty()) {
-        out.push(BannerRow { kind: "down", text: format!("{e} Trying again every few seconds."), ago: None, buttons: Vec::new() });
+        out.push(BannerRow {
+            kind: "down",
+            text: format!("{e} Trying again every few seconds."),
+            ago: None,
+            buttons: Vec::new(),
+        });
     }
-    let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.iter().cloned().partition(|a| a["urgent"] == true);
+    let (urgent, alerts): (Vec<Value>, Vec<Value>) =
+        alerts.iter().cloned().partition(|a| a["urgent"] == true);
     for a in &urgent {
-        out.push(BannerRow { kind: "urgent", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) });
+        out.push(BannerRow {
+            kind: "urgent",
+            text: s(a, "text").to_string(),
+            ago: Some(fmt::ago(s(a, "at"))),
+            buttons: alert_buttons(a),
+        });
     }
     if alerts.len() > 1 {
         out.push(BannerRow {
             kind: "alert",
-            text: format!("{} your attention.", fmt::plural(alerts.len() as i64, "task needs", "tasks need")),
+            text: format!(
+                "{} your attention.",
+                fmt::plural(alerts.len() as i64, "task needs", "tasks need")
+            ),
             ago: Some(fmt::ago(s(alerts.last().unwrap_or(&Value::Null), "at"))),
             buttons: vec![("alerts-open", "Show all".into())],
         });
     } else {
         for a in &alerts {
-            out.push(BannerRow { kind: "alert", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) });
+            out.push(BannerRow {
+                kind: "alert",
+                text: s(a, "text").to_string(),
+                ago: Some(fmt::ago(s(a, "at"))),
+                buttons: alert_buttons(a),
+            });
         }
     }
     out
@@ -932,8 +1135,19 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
 
 /// `alertsDialogHtml`: (title, rows); its foot is "Dismiss all" while any alert can be dismissed. (For the dialog in modals.rs.)
 pub fn alerts_dialog_view(alerts: &[Value]) -> (String, Vec<BannerRow>) {
-    let title = format!("{} your attention", fmt::plural(alerts.len() as i64, "task needs", "tasks need"));
-    let rows = alerts.iter().map(|a| BannerRow { kind: alert_kind(a), text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }).collect();
+    let title = format!(
+        "{} your attention",
+        fmt::plural(alerts.len() as i64, "task needs", "tasks need")
+    );
+    let rows = alerts
+        .iter()
+        .map(|a| BannerRow {
+            kind: alert_kind(a),
+            text: s(a, "text").to_string(),
+            ago: Some(fmt::ago(s(a, "at"))),
+            buttons: alert_buttons(a),
+        })
+        .collect();
     (title, rows)
 }
 
@@ -947,11 +1161,23 @@ pub struct Pill {
 
 /// `connPill`.
 pub fn conn_pill(m: &Value) -> Pill {
-    let heard = fmt::opt_s(m, "seen_at").map(|x| format!("Last heard from {}", fmt::ago(x))).unwrap_or_else(|| "Not heard from yet".into());
+    let heard = fmt::opt_s(m, "seen_at")
+        .map(|x| format!("Last heard from {}", fmt::ago(x)))
+        .unwrap_or_else(|| "Not heard from yet".into());
     if b(m, "up") {
-        Pill { cls: "up", label: "Connected to Midna".into(), title: heard }
+        Pill {
+            cls: "up",
+            label: "Connected to Midna".into(),
+            title: heard,
+        }
     } else {
-        Pill { cls: "down", label: "Midna isn’t running".into(), title: format!("{heard}. Starting, messaging and closing terminals wait until it’s back.") }
+        Pill {
+            cls: "down",
+            label: "Midna isn’t running".into(),
+            title: format!(
+                "{heard}. Starting, messaging and closing terminals wait until it’s back."
+            ),
+        }
     }
 }
 
@@ -999,7 +1225,8 @@ pub fn usage_view(u: &Value) -> Option<UsageView> {
         return None;
     }
     // The web compares with the reader's own clock (not the board's).
-    let stale = fmt::parse(s(u, "seen_at")).is_some_and(|x| (fmt::device_now() - x).num_milliseconds() > 3_600_000);
+    let stale = fmt::parse(s(u, "seen_at"))
+        .is_some_and(|x| (fmt::device_now() - x).num_milliseconds() > 3_600_000);
     let mut title: Vec<String> = wins
         .iter()
         .map(|w| {
@@ -1008,7 +1235,9 @@ pub fn usage_view(u: &Value) -> Option<UsageView> {
                 "seven_day" => "7-day".to_string(),
                 _ => s(w, "label").to_string(),
             };
-            let resets = fmt::opt_s(w, "resets_at").map(|r| format!(", resets {}", fmt::day_clock(r))).unwrap_or_default();
+            let resets = fmt::opt_s(w, "resets_at")
+                .map(|r| format!(", resets {}", fmt::day_clock(r)))
+                .unwrap_or_default();
             format!("{name} limit: {}% used{resets}", js_num(&w["pct"]))
         })
         .collect();
@@ -1019,22 +1248,49 @@ pub fn usage_view(u: &Value) -> Option<UsageView> {
         .iter()
         .map(|w| {
             let pct = w["pct"].as_f64().unwrap_or(0.);
-            UsageWin { level: usage_level(pct), label: s(w, "label").to_string(), width: pct.clamp(0., 100.), value: format!("{}%", js_num(&w["pct"])) }
+            UsageWin {
+                level: usage_level(pct),
+                label: s(w, "label").to_string(),
+                width: pct.clamp(0., 100.),
+                value: format!("{}%", js_num(&w["pct"])),
+            }
         })
         .collect();
-    Some(UsageView { stale, title: title.join("\n"), windows })
+    Some(UsageView {
+        stale,
+        title: title.join("\n"),
+        windows,
+    })
 }
 
 // ------------------------------------------------------------------ chrome drawing
 
 /// `.banner`: 7px 40px, 6/10 gaps, 13px, a bottom line.
 fn bar(bg: Hsla, fg: Hsla, line: Hsla) -> Div {
-    div().flex().flex_none().items_center().flex_wrap().gap_x(px(10.)).gap_y(px(6.)).px(px(40.)).py(px(7.)).text_size(px(13.)).bg(bg).text_color(fg).border_b_1().border_color(line)
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .flex_wrap()
+        .gap_x(px(10.))
+        .gap_y(px(6.))
+        .px(px(40.))
+        .py(px(7.))
+        .text_size(px(13.))
+        .bg(bg)
+        .text_color(fg)
+        .border_b_1()
+        .border_color(line)
 }
 
 /// `.btn.sm` in the banner: 32px tall, 12.5px, 0 10px, radius 7. `soft` is accent on accent-soft
 /// (semibold); otherwise `.ghost` (muted, no fill).
-fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, soft: bool) -> Stateful<Div> {
+fn banner_btn(
+    t: &Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    soft: bool,
+) -> Stateful<Div> {
     let text = t.text;
     div()
         .id(id)
@@ -1048,8 +1304,15 @@ fn banner_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString
         .text_size(px(12.5))
         .whitespace_nowrap()
         .cursor_pointer()
-        .when(soft, |d| d.bg(t.accent_soft).text_color(t.accent).font_weight(FontWeight::SEMIBOLD).hover(|s| s.opacity(0.9)))
-        .when(!soft, |d| d.text_color(t.muted).hover(move |s| s.text_color(text)))
+        .when(soft, |d| {
+            d.bg(t.accent_soft)
+                .text_color(t.accent)
+                .font_weight(FontWeight::SEMIBOLD)
+                .hover(|s| s.opacity(0.9))
+        })
+        .when(!soft, |d| {
+            d.text_color(t.muted).hover(move |s| s.text_color(text))
+        })
         .child(label.into())
 }
 
@@ -1064,7 +1327,10 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
             bar(t.down_soft, t.down, t.down_line)
                 .child(kit::dot(t.down, 8.))
                 .child(div().flex_1().min_w_0().child(r.text.clone()))
-                .child(banner_btn(t, "down-copy", "Copy", false).on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx))))
+                .child(
+                    banner_btn(t, "down-copy", "Copy", false)
+                        .on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx))),
+                )
                 .into_any_element(),
         );
     }
@@ -1085,7 +1351,12 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
         _ => {}
     }
     for p in crate::install::in_the_way() {
-        out.push(bar(t.warn_soft, t.warn_text, t.warn_line).child(kit::dot(t.warn, 8.)).child(div().flex_1().min_w_0().child(p)).into_any_element());
+        out.push(
+            bar(t.warn_soft, t.warn_text, t.warn_line)
+                .child(kit::dot(t.warn, 8.))
+                .child(div().flex_1().min_w_0().child(p))
+                .into_any_element(),
+        );
     }
     out.extend(ui::prwatch::banner(m, t, cx));
     out
@@ -1101,34 +1372,79 @@ fn alert_text(r: &BannerRow, ago: Hsla) -> Div {
         .items_baseline()
         .gap(px(4.))
         .child(r.text.clone())
-        .children(r.ago.clone().map(|a| div().ml(px(4.)).text_size(px(10.8)).text_color(ago).child(a)))
+        .children(r.ago.clone().map(|a| {
+            div()
+                .ml(px(4.))
+                .text_size(px(10.8))
+                .text_color(ago)
+                .child(a)
+        }))
 }
 
 /// One alert: its text and age, "Open T12" and Dismiss. Also used by the alerts dialog.
 pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
     let id = s(a, "id").to_string();
-    let r = BannerRow { kind: alert_kind(a), text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) };
-    let (task, goal) = (fmt::opt_s(a, "task").map(str::to_string), fmt::opt_s(a, "goal").map(str::to_string));
+    let r = BannerRow {
+        kind: alert_kind(a),
+        text: s(a, "text").to_string(),
+        ago: Some(fmt::ago(s(a, "at"))),
+        buttons: alert_buttons(a),
+    };
+    let (task, goal) = (
+        fmt::opt_s(a, "task").map(str::to_string),
+        fmt::opt_s(a, "goal").map(str::to_string),
+    );
     // An urgent alert is solid red; the others are red on the soft red.
     let urgent = r.kind == "urgent";
-    let row = if urgent { bar(t.down, t.on_accent, t.down).font_weight(FontWeight::SEMIBOLD) } else { bar(t.down_soft, t.down, t.down_line) };
+    let row = if urgent {
+        bar(t.down, t.on_accent, t.down).font_weight(FontWeight::SEMIBOLD)
+    } else {
+        bar(t.down_soft, t.down, t.down_line)
+    };
     row.child(kit::dot(if urgent { t.on_accent } else { t.down }, 8.))
         .child(alert_text(&r, if urgent { t.on_accent } else { t.muted }))
-        .children(r.buttons.iter().filter(|(act, _)| *act == "alert-open").map(|(_, label)| {
-            let (task, goal) = (task.clone(), goal.clone());
-            banner_btn(t, SharedString::from(format!("alert-open-{id}")), label.clone(), true).on_click(cx.listener(move |m, _, window, cx| {
-                open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
-            }))
-        }))
+        .children(
+            r.buttons
+                .iter()
+                .filter(|(act, _)| *act == "alert-open")
+                .map(|(_, label)| {
+                    let (task, goal) = (task.clone(), goal.clone());
+                    banner_btn(
+                        t,
+                        SharedString::from(format!("alert-open-{id}")),
+                        label.clone(),
+                        true,
+                    )
+                    .on_click(cx.listener(move |m, _, window, cx| {
+                        open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
+                    }))
+                }),
+        )
         .child({
             let text = r.text.clone();
-            banner_btn(t, SharedString::from(format!("alert-copy-{id}")), "Copy", false)
-                .when(urgent, |d| d.text_color(t.on_accent))
-                .on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx)))
+            banner_btn(
+                t,
+                SharedString::from(format!("alert-copy-{id}")),
+                "Copy",
+                false,
+            )
+            .when(urgent, |d| d.text_color(t.on_accent))
+            .on_click(cx.listener(move |m, _, _, cx| copy_text(m, &text, cx)))
         })
-        .when(r.buttons.iter().any(|(act, _)| *act == "alert-dismiss"), |d| {
-            d.child(banner_btn(t, SharedString::from(format!("alert-dismiss-{id}")), "Dismiss", false).on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))))
-        })
+        .when(
+            r.buttons.iter().any(|(act, _)| *act == "alert-dismiss"),
+            |d| {
+                d.child(
+                    banner_btn(
+                        t,
+                        SharedString::from(format!("alert-dismiss-{id}")),
+                        "Dismiss",
+                        false,
+                    )
+                    .on_click(cx.listener(move |m, _, _, cx| dismiss_alert(m, &id, cx))),
+                )
+            },
+        )
 }
 
 /// The banner's Copy: its text on the clipboard, and a toast.
@@ -1138,7 +1454,13 @@ pub fn copy_text(m: &mut MainWindow, text: &str, cx: &mut Context<MainWindow>) {
 }
 
 /// `alert-open`: close the alerts dialog, then the task (or else the goal).
-pub fn open_alert(m: &mut MainWindow, task: Option<&str>, goal: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) {
+pub fn open_alert(
+    m: &mut MainWindow,
+    task: Option<&str>,
+    goal: Option<&str>,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) {
     if matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
         m.set_modal(None, window, cx);
     }
@@ -1157,7 +1479,11 @@ pub fn dismiss_alert(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>)
 /// `alerts-dismiss-all`: dismiss every current alert; the dialog closes once none are left.
 /// (For the dialog in modals.rs.)
 pub fn dismiss_all_alerts(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    let ids: Vec<String> = arr(m.state(), "alerts").iter().filter(|a| !alert_stays(a)).map(|a| s(a, "id").to_string()).collect();
+    let ids: Vec<String> = arr(m.state(), "alerts")
+        .iter()
+        .filter(|a| !alert_stays(a))
+        .map(|a| s(a, "id").to_string())
+        .collect();
     for id in ids {
         dismiss_alert(m, &id, cx);
     }
@@ -1166,18 +1492,50 @@ pub fn dismiss_all_alerts(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 /// `.conn`: 12.5px, 3px 10px, fully rounded, 6px gaps (line height 1.5).
 pub fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<Div> {
     let _ = t;
-    div().id(id).flex().flex_none().items_center().gap(px(6.)).py(px(3.)).px(px(10.)).rounded_full().text_size(px(12.5)).line_height(px(18.75)).whitespace_nowrap().text_color(fg).bg(bg)
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .py(px(3.))
+        .px(px(10.))
+        .rounded_full()
+        .text_size(px(12.5))
+        .line_height(px(18.75))
+        .whitespace_nowrap()
+        .text_color(fg)
+        .bg(bg)
 }
 
 /// Bottom bar (`statusBarHtml`): Midna connection, work hours and usage pills.
 fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
     let st = m.state().clone();
     // `#statusbar`: min-height 34, 4px 12px, 8px gaps.
-    let mut bar = div().flex().flex_none().items_center().gap(px(8.)).min_h(px(34.)).py(px(4.)).px(px(12.)).border_t_1().border_color(t.border).bg(t.card);
+    let mut bar = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .min_h(px(34.))
+        .py(px(4.))
+        .px(px(12.))
+        .border_t_1()
+        .border_color(t.border)
+        .bg(t.card);
     if let Some(mid) = st.get("midna").filter(|v| v.is_object()) {
         let p = conn_pill(mid);
-        let (fg, bg, dot) = if p.cls == "up" { (t.up_fg, t.up_soft, t.up) } else { (t.warn_fg, t.warn_soft, t.warn) };
-        bar = bar.child(pill_shell(t, "conn-pill", fg, bg).child(kit::dot(dot, 8.)).child(p.label).tooltip(kit::tip(p.title)));
+        let (fg, bg, dot) = if p.cls == "up" {
+            (t.up_fg, t.up_soft, t.up)
+        } else {
+            (t.warn_fg, t.warn_soft, t.warn)
+        };
+        bar = bar.child(
+            pill_shell(t, "conn-pill", fg, bg)
+                .child(kit::dot(dot, 8.))
+                .child(p.label)
+                .tooltip(kit::tip(p.title)),
+        );
     }
     bar = bar.child(ui::hours::pill(m, t, cx));
     if let Some(u) = st.get("usage").and_then(usage_view) {
@@ -1202,7 +1560,9 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
             .text_color(t.muted)
             .cursor_pointer()
             .hover(move |s| s.text_color(text))
-            .tooltip(kit::tip("Settings: GitHub, Bitbucket and Slack accounts (⌘,)"))
+            .tooltip(kit::tip(
+                "Settings: GitHub, Bitbucket and Slack accounts (⌘,)",
+            ))
             .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
             .child("Settings"),
     );
@@ -1214,10 +1574,28 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
 fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
     let list = st.get("accounts")?.as_array().filter(|l| !l.is_empty())?;
     let label = match list.as_slice() {
-        [one] => format!("{}: {}", one["label"].as_str().unwrap_or("Account"), if one["reauth"] == true { "sign in again" } else { "check sign-in" }),
+        [one] => format!(
+            "{}: {}",
+            one["label"].as_str().unwrap_or("Account"),
+            if one["reauth"] == true {
+                "sign in again"
+            } else {
+                "check sign-in"
+            }
+        ),
         many => format!("{} accounts need you", many.len()),
     };
-    let tip = list.iter().map(|a| format!("{}: {}", a["label"].as_str().unwrap_or(""), a["reason"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
+    let tip = list
+        .iter()
+        .map(|a| {
+            format!(
+                "{}: {}",
+                a["label"].as_str().unwrap_or(""),
+                a["reason"].as_str().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     Some(
         pill_shell(t, "accounts-pill", t.warn_fg, t.warn_soft)
             .cursor_pointer()
@@ -1234,15 +1612,28 @@ fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
     use crate::hooks::Hooks;
     let can_install = crate::hooks::target().is_some_and(|(_, can)| can);
     let text = t.text;
-    let base = div().id("hooks").flex().items_center().gap(px(5.)).text_size(px(12.5)).whitespace_nowrap().text_color(t.muted);
+    let base = div()
+        .id("hooks")
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .text_size(px(12.5))
+        .whitespace_nowrap()
+        .text_color(t.muted);
     let clickable = |d: Stateful<Div>| -> Stateful<Div> {
         if can_install {
-            d.cursor_pointer().hover(move |s| s.text_color(text)).on_click(cx.listener(|m, _, _, cx| m.install_hooks(cx)))
+            d.cursor_pointer()
+                .hover(move |s| s.text_color(text))
+                .on_click(cx.listener(|m, _, _, cx| m.install_hooks(cx)))
         } else {
             d
         }
     };
-    let by_app = if can_install { "" } else { "\nInstall them from Taskboard.app." };
+    let by_app = if can_install {
+        ""
+    } else {
+        "\nInstall them from Taskboard.app."
+    };
     let el = if m.hooks_busy {
         base.child("Installing hooks…")
     } else {
@@ -1284,9 +1675,37 @@ fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
                 .gap(px(6.))
                 .px(px(7.))
                 .when(n > 0, |d| d.border_l_1().border_color(t.border_2))
-                .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(t.faint).child(w.label.clone()))
-                .child(div().w(px(34.)).h(px(5.)).rounded_full().overflow_hidden().bg(t.border_2).child(div().h_full().rounded_full().bg(bar_c).w(relative((w.width / 100.) as f32))))
-                .child(div().min_w(px(22.)).flex().justify_end().text_color(val_c).when(w.level == "hot", |d| d.font_weight(FontWeight::SEMIBOLD)).child(w.value.clone())),
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.faint)
+                        .child(w.label.clone()),
+                )
+                .child(
+                    div()
+                        .w(px(34.))
+                        .h(px(5.))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(t.border_2)
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .bg(bar_c)
+                                .w(relative((w.width / 100.) as f32)),
+                        ),
+                )
+                .child(
+                    div()
+                        .min_w(px(22.))
+                        .flex()
+                        .justify_end()
+                        .text_color(val_c)
+                        .when(w.level == "hot", |d| d.font_weight(FontWeight::SEMIBOLD))
+                        .child(w.value.clone()),
+                ),
         );
     }
     row.into_any_element()
@@ -1297,7 +1716,16 @@ fn toasts(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
     if m.toasts.is_empty() {
         return None;
     }
-    let mut col = div().absolute().bottom(px(24.)).left_0().right_0().px(px(16.)).flex().flex_col().items_center().gap(px(6.));
+    let mut col = div()
+        .absolute()
+        .bottom(px(24.))
+        .left_0()
+        .right_0()
+        .px(px(16.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(6.));
     // (One at a time: `toast` replaces the last.)
     for (i, x) in m.toasts.iter().enumerate() {
         col = col.child(
@@ -1318,26 +1746,43 @@ fn toasts(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MainWindow, Page, Panel, TaskTab, alerts_dialog_view, banner_view, conn_pill, dismiss_alert, dismiss_all_alerts, page_title, usage_view};
+    use super::{
+        MainWindow, Page, Panel, TaskTab, alerts_dialog_view, banner_view, conn_pill,
+        dismiss_alert, dismiss_all_alerts, page_title, usage_view,
+    };
     use crate::fmt::arr;
     use crate::parity::{golden, settle, window};
     use crate::ui;
     use serde_json::{Value, json};
 
     fn rows_json(rows: &[super::BannerRow]) -> Value {
-        json!(rows.iter().map(|r| json!({"kind": r.kind, "text": r.text, "ago": r.ago,
-            "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()})).collect::<Vec<_>>())
+        json!(
+            rows.iter()
+                .map(|r| json!({"kind": r.kind, "text": r.text, "ago": r.ago,
+            "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()}))
+                .collect::<Vec<_>>()
+        )
     }
 
     #[::core::prelude::v1::test]
     fn banner_and_alerts_dialog_match_web() {
         let g = golden("chrome");
-        g.only("banner").check(|i| rows_json(&banner_view(i["down"].as_str(), arr(i, "alerts"))));
+        g.only("banner")
+            .check(|i| rows_json(&banner_view(i["down"].as_str(), arr(i, "alerts"))));
         g.only("alertsDialog").check(|i| {
             let (title, rows) = alerts_dialog_view(arr(i, "alerts"));
-            let rows: Vec<Value> = rows.iter().map(|r| json!({"text": r.text, "ago": r.ago,
-                "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()})).collect();
-            let foot: Vec<&str> = if arr(i, "alerts").iter().any(|a| !super::alert_stays(a)) { vec!["alerts-dismiss-all"] } else { vec![] };
+            let rows: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({"text": r.text, "ago": r.ago,
+                "buttons": r.buttons.iter().map(|(a, l)| format!("{a}:{l}")).collect::<Vec<_>>()})
+                })
+                .collect();
+            let foot: Vec<&str> = if arr(i, "alerts").iter().any(|a| !super::alert_stays(a)) {
+                vec!["alerts-dismiss-all"]
+            } else {
+                vec![]
+            };
             json!({"title": title, "rows": rows, "foot": foot})
         });
     }
@@ -1345,13 +1790,26 @@ mod tests {
     #[::core::prelude::v1::test]
     fn urgent_alerts_get_rows_of_their_own_first() {
         let a = |id: &str, urgent: bool| json!({"id": id, "text": format!("Alert {id}"), "at": "2026-10-08T10:00:00Z", "urgent": urgent, "task": "T3"});
-        let rows = banner_view(None, &[a("n1", false), a("u1", true), a("n2", false), a("u2", true)]);
+        let rows = banner_view(
+            None,
+            &[a("n1", false), a("u1", true), a("n2", false), a("u2", true)],
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| r.kind).collect();
         assert_eq!(kinds, vec!["urgent", "urgent", "alert"]);
-        assert_eq!((rows[0].text.as_str(), rows[1].text.as_str()), ("Alert u1", "Alert u2"));
-        assert!(rows[2].text.starts_with("2 tasks need"), "only the other alerts fold: {}", rows[2].text);
+        assert_eq!(
+            (rows[0].text.as_str(), rows[1].text.as_str()),
+            ("Alert u1", "Alert u2")
+        );
+        assert!(
+            rows[2].text.starts_with("2 tasks need"),
+            "only the other alerts fold: {}",
+            rows[2].text
+        );
         let rows = banner_view(None, &[a("u1", true), a("n1", false)]);
-        assert_eq!(rows.iter().map(|r| r.kind).collect::<Vec<_>>(), vec!["urgent", "alert"]);
+        assert_eq!(
+            rows.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            vec!["urgent", "alert"]
+        );
         assert_eq!(rows[1].text, "Alert n1");
     }
 
@@ -1407,8 +1865,16 @@ mod tests {
         settle(cx);
         let posts: Vec<(String, Value)> = rec.posts();
         assert_eq!(posts[0], ("alerts/a1/dismiss".to_string(), json!({})));
-        assert!(posts.iter().any(|(p, b)| p == "alerts/x1/dismiss" && *b == json!({})));
-        assert!(posts.iter().any(|(p, b)| p == "alerts/x2/dismiss" && *b == json!({})));
+        assert!(
+            posts
+                .iter()
+                .any(|(p, b)| p == "alerts/x1/dismiss" && *b == json!({}))
+        );
+        assert!(
+            posts
+                .iter()
+                .any(|(p, b)| p == "alerts/x2/dismiss" && *b == json!({}))
+        );
     }
 
     #[gpui_kit::test]
@@ -1416,7 +1882,10 @@ mod tests {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
             m.go(Page::Backlog, cx);
-            m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
+            m.panel = Some(Panel::Task {
+                r: "T1".into(),
+                tab: TaskTab::Overview,
+            });
             m.go_home(cx);
             assert!(m.page == Page::Board);
             assert!(m.panel.is_none(), "nothing stays open");
@@ -1427,8 +1896,14 @@ mod tests {
     #[gpui_kit::test]
     fn the_banner_copies_its_text(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
-        w.update(cx, |m: &mut MainWindow, _, cx| super::copy_text(m, "T4 didn't start: no folder", cx)).unwrap();
-        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("T4 didn't start: no folder"));
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            super::copy_text(m, "T4 didn't start: no folder", cx)
+        })
+        .unwrap();
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some("T4 didn't start: no folder")
+        );
     }
 
     #[gpui_kit::test]
@@ -1439,7 +1914,10 @@ mod tests {
             m.escape(window, cx);
             assert!(m.modal.is_none(), "the alerts dialog closes");
             // The task panel closes; an issue panel only on the board.
-            m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
+            m.panel = Some(Panel::Task {
+                r: "T1".into(),
+                tab: TaskTab::Overview,
+            });
             m.escape(window, cx);
             assert!(m.panel.is_none());
             m.page = Page::Goal("G1".into());
@@ -1449,20 +1927,44 @@ mod tests {
             m.page = Page::Backlog;
             m.backlog.picked = vec!["B1".into(), "B2".into()];
             m.escape(window, cx);
-            assert!(m.panel.is_none(), "on the Backlog page it closes, as on the board");
-            assert_eq!(m.backlog.picked.len(), 2, "closing the panel keeps the checked issues");
-            m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
+            assert!(
+                m.panel.is_none(),
+                "on the Backlog page it closes, as on the board"
+            );
+            assert_eq!(
+                m.backlog.picked.len(),
+                2,
+                "closing the panel keeps the checked issues"
+            );
+            m.panel = Some(Panel::Task {
+                r: "T1".into(),
+                tab: TaskTab::Overview,
+            });
             m.escape(window, cx);
-            assert!(m.panel.is_none() && m.backlog.picked.len() == 2, "a task panel too");
+            assert!(
+                m.panel.is_none() && m.backlog.picked.len() == 2,
+                "a task panel too"
+            );
             m.escape(window, cx);
             assert!(m.backlog.picked.is_empty(), "then Esc unchecks them");
             // Then the rail's filters (railClear), with the board focused.
             m.page = Page::Board;
-            m.filters = crate::app::Filters { project: "webapp".into(), goal: "G1".into(), done: "7d".into() };
+            m.filters = crate::app::Filters {
+                project: "webapp".into(),
+                goal: "G1".into(),
+                done: "7d".into(),
+            };
             m.board.keep = vec!["B1".into()];
             window.focus(&m.focus, cx);
             m.escape(window, cx);
-            assert_eq!((m.filters.project.as_str(), m.filters.goal.as_str(), m.filters.done.as_str()), ("all", "all", "7d"));
+            assert_eq!(
+                (
+                    m.filters.project.as_str(),
+                    m.filters.goal.as_str(),
+                    m.filters.done.as_str()
+                ),
+                ("all", "all", "7d")
+            );
             assert!(m.board.keep.is_empty());
         })
         .unwrap();

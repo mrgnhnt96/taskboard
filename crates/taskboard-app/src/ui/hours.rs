@@ -9,7 +9,15 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
-pub const DAYS: [(&str, &str); 7] = [("sun", "S"), ("mon", "M"), ("tue", "T"), ("wed", "W"), ("thu", "T"), ("fri", "F"), ("sat", "S")];
+pub const DAYS: [(&str, &str); 7] = [
+    ("sun", "S"),
+    ("mon", "M"),
+    ("tue", "T"),
+    ("wed", "W"),
+    ("thu", "T"),
+    ("fri", "F"),
+    ("sat", "S"),
+];
 const MENU: &str = "hours";
 /// A time list opened inside the menu: which select.
 const SELECTS: [&str; 3] = ["start", "end", "today"];
@@ -43,19 +51,31 @@ impl State {
             on: b(h, "on"),
             start: s(h, "start").into(),
             end: s(h, "end").into(),
-            days: arr(h, "days").iter().filter_map(|d| d.as_str().map(str::to_string)).collect(),
+            days: arr(h, "days")
+                .iter()
+                .filter_map(|d| d.as_str().map(str::to_string))
+                .collect(),
             today: s(h, "today_until").into(),
             err: None,
             open: None,
-            first_day: arr(h, "week_days").first().and_then(|d| d.as_str()).unwrap_or("sun").into(),
+            first_day: arr(h, "week_days")
+                .first()
+                .and_then(|d| d.as_str())
+                .unwrap_or("sun")
+                .into(),
         }
     }
 
     /// `saveHours`'s body: `today_until` only when it differs from the board's (`""` → `"off"`).
     pub fn body(&self, current_today: &str) -> Value {
-        let mut body = json!({"on": self.on, "start": self.start, "end": self.end, "days": self.days});
+        let mut body =
+            json!({"on": self.on, "start": self.start, "end": self.end, "days": self.days});
         if self.today != current_today {
-            body["today_until"] = json!(if self.today.is_empty() { "off".to_string() } else { self.today.clone() });
+            body["today_until"] = json!(if self.today.is_empty() {
+                "off".to_string()
+            } else {
+                self.today.clone()
+            });
         }
         body
     }
@@ -75,24 +95,51 @@ pub fn pill_view(h: &Value) -> Pill {
     let (cls, label) = if !b(h, "on") {
         ("hours", "No work hours".to_string())
     } else if b(h, "open") && fmt::opt_s(h, "today_until").is_some() {
-        ("hours", format!("Work hours until {} today", fmt::clock12(s(h, "today_until"))))
+        (
+            "hours",
+            format!(
+                "Work hours until {} today",
+                fmt::clock12(s(h, "today_until"))
+            ),
+        )
     } else if b(h, "open") {
-        ("hours", format!("Work hours {}–{}", fmt::clock12(s(h, "start")), fmt::clock12(s(h, "end"))))
+        (
+            "hours",
+            format!(
+                "Work hours {}–{}",
+                fmt::clock12(s(h, "start")),
+                fmt::clock12(s(h, "end"))
+            ),
+        )
     } else {
-        let when = fmt::opt_s(h, "next_open").map(fmt::day_clock).unwrap_or_default();
-        ("hours closed", format!("Agents off until {when}").trim_end().to_string())
+        let when = fmt::opt_s(h, "next_open")
+            .map(fmt::day_clock)
+            .unwrap_or_default();
+        (
+            "hours closed",
+            format!("Agents off until {when}").trim_end().to_string(),
+        )
     };
-    Pill { cls, label, title: s(h, "line").to_string() }
+    Pill {
+        cls,
+        label,
+        title: s(h, "line").to_string(),
+    }
 }
 
 /// `hourOptions(cur)`: every half hour, plus `cur` when it's off the grid; (value, label).
 pub fn hour_options(cur: &str) -> Vec<(String, String)> {
-    let mut times: Vec<String> = (0..48).map(|k| format!("{:02}:{:02}", k / 2, (k % 2) * 30)).collect();
+    let mut times: Vec<String> = (0..48)
+        .map(|k| format!("{:02}:{:02}", k / 2, (k % 2) * 30))
+        .collect();
     if !cur.is_empty() && !times.iter().any(|x| x == cur) {
         times.push(cur.to_string());
         times.sort();
     }
-    times.into_iter().map(|v| (v.clone(), fmt::clock12(&v))).collect()
+    times
+        .into_iter()
+        .map(|v| (v.clone(), fmt::clock12(&v)))
+        .collect()
 }
 
 /// The "Today until" options: "Usual end" first.
@@ -103,12 +150,21 @@ pub fn today_options(cur: &str) -> Vec<(String, String)> {
 }
 
 pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
-    let Some(h) = m.state().get("work_hours").filter(|v| v.is_object()).cloned() else {
+    let Some(h) = m
+        .state()
+        .get("work_hours")
+        .filter(|v| v.is_object())
+        .cloned()
+    else {
         return div().into_any_element();
     };
     let p = pill_view(&h);
     let closed = p.cls == "hours closed";
-    let (fg, bg, dot) = if closed { (t.warn_fg, t.warn_soft, t.warn) } else { (t.muted, t.seg, t.up) };
+    let (fg, bg, dot) = if closed {
+        (t.warn_fg, t.warn_soft, t.warn)
+    } else {
+        (t.muted, t.seg, t.up)
+    };
     let open = m.menu_open(MENU).is_some();
     div()
         .id("hours-pill")
@@ -120,7 +176,11 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
         .line_height(px(18.75))
         .rounded_full()
         .border_1()
-        .border_color(if open { fg } else { gpui_kit::transparent_black() })
+        .border_color(if open {
+            fg
+        } else {
+            gpui_kit::transparent_black()
+        })
         .hover(move |d| d.border_color(fg))
         .cursor_pointer()
         .text_size(px(12.5))
@@ -129,7 +189,12 @@ pub fn pill(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyE
         .bg(bg)
         .child(kit::dot(dot, 8.))
         .child(p.label)
-        .child(div().ml(px(-1.)).opacity(0.65).child(kit::icon(kit::Icon::Chev, 14., fg)))
+        .child(
+            div()
+                .ml(px(-1.))
+                .opacity(0.65)
+                .child(kit::icon(kit::Icon::Chev, 14., fg)),
+        )
         .tooltip(kit::tip(p.title))
         .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
             if m.menu_open(MENU).is_none() {
@@ -163,8 +228,20 @@ pub fn save(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
 }
 
 /// A select: the chosen option's label and ▾; it opens its option list in place.
-fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, String)], enabled: bool, open: bool, cx: &mut Context<MainWindow>) -> Div {
-    let label = options.iter().find(|(v, _)| v == value).map(|(_, l)| l.clone()).unwrap_or_default();
+fn select(
+    t: &Theme,
+    which: &'static str,
+    value: &str,
+    options: &[(String, String)],
+    enabled: bool,
+    open: bool,
+    cx: &mut Context<MainWindow>,
+) -> Div {
+    let label = options
+        .iter()
+        .find(|(v, _)| v == value)
+        .map(|(_, l)| l.clone())
+        .unwrap_or_default();
     let button = div()
         .id(SharedString::from(format!("hours-{which}")))
         .flex()
@@ -185,25 +262,49 @@ fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, Strin
         .when(!enabled, |d| d.opacity(0.5))
         .when(enabled, |d| {
             d.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
-                m.hours.open = if m.hours.open == Some(which) { None } else { Some(which) };
+                m.hours.open = if m.hours.open == Some(which) {
+                    None
+                } else {
+                    Some(which)
+                };
                 cx.notify();
             }))
         });
     let mut col = div().flex().flex_col().flex_1().min_w_0().child(button);
     if open {
-        let mut list = div().id(SharedString::from(format!("hours-{which}-list"))).flex().flex_col().max_h(px(200.)).overflow_y_scroll().mt(px(4.)).p(px(2.)).rounded(px(6.)).border_1().border_color(t.border).bg(t.card);
+        let mut list = div()
+            .id(SharedString::from(format!("hours-{which}-list")))
+            .flex()
+            .flex_col()
+            .max_h(px(200.))
+            .overflow_y_scroll()
+            .mt(px(4.))
+            .p(px(2.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.card);
         for (v, l) in options {
             let (v2, sel) = (v.clone(), v == value);
-            list = list.child(kit::menu_item(t, SharedString::from(format!("hours-{which}-{v}")), l.clone(), sel).h(px(26.)).on_click(cx.listener(move |m, _, _, cx| {
-                match which {
-                    "start" => m.hours.start = v2.clone(),
-                    "end" => m.hours.end = v2.clone(),
-                    _ => m.hours.today = v2.clone(),
-                }
-                m.hours.open = None;
-                save(m, cx);
-                cx.notify();
-            })));
+            list = list.child(
+                kit::menu_item(
+                    t,
+                    SharedString::from(format!("hours-{which}-{v}")),
+                    l.clone(),
+                    sel,
+                )
+                .h(px(26.))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    match which {
+                        "start" => m.hours.start = v2.clone(),
+                        "end" => m.hours.end = v2.clone(),
+                        _ => m.hours.today = v2.clone(),
+                    }
+                    m.hours.open = None;
+                    save(m, cx);
+                    cx.notify();
+                })),
+            );
         }
         col = col.child(list);
     }
@@ -220,8 +321,16 @@ pub struct KeepAwake {
 
 pub fn keep_awake_view(k: &Value) -> Option<KeepAwake> {
     let line = fmt::opt_s(k, "line")?.to_string();
-    let schedule = if b(&k["settings"], "enabled") { fmt::opt_s(k, "schedule").map(str::to_string) } else { None };
-    Some(KeepAwake { held: b(k, "held"), line, schedule })
+    let schedule = if b(&k["settings"], "enabled") {
+        fmt::opt_s(k, "schedule").map(str::to_string)
+    } else {
+        None
+    };
+    Some(KeepAwake {
+        held: b(k, "held"),
+        line,
+        schedule,
+    })
 }
 
 fn keep_awake(t: &Theme, k: KeepAwake) -> Div {
@@ -234,17 +343,38 @@ fn keep_awake(t: &Theme, k: KeepAwake) -> Div {
         .border_t_1()
         .border_color(t.border)
         .text_size(px(12.5))
-        .child(div().flex().items_center().gap(px(6.)).child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.)).child(k.line))
-        .children(k.schedule.map(|s| div().pl(px(14.)).text_color(t.muted).child(s)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.))
+                .child(k.line),
+        )
+        .children(
+            k.schedule
+                .map(|s| div().pl(px(14.)).text_color(t.muted).child(s)),
+        )
 }
 
-pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+pub fn render_menu(
+    m: &mut MainWindow,
+    _window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) -> Option<AnyElement> {
     let at = m.menu_open(MENU)?;
     let t = cx.global::<Theme>().clone();
     let st = &m.hours;
     let on = st.on;
     // `.hours-row`: 8px gaps, 13px, 0 4px.
-    let row = || div().flex().items_center().gap(px(8.)).px(px(4.)).text_size(px(13.));
+    let row = || {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(4.))
+            .text_size(px(13.))
+    };
     let check = div()
         .id("hours-on")
         .flex()
@@ -288,21 +418,35 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
             .text_size(px(13.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(if sel { t.text } else { t.muted })
-            .when(sel, |x| x.bg(t.card).shadow(crate::ui::sidebar::shadow_seg(&t)))
+            .when(sel, |x| {
+                x.bg(t.card).shadow(crate::ui::sidebar::shadow_seg(&t))
+            })
             .when(!on, |x| x.opacity(0.5))
             .tooltip(kit::tip(fmt::cap(d)))
             .child(l);
         if on {
-            item = item.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| {
-                m.hours.toggle_day(d);
-                save(m, cx);
-                cx.notify();
-            }));
+            item = item
+                .cursor_pointer()
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    m.hours.toggle_day(d);
+                    save(m, cx);
+                    cx.notify();
+                }));
         }
         days = days.child(item);
     }
-    let (start_o, end_o, today_o) = (hour_options(&st.start), hour_options(&st.end), today_options(&st.today));
-    let (start, end, today, open, err) = (st.start.clone(), st.end.clone(), st.today.clone(), st.open, st.err.clone());
+    let (start_o, end_o, today_o) = (
+        hour_options(&st.start),
+        hour_options(&st.end),
+        today_options(&st.today),
+    );
+    let (start, end, today, open, err) = (
+        st.start.clone(),
+        st.end.clone(),
+        st.today.clone(),
+        st.open,
+        st.err.clone(),
+    );
     let menu = kit::menu_box(&t, 280.)
         .id("hours-menu")
         .shadow(crate::ui::sidebar::shadow_modal(&t))
@@ -314,16 +458,66 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
             row()
                 .items_start()
                 .child(div().pt(px(10.)).child("From"))
-                .child(select(&t, SELECTS[0], &start, &start_o, on, open == Some("start"), cx))
+                .child(select(
+                    &t,
+                    SELECTS[0],
+                    &start,
+                    &start_o,
+                    on,
+                    open == Some("start"),
+                    cx,
+                ))
                 .child(div().pt(px(10.)).child("to"))
-                .child(select(&t, SELECTS[1], &end, &end_o, on, open == Some("end"), cx)),
+                .child(select(
+                    &t,
+                    SELECTS[1],
+                    &end,
+                    &end_o,
+                    on,
+                    open == Some("end"),
+                    cx,
+                )),
         )
         .child(days)
-        .child(row().items_start().child(div().pt(px(10.)).child("Today until")).child(select(&t, SELECTS[2], &today, &today_o, on, open == Some("today"), cx)))
-        .children(err.map(|e| div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(t.down).child(e)))
-        .children(m.state().get("keep_awake").and_then(keep_awake_view).map(|k| keep_awake(&t, k)));
+        .child(
+            row()
+                .items_start()
+                .child(div().pt(px(10.)).child("Today until"))
+                .child(select(
+                    &t,
+                    SELECTS[2],
+                    &today,
+                    &today_o,
+                    on,
+                    open == Some("today"),
+                    cx,
+                )),
+        )
+        .children(err.map(|e| {
+            div()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.down)
+                .child(e)
+        }))
+        .children(
+            m.state()
+                .get("keep_awake")
+                .and_then(keep_awake_view)
+                .map(|k| keep_awake(&t, k)),
+        );
     // Opens upward from the pill.
-    Some(deferred(anchored().anchor(Anchor::BottomLeft).position(at).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
+    Some(
+        deferred(
+            anchored()
+                .anchor(Anchor::BottomLeft)
+                .position(at)
+                .snap_to_window_with_margin(px(8.))
+                .child(menu),
+        )
+        .with_priority(3)
+        .into_any_element(),
+    )
 }
 
 #[cfg(test)]
@@ -381,7 +575,10 @@ mod tests {
                 on: b(m, "on"),
                 start: s(m, "start").into(),
                 end: s(m, "end").into(),
-                days: arr(m, "days").iter().filter_map(|d| d.as_str().map(str::to_string)).collect(),
+                days: arr(m, "days")
+                    .iter()
+                    .filter_map(|d| d.as_str().map(str::to_string))
+                    .collect(),
                 today: s(m, "today").into(),
                 err: None,
                 open: None,
@@ -398,18 +595,29 @@ mod tests {
     #[::core::prelude::v1::test]
     fn days_follow_the_first_weekday() {
         let order = |f: &str| week_order(f).iter().map(|(d, _)| *d).collect::<Vec<_>>();
-        assert_eq!(order("sun"), DAYS.iter().map(|(d, _)| *d).collect::<Vec<_>>());
-        assert_eq!(order("mon"), vec!["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+        assert_eq!(
+            order("sun"),
+            DAYS.iter().map(|(d, _)| *d).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            order("mon"),
+            vec!["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        );
         assert_eq!(order("nope")[0], "sun");
-        let st = State::from_hours(&json!({"on": true, "days": ["mon"], "week_days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}));
+        let st = State::from_hours(
+            &json!({"on": true, "days": ["mon"], "week_days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}),
+        );
         assert_eq!(st.first_day, "mon");
         assert_eq!(State::from_hours(&json!({"on": true})).first_day, "sun");
     }
 
     #[::core::prelude::v1::test]
     fn keep_awake_shows_midnas_line() {
-        let k = super::keep_awake_view(&json!({"held": true, "line": "Keeping awake until 6 PM: 1 agent working",
-            "schedule": "9 AM–6 PM weekdays", "settings": {"enabled": true}})).unwrap();
+        let k = super::keep_awake_view(
+            &json!({"held": true, "line": "Keeping awake until 6 PM: 1 agent working",
+            "schedule": "9 AM–6 PM weekdays", "settings": {"enabled": true}}),
+        )
+        .unwrap();
         assert!(k.held);
         assert_eq!(k.schedule.as_deref(), Some("9 AM–6 PM weekdays"));
         let off = super::keep_awake_view(&json!({"held": false, "line": "Keep-awake is off", "schedule": "9 AM–6 PM weekdays", "settings": {"enabled": false}})).unwrap();
@@ -432,6 +640,9 @@ mod tests {
         let body = rec.last("hours").expect("posted /hours");
         assert_eq!(body["on"], json!(true));
         assert!(body["days"].as_array().unwrap().contains(&json!("sat")));
-        assert!(body.get("today_until").is_none(), "today_until only when it changed");
+        assert!(
+            body.get("today_until").is_none(),
+            "today_until only when it changed"
+        );
     }
 }

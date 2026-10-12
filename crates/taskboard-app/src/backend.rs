@@ -61,18 +61,39 @@ pub struct Daemon {
 impl Daemon {
     #[cfg(test)]
     pub fn at(base: &str) -> Daemon {
-        Daemon { base: base.into(), agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(300)).build(), token: None, socket: None }
+        Daemon {
+            base: base.into(),
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_millis(300))
+                .build(),
+            token: None,
+            socket: None,
+        }
     }
 
     pub fn new() -> Daemon {
         let cfg = Config::load().ok();
-        let host = cfg.as_ref().map(|c| c.host.clone()).unwrap_or_else(|| "127.0.0.1".into());
+        let host = cfg
+            .as_ref()
+            .map(|c| c.host.clone())
+            .unwrap_or_else(|| "127.0.0.1".into());
         let port = cfg.as_ref().map(|c| c.port).unwrap_or(8792);
-        let base = std::env::var("TASKBOARD_URL").ok().map(|u| u.trim_end_matches('/').trim_end_matches("/tasks").to_string());
+        let base = std::env::var("TASKBOARD_URL").ok().map(|u| {
+            u.trim_end_matches('/')
+                .trim_end_matches("/tasks")
+                .to_string()
+        });
         Daemon {
-            socket: if base.is_some() { None } else { cfg.as_ref().map(taskboardd::apporigin::socket_path) },
+            socket: if base.is_some() {
+                None
+            } else {
+                cfg.as_ref().map(taskboardd::apporigin::socket_path)
+            },
             base: base.unwrap_or_else(|| format!("http://{host}:{port}")),
-            agent: ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(2)).timeout(Duration::from_secs(20)).build(),
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(2))
+                .timeout(Duration::from_secs(20))
+                .build(),
             token: cfg.as_ref().map(taskboardd::apptoken::path),
         }
     }
@@ -82,10 +103,19 @@ impl Daemon {
             // As the web board's `api()`: an OK answer that isn't JSON is just empty.
             Ok(resp) => Ok(resp.into_json::<Value>().unwrap_or(Value::Null)),
             Err(ureq::Error::Status(code, resp)) => {
-                let msg = resp.into_json::<Value>().ok().and_then(|v| v["error"].as_str().map(str::to_string));
-                Err(CallError { status: code, message: msg.unwrap_or_else(|| format!("The board answered {code}.")) })
+                let msg = resp
+                    .into_json::<Value>()
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(str::to_string));
+                Err(CallError {
+                    status: code,
+                    message: msg.unwrap_or_else(|| format!("The board answered {code}.")),
+                })
             }
-            Err(_) => Err(CallError { status: 0, message: "Can’t reach the task board server.".into() }),
+            Err(_) => Err(CallError {
+                status: 0,
+                message: "Can’t reach the task board server.".into(),
+            }),
         }
     }
 }
@@ -95,9 +125,11 @@ impl Backend for Daemon {
         "daemon"
     }
 
-
     fn get(&self, path: &str, query: &[(&str, String)]) -> CallResult {
-        let mut req = self.agent.get(&format!("{}/tasks/api/{path}", self.base)).set("Accept", "application/json");
+        let mut req = self
+            .agent
+            .get(&format!("{}/tasks/api/{path}", self.base))
+            .set("Accept", "application/json");
         for (k, v) in query {
             req = req.query(k, v);
         }
@@ -118,13 +150,27 @@ impl Backend for Daemon {
             let bytes = serde_json::to_vec(&body).unwrap_or_default();
             // A stale socket (nothing listens) falls back to the port; a post that got there doesn't
             // go twice.
-            match taskboardd::apporigin::post(sock, path, &headers, &bytes, Duration::from_secs(20)) {
+            match taskboardd::apporigin::post(sock, path, &headers, &bytes, Duration::from_secs(20))
+            {
                 Ok((status, answer)) => return socket_answer(status, &answer),
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {}
-                Err(_) => return Err(CallError { status: 0, message: "Can’t reach the task board server.".into() }),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) => {}
+                Err(_) => {
+                    return Err(CallError {
+                        status: 0,
+                        message: "Can’t reach the task board server.".into(),
+                    });
+                }
             }
         }
-        let mut req = self.agent.post(&format!("{}/tasks/api/{path}", self.base)).set("X-Task-Board", "1").set("X-Task-Board-From", "app");
+        let mut req = self
+            .agent
+            .post(&format!("{}/tasks/api/{path}", self.base))
+            .set("X-Task-Board", "1")
+            .set("X-Task-Board-From", "app");
         if let Some(token) = token {
             req = req.set("X-Task-Board-Token", &token);
         }
@@ -139,7 +185,10 @@ fn socket_answer(status: u16, body: &[u8]) -> CallResult {
         return Ok(v.unwrap_or(Value::Null));
     }
     let msg = v.and_then(|v| v["error"].as_str().map(str::to_string));
-    Err(CallError { status, message: msg.unwrap_or_else(|| format!("The board answered {status}.")) })
+    Err(CallError {
+        status,
+        message: msg.unwrap_or_else(|| format!("The board answered {status}.")),
+    })
 }
 
 // ------------------------------------------------------------------ fake
@@ -163,7 +212,10 @@ impl Fake {
         cfg.owner = "Alex".into();
         let board = Board::new(cfg, false).expect("fake board");
         if let Err(e) = taskboardd::seed::seed(&board) {
-            eprintln!("taskboard-app: seeding the fake board failed: {}", e.message);
+            eprintln!(
+                "taskboard-app: seeding the fake board failed: {}",
+                e.message
+            );
         }
         seed_sessions(&board);
         Fake { board, dir }
@@ -181,15 +233,25 @@ impl Backend for Fake {
         "fake"
     }
 
-
     fn get(&self, path: &str, query: &[(&str, String)]) -> CallResult {
-        let q: Query = query.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-        api::dispatch(&self.board, "GET", path, &q, &json!({})).map_err(|e| CallError { status: e.status, message: e.message })
+        let q: Query = query
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        api::dispatch(&self.board, "GET", path, &q, &json!({})).map_err(|e| CallError {
+            status: e.status,
+            message: e.message,
+        })
     }
 
     fn post(&self, path: &str, body: Value) -> CallResult {
-        let q: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
-        api::dispatch(&self.board, "POST", path, &q, &body).map_err(|e| CallError { status: e.status, message: e.message })
+        let q: Query = [(api::FROM.to_string(), "app".to_string())]
+            .into_iter()
+            .collect();
+        api::dispatch(&self.board, "POST", path, &q, &body).map_err(|e| CallError {
+            status: e.status,
+            message: e.message,
+        })
     }
 }
 
@@ -198,8 +260,20 @@ fn seed_sessions(board: &Board) {
     use taskboardd::util::now_iso;
     let now = now_iso();
     let rows = [
-        ("fake-s1", "T2 Sign in with a passkey", "webapp", "working", Some(2i64)),
-        ("fake-s2", "T3 Settings page: manage passkeys", "webapp", "needs", Some(3)),
+        (
+            "fake-s1",
+            "T2 Sign in with a passkey",
+            "webapp",
+            "working",
+            Some(2i64),
+        ),
+        (
+            "fake-s2",
+            "T3 Settings page: manage passkeys",
+            "webapp",
+            "needs",
+            Some(3),
+        ),
         ("fake-s3", "api shell", "api", "idle", None),
     ];
     for (id, name, project, status, task) in rows {
@@ -210,7 +284,10 @@ fn seed_sessions(board: &Board) {
                                 "branch" => "feature/passkeys"],
         );
         if let Some(t) = task {
-            let _ = board.db.x("UPDATE tasks SET session_id = ?, session_name = ? WHERE id = ?", taskboardd::p![id, name, t]);
+            let _ = board.db.x(
+                "UPDATE tasks SET session_id = ?, session_name = ? WHERE id = ?",
+                taskboardd::p![id, name, t],
+            );
         }
     }
 }
@@ -243,7 +320,10 @@ mod tests {
         let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let server = std::thread::spawn(move || {
             let mut seen = vec![];
-            for answer in ["HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\n{\"ok\":true}", "HTTP/1.1 403 Forbidden\r\ncontent-length: 16\r\n\r\n{\"error\":\"Nope\"}"] {
+            for answer in [
+                "HTTP/1.1 200 OK\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
+                "HTTP/1.1 403 Forbidden\r\ncontent-length: 16\r\n\r\n{\"error\":\"Nope\"}",
+            ] {
                 let (mut s, _) = l.accept().unwrap();
                 let mut buf = vec![0u8; 4096];
                 let mut req = vec![];
@@ -259,12 +339,25 @@ mod tests {
         let mut d = Daemon::at("http://127.0.0.1:9");
         d.socket = Some(sock);
         d.token = Some(token);
-        assert_eq!(d.post("tasks/T1/start", json!({"mode": "queue"})).unwrap(), json!({"ok": true}));
-        let e = d.post("tasks/T1/start", json!({"mode": "queue"})).unwrap_err();
+        assert_eq!(
+            d.post("tasks/T1/start", json!({"mode": "queue"})).unwrap(),
+            json!({"ok": true})
+        );
+        let e = d
+            .post("tasks/T1/start", json!({"mode": "queue"}))
+            .unwrap_err();
         assert_eq!((e.status, e.message.as_str()), (403, "Nope"));
         let seen = server.join().unwrap();
-        assert!(seen[0].starts_with("POST /tasks/api/tasks/T1/start HTTP/1.1\r\n"), "{}", seen[0]);
-        for h in ["X-Task-Board: 1\r\n", "X-Task-Board-From: app\r\n", "X-Task-Board-Token: abc123\r\n"] {
+        assert!(
+            seen[0].starts_with("POST /tasks/api/tasks/T1/start HTTP/1.1\r\n"),
+            "{}",
+            seen[0]
+        );
+        for h in [
+            "X-Task-Board: 1\r\n",
+            "X-Task-Board-From: app\r\n",
+            "X-Task-Board-Token: abc123\r\n",
+        ] {
             assert!(seen[0].contains(h), "{h} in {}", seen[0]);
         }
         // No socket: the port, which isn't there.

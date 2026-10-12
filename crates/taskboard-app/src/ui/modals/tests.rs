@@ -3,16 +3,21 @@
 use super::*;
 // An explicit import beats the glob above, which would bring in GPUI's own `test` attribute
 // (and `#[gpui_kit::test]` expands to a plain `#[test]`).
+use crate::parity::{self, golden};
 #[allow(unused_imports)]
 use ::core::prelude::v1::test;
-use crate::parity::{self, golden};
 use gpui_kit::{TestAppContext, WindowHandle};
 use serde_json::{Value, json};
 
 #[test]
 fn names_sort_like_the_web() {
     golden("forms").only("localeSort").check(|i| {
-        let mut v: Vec<String> = i["list"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        let mut v: Vec<String> = i["list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
         v.sort_by(|a, b| locale_cmp(a, b));
         json!(v)
     });
@@ -44,10 +49,19 @@ fn escape_closes_the_alerts_dialog(cx: &mut TestAppContext) {
     })
     .unwrap();
     redraw(w, cx);
-    w.update(cx, |m, _, _| assert!(matches!(m.modal, Some(Modal::Alerts)), "the dialog stays while there are alerts")).unwrap();
+    w.update(cx, |m, _, _| {
+        assert!(
+            matches!(m.modal, Some(Modal::Alerts)),
+            "the dialog stays while there are alerts"
+        )
+    })
+    .unwrap();
     cx.simulate_keystrokes(w.into(), "escape");
     parity::settle(cx);
-    w.update(cx, |m, _, _| assert!(m.modal.is_none(), "esc closes the alerts dialog")).unwrap();
+    w.update(cx, |m, _, _| {
+        assert!(m.modal.is_none(), "esc closes the alerts dialog")
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

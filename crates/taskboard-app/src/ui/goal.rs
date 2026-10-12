@@ -25,11 +25,19 @@ mod waves;
 const START_MENU: &str = "goal-start";
 const ATT_MENU: &str = "goal-att";
 const MAX_TERMINALS: [i64; 7] = [1, 2, 3, 4, 5, 6, 8];
-const ATT_KINDS: [(&str, &str); 6] = [("design", "Design"), ("proposal", "Proposal"), ("doc", "Doc"), ("evidence", "Evidence"), ("results", "Results"), ("other", "Link")];
+const ATT_KINDS: [(&str, &str); 6] = [
+    ("design", "Design"),
+    ("proposal", "Proposal"),
+    ("doc", "Doc"),
+    ("evidence", "Evidence"),
+    ("results", "Results"),
+    ("other", "Link"),
+];
 const FOLD_NOTES: &str = "tb.fold.gnotes";
 const BACKLOG_HELP: &str = "Issues found while testing, building or reviewing that no task covers yet. Terminals add them instead of fixing them on the side.";
 const NOTES_HELP: &str = "Every task in this goal gets these, and the open backlog, in its handoff. A new terminal starts with what earlier tasks learned.";
-const ATTACH_HELP: &str = "Designs, proposals and docs for the whole goal. Every task’s handoff lists them.";
+const ATTACH_HELP: &str =
+    "Designs, proposals and docs for the whole goal. Every task’s handoff lists them.";
 
 #[derive(Default)]
 pub struct State {
@@ -124,9 +132,22 @@ fn status_tone(k: &str) -> &'static str {
     }
 }
 
+/// `PR_STAGE_CLS` as a chip color.
+fn stage_tone(phase: &str) -> &'static str {
+    match phase {
+        "fix" => "down",
+        "comments" => "warn",
+        "merged" => "up",
+        "checks" | "declined" => "queued",
+        _ => "accent",
+    }
+}
+
 /// `prOpen`: a PR with no state counts as open.
 fn pr_open(pr: &Value) -> bool {
-    fmt::opt_s(pr, "state").unwrap_or("OPEN").eq_ignore_ascii_case("open")
+    fmt::opt_s(pr, "state")
+        .unwrap_or("OPEN")
+        .eq_ignore_ascii_case("open")
 }
 
 fn has_pr(t: &Value) -> bool {
@@ -187,10 +208,20 @@ fn checks_label(pr: &Value) -> &'static str {
 
 /// `issueState(b).text`.
 fn issue_state_text(bl: &Value) -> Option<String> {
-    let tr = bl.get("task_id").filter(|v| !v.is_null()).map(|v| format!("T{}", num_text(v)));
+    let tr = bl
+        .get("task_id")
+        .filter(|v| !v.is_null())
+        .map(|v| format!("T{}", num_text(v)));
     match s(bl, "state") {
-        "task" => Some(tr.map(|t| format!("Made into task {t}")).unwrap_or_else(|| "Made into a task".into())),
-        "ticket" => Some(fmt::opt_s(bl, "jira_key").map(|k| format!("Jira {k}")).unwrap_or_else(|| "Jira ticket being created".into())),
+        "task" => Some(
+            tr.map(|t| format!("Made into task {t}"))
+                .unwrap_or_else(|| "Made into a task".into()),
+        ),
+        "ticket" => Some(
+            fmt::opt_s(bl, "jira_key")
+                .map(|k| format!("Jira {k}"))
+                .unwrap_or_else(|| "Jira ticket being created".into()),
+        ),
         "drop" => Some("Closed as won’t do".into()),
         _ => None,
     }
@@ -198,7 +229,10 @@ fn issue_state_text(bl: &Value) -> Option<String> {
 
 /// `issueFrom(b, long)`.
 pub fn issue_from(bl: &Value, long: bool) -> String {
-    let ft = bl.get("found_by_task").filter(|v| is_truthy(v)).map(|f| fmt::ref_of(f, "T"));
+    let ft = bl
+        .get("found_by_task")
+        .filter(|v| is_truthy(v))
+        .map(|f| fmt::ref_of(f, "T"));
     let name = fmt::opt_s(bl, "found_by_name");
     let source = fmt::opt_s(bl, "source");
     let who = if source == Some("you") || (source.is_none() && name.is_none() && ft.is_none()) {
@@ -212,7 +246,11 @@ pub fn issue_from(bl: &Value, long: bool) -> String {
     } else {
         name.unwrap_or("Found by a terminal").to_string()
     };
-    [who, fmt::hhmm(s(bl, "created_at"))].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+    [who, fmt::hhmm(s(bl, "created_at"))]
+        .into_iter()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// JS `String.length` (UTF-16 code units).
@@ -224,7 +262,11 @@ fn js_len(s: &str) -> usize {
 
 /// `countedTasks(g)`: the goal's own tasks, then the shared ones from other goals that also count toward it.
 fn counted(g: &Value) -> Vec<Value> {
-    arr(g, "tasks").iter().chain(arr(g, "shared")).cloned().collect()
+    arr(g, "tasks")
+        .iter()
+        .chain(arr(g, "shared"))
+        .cloned()
+        .collect()
 }
 
 /// `goalState(countedTasks(g), g)`: the goal's state label and its chip color.
@@ -236,12 +278,22 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
             return ("Waiting on you".into(), "warn");
         }
         if !open.is_empty() {
-            return (if open.len() > 1 { format!("{} PRs awaiting merge", open.len()) } else { "Awaiting merge".into() }, "accent");
+            return (
+                if open.len() > 1 {
+                    format!("{} PRs awaiting merge", open.len())
+                } else {
+                    "Awaiting merge".into()
+                },
+                "accent",
+            );
         }
         // The Python board's "Waiting on N bits": a backend flag not made yet holds back a finished goal.
         let bits = i(g, "bits_waiting");
         if bits > 0 {
-            return (format!("Waiting on {}", fmt::plural(bits, "bit", "bits")), "warn");
+            return (
+                format!("Waiting on {}", fmt::plural(bits, "bit", "bits")),
+                "warn",
+            );
         }
         return ("Done".into(), "up");
     }
@@ -265,14 +317,25 @@ pub fn goal_state(g: &Value) -> (String, &'static str) {
     if tasks.iter().any(|t| s(t, "status") == "working") {
         return ("In progress".into(), "accent");
     }
-    let queued: Vec<&Value> = tasks.iter().filter(|t| s(t, "status") == "queued").collect();
+    let queued: Vec<&Value> = tasks
+        .iter()
+        .filter(|t| s(t, "status") == "queued")
+        .collect();
     if queued.iter().any(|t| b(t, "blocked")) {
         return ("Blocked".into(), "warn");
     }
     if !queued.is_empty() {
         return ("Queued".into(), "accent");
     }
-    (if tasks.is_empty() { "No tasks yet" } else { "Not started" }.into(), "queued")
+    (
+        if tasks.is_empty() {
+            "No tasks yet"
+        } else {
+            "Not started"
+        }
+        .into(),
+        "queued",
+    )
 }
 
 struct Counts {
@@ -298,14 +361,27 @@ fn counts(g: &Value) -> Counts {
 /// tasks (`ships_pr`): "1 of 3 PRs opened · 1 canceled", or "No PRs planned".
 pub fn pr_count(tasks: &[Value]) -> String {
     let prs: Vec<&Value> = tasks.iter().filter(|t| has_pr(t)).collect();
-    let merged = prs.iter().filter(|t| s(&t["pr"], "state").eq_ignore_ascii_case("merged")).count() as i64;
+    let merged = prs
+        .iter()
+        .filter(|t| s(&t["pr"], "state").eq_ignore_ascii_case("merged"))
+        .count() as i64;
     let n = prs.len() as i64;
     if tasks.iter().any(|t| t["ships_pr"].is_boolean()) {
-        let canceled = tasks.iter().filter(|t| fmt::opt_s(t, "no_pr").is_some()).count() as i64;
-        let planned = tasks.iter().filter(|t| t["ships_pr"] == true && fmt::opt_s(t, "no_pr").is_none()).count() as i64;
+        let canceled = tasks
+            .iter()
+            .filter(|t| fmt::opt_s(t, "no_pr").is_some())
+            .count() as i64;
+        let planned = tasks
+            .iter()
+            .filter(|t| t["ships_pr"] == true && fmt::opt_s(t, "no_pr").is_none())
+            .count() as i64;
         let planned = planned.max(n);
         if planned == 0 {
-            return if canceled > 0 { format!("No PRs planned · {canceled} canceled") } else { "No PRs planned".into() };
+            return if canceled > 0 {
+                format!("No PRs planned · {canceled} canceled")
+            } else {
+                "No PRs planned".into()
+            };
         }
         let mut out = format!("{n} of {} opened", fmt::plural(planned, "PR", "PRs"));
         if merged > 0 {
@@ -326,7 +402,10 @@ pub fn pr_count(tasks: &[Value]) -> String {
 }
 
 fn open_issue_count(g: &Value) -> i64 {
-    arr(g, "backlog").iter().filter(|x| fmt::opt_s(x, "state").unwrap_or("open") == "open").count() as i64
+    arr(g, "backlog")
+        .iter()
+        .filter(|x| fmt::opt_s(x, "state").unwrap_or("open") == "open")
+        .count() as i64
 }
 
 // ------------------------------------------------------------------ header
@@ -354,11 +433,24 @@ pub fn header_view(g: &Value, jira_on: bool) -> HeaderView {
     let open = open_issue_count(g);
     let prs = pr_count(arr(g, "tasks"));
     let epic = match fmt::opt_s(g, "epic_key") {
-        Some(key) => Some(format!("Jira epic {key}{}", fmt::opt_s(g, "epic_status").map(|x| format!(" · {x}")).unwrap_or_default())),
+        Some(key) => Some(format!(
+            "Jira epic {key}{}",
+            fmt::opt_s(g, "epic_status")
+                .map(|x| format!(" · {x}"))
+                .unwrap_or_default()
+        )),
         None if jira_on => Some("No Jira epic".into()),
         None => None,
     };
-    let epic_link = fmt::opt_s(g, "epic_key").and(fmt::opt_s(g, "epic_url")).map(|u| if u.starts_with("http://") || u.starts_with("https://") { u.to_string() } else { "#".into() });
+    let epic_link = fmt::opt_s(g, "epic_key")
+        .and(fmt::opt_s(g, "epic_url"))
+        .map(|u| {
+            if u.starts_with("http://") || u.starts_with("https://") {
+                u.to_string()
+            } else {
+                "#".into()
+            }
+        });
     HeaderView {
         pills: ["Goal".into(), state, fmt::ref_of(g, "G")],
         state_tone: tone,
@@ -372,9 +464,16 @@ pub fn header_view(g: &Value, jira_on: bool) -> HeaderView {
             c.done,
             c.n,
             c.active,
-            if prs.is_empty() { String::new() } else { format!(" · {prs}") }
+            if prs.is_empty() {
+                String::new()
+            } else {
+                format!(" · {prs}")
+            }
         ),
-        tabs: tab_items(g).into_iter().map(|(label, n, _)| format!("{label} {n}")).collect(),
+        tabs: tab_items(g)
+            .into_iter()
+            .map(|(label, n, _)| format!("{label} {n}"))
+            .collect(),
         backlog_hot: open > 0,
     }
 }
@@ -388,7 +487,11 @@ pub fn tab_items(g: &Value) -> Vec<(&'static str, i64, bool)> {
     let qa = arr(g, "qa");
     if !qa.is_empty() {
         let asks = qa.iter().filter(|x| b(x, "waiting")).count() as i64;
-        items.push(("QA", if asks > 0 { asks } else { qa.len() as i64 }, asks > 0));
+        items.push((
+            "QA",
+            if asks > 0 { asks } else { qa.len() as i64 },
+            asks > 0,
+        ));
     }
     items
 }
@@ -419,7 +522,10 @@ fn qa_state(c: &Value) -> (String, &'static str) {
         return ("Waiting on you".into(), "needs");
     }
     if let Some(t) = fmt::opt_s(c, "task") {
-        return (format!("Now {t}"), status_key(&json!({"status": c["task_status"]})));
+        return (
+            format!("Now {t}"),
+            status_key(&json!({"status": c["task_status"]})),
+        );
     }
     if c["verdict"].is_null() {
         return ("Being read".into(), "queued");
@@ -430,7 +536,9 @@ fn qa_state(c: &Value) -> (String, &'static str) {
 /// `qaItem(c)`.
 pub fn qa_item(c: &Value) -> QaItem {
     let (chip, key) = qa_state(c);
-    let ask = fmt::opt_s(c, "ask").or(fmt::opt_s(c, "title")).unwrap_or("Read the comment on the ticket");
+    let ask = fmt::opt_s(c, "ask")
+        .or(fmt::opt_s(c, "title"))
+        .unwrap_or("Read the comment on the ticket");
     QaItem {
         r: s(c, "ref").to_string(),
         wait: b(c, "waiting"),
@@ -443,9 +551,15 @@ pub fn qa_item(c: &Value) -> QaItem {
         at: fmt::hhmm(s(c, "created_at")),
         source_task: fmt::opt_s(c, "source_task").map(str::to_string),
         task: fmt::opt_s(c, "task").map(|t| {
-            (t.to_string(), status_label(status_key(&json!({"status": c["task_status"]}))).to_lowercase(), fmt::opt_s(c, "task_title").map(str::to_string))
+            (
+                t.to_string(),
+                status_label(status_key(&json!({"status": c["task_status"]}))).to_lowercase(),
+                fmt::opt_s(c, "task_title").map(str::to_string),
+            )
         }),
-        by: fmt::opt_s(c, "handled_by").filter(|_| fmt::opt_s(c, "task").is_none() && fmt::opt_s(c, "handled_at").is_some()).map(str::to_string),
+        by: fmt::opt_s(c, "handled_by")
+            .filter(|_| fmt::opt_s(c, "task").is_none() && fmt::opt_s(c, "handled_at").is_some())
+            .map(str::to_string),
         text: fmt::opt_s(c, "text").map(str::to_string),
     }
 }
@@ -453,8 +567,15 @@ pub fn qa_item(c: &Value) -> QaItem {
 /// `goalQa(qa)`: "Waiting on you" first, then "Handled".
 pub fn qa_groups(qa: &[Value]) -> Vec<(&'static str, Vec<QaItem>)> {
     let waiting: Vec<QaItem> = qa.iter().filter(|c| b(c, "waiting")).map(qa_item).collect();
-    let rest: Vec<QaItem> = qa.iter().filter(|c| !b(c, "waiting")).map(qa_item).collect();
-    [("Waiting on you", waiting), ("Handled", rest)].into_iter().filter(|(_, v)| !v.is_empty()).collect()
+    let rest: Vec<QaItem> = qa
+        .iter()
+        .filter(|c| !b(c, "waiting"))
+        .map(qa_item)
+        .collect();
+    [("Waiting on you", waiting), ("Handled", rest)]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .collect()
 }
 
 // ------------------------------------------------------------------ run buttons
@@ -465,7 +586,9 @@ fn after_hours(hours: &Value) -> bool {
 
 /// `opensAt()`: when work hours open next, ("tomorrow", "6am"); ("later", "") when unknown.
 pub fn opens_at(hours: &Value) -> (String, String) {
-    let Some(t) = fmt::parse(s(hours, "next_open")) else { return ("later".into(), String::new()) };
+    let Some(t) = fmt::parse(s(hours, "next_open")) else {
+        return ("later".into(), String::new());
+    };
     let l = fmt::local(t);
     let today = fmt::local(fmt::now()).date_naive();
     let day = if l.date_naive() == today {
@@ -493,19 +616,39 @@ pub struct RunButton {
 pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
     let tasks = arr(g, "tasks");
     let planned = tasks.iter().filter(|x| s(x, "status") == "planned").count() as i64;
-    let going = tasks.iter().filter(|x| matches!(s(x, "status"), "queued" | "working" | "needs")).count() as i64;
-    let unstarted = tasks.iter().any(|x| s(x, "status") == "needs" && s(x, "needs_reason") == "start_failed");
+    let going = tasks
+        .iter()
+        .filter(|x| matches!(s(x, "status"), "queued" | "working" | "needs"))
+        .count() as i64;
+    let unstarted = tasks
+        .iter()
+        .any(|x| s(x, "status") == "needs" && s(x, "needs_reason") == "start_failed");
     let mut out = Vec::new();
     let mut split = false;
     if planned > 0 && after_hours(hours) {
         split = true;
         let (day, at) = opens_at(hours);
         let later = format!("Start {day}");
-        let more = if going > 0 { fmt::plural(planned, "more task", "more tasks") } else { String::new() };
+        let more = if going > 0 {
+            fmt::plural(planned, "more task", "more tasks")
+        } else {
+            String::new()
+        };
         out.push(RunButton {
             act: "goal-run",
-            label: if more.is_empty() { later } else { format!("{later}: {more}") },
-            title: format!("Queue the planned tasks now; they start when work hours open{}", if at.is_empty() { String::new() } else { format!(" ({day} at {at})") }),
+            label: if more.is_empty() {
+                later
+            } else {
+                format!("{later}: {more}")
+            },
+            title: format!(
+                "Queue the planned tasks now; they start when work hours open{}",
+                if at.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({day} at {at})")
+                }
+            ),
             busy_label: "Queuing…",
         });
     } else if planned > 0 || (going > 0 && (b(g, "paused") || unstarted)) {
@@ -517,16 +660,29 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
             "Start".to_string()
         };
         let title = if planned > 0 {
-            format!("Queue the {}; the goal’s rules decide what runs when", fmt::plural(planned, "planned task", "planned tasks"))
+            format!(
+                "Queue the {}; the goal’s rules decide what runs when",
+                fmt::plural(planned, "planned task", "planned tasks")
+            )
         } else if unstarted {
             "Queue the tasks that couldn’t start again".into()
         } else {
             "Let new tasks start again".into()
         };
-        out.push(RunButton { act: "goal-run", label, title, busy_label: "Starting…" });
+        out.push(RunButton {
+            act: "goal-run",
+            label,
+            title,
+            busy_label: "Starting…",
+        });
     }
     if going > 0 && !b(g, "paused") && !b(g, "deprioritized") && !unstarted {
-        out.push(RunButton { act: "goal-pause", label: "Pause".into(), title: "Nothing new starts; running tasks carry on".into(), busy_label: "Sending…" });
+        out.push(RunButton {
+            act: "goal-pause",
+            label: "Pause".into(),
+            title: "Nothing new starts; running tasks carry on".into(),
+            busy_label: "Sending…",
+        });
     }
     let done = !tasks.is_empty() && tasks.iter().all(|x| s(x, "status") == "done");
     out.push(RunButton {
@@ -536,7 +692,12 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
         busy_label: "Opening…",
     });
     if !b(g, "deprioritized") && !done {
-        out.push(RunButton { act: "goal-deprio-ask", label: "Deprioritize".into(), title: "Take it off the board’s goal list; nothing new starts".into(), busy_label: "Sending…" });
+        out.push(RunButton {
+            act: "goal-deprio-ask",
+            label: "Deprioritize".into(),
+            title: "Take it off the board’s goal list; nothing new starts".into(),
+            busy_label: "Sending…",
+        });
     }
     (split, out)
 }
@@ -545,8 +706,23 @@ pub fn run_buttons_view(g: &Value, hours: &Value) -> (bool, Vec<RunButton>) {
 pub fn start_menu_view(hours: &Value) -> Vec<(&'static str, String, String)> {
     let (day, at) = opens_at(hours);
     vec![
-        ("goal-run", format!("Start {day}"), format!("Queued now, starts when work hours open{}", if at.is_empty() { String::new() } else { format!(" at {at}") })),
-        ("goal-run-now", "Start now".into(), "Runs outside work hours until they open".into()),
+        (
+            "goal-run",
+            format!("Start {day}"),
+            format!(
+                "Queued now, starts when work hours open{}",
+                if at.is_empty() {
+                    String::new()
+                } else {
+                    format!(" at {at}")
+                }
+            ),
+        ),
+        (
+            "goal-run-now",
+            "Start now".into(),
+            "Runs outside work hours until they open".into(),
+        ),
     ]
 }
 
@@ -557,8 +733,15 @@ pub fn run_toast(v: &Value, hours: &Value) -> String {
         "Going again".into()
     } else if after_hours(hours) {
         let (day, at) = opens_at(hours);
-        let when = [day, at].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" at ");
-        format!("{} queued. They start {when}.", fmt::plural(n, "task", "tasks"))
+        let when = [day, at]
+            .into_iter()
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join(" at ");
+        format!(
+            "{} queued. They start {when}.",
+            fmt::plural(n, "task", "tasks")
+        )
     } else {
         format!("Started: {} queued", fmt::plural(n, "task", "tasks"))
     }
@@ -566,7 +749,10 @@ pub fn run_toast(v: &Value, hours: &Value) -> String {
 
 /// The toast after `goal-run-now`.
 pub fn run_now_toast(v: &Value) -> String {
-    format!("Started now: {} queued. The goal runs until work hours open.", fmt::plural(i(v, "queued_now"), "task", "tasks"))
+    format!(
+        "Started now: {} queued. The goal runs until work hours open.",
+        fmt::plural(i(v, "queued_now"), "task", "tasks")
+    )
 }
 
 // ------------------------------------------------------------------ tasks
@@ -576,7 +762,9 @@ pub struct TaskRow {
     pub r: String,
     pub n: usize,
     pub key: &'static str,
-    pub chip: &'static str,
+    pub chip: String,
+    /// The chip's color (`status_tone`, or the PR stage's while it waits on a merge).
+    pub tone: &'static str,
     pub title: String,
     pub meta: String,
     pub jira_tip: Option<String>,
@@ -592,24 +780,60 @@ pub struct TaskRow {
 
 /// `goalTaskMeta(t, i, tasks, g)`.
 pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
-    let prev_open = || (0..idx).rev().find(|&j| s(&tasks[j], "status") != "done").map(|j| j + 1).unwrap_or(0);
+    let prev_open = || {
+        (0..idx)
+            .rev()
+            .find(|&j| s(&tasks[j], "status") != "done")
+            .map(|j| j + 1)
+            .unwrap_or(0)
+    };
     let who = fmt::opt_s(t, "who").map(str::to_string);
-    let key = t.get("jira").and_then(|j| fmt::opt_s(j, "key")).map(str::to_string);
+    let key = t
+        .get("jira")
+        .and_then(|j| fmt::opt_s(j, "key"))
+        .map(str::to_string);
     let high = (s(t, "priority") == "high").then(|| "High".to_string());
     let after = |p: usize| (p > 0).then(|| format!("after task {p}"));
     let in_order = is_truthy(&g["run_in_order"]);
     let parts: Vec<Option<String>> = match s(t, "status") {
-        "done" => vec![who.clone(), Some(format!("{} {}", if b(t, "failed") { "stopped" } else { "finished" }, fmt::ago(s(t, "when")))), key],
+        "done" => vec![
+            who.clone(),
+            Some(format!(
+                "{} {}",
+                if b(t, "failed") {
+                    "stopped"
+                } else {
+                    "finished"
+                },
+                fmt::ago(s(t, "when"))
+            )),
+            key,
+        ],
         _ if b(t, "lost") => vec![Some("Terminal lost".into()), who.clone()],
         "working" | "needs" => vec![
             who.clone(),
             Some(fmt::running_for(t)),
-            Some(format!("{} {}", if fmt::opt_s(t, "question").is_some() { "asked" } else { "updated" }, fmt::ago(s(t, "when")))),
+            Some(format!(
+                "{} {}",
+                if fmt::opt_s(t, "question").is_some() {
+                    "asked"
+                } else {
+                    "updated"
+                },
+                fmt::ago(s(t, "when"))
+            )),
             key,
         ],
         "queued" if b(t, "starting") => vec![high, Some("starting".into()), key],
-        "queued" if fmt::opt_s(t, "waiting").is_some() => vec![high, fmt::opt_s(t, "waiting").map(str::to_string), key],
-        "queued" => vec![high, after(if in_order { prev_open() } else { 0 }).or(Some("starts when a terminal is free".into())), key],
+        "queued" if fmt::opt_s(t, "waiting").is_some() => {
+            vec![high, fmt::opt_s(t, "waiting").map(str::to_string), key]
+        }
+        "queued" => vec![
+            high,
+            after(if in_order { prev_open() } else { 0 })
+                .or(Some("starts when a terminal is free".into())),
+            key,
+        ],
         _ => vec![after(if in_order { prev_open() } else { 0 })],
     };
     let mut parts = parts;
@@ -624,8 +848,17 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
         parts.push(Some(format!("also for {}", also.join(", "))));
     }
     let waiting = fmt::opt_s(t, "waiting").is_some();
-    parts.extend(waves::plan_facts(t).into_iter().filter(|(_, refs)| !(*refs && waiting)).map(|(text, _)| Some(text)));
-    let mut list: Vec<String> = parts.into_iter().flatten().filter(|x| !x.is_empty()).collect();
+    parts.extend(
+        waves::plan_facts(t)
+            .into_iter()
+            .filter(|(_, refs)| !(*refs && waiting))
+            .map(|(text, _)| Some(text)),
+    );
+    let mut list: Vec<String> = parts
+        .into_iter()
+        .flatten()
+        .filter(|x| !x.is_empty())
+        .collect();
     if let Some(first) = list.first_mut() {
         if Some(first.as_str()) != who.as_deref() {
             *first = fmt::cap(first);
@@ -647,12 +880,17 @@ pub enum MetaBit {
 
 /// The meta line in pieces, its board refs and ticket keys apart, as the task panel links them.
 pub fn meta_bits(meta: &str) -> Vec<MetaBit> {
-    let is_ref = |w: &str| w.len() > 1 && (w.starts_with('T') || w.starts_with('G')) && w[1..].chars().all(|c| c.is_ascii_digit());
+    let is_ref = |w: &str| {
+        w.len() > 1
+            && (w.starts_with('T') || w.starts_with('G'))
+            && w[1..].chars().all(|c| c.is_ascii_digit())
+    };
     let is_ticket = |w: &str| {
         w.split_once('-').is_some_and(|(k, n)| {
             k.len() >= 2
                 && k.starts_with(|c: char| c.is_ascii_uppercase())
-                && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && k.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
                 && !n.is_empty()
                 && n.chars().all(|c| c.is_ascii_digit())
         })
@@ -703,13 +941,42 @@ pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskR
     } else {
         status_key(t)
     };
-    let jira_tip = t.get("jira").and_then(|j| fmt::opt_s(j, "key").map(|k| format!("{k}{}", fmt::opt_s(j, "status").map(|x| format!(" · {x}")).unwrap_or_default())));
+    // Its PR's stage names where the merge stands ("Checks running", "Ready to merge").
+    let (chip, tone) = match t["pr"]
+        .get("stage")
+        .filter(|st| key == "merge" && st.is_object())
+    {
+        Some(st) => (s(st, "label").to_string(), stage_tone(s(st, "phase"))),
+        None => (status_label(key).to_string(), status_tone(key)),
+    };
+    let jira_tip = t.get("jira").and_then(|j| {
+        fmt::opt_s(j, "key").map(|k| {
+            format!(
+                "{k}{}",
+                fmt::opt_s(j, "status")
+                    .map(|x| format!(" · {x}"))
+                    .unwrap_or_default()
+            )
+        })
+    });
     let (pr_text, pr_tip, pr_phase) = if has_pr(t) {
         let pr = &t["pr"];
         let stage = pr.get("stage").filter(|v| v.is_object());
         let num = num_text(&pr["num"]);
-        let tip = format!("PR #{num} · {}checks {}", stage.map(|st| format!("{} · ", s(st, "label"))).unwrap_or_default(), checks_label(pr).to_lowercase());
-        (Some(format!("#{num}")), Some(tip), stage.map(|st| s(st, "phase").to_string()).unwrap_or_default())
+        let tip = format!(
+            "PR #{num} · {}checks {}",
+            stage
+                .map(|st| format!("{} · ", s(st, "label")))
+                .unwrap_or_default(),
+            checks_label(pr).to_lowercase()
+        );
+        (
+            Some(format!("#{num}")),
+            Some(tip),
+            stage
+                .map(|st| s(st, "phase").to_string())
+                .unwrap_or_default(),
+        )
     } else {
         (None, None, String::new())
     };
@@ -717,7 +984,8 @@ pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskR
         r: fmt::ref_of(t, "T"),
         n: idx + 1,
         key,
-        chip: status_label(key),
+        chip,
+        tone,
         title: s(t, "title").to_string(),
         meta: task_meta(t, idx, tasks, g),
         jira_tip,
@@ -725,7 +993,10 @@ pub fn task_row_view(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> TaskR
         pr_tip,
         pr_phase,
         planned: s(t, "status") == "planned",
-        pr_planned: !has_pr(t) && t["ships_pr"] == true && fmt::opt_s(t, "no_pr").is_none() && s(t, "status") != "done",
+        pr_planned: !has_pr(t)
+            && t["ships_pr"] == true
+            && fmt::opt_s(t, "no_pr").is_none()
+            && s(t, "status") != "done",
         tip: None,
     }
 }
@@ -740,7 +1011,10 @@ pub fn shared_row_view(t: &Value) -> TaskRow {
         Some(g) => format!("From {} · {}", s(g, "ref"), s(g, "name")),
         None => "From another goal".into(),
     };
-    row.tip = Some(format!("Counts toward this goal; {} runs it", home.map(|g| s(g, "ref")).unwrap_or("its own goal")));
+    row.tip = Some(format!(
+        "Counts toward this goal; {} runs it",
+        home.map(|g| s(g, "ref")).unwrap_or("its own goal")
+    ));
     row
 }
 
@@ -762,10 +1036,19 @@ pub fn how_runs_view(g: &Value) -> HowRuns {
         _ => 0.,
     };
     let max = if n == 0. || n.is_nan() { 2. } else { n };
-    let checked = |k: &str| !matches!(g.get(k), Some(Value::Bool(false))) && !matches!(g.get(k), Some(Value::Number(x)) if x.as_f64() == Some(0.));
-    let options: Vec<(i64, String)> = MAX_TERMINALS.iter().map(|&k| (k, fmt::plural(k, "terminal", "terminals"))).collect();
+    let checked = |k: &str| {
+        !matches!(g.get(k), Some(Value::Bool(false)))
+            && !matches!(g.get(k), Some(Value::Number(x)) if x.as_f64() == Some(0.))
+    };
+    let options: Vec<(i64, String)> = MAX_TERMINALS
+        .iter()
+        .map(|&k| (k, fmt::plural(k, "terminal", "terminals")))
+        .collect();
     HowRuns {
-        selected: options.iter().find(|(k, _)| *k as f64 == max).map(|(_, l)| l.clone()),
+        selected: options
+            .iter()
+            .find(|(k, _)| *k as f64 == max)
+            .map(|(_, l)| l.clone()),
         options,
         run_in_order: checked("run_in_order"),
         auto_close: checked("auto_close"),
@@ -775,9 +1058,17 @@ pub fn how_runs_view(g: &Value) -> HowRuns {
 /// `gateBanner(g)`: (label, text, (act, button)).
 pub fn gate_view(g: &Value) -> Option<(&'static str, &'static str, (&'static str, &'static str))> {
     if b(g, "deprioritized") {
-        Some(("Deprioritized", "It’s off the board’s goal list and nothing new starts. Tasks already running carry on.", ("goal-deprio", "Bring it back")))
+        Some((
+            "Deprioritized",
+            "It’s off the board’s goal list and nothing new starts. Tasks already running carry on.",
+            ("goal-deprio", "Bring it back"),
+        ))
     } else if b(g, "paused") {
-        Some(("Paused", "Nothing new starts in this goal. Tasks already running carry on.", ("goal-pause", "Resume the goal")))
+        Some((
+            "Paused",
+            "Nothing new starts in this goal. Tasks already running carry on.",
+            ("goal-pause", "Resume the goal"),
+        ))
     } else {
         None
     }
@@ -786,20 +1077,37 @@ pub fn gate_view(g: &Value) -> Option<(&'static str, &'static str, (&'static str
 /// `gdeprioHtml`: title, the two paragraphs, the buttons.
 pub fn deprio_dialog_view(g: &Value) -> (&'static str, [String; 2], [&'static str; 2]) {
     let tasks = arr(g, "tasks");
-    let running = tasks.iter().filter(|x| matches!(s(x, "status"), "working" | "needs")).count() as i64;
+    let running = tasks
+        .iter()
+        .filter(|x| matches!(s(x, "status"), "working" | "needs"))
+        .count() as i64;
     let queued = tasks.iter().filter(|x| s(x, "status") == "queued").count() as i64;
     let mut after = Vec::new();
     if running > 0 {
-        after.push(format!("{} already running carr{} on.", fmt::plural(running, "task", "tasks"), if running == 1 { "ies" } else { "y" }));
+        after.push(format!(
+            "{} already running carr{} on.",
+            fmt::plural(running, "task", "tasks"),
+            if running == 1 { "ies" } else { "y" }
+        ));
     }
     if queued > 0 {
-        after.push(format!("{} won’t start.", fmt::plural(queued, "queued task", "queued tasks")));
+        after.push(format!(
+            "{} won’t start.",
+            fmt::plural(queued, "queued task", "queued tasks")
+        ));
     }
-    let name = fmt::opt_s(g, "name").map(str::to_string).unwrap_or_else(|| fmt::ref_of(g, "G"));
+    let name = fmt::opt_s(g, "name")
+        .map(str::to_string)
+        .unwrap_or_else(|| fmt::ref_of(g, "G"));
     (
         "Deprioritize this goal?",
         [
-            format!("{name} goes off the board’s goal list and nothing new starts. {}", after.join(" ")).trim_end().to_string(),
+            format!(
+                "{name} goes off the board’s goal list and nothing new starts. {}",
+                after.join(" ")
+            )
+            .trim_end()
+            .to_string(),
             "You can bring it back from the Deprioritized list under Goals.".into(),
         ],
         ["Cancel", "Deprioritize"],
@@ -813,7 +1121,13 @@ fn note_from(n: &Value) -> String {
     let at = fmt::opt_s(n, "at").map(fmt::hhmm).unwrap_or_default();
     match fmt::opt_s(n, "source") {
         None => at,
-        Some("you") => if at.is_empty() { "you".into() } else { format!("you, {at}") },
+        Some("you") => {
+            if at.is_empty() {
+                "you".into()
+            } else {
+                format!("you, {at}")
+            }
+        }
         Some(src) => src.to_string(),
     }
 }
@@ -842,27 +1156,51 @@ pub fn notes_view(notes: &[Value]) -> Vec<(&'static str, Vec<NoteItem>)> {
         Some(v) => v.to_string(),
     };
     let mut list: Vec<&Value> = notes.iter().collect();
-    list.sort_by(|a, c| b(c, "pinned").cmp(&b(a, "pinned")).then_with(|| at_key(a).cmp(&at_key(c))));
-    let groups: Vec<(&'static str, Vec<NoteItem>)> = [("finding", "Findings"), ("decision", "Decisions"), ("reference", "References")]
-        .into_iter()
-        .map(|(k, title)| {
-            let items = list
-                .iter()
-                .filter(|n| {
-                    let nk = s(n, "kind");
-                    (if nk == "decision" || nk == "reference" { nk } else { "finding" }) == k
-                })
-                .map(|n| {
-                    let t = s(n, "text").trim().to_string();
-                    NoteItem { note: (*n).clone(), text: t.split_whitespace().collect::<Vec<_>>().join(" "), from: note_from(n), long: note_long(&t), pinned: b(n, "pinned") }
-                })
-                .collect::<Vec<_>>();
-            (title, items)
-        })
-        .filter(|(_, l)| !l.is_empty())
-        .collect();
+    list.sort_by(|a, c| {
+        b(c, "pinned")
+            .cmp(&b(a, "pinned"))
+            .then_with(|| at_key(a).cmp(&at_key(c)))
+    });
+    let groups: Vec<(&'static str, Vec<NoteItem>)> = [
+        ("finding", "Findings"),
+        ("decision", "Decisions"),
+        ("reference", "References"),
+    ]
+    .into_iter()
+    .map(|(k, title)| {
+        let items = list
+            .iter()
+            .filter(|n| {
+                let nk = s(n, "kind");
+                (if nk == "decision" || nk == "reference" {
+                    nk
+                } else {
+                    "finding"
+                }) == k
+            })
+            .map(|n| {
+                let t = s(n, "text").trim().to_string();
+                NoteItem {
+                    note: (*n).clone(),
+                    text: t.split_whitespace().collect::<Vec<_>>().join(" "),
+                    from: note_from(n),
+                    long: note_long(&t),
+                    pinned: b(n, "pinned"),
+                }
+            })
+            .collect::<Vec<_>>();
+        (title, items)
+    })
+    .filter(|(_, l)| !l.is_empty())
+    .collect();
     if groups.is_empty() {
-        let empty = NoteItem { note: Value::Null, text: "Notes from tasks and from you collect here.".into(), from: String::new(), long: false, pinned: false };
+        let empty = NoteItem {
+            note: Value::Null,
+            text: "Notes from tasks and from you collect here.".into(),
+            from: String::new(),
+            long: false,
+            pinned: false,
+        };
         return vec![("Nothing yet", vec![empty])];
     }
     groups
@@ -875,7 +1213,11 @@ pub fn note_dialog_title(n: &Value) -> String {
         "reference" => "Reference",
         _ => "Finding",
     };
-    [kind.to_string(), note_from(n)].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+    [kind.to_string(), note_from(n)]
+        .into_iter()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -897,8 +1239,10 @@ fn is_word(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-const PATH_EXTS: [&str; 22] =
-    ["dart", "kt", "kts", "java", "swift", "py", "js", "mjs", "ts", "tsx", "jsx", "json", "yml", "yaml", "md", "sh", "gradle", "xml", "html", "css", "toml", "lock"];
+const PATH_EXTS: [&str; 22] = [
+    "dart", "kt", "kts", "java", "swift", "py", "js", "mjs", "ts", "tsx", "jsx", "json", "yml",
+    "yaml", "md", "sh", "gradle", "xml", "html", "css", "toml", "lock",
+];
 
 /// `INLINE` at byte `p` of `s` (chars `cs`): (end, kind 0 url / 1 tick / 2 path), first alternative wins.
 fn inline_at(cs: &[(usize, char)], k: usize) -> Option<(usize, u8)> {
@@ -1071,15 +1415,22 @@ pub fn note_blocks(text: &str) -> Vec<NoteBlock> {
             return;
         }
         match kind {
-            Some(K::Li) => out.push(NoteBlock::Ul(buf.iter().map(|l| inline_segments(l)).collect())),
+            Some(K::Li) => out.push(NoteBlock::Ul(
+                buf.iter().map(|l| inline_segments(l)).collect(),
+            )),
             Some(K::Code) => out.push(NoteBlock::Pre(buf.join("\n"))),
-            _ => out.push(NoteBlock::P(buf.iter().map(|l| inline_segments(l)).collect())),
+            _ => out.push(NoteBlock::P(
+                buf.iter().map(|l| inline_segments(l)).collect(),
+            )),
         }
         buf.clear();
     };
     let bullet = |l: &str| {
         let t = l.trim_start();
-        ["- ", "* ", "• "].iter().find_map(|m| t.strip_prefix(m)).map(str::to_string)
+        ["- ", "* ", "• "]
+            .iter()
+            .find_map(|m| t.strip_prefix(m))
+            .map(str::to_string)
     };
     for raw in text.split('\n') {
         let line = raw.trim_end();
@@ -1103,7 +1454,12 @@ pub fn note_blocks(text: &str) -> Vec<NoteBlock> {
         kind = k;
         match k {
             Some(K::Li) => buf.push(bullet(line).unwrap_or_default()),
-            Some(K::Code) => buf.push(line.strip_prefix("  ").or_else(|| line.strip_prefix('\t')).unwrap_or(line).to_string()),
+            Some(K::Code) => buf.push(
+                line.strip_prefix("  ")
+                    .or_else(|| line.strip_prefix('\t'))
+                    .unwrap_or(line)
+                    .to_string(),
+            ),
             Some(K::P) => buf.push(line.trim().to_string()),
             None => {}
         }
@@ -1116,7 +1472,11 @@ pub fn note_blocks(text: &str) -> Vec<NoteBlock> {
 
 fn att_kind(a: &Value) -> &'static str {
     let k = s(a, "kind");
-    ATT_KINDS.iter().find(|(id, _)| *id == k).map(|(id, _)| *id).unwrap_or("other")
+    ATT_KINDS
+        .iter()
+        .find(|(id, _)| *id == k)
+        .map(|(id, _)| *id)
+        .unwrap_or("other")
 }
 
 fn att_web(a: &Value) -> bool {
@@ -1145,12 +1505,43 @@ pub fn attachments_view(list: &[Value], gr: &str) -> Vec<AttItem> {
     list.iter()
         .map(|a| {
             let kind = att_kind(a);
-            let label = ATT_KINDS.iter().find(|(id, _)| *id == kind).map(|(_, l)| *l).unwrap_or("Link");
-            let src = fmt::opt_s(a, "task").or(fmt::opt_s(a, "goal")).filter(|x| *x != gr).map(str::to_string);
-            let meta = [Some(label.to_string()), src.clone(), fmt::opt_s(a, "at").map(fmt::ago)].into_iter().flatten().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+            let label = ATT_KINDS
+                .iter()
+                .find(|(id, _)| *id == kind)
+                .map(|(_, l)| *l)
+                .unwrap_or("Link");
+            let src = fmt::opt_s(a, "task")
+                .or(fmt::opt_s(a, "goal"))
+                .filter(|x| *x != gr)
+                .map(str::to_string);
+            let meta = [
+                Some(label.to_string()),
+                src.clone(),
+                fmt::opt_s(a, "at").map(fmt::ago),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
             let linked = att_has_href(a);
-            let tip = if linked { if att_web(a) { s(a, "title").to_string() } else { format!("{}\n{}", s(a, "title"), s(a, "url")) } } else { s(a, "url").to_string() };
-            AttItem { id: i(a, "id"), name: s(a, "title").to_string(), linked, meta, tip, src }
+            let tip = if linked {
+                if att_web(a) {
+                    s(a, "title").to_string()
+                } else {
+                    format!("{}\n{}", s(a, "title"), s(a, "url"))
+                }
+            } else {
+                s(a, "url").to_string()
+            };
+            AttItem {
+                id: i(a, "id"),
+                name: s(a, "title").to_string(),
+                linked,
+                meta,
+                tip,
+                src,
+            }
         })
         .collect()
 }
@@ -1193,7 +1584,12 @@ pub struct BacklogView {
 }
 
 /// `goalBacklogRows` (`withKept` + the won't-do filter).
-fn backlog_rows(g: &Value, kept: &HashMap<String, Value>, order: &[String], show_dropped: bool) -> Vec<Value> {
+fn backlog_rows(
+    g: &Value,
+    kept: &HashMap<String, Value>,
+    order: &[String],
+    show_dropped: bool,
+) -> Vec<Value> {
     let mut rows: Vec<Value> = arr(g, "backlog").to_vec();
     let mut have: HashSet<String> = rows.iter().map(|x| fmt::ref_of(x, "B")).collect();
     for (ix, r) in order.iter().enumerate() {
@@ -1204,28 +1600,54 @@ fn backlog_rows(g: &Value, kept: &HashMap<String, Value>, order: &[String], show
             }
         }
     }
-    rows.into_iter().filter(|x| show_dropped || s(x, "state") != "drop" || kept.contains_key(&fmt::ref_of(x, "B"))).collect()
+    rows.into_iter()
+        .filter(|x| {
+            show_dropped || s(x, "state") != "drop" || kept.contains_key(&fmt::ref_of(x, "B"))
+        })
+        .collect()
 }
 
 /// `goalIssueState(b, g)`.
 fn goal_issue_state(bl: &Value, g: &Value) -> Option<String> {
     if s(bl, "state") == "task" {
         let tasks = arr(g, "tasks");
-        if let Some(ix) = tasks.iter().position(|t| !bl["task_id"].is_null() && t["id"] == bl["task_id"]) {
-            return Some(format!("Now task {} · {}", ix + 1, status_label(status_key(&tasks[ix])).to_lowercase()));
+        if let Some(ix) = tasks
+            .iter()
+            .position(|t| !bl["task_id"].is_null() && t["id"] == bl["task_id"])
+        {
+            return Some(format!(
+                "Now task {} · {}",
+                ix + 1,
+                status_label(status_key(&tasks[ix])).to_lowercase()
+            ));
         }
     }
     issue_state_text(bl)
 }
 
 /// `goalBacklog(g)` + `bulkBar`.
-pub fn backlog_view(g: &Value, sel: &[String], show_dropped: bool, kept: &HashMap<String, Value>, order: &[String], jira: bool, bulk_busy: bool) -> BacklogView {
+pub fn backlog_view(
+    g: &Value,
+    sel: &[String],
+    show_dropped: bool,
+    kept: &HashMap<String, Value>,
+    order: &[String],
+    jira: bool,
+    bulk_busy: bool,
+) -> BacklogView {
     let rows = backlog_rows(g, kept, order, show_dropped);
-    let pickable: Vec<String> = rows.iter().filter(|x| fmt::opt_s(x, "state").unwrap_or("open") == "open").map(|x| fmt::ref_of(x, "B")).collect();
+    let pickable: Vec<String> = rows
+        .iter()
+        .filter(|x| fmt::opt_s(x, "state").unwrap_or("open") == "open")
+        .map(|x| fmt::ref_of(x, "B"))
+        .collect();
     let n = sel.iter().filter(|r| pickable.contains(r)).count();
     let bar = (!pickable.is_empty() && !rows.is_empty()).then(|| {
         if n == 0 {
-            BulkBar { label: "Select all".into(), buttons: vec![] }
+            BulkBar {
+                label: "Select all".into(),
+                buttons: vec![],
+            }
         } else {
             let _ = bulk_busy;
             let mut buttons = vec!["Make tasks"];
@@ -1233,7 +1655,10 @@ pub fn backlog_view(g: &Value, sel: &[String], show_dropped: bool, kept: &HashMa
                 buttons.push("Create tickets");
             }
             buttons.extend(["Won’t do", "Clear"]);
-            BulkBar { label: format!("{n} selected"), buttons }
+            BulkBar {
+                label: format!("{n} selected"),
+                buttons,
+            }
         }
     });
     let view_rows = rows
@@ -1255,23 +1680,41 @@ pub fn backlog_view(g: &Value, sel: &[String], show_dropped: bool, kept: &HashMa
                 title: s(bl, "title").to_string(),
                 from: issue_from(bl, true),
                 actions,
-                state: if open { None } else { issue_state_text(bl).and(goal_issue_state(bl, g)) },
+                state: if open {
+                    None
+                } else {
+                    issue_state_text(bl).and(goal_issue_state(bl, g))
+                },
             }
         })
         .collect();
     let closed_n = match g.get("closed_count") {
         Some(Value::Number(x)) => x.as_i64().unwrap_or(0),
         Some(v) if !v.is_null() => i(g, "closed_count"),
-        _ => arr(g, "backlog").iter().filter(|x| s(x, "state") == "drop").count() as i64,
+        _ => arr(g, "backlog")
+            .iter()
+            .filter(|x| s(x, "state") == "drop")
+            .count() as i64,
     };
     let closed = if rows.is_empty() && closed_n == 0 {
-        Some(("Nothing in the backlog yet. Issues that terminals find will collect here.".to_string(), None))
+        Some((
+            "Nothing in the backlog yet. Issues that terminals find will collect here.".to_string(),
+            None,
+        ))
     } else if closed_n > 0 {
-        Some((format!("{closed_n} closed as won’t do · "), Some(if show_dropped { "Hide" } else { "Show" })))
+        Some((
+            format!("{closed_n} closed as won’t do · "),
+            Some(if show_dropped { "Hide" } else { "Show" }),
+        ))
     } else {
         None
     };
-    BacklogView { rows: view_rows, pickable, bar, closed }
+    BacklogView {
+        rows: view_rows,
+        pickable,
+        bar,
+        closed,
+    }
 }
 
 /// `BULK_DONE[action](n)`.
@@ -1286,7 +1729,14 @@ pub fn bulk_toast(action: &str, n: i64) -> String {
 // ------------------------------------------------------------------ actions (the web's run())
 
 /// What a request shows when it's done: a note in its group, else a toast.
-fn note(m: &mut MainWindow, grp: Option<&str>, text: String, err: bool, toast: bool, cx: &mut Context<MainWindow>) {
+fn note(
+    m: &mut MainWindow,
+    grp: Option<&str>,
+    text: String,
+    err: bool,
+    toast: bool,
+    cx: &mut Context<MainWindow>,
+) {
     if text.is_empty() {
         return;
     }
@@ -1342,56 +1792,130 @@ fn hours(m: &MainWindow) -> Value {
 pub fn run_goal(m: &mut MainWindow, gr: &str, now: bool, cx: &mut Context<MainWindow>) {
     m.menu = None;
     if now {
-        run(m, format!("goal-run-now::{gr}"), None, true, format!("goals/{gr}/run"), json!({"now": true}), cx, |_, v, _| run_now_toast(v));
+        run(
+            m,
+            format!("goal-run-now::{gr}"),
+            None,
+            true,
+            format!("goals/{gr}/run"),
+            json!({"now": true}),
+            cx,
+            |_, v, _| run_now_toast(v),
+        );
     } else {
-        run(m, format!("goal-run::{gr}"), None, true, format!("goals/{gr}/run"), json!({}), cx, |m, v, _| run_toast(v, &hours(m)));
+        run(
+            m,
+            format!("goal-run::{gr}"),
+            None,
+            true,
+            format!("goals/{gr}/run"),
+            json!({}),
+            cx,
+            |m, v, _| run_toast(v, &hours(m)),
+        );
     }
 }
 
 /// `goal-plan-edit`.
 pub fn plan_goal(m: &mut MainWindow, gr: &str, cx: &mut Context<MainWindow>) {
-    run(m, format!("goal-plan-edit::{gr}"), None, true, format!("goals/{gr}/plan"), json!({"mode": "edit"}), cx, |_, _, _| {
-        "Opening a Claude terminal in Midna. It starts in about half a minute.".into()
-    });
+    run(
+        m,
+        format!("goal-plan-edit::{gr}"),
+        None,
+        true,
+        format!("goals/{gr}/plan"),
+        json!({"mode": "edit"}),
+        cx,
+        |_, _, _| "Opening a Claude terminal in Midna. It starts in about half a minute.".into(),
+    );
 }
 
 /// `goal-pause` (`on`) from the run buttons, or Resume (`off`) from the gate banner.
 pub fn set_paused(m: &mut MainWindow, gr: &str, on: bool, cx: &mut Context<MainWindow>) {
     let grp = (!on).then(|| format!("ggate:{gr}"));
     let arg = if on { "on" } else { "off" };
-    run(m, format!("goal-pause:{arg}:{gr}"), grp, true, format!("goals/{gr}"), json!({"paused": on}), cx, move |_, _, _| {
-        if on { "Paused. Running tasks carry on.".into() } else { "Going again".into() }
-    });
+    run(
+        m,
+        format!("goal-pause:{arg}:{gr}"),
+        grp,
+        true,
+        format!("goals/{gr}"),
+        json!({"paused": on}),
+        cx,
+        move |_, _, _| {
+            if on {
+                "Paused. Running tasks carry on.".into()
+            } else {
+                "Going again".into()
+            }
+        },
+    );
 }
 
 /// `goal-deprio-yes` (the dialog) or "Bring it back" (`goal-deprio` off, the gate banner).
 pub fn set_deprioritized(m: &mut MainWindow, gr: &str, on: bool, cx: &mut Context<MainWindow>) {
     if on {
-        run(m, format!("goal-deprio-yes::{gr}"), None, true, format!("goals/{gr}"), json!({"deprioritized": true}), cx, |m, _, cx| {
-            close_dialog(m, cx);
-            "Deprioritized. Running tasks carry on.".into()
-        });
+        run(
+            m,
+            format!("goal-deprio-yes::{gr}"),
+            None,
+            true,
+            format!("goals/{gr}"),
+            json!({"deprioritized": true}),
+            cx,
+            |m, _, cx| {
+                close_dialog(m, cx);
+                "Deprioritized. Running tasks carry on.".into()
+            },
+        );
     } else {
-        run(m, format!("goal-deprio:off:{gr}"), Some(format!("ggate:{gr}")), true, format!("goals/{gr}"), json!({"deprioritized": false}), cx, |_, _, _| {
-            "Back on the board".into()
-        });
+        run(
+            m,
+            format!("goal-deprio:off:{gr}"),
+            Some(format!("ggate:{gr}")),
+            true,
+            format!("goals/{gr}"),
+            json!({"deprioritized": false}),
+            cx,
+            |_, _, _| "Back on the board".into(),
+        );
     }
 }
 
 /// `goal-set`: "How this goal runs" (saved at once; shown at once).
-pub fn set_run_option(m: &mut MainWindow, gr: &str, field: &'static str, v: Value, cx: &mut Context<MainWindow>) {
+pub fn set_run_option(
+    m: &mut MainWindow,
+    gr: &str,
+    field: &'static str,
+    v: Value,
+    cx: &mut Context<MainWindow>,
+) {
     if m.goal_page.busy.contains(&format!("goal-set::{gr}")) {
         return;
     }
     if let Some(goal) = m.data.goal.as_mut().filter(|g| fmt::ref_of(g, "G") == gr) {
         goal[field] = v.clone();
     }
-    run(m, format!("goal-set::{gr}"), Some(format!("gset:{gr}")), false, format!("goals/{gr}"), json!({ field: v }), cx, |_, _, _| "Saved".into());
+    run(
+        m,
+        format!("goal-set::{gr}"),
+        Some(format!("gset:{gr}")),
+        false,
+        format!("goals/{gr}"),
+        json!({ field: v }),
+        cx,
+        |_, _, _| "Saved".into(),
+    );
 }
 
 /// `keepIssue`: hold the row where it is, then refresh it from the board (`refreshKept`).
 fn keep_issue(m: &mut MainWindow, r: &str) {
-    if let Some(row) = m.data.goal.as_ref().and_then(|g| arr(g, "backlog").iter().find(|x| fmt::ref_of(x, "B") == r).cloned()) {
+    if let Some(row) = m.data.goal.as_ref().and_then(|g| {
+        arr(g, "backlog")
+            .iter()
+            .find(|x| fmt::ref_of(x, "B") == r)
+            .cloned()
+    }) {
         m.goal_page.kept.insert(r.to_string(), row);
     }
 }
@@ -1401,12 +1925,28 @@ fn refresh_kept(m: &mut MainWindow, refs: Vec<String>, cx: &mut Context<MainWind
     cx.spawn(async move |this, cx| {
         let got = cx
             .background_executor()
-            .spawn(async move { refs.into_iter().filter_map(|r| backend.get(&format!("backlog/{r}"), &[]).ok().map(|v| (r, v))).collect::<Vec<_>>() })
+            .spawn(async move {
+                refs.into_iter()
+                    .filter_map(|r| {
+                        backend
+                            .get(&format!("backlog/{r}"), &[])
+                            .ok()
+                            .map(|v| (r, v))
+                    })
+                    .collect::<Vec<_>>()
+            })
             .await;
         let _ = this.update(cx, |m, cx| {
             for (r, v) in got {
                 if m.goal_page.kept.contains_key(&r) {
-                    m.goal_page.kept.insert(r, if v["issue"].is_object() { v["issue"].clone() } else { v });
+                    m.goal_page.kept.insert(
+                        r,
+                        if v["issue"].is_object() {
+                            v["issue"].clone()
+                        } else {
+                            v
+                        },
+                    );
                 }
             }
             cx.notify();
@@ -1419,19 +1959,36 @@ fn refresh_kept(m: &mut MainWindow, refs: Vec<String>, cx: &mut Context<MainWind
 pub fn issue_action(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
     keep_issue(m, r);
     let (busy, path, body) = match act {
-        "promote" => (format!("promote:goal:{r}"), format!("backlog/{r}/promote"), json!({"where": "goal"})),
-        "ticket" => (format!("ticket::{r}"), format!("backlog/{r}/ticket"), json!({})),
+        "promote" => (
+            format!("promote:goal:{r}"),
+            format!("backlog/{r}/promote"),
+            json!({"where": "goal"}),
+        ),
+        "ticket" => (
+            format!("ticket::{r}"),
+            format!("backlog/{r}/ticket"),
+            json!({}),
+        ),
         _ => (format!("drop::{r}"), format!("backlog/{r}/drop"), json!({})),
     };
     let rr = r.to_string();
-    run(m, busy, Some(format!("issue:{r}")), false, path, body, cx, move |m, _, cx| {
-        refresh_kept(m, vec![rr], cx);
-        match act {
-            "promote" => String::new(),
-            "ticket" => "Asked Jira for a ticket".into(),
-            _ => "Closed as won’t do".into(),
-        }
-    });
+    run(
+        m,
+        busy,
+        Some(format!("issue:{r}")),
+        false,
+        path,
+        body,
+        cx,
+        move |m, _, cx| {
+            refresh_kept(m, vec![rr], cx);
+            match act {
+                "promote" => String::new(),
+                "ticket" => "Asked Jira for a ticket".into(),
+                _ => "Closed as won’t do".into(),
+            }
+        },
+    );
 }
 
 /// `bulkChange(action, extra)`.
@@ -1452,23 +2009,38 @@ pub fn bulk(m: &mut MainWindow, action: &'static str, extra: Value, cx: &mut Con
         o.extend(e);
     }
     let n_ids = ids.len() as i64;
-    run(m, format!("bl-bulk:{action}:"), Some("bulk".into()), false, "backlog/bulk".into(), body, cx, move |m, v, cx| {
-        m.goal_page.sel.clear();
-        m.goal_page.anchor = None;
-        let n = match v.get("count").and_then(Value::as_i64) {
-            Some(c) if c != 0 => c,
-            _ => n_ids,
-        };
-        m.toast(bulk_toast(action, n), false, cx);
-        refresh_kept(m, ids, cx);
-        String::new()
-    });
+    run(
+        m,
+        format!("bl-bulk:{action}:"),
+        Some("bulk".into()),
+        false,
+        "backlog/bulk".into(),
+        body,
+        cx,
+        move |m, v, cx| {
+            m.goal_page.sel.clear();
+            m.goal_page.anchor = None;
+            let n = match v.get("count").and_then(Value::as_i64) {
+                Some(c) if c != 0 => c,
+                _ => n_ids,
+            };
+            m.toast(bulk_toast(action, n), false, cx);
+            refresh_kept(m, ids, cx);
+            String::new()
+        },
+    );
 }
 
 /// `bl-pick` (shift extends from the last one picked) and `bl-pick-all`.
 fn pick(m: &mut MainWindow, r: &str, on: bool, shift: bool, pickable: &[String]) {
     let st = &mut m.goal_page;
-    let span: Vec<String> = match (shift, st.anchor.as_ref().and_then(|a| pickable.iter().position(|x| x == a)), pickable.iter().position(|x| x == r)) {
+    let span: Vec<String> = match (
+        shift,
+        st.anchor
+            .as_ref()
+            .and_then(|a| pickable.iter().position(|x| x == a)),
+        pickable.iter().position(|x| x == r),
+    ) {
         (true, Some(a), Some(j)) => pickable[a.min(j)..=a.max(j)].to_vec(),
         _ => vec![r.to_string()],
     };
@@ -1535,7 +2107,13 @@ fn checkbox(t: &Theme, on: bool, mixed: bool) -> Div {
         .text_size(px(11.))
         .line_height(px(14.))
         .font_weight(FontWeight::BOLD)
-        .child(if on { "✓" } else if mixed { "–" } else { "" })
+        .child(if on {
+            "✓"
+        } else if mixed {
+            "–"
+        } else {
+            ""
+        })
 }
 
 /// `--accent-tint` (the theme has no field for it).
@@ -1548,17 +2126,41 @@ fn accent_tint(t: &Theme) -> Hsla {
 
 /// `.card-box`: 14px 16px padding, 12px radius, 10px gap.
 fn card_box(t: &Theme) -> Div {
-    div().flex().flex_col().gap(px(10.)).px(px(16.)).py(px(14.)).rounded(px(12.)).border_1().border_color(t.border).bg(t.card)
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .px(px(16.))
+        .py(px(14.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
 }
 
 /// `.aside-card`: 12px 14px padding, 12px radius, 10px gap.
 fn aside_card(t: &Theme) -> Div {
-    div().flex().flex_col().min_w_0().gap(px(10.)).px(px(14.)).py(px(12.)).rounded(px(12.)).border_1().border_color(t.border).bg(t.card)
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .gap(px(10.))
+        .px(px(14.))
+        .py(px(12.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
 }
 
 /// `.h3` at a size (13px; 12.5px in an aside card): semibold, muted, uppercase.
 fn h3(t: &Theme, size: f32, text: &str) -> Div {
-    div().text_size(px(size)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).whitespace_nowrap().child(text.to_uppercase())
+    div()
+        .text_size(px(size))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.muted)
+        .whitespace_nowrap()
+        .child(text.to_uppercase())
 }
 
 /// `.pill`: 12px semibold, 2px 10px, fully rounded.
@@ -1613,7 +2215,15 @@ fn st_colors(t: &Theme, tone: &str) -> (Hsla, Hsla, Option<Hsla>) {
 /// `.chip.st-*`.
 fn st_chip(t: &Theme, tone: &str, label: impl Into<SharedString>) -> Div {
     let (fg, bg, line) = st_colors(t, tone);
-    chip(fg, bg, label).when_some(line, |d, c| d.shadow(vec![BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: true }]))
+    chip(fg, bg, label).when_some(line, |d, c| {
+        d.shadow(vec![BoxShadow {
+            color: c,
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(1.),
+            inset: true,
+        }])
+    })
 }
 
 /// `.k-*`: a backlog issue's kind chip.
@@ -1645,20 +2255,36 @@ fn md_btn(t: &Theme, id: impl Into<ElementId>, kind: &str) -> Stateful<Div> {
         .whitespace_nowrap()
         .cursor_pointer();
     match kind {
-        "primary" => b.bg(t.accent_btn).border_color(t.accent_btn).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).hover(|s| s.opacity(0.94)),
+        "primary" => b
+            .bg(t.accent_btn)
+            .border_color(t.accent_btn)
+            .text_color(t.on_accent)
+            .font_weight(FontWeight::SEMIBOLD)
+            .hover(|s| s.opacity(0.94)),
         "danger" => {
             let h = t.down_soft;
-            b.bg(t.card).border_color(t.down_line).text_color(t.down).hover(move |s| s.bg(h))
+            b.bg(t.card)
+                .border_color(t.down_line)
+                .text_color(t.down)
+                .hover(move |s| s.bg(h))
         }
         _ => {
             let h = t.border_2;
-            b.bg(t.card).border_color(t.border).text_color(t.text).hover(move |s| s.border_color(h))
+            b.bg(t.card)
+                .border_color(t.border)
+                .text_color(t.text)
+                .hover(move |s| s.border_color(h))
         }
     }
 }
 
 /// `.btn.sm` (32px, 0 10px, 7px radius, 12.5px): `soft`, outlined, or `ghost`.
-fn btn_sm(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, style: &str) -> Stateful<Div> {
+fn btn_sm(
+    t: &Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    style: &str,
+) -> Stateful<Div> {
     let b = div()
         .id(id)
         .flex()
@@ -1675,25 +2301,51 @@ fn btn_sm(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, s
         .cursor_pointer()
         .child(label.into());
     match style {
-        "soft" => b.bg(t.accent_soft).border_color(t.accent_soft).text_color(t.accent).font_weight(FontWeight::SEMIBOLD),
+        "soft" => b
+            .bg(t.accent_soft)
+            .border_color(t.accent_soft)
+            .text_color(t.accent)
+            .font_weight(FontWeight::SEMIBOLD),
         "ghost" => {
             let hover = t.text;
-            b.border_color(transparent_black()).text_color(t.muted).hover(move |s| s.text_color(hover))
+            b.border_color(transparent_black())
+                .text_color(t.muted)
+                .hover(move |s| s.text_color(hover))
         }
         _ => {
             let h = t.border_2;
-            b.bg(t.card).border_color(t.border).text_color(t.text).hover(move |s| s.border_color(h))
+            b.bg(t.card)
+                .border_color(t.border)
+                .text_color(t.text)
+                .hover(move |s| s.border_color(h))
         }
     }
 }
 
 /// `.seg.sm` with a `.count` in every button (the Tasks / Backlog tabs).
-fn seg_counts(t: &Theme, id: &str, items: &[(&str, i64, bool)], on: usize, mut f: impl FnMut(usize, Stateful<Div>) -> Stateful<Div>) -> Div {
-    let mut row = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
+fn seg_counts(
+    t: &Theme,
+    id: &str,
+    items: &[(&str, i64, bool)],
+    on: usize,
+    mut f: impl FnMut(usize, Stateful<Div>) -> Stateful<Div>,
+) -> Div {
+    let mut row = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .p(px(3.))
+        .rounded(px(9.))
+        .bg(t.seg);
     for (ix, (label, n, hot)) in items.iter().enumerate() {
         let sel = ix == on;
         let hover = t.text;
-        let (cfg, cbg) = if *hot { (t.warn_fg, t.warn_soft) } else { (t.muted, t.col) };
+        let (cfg, cbg) = if *hot {
+            (t.warn_fg, t.warn_soft)
+        } else {
+            (t.muted, t.col)
+        };
         let item = div()
             .id(SharedString::from(format!("{id}-{ix}")))
             .flex()
@@ -1707,10 +2359,37 @@ fn seg_counts(t: &Theme, id: &str, items: &[(&str, i64, bool)], on: usize, mut f
             .cursor_pointer()
             .whitespace_nowrap()
             .text_color(if sel { t.text } else { t.muted })
-            .when(sel, |d| d.bg(t.card).shadow(vec![BoxShadow { color: hsla(0., 0., 0., if t.mode == crate::theme::ThemeMode::Dark { 0.4 } else { 0.1 }), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]))
+            .when(sel, |d| {
+                d.bg(t.card).shadow(vec![BoxShadow {
+                    color: hsla(
+                        0.,
+                        0.,
+                        0.,
+                        if t.mode == crate::theme::ThemeMode::Dark {
+                            0.4
+                        } else {
+                            0.1
+                        },
+                    ),
+                    offset: point(px(0.), px(1.)),
+                    blur_radius: px(2.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+            })
             .hover(move |s| s.text_color(hover))
             .child(label.to_string())
-            .child(div().px(px(7.)).rounded_full().bg(cbg).text_color(cfg).text_size(px(12.)).line_height(px(18.)).font_weight(FontWeight::SEMIBOLD).child(n.to_string()));
+            .child(
+                div()
+                    .px(px(7.))
+                    .rounded_full()
+                    .bg(cbg)
+                    .text_color(cfg)
+                    .text_size(px(12.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(n.to_string()),
+            );
         row = row.child(f(ix, item));
     }
     row
@@ -1718,7 +2397,11 @@ fn seg_counts(t: &Theme, id: &str, items: &[(&str, i64, bool)], on: usize, mut f
 
 /// `PR_STAGE_ICON[phase]` (none for a phase it doesn't know).
 fn stage_icon(phase: &str) -> Option<&'static str> {
-    ["checks", "fix", "review", "comments", "merge", "merged", "declined"].into_iter().find(|p| *p == phase)
+    [
+        "checks", "fix", "review", "comments", "merge", "merged", "declined",
+    ]
+    .into_iter()
+    .find(|p| *p == phase)
 }
 
 #[derive(Clone, Copy)]
@@ -1741,12 +2424,19 @@ fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            let grid = if matches!(kind, Ico::Att(_)) { 16. } else { 24. };
+            let grid = if matches!(kind, Ico::Att(_)) {
+                16.
+            } else {
+                24.
+            };
             let k = bounds.size.width.as_f32() / grid;
             let o = bounds.origin;
             let u = move |x: f32, y: f32| point(o.x + px(x * k), o.y + px(y * k));
             let arc = |cx: f32, cy: f32, r: f32, a0: f32, a1: f32| -> Vec<(f32, f32)> {
-                (0..=12).map(|i| (a0 + (a1 - a0) * i as f32 / 12.).to_radians()).map(|a| (cx + r * a.cos(), cy + r * a.sin())).collect()
+                (0..=12)
+                    .map(|i| (a0 + (a1 - a0) * i as f32 / 12.).to_radians())
+                    .map(|a| (cx + r * a.cos(), cy + r * a.sin()))
+                    .collect()
             };
             let line = |pts: &[(f32, f32)], w: f32, window: &mut Window| {
                 let mut p = PathBuilder::stroke(px(w * k));
@@ -1787,7 +2477,11 @@ fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
             match kind {
                 Ico::Flag => {
                     line(&[(5., 21.), (5., 4.)], 2.2, window);
-                    line(&[(5., 4.), (16., 4.), (14., 8.), (16., 12.), (5., 12.)], 2.2, window);
+                    line(
+                        &[(5., 4.), (16., 4.), (14., 8.), (16., 12.), (5., 12.)],
+                        2.2,
+                        window,
+                    );
                 }
                 Ico::Play => fill(&[(8., 5.), (19.7, 12.), (8., 19.)], window),
                 Ico::Pause => {
@@ -1818,7 +2512,14 @@ fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
                 Ico::Jira => {
                     for (x0, y0) in [(11.45, 0.), (5.74, 5.76), (0., 11.51)] {
                         let mut pts = vec![(x0, y0), (x0 + 11.56, y0), (x0 + 12.55, y0 + 1.)];
-                        pts.extend([(x0 + 12.55, y0 + 12.48), (x0 + 9.5, y0 + 11.), (x0 + 7.35, y0 + 7.27), (x0 + 7.35, y0 + 5.2), (x0 + 5.2, y0 + 5.2), (x0 + 1.5, y0 + 3.5)]);
+                        pts.extend([
+                            (x0 + 12.55, y0 + 12.48),
+                            (x0 + 9.5, y0 + 11.),
+                            (x0 + 7.35, y0 + 7.27),
+                            (x0 + 7.35, y0 + 5.2),
+                            (x0 + 5.2, y0 + 5.2),
+                            (x0 + 1.5, y0 + 3.5),
+                        ]);
                         fill(&pts, window);
                     }
                 }
@@ -1837,16 +2538,45 @@ fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
                         line(&arc(10.5, 17.5, 1.6, 0., 360.), 2.2, window);
                     }
                     "review" => {
-                        line(&[(2.5, 12.), (6., 7.), (12., 5.5), (18., 7.), (21.5, 12.), (18., 17.), (12., 18.5), (6., 17.), (2.5, 12.)], 2.2, window);
+                        line(
+                            &[
+                                (2.5, 12.),
+                                (6., 7.),
+                                (12., 5.5),
+                                (18., 7.),
+                                (21.5, 12.),
+                                (18., 17.),
+                                (12., 18.5),
+                                (6., 17.),
+                                (2.5, 12.),
+                            ],
+                            2.2,
+                            window,
+                        );
                         line(&circle(12., 12., 2.8), 2.2, window);
                     }
-                    "comments" => line(&[(4., 5.), (20., 5.), (20., 16.), (9., 16.), (4., 20.), (4., 5.)], 2.2, window),
+                    "comments" => line(
+                        &[
+                            (4., 5.),
+                            (20., 5.),
+                            (20., 16.),
+                            (9., 16.),
+                            (4., 20.),
+                            (4., 5.),
+                        ],
+                        2.2,
+                        window,
+                    ),
                     "merge" => {
                         for (x, y) in [(6., 5.), (6., 19.), (18., 12.)] {
                             line(&circle(x, y, 2.3), 2.2, window);
                         }
                         line(&[(6., 7.3), (6., 16.7)], 2.2, window);
-                        line(&[(6., 7.3), (7., 10.), (10., 11.5), (15.7, 12.)], 2.2, window);
+                        line(
+                            &[(6., 7.3), (7., 10.), (10., 11.5), (15.7, 12.)],
+                            2.2,
+                            window,
+                        );
                     }
                     "merged" => line(&[(5., 12.5), (9.5, 17.), (19., 7.5)], 2.2, window),
                     "declined" => {
@@ -1862,7 +2592,17 @@ fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
                     let w = 1.6;
                     match kind {
                         "design" => {
-                            line(&[(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5), (2.5, 2.5)], w, window);
+                            line(
+                                &[
+                                    (2.5, 2.5),
+                                    (13.5, 2.5),
+                                    (13.5, 13.5),
+                                    (2.5, 13.5),
+                                    (2.5, 2.5),
+                                ],
+                                w,
+                                window,
+                            );
                             line(&[(2.5, 6.5), (13.5, 6.5)], w, window);
                             line(&[(6.5, 6.5), (6.5, 13.5)], w, window);
                         }
@@ -1874,7 +2614,18 @@ fn ico(kind: Ico, size: f32, color: Hsla) -> impl IntoElement {
                             line(&[(6.5, 13.5), (9.5, 13.5)], w, window);
                         }
                         "doc" => {
-                            line(&[(4., 2.5), (9.5, 2.5), (12., 5.), (12., 13.5), (4., 13.5), (4., 2.5)], w, window);
+                            line(
+                                &[
+                                    (4., 2.5),
+                                    (9.5, 2.5),
+                                    (12., 5.),
+                                    (12., 13.5),
+                                    (4., 13.5),
+                                    (4., 2.5),
+                                ],
+                                w,
+                                window,
+                            );
                             line(&[(6.5, 8.), (9.5, 8.)], w, window);
                             line(&[(6.5, 10.5), (9.5, 10.5)], w, window);
                         }
@@ -1908,7 +2659,9 @@ fn open_attachment(url: &str, cx: &mut App) {
         cx.open_url(url);
     } else {
         let path = taskboardd::util::expand_home(url);
-        let _ = std::process::Command::new("/usr/bin/open").arg(path).spawn();
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg(path)
+            .spawn();
     }
 }
 
@@ -1927,31 +2680,41 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
         .child(div().h_full().bg(t.up).w(pct(c.done)))
         .child(div().h_full().bg(t.accent).w(pct(c.active)))
         .child(div().h_full().bg(t.backlog_dot).w(pct(c.queued)));
-    let epic: Option<AnyElement> = h.epic.clone().map(|text| match (&h.epic_link, fmt::opt_s(g, "epic_key")) {
-        (Some(url), Some(key)) => {
-            let url = url.clone();
-            let rest = text.trim_start_matches("Jira epic ").trim_start_matches(key).to_string();
-            let fg = t.accent_fg;
-            div()
-                .flex()
-                .whitespace_nowrap()
-                .child("Jira epic ")
-                .child(
+    let epic: Option<AnyElement> =
+        h.epic
+            .clone()
+            .map(|text| match (&h.epic_link, fmt::opt_s(g, "epic_key")) {
+                (Some(url), Some(key)) => {
+                    let url = url.clone();
+                    let rest = text
+                        .trim_start_matches("Jira epic ")
+                        .trim_start_matches(key)
+                        .to_string();
+                    let fg = t.accent_fg;
                     div()
-                        .id("goal-epic")
-                        .cursor_pointer()
-                        .font_family(t.mono_font.clone())
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(fg)
-                        .underline()
-                        .child(key.to_string())
-                        .on_click(move |_, _, cx| if url != "#" { cx.open_url(&url) }),
-                )
-                .child(rest)
-                .into_any_element()
-        }
-        _ => div().child(text).into_any_element(),
-    });
+                        .flex()
+                        .whitespace_nowrap()
+                        .child("Jira epic ")
+                        .child(
+                            div()
+                                .id("goal-epic")
+                                .cursor_pointer()
+                                .font_family(t.mono_font.clone())
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(fg)
+                                .underline()
+                                .child(key.to_string())
+                                .on_click(move |_, _, cx| {
+                                    if url != "#" {
+                                        cx.open_url(&url)
+                                    }
+                                }),
+                        )
+                        .child(rest)
+                        .into_any_element()
+                }
+                _ => div().child(text).into_any_element(),
+            });
     let repo = fmt::opt_s(g, "repo_path").map(str::to_string);
     let (sfg, sbg, _) = st_colors(t, h.state_tone);
     div()
@@ -1964,13 +2727,28 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                 .flex_wrap()
                 .items_center()
                 .gap(px(10.))
-                .child(pill(t.goal, t.goal_soft).child(ico(Ico::Flag, 12., t.goal)).child("Goal"))
+                .child(
+                    pill(t.goal, t.goal_soft)
+                        .child(ico(Ico::Flag, 12., t.goal))
+                        .child("Goal"),
+                )
                 .child(pill(sfg, sbg).child(h.pills[1].clone()))
-                .child(pill(t.muted, t.panel_2).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(h.pills[2].clone()))
+                .child(
+                    pill(t.muted, t.panel_2)
+                        .font_family(t.mono_font.clone())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(h.pills[2].clone()),
+                )
                 .child(div().flex_1())
                 .child(run_buttons(m, t, g, cx)),
         )
-        .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).line_height(relative(1.25)).child(h.name.clone()))
+        .child(
+            div()
+                .text_size(px(26.))
+                .font_weight(FontWeight::BOLD)
+                .line_height(relative(1.25))
+                .child(h.name.clone()),
+        )
         .when_some(h.tldr.clone(), |d, tl| {
             d.child(
                 div()
@@ -1980,7 +2758,15 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                     .text_color(t.text)
                     .flex()
                     .items_baseline()
-                    .child(div().flex_none().mr(px(8.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.text_2).child("TLDR"))
+                    .child(
+                        div()
+                            .flex_none()
+                            .mr(px(8.))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(t.text_2)
+                            .child("TLDR"),
+                    )
                     .child(div().flex_1().min_w_0().child(tl)),
             )
         })
@@ -2016,13 +2802,24 @@ fn run_buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
             a => format!("{a}::{gr}"),
         };
         let is_busy = busy(m, &key);
-        let label = if is_busy { bt.busy_label.to_string() } else { bt.label.clone() };
+        let label = if is_busy {
+            bt.busy_label.to_string()
+        } else {
+            bt.label.clone()
+        };
         let gr2 = gr.clone();
         let el = match bt.act {
             "goal-run" => {
-                let main = md_btn(t, "goal-run", "primary").child(ico(Ico::Play, 14., t.on_accent)).child(label).tooltip(kit::tip(bt.title.clone()));
+                let main = md_btn(t, "goal-run", "primary")
+                    .child(ico(Ico::Play, 14., t.on_accent))
+                    .child(label)
+                    .tooltip(kit::tip(bt.title.clone()));
                 let main = act_btn(main, is_busy);
-                let main = if is_busy { main } else { main.on_click(cx.listener(move |m, _, _, cx| run_goal(m, &gr2, false, cx))) };
+                let main = if is_busy {
+                    main
+                } else {
+                    main.on_click(cx.listener(move |m, _, _, cx| run_goal(m, &gr2, false, cx)))
+                };
                 if split {
                     div()
                         .flex()
@@ -2037,7 +2834,11 @@ fn run_buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                                 .tooltip(kit::tip("Start now instead"))
                                 .on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
                                     let p = e.position();
-                                    m.toggle_menu(START_MENU, point(p.x - px(240.), p.y + px(14.)), cx);
+                                    m.toggle_menu(
+                                        START_MENU,
+                                        point(p.x - px(240.), p.y + px(14.)),
+                                        cx,
+                                    );
                                 })),
                         )
                         .into_any_element()
@@ -2046,14 +2847,37 @@ fn run_buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 }
             }
             "goal-pause" => {
-                let b = act_btn(md_btn(t, "goal-pause", "").child(ico(Ico::Pause, 14., t.text)).child(label).tooltip(kit::tip(bt.title.clone())), is_busy);
-                if is_busy { b } else { b.on_click(cx.listener(move |m, _, _, cx| set_paused(m, &gr2, true, cx))) }.into_any_element()
+                let b = act_btn(
+                    md_btn(t, "goal-pause", "")
+                        .child(ico(Ico::Pause, 14., t.text))
+                        .child(label)
+                        .tooltip(kit::tip(bt.title.clone())),
+                    is_busy,
+                );
+                if is_busy {
+                    b
+                } else {
+                    b.on_click(cx.listener(move |m, _, _, cx| set_paused(m, &gr2, true, cx)))
+                }
+                .into_any_element()
             }
             "goal-plan-edit" => {
-                let b = act_btn(md_btn(t, "goal-plan", "").child(ico(Ico::Chat, 14., t.text)).child(label).tooltip(kit::tip(bt.title.clone())), is_busy);
-                if is_busy { b } else { b.on_click(cx.listener(move |m, _, _, cx| plan_goal(m, &gr2, cx))) }.into_any_element()
+                let b = act_btn(
+                    md_btn(t, "goal-plan", "")
+                        .child(ico(Ico::Chat, 14., t.text))
+                        .child(label)
+                        .tooltip(kit::tip(bt.title.clone())),
+                    is_busy,
+                );
+                if is_busy {
+                    b
+                } else {
+                    b.on_click(cx.listener(move |m, _, _, cx| plan_goal(m, &gr2, cx)))
+                }
+                .into_any_element()
             }
-            _ => md_btn(t, "goal-deprio", "danger").child(label)
+            _ => md_btn(t, "goal-deprio", "danger")
+                .child(label)
                 .tooltip(kit::tip(bt.title.clone()))
                 .on_click(cx.listener(|m, _, window, cx| {
                     m.goal_page.deprio_open = true;
@@ -2066,10 +2890,17 @@ fn run_buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
     row
 }
 
-fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+fn start_menu(
+    m: &MainWindow,
+    t: &Theme,
+    g: &Value,
+    cx: &mut Context<MainWindow>,
+) -> Option<AnyElement> {
     let at = m.menu_open(START_MENU)?;
     let gr = fmt::ref_of(g, "G");
-    let mut menu = kit::menu_box(t, 290.).id("goal-start-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    let mut menu = kit::menu_box(t, 290.)
+        .id("goal-start-menu")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     for (act, title, sub) in start_menu_view(&hours(m)) {
         let hover = t.panel_2;
         let gr = gr.clone();
@@ -2084,9 +2915,16 @@ fn start_menu(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(move |d| d.bg(hover))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(title))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(title),
+                )
                 .child(div().text_size(px(12.)).text_color(t.muted).child(sub))
-                .on_click(cx.listener(move |m, _, _, cx| run_goal(m, &gr, act == "goal-run-now", cx))),
+                .on_click(
+                    cx.listener(move |m, _, _, cx| run_goal(m, &gr, act == "goal-run-now", cx)),
+                ),
         );
     }
     Some(kit::popover(at, menu))
@@ -2098,13 +2936,30 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
     let Some((label, text, (act, button))) = gate_view(g) else {
         return note.map(|n| div().child(n));
     };
-    let key = if act == "goal-deprio" { format!("goal-deprio:off:{gr}") } else { format!("goal-pause:off:{gr}") };
+    let key = if act == "goal-deprio" {
+        format!("goal-deprio:off:{gr}")
+    } else {
+        format!("goal-pause:off:{gr}")
+    };
     let is_busy = busy(m, &key);
-    let bt = act_btn(md_btn(t, "goal-gate", "primary").h(px(36.)).px(px(14.)).rounded(px(8.)).child(if is_busy { "Sending…" } else { button }), is_busy);
+    let bt = act_btn(
+        md_btn(t, "goal-gate", "primary")
+            .h(px(36.))
+            .px(px(14.))
+            .rounded(px(8.))
+            .child(if is_busy { "Sending…" } else { button }),
+        is_busy,
+    );
     let bt = if is_busy {
         bt
     } else {
-        bt.on_click(cx.listener(move |m, _, _, cx| if act == "goal-deprio" { set_deprioritized(m, &gr, false, cx) } else { set_paused(m, &gr, false, cx) }))
+        bt.on_click(cx.listener(move |m, _, _, cx| {
+            if act == "goal-deprio" {
+                set_deprioritized(m, &gr, false, cx)
+            } else {
+                set_paused(m, &gr, false, cx)
+            }
+        }))
     };
     Some(
         div()
@@ -2115,7 +2970,13 @@ fn gate(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> O
             .py(px(14.))
             .rounded(px(12.))
             .bg(t.warn_soft)
-            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn_fg).child(label.to_uppercase()))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.warn_fg)
+                    .child(label.to_uppercase()),
+            )
             .child(div().text_size(px(14.)).child(text))
             .child(div().flex().child(bt))
             .children(note),
@@ -2145,9 +3006,20 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
         _ => None,
     };
     // `.rows.trows`.
-    let site = m.state()["jira"]["site"].as_str().map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
+    let site = m.state()["jira"]["site"]
+        .as_str()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(str::to_string);
     let rows = |views: Vec<TaskRow>, cx: &mut Context<MainWindow>| {
-        let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.card)
+            .overflow_hidden();
         for (ix, row) in views.into_iter().enumerate() {
             let on = open_task.as_deref() == Some(row.r.as_str());
             list = list.child(task_row_el(t, row, ix, on, site.as_deref(), cx));
@@ -2160,51 +3032,100 @@ fn task_rows(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
     if !tasks.is_empty() && by_wave {
         out = out.child(waves::rail(m, t, g, cx));
     } else if !tasks.is_empty() {
-        out = out.child(rows(tasks.iter().enumerate().map(|(ix, task)| task_row_view(task, ix, tasks, g)).collect(), cx));
+        out = out.child(rows(
+            tasks
+                .iter()
+                .enumerate()
+                .map(|(ix, task)| task_row_view(task, ix, tasks, g))
+                .collect(),
+            cx,
+        ));
     }
     if !shared.is_empty() && !by_wave {
         // `.h3.shared-h`: 18px above, 8px below.
         out = out
-            .child(h3(t, 13., "From other goals").when(!tasks.is_empty(), |d| d.mt(px(18.))).mb(px(8.)))
+            .child(
+                h3(t, 13., "From other goals")
+                    .when(!tasks.is_empty(), |d| d.mt(px(18.)))
+                    .mb(px(8.)),
+            )
             .child(rows(shared.iter().map(shared_row_view).collect(), cx));
     }
     out
 }
 
 /// A row's meta line, its task and goal refs opening them and its ticket keys opening Jira (`refLinks`).
-fn meta_line(t: &Theme, r: &str, meta: &str, site: Option<&str>, cx: &mut Context<MainWindow>) -> Div {
-    let mut line = div().flex().items_center().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(12.5)).text_color(t.muted);
+fn meta_line(
+    t: &Theme,
+    r: &str,
+    meta: &str,
+    site: Option<&str>,
+    cx: &mut Context<MainWindow>,
+) -> Div {
+    let mut line = div()
+        .flex()
+        .items_center()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_size(px(12.5))
+        .text_color(t.muted);
     let hover = t.accent;
     for (k, bit) in meta_bits(meta).into_iter().enumerate() {
         let id = SharedString::from(format!("goal-meta-{r}-{k}"));
-        let link = |label: String| div().id(id.clone()).flex_none().cursor_pointer().text_color(t.accent_fg).hover(move |d| d.text_color(hover)).child(label);
+        let link = |label: String| {
+            div()
+                .id(id.clone())
+                .flex_none()
+                .cursor_pointer()
+                .text_color(t.accent_fg)
+                .hover(move |d| d.text_color(hover))
+                .child(label)
+        };
         line = match bit {
             MetaBit::Ref(x) => {
                 let target = x.clone();
-                line.child(link(x.clone()).tooltip(kit::tip(format!("Open {x}"))).on_click(cx.listener(move |m, _, _, cx| {
-                    cx.stop_propagation();
-                    if target.starts_with('G') {
-                        m.go(Page::Goal(target.clone()), cx);
-                    } else {
-                        m.open_task(target.clone(), cx);
-                    }
-                })))
+                line.child(
+                    link(x.clone())
+                        .tooltip(kit::tip(format!("Open {x}")))
+                        .on_click(cx.listener(move |m, _, _, cx| {
+                            cx.stop_propagation();
+                            if target.starts_with('G') {
+                                m.go(Page::Goal(target.clone()), cx);
+                            } else {
+                                m.open_task(target.clone(), cx);
+                            }
+                        })),
+                )
             }
             MetaBit::Ticket(x) if site.is_some() => {
                 let url = format!("https://{}/browse/{x}", site.unwrap_or_default());
-                line.child(link(x.clone()).tooltip(kit::tip(format!("Open {x} in Jira"))).on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    cx.open_url(&url);
-                }))
+                line.child(
+                    link(x.clone())
+                        .tooltip(kit::tip(format!("Open {x} in Jira")))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.open_url(&url);
+                        }),
+                )
             }
-            MetaBit::Ticket(x) | MetaBit::Text(x) => line.child(div().min_w_0().truncate().child(x.replace(' ', "\u{a0}"))),
+            MetaBit::Ticket(x) | MetaBit::Text(x) => {
+                line.child(div().min_w_0().truncate().child(x.replace(' ', "\u{a0}")))
+            }
         };
     }
     line
 }
 
 /// One `.trow`: the step number (or "·" for a shared task), the status chip, Jira and PR marks, title and meta.
-fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+fn task_row_el(
+    t: &Theme,
+    row: TaskRow,
+    ix: usize,
+    on: bool,
+    site: Option<&str>,
+    cx: &mut Context<MainWindow>,
+) -> Stateful<Div> {
     let meta = (!row.meta.is_empty()).then(|| meta_line(t, &row.r, &row.meta, site, cx));
     let hover = accent_tint(t);
     let target = row.r.clone();
@@ -2216,7 +3137,11 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>,
         _ => t.accent_fg,
     };
     let fade = if row.planned { 0.85 } else { 1. };
-    let id = if row.n == 0 { format!("goal-shared-{}", row.r) } else { format!("goal-task-{}", row.r) };
+    let id = if row.n == 0 {
+        format!("goal-shared-{}", row.r)
+    } else {
+        format!("goal-task-{}", row.r)
+    };
     div()
         .id(SharedString::from(id))
         .flex()
@@ -2240,7 +3165,11 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>,
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(t.muted)
-                .child(if row.n == 0 { "·".to_string() } else { row.n.to_string() }),
+                .child(if row.n == 0 {
+                    "·".to_string()
+                } else {
+                    row.n.to_string()
+                }),
         )
         .child(
             div()
@@ -2256,7 +3185,7 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>,
                         .items_center()
                         .gap(px(8.))
                         .min_w_0()
-                        .child(st_chip(t, status_tone(row.key), row.chip))
+                        .child(st_chip(t, row.tone, row.chip.clone()))
                         .children(row.jira_tip.clone().map(|tip| {
                             div()
                                 .id(SharedString::from(format!("goal-jira-{}", row.r)))
@@ -2276,7 +3205,13 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>,
                                 .text_color(pr_color)
                                 .child(ico(Ico::PrOpen, 13., pr_color))
                                 .child(txt)
-                                .when_some(stage_icon(&row.pr_phase), |d, st| d.child(div().ml(px(3.)).child(ico(Ico::Stage(st), 13., pr_color))))
+                                .when_some(stage_icon(&row.pr_phase), |d, st| {
+                                    d.child(div().ml(px(3.)).child(ico(
+                                        Ico::Stage(st),
+                                        13.,
+                                        pr_color,
+                                    )))
+                                })
                                 .tooltip(kit::tip(row.pr_tip.clone().unwrap_or_default()))
                         }))
                         .when(row.pr_planned, |d| {
@@ -2289,7 +3224,16 @@ fn task_row_el(t: &Theme, row: TaskRow, ix: usize, on: bool, site: Option<&str>,
                                     .tooltip(kit::tip("Ends in a PR")),
                             )
                         })
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(row.title.clone())),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text)
+                                .child(row.title.clone()),
+                        ),
                 )
                 .children(meta),
         )
@@ -2304,7 +3248,15 @@ fn qa_tab(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
     for (gi, (title, items)) in groups.into_iter().enumerate() {
         // `.h3` (`.shared-h` after the first group), then `.rows.qrows` 8px below.
         out = out.child(h3(t, 13., title).when(gi > 0, |d| d.mt(px(18.))));
-        let mut list = div().mt(px(8.)).flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
+        let mut list = div()
+            .mt(px(8.))
+            .flex()
+            .flex_col()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.card)
+            .overflow_hidden();
         for (ix, c) in items.into_iter().enumerate() {
             list = list.child(qa_row(m, t, c, ix, cx));
         }
@@ -2344,10 +3296,18 @@ fn qa_row(m: &MainWindow, t: &Theme, c: QaItem, ix: usize, cx: &mut Context<Main
         )
         .child(format!("· {}", c.at));
     if let Some(src) = c.source_task.clone() {
-        meta = meta.child("· about").child(link(format!("qa-src-{}", c.r), src.clone(), src, cx));
+        meta = meta
+            .child("· about")
+            .child(link(format!("qa-src-{}", c.r), src.clone(), src, cx));
     }
     if let Some((tr, st, title)) = c.task.clone() {
-        meta = meta.child("·").child(link(format!("qa-task-{}", c.r), tr.clone(), tr, cx)).child(format!("{st}{}", title.map(|x| format!(" · {x}")).unwrap_or_default()));
+        meta = meta
+            .child("·")
+            .child(link(format!("qa-task-{}", c.r), tr.clone(), tr, cx))
+            .child(format!(
+                "{st}{}",
+                title.map(|x| format!(" · {x}")).unwrap_or_default()
+            ));
     }
     if let Some(by) = &c.by {
         meta = meta.child(format!("· by {by}"));
@@ -2378,7 +3338,13 @@ fn qa_row(m: &MainWindow, t: &Theme, c: QaItem, ix: usize, cx: &mut Context<Main
                         cx.notify();
                     })),
             )
-            .when(open, |d| d.child(div().mt(px(8.)).text_size(px(13.)).child(note_body_keyed(t, &note_blocks(&text), &format!("qa-{}", c.r)))))
+            .when(open, |d| {
+                d.child(div().mt(px(8.)).text_size(px(13.)).child(note_body_keyed(
+                    t,
+                    &note_blocks(&text),
+                    &format!("qa-{}", c.r),
+                )))
+            })
     });
     div()
         .flex()
@@ -2389,8 +3355,30 @@ fn qa_row(m: &MainWindow, t: &Theme, c: QaItem, ix: usize, cx: &mut Context<Main
         .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
         // `.qrow.wait`: a 3px warn edge on the left.
         .when(c.wait, |d| d.border_l(px(3.)).border_color(t.warn))
-        .child(div().flex().items_center().gap(px(8.)).child(st_chip(t, if c.wait { "warn" } else { status_tone(c.key) }, c.chip.clone())).child(pill(t.muted, t.panel_2).font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM).child(c.r.clone())))
-        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.45)).child(inline_el(t, &c.ask, format!("qa-ask-{}", c.r))))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(st_chip(
+                    t,
+                    if c.wait { "warn" } else { status_tone(c.key) },
+                    c.chip.clone(),
+                ))
+                .child(
+                    pill(t.muted, t.panel_2)
+                        .font_family(t.mono_font.clone())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(c.r.clone()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(14.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .line_height(relative(1.45))
+                .child(inline_el(t, &c.ask, format!("qa-ask-{}", c.r))),
+        )
         .child(meta)
         .children(fold)
 }
@@ -2443,25 +3431,48 @@ fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
                         .child(shown)
                         .child(ico(Ico::Chev, 12., t.text))
                         .on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
-                    let p = e.position();
-                    m.toggle_menu(&mk, point(p.x - px(20.), p.y + px(14.)), cx);
+                            let p = e.position();
+                            m.toggle_menu(&mk, point(p.x - px(20.), p.y + px(14.)), cx);
                         })),
                 )
-                .child(div().text_size(px(13.)).text_color(t.muted).child("working on this goal at once")),
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(t.muted)
+                        .child("working on this goal at once"),
+                ),
         )
-        .child(toggle("goal-in-order", "run_in_order", v.run_in_order, "Run the tasks in order, one after another"))
-        .child(toggle("goal-auto-close", "auto_close", v.auto_close, "Close each terminal when its task is done"))
+        .child(toggle(
+            "goal-in-order",
+            "run_in_order",
+            v.run_in_order,
+            "Run the tasks in order, one after another",
+        ))
+        .child(toggle(
+            "goal-auto-close",
+            "auto_close",
+            v.auto_close,
+            "Close each terminal when its task is done",
+        ))
         .children(inline_note(m, t, &format!("gset:{gr}")))
         .children(m.menu_open(&menu_key).map(|at| {
-            let mut menu = kit::menu_box(t, 170.).id("goal-max-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            let mut menu = kit::menu_box(t, 170.)
+                .id("goal-max-menu")
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             for (n, label) in v.options.iter().cloned() {
                 let gr = gr.clone();
-                menu = menu.child(kit::menu_item(t, SharedString::from(format!("goal-max-{n}")), label.clone(), Some(&label) == v.selected.as_ref()).on_click(cx.listener(
-                    move |m, _, _, cx| {
+                menu = menu.child(
+                    kit::menu_item(
+                        t,
+                        SharedString::from(format!("goal-max-{n}")),
+                        label.clone(),
+                        Some(&label) == v.selected.as_ref(),
+                    )
+                    .on_click(cx.listener(move |m, _, _, cx| {
                         m.menu = None;
                         set_run_option(m, &gr, "max_terminals", json!(n), cx);
-                    },
-                )));
+                    })),
+                );
             }
             kit::popover(at, menu)
         }))
@@ -2470,9 +3481,16 @@ fn how_runs(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
 fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let list = arr(g, "attachments");
-    let card = aside_card(t).child(h3(t, 12.5, "Attached")).children(inline_note(m, t, &format!("att:goals:{gr}")));
+    let card = aside_card(t)
+        .child(h3(t, 12.5, "Attached"))
+        .children(inline_note(m, t, &format!("att:goals:{gr}")));
     if list.is_empty() {
-        return card.child(div().text_size(px(13.)).text_color(t.muted).child(ATTACH_HELP));
+        return card.child(
+            div()
+                .text_size(px(13.))
+                .text_color(t.muted)
+                .child(ATTACH_HELP),
+        );
     }
     // `.atts`: one `.att` row each (kind icon, name over meta, the actions button on hover).
     let mut atts = div().flex().flex_col();
@@ -2505,14 +3523,24 @@ fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 .into_any_element()
         };
         // `.att-m`: kind · source · age, the source (T4 / G2) as an `.att-src` chip.
-        let mut meta = div().flex().items_center().text_size(px(12.)).text_color(t.muted).whitespace_nowrap().overflow_hidden();
+        let mut meta = div()
+            .flex()
+            .items_center()
+            .text_size(px(12.))
+            .text_color(t.muted)
+            .whitespace_nowrap()
+            .overflow_hidden();
         for (k, part) in item.meta.split(" · ").enumerate() {
             if k > 0 {
                 meta = meta.child(div().flex_none().child("\u{a0}·\u{a0}"));
             }
             if item.src.as_deref() == Some(part) {
                 let target = part.to_string();
-                let (fg, bg) = if part.starts_with('T') { (t.accent_fg, t.accent_soft) } else { (t.goal, t.goal_soft) };
+                let (fg, bg) = if part.starts_with('T') {
+                    (t.accent_fg, t.accent_soft)
+                } else {
+                    (t.goal, t.goal_soft)
+                };
                 meta = meta.child(
                     div()
                         .id(SharedString::from(format!("att-src-{id}")))
@@ -2566,8 +3594,27 @@ fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                 .mx(px(-6.))
                 .rounded(px(8.))
                 .text_size(px(13.))
-                .child(div().flex().flex_none().items_center().justify_center().size(px(26.)).rounded(px(7.)).bg(kbg).child(ico(Ico::Att(kind), 14., kfg)))
-                .child(div().flex().flex_col().flex_1().min_w_0().gap(px(1.)).child(name).child(meta))
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(26.))
+                        .rounded(px(7.))
+                        .bg(kbg)
+                        .child(ico(Ico::Att(kind), 14., kfg)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(1.))
+                        .child(name)
+                        .child(meta),
+                )
                 .child(
                     div()
                         .id(SharedString::from(format!("att-menu-{id}")))
@@ -2582,7 +3629,9 @@ fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                         .bg(t.card)
                         .text_color(t.muted)
                         .cursor_pointer()
-                        .when(!menu_open, |d| d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.)))
+                        .when(!menu_open, |d| {
+                            d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+                        })
                         .hover(move |s| s.text_color(hover_fg).border_color(hover_line))
                         .child("•••")
                         .text_size(px(9.))
@@ -2601,10 +3650,17 @@ fn attachments(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
 fn att_menu(t: &Theme, a: &Value, at: Point<Pixels>, cx: &mut Context<MainWindow>) -> AnyElement {
     let id = i(a, "id");
     let url = s(a, "url").to_string();
-    let mut menu = kit::menu_box(t, 170.).id("att-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    let mut menu = kit::menu_box(t, 170.)
+        .id("att-menu")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
     for label in att_menu_items(a) {
         let url = url.clone();
-        let item = kit::menu_item(t, SharedString::from(format!("att-{id}-{label}")), label, false);
+        let item = kit::menu_item(
+            t,
+            SharedString::from(format!("att-{id}-{label}")),
+            label,
+            false,
+        );
         let item = match label {
             "Open" => item.on_click(cx.listener(move |m, _, _, cx| {
                 m.menu = None;
@@ -2624,27 +3680,54 @@ fn att_menu(t: &Theme, a: &Value, at: Point<Pixels>, cx: &mut Context<MainWindow
 fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let gr = fmt::ref_of(g, "G");
     let fk = format!("gnote:{gr}");
-    let folded_open = crate::prefs::get_str(FOLD_NOTES).map(|v| v == "open").unwrap_or(true);
+    let folded_open = crate::prefs::get_str(FOLD_NOTES)
+        .map(|v| v == "open")
+        .unwrap_or(true);
     let head = div()
         .id("gnotes-head")
         .flex()
         .items_center()
         .cursor_pointer()
         .gap(px(8.))
-        .child(div().flex().flex_none().items_center().justify_center().w(px(10.)).child(ico(if folded_open { Ico::Chev } else { Ico::Right }, 14., t.muted)))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .w(px(10.))
+                .child(ico(
+                    if folded_open { Ico::Chev } else { Ico::Right },
+                    14.,
+                    t.muted,
+                )),
+        )
         .child(div().flex_1().child(h3(t, 12.5, "Goal notes")))
         .on_click(cx.listener(move |_, _, _, cx| {
-            crate::prefs::set(FOLD_NOTES, json!(if folded_open { "closed" } else { "open" }));
+            crate::prefs::set(
+                FOLD_NOTES,
+                json!(if folded_open { "closed" } else { "open" }),
+            );
             cx.notify();
         }));
     let mut card = aside_card(t).child(head);
     if !folded_open {
         return card;
     }
-    card = card.child(div().text_size(px(13.)).text_color(t.muted).child(NOTES_HELP));
+    card = card.child(
+        div()
+            .text_size(px(13.))
+            .text_color(t.muted)
+            .child(NOTES_HELP),
+    );
     card = card.children(inline_note(m, t, &fk));
     for (title, items) in notes_view(arr(g, "notes")) {
-        let mut grp = div().flex().flex_col().gap(px(4.)).child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(title));
+        let mut grp = div().flex().flex_col().gap(px(4.)).child(
+            div()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        );
         let mut ul = div().flex().flex_col().gap(px(3.));
         for item in items {
             let id = i(&item.note, "id");
@@ -2653,7 +3736,14 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
             let mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
             if item.pinned {
                 runs.push_str("Pinned");
-                hl.push((0..runs.len(), HighlightStyle { color: Some(t.goal), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() }));
+                hl.push((
+                    0..runs.len(),
+                    HighlightStyle {
+                        color: Some(t.goal),
+                        font_weight: Some(FontWeight::SEMIBOLD),
+                        ..Default::default()
+                    },
+                ));
                 runs.push(' ');
             }
             runs.push_str(&item.text);
@@ -2661,7 +3751,13 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                 runs.push(' ');
                 let at = runs.len();
                 runs.push_str(&item.from);
-                hl.push((at..runs.len(), HighlightStyle { color: Some(t.muted), ..Default::default() }));
+                hl.push((
+                    at..runs.len(),
+                    HighlightStyle {
+                        color: Some(t.muted),
+                        ..Default::default()
+                    },
+                ));
             }
             let text = div()
                 .w_full()
@@ -2670,7 +3766,10 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                 .text_color(t.text_2)
                 .when(item.long, |d| d.line_clamp(3))
                 .child(StyledText::new(runs).with_highlights(hl));
-            let from = div().text_size(px(12.)).text_color(t.muted).child(item.from.clone());
+            let from = div()
+                .text_size(px(12.))
+                .text_color(t.muted)
+                .child(item.from.clone());
             let row = if item.long {
                 let n = item.note.clone();
                 div().flex().flex_col().child(text).child(
@@ -2679,16 +3778,41 @@ fn notes(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>)
                         .items_baseline()
                         .gap(px(8.))
                         .mt(px(2.))
-                        .child(kit::link(t, SharedString::from(format!("gnote-open-{id}")), "Show all").text_size(px(12.5)).text_color(t.accent_fg).underline().on_click(cx.listener(move |m, _, window, cx| {
-                            m.goal_page.note_dialog = Some(n.clone());
-                            open_dialog(m, window, cx);
-                        })))
+                        .child(
+                            kit::link(
+                                t,
+                                SharedString::from(format!("gnote-open-{id}")),
+                                "Show all",
+                            )
+                            .text_size(px(12.5))
+                            .text_color(t.accent_fg)
+                            .underline()
+                            .on_click(cx.listener(
+                                move |m, _, window, cx| {
+                                    m.goal_page.note_dialog = Some(n.clone());
+                                    open_dialog(m, window, cx);
+                                },
+                            )),
+                        )
                         .child(from),
                 )
             } else {
                 div().flex().flex_col().child(text)
             };
-            ul = ul.child(div().flex().text_size(px(13.5)).child(div().flex_none().w(px(16.)).pl(px(4.)).text_color(t.text_2).child("•")).child(row.flex_1().min_w_0()));
+            ul = ul.child(
+                div()
+                    .flex()
+                    .text_size(px(13.5))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(16.))
+                            .pl(px(4.))
+                            .text_color(t.text_2)
+                            .child("•"),
+                    )
+                    .child(row.flex_1().min_w_0()),
+            );
         }
         grp = grp.child(ul);
         card = card.child(grp);
@@ -2706,7 +3830,15 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         }
     }
     let st = &m.goal_page;
-    let v = backlog_view(g, &st.sel, st.show_dropped, &st.kept, &st.order, m.jira_on(), bulk_busy);
+    let v = backlog_view(
+        g,
+        &st.sel,
+        st.show_dropped,
+        &st.kept,
+        &st.order,
+        m.jira_on(),
+        bulk_busy,
+    );
     let order: Vec<String> = v.rows.iter().map(|r| r.r.clone()).collect();
     let pickable = v.pickable.clone();
     m.goal_page.sel.retain(|r| pickable.contains(r));
@@ -2715,7 +3847,12 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         Some(Panel::Issue { r }) => Some(r.clone()),
         _ => None,
     };
-    let mut col = div().flex().flex_col().gap(px(12.)).child(div().text_size(px(13.)).text_color(t.muted).child(BACKLOG_HELP));
+    let mut col = div().flex().flex_col().gap(px(12.)).child(
+        div()
+            .text_size(px(13.))
+            .text_color(t.muted)
+            .child(BACKLOG_HELP),
+    );
     if let Some(bar) = &v.bar {
         let n = m.goal_page.sel.len();
         let all = n > 0 && n == pickable.len();
@@ -2728,7 +3865,15 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
             .gap(px(8.))
             .min_h(px(36.))
             .px(px(16.))
-            .when(n > 0, |d| d.pl(px(16.)).pr(px(12.)).py(px(8.)).bg(t.accent_soft).border_1().border_color(t.accent_line).rounded(px(12.)))
+            .when(n > 0, |d| {
+                d.pl(px(16.))
+                    .pr(px(12.))
+                    .py(px(8.))
+                    .bg(t.accent_soft)
+                    .border_1()
+                    .border_color(t.accent_line)
+                    .rounded(px(12.))
+            })
             .child(
                 div()
                     .id("bl-pick-all")
@@ -2738,7 +3883,11 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                     .cursor_pointer()
                     .text_size(px(13.))
                     .text_color(t.muted)
-                    .when(n > 0, |d| d.text_color(t.text).font_weight(FontWeight::SEMIBOLD).mr(px(4.)))
+                    .when(n > 0, |d| {
+                        d.text_color(t.text)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .mr(px(4.))
+                    })
                     .child(checkbox(t, all, n > 0 && !all))
                     .child(bar.label.clone())
                     .on_click(cx.listener(move |m, _, _, cx| {
@@ -2762,19 +3911,38 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
             let own_busy = busy(m, &format!("bl-bulk:{action}:"));
             let shown = if own_busy { "Sending…" } else { label };
             let el = match action {
-                "clear" => kit::link(t, "bl-pick-clear", label).text_color(t.accent_fg).underline().when(!bulk_busy, |d| {
-                    d.on_click(cx.listener(|m, _, _, cx| {
-                        m.goal_page.sel.clear();
-                        m.goal_page.anchor = None;
-                        m.goal_page.notes.remove("bulk");
-                        cx.notify();
-                    }))
+                "clear" => kit::link(t, "bl-pick-clear", label)
+                    .text_color(t.accent_fg)
+                    .underline()
+                    .when(!bulk_busy, |d| {
+                        d.on_click(cx.listener(|m, _, _, cx| {
+                            m.goal_page.sel.clear();
+                            m.goal_page.anchor = None;
+                            m.goal_page.notes.remove("bulk");
+                            cx.notify();
+                        }))
+                    }),
+                a => act_btn(
+                    btn_sm(
+                        t,
+                        SharedString::from(format!("bl-bulk-{a}")),
+                        shown,
+                        match a {
+                            "task" => "soft",
+                            "drop" => "ghost",
+                            _ => "",
+                        },
+                    ),
+                    bulk_busy,
+                )
+                .when(!bulk_busy, |d| {
+                    d.on_click(cx.listener(move |m, _, _, cx| bulk(m, a, json!({}), cx)))
                 }),
-                a => act_btn(btn_sm(t, SharedString::from(format!("bl-bulk-{a}")), shown, match a { "task" => "soft", "drop" => "ghost", _ => "" }), bulk_busy)
-                    .when(!bulk_busy, |d| d.on_click(cx.listener(move |m, _, _, cx| bulk(m, a, json!({}), cx)))),
             };
             if action == "clear" {
-                row = row.children(inline_note(m, t, "bulk")).child(div().flex_1());
+                row = row
+                    .children(inline_note(m, t, "bulk"))
+                    .child(div().flex_1());
             }
             row = row.child(el);
         }
@@ -2782,7 +3950,14 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
     }
     if !v.rows.is_empty() {
         let picks_any = !pickable.is_empty();
-        let mut list = div().flex().flex_col().rounded(px(12.)).border_1().border_color(t.border).bg(t.card).overflow_hidden();
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.card)
+            .overflow_hidden();
         for (ix, row) in v.rows.iter().enumerate() {
             let r = row.r.clone();
             let picked = m.goal_page.sel.contains(&r);
@@ -2808,10 +3983,29 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                     "drop" => "ghost",
                     _ => "",
                 };
-                let bt = act_btn(btn_sm(t, SharedString::from(format!("bl-{act}-{r}")), if is_busy { "Sending…" } else { a }, style), is_busy);
-                acts = acts.child(if is_busy { bt } else { bt.on_click(cx.listener(move |m, _, _, cx| issue_action(m, act, &rr, cx))) });
+                let bt = act_btn(
+                    btn_sm(
+                        t,
+                        SharedString::from(format!("bl-{act}-{r}")),
+                        if is_busy { "Sending…" } else { a },
+                        style,
+                    ),
+                    is_busy,
+                );
+                acts = acts.child(if is_busy {
+                    bt
+                } else {
+                    bt.on_click(cx.listener(move |m, _, _, cx| issue_action(m, act, &rr, cx)))
+                });
             }
-            let state_kind = s(arr(g, "backlog").iter().find(|x| fmt::ref_of(x, "B") == r).unwrap_or(&Value::Null), "state").to_string();
+            let state_kind = s(
+                arr(g, "backlog")
+                    .iter()
+                    .find(|x| fmt::ref_of(x, "B") == r)
+                    .unwrap_or(&Value::Null),
+                "state",
+            )
+            .to_string();
             let (sfg, sbg) = match state_kind.as_str() {
                 "task" => (t.goal, t.goal_soft),
                 "ticket" => (t.accent_fg, t.accent_soft),
@@ -2832,7 +4026,17 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                     .when(ix > 0, |d| d.border_t_1().border_color(t.divider))
                     .when(picked && !on, |d| d.bg(tint.opacity(0.8)))
                     .when(!on, |d| d.hover(move |s| s.bg(tint.opacity(0.6))))
-                    .when(on, |d| d.bg(tint).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(t.accent)))
+                    .when(on, |d| {
+                        d.bg(tint).child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(3.))
+                                .bg(t.accent),
+                        )
+                    })
                     .when(row.checkbox, |d| {
                         d.child(
                             div()
@@ -2864,16 +4068,54 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
                                     .items_start()
                                     .gap(px(8.))
                                     .min_w_0()
-                                    .child(kind_chip(t, s(arr(g, "backlog").iter().find(|x| fmt::ref_of(x, "B") == r).unwrap_or(&Value::Null), "kind"), row.kind.clone()).mt(px(2.)))
-                                    .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.4)).child(row.title.clone())),
+                                    .child(
+                                        kind_chip(
+                                            t,
+                                            s(
+                                                arr(g, "backlog")
+                                                    .iter()
+                                                    .find(|x| fmt::ref_of(x, "B") == r)
+                                                    .unwrap_or(&Value::Null),
+                                                "kind",
+                                            ),
+                                            row.kind.clone(),
+                                        )
+                                        .mt(px(2.)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .line_height(relative(1.4))
+                                            .child(row.title.clone()),
+                                    ),
                             )
-                            .child(div().text_size(px(12.5)).text_color(t.muted).child(row.from.clone()))
-                            .on_click(cx.listener(move |m, _, _, cx| m.open_issue(open_r.clone(), cx))),
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(t.muted)
+                                    .child(row.from.clone()),
+                            )
+                            .on_click(
+                                cx.listener(move |m, _, _, cx| m.open_issue(open_r.clone(), cx)),
+                            ),
                     )
                     .child(match &row.state {
                         Some(state) if row.actions.is_empty() => div()
                             .flex()
-                            .child(div().px(px(8.)).py(px(2.)).rounded(px(6.)).bg(sbg).text_color(sfg).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(state.clone()))
+                            .child(
+                                div()
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(6.))
+                                    .bg(sbg)
+                                    .text_color(sfg)
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(state.clone()),
+                            )
                             .into_any_element(),
                         _ => acts.into_any_element(),
                     })
@@ -2883,18 +4125,38 @@ fn backlog(m: &mut MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow
         col = col.child(list);
     }
     if let Some((line, button)) = v.closed {
-        col = col.child(div().flex().items_center().gap(px(4.)).text_size(px(12.5)).text_color(t.muted).child(line.trim_end().to_string()).when_some(button, |d, label| {
-            d.child(kit::link(t, "show-dropped", label).text_size(px(12.5)).text_color(t.accent_fg).underline().on_click(cx.listener(|m, _, _, cx| {
-                m.goal_page.show_dropped = !m.goal_page.show_dropped;
-                cx.notify();
-            })))
-        }));
+        col = col.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(12.5))
+                .text_color(t.muted)
+                .child(line.trim_end().to_string())
+                .when_some(button, |d, label| {
+                    d.child(
+                        kit::link(t, "show-dropped", label)
+                            .text_size(px(12.5))
+                            .text_color(t.accent_fg)
+                            .underline()
+                            .on_click(cx.listener(|m, _, _, cx| {
+                                m.goal_page.show_dropped = !m.goal_page.show_dropped;
+                                cx.notify();
+                            })),
+                    )
+                }),
+        );
     }
     col
 }
 
 /// The Deprioritize confirmation and the full-note dialog (the web's `gdeprio` / `gnote` modals).
-fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+fn dialog(
+    m: &MainWindow,
+    t: &Theme,
+    g: &Value,
+    cx: &mut Context<MainWindow>,
+) -> Option<AnyElement> {
     let focus = m.goal_page.dialog_focus.clone()?;
     let gr = fmt::ref_of(g, "G");
     // `.modal-head`: an 18px title and the 36px close button.
@@ -2904,7 +4166,13 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(div().flex_1().text_size(px(18.)).font_weight(FontWeight::BOLD).child(title))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(18.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(title),
+            )
             .child(
                 div()
                     .id("goal-dialog-close")
@@ -2926,18 +4194,53 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
             )
     };
     // `.modal.narrow`: 560px, 28px padding, 18px gap, 16px radius.
-    let shell = || kit::modal_box(t, 560.).border_0().rounded(px(16.)).p(px(28.)).gap(px(18.));
+    let shell = || {
+        kit::modal_box(t, 560.)
+            .border_0()
+            .rounded(px(16.))
+            .p(px(28.))
+            .gap(px(18.))
+    };
     let body: Div = if m.goal_page.deprio_open && !b(g, "deprioritized") {
         let (title, paras, buttons) = deprio_dialog_view(g);
-        let name = fmt::opt_s(g, "name").map(str::to_string).unwrap_or_else(|| gr.clone());
-        let rest = paras[0].strip_prefix(&name).unwrap_or(&paras[0]).to_string();
+        let name = fmt::opt_s(g, "name")
+            .map(str::to_string)
+            .unwrap_or_else(|| gr.clone());
+        let rest = paras[0]
+            .strip_prefix(&name)
+            .unwrap_or(&paras[0])
+            .to_string();
         let is_busy = busy(m, &format!("goal-deprio-yes::{gr}"));
         let lg = |b: Stateful<Div>| b.h(px(42.)).px(px(16.)).rounded(px(8.)).text_size(px(14.));
-        let yes = act_btn(lg(md_btn(t, "goal-deprio-yes", "danger")).bg(t.down).border_color(t.down).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).child(if is_busy { "Deprioritizing…" } else { buttons[1] }), is_busy);
-        let yes = if is_busy { yes } else { yes.on_click(cx.listener(move |m, _, _, cx| set_deprioritized(m, &gr, true, cx))) };
+        let yes = act_btn(
+            lg(md_btn(t, "goal-deprio-yes", "danger"))
+                .bg(t.down)
+                .border_color(t.down)
+                .text_color(t.on_accent)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if is_busy {
+                    "Deprioritizing…"
+                } else {
+                    buttons[1]
+                }),
+            is_busy,
+        );
+        let yes = if is_busy {
+            yes
+        } else {
+            yes.on_click(cx.listener(move |m, _, _, cx| set_deprioritized(m, &gr, true, cx)))
+        };
         shell()
             .child(head(div().child(title).into_any_element()))
-            .child(div().text_size(px(14.)).child(StyledText::new(format!("{name}{rest}")).with_highlights([(0..name.len(), HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() })])))
+            .child(div().text_size(px(14.)).child(
+                StyledText::new(format!("{name}{rest}")).with_highlights([(
+                    0..name.len(),
+                    HighlightStyle {
+                        font_weight: Some(FontWeight::BOLD),
+                        ..Default::default()
+                    },
+                )]),
+            ))
             .child(kit::help(t, paras[1].clone()))
             .child(
                 div()
@@ -2948,7 +4251,11 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                     .pt(px(14.))
                     .border_t_1()
                     .border_color(t.divider)
-                    .child(lg(md_btn(t, "goal-deprio-no", "")).child(buttons[0]).on_click(cx.listener(|m, _, _, cx| close_dialog(m, cx))))
+                    .child(
+                        lg(md_btn(t, "goal-deprio-no", ""))
+                            .child(buttons[0])
+                            .on_click(cx.listener(|m, _, _, cx| close_dialog(m, cx))),
+                    )
                     .child(yes),
             )
     } else if let Some(n) = &m.goal_page.note_dialog {
@@ -2956,9 +4263,19 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
             .flex()
             .items_baseline()
             .gap(px(6.))
-            .when(b(n, "pinned"), |d| d.child(div().text_color(t.goal).font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child("Pinned")))
+            .when(b(n, "pinned"), |d| {
+                d.child(
+                    div()
+                        .text_color(t.goal)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(13.))
+                        .child("Pinned"),
+                )
+            })
             .child(note_dialog_title(n));
-        shell().child(head(title.into_any_element())).child(note_body(t, &note_blocks(s(n, "text")), i(n, "id")))
+        shell()
+            .child(head(title.into_any_element()))
+            .child(note_body(t, &note_blocks(s(n, "text")), i(n, "id")))
     } else {
         return None;
     };
@@ -2979,7 +4296,12 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                 .justify_center()
                 // A click on the backdrop does nothing (`modal-bg`), but doesn't reach the page.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(div().id("goal-dialog").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(body)),
+                .child(
+                    div()
+                        .id("goal-dialog")
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(body),
+                ),
         )
         .with_priority(1)
         .into_any_element(),
@@ -2989,31 +4311,54 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
 /// `noteBody` rendered: paragraphs, bullets, code blocks, links and `code`.
 /// `inlineText`'s segments as one run of text: code on a tinted ground, links that open.
 fn inline_el(t: &Theme, segs: &[Inline], key: String) -> AnyElement {
-        let mut text = String::new();
-        let mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-        let mut links: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-        for seg in segs {
-            let start = text.len();
-            match seg {
-                Inline::Text(x) => text.push_str(x),
-                Inline::Code(x) => {
-                    text.push_str(x);
-                    hl.push((start..text.len(), HighlightStyle { background_color: Some(t.bg), ..Default::default() }));
-                }
-                Inline::Link(u) => {
-                    text.push_str(u);
-                    hl.push((start..text.len(), HighlightStyle { color: Some(t.accent_fg), underline: Some(UnderlineStyle { thickness: px(1.), color: Some(t.accent_fg), wavy: false }), ..Default::default() }));
-                    links.push((start..text.len(), u.clone()));
-                }
+    let mut text = String::new();
+    let mut hl: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+    let mut links: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    for seg in segs {
+        let start = text.len();
+        match seg {
+            Inline::Text(x) => text.push_str(x),
+            Inline::Code(x) => {
+                text.push_str(x);
+                hl.push((
+                    start..text.len(),
+                    HighlightStyle {
+                        background_color: Some(t.bg),
+                        ..Default::default()
+                    },
+                ));
+            }
+            Inline::Link(u) => {
+                text.push_str(u);
+                hl.push((
+                    start..text.len(),
+                    HighlightStyle {
+                        color: Some(t.accent_fg),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.),
+                            color: Some(t.accent_fg),
+                            wavy: false,
+                        }),
+                        ..Default::default()
+                    },
+                ));
+                links.push((start..text.len(), u.clone()));
             }
         }
-        let styled = StyledText::new(text).with_highlights(hl);
-        if links.is_empty() {
-            return styled.into_any_element();
-        }
-        let ranges: Vec<_> = links.iter().map(|(r, _)| r.clone()).collect();
-        let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
-        InteractiveText::new(SharedString::from(key), styled).on_click(ranges, move |ix, _, cx| if let Some(u) = urls.get(ix) { cx.open_url(u) }).into_any_element()
+    }
+    let styled = StyledText::new(text).with_highlights(hl);
+    if links.is_empty() {
+        return styled.into_any_element();
+    }
+    let ranges: Vec<_> = links.iter().map(|(r, _)| r.clone()).collect();
+    let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
+    InteractiveText::new(SharedString::from(key), styled)
+        .on_click(ranges, move |ix, _, cx| {
+            if let Some(u) = urls.get(ix) {
+                cx.open_url(u)
+            }
+        })
+        .into_any_element()
 }
 
 fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
@@ -3022,7 +4367,13 @@ fn note_body(t: &Theme, blocks: &[NoteBlock], id: i64) -> Div {
 
 fn note_body_keyed(t: &Theme, blocks: &[NoteBlock], key: &str) -> Div {
     let inline = |segs: &[Inline], k: String| inline_el(t, segs, k);
-    let mut col = div().flex().flex_col().gap(px(10.)).text_size(px(14.)).line_height(relative(1.55)).text_color(t.text);
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .text_size(px(14.))
+        .line_height(relative(1.55))
+        .text_color(t.text);
     for (bi, block) in blocks.iter().enumerate() {
         col = col.child(match block {
             NoteBlock::P(lines) => {
@@ -3035,7 +4386,18 @@ fn note_body_keyed(t: &Theme, blocks: &[NoteBlock], key: &str) -> Div {
             NoteBlock::Ul(items) => {
                 let mut ul = div().flex().flex_col().gap(px(4.)).pl(px(18.));
                 for (li, it) in items.iter().enumerate() {
-                    ul = ul.child(div().flex().gap(px(6.)).child(div().flex_none().text_color(t.muted).child("•")).child(div().flex_1().min_w_0().child(inline(it, format!("{key}-{bi}-{li}")))));
+                    ul = ul.child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .child(div().flex_none().text_color(t.muted).child("•"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(inline(it, format!("{key}-{bi}-{li}"))),
+                            ),
+                    );
                 }
                 ul
             }
@@ -3093,7 +4455,11 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             .pt(px(44.))
             .px(px(28.))
             .child(match err {
-                Some(e) => div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e),
+                Some(e) => div()
+                    .text_size(px(12.5))
+                    .text_color(t.down)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(e),
                 None => kit::help(&t, "Loading…"),
             })
             .into_any_element();
@@ -3101,17 +4467,29 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
     let backlog_view = m.goal_page.backlog_view;
     let qa_view = !backlog_view && m.goal_page.qa_view && !arr(&g, "qa").is_empty();
     let items = tab_items(&g);
-    let tabs = seg_counts(&t, "goal-view", &items, if backlog_view { 1 } else if qa_view { 2 } else { 0 }, |ix, item| {
-        item.on_click(cx.listener(move |m, _, _, cx| {
-            m.goal_page.backlog_view = ix == 1;
-            m.goal_page.qa_view = ix == 2;
-            // `goal-view` also closes the open issue.
-            if matches!(m.panel, Some(Panel::Issue { .. })) {
-                m.close_panel(cx);
-            }
-            cx.notify();
-        }))
-    });
+    let tabs = seg_counts(
+        &t,
+        "goal-view",
+        &items,
+        if backlog_view {
+            1
+        } else if qa_view {
+            2
+        } else {
+            0
+        },
+        |ix, item| {
+            item.on_click(cx.listener(move |m, _, _, cx| {
+                m.goal_page.backlog_view = ix == 1;
+                m.goal_page.qa_view = ix == 2;
+                // `goal-view` also closes the open issue.
+                if matches!(m.panel, Some(Panel::Issue { .. })) {
+                    m.close_panel(cx);
+                }
+                cx.notify();
+            }))
+        },
+    );
     // `.gbody`: the section (1.5fr) and the aside (1fr), 24px apart; the aside starts level with the
     // list, under the `.gbar` (38px) and its 12px gap.
     let mut left = div()
@@ -3120,7 +4498,11 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
         .min_w_0()
         .gap(px(12.))
         .child(div().flex().items_center().gap(px(8.)).child(tabs))
-        .when(!backlog_view && !qa_view, |d| d.children(gate(m, &t, &g, cx)).child(task_rows(m, &t, &g, cx)).child(how_runs(m, &t, &g, cx)))
+        .when(!backlog_view && !qa_view, |d| {
+            d.children(gate(m, &t, &g, cx))
+                .child(task_rows(m, &t, &g, cx))
+                .child(how_runs(m, &t, &g, cx))
+        })
         .when(qa_view, |d| d.child(qa_tab(m, &t, &g, cx)))
         .when(backlog_view, |d| d.child(backlog(m, &t, &g, cx)));
     left.style().flex_grow = Some(1.5);
@@ -3142,7 +4524,10 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
         )
     };
     let right = div().flex_1().min_w_0().mt(px(50.)).children(right_body);
-    let overlays: Vec<AnyElement> = [start_menu(m, &t, &g, cx), dialog(m, &t, &g, cx)].into_iter().flatten().collect();
+    let overlays: Vec<AnyElement> = [start_menu(m, &t, &g, cx), dialog(m, &t, &g, cx)]
+        .into_iter()
+        .flatten()
+        .collect();
     div()
         .id("goal-page")
         .flex_1()
@@ -3158,7 +4543,14 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .px(px(40.))
                 .pb(px(48.))
                 .child(header(m, &t, &g, cx))
-                .child(div().flex().items_start().gap(px(24.)).child(left).child(right)),
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(24.))
+                        .child(left)
+                        .child(right),
+                ),
         )
         .children(overlays)
         .into_any_element()
@@ -3190,7 +4582,9 @@ mod tests {
                 .iter()
                 .map(|b| match b {
                     NoteBlock::P(lines) => json!({"p": lines.iter().map(seg).collect::<Vec<_>>()}),
-                    NoteBlock::Ul(items) => json!({"ul": items.iter().map(seg).collect::<Vec<_>>()}),
+                    NoteBlock::Ul(items) => {
+                        json!({"ul": items.iter().map(seg).collect::<Vec<_>>()})
+                    }
                     NoteBlock::Pre(x) => json!({"pre": x}),
                 })
                 .collect(),
@@ -3198,12 +4592,16 @@ mod tests {
     }
 
     fn note_items_json(groups: Vec<(&'static str, Vec<NoteItem>)>) -> Value {
-        json!(groups
-            .into_iter()
-            .map(|(title, items)| json!({"title": title, "items": items.iter().map(|n| json!({
+        json!(
+            groups
+                .into_iter()
+                .map(
+                    |(title, items)| json!({"title": title, "items": items.iter().map(|n| json!({
                 "text": if n.pinned { format!("Pinned {}", n.text) } else { n.text.clone() },
-                "from": n.from, "long": n.long, "pinned": n.pinned})).collect::<Vec<_>>()}))
-            .collect::<Vec<_>>())
+                "from": n.from, "long": n.long, "pinned": n.pinned})).collect::<Vec<_>>()})
+                )
+                .collect::<Vec<_>>()
+        )
     }
 
     /// Every pure view against the web board's own output (times of day: `times_match_web`).
@@ -3211,7 +4609,14 @@ mod tests {
     fn views_match_web() {
         let g = golden("goal");
         let skip = ["action", "noteFromTimes", "issueFromTimes"];
-        let cases = parity::Golden { cases: g.cases.iter().filter(|c| !skip.contains(&c["input"]["fn"].as_str().unwrap_or(""))).cloned().collect() };
+        let cases = parity::Golden {
+            cases: g
+                .cases
+                .iter()
+                .filter(|c| !skip.contains(&c["input"]["fn"].as_str().unwrap_or("")))
+                .cloned()
+                .collect(),
+        };
         cases.check(|i| {
             let goal = &i["goal"];
             match i["fn"].as_str().unwrap() {
@@ -3336,17 +4741,49 @@ mod tests {
     #[::core::prelude::v1::test]
     fn toasts_match_web() {
         let g = golden("goal").only("action");
-        let find = |n: &str| g.cases.iter().find(|c| c["name"] == format!("action {n}")).map(|c| c["expect"].clone()).unwrap();
+        let find = |n: &str| {
+            g.cases
+                .iter()
+                .find(|c| c["name"] == format!("action {n}"))
+                .map(|c| c["expect"].clone())
+                .unwrap()
+        };
         let open = json!({"on": true, "open": true});
         let closed = json!({"on": true, "open": false, "next_open": "2026-10-08T06:00"});
-        assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 2}), &open)}), find("run")["feedback"]);
-        assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 0}), &open)}), find("run, nothing queued")["feedback"]);
-        assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 1}), &open)}), find("run, 1 queued")["feedback"]);
-        assert_eq!(json!({"toast": run_toast(&json!({"queued_now": 3}), &closed)}), find("run after hours")["feedback"]);
-        assert_eq!(json!({"toast": run_now_toast(&json!({"queued_now": 2}))}), find("run now")["feedback"]);
-        assert_eq!(json!({"toast": run_now_toast(&json!({}))}), find("run now, none")["feedback"]);
-        for (name, action) in [("bulk make tasks", "task"), ("bulk tickets", "ticket"), ("bulk drop", "drop")] {
-            assert_eq!(json!([bulk_toast(action, 2), bulk_toast(action, 1)]), find(name)["bulk_toast"], "{name}");
+        assert_eq!(
+            json!({"toast": run_toast(&json!({"queued_now": 2}), &open)}),
+            find("run")["feedback"]
+        );
+        assert_eq!(
+            json!({"toast": run_toast(&json!({"queued_now": 0}), &open)}),
+            find("run, nothing queued")["feedback"]
+        );
+        assert_eq!(
+            json!({"toast": run_toast(&json!({"queued_now": 1}), &open)}),
+            find("run, 1 queued")["feedback"]
+        );
+        assert_eq!(
+            json!({"toast": run_toast(&json!({"queued_now": 3}), &closed)}),
+            find("run after hours")["feedback"]
+        );
+        assert_eq!(
+            json!({"toast": run_now_toast(&json!({"queued_now": 2}))}),
+            find("run now")["feedback"]
+        );
+        assert_eq!(
+            json!({"toast": run_now_toast(&json!({}))}),
+            find("run now, none")["feedback"]
+        );
+        for (name, action) in [
+            ("bulk make tasks", "task"),
+            ("bulk tickets", "ticket"),
+            ("bulk drop", "drop"),
+        ] {
+            assert_eq!(
+                json!([bulk_toast(action, 2), bulk_toast(action, 1)]),
+                find(name)["bulk_toast"],
+                "{name}"
+            );
         }
     }
 
@@ -3367,7 +4804,12 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn review_log_issues_say_so() {
-        let from = |src: &str| issue_from(&json!({"source": src, "found_by_name": "Sam", "created_at": ""}), true);
+        let from = |src: &str| {
+            issue_from(
+                &json!({"source": src, "found_by_name": "Sam", "created_at": ""}),
+                true,
+            )
+        };
         assert_eq!(from("review_log"), "From the Review log");
         assert_eq!(from("you"), "Added by you");
     }
@@ -3376,14 +4818,32 @@ mod tests {
 
     fn expect_post(name: &str) -> (String, Value, Value) {
         let g = golden("goal").only("action");
-        let c = g.cases.iter().find(|c| c["name"] == format!("action {name}")).unwrap_or_else(|| panic!("no golden action {name}"));
+        let c = g
+            .cases
+            .iter()
+            .find(|c| c["name"] == format!("action {name}"))
+            .unwrap_or_else(|| panic!("no golden action {name}"));
         let post = &c["expect"]["posts"][0];
-        (post[0].as_str().unwrap().trim_start_matches('/').to_string(), post[1].clone(), c["expect"]["feedback"].clone())
+        (
+            post[0]
+                .as_str()
+                .unwrap()
+                .trim_start_matches('/')
+                .to_string(),
+            post[1].clone(),
+            c["expect"]["feedback"].clone(),
+        )
     }
 
-    fn goal_window(cx: &mut gpui_kit::TestAppContext) -> (gpui_kit::WindowHandle<MainWindow>, std::sync::Arc<parity::Recording>) {
+    fn goal_window(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (
+        gpui_kit::WindowHandle<MainWindow>,
+        std::sync::Arc<parity::Recording>,
+    ) {
         let (w, rec) = parity::window(cx);
-        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx))
+            .unwrap();
         parity::settle(cx);
         rec.clear();
         (w, rec)
@@ -3391,13 +4851,33 @@ mod tests {
 
     /// Path and body of the last POST to `path`, and what it showed.
     fn sent(rec: &parity::Recording, path: &str) -> Value {
-        rec.last(path).unwrap_or_else(|| panic!("nothing posted to {path}: {:?}", rec.posts()))
+        rec.last(path)
+            .unwrap_or_else(|| panic!("nothing posted to {path}: {:?}", rec.posts()))
     }
 
-    fn feedback(w: &gpui_kit::WindowHandle<MainWindow>, cx: &mut gpui_kit::TestAppContext, grp: Option<&str>) -> Value {
+    fn feedback(
+        w: &gpui_kit::WindowHandle<MainWindow>,
+        cx: &mut gpui_kit::TestAppContext,
+        grp: Option<&str>,
+    ) -> Value {
         w.update(cx, |m, _, _| match grp {
-            Some(g) => m.goal_page.notes.get(g).map(|(t, err)| if *err { json!({"error": t}) } else { json!({"note": g, "text": t}) }).unwrap_or(Value::Null),
-            None => m.toasts.last().map(|t| json!({"toast": t.text})).unwrap_or(Value::Null),
+            Some(g) => m
+                .goal_page
+                .notes
+                .get(g)
+                .map(|(t, err)| {
+                    if *err {
+                        json!({"error": t})
+                    } else {
+                        json!({"note": g, "text": t})
+                    }
+                })
+                .unwrap_or(Value::Null),
+            None => m
+                .toasts
+                .last()
+                .map(|t| json!({"toast": t.text}))
+                .unwrap_or(Value::Null),
         })
         .unwrap()
     }
@@ -3410,12 +4890,30 @@ mod tests {
             ("run now", Box::new(|m, cx| run_goal(m, "G1", true, cx))),
             ("plan", Box::new(|m, cx| plan_goal(m, "G1", cx))),
             ("pause", Box::new(|m, cx| set_paused(m, "G1", true, cx))),
-            ("resume (gate)", Box::new(|m, cx| set_paused(m, "G1", false, cx))),
-            ("deprioritize (dialog)", Box::new(|m, cx| set_deprioritized(m, "G1", true, cx))),
-            ("bring back (gate)", Box::new(|m, cx| set_deprioritized(m, "G1", false, cx))),
-            ("set max terminals", Box::new(|m, cx| set_run_option(m, "G1", "max_terminals", json!(3), cx))),
-            ("set run in order off", Box::new(|m, cx| set_run_option(m, "G1", "run_in_order", json!(false), cx))),
-            ("set auto close on", Box::new(|m, cx| set_run_option(m, "G1", "auto_close", json!(true), cx))),
+            (
+                "resume (gate)",
+                Box::new(|m, cx| set_paused(m, "G1", false, cx)),
+            ),
+            (
+                "deprioritize (dialog)",
+                Box::new(|m, cx| set_deprioritized(m, "G1", true, cx)),
+            ),
+            (
+                "bring back (gate)",
+                Box::new(|m, cx| set_deprioritized(m, "G1", false, cx)),
+            ),
+            (
+                "set max terminals",
+                Box::new(|m, cx| set_run_option(m, "G1", "max_terminals", json!(3), cx)),
+            ),
+            (
+                "set run in order off",
+                Box::new(|m, cx| set_run_option(m, "G1", "run_in_order", json!(false), cx)),
+            ),
+            (
+                "set auto close on",
+                Box::new(|m, cx| set_run_option(m, "G1", "auto_close", json!(true), cx)),
+            ),
         ];
         for (name, f) in cases {
             rec.clear();
@@ -3428,7 +4926,11 @@ mod tests {
             let grp = fb.get("note").and_then(Value::as_str);
             let got = feedback(&w, cx, grp);
             if grp.is_some() {
-                assert_eq!(got.get("note"), fb.get("note"), "{name}: shown in {grp:?}, got {got}");
+                assert_eq!(
+                    got.get("note"),
+                    fb.get("note"),
+                    "{name}: shown in {grp:?}, got {got}"
+                );
             } else if name != "run" && name != "run now" {
                 assert_eq!(got, fb, "{name}: toast");
             }
@@ -3439,18 +4941,47 @@ mod tests {
     fn issues_send_what_the_web_sent(cx: &mut gpui_kit::TestAppContext) {
         let (w, rec) = goal_window(cx);
         // Backlog rows and the bulk bar.
-        for (name, act) in [("promote (goal row)", "promote"), ("ticket (goal row)", "ticket"), ("drop (goal row)", "drop")] {
+        for (name, act) in [
+            ("promote (goal row)", "promote"),
+            ("ticket (goal row)", "ticket"),
+            ("drop (goal row)", "drop"),
+        ] {
             rec.clear();
-            w.update(cx, |m, _, cx| issue_action(m, act, "B1", cx)).unwrap();
+            w.update(cx, |m, _, cx| issue_action(m, act, "B1", cx))
+                .unwrap();
             parity::settle(cx);
             let (path, body, _) = expect_post(name);
             assert_eq!(sent(&rec, &path), body, "{name}");
         }
-        w.update(cx, |m, _, _| assert!(m.goal_page.kept.contains_key("B1"), "a changed issue stays in the list")).unwrap();
+        w.update(cx, |m, _, _| {
+            assert!(
+                m.goal_page.kept.contains_key("B1"),
+                "a changed issue stays in the list"
+            )
+        })
+        .unwrap();
         for (name, sel, f) in [
-            ("bulk make tasks", vec!["B1", "B2"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| bulk(m, "task", json!({}), cx)) as Box<dyn Fn(&mut MainWindow, &mut Context<MainWindow>)>),
-            ("bulk tickets", vec!["B2"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| bulk(m, "ticket", json!({}), cx))),
-            ("bulk drop", vec!["B3", "B1"], Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| bulk(m, "drop", json!({}), cx))),
+            (
+                "bulk make tasks",
+                vec!["B1", "B2"],
+                Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| {
+                    bulk(m, "task", json!({}), cx)
+                }) as Box<dyn Fn(&mut MainWindow, &mut Context<MainWindow>)>,
+            ),
+            (
+                "bulk tickets",
+                vec!["B2"],
+                Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| {
+                    bulk(m, "ticket", json!({}), cx)
+                }),
+            ),
+            (
+                "bulk drop",
+                vec!["B3", "B1"],
+                Box::new(|m: &mut MainWindow, cx: &mut Context<MainWindow>| {
+                    bulk(m, "drop", json!({}), cx)
+                }),
+            ),
         ] {
             rec.clear();
             w.update(cx, |m, _, cx| {
@@ -3461,22 +4992,43 @@ mod tests {
             parity::settle(cx);
             assert_eq!(sent(&rec, "backlog/bulk"), expect_post(name).1, "{name}");
             // The sample board only has B1 and G1: other ids fail, and then (as on the web) the selection stays.
-            let failed = w.update(cx, |m, _, _| m.goal_page.notes.get("bulk").is_some_and(|(_, err)| *err)).unwrap();
+            let failed = w
+                .update(cx, |m, _, _| {
+                    m.goal_page.notes.get("bulk").is_some_and(|(_, err)| *err)
+                })
+                .unwrap();
             let left = w.update(cx, |m, _, _| m.goal_page.sel.len()).unwrap();
             if name == "bulk move out" {
-                assert!(!failed && left == 0, "{name}: done, selection cleared ({:?})", w.update(cx, |m, _, _| m.goal_page.notes.get("bulk").cloned()).unwrap());
+                assert!(
+                    !failed && left == 0,
+                    "{name}: done, selection cleared ({:?})",
+                    w.update(cx, |m, _, _| m.goal_page.notes.get("bulk").cloned())
+                        .unwrap()
+                );
             } else {
-                assert!(!failed || left == sel.len(), "{name}: a failure keeps the selection");
+                assert!(
+                    !failed || left == sel.len(),
+                    "{name}: a failure keeps the selection"
+                );
             }
         }
     }
 
     #[::core::prelude::v1::test]
     fn shift_click_picks_a_range() {
-        let pickable: Vec<String> = ["B1", "B2", "B3", "B4"].iter().map(|x| x.to_string()).collect();
+        let pickable: Vec<String> = ["B1", "B2", "B3", "B4"]
+            .iter()
+            .map(|x| x.to_string())
+            .collect();
         let mut st = State::default();
         let pick_on = |st: &mut State, r: &str, shift: bool| {
-            let span: Vec<String> = match (shift, st.anchor.as_ref().and_then(|a| pickable.iter().position(|x| x == a)), pickable.iter().position(|x| x == r)) {
+            let span: Vec<String> = match (
+                shift,
+                st.anchor
+                    .as_ref()
+                    .and_then(|a| pickable.iter().position(|x| x == a)),
+                pickable.iter().position(|x| x == r),
+            ) {
                 (true, Some(a), Some(j)) => pickable[a.min(j)..=a.max(j)].to_vec(),
                 _ => vec![r.to_string()],
             };
@@ -3496,10 +5048,16 @@ mod tests {
     fn kept_rows_stay_where_they_were() {
         let g = json!({"backlog": [{"id": 1, "ref": "B1", "state": "open"}, {"id": 3, "ref": "B3", "state": "open"}]});
         let mut kept = HashMap::new();
-        kept.insert("B2".to_string(), json!({"id": 2, "ref": "B2", "state": "drop"}));
+        kept.insert(
+            "B2".to_string(),
+            json!({"id": 2, "ref": "B2", "state": "drop"}),
+        );
         let order = vec!["B1".to_string(), "B2".to_string(), "B3".to_string()];
         let rows = backlog_rows(&g, &kept, &order, false);
-        assert_eq!(rows.iter().map(|r| fmt::ref_of(r, "B")).collect::<Vec<_>>(), vec!["B1", "B2", "B3"]);
+        assert_eq!(
+            rows.iter().map(|r| fmt::ref_of(r, "B")).collect::<Vec<_>>(),
+            vec!["B1", "B2", "B3"]
+        );
         // Without being kept, a dropped issue is hidden until Show.
         let g2 = json!({"backlog": [{"id": 2, "ref": "B2", "state": "drop"}]});
         assert!(backlog_rows(&g2, &HashMap::new(), &[], false).is_empty());
@@ -3525,8 +5083,15 @@ mod pr_plan_tests {
                 MetaBit::Ref("G2".into()),
             ]
         );
-        assert_eq!(meta_bits("starts when a terminal is free"), vec![MetaBit::Text("starts when a terminal is free".into())]);
-        assert_eq!(meta_bits("Tests ran 2x"), vec![MetaBit::Text("Tests ran 2x".into())], "words aren't refs");
+        assert_eq!(
+            meta_bits("starts when a terminal is free"),
+            vec![MetaBit::Text("starts when a terminal is free".into())]
+        );
+        assert_eq!(
+            meta_bits("Tests ran 2x"),
+            vec![MetaBit::Text("Tests ran 2x".into())],
+            "words aren't refs"
+        );
     }
 
     #[::core::prelude::v1::test]
@@ -3535,26 +5100,53 @@ mod pr_plan_tests {
         let todo = json!({"status": "queued", "ships_pr": true});
         let none = json!({"status": "queued", "ships_pr": false});
         let canceled = json!({"status": "done", "ships_pr": true, "no_pr": "not needed"});
-        assert_eq!(pr_count(&[open.clone(), todo.clone(), none.clone(), canceled.clone()]), "1 of 2 PRs opened · 1 canceled");
+        assert_eq!(
+            pr_count(&[open.clone(), todo.clone(), none.clone(), canceled.clone()]),
+            "1 of 2 PRs opened · 1 canceled"
+        );
         assert_eq!(pr_count(&[none.clone()]), "No PRs planned");
         // The web board's own count, before the board sent a plan.
-        assert_eq!(pr_count(&[json!({"pr": {"num": 3, "state": "MERGED"}})]), "1 of 1 PR merged");
+        assert_eq!(
+            pr_count(&[json!({"pr": {"num": 3, "state": "MERGED"}})]),
+            "1 of 1 PR merged"
+        );
         let row = task_row_view(&todo, 0, std::slice::from_ref(&todo), &json!({}));
         assert!(row.pr_planned);
-        assert!(task_meta(&canceled, 0, std::slice::from_ref(&canceled), &json!({})).contains("PR canceled: not needed"));
+        assert!(
+            task_meta(&canceled, 0, std::slice::from_ref(&canceled), &json!({}))
+                .contains("PR canceled: not needed")
+        );
         // The wave rail has a chip for it.
-        assert!(waves::wtask(&canceled).facts.iter().any(|(c, x)| *c == "quiet" && x == "PR canceled: not needed"));
-        assert!(!waves::wtask(&open).facts.iter().any(|(_, x)| x.starts_with("PR canceled")));
+        assert!(
+            waves::wtask(&canceled)
+                .facts
+                .iter()
+                .any(|(c, x)| *c == "quiet" && x == "PR canceled: not needed")
+        );
+        assert!(
+            !waves::wtask(&open)
+                .facts
+                .iter()
+                .any(|(_, x)| x.starts_with("PR canceled"))
+        );
     }
 
     #[::core::prelude::v1::test]
     fn a_task_waiting_on_its_merge_is_not_done() {
         let row = |t: &Value| task_row_view(t, 0, std::slice::from_ref(t), &json!({}));
         let open = json!({"status": "done", "pr": {"num": 3, "state": "OPEN"}});
-        assert_eq!((row(&open).key, row(&open).chip), ("merge", "Awaiting merge"));
+        assert_eq!(
+            (row(&open).key, row(&open).chip.as_str()),
+            ("merge", "Awaiting merge")
+        );
         let stopped = json!({"status": "done", "pr": {"num": 3, "state": "OPEN", "stage": {"stopped": {"asked": true}}}});
         assert_eq!(row(&stopped).chip, "Needs you");
         let merged = json!({"status": "done", "pr": {"num": 3, "state": "MERGED"}});
         assert_eq!(row(&merged).chip, "Done");
+        let checks = json!({"status": "done", "pr": {"num": 3, "state": "OPEN", "stage": {"phase": "fix", "label": "Checks failed"}}});
+        assert_eq!(
+            (row(&checks).chip.as_str(), row(&checks).tone),
+            ("Checks failed", "down")
+        );
     }
 }

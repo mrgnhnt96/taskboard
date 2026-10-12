@@ -62,7 +62,9 @@ pub fn locale_cmp(a: &str, b: &str) -> Ordering {
         (p, sec, ter)
     }
     let (ka, kb) = (keys(a), keys(b));
-    ka.0.cmp(&kb.0).then_with(|| ka.1.cmp(&kb.1)).then_with(|| ka.2.cmp(&kb.2))
+    ka.0.cmp(&kb.0)
+        .then_with(|| ka.1.cmp(&kb.1))
+        .then_with(|| ka.2.cmp(&kb.2))
 }
 
 fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
@@ -73,7 +75,10 @@ fn close(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) 
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     // The alerts dialog closes itself once nothing needs you (renderBanner).
-    if matches!(m.modal, Some(Modal::Alerts)) && arr(m.state(), "alerts").is_empty() && m.data.state.is_some() {
+    if matches!(m.modal, Some(Modal::Alerts))
+        && arr(m.state(), "alerts").is_empty()
+        && m.data.state.is_some()
+    {
         m.modal = None;
         window.focus(&m.focus, cx);
         return div().into_any_element();
@@ -89,7 +94,14 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             .justify_center()
             .on_action(cx.listener(|m, _: &CloseOverlay, window, cx| on_escape(m, window, cx)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().id("modal-body").flex().flex_col().max_h(relative(0.92)).child(body)),
+            .child(
+                div()
+                    .id("modal-body")
+                    .flex()
+                    .flex_col()
+                    .max_h(relative(0.92))
+                    .child(body),
+            ),
     )
     .with_priority(1)
     .into_any_element()
@@ -112,14 +124,27 @@ pub fn head(t: &Theme, title: impl Into<SharedString>, cx: &mut Context<MainWind
         .px(px(20.))
         .pt(px(18.))
         .pb(px(12.))
-        .child(div().flex_1().text_size(px(17.)).font_weight(FontWeight::BOLD).child(title.into()))
-        .child(kit::btn_small(t, "modal-close", "Close").on_click(cx.listener(|m, _, window, cx| close(m, window, cx))))
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(17.))
+                .font_weight(FontWeight::BOLD)
+                .child(title.into()),
+        )
+        .child(
+            kit::btn_small(t, "modal-close", "Close")
+                .on_click(cx.listener(|m, _, window, cx| close(m, window, cx))),
+        )
 }
 
 fn alerts(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
     let list = arr(m.state(), "alerts").to_vec();
     let (title, _) = crate::app::alerts_dialog_view(&list);
-    let mut col = div().id("alerts-list").flex().flex_col().overflow_y_scroll();
+    let mut col = div()
+        .id("alerts-list")
+        .flex()
+        .flex_col()
+        .overflow_y_scroll();
     for a in &list {
         col = col.child(alert_row(t, a, cx));
     }

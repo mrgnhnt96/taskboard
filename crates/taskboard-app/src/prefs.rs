@@ -25,7 +25,9 @@ thread_local! {
 fn default_path() -> PathBuf {
     match std::env::var("TASKBOARD_DATA") {
         Ok(d) if !d.trim().is_empty() => taskboardd::util::expand_home(&d).join("app-state.json"),
-        _ => taskboardd::util::expand_home("~/Library/Application Support/com.mrgnhnt.taskboard/app-state.json"),
+        _ => taskboardd::util::expand_home(
+            "~/Library/Application Support/com.mrgnhnt.taskboard/app-state.json",
+        ),
     }
 }
 
@@ -49,7 +51,10 @@ fn with<R>(f: impl FnOnce(&mut Store) -> R) -> R {
 #[cfg(not(test))]
 fn with<R>(f: impl FnOnce(&mut Store) -> R) -> R {
     let mut g = STORE.lock().unwrap_or_else(|e| e.into_inner());
-    let s = g.get_or_insert_with(|| Store { path: None, map: Map::new() });
+    let s = g.get_or_insert_with(|| Store {
+        path: None,
+        map: Map::new(),
+    });
     f(s)
 }
 
@@ -59,7 +64,12 @@ fn save(s: &Store) {
         let _ = std::fs::create_dir_all(d);
     }
     let tmp = p.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_vec_pretty(&Value::Object(s.map.clone())).unwrap_or_default()).is_ok() {
+    if std::fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(&Value::Object(s.map.clone())).unwrap_or_default(),
+    )
+    .is_ok()
+    {
         let _ = std::fs::rename(&tmp, p);
     }
 }

@@ -28,7 +28,9 @@ pub fn frozen_now() -> Option<DateTime<Utc>> {
 
 /// Freeze `fmt::now()` on this thread (tests run each on their own thread).
 pub fn freeze(iso: &str) {
-    let t = DateTime::parse_from_rfc3339(iso).expect("frozen time").with_timezone(&Utc);
+    let t = DateTime::parse_from_rfc3339(iso)
+        .expect("frozen time")
+        .with_timezone(&Utc);
     NOW.with(|n| n.set(Some(t)));
 }
 
@@ -39,10 +41,13 @@ pub struct Golden {
 /// `parity/golden/<name>.json`, with the clock frozen at its `now`.
 pub fn golden(name: &str) -> Golden {
     let path = format!("{}/parity/golden/{name}.json", env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e} (run parity/regen.sh)"));
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{path}: {e} (run parity/regen.sh)"));
     let v: Value = serde_json::from_str(&text).expect("golden json");
     freeze(v["now"].as_str().expect("golden now"));
-    Golden { cases: v["cases"].as_array().cloned().unwrap_or_default() }
+    Golden {
+        cases: v["cases"].as_array().cloned().unwrap_or_default(),
+    }
 }
 
 impl Golden {
@@ -52,15 +57,33 @@ impl Golden {
         for c in &self.cases {
             let got = f(&c["input"]);
             if got != c["expect"] {
-                bad.push(format!("  {}: web {} / app {}", c["name"].as_str().unwrap_or("?"), c["expect"], got));
+                bad.push(format!(
+                    "  {}: web {} / app {}",
+                    c["name"].as_str().unwrap_or("?"),
+                    c["expect"],
+                    got
+                ));
             }
         }
-        assert!(bad.is_empty(), "{} of {} cases differ from the web board:\n{}", bad.len(), self.cases.len(), bad.join("\n"));
+        assert!(
+            bad.is_empty(),
+            "{} of {} cases differ from the web board:\n{}",
+            bad.len(),
+            self.cases.len(),
+            bad.join("\n")
+        );
     }
 
     /// Only the cases whose `input.fn` is `name`.
     pub fn only(&self, name: &str) -> Golden {
-        Golden { cases: self.cases.iter().filter(|c| c["input"]["fn"] == name).cloned().collect() }
+        Golden {
+            cases: self
+                .cases
+                .iter()
+                .filter(|c| c["input"]["fn"] == name)
+                .cloned()
+                .collect(),
+        }
     }
 }
 
@@ -76,7 +99,11 @@ pub struct Recording {
 
 impl Recording {
     pub fn new() -> Arc<Recording> {
-        Arc::new(Recording { inner: Fake::new(), posts: Mutex::new(Vec::new()), fail: Mutex::new(Vec::new()) })
+        Arc::new(Recording {
+            inner: Fake::new(),
+            posts: Mutex::new(Vec::new()),
+            fail: Mutex::new(Vec::new()),
+        })
     }
 
     pub fn posts(&self) -> Vec<(String, Value)> {
@@ -85,7 +112,13 @@ impl Recording {
 
     /// The last POST to `path`.
     pub fn last(&self, path: &str) -> Option<Value> {
-        self.posts.lock().unwrap().iter().rev().find(|(p, _)| p == path).map(|(_, b)| b.clone())
+        self.posts
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(p, _)| p == path)
+            .map(|(_, b)| b.clone())
     }
 
     pub fn clear(&self) {
@@ -94,7 +127,10 @@ impl Recording {
 
     /// Make `GET <path>` fail with the board's `status` and sentence (empty `msg`: unreachable).
     pub fn fail(&self, path: &str, status: u16, msg: &str) {
-        self.fail.lock().unwrap().push((path.to_string(), status, msg.to_string()));
+        self.fail
+            .lock()
+            .unwrap()
+            .push((path.to_string(), status, msg.to_string()));
     }
 
     pub fn heal(&self) {
@@ -112,13 +148,20 @@ impl Backend for Recording {
         "recording"
     }
     fn get(&self, path: &str, query: &[(&str, String)]) -> CallResult {
-        if let Some((_, status, msg)) = self.fail.lock().unwrap().iter().find(|(p, _, _)| p == path) {
-            return Err(crate::backend::CallError { status: *status, message: msg.clone() });
+        if let Some((_, status, msg)) = self.fail.lock().unwrap().iter().find(|(p, _, _)| p == path)
+        {
+            return Err(crate::backend::CallError {
+                status: *status,
+                message: msg.clone(),
+            });
         }
         self.inner.get(path, query)
     }
     fn post(&self, path: &str, body: Value) -> CallResult {
-        self.posts.lock().unwrap().push((path.to_string(), body.clone()));
+        self.posts
+            .lock()
+            .unwrap()
+            .push((path.to_string(), body.clone()));
         self.inner.post(path, body)
     }
 }
@@ -126,11 +169,20 @@ impl Backend for Recording {
 // ------------------------------------------------------------------ headless window
 
 /// A `MainWindow` on a fresh [`Recording`] board, after its first refresh landed.
-pub fn window(cx: &mut gpui_kit::TestAppContext) -> (gpui_kit::WindowHandle<crate::app::MainWindow>, Arc<Recording>) {
+pub fn window(
+    cx: &mut gpui_kit::TestAppContext,
+) -> (
+    gpui_kit::WindowHandle<crate::app::MainWindow>,
+    Arc<Recording>,
+) {
     let rec = Recording::new();
     crate::prefs::reset();
     cx.update(|cx| {
-        cx.set_global(crate::theme::Theme::new(crate::theme::ThemeMode::Light, "Helvetica Neue".into(), "Menlo".into()));
+        cx.set_global(crate::theme::Theme::new(
+            crate::theme::ThemeMode::Light,
+            "Helvetica Neue".into(),
+            "Menlo".into(),
+        ));
         crate::app::bind_keys(cx);
     });
     let be: Arc<dyn Backend> = rec.clone();
@@ -180,25 +232,37 @@ mod tests {
     fn notification_links_open_the_right_place(cx: &mut gpui_kit::TestAppContext) {
         use crate::app::{Page, Panel};
         let (w, _rec) = window(cx);
-        w.update(cx, |m, _, cx| m.open_link("taskboard://task/t3", cx)).unwrap();
+        w.update(cx, |m, _, cx| m.open_link("taskboard://task/t3", cx))
+            .unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
             assert!(matches!(&m.panel, Some(Panel::Task { r, .. }) if r == "T3"));
-            assert_eq!(m.data.task.as_ref().and_then(|t| t["ref"].as_str()), Some("T3"), "task detail fetched");
+            assert_eq!(
+                m.data.task.as_ref().and_then(|t| t["ref"].as_str()),
+                Some("T3"),
+                "task detail fetched"
+            );
         })
         .unwrap();
-        w.update(cx, |m, _, cx| m.open_link("taskboard-dev://goal/G1", cx)).unwrap();
+        w.update(cx, |m, _, cx| m.open_link("taskboard-dev://goal/G1", cx))
+            .unwrap();
         settle(cx);
-        w.update(cx, |m, _, _| assert_eq!(m.page, Page::Goal("G1".into()))).unwrap();
-        w.update(cx, |m, _, cx| m.open_link("taskboard://session/fake-s2", cx)).unwrap();
+        w.update(cx, |m, _, _| assert_eq!(m.page, Page::Goal("G1".into())))
+            .unwrap();
+        w.update(cx, |m, _, cx| {
+            m.open_link("taskboard://session/fake-s2", cx)
+        })
+        .unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
             assert_eq!(m.page, Page::Sessions);
             assert_eq!(m.sessions.selected.as_deref(), Some("fake-s2"));
         })
         .unwrap();
-        w.update(cx, |m, _, cx| m.open_link("taskboard://", cx)).unwrap();
-        w.update(cx, |m, _, _| assert_eq!(m.page, Page::Board)).unwrap();
+        w.update(cx, |m, _, cx| m.open_link("taskboard://", cx))
+            .unwrap();
+        w.update(cx, |m, _, _| assert_eq!(m.page, Page::Board))
+            .unwrap();
     }
 
     /// `loadTask`: a failed fetch keeps the panel open with the board's sentence in place of
@@ -211,7 +275,11 @@ mod tests {
         w.update(cx, |m, _, _| {
             assert!(m.panel.is_some(), "the panel stays open, as on the web");
             assert!(m.data.task.is_none());
-            assert_eq!(m.data.errs.task.as_deref(), Some("There's no task T99."), "the board's own sentence");
+            assert_eq!(
+                m.data.errs.task.as_deref(),
+                Some("There's no task T99."),
+                "the board's own sentence"
+            );
         })
         .unwrap();
     }
@@ -223,7 +291,11 @@ mod tests {
         use crate::app::Page;
         let (w, rec) = window(cx);
         // Sessions: list and detail.
-        rec.fail("sessions", 500, "The board hit an error. It's in the board's log.");
+        rec.fail(
+            "sessions",
+            500,
+            "The board hit an error. It's in the board's log.",
+        );
         rec.fail("sessions/fake-s1", 404, "There's nothing at that address.");
         w.update(cx, |m, _, cx| {
             m.sessions.selected = Some("fake-s1".into());
@@ -232,16 +304,29 @@ mod tests {
         .unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
-            assert_eq!(m.data.errs.sessions.as_deref(), Some("The board hit an error. It's in the board's log."));
-            assert_eq!(m.data.errs.session.as_deref(), Some("There's nothing at that address."));
-            assert!(m.data.session.is_none(), "a failed detail for another terminal shows nothing");
+            assert_eq!(
+                m.data.errs.sessions.as_deref(),
+                Some("The board hit an error. It's in the board's log.")
+            );
+            assert_eq!(
+                m.data.errs.session.as_deref(),
+                Some("There's nothing at that address.")
+            );
+            assert!(
+                m.data.session.is_none(),
+                "a failed detail for another terminal shows nothing"
+            );
         })
         .unwrap();
         // Goal page.
         rec.fail("goals/G1", 500, "Boom.");
-        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx))
+            .unwrap();
         settle(cx);
-        w.update(cx, |m, _, _| assert_eq!(m.data.errs.goal.as_deref(), Some("Boom."))).unwrap();
+        w.update(cx, |m, _, _| {
+            assert_eq!(m.data.errs.goal.as_deref(), Some("Boom."))
+        })
+        .unwrap();
         // While the board is down, only the banner speaks.
         rec.heal();
         rec.fail("state", 0, "Can’t reach the task board server.");
@@ -249,8 +334,15 @@ mod tests {
         w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
-            assert_eq!(m.down.as_deref(), Some("Can’t reach the task board server."));
-            assert_eq!(m.data.errs.goal.as_deref(), Some("Boom."), "unchanged: nothing else was fetched");
+            assert_eq!(
+                m.down.as_deref(),
+                Some("Can’t reach the task board server.")
+            );
+            assert_eq!(
+                m.data.errs.goal.as_deref(),
+                Some("Boom."),
+                "unchanged: nothing else was fetched"
+            );
         })
         .unwrap();
     }
@@ -260,9 +352,11 @@ mod tests {
     fn another_goal_starts_empty(cx: &mut gpui_kit::TestAppContext) {
         use crate::app::Page;
         let (w, _rec) = window(cx);
-        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx)).unwrap();
+        w.update(cx, |m, _, cx| m.go(Page::Goal("G1".into()), cx))
+            .unwrap();
         settle(cx);
-        w.update(cx, |m, _, _| assert!(m.data.goal.is_some())).unwrap();
+        w.update(cx, |m, _, _| assert!(m.data.goal.is_some()))
+            .unwrap();
         w.update(cx, |m, _, cx| {
             m.go(Page::Goal("G9".into()), cx);
             assert!(m.data.goal.is_none(), "G1 isn't shown as G9 while it loads");
@@ -274,25 +368,42 @@ mod tests {
     fn filters_persist_like_the_web(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m, _, cx| {
-            let f = crate::app::Filters { project: "webapp".into(), goal: "G1".into(), done: "7d".into() };
+            let f = crate::app::Filters {
+                project: "webapp".into(),
+                goal: "G1".into(),
+                done: "7d".into(),
+            };
             m.set_filters(f, cx);
         })
         .unwrap();
         let saved = crate::prefs::get("taskboard.filter").unwrap();
-        assert_eq!(saved, json!({"project": "webapp", "goal": "G1", "done": "7d"}));
+        assert_eq!(
+            saved,
+            json!({"project": "webapp", "goal": "G1", "done": "7d"})
+        );
         let f = crate::app::Filters::load();
-        assert_eq!((f.project.as_str(), f.goal.as_str(), f.done.as_str()), ("webapp", "G1", "7d"));
+        assert_eq!(
+            (f.project.as_str(), f.goal.as_str(), f.done.as_str()),
+            ("webapp", "G1", "7d")
+        );
         // Invalid saved values fall back field by field (loadFilter).
-        crate::prefs::set("taskboard.filter", json!({"project": 3, "goal": "nope", "done": "1y"}));
+        crate::prefs::set(
+            "taskboard.filter",
+            json!({"project": 3, "goal": "nope", "done": "1y"}),
+        );
         let f = crate::app::Filters::load();
-        assert_eq!((f.project.as_str(), f.goal.as_str(), f.done.as_str()), ("all", "all", "24h"));
+        assert_eq!(
+            (f.project.as_str(), f.goal.as_str(), f.done.as_str()),
+            ("all", "all", "24h")
+        );
     }
 
     /// The task panel's "N open in the goal’s backlog" opens that goal on its Backlog tab.
     #[gpui_kit::test]
     fn goal_backlog_link_opens_the_backlog_tab(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
-        w.update(cx, |m, _, cx| crate::ui::goal::open(m, "G1", true, cx)).unwrap();
+        w.update(cx, |m, _, cx| crate::ui::goal::open(m, "G1", true, cx))
+            .unwrap();
         settle(cx);
         w.update(cx, |m, _, _| {
             assert_eq!(m.page, crate::app::Page::Goal("G1".into()));

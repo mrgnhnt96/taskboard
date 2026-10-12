@@ -15,7 +15,10 @@ enum Block {
     /// Lines, each already through the inline pass (markup).
     Para(Vec<String>),
     Heading(String),
-    List { ordered: bool, items: Vec<String> },
+    List {
+        ordered: bool,
+        items: Vec<String>,
+    },
     /// Raw code (escaped only when written out as HTML).
     Code(String),
 }
@@ -24,8 +27,22 @@ enum Block {
 
 /// JS `\s`.
 fn js_space(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{a0}' | '\u{1680}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
-        || ('\u{2000}'..='\u{200a}').contains(&c)
+    matches!(
+        c,
+        ' ' | '\t'
+            | '\n'
+            | '\r'
+            | '\u{b}'
+            | '\u{c}'
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    ) || ('\u{2000}'..='\u{200a}').contains(&c)
 }
 
 /// JS `\w`.
@@ -61,7 +78,9 @@ fn prepare(text: &str, max: usize) -> String {
         return src;
     }
     // src.lastIndexOf('\n', max): the last newline at index <= max.
-    let cut = units[..=max.min(units.len() - 1)].iter().rposition(|&u| u == b'\n' as u16);
+    let cut = units[..=max.min(units.len() - 1)]
+        .iter()
+        .rposition(|&u| u == b'\n' as u16);
     let at = match cut {
         Some(c) if c as f64 > max as f64 * 0.6 => c,
         _ => max,
@@ -108,7 +127,8 @@ pub fn inline(t: &str) -> String {
         while j < cs.len() && cs[j] != '`' && cs[j] != '\n' {
             j += 1;
         }
-        (j < cs.len() && cs[j] == '`' && j > i + 1).then(|| (j + 1, format!("<code>{}</code>", collect(cs, i + 1, j))))
+        (j < cs.len() && cs[j] == '`' && j > i + 1)
+            .then(|| (j + 1, format!("<code>{}</code>", collect(cs, i + 1, j))))
     });
     // /\*\*([^*\n]+)\*\*/g
     let s = replace_all(&s, |cs, i| {
@@ -119,7 +139,8 @@ pub fn inline(t: &str) -> String {
         while j < cs.len() && cs[j] != '*' && cs[j] != '\n' {
             j += 1;
         }
-        (j > i + 2 && cs.get(j) == Some(&'*') && cs.get(j + 1) == Some(&'*')).then(|| (j + 2, format!("<b>{}</b>", collect(cs, i + 2, j))))
+        (j > i + 2 && cs.get(j) == Some(&'*') && cs.get(j + 1) == Some(&'*'))
+            .then(|| (j + 2, format!("<b>{}</b>", collect(cs, i + 2, j))))
     });
     // /(^|[^\w*])\*([^*\n]+)\*(?!\w)/g  — group 1 is the char before (or the string start).
     let s = replace_all(&s, |cs, i| {
@@ -134,7 +155,8 @@ pub fn inline(t: &str) -> String {
         while j < cs.len() && cs[j] != '*' && cs[j] != '\n' {
             j += 1;
         }
-        let ok = j > star + 1 && cs.get(j) == Some(&'*') && !cs.get(j + 1).is_some_and(|c| js_word(*c));
+        let ok =
+            j > star + 1 && cs.get(j) == Some(&'*') && !cs.get(j + 1).is_some_and(|c| js_word(*c));
         ok.then(|| (j + 1, format!("{lead}<i>{}</i>", collect(cs, star + 1, j))))
     });
     // /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g
@@ -159,7 +181,13 @@ pub fn inline(t: &str) -> String {
             return None;
         }
         let url = collect(cs, u0, k);
-        Some((k + 1, format!("<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">{}</a>", collect(cs, i + 1, j))))
+        Some((
+            k + 1,
+            format!(
+                "<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">{}</a>",
+                collect(cs, i + 1, j)
+            ),
+        ))
     });
     // /(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?])/g
     replace_all(&s, |cs, i| {
@@ -185,7 +213,10 @@ pub fn inline(t: &str) -> String {
             return None;
         }
         let url = collect(cs, u0, end);
-        Some((end, format!("{lead}<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">{url}</a>")))
+        Some((
+            end,
+            format!("{lead}<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">{url}</a>"),
+        ))
     })
 }
 
@@ -236,10 +267,15 @@ fn parse(text: &str, max: usize) -> Vec<Block> {
     let mut code: Option<Vec<String>> = None;
     fn flush(out: &mut Vec<Block>, para: &mut Vec<String>, list: &mut Option<(bool, Vec<String>)>) {
         if !para.is_empty() {
-            out.push(Block::Para(std::mem::take(para).iter().map(|l| inline(l)).collect()));
+            out.push(Block::Para(
+                std::mem::take(para).iter().map(|l| inline(l)).collect(),
+            ));
         }
         if let Some((ordered, items)) = list.take() {
-            out.push(Block::List { ordered, items: items.iter().map(|i| inline(i)).collect() });
+            out.push(Block::List {
+                ordered,
+                items: items.iter().map(|i| inline(i)).collect(),
+            });
         }
     }
     let fence = |l: &str| l.trim_start_matches(js_space).starts_with("```");
@@ -296,7 +332,13 @@ fn to_html(text: &str, max: usize) -> String {
             Block::Heading(h) => o.push_str(&format!("<p class=\"md-h\">{h}</p>")),
             Block::List { ordered, items } => {
                 let tag = if ordered { "ol" } else { "ul" };
-                o.push_str(&format!("<{tag}>{}</{tag}>", items.iter().map(|i| format!("<li>{i}</li>")).collect::<String>()));
+                o.push_str(&format!(
+                    "<{tag}>{}</{tag}>",
+                    items
+                        .iter()
+                        .map(|i| format!("<li>{i}</li>"))
+                        .collect::<String>()
+                ));
             }
             Block::Code(c) => o.push_str(&format!("<pre><code>{}</code></pre>", esc(&c))),
         }
@@ -317,7 +359,11 @@ struct Span {
 }
 
 fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
 }
 
 /// Markup from [`inline`] → styled spans (tags nest: a link around code, bold inside code…).
@@ -340,9 +386,14 @@ fn spans(markup: &str) -> Vec<Span> {
         s
     };
     while !rest.is_empty() {
-        let tag = ["<code>", "</code>", "<b>", "</b>", "<i>", "</i>", "</a>"].into_iter().find(|t| rest.starts_with(t)).map(str::to_string).or_else(|| {
-            rest.strip_prefix("<a href=\"").and_then(|r| r.find("\">").map(|e| rest[..9 + e + 2].to_string()))
-        });
+        let tag = ["<code>", "</code>", "<b>", "</b>", "<i>", "</i>", "</a>"]
+            .into_iter()
+            .find(|t| rest.starts_with(t))
+            .map(str::to_string)
+            .or_else(|| {
+                rest.strip_prefix("<a href=\"")
+                    .and_then(|r| r.find("\">").map(|e| rest[..9 + e + 2].to_string()))
+            });
         match tag {
             Some(t) => {
                 if !cur.text.is_empty() {
@@ -355,7 +406,8 @@ fn spans(markup: &str) -> Vec<Span> {
                         stack.remove(i);
                     }
                 } else if t.starts_with("<a ") {
-                    let url = t["<a href=\"".len()..t.find("\" target").unwrap_or(t.len() - 2)].to_string();
+                    let url = t["<a href=\"".len()..t.find("\" target").unwrap_or(t.len() - 2)]
+                        .to_string();
                     stack.push(("a", Some(unescape(&url))));
                 } else {
                     let name: &'static str = match t.as_str() {
@@ -384,8 +436,15 @@ fn spans(markup: &str) -> Vec<Span> {
 
 fn inline_el(t: &Theme, markup: &str, id: &str) -> AnyElement {
     let parts = spans(markup);
-    if parts.iter().all(|p| *p == Span { text: p.text.clone(), ..Default::default() }) {
-        return div().child(parts.into_iter().map(|p| p.text).collect::<String>()).into_any_element();
+    if parts.iter().all(|p| {
+        *p == Span {
+            text: p.text.clone(),
+            ..Default::default()
+        }
+    }) {
+        return div()
+            .child(parts.into_iter().map(|p| p.text).collect::<String>())
+            .into_any_element();
     }
     let mut text = String::new();
     let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
@@ -406,7 +465,11 @@ fn inline_el(t: &Theme, markup: &str, id: &str) -> AnyElement {
         }
         if let Some(u) = &p.link {
             h.color = Some(t.accent);
-            h.underline = Some(UnderlineStyle { thickness: px(1.), color: Some(t.accent), wavy: false });
+            h.underline = Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(t.accent),
+                wavy: false,
+            });
             links.push((r.clone(), u.clone()));
         }
         if h != HighlightStyle::default() {
@@ -441,17 +504,28 @@ pub fn render(t: &Theme, text: &str, max: usize, id: &str) -> Div {
                 }
                 p.into_any_element()
             }
-            Block::Heading(h) => div().font_weight(FontWeight::BOLD).child(inline_el(t, &h, &bid)).into_any_element(),
+            Block::Heading(h) => div()
+                .font_weight(FontWeight::BOLD)
+                .child(inline_el(t, &h, &bid))
+                .into_any_element(),
             Block::List { ordered, items } => {
                 let mut l = div().flex().flex_col().gap(px(2.));
                 for (k, it) in items.iter().enumerate() {
-                    let mark = if ordered { format!("{}.", k + 1) } else { "•".into() };
+                    let mark = if ordered {
+                        format!("{}.", k + 1)
+                    } else {
+                        "•".into()
+                    };
                     l = l.child(
                         div()
                             .flex()
                             .gap(px(6.))
                             .child(div().flex_none().w(px(16.)).text_color(t.muted).child(mark))
-                            .child(div().flex_1().min_w_0().child(inline_el(t, it, &format!("{bid}-{k}")))),
+                            .child(div().flex_1().min_w_0().child(inline_el(
+                                t,
+                                it,
+                                &format!("{bid}-{k}"),
+                            ))),
                     );
                 }
                 l.into_any_element()
@@ -477,12 +551,19 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn md_lite_matches_web() {
-        crate::parity::golden("chrome").only("mdLite").check(|i| json!(to_html(i["text"].as_str().unwrap(), i["max"].as_u64().unwrap() as usize)));
+        crate::parity::golden("chrome").only("mdLite").check(|i| {
+            json!(to_html(
+                i["text"].as_str().unwrap(),
+                i["max"].as_u64().unwrap() as usize
+            ))
+        });
     }
 
     #[::core::prelude::v1::test]
     fn markup_to_spans() {
-        let s = spans("a <code>c</code> <a href=\"https://x.io\" target=\"_blank\" rel=\"noopener\"><code>k</code></a> &amp; <b>b<i>i</i></b>");
+        let s = spans(
+            "a <code>c</code> <a href=\"https://x.io\" target=\"_blank\" rel=\"noopener\"><code>k</code></a> &amp; <b>b<i>i</i></b>",
+        );
         assert_eq!(s[0].text, "a ");
         assert!(s[1].code && s[1].text == "c");
         assert!(s[3].code && s[3].link.as_deref() == Some("https://x.io") && s[3].text == "k");
