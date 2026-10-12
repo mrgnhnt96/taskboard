@@ -566,6 +566,13 @@ pub fn agents_merge_on(app: &App, project: Option<&str>) -> bool {
     crate::projects::pr_rules(app, project).agents_merge.unwrap_or_else(|| crate::projects::agents_merge_default(app))
 }
 
+/// Whether a green PR waits for the owner's review: the project's word (`tb project set
+/// --owner-review`, `[pr.projects.<name>] owner_review`), else the board's (`tb project owner-review`),
+/// else `pr.owner_review`. Off, `step` marks it reviewed for them.
+pub fn owner_review_on(app: &App, project: Option<&str>) -> bool {
+    crate::projects::pr_rules(app, project).owner_review.unwrap_or_else(|| crate::projects::owner_review_default(app))
+}
+
 /// Approvals this task's PR needs: its project's count, else `pr.approvals` (2). None (a count of 0):
 /// the host's own verdict decides.
 pub fn approvals_needed(app: &App, t: &Row) -> Option<i64> {
@@ -801,9 +808,20 @@ pub fn skip_checks(app: &App, t: &Row, reason: &str, all: bool, who: &str) -> Re
 
 /// Applies a fresh PR record to its task: stage, Jira, wakes.
 pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
-    let (f, heads) = with_head(t, rec);
+    let (mut f, heads) = with_head(t, rec);
     let head = rec["head"].as_str().unwrap_or("").to_string();
     let mut changes: Vec<(&str, Value)> = vec![("rec", rec.clone()), ("checked_at", json!(now_iso()))];
+    // The owner's review is off: a green PR that would wait for them is marked reviewed by the board.
+    if t.s("status") == Some("done")
+        && !f.contains_key("reviewed")
+        && !owner_review_on(app, t.s("project"))
+        && phase_of(app, &probe(t, &f), rec) == "review"
+    {
+        let at = now_iso();
+        f.insert("reviewed".into(), json!(at));
+        changes.push(("reviewed", json!(at)));
+        board::log_event(app, t.id(), board::BOARD, "status", &format!("PR #{}: marked reviewed for {} (owner review is off)", t.i0("pr_num"), app.cfg.owner))?;
+    }
     if let Some(heads) = heads {
         changes.push(("head_at", heads));
     }

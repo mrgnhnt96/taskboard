@@ -127,6 +127,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
         ("GET", ["projects", "agents-merge"]) => Ok(projects::describe_agents_merge(app)),
         ("POST", ["projects", "agents-merge"]) => set_agents_merge(app, body),
+        ("GET", ["projects", "owner-review"]) => Ok(projects::describe_owner_review(app)),
+        ("POST", ["projects", "owner-review"]) => set_owner_review(app, body),
         ("POST", ["projects", name]) => patch_project(app, name, body),
         ("GET", ["sessions"]) => Ok(json!({"sessions": ops::session_list(app, q(query, "project", "all"))?})),
         ("GET", ["sessions", "closed"]) => {
@@ -591,6 +593,20 @@ fn set_agents_merge(app: &App, body: &Value) -> Result<Value> {
     };
     app.db.tx(|| projects::set_agents_merge(app, on))?;
     Ok(projects::describe_agents_merge(app))
+}
+
+/// `tb project owner-review on|off|default`: whether green PRs wait for the owner's review on projects
+/// that don't say.
+fn set_owner_review(app: &App, body: &Value) -> Result<Value> {
+    let on = match body.get("owner_review") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) if s == "on" => Some(true),
+        Some(Value::String(s)) if s == "off" => Some(false),
+        Some(Value::Null) => None,
+        _ => return err(400, "owner_review is true (on), false (off) or null (config.toml's pr.owner_review)."),
+    };
+    app.db.tx(|| projects::set_owner_review(app, on))?;
+    Ok(projects::describe_owner_review(app))
 }
 
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
