@@ -1386,6 +1386,21 @@ fn print_pr_status(t: &str, v: &Value) {
     if let Some(e) = live["base_error"].as_str() {
         out(&format!("Couldn't compare with the base branch: {e}"));
     }
+    let e = &live["expected"];
+    let from = match e["source"].as_str() {
+        Some("command") => " (from expected_cmd)",
+        Some("list") => " (from the project's expected list)",
+        _ => "",
+    };
+    match e["checks"].as_array() {
+        Some(c) if c.is_empty() => out(&format!("Expected checks for this push: none{from}")),
+        Some(c) => out(&format!("Expected checks for this push: {}{from}", c.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))),
+        None if e["source"] == "command" => out(&format!(
+            "Expected checks for this push: expected_cmd couldn't tell{}",
+            e["error"].as_str().map(|x| format!(" ({x})")).unwrap_or_default()
+        )),
+        None => {}
+    }
     if let Some(m) = live["expected_missing"].as_array().filter(|m| !m.is_empty()) {
         let names = m.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ");
         match live["expected_wait_mins"].as_f64() {

@@ -510,6 +510,8 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     live["failures"] = json!(failures);
     live["base_error"] = json!(base_failing.err());
     live["not_ours"] = prflow::not_ours(&f, &rec);
+    let expected = prflow::expected_for(app, &t, &rec);
+    live["expected"] = json!({"checks": expected.checks, "source": expected.source, "error": expected.error});
     live["expected_missing"] = json!(prflow::expected_missing(app, &t, &rec));
     live["expected_wait_mins"] = json!(prflow::expected_wait_mins(app, &t));
     live["expected_waited_out"] = json!(prflow::expected_wait_over(app, &t, &f, &rec));
