@@ -355,10 +355,10 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<FeedCmd>,
     },
-    /// The work event stream (docs/STREAM.md): send events in protocol v1
+    /// The work event stream (docs/STREAM.md): each source's mode and health (no action), send events
     Stream {
         #[command(subcommand)]
-        action: StreamCmd,
+        action: Option<StreamCmd>,
     },
     /// Stop or resume the board's PR builds, only on the owner's word (no action: whether they're stopped)
     PrBuilds {
@@ -1218,6 +1218,13 @@ enum StreamCmd {
     Send {
         /// The JSON (stdin when left out or -)
         json: Option<String>,
+    },
+    /// Whether the board polls a source or its stream drives it, overriding config.toml
+    Mode {
+        /// prs, builds, jira or qa
+        source: String,
+        /// board, stream, or default (config.toml's)
+        mode: String,
     },
 }
 
@@ -3126,7 +3133,16 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Device { action } => device_cmd(c, action),
         Cmd::Feed { action } => feed_cmd(c, action),
-        Cmd::Stream { action: StreamCmd::Send { json } } => stream_send(c, json),
+        Cmd::Stream { action: Some(StreamCmd::Send { json }) } => stream_send(c, json),
+        Cmd::Stream { action: Some(StreamCmd::Mode { source, mode }) } => {
+            let v = c.call("POST", "/stream/mode", Some(json!({"source": source, "mode": mode})))?;
+            out(&stream_lines(&v));
+            Ok(0)
+        }
+        Cmd::Stream { action: None } => {
+            out(&stream_lines(&c.call("GET", "/stream", None)?));
+            Ok(0)
+        }
         Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
         Cmd::Master { args, why, who, proof } => master_cmd(c, args, why, who, proof),
         Cmd::Bits { goal, t } => {
@@ -4246,6 +4262,33 @@ fn rate_lines(v: &Value) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+/// One line per source: its mode (and where it's set), its stream's health and whether its poll runs.
+fn stream_lines(v: &Value) -> String {
+    let mut lines = vec![];
+    for s in v["sources"].as_array().into_iter().flatten() {
+        let mut line = format!("{:<7} {}", s["source"].as_str().unwrap_or("?"), s["mode"].as_str().unwrap_or("board"));
+        match s["mode_from"].as_str() {
+            Some("override") => line += " (tb stream mode)",
+            Some("config") => line += " (config.toml)",
+            _ => {}
+        }
+        if s["watched"] == true {
+            line += &match s["problem"].as_str() {
+                Some(p) => format!(" · {p}: {}", s["why"].as_str().unwrap_or("")),
+                None => " · healthy".to_string(),
+            };
+            for (k, label) in [("last_event_at", "last event"), ("last_heartbeat_at", "last heartbeat")] {
+                if let Some(t) = s[k].as_str() {
+                    line += &format!(" · {label} {}", taskboardd::util::local_clock(Some(t)));
+                }
+            }
+        }
+        line += if s["polling"] == true { " · polling" } else { " · poll resting" };
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 fn stream_send(c: &Ctx, json: Option<String>) -> Result<i32, String> {

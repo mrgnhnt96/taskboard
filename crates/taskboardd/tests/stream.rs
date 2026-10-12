@@ -1,6 +1,8 @@
 //! The work event stream, protocol v1 (#76): one endpoint takes one event or a batch, answers each
 //! event on its own (accepted, duplicate, rejected with why), keeps each payload once by its id and
-//! routes pr, build and heartbeat to the PR feed and jira.comment to QA comments.
+//! routes pr, build and heartbeat to the PR feed and jira.comment to QA comments. Each source (#77)
+//! has a mode, board or stream, and its own health; in stream mode a complete pr event is the PR's
+//! state and the source's own poll rests while its stream is healthy.
 
 use std::sync::Arc;
 
@@ -9,8 +11,9 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::prhost::{self, Check, FakeHost, Record};
-use taskboardd::util::{Row, RowExt};
-use taskboardd::{board, midna, reports};
+use taskboardd::stream::SourceConfig;
+use taskboardd::util::{iso, now_ts, Row, RowExt};
+use taskboardd::{board, feed, midna, prflow, reports};
 
 struct Board {
     app: Arc<App>,
@@ -18,9 +21,14 @@ struct Board {
 }
 
 fn board() -> Board {
+    board_with(|_| {})
+}
+
+fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     cfg.pr.watch = true;
+    f(&mut cfg);
     cfg.jira.site = "acme.atlassian.net".into();
     cfg.jira.project = "PROJ".into();
     let repo = dir.path().join("webapp");
@@ -33,6 +41,23 @@ fn board() -> Board {
 impl Board {
     fn post(&self, path: &str, body: Value) -> Value {
         api::dispatch(&self.app, "POST", path, &Query::new(), &body).unwrap_or_else(|e| panic!("POST {path}: {}", e.message))
+    }
+    fn get(&self, path: &str) -> Value {
+        api::dispatch(&self.app, "GET", path, &Query::new(), &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
+    }
+    fn mode_err(&self, body: Value) -> String {
+        api::dispatch(&self.app, "POST", "/stream/mode", &Query::new(), &body).expect_err("should fail").message
+    }
+    fn source(&self, name: &str) -> Value {
+        self.get("/stream")["sources"].as_array().unwrap().iter().find(|s| s["source"] == name).cloned().unwrap()
+    }
+    fn feed_state(&self, name: &str, st: Value) {
+        let key = if name == "prs" { "pr_feed".to_string() } else { format!("stream_feed_{name}") };
+        self.app.db.set_setting(&key, Some(&st.to_string())).unwrap();
+    }
+    fn rec(&self, id: i64) -> Value {
+        let f: Value = serde_json::from_str(&board::get_task(&self.app, id).unwrap().st("pr_flow")).unwrap();
+        f["rec"].clone()
     }
     fn send(&self, body: Value) -> Value {
         self.post("/stream/events", body)
@@ -69,6 +94,27 @@ fn ev(id: &str, kind: &str, extra: Value) -> Value {
         e[k] = v.clone();
     }
     e
+}
+
+fn ago(secs: f64) -> String {
+    iso(now_ts() - secs)
+}
+
+fn stream_mode(name: &str) -> impl FnOnce(&mut Config) + '_ {
+    move |c| {
+        c.stream.sources.insert(name.into(), SourceConfig { mode: "stream".into(), ..Default::default() });
+    }
+}
+
+fn host_rec(head: &str) -> Record {
+    Record {
+        state: "OPEN".into(),
+        author: "me".into(),
+        head: head.into(),
+        base: "main".into(),
+        checks: vec![Check { name: "build".into(), state: "passed".into(), url: None, at: None }],
+        ..Default::default()
+    }
 }
 
 fn batch(events: Vec<Value>) -> Value {
@@ -164,7 +210,7 @@ fn a_pr_event_refreshes_its_pr_and_says_whether_it_was_complete() {
 }
 
 #[test]
-fn build_and_heartbeat_events_reach_the_pr_feed() {
+fn build_and_heartbeat_events_reach_their_sources() {
     let b = board();
     let r = b.send(batch(vec![
         ev("b1", "build", json!({"repo": "acme/webapp", "branch": "main", "head": "abc", "state": "failed", "pipeline": "ci",
@@ -173,10 +219,15 @@ fn build_and_heartbeat_events_reach_the_pr_feed() {
     ]));
     assert_eq!(r["accepted"], 2, "{r}");
     assert_eq!(r["results"][0]["result"]["kind"], "build");
-    let feed: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
-    assert_eq!(feed["last_event"]["kind"], "build", "{feed}");
-    assert_eq!(feed["active"], true);
-    assert!(feed["last_heartbeat_at"].is_string());
+    assert_eq!(r["results"][1]["result"]["sources"], json!(["prs", "builds"]));
+    let builds = b.source("builds");
+    assert_eq!(builds["last_event"]["kind"], "build", "{builds}");
+    assert!(builds["last_heartbeat_at"].is_string());
+    let prs = b.source("prs");
+    assert_eq!(prs["last_event"], Value::Null, "a build is the builds source's: {prs}");
+    assert_eq!(prs["active"], true);
+    assert!(prs["last_heartbeat_at"].is_string());
+    assert_eq!(b.source("qa")["last_heartbeat_at"], Value::Null, "a heartbeat covers only the sources it names");
 }
 
 #[test]
@@ -200,4 +251,117 @@ fn the_old_endpoints_still_work() {
     b.post("/prs/heartbeat", json!({}));
     assert_eq!(b.post("/prs/event", json!({"repo": "acme/other", "num": 3}))["task"], Value::Null);
     assert!(b.post("/jira/comment", json!({"key": "PROJ-9", "comment_id": "101"}))["ignored"].is_string());
+}
+
+#[test]
+fn a_source_s_mode_comes_from_the_board_then_config_toml_then_board() {
+    let b = board_with(stream_mode("qa"));
+    let modes = |b: &Board| -> Vec<(String, String)> {
+        b.get("/stream")["sources"].as_array().unwrap().iter().map(|s| (s["mode"].as_str().unwrap().into(), s["mode_from"].as_str().unwrap().into())).collect()
+    };
+    let m = modes(&b);
+    assert_eq!(m[0], ("board".into(), "default".into()), "prs: today's behaviour");
+    assert_eq!(m[3], ("stream".into(), "config".into()), "qa: config.toml");
+
+    let r = b.post("/stream/mode", json!({"source": "prs", "mode": "stream"}));
+    assert_eq!(r["sources"][0]["mode_from"], "override", "{r}");
+    b.post("/stream/mode", json!({"source": "qa", "mode": "Board"}));
+    assert_eq!(modes(&b)[3], ("board".into(), "override".into()));
+    b.post("/stream/mode", json!({"source": "qa", "mode": "default"}));
+    assert_eq!(modes(&b)[3], ("stream".into(), "config".into()), "default drops the override");
+    assert_eq!(modes(&b)[0].0, "stream");
+
+    assert_eq!(b.mode_err(json!({"source": "ci", "mode": "stream"})), "source is one of prs, builds, jira, qa.");
+    assert_eq!(b.mode_err(json!({"source": "prs", "mode": "push"})), "mode is board, stream or default.");
+}
+
+#[test]
+fn in_stream_mode_a_complete_pr_event_is_the_pr_s_state() {
+    let b = board_with(stream_mode("prs"));
+    let id = b.pr_task(BB);
+    let h = FakeHost::new("bitbucket", host_rec("h0"));
+    prhost::install(&b.app, h.clone());
+    prflow::refresh_task(&b.app, id).unwrap().unwrap();
+    assert_eq!(b.rec(id)["head"], "h0", "the first read gives the board's account and the base head");
+
+    *h.rec.lock() = host_rec("h9");
+    let mut e = full_pr("pr1");
+    e["head"] = json!("h1");
+    e["reviewers"] = json!([{"who": "sam", "state": "approved"}, {"who": "kim", "state": "changes", "at": "2026-10-12T15:02:00Z"}]);
+    e["threads"] = json!([{"id": "t1", "path": "src/a.rs", "line": 3, "resolved": false,
+        "comments": [{"id": "c1", "author": "kim", "body": "Rename this", "at": "2026-10-12T15:01:00Z"}]}]);
+    let r = b.send(batch(vec![e]));
+    assert_eq!(r["results"][0]["result"]["applied"], true, "{r}");
+    let rec = b.rec(id);
+    assert_eq!(rec["head"], "h1", "the event, not the host (h9): {rec}");
+    assert_eq!(rec["approvals"], 1);
+    assert_eq!(rec["threads"][0]["text"], "Rename this");
+    assert_eq!(rec["threads"][0]["kind"], "review");
+    assert_eq!(rec["comments"], 1);
+
+    let r = b.send(batch(vec![ev("pr2", "pr", json!({"repo": "acme/webapp", "num": 9, "provider": "bitbucket", "head": "h2"}))]));
+    assert_eq!(r["results"][0]["result"]["applied"], false, "missing fields: {r}");
+    assert_eq!(b.rec(id)["head"], "h9", "an incomplete event falls back to one host read");
+}
+
+#[test]
+fn a_pr_with_no_read_yet_or_in_board_mode_is_read_from_its_host() {
+    let b = board_with(stream_mode("prs"));
+    let id = b.pr_task(BB);
+    prhost::install(&b.app, FakeHost::new("bitbucket", host_rec("h9")));
+    let r = b.send(batch(vec![full_pr("pr1")]));
+    assert_eq!(r["results"][0]["result"]["applied"], false, "no prior read: {r}");
+    assert_eq!(b.rec(id)["head"], "h9");
+
+    b.post("/stream/mode", json!({"source": "prs", "mode": "board"}));
+    let mut e = full_pr("pr2");
+    e["head"] = json!("h1");
+    let r = b.send(batch(vec![e]));
+    assert_eq!(r["results"][0]["result"]["applied"], false, "board mode: a hint");
+    assert_eq!(b.rec(id)["head"], "h9");
+}
+
+#[test]
+fn health_is_kept_per_source() {
+    let b = board_with(stream_mode("qa"));
+    let qa = b.source("qa");
+    assert_eq!((qa["watched"].as_bool(), qa["healthy"].as_bool()), (Some(true), Some(true)), "{qa}");
+    assert_eq!(b.source("builds")["watched"], false, "board mode: not watched");
+
+    b.send(batch(vec![ev("h1", "heartbeat", json!({"sources": ["qa"]}))]));
+    assert!(b.source("qa")["last_heartbeat_at"].is_string());
+    assert_eq!(b.source("prs")["last_heartbeat_at"], Value::Null);
+
+    b.feed_state("qa", json!({"since": ago(4000.0), "last_heartbeat_at": ago(200.0)}));
+    let qa = b.source("qa");
+    assert_eq!(qa["problem"], "stuck", "{qa}");
+    assert!(qa["why"].as_str().unwrap().contains("heartbeat for 3 minutes"), "{qa}");
+    assert_eq!(b.source("prs")["problem"], Value::Null, "one source's trouble is its own");
+
+    b.feed_state("qa", json!({"since": ago(4000.0)}));
+    assert_eq!(b.source("qa")["problem"], "silent");
+}
+
+#[test]
+fn a_stream_mode_source_s_poll_rests_while_its_stream_is_healthy() {
+    let b = board_with(|c| {
+        for s in ["prs", "builds", "qa"] {
+            stream_mode(s)(c);
+        }
+        c.feed.poll_while_healthy = true;
+    });
+    for s in ["prs", "builds", "qa"] {
+        b.feed_state(s, json!({"since": ago(10.0)}));
+        assert!(feed::poll_rests(&b.app, s), "{s}: healthy, so its poll rests");
+        assert_eq!(b.source(s)["polling"], false);
+        b.feed_state(s, json!({"since": ago(4000.0), "last_heartbeat_at": ago(200.0)}));
+        assert!(!feed::poll_rests(&b.app, s), "{s}: stuck, so its poll takes over");
+    }
+    assert!(feed::poll_due(&b.app));
+    assert!(!feed::poll_rests(&b.app, "jira"), "board mode always polls");
+
+    b.post("/stream/mode", json!({"source": "qa", "mode": "board"}));
+    b.feed_state("qa", json!({"since": ago(10.0)}));
+    assert!(!feed::poll_rests(&b.app, "qa"));
+    assert_eq!(b.source("qa")["polling"], true);
 }

@@ -6,13 +6,22 @@
 //! A body is an envelope, `{v: 1, events: [...]}`, or one event on its own (`{v: 1, id, kind, ...}`).
 //! Each event is checked on its own and answered on its own: `accepted`, `duplicate` (its `id` came
 //! before) or `rejected` with why. An accepted event is kept in `stream_events` (its whole payload, so
-//! later work can apply it) and routed: pr, build and heartbeat to the PR feed ([`feed::intake`],
-//! [`feed::heartbeat`]), jira.comment to QA comments ([`qa::intake`]); the other kinds are only kept
-//! for now. An event whose route refuses it is rejected and not kept, so the relay can send it again.
+//! later work can apply it) and routed: pr and build to the PR feed ([`feed::intake_from`]), heartbeat
+//! to each source it names, jira.comment to QA comments ([`qa::intake`]); every kind counts for its
+//! source's health. An event whose route refuses it is rejected and not kept, so the relay can send it
+//! again.
+//!
+//! Each source (prs, builds, jira, qa) has a mode: board (the default, today's behaviour: the board
+//! polls and a pr event is a hint to read that PR again) or stream (events are the source of truth and
+//! the source's own poll rests while its stream is healthy). config.toml's `[stream.sources.<name>]`
+//! sets it; `tb stream mode` overrides it on the board.
 //!
 //! A pr event without every v1 field is still accepted, kept with `complete = 0`: the board reads that
 //! PR from its host instead of trusting the event.
 
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -84,7 +93,7 @@ fn one(app: &App, ev: &Value) -> Result<Value> {
         app.db.insert("stream_events", row).map(Some)
     })?;
     let Some(row) = kept else { return Ok(answer("duplicate")) };
-    match route(app, &kind, ev) {
+    match route(app, &kind, ev, complete) {
         Ok(result) => {
             app.db.update("stream_events", &json!(row), fields!["result" => jdumps(&result)])?;
             let mut a = answer("accepted");
@@ -320,16 +329,149 @@ fn jira_key(ev: &Value) -> Check {
     ops::jira_key(&body_str(ev, "key")).map(|_| ()).map_err(|e| e.message)
 }
 
-fn route(app: &App, kind: &str, ev: &Value) -> Result<Value> {
+/// The source an event kind counts for: its health hears from it.
+fn source_of(kind: &str) -> Option<&'static str> {
     match kind {
-        "pr" => feed::intake(app, &as_feed_pr(ev)),
-        "build" => feed::intake(app, &as_feed_build(ev)),
-        "heartbeat" => app.db.tx(|| feed::heartbeat(app, &json!({"active": ev["active"], "idle_until": ev["idle_until"], "connected_at": ev["connected_at"]}))),
+        "pr" | "review" | "comment" => Some("prs"),
+        "push" | "build" => Some("builds"),
+        "jira.issue" => Some("jira"),
+        "jira.comment" => Some("qa"),
+        _ => None,
+    }
+}
+
+fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
+    match kind {
+        "pr" => {
+            let apply = (complete && streams(app, "prs")).then_some(ev);
+            feed::intake_from(app, &as_feed_pr(ev), &["prs"], apply)
+        }
+        "build" => feed::intake_from(app, &as_feed_build(ev), &["builds"], None),
+        "heartbeat" => {
+            let named: Vec<&str> = ev["sources"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+            let sources = if named.is_empty() { SOURCES.to_vec() } else { named };
+            let hb = json!({"active": ev["active"], "idle_until": ev["idle_until"], "connected_at": ev["connected_at"]});
+            app.db.tx(|| feed::heartbeat_for(app, &hb, &sources))?;
+            Ok(json!({"sources": sources}))
+        }
         "jira.comment" => {
+            feed::note_event_for(app, "qa", kind, ev, None)?;
             qa::intake(app, &json!({"key": ev["key"], "comment_id": body_str(ev, "comment_id"), "author": ev["author"], "text": ev["body"]}))
         }
-        _ => Ok(Value::Null),
+        _ => {
+            if let Some(src) = source_of(kind) {
+                feed::note_event_for(app, src, kind, ev, None)?;
+            }
+            Ok(Value::Null)
+        }
     }
+}
+
+const MODES_SETTING: &str = "stream_modes";
+pub const MODES: &[&str] = &["board", "stream"];
+
+/// `[stream]` in config.toml: each source's mode and, for builds, jira and qa, its stream's health
+/// settings (prs keeps `[feed]`'s).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct StreamConfig {
+    pub sources: BTreeMap<String, SourceConfig>,
+}
+
+/// `[stream.sources.<name>]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SourceConfig {
+    /// board (the board's own poll; events are hints) or stream (events are the source of truth).
+    pub mode: String,
+    pub restart_cmd: String,
+    pub stuck_secs: f64,
+    pub silent_secs: f64,
+    pub restart_mins: Vec<f64>,
+    pub settle_secs: f64,
+}
+
+impl Default for SourceConfig {
+    fn default() -> Self {
+        let f = feed::FeedConfig::default();
+        SourceConfig {
+            mode: "board".into(),
+            restart_cmd: String::new(),
+            stuck_secs: f.stuck_secs,
+            silent_secs: f.silent_secs,
+            restart_mins: f.restart_mins,
+            settle_secs: f.settle_secs,
+        }
+    }
+}
+
+pub fn source_config(app: &App, name: &str) -> SourceConfig {
+    app.cfg.stream.sources.get(name).cloned().unwrap_or_default()
+}
+
+pub fn label(name: &str) -> &'static str {
+    match name {
+        "prs" => "PR",
+        "builds" => "builds",
+        "jira" => "Jira",
+        _ => "QA",
+    }
+}
+
+fn overrides(app: &App) -> Row {
+    jloads_obj(app.db.get_setting(MODES_SETTING).ok().flatten().as_deref())
+}
+
+/// A source's mode and where it comes from: `tb stream mode` (override), config.toml (config), or
+/// neither (default, board).
+pub fn mode(app: &App, name: &str) -> (&'static str, &'static str) {
+    let pick = |m: &str| MODES.iter().copied().find(|x| x.eq_ignore_ascii_case(m.trim()));
+    if let Some(m) = overrides(app).s(name).and_then(pick) {
+        return (m, "override");
+    }
+    match app.cfg.stream.sources.get(name).and_then(|c| pick(&c.mode)) {
+        Some(m) => (m, "config"),
+        None => ("board", "default"),
+    }
+}
+
+/// The stream drives this source: its events are applied as they are.
+pub fn streams(app: &App, name: &str) -> bool {
+    mode(app, name).0 == "stream"
+}
+
+/// `POST /stream/mode {source, mode}` (`tb stream mode`): board or stream overrides config.toml's mode;
+/// default drops the override.
+pub fn set_mode(app: &App, body: &Value) -> Result<Value> {
+    let name = body_str(body, "source").to_lowercase();
+    if !SOURCES.contains(&name.as_str()) {
+        return err(400, format!("source is one of {}.", SOURCES.join(", ")));
+    }
+    let m = body_str(body, "mode").to_lowercase();
+    let mut o = overrides(app);
+    match m.as_str() {
+        "board" | "stream" => o.insert(name.clone(), json!(m)),
+        "default" => o.remove(&name),
+        _ => return err(400, "mode is board, stream or default."),
+    };
+    app.db.set_setting(MODES_SETTING, Some(&jdumps(&Value::Object(o))))?;
+    Ok(overview(app))
+}
+
+/// `GET /stream` (`tb stream`): each source's mode and its stream's health.
+pub fn overview(app: &App) -> Value {
+    let sources: Vec<Value> = SOURCES
+        .iter()
+        .map(|name| {
+            let (m, from) = mode(app, name);
+            let mut h = feed::health_of(app, &feed::source(app, name));
+            h["source"] = json!(name);
+            h["mode"] = json!(m);
+            h["mode_from"] = json!(from);
+            h
+        })
+        .collect();
+    json!({"v": VERSION, "sources": sources})
 }
 
 /// A pr event as the PR feed's own event (`POST /prs/event`).

@@ -441,12 +441,29 @@ pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, Str
         Ok(r) => r,
         Err(e) => return Ok(Err(e)),
     };
-    note_expected(app, &t, &rec)?;
-    let t = board::get_task(app, id)?;
-    gate(app, &t, &rec)?;
-    let t = board::get_task(app, id)?;
-    app.db.tx(|| step(app, &t, &rec))?;
+    apply(app, id, &rec)?;
     Ok(Ok(rec))
+}
+
+/// Steps one task's PR with a record, as a read of it would.
+pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
+    let t = board::get_task(app, id)?;
+    note_expected(app, &t, rec)?;
+    let t = board::get_task(app, id)?;
+    gate(app, &t, rec)?;
+    let t = board::get_task(app, id)?;
+    app.db.tx(|| step(app, &t, rec))?;
+    Ok(())
+}
+
+/// A complete stream pr event, stepped as the PR's state without reading its host (stream mode). None
+/// until the PR has been read once: the board's account and the base branch's head come from that read.
+pub fn apply_event(app: &App, id: i64, ev: &Value) -> Result<Option<Value>> {
+    let prior = flow(&board::get_task(app, id)?).get("rec").filter(|r| r.is_object()).cloned();
+    let Some(prior) = prior else { return Ok(None) };
+    let rec = crate::prhost::Record::from_event(ev, &prior).to_value();
+    apply(app, id, &rec)?;
+    Ok(Some(rec))
 }
 
 fn str_list(v: &Value) -> Vec<String> {

@@ -352,10 +352,10 @@ pub fn on_pr_event(app: &App, body: &Value) -> Result<Value> {
 
 /// While PR builds are stopped: the owner's open PRs on each repo the board knows, read every
 /// `owner_prs_secs`, so builds on the ones opened by hand are cancelled too. Reads the hosts outside
-/// any database transaction.
+/// any database transaction. Rests while the builds stream drives and is healthy.
 pub fn read_owner_prs(app: &App) -> Result<()> {
     let every = app.cfg.pr_builds.owner_prs_secs;
-    if every <= 0.0 || !stopped(app) {
+    if every <= 0.0 || !stopped(app) || crate::feed::poll_rests(app, "builds") {
         return Ok(());
     }
     if setting(app, OWNER_PRS)["read_at"].as_str().and_then(parse_iso).is_some_and(|t| now_ts() - t < every) {

@@ -45,6 +45,7 @@ pub struct FileConfig {
     pub feed: crate::feed::FeedConfig,
     /// `[hosts.<host>]`: each PR host's call budget (`prhost/limit.rs`).
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
+    pub stream: crate::stream::StreamConfig,
     pub pr_builds: crate::prbuilds::PrBuildsConfig,
     pub master: crate::breaks::MasterConfig,
     /// The owner's commit emails: their own pushes (`prbuilds.rs`) and commits on a red default branch.
@@ -556,6 +557,7 @@ pub struct Config {
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
+    pub stream: crate::stream::StreamConfig,
     pub pr_builds: crate::prbuilds::PrBuildsConfig,
     pub master: crate::breaks::MasterConfig,
     pub owner_emails: Vec<String>,
@@ -714,6 +716,7 @@ impl Config {
             reviewers: f.reviewers,
             feed: f.feed,
             hosts: f.hosts,
+            stream: f.stream,
             pr_builds: f.pr_builds,
             master: f.master,
             owner_emails: f.owner_emails,

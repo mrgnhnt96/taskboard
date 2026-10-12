@@ -246,6 +246,80 @@ impl Record {
         }
     }
 
+    /// A complete stream pr event (`docs/STREAM.md`) as a read. What the event doesn't carry (the
+    /// board's account, the base branch's head, the PR's tasks) comes from `prior`, the last record.
+    pub fn from_event(ev: &Value, prior: &Value) -> Record {
+        let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+        let opt = |v: &Value, k: &str| v[k].as_str().map(str::to_string);
+        let list = |v: &Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
+        let checks = list(ev, "checks")
+            .iter()
+            .map(|c| Check { name: s(c, "name"), state: s(c, "state"), url: opt(c, "url"), at: opt(c, "finished_at").or(opt(c, "started_at")) })
+            .collect();
+        let reviewers: Vec<Reviewer> = list(ev, "reviewers")
+            .iter()
+            .map(|r| {
+                let state = s(r, "state");
+                let changes_at = if state == "changes" { opt(r, "at") } else { None };
+                Reviewer { user: s(r, "who"), name: s(r, "who"), state, requested: true, changes_at }
+            })
+            .collect();
+        let threads: Vec<Thread> = list(ev, "threads")
+            .iter()
+            .filter_map(|t| {
+                let comments = list(t, "comments");
+                let (first, last) = (comments.first()?, comments.last()?);
+                Some(Thread {
+                    id: s(t, "id"),
+                    kind: if t["path"].is_string() { "review" } else { "comment" }.into(),
+                    resolvable: t["resolved"].is_boolean(),
+                    resolved: t["resolved"].as_bool().unwrap_or(false),
+                    author: s(first, "author"),
+                    author_name: s(first, "author"),
+                    last_author: s(last, "author"),
+                    last_id: s(last, "id"),
+                    last_at: s(last, "at"),
+                    path: opt(t, "path"),
+                    line: t["line"].as_i64(),
+                    text: gist(&s(first, "body")),
+                    replies: comments[1..]
+                        .iter()
+                        .map(|c| Reply { author: s(c, "author"), author_name: s(c, "author"), text: one_line(&s(c, "body"), REPLY_MAX), at: s(c, "at") })
+                        .collect(),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let author = s(ev, "author");
+        let state = match ev["state"].as_str().unwrap_or("") {
+            "merged" => "MERGED",
+            "declined" => "DECLINED",
+            _ => "OPEN",
+        };
+        let mut rec = Record {
+            state: state.into(),
+            title: s(ev, "title"),
+            head: s(ev, "head"),
+            branch: s(ev, "branch"),
+            base: s(ev, "base"),
+            base_head: s(prior, "base_head"),
+            checks,
+            approvals: reviewers.iter().filter(|r| r.state == "approved" && r.user != author).count() as i64,
+            changes_at: reviewers.iter().filter_map(|r| r.changes_at.clone()).max(),
+            comments: threads.iter().flat_map(|t| std::iter::once(&t.author).chain(t.replies.iter().map(|r| &r.author))).filter(|a| **a != author).count() as i64,
+            reviewers,
+            threads,
+            tasks_open: prior["tasks_open"].as_i64().unwrap_or(0),
+            tasks_error: opt(prior, "tasks_error"),
+            viewer: s(prior, "viewer"),
+            mergeable: ev["mergeable"].clone(),
+            author,
+            ..Default::default()
+        };
+        rec.leave_out_viewer();
+        rec
+    }
+
     pub fn failed(&self) -> Vec<String> {
         self.checks.iter().filter(|c| c.state == "failed").map(|c| c.name.clone()).collect()
     }
