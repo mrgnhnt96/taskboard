@@ -387,7 +387,7 @@ pub fn read_owner_prs(app: &App) -> Result<()> {
     save_owner_prs(app, json!(now_iso()), prs)
 }
 
-/// A build event for no PR on the board: one of the owner's pushes (by `author`, or on the branch of
+/// A build event for no PR on the board: one of the owner's pushes (by `author` or `mine: true`, or on the branch of
 /// one of the owner's open PRs, whoever wrote the commit) is cancelled too, and so is a build on one of
 /// the owner's PRs opened by hand (by its number or branch).
 pub fn on_push_build(app: &App, body: &Value) -> Result<Value> {
@@ -399,7 +399,7 @@ pub fn on_push_build(app: &App, body: &Value) -> Result<Value> {
     let by_owner = owner_email(app, &body_str(body, "author").to_lowercase());
     let pr = if by_owner { None } else { owner_pr_on(app, &repo, &branch)? };
     let hand = if pr.is_none() { hand_pr_on(app, &host, &repo, num, &branch) } else { None };
-    let mine = by_owner || pr.is_some() || hand.is_some();
+    let mine = by_owner || as_bool(body.get("mine"), false) || pr.is_some() || hand.is_some();
     if !is_running(&state) || !stopped(app) || !mine {
         return Ok(json!({"state": state, "owners": mine}));
     }

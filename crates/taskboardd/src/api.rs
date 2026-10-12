@@ -404,6 +404,10 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["prs", "event"]) => crate::feed::intake(app, body),
         ("POST", ["prs", "heartbeat"]) => app.db.tx(|| crate::feed::heartbeat(app, body)),
         (_, ["master", rest @ ..]) => crate::breaks::route(app, method, rest, body),
+        // The old board's listener and tools (docs/CUTOVER.md).
+        ("POST", ["master-builds"]) => crate::breaks::posted(app, body),
+        ("POST", ["pr-builds", "event"]) => crate::feed::old_push(app, body),
+        (_, ["master-breaks", rest @ ..]) => crate::breaks::old_route(app, method, rest, q(query, "limit", "20").parse().unwrap_or(20), body),
         ("GET", ["pr-builds"]) => Ok(crate::prbuilds::status(app)),
         ("POST", ["pr-builds"]) => app.db.tx(|| crate::prbuilds::set(app, body)),
         ("POST", ["prs", "refresh"]) => {

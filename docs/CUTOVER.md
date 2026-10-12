@@ -113,3 +113,22 @@ Then open Taskboard.app: it links `~/.local/bin/tb` and its status bar offers to
 
 Opening Taskboard.app registers its LaunchAgent, which starts `taskboardd serve` on the port. Run
 `taskboardd check` to confirm nothing is in the way, and the board shows the imported work.
+
+## What an old listener keeps working
+
+A listener (or script) written for the old board can keep posting to the same port; Taskboard takes
+its routes as they were. Each post counts as the feed being alive (`GET /prs/feed`'s `last_event_at`),
+so the feed isn't marked silent while only the old listener is talking.
+
+- `POST /master-builds {pipeline, build_id, url, sha, state, ts, last_green}`: the matching
+  `[master.projects]` branch is read at once (as `tb master check` does), so a red build opens its
+  break right away. The build's state, number and link go into the break's evidence. The old
+  pipeline's name rarely names a project, so it's matched by `project`, then the repo in `url`, then
+  `pipeline`, then the only watched project.
+- `POST /pr-builds/event {repo, branch, pr?}`: a build of the owner's (as `tb feed event --mine`
+  with `kind: build`); while PR builds are stopped it's cancelled, with the follow-up sweeps.
+- `GET /master-breaks(?limit)`, `GET /master-breaks/:ref`, and `POST /master-breaks/:ref/verdict`
+  with `yours`, `not_yours` or `unsure`: the old answers, read from the board's `M<n>` breaks
+  (`yours` is `ours`, `not_yours` is `not-ours` and still needs a `proof` link).
+
+docs/API.md lists their bodies and responses.

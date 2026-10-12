@@ -589,7 +589,107 @@ fn evidence(app: &App, project: &str, host: &str, repo: &str, r: &BranchRead) ->
                    "tests": f.as_ref().map(|f| f.tests.clone()).unwrap_or_default()})
         })
         .collect();
-    json!({"checks": checks, "read_at": now_iso()})
+    let mut out = json!({"checks": checks, "read_at": now_iso()});
+    if let Some(b) = posted_build(app, project, &r.head) {
+        if let Some(url) = b["url"].as_str() {
+            for c in out["checks"].as_array_mut().into_iter().flatten().filter(|c| c["url"].as_str().is_none_or(|u| u.is_empty())) {
+                c["url"] = json!(url);
+            }
+        }
+        out["build"] = b;
+    }
+    out
+}
+
+/// The last build the old listener posted for this project (`POST /master-builds`), when it's of
+/// this head (or doesn't say which commit it built).
+fn posted_build(app: &App, project: &str, head: &str) -> Option<Value> {
+    let b = watch_state(app).get(project)?.get("build")?.clone();
+    let sha = b["sha"].as_str().unwrap_or("");
+    (sha.is_empty() || head.is_empty() || head.starts_with(sha) || sha.starts_with(head)).then_some(b)
+}
+
+/// The watched project a posted build is of: `project` by name, else the repo in its `url` (or
+/// `repo`) matching a project's repo or name, else `pipeline` as a project's name, else the only
+/// watched project.
+fn project_of_build(app: &App, body: &Value) -> Option<(String, MasterProject)> {
+    let projects = &app.cfg.master.projects;
+    let by_name = |n: &str| projects.iter().find(|(k, _)| k.eq_ignore_ascii_case(n.trim())).map(|(k, p)| (k.clone(), p.clone()));
+    if let Some(found) = Some(body_str(body, "project")).filter(|n| !n.is_empty()).and_then(|n| by_name(&n)) {
+        return Some(found);
+    }
+    let re = regex::Regex::new(r"(?:github\.com|bitbucket\.org)/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)").unwrap();
+    let repo = re.captures(&body_str(body, "url")).map(|c| c[1].to_string()).unwrap_or_else(|| body_str(body, "repo"));
+    if !repo.is_empty() {
+        let short = repo.rsplit('/').next().unwrap_or(&repo).to_string();
+        let found = projects.iter().find(|(name, p)| {
+            let theirs = p.repo.clone().filter(|r| !r.is_empty()).or_else(|| target(app, name, p).ok().map(|(_, r)| r));
+            theirs.is_some_and(|r| r.eq_ignore_ascii_case(&repo)) || name.eq_ignore_ascii_case(&short)
+        });
+        if let Some((k, p)) = found {
+            return Some((k.clone(), p.clone()));
+        }
+    }
+    if let Some(found) = Some(body_str(body, "pipeline")).filter(|n| !n.is_empty()).and_then(|n| by_name(&n)) {
+        return Some(found);
+    }
+    (projects.len() == 1).then(|| projects.iter().next().map(|(k, p)| (k.clone(), p.clone()))).flatten()
+}
+
+/// `POST /master-builds {pipeline, build_id, url, sha, state, ts, last_green}` (the old board's
+/// listener): a default-branch build started or finished. It's a feed event, and the project's
+/// branch is read now (as `POST /master/check` reads it), so a red build opens its break at once;
+/// the build's `state`, `build_id` and `url` go into the break's evidence (`build`; a failing check
+/// without a link gets the build's).
+pub fn posted(app: &App, body: &Value) -> Result<Value> {
+    crate::feed::note_event(app, "master-build", body, None)?;
+    let Some((name, p)) = project_of_build(app, body) else {
+        return Ok(json!({"ok": true, "project": null, "checked": false, "why": "no project in [master.projects] matches this build"}));
+    };
+    let mut build = serde_json::Map::new();
+    for k in ["pipeline", "build_id", "url", "sha", "state", "ts", "last_green"] {
+        if let Some(v) = body.get(k).filter(|v| !v.is_null() && v.as_str() != Some("")) {
+            build.insert(k.into(), v.clone());
+        }
+    }
+    build.insert("at".into(), json!(now_iso()));
+    note_watch(app, &name, fields!["build" => Value::Object(build)])?;
+    check_project(app, &name, &p)?;
+    let open = match open_break(app, &name)? {
+        Some(b) => dict(app, &b)?,
+        None => Value::Null,
+    };
+    Ok(json!({"ok": true, "project": name, "checked": true, "break": open}))
+}
+
+/// `GET /master-breaks?limit=n` (the old board's): `{breaks}`, the open breaks then the closed ones,
+/// each newest first, at most `limit` (20) in all.
+pub fn old_list(app: &App, limit: i64) -> Result<Value> {
+    let mut out = vec![];
+    for b in app.db.q("SELECT * FROM breaks ORDER BY state = 'open' DESC, id DESC LIMIT ?", p![limit.clamp(1, 500)])? {
+        out.push(dict(app, &b)?);
+    }
+    Ok(json!({"breaks": out}))
+}
+
+/// The old board's routes under `/master-breaks`: the list, one break, and `POST :ref/verdict
+/// {verdict: yours|not_yours|unsure, why, proof?}` (`yours` is `ours`, `not_yours` `not-ours`).
+pub fn old_route(app: &App, method: &str, rest: &[&str], limit: i64, body: &Value) -> Result<Value> {
+    match (method, rest) {
+        ("GET", []) => old_list(app, limit),
+        ("GET", [id]) => dict(app, &get(app, need_ref(&json!(id), "break")?)?),
+        ("POST", [id, "verdict"]) => {
+            let v = body_str(body, "verdict").to_lowercase().replace('-', "_");
+            let mut b = body.clone();
+            b["verdict"] = json!(match v.as_str() {
+                "yours" => "ours",
+                "not_yours" => "not_ours",
+                other => other,
+            });
+            override_verdict(app, need_ref(&json!(id), "break")?, &b)
+        }
+        _ => err(404, "There's nothing at that address."),
+    }
 }
 
 /// (verdict, by, why).

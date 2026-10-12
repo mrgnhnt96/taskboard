@@ -322,6 +322,43 @@ pub fn task_of_event(app: &App, body: &Value) -> Result<Option<Row>> {
     Ok(None)
 }
 
+/// One event came from the feed: it's alive (for the silent check), and `last_event` says what it was.
+pub fn note_event(app: &App, kind: &str, body: &Value, task: Option<i64>) -> Result<()> {
+    let mut st = state(app);
+    let now = now_iso();
+    st.insert("last_event_at".into(), json!(now));
+    st.insert(
+        "last_event".into(),
+        json!({"kind": kind, "at": now, "task": task.map(|t| rf("task", t)), "url": body.get("url"), "state": body.get("state"),
+               "source": body.get("source")}),
+    );
+    save(app, &st)
+}
+
+/// `POST /pr-builds/event {repo, branch, pr?}` (the old board's listener): a push to, or a new or
+/// updated PR on, one of the owner's branches. Taken as a build event of the owner's (`kind: build`,
+/// `num: pr`, `mine: true`, `state: started`, `head: sha`), so while PR builds are stopped its builds
+/// are cancelled, with the follow-up sweeps.
+pub fn old_push(app: &App, body: &Value) -> Result<Value> {
+    let mut ev = body.as_object().cloned().unwrap_or_default();
+    ev.insert("kind".into(), json!("build"));
+    ev.insert("mine".into(), json!(true));
+    for (to, from) in [("num", "pr"), ("head", "sha")] {
+        if ev.get(to).is_none_or(|v| v.is_null()) {
+            if let Some(v) = body.get(from).filter(|v| !v.is_null()) {
+                ev.insert(to.into(), v.clone());
+            }
+        }
+    }
+    if body_str(body, "state").is_empty() {
+        ev.insert("state".into(), json!("started"));
+    }
+    if body_str(body, "source").is_empty() {
+        ev.insert("source".into(), json!("pr-builds"));
+    }
+    intake(app, &Value::Object(ev))
+}
+
 /// `POST /prs/event` (`tb feed event`): one PR changed (`kind: pr`, the default) or one of its builds
 /// did (`kind: build`, with `state`). The board notes it for the feed's health and reads that PR again.
 pub fn intake(app: &App, body: &Value) -> Result<Value> {
@@ -333,15 +370,7 @@ pub fn intake(app: &App, body: &Value) -> Result<Value> {
         return err(400, "An event's kind is pr, build or heartbeat.");
     }
     let t = task_of_event(app, body)?;
-    let mut st = state(app);
-    let now = now_iso();
-    st.insert("last_event_at".into(), json!(now));
-    st.insert(
-        "last_event".into(),
-        json!({"kind": kind, "at": now, "task": t.as_ref().map(|t| rf("task", t.id())), "url": body.get("url"), "state": body.get("state"),
-               "source": body.get("source")}),
-    );
-    save(app, &st)?;
+    note_event(app, &kind, body, t.as_ref().map(|t| t.id()))?;
     let mut out = json!({"ok": true, "kind": kind, "task": t.as_ref().map(|t| rf("task", t.id()))});
     let Some(t) = t else {
         if kind == "build" {
