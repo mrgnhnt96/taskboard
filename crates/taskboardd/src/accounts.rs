@@ -17,10 +17,16 @@
 //!
 //! [`required_scopes`] is what Taskboard needs from each account. A connected account whose checked
 //! scopes miss one answers `reauth: true` with the `missing` scopes, and the app asks the owner to sign
-//! in again; raising the list flags every older sign-in.
+//! in again; raising the list flags every older sign-in. [`features`] names what each scope is for, so
+//! an account also answers every scope it lacks (`missing_scopes`), the features that are `off`, and a
+//! `note` saying so ("Can read PRs; add read:user:bitbucket to show your Bitbucket name.").
+//!
+//! A Bitbucket token that can't read `/user` (no `read:user:bitbucket`) is still kept when it can read
+//! a configured repo's PRs (`[pr.projects]` / `[master.projects]`) or any repo it's a member of; the
+//! email stands in for who it is.
 //!
 //! A board on a test config (`cfg.accounts_sandbox`) keeps everything in memory, accepts any token but
-//! `bad` (and `narrow`, which lacks scopes), and signs GitHub in a few seconds after "Sign in", so the
+//! `bad` (and `narrow`, which lacks scopes, and `nouser`, a Bitbucket token that can't read `/user`), and signs GitHub in a few seconds after "Sign in", so the
 //! sample board and the tests never touch the Keychain, `gh`, git or the network.
 
 use std::collections::HashMap;
@@ -106,8 +112,35 @@ impl Provider {
 pub fn required_scopes(p: Provider) -> &'static [&'static str] {
     match p {
         Provider::Github => &["repo", "read:org", "workflow"],
-        Provider::Bitbucket => &["read:user:bitbucket", "read:repository:bitbucket", "write:repository:bitbucket", "read:pullrequest:bitbucket", "write:pullrequest:bitbucket"],
+        Provider::Bitbucket => &["read:repository:bitbucket", "write:repository:bitbucket", "read:pullrequest:bitbucket", "write:pullrequest:bitbucket"],
         Provider::Slack => &[],
+    }
+}
+
+/// A feature of the board and the scopes it needs from an account.
+pub struct Feature {
+    pub id: &'static str,
+    /// What it does, to finish "add <scope> to …".
+    pub label: &'static str,
+    pub scopes: &'static [&'static str],
+}
+
+/// What each scope is for, so a token without one says which feature is off. Every
+/// [`required_scopes`] scope is in one; the others (your Bitbucket name, cancelling builds) show as
+/// off but don't ask for a new sign-in.
+pub fn features(p: Provider) -> &'static [Feature] {
+    const BITBUCKET: &[Feature] = &[
+        Feature { id: "watch", label: "watch PRs", scopes: &["read:repository:bitbucket", "read:pullrequest:bitbucket"] },
+        Feature { id: "push", label: "push branches", scopes: &["write:repository:bitbucket"] },
+        Feature { id: "comment", label: "comment on PRs", scopes: &["write:pullrequest:bitbucket"] },
+        Feature { id: "merge", label: "merge PRs", scopes: &["write:pullrequest:bitbucket"] },
+        Feature { id: "master", label: "watch master breaks", scopes: &["read:repository:bitbucket"] },
+        Feature { id: "cancel", label: "cancel builds", scopes: &["write:pipeline:bitbucket"] },
+        Feature { id: "name", label: "show your Bitbucket name", scopes: &["read:user:bitbucket"] },
+    ];
+    match p {
+        Provider::Bitbucket => BITBUCKET,
+        Provider::Github | Provider::Slack => &[],
     }
 }
 
@@ -115,19 +148,52 @@ pub fn required_scopes(p: Provider) -> &'static [&'static str] {
 /// token, or a Bitbucket answer in another vocabulary): those can't be judged. `write:x` and
 /// `admin:x` cover `read:x`.
 pub fn missing_scopes(p: Provider, scopes: &[String]) -> Vec<String> {
+    lacking(p, scopes, &[], required_scopes(p))
+}
+
+/// Which of `want` a token lacks: the ones `lacks` names (the service refused them), and, when the
+/// service listed its scopes, the ones it didn't list.
+fn lacking(p: Provider, scopes: &[String], lacks: &[String], want: &[&str]) -> Vec<String> {
     let judged = match p {
         Provider::Bitbucket => scopes.iter().any(|s| s.ends_with(":bitbucket")),
         _ => !scopes.is_empty(),
     };
-    if !judged {
-        return vec![];
-    }
     let has = |s: &str| scopes.iter().any(|x| x == s);
-    required_scopes(p)
-        .iter()
-        .filter(|need| !(has(need) || need.strip_prefix("read:").is_some_and(|rest| has(&format!("write:{rest}")) || has(&format!("admin:{rest}")))))
-        .map(|s| s.to_string())
-        .collect()
+    let covered = |need: &str| has(need) || need.strip_prefix("read:").is_some_and(|rest| has(&format!("write:{rest}")) || has(&format!("admin:{rest}")));
+    want.iter().filter(|need| lacks.iter().any(|l| l == *need) || (judged && !covered(need))).map(|s| s.to_string()).collect()
+}
+
+/// Every scope the [`features`] lack, the features that are off (`[{id, label, needs}]`), and a note
+/// saying what to add for which ("Can read PRs; add write:pipeline:bitbucket to cancel builds.").
+fn features_off(p: Provider, w: &Value) -> (Vec<String>, Vec<Value>, Option<String>) {
+    let (scopes, lacks) = (scopes_of(w), strs(&w["lacks"]));
+    let mut missing: Vec<String> = vec![];
+    let mut off = vec![];
+    // "add <scopes> to <features>", features needing the same scopes together
+    let mut asks: Vec<(String, Vec<&str>)> = vec![];
+    for f in features(p) {
+        let needs = lacking(p, &scopes, &lacks, f.scopes);
+        if needs.is_empty() {
+            continue;
+        }
+        for s in &needs {
+            if !missing.contains(s) {
+                missing.push(s.clone());
+            }
+        }
+        off.push(json!({"id": f.id, "label": f.label, "needs": needs}));
+        let add = needs.join(" and ");
+        match asks.iter_mut().find(|(a, _)| *a == add) {
+            Some((_, labels)) => labels.push(f.label),
+            None => asks.push((add, vec![f.label])),
+        }
+    }
+    let note = (!off.is_empty()).then(|| {
+        let reads = !off.iter().any(|f| f["id"] == "watch");
+        let asks: Vec<String> = asks.iter().map(|(add, labels)| format!("add {add} to {}", labels.join(" and "))).collect();
+        format!("{}; {}.", if reads { "Can read PRs" } else { "Can't read PRs" }, asks.join(", "))
+    });
+    (missing, off, note)
 }
 
 fn provider(id: &str) -> Result<Provider> {
@@ -214,7 +280,11 @@ fn who(user: &str, name: &str, detail: &str, scopes: Vec<String>) -> Value {
 }
 
 fn scopes_of(w: &Value) -> Vec<String> {
-    w["scopes"].as_array().map(|s| s.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect()).unwrap_or_default()
+    strs(&w["scopes"])
+}
+
+fn strs(v: &Value) -> Vec<String> {
+    v.as_array().map(|s| s.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect()).unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ the API
@@ -241,9 +311,13 @@ fn account(app: &App, p: Provider, saved: &Map<String, Value>) -> Value {
         for k in ["user", "name", "detail", "scopes", "checked_at", "error"] {
             a[k] = w.get(k).cloned().unwrap_or(Value::Null);
         }
-        let missing = missing_scopes(p, &scopes_of(&w));
+        let missing = lacking(p, &scopes_of(&w), &strs(&w["lacks"]), required_scopes(p));
         a["reauth"] = json!(!missing.is_empty());
         a["missing"] = json!(missing);
+        let (all, off, note) = features_off(p, &w);
+        a["missing_scopes"] = json!(all);
+        a["off"] = json!(off);
+        a["note"] = json!(note);
     }
     if p == Provider::Github {
         let g = app.accounts.gh.lock();
@@ -263,7 +337,7 @@ fn account(app: &App, p: Provider, saved: &Map<String, Value>) -> Value {
 
 fn base(p: Provider, connected: bool) -> Value {
     json!({"id": p.id(), "label": p.label(), "connected": connected, "user": null, "name": null, "detail": null,
-           "scopes": [], "required": required_scopes(p), "missing": [], "reauth": false, "checked_at": null, "error": null,
+           "scopes": [], "required": required_scopes(p), "missing": [], "missing_scopes": [], "off": [], "note": null, "reauth": false, "checked_at": null, "error": null,
            "login": null, "gh": true, "setup": null})
 }
 
@@ -274,7 +348,7 @@ pub fn attention(cfg: &Config) -> Value {
     let mut out = vec![];
     for p in PROVIDERS {
         let Some(w) = saved.get(p.id()) else { continue };
-        let missing = missing_scopes(p, &scopes_of(w));
+        let missing = lacking(p, &scopes_of(w), &strs(&w["lacks"]), required_scopes(p));
         let reason = if !missing.is_empty() {
             format!("Sign in again: Taskboard now needs {}.", missing.join(", "))
         } else if let Some(e) = w["error"].as_str() {
@@ -364,11 +438,12 @@ fn verify(app: &App, p: Provider, cred: &Cred) -> std::result::Result<Value, Str
     if app.accounts.sandbox {
         return sandbox_who(p, &cred.1);
     }
-    ask_service(p, cred)
+    ask_service(p, cred, &app.cfg.pr.bitbucket_api, &|| bitbucket_repos(app))
 }
 
-/// Asks the service who a token belongs to and what it may do.
-fn ask_service(p: Provider, cred: &Cred) -> std::result::Result<Value, String> {
+/// Asks the service who a token belongs to and what it may do. Bitbucket is asked at `bitbucket_api`,
+/// and checked against `bitbucket_repos` when it can't read the user.
+fn ask_service(p: Provider, cred: &Cred, bitbucket_api: &str, bitbucket_repos: &dyn Fn() -> Vec<String>) -> std::result::Result<Value, String> {
     let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
     let scopes = |r: &ureq::Response| -> Vec<String> {
         r.header("x-oauth-scopes").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default()
@@ -388,21 +463,12 @@ fn ask_service(p: Provider, cred: &Cred) -> std::result::Result<Value, String> {
         },
         Provider::Bitbucket => {
             let auth = format!("Basic {}", b64(format!("{}:{}", cred.0, cred.1).as_bytes()));
-            match agent.get("https://api.bitbucket.org/2.0/user").set("Authorization", &auth).set("Accept", "application/json").call() {
-                Ok(r) => {
-                    let sc = scopes(&r);
-                    let v: Value = r.into_json().unwrap_or(Value::Null);
-                    let user = v["username"].as_str().or(v["nickname"].as_str()).unwrap_or("").to_string();
-                    let name = v["display_name"].as_str().unwrap_or(&user).to_string();
-                    Ok(who(&user, &name, &format!("@{user} · {}", cred.0), sc))
-                }
-                Err(ureq::Error::Status(401, _)) => {
-                    Err("Bitbucket didn't accept that email and token. Use an API token with Bitbucket scopes (not an app password), made by the same account.".into())
-                }
-                Err(ureq::Error::Status(403, _)) => Err("Bitbucket accepted the token but it can't read your account. Add the read:user:bitbucket scope.".into()),
-                Err(ureq::Error::Status(code, _)) => Err(format!("Bitbucket answered {code}.")),
-                Err(_) => Err("Can't reach Bitbucket.".into()),
-            }
+            let get = |url: &str| match agent.get(url).set("Authorization", &auth).set("Accept", "application/json").call() {
+                Ok(r) => Ok((scopes(&r), r.into_json().unwrap_or(Value::Null))),
+                Err(ureq::Error::Status(code, _)) => Err(code),
+                Err(_) => Err(0),
+            };
+            bitbucket_who(bitbucket_api.trim_end_matches('/'), &cred.0, &bitbucket_repos(), &get)
         }
         Provider::Slack => match agent.post("https://slack.com/api/auth.test").set("Authorization", &format!("Bearer {}", cred.1)).call() {
             Ok(r) => {
@@ -427,6 +493,66 @@ fn ask_service(p: Provider, cred: &Cred) -> std::result::Result<Value, String> {
     }
 }
 
+/// A Bitbucket GET's answer: the token's scopes and the body, or the HTTP status (0: no answer).
+type BitbucketGet<'a> = &'a dyn Fn(&str) -> std::result::Result<(Vec<String>, Value), u16>;
+
+/// Who a Bitbucket token is. Without `read:user:bitbucket` (`/user` answers 403) it's still kept
+/// when it can read the PRs of one of `repos`, or any repo it's a member of, as `email` and with
+/// `lacks` naming that scope; it's refused only when it can't read a single repo.
+fn bitbucket_who(api: &str, email: &str, repos: &[String], get: BitbucketGet) -> std::result::Result<Value, String> {
+    match get(&format!("{api}/user")) {
+        Ok((sc, v)) => {
+            let user = v["username"].as_str().or(v["nickname"].as_str()).unwrap_or("").to_string();
+            let name = v["display_name"].as_str().unwrap_or(&user).to_string();
+            Ok(who(&user, &name, &format!("@{user} · {email}"), sc))
+        }
+        Err(401) => Err("Bitbucket didn't accept that email and token. Use an API token with Bitbucket scopes (not an app password), made by the same account.".into()),
+        Err(403) => {
+            let tries = repos.iter().map(|r| (format!("{api}/repositories/{r}/pullrequests?pagelen=1"), false)).chain([(format!("{api}/repositories?role=member&pagelen=1"), true)]);
+            for (url, listing) in tries {
+                match get(&url) {
+                    // a listing with no repos in it reads nothing
+                    Ok((_, v)) if listing && v["values"].as_array().is_none_or(|l| l.is_empty()) => {}
+                    Ok((sc, _)) => {
+                        let mut w = who(email, email, email, sc);
+                        w["lacks"] = json!(["read:user:bitbucket"]);
+                        return Ok(w);
+                    }
+                    Err(0) => return Err("Can't reach Bitbucket.".into()),
+                    Err(_) => {}
+                }
+            }
+            Err("Bitbucket accepted the token but it can't read a single repository. Add the read:repository:bitbucket and read:pullrequest:bitbucket scopes.".into())
+        }
+        Err(0) => Err("Can't reach Bitbucket.".into()),
+        Err(code) => Err(format!("Bitbucket answered {code}.")),
+    }
+}
+
+/// The Bitbucket repos the board is set to read (`[master.projects]` and `[pr.projects]`, from the
+/// project's `origin` when the config doesn't name one), at most three: each is a request.
+fn bitbucket_repos(app: &App) -> Vec<String> {
+    let master = &app.cfg.master.projects;
+    let mut out: Vec<String> = vec![];
+    for name in master.keys().chain(app.cfg.pr.projects.keys()) {
+        if out.len() >= 3 {
+            break;
+        }
+        let set = master.get(name).and_then(|m| Some((m.host.clone().filter(|h| !h.is_empty())?, m.repo.clone().filter(|r| !r.is_empty())?)));
+        let found = set.or_else(|| {
+            let path = crate::projects::project_path(app, Some(name)).ok().flatten()?;
+            let o = proc::run(&proc::which("git")?, &["-C".into(), path, "remote".into(), "get-url".into(), "origin".into()], None, 10.0).ok()?;
+            crate::prhost::repo_of_remote(o.stdout.trim())
+        });
+        if let Some((host, repo)) = found {
+            if host == "bitbucket" && !out.contains(&repo) {
+                out.push(repo);
+            }
+        }
+    }
+    out
+}
+
 /// The sandbox's answer for a token: `bad` is refused, `narrow` lacks scopes Taskboard needs.
 fn sandbox_who(p: Provider, token: &str) -> std::result::Result<Value, String> {
     if token == "bad" {
@@ -435,6 +561,11 @@ fn sandbox_who(p: Provider, token: &str) -> std::result::Result<Value, String> {
     let mut scopes: Vec<String> = required_scopes(p).iter().map(|s| s.to_string()).collect();
     if token == "narrow" {
         scopes.truncate(1);
+    }
+    if p == Provider::Bitbucket && token == "nouser" {
+        let mut w = who("sample@example.com", "sample@example.com", "sample@example.com", scopes);
+        w["lacks"] = json!(["read:user:bitbucket"]);
+        return Ok(w);
     }
     Ok(match p {
         Provider::Github => who("sample-user", "sample-user", "@sample-user · github.com", scopes),
@@ -596,7 +727,7 @@ fn take_login_token(cfg: &Config, bin: &Path, dir: &Path) -> std::result::Result
     if !o.status.success() || token.is_empty() {
         return Err("gh signed in but didn't hand over a token. Try again.".into());
     }
-    let probe = ask_service(Provider::Github, &(String::new(), token.clone()))?;
+    let probe = ask_service(Provider::Github, &(String::new(), token.clone()), &cfg.pr.bitbucket_api, &Vec::new)?;
     keychain_set(Provider::Github.service(), probe["user"].as_str().unwrap_or(""), &token)?;
     save_who(cfg, Provider::Github, Some(probe));
     Ok(())
@@ -881,5 +1012,64 @@ mod tests {
         let bb = s(&["read:user:bitbucket", "write:repository:bitbucket", "write:pullrequest:bitbucket"]);
         assert!(missing_scopes(Provider::Bitbucket, &bb).is_empty(), "write covers read");
         assert!(missing_scopes(Provider::Slack, &s(&["chat:write"])).is_empty());
+    }
+
+    /// A fake Bitbucket: the URLs it answers (with their scopes and body); every other URL gets `rest`.
+    fn bitbucket(answers: Vec<(&'static str, std::result::Result<Value, u16>)>, rest: u16, scopes: &'static [&'static str]) -> impl Fn(&str) -> std::result::Result<(Vec<String>, Value), u16> {
+        let asked = Mutex::new(vec![]);
+        move |url: &str| {
+            asked.lock().push(url.to_string());
+            let sc = scopes.iter().map(|s| s.to_string()).collect();
+            answers.iter().find(|(u, _)| *u == url).map(|(_, a)| a.clone().map(|v| (sc, v))).unwrap_or(Err(rest))
+        }
+    }
+
+    #[test]
+    fn a_bitbucket_token_without_read_user_is_kept_when_it_reads_a_repo() {
+        let api = "https://api";
+        let repos = vec!["ws/app".to_string()];
+        let get = bitbucket(vec![("https://api/user", Err(403)), ("https://api/repositories/ws/app/pullrequests?pagelen=1", Ok(json!({"values": []})))], 403, &[]);
+        let w = bitbucket_who(api, "me@co.com", &repos, &get).unwrap();
+        assert_eq!((w["user"].as_str(), w["name"].as_str()), (Some("me@co.com"), Some("me@co.com")), "the email is who it is");
+        assert_eq!(w["lacks"], json!(["read:user:bitbucket"]));
+
+        let get = bitbucket(vec![("https://api/user", Err(403)), ("https://api/repositories?role=member&pagelen=1", Ok(json!({"values": [{"full_name": "ws/x"}]})))], 404, &[]);
+        assert!(bitbucket_who(api, "me@co.com", &repos, &get).is_ok(), "a configured repo it can't read falls back to any repo it's a member of");
+        assert!(bitbucket_who(api, "me@co.com", &[], &get).is_ok(), "with no configured repo");
+
+        let get = bitbucket(vec![("https://api/user", Err(403)), ("https://api/repositories?role=member&pagelen=1", Ok(json!({"values": []})))], 403, &[]);
+        let e = bitbucket_who(api, "me@co.com", &repos, &get).unwrap_err();
+        assert!(e.contains("can't read a single repository"), "{e}");
+        let get = bitbucket(vec![("https://api/user", Err(401))], 200, &[]);
+        assert!(bitbucket_who(api, "me@co.com", &repos, &get).unwrap_err().contains("didn't accept"));
+
+        let get = bitbucket(vec![("https://api/user", Ok(json!({"username": "me", "display_name": "Me"})))], 403, &["read:user:bitbucket"]);
+        let w = bitbucket_who(api, "me@co.com", &repos, &get).unwrap();
+        assert_eq!((w["name"].as_str(), w["detail"].as_str(), w["lacks"].is_null()), (Some("Me"), Some("@me · me@co.com"), true));
+    }
+
+    #[test]
+    fn says_which_features_a_tokens_scopes_leave_off() {
+        let (app, dir) = board();
+        let v = connect(&app, "bitbucket", &json!({"email": "a@b.co", "token": "nouser"})).unwrap();
+        let bb = account(&v, "bitbucket");
+        assert_eq!((bb["connected"].clone(), bb["reauth"].clone()), (json!(true), json!(false)), "kept, and no new sign-in asked for");
+        assert_eq!(bb["missing_scopes"], json!(["write:pipeline:bitbucket", "read:user:bitbucket"]));
+        assert_eq!(bb["note"], "Can read PRs; add write:pipeline:bitbucket to cancel builds, add read:user:bitbucket to show your Bitbucket name.");
+        assert!(attention(&Config::for_tests(dir.path())).as_array().unwrap().is_empty(), "a missing name isn't the owner's problem");
+
+        // the scopes Bitbucket lists for the token judge every feature
+        let w = json!({"scopes": ["read:user:bitbucket", "write:repository:bitbucket", "read:pullrequest:bitbucket"]});
+        let (missing, off, note) = features_off(Provider::Bitbucket, &w);
+        assert_eq!(missing, vec!["write:pullrequest:bitbucket", "write:pipeline:bitbucket"]);
+        let ids: Vec<&str> = off.iter().filter_map(|f| f["id"].as_str()).collect();
+        assert_eq!(ids, vec!["comment", "merge", "cancel"]);
+        assert_eq!(note.unwrap(), "Can read PRs; add write:pullrequest:bitbucket to comment on PRs and merge PRs, add write:pipeline:bitbucket to cancel builds.");
+        let (_, _, note) = features_off(Provider::Bitbucket, &json!({"scopes": ["read:user:bitbucket"]}));
+        assert!(note.unwrap().starts_with("Can't read PRs; add read:repository:bitbucket and read:pullrequest:bitbucket to watch PRs"));
+        assert_eq!(features_off(Provider::Bitbucket, &json!({"scopes": ["repository:write"]})).1, Vec::<Value>::new(), "an older vocabulary isn't judged");
+
+        let needed: Vec<&str> = features(Provider::Bitbucket).iter().flat_map(|f| f.scopes.iter().copied()).collect();
+        assert!(required_scopes(Provider::Bitbucket).iter().all(|s| needed.contains(s)), "every required scope is some feature's");
     }
 }

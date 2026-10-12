@@ -739,6 +739,8 @@ impl SettingsWindow {
                     cx.notify();
                 }));
                 rows.push(reauth_row(t, "bitbucket", a, "Make a new API token with them and connect it.", btn.into_any_element()));
+            } else if let Some(note) = a["note"].as_str() {
+                rows.push(off_row(t, "bitbucket", a, note));
             }
             rows.push(push_row(t, "bitbucket", "bitbucket.org"));
         }
@@ -749,7 +751,7 @@ impl SettingsWindow {
                 t,
                 "bitbucket",
                 "API token",
-                "An Atlassian API token with Bitbucket scopes: read:user, read and write repository, read and write pullrequest.",
+                "An Atlassian API token with Bitbucket scopes: read and write repository, read and write pullrequest, read:user for your name, write:pipeline to cancel builds.",
                 &self.bb_token,
                 window,
                 cx,
@@ -1138,6 +1140,15 @@ fn reauth_row(t: &Theme, id: &str, a: &Value, how: &str, button: AnyElement) -> 
         .into_any_element()
 }
 
+/// What the token's scopes leave off ("Can read PRs; add read:user:bitbucket to show your Bitbucket
+/// name."), with the scopes it lacks. Read-only: a new token is made on the service.
+fn off_row(t: &Theme, id: &str, a: &Value, note: &str) -> AnyElement {
+    let lacks: Vec<&str> = a["missing_scopes"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    line(t, &format!("{id}-off"), false, false, note, "", None)
+        .child(div().flex().flex_wrap().gap(px(4.)).max_w(px(260.)).justify_end().children(lacks.iter().map(|s| kit::chip(t, s.to_string()))))
+        .into_any_element()
+}
+
 /// How agents push: only in the board's sessions, only while on a task.
 fn push_row(t: &Theme, id: &str, host: &str) -> AnyElement {
     row(t, &format!("{id}-git"), false)
@@ -1254,6 +1265,27 @@ mod tests {
         .unwrap();
         settle(cx);
         w.update(cx, |s, _, _| assert_eq!(s.account("github")["reauth"], false)).unwrap();
+        assert_eq!(rec.get("state", &[]).unwrap()["accounts"], json!([]));
+    }
+
+    #[gpui_kit::test]
+    fn a_bitbucket_token_without_read_user_is_kept_and_says_what_is_off(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = window(cx);
+        w.update(cx, |s, _, cx| {
+            s.bb_email.set_text("a@b.co", cx);
+            s.bb_token.set_text("nouser", cx);
+            s.connect("bitbucket", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |s, _, _| {
+            let bb = s.account("bitbucket");
+            assert_eq!((bb["connected"].clone(), bb["reauth"].clone()), (json!(true), json!(false)));
+            assert!(bb["missing_scopes"].as_array().unwrap().contains(&json!("read:user:bitbucket")));
+            assert!(bb["note"].as_str().unwrap().contains("add read:user:bitbucket to show your Bitbucket name"));
+            assert!(!super::needs_owner(&bb), "nothing for the owner to fix");
+        })
+        .unwrap();
         assert_eq!(rec.get("state", &[]).unwrap()["accounts"], json!([]));
     }
 
