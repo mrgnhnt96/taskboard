@@ -58,10 +58,57 @@ fn a_failed_compact_holds_the_task_for_the_owner_and_reopening_resumes_it_as_it_
     let ctx: Value = serde_json::from_str(board::get_task(&b.app, t).unwrap().s("context").unwrap()).unwrap();
     assert_eq!(ctx["resume_as_is"], "c1", "the reopen skips the compact for this conversation");
 
-    assert!(midna::take_resume_as_is(&b.app, t, "c1").unwrap(), "the reopen's resume goes ahead as it is");
+    assert!(midna::resume_as_is(&b.app, t, "c1").unwrap(), "the reopen's resume goes ahead as it is");
+    assert!(midna::resume_as_is(&b.app, t, "c1").unwrap(), "reading the choice doesn't use it up");
+    midna::used_resume_as_is(&b.app, t, "c1").unwrap();
     let ctx: Value = serde_json::from_str(board::get_task(&b.app, t).unwrap().s("context").unwrap()).unwrap();
     assert!(ctx.get("resume_as_is").is_none(), "the choice covers that one resume");
-    assert!(!midna::take_resume_as_is(&b.app, t, "c1").unwrap(), "the next cold resume compacts again");
+    assert!(!midna::resume_as_is(&b.app, t, "c1").unwrap(), "the next cold resume compacts again");
+}
+
+/// A cold resume as it is whose first `session.open` doesn't go through keeps the owner's choice, so the
+/// retry resumes without compacting; the choice goes once a terminal opened.
+#[test]
+fn resume_as_is_survives_an_open_that_didn_t_go_through() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    let repo = dir.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    let midna_exe = dir.path().join("fake-midna");
+    std::fs::write(
+        &midna_exe,
+        "#!/bin/sh\nd=$(dirname \"$0\")\nif [ \"$2\" = session.open ] && [ ! -f \"$d/opened-once\" ]; then touch \"$d/opened-once\"; echo 'no terminal' >&2; exit 1; fi\nif [ \"$2\" = session.open ]; then echo '{\"id\": \"S9\"}'; exit 0; fi\necho '{}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&midna_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    cfg.midna = midna_exe;
+    let claude_exe = dir.path().join("fake-claude");
+    std::fs::write(&claude_exe, "#!/bin/sh\ntouch \"$(dirname \"$0\")/compacted\"\nexit 1\n").unwrap();
+    std::fs::set_permissions(&claude_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    cfg.claude = claude_exe.to_string_lossy().to_string();
+    let file = taskboardd::transcript::transcript_file(&cfg.claude_projects, &repo.to_string_lossy(), "c1");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, json!({"type": "user", "message": {"content": "hi"}, "timestamp": "2000-01-01T00:00:00Z"}).to_string()).unwrap();
+    let app = App::for_tests(cfg);
+    app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    let b = Board { app, _dir: dir };
+
+    let t = b.post("/tasks", json!({"title": "Fix the tab bar", "detail": "Do it.", "project": "webapp"}))["id"].as_i64().unwrap();
+    let mut ctx = board::task_context(&board::get_task(&b.app, t).unwrap());
+    ctx.insert("resume_as_is".into(), json!("c1"));
+    board::save_context(&b.app, t, &ctx, false).unwrap();
+    let jid = board::create_job(&b.app, "agent", json!({"flags": "--resume c1", "cwd": repo.to_string_lossy()}), Some(t), "start", None).unwrap();
+    let job = || b.app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap();
+
+    midna::run_job(&b.app, &job());
+    assert!(midna::resume_as_is(&b.app, t, "c1").unwrap(), "the open didn't go through, so the choice stays");
+    b.app.db.x("UPDATE jobs SET state = 'pending' WHERE id = ?", p![jid]).unwrap();
+    midna::run_job(&b.app, &job());
+    let target: Value = serde_json::from_str(job().s("target").unwrap_or("{}")).unwrap();
+    assert_eq!(target["session"], "S9", "the retry opened a terminal");
+    assert!(!b._dir.path().join("compacted").exists(), "neither run compacted the conversation");
+    assert!(!midna::resume_as_is(&b.app, t, "c1").unwrap(), "the choice is used up once a terminal opened");
 }
 
 #[test]

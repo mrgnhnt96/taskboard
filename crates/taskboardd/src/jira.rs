@@ -91,11 +91,21 @@ pub fn drop_pending_creates(app: &App, project: &str) -> Result<()> {
 }
 
 pub fn request_create_for_task(app: &App, t: &Row) -> Result<i64> {
+    create_for_task(app, t, None)
+}
+
+/// A ticket the board asks for by itself (`auto_ticket`): its result is logged as the board's, so it never
+/// counts as the agent moving on.
+pub fn request_create_by_board(app: &App, t: &Row) -> Result<i64> {
+    create_for_task(app, t, Some("board"))
+}
+
+fn create_for_task(app: &App, t: &Row, by: Option<&str>) -> Result<i64> {
     let g = board::find_goal(app, t.i("goal_id"))?;
     ensure_epic(app, g.as_ref())?;
     request_job(
         app,
-        json!({"op": "create", "summary": t.v("title"), "description": t.v("detail"), "issue_type": app.cfg.jira.task_type}),
+        json!({"op": "create", "summary": t.v("title"), "description": t.v("detail"), "issue_type": app.cfg.jira.task_type, "by": by}),
         json!({"task": t.id()}),
     )
 }
@@ -1050,7 +1060,7 @@ pub fn ensure_tickets(app: &App) -> Result<()> {
         if !wants_ticket(app, &t)? || last_create(app, t.id())?.is_some() {
             continue;
         }
-        request_create_for_task(app, &t)?;
+        request_create_by_board(app, &t)?;
         board::log_event(app, t.id(), board::BOARD, "jira", "Asked for a Jira ticket for its PR")?;
     }
     Ok(())
