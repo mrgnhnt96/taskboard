@@ -1,13 +1,14 @@
 //! PR builds stopped: a board-wide switch, set on the owner's word (`tb pr-builds stop|resume`,
 //! recording who), for when CI time is scarce. While it's on:
 //!
-//! - every build on one of the owner's PRs or the owner's own pushes (an event's `author` in
-//!   `owner_emails`, or its branch one of those PRs') is cancelled as soon as the board hears of it: a
+//! - every build on one of the owner's PRs or the owner's own pushes (an event's `author` one of
+//!   `owner_emails` or `[reviewers] me`, or a roster alias of one of those, `mine: true`, or its branch
+//!   one of those PRs') is cancelled as soon as the board hears of it: a
 //!   build event on the feed (`POST /prs/event`, `kind: build`), or a running check on a poll. The
 //!   owner's PRs are the ones a board task made and the ones the owner opened by hand: the board
 //!   reads the owner's open PRs on each repo it knows every `owner_prs_secs` (120) while builds are
-//!   stopped, and notes the ones the feed's PR events say are the owner's (`author` in
-//!   `owner_emails`, or `mine: true`). A build on one of those is cancelled by its PR's number too
+//!   stopped, and notes the ones the feed's PR events say are the owner's (`author` the owner's, as
+//!   above, or `mine: true`). A build on one of those is cancelled by its PR's number too
 //!   (pull-request pipelines);
 //! - a cancel runs the CI's command from `[pr_builds.cancel]` (by provider: `github`, `bitbucket`,
 //!   `azure`, or any name an event gives), else the PR host's own (`gh run cancel`, Pipelines'
@@ -314,8 +315,24 @@ fn hand_pr_on(app: &App, host: &str, repo: &str, num: i64, branch: &str) -> Opti
     on.into_iter().find(|p| same_repo(p, &r))
 }
 
-fn owner_email(app: &App, email: &str) -> bool {
-    !email.is_empty() && app.cfg.owner_emails.iter().any(|e| e.trim().eq_ignore_ascii_case(email))
+/// An event's `author` is the owner: one of `owner_emails` or `[reviewers] me`, or another name, email
+/// or host id of a roster row that one of those names (its aliases), in any case.
+fn owner_author(app: &App, author: &str) -> Result<bool> {
+    let a = author.trim().to_lowercase();
+    if a.is_empty() {
+        return Ok(false);
+    }
+    let me: Vec<String> = app.cfg.owner_emails.iter().chain(app.cfg.reviewers.me.iter()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
+    if me.contains(&a) {
+        return Ok(true);
+    }
+    let rows = app.db.q("SELECT * FROM reviewers", p![])?;
+    Ok(rows.iter().map(crate::reviewers::idents).any(|ids| ids.contains(&a) && ids.iter().any(|i| me.contains(i))))
+}
+
+/// The event is the owner's: `mine: true`, or its `author` is the owner (`owner_author`).
+fn owners_event(app: &App, body: &Value) -> Result<bool> {
+    Ok(as_bool(body.get("mine"), false) || owner_author(app, &body_str(body, "author"))?)
 }
 
 /// The host, repo and number an event names: by its PR link (`url`), else `host`, `repo` and `num`.
@@ -326,10 +343,10 @@ fn event_pr(body: &Value) -> (String, String, i64) {
     }
 }
 
-/// A PR event for no PR on the board: one of the owner's (`author` in `owner_emails`, or `mine: true`)
+/// A PR event for no PR on the board: one of the owner's (`author` the owner's, or `mine: true`)
 /// is noted while it's open, so builds on it are cancelled while PR builds are stopped.
 pub fn on_pr_event(app: &App, body: &Value) -> Result<Value> {
-    let mine = as_bool(body.get("mine"), false) || owner_email(app, &body_str(body, "author").to_lowercase());
+    let mine = owners_event(app, body)?;
     let (host, repo, num) = event_pr(body);
     if !mine || repo.is_empty() || num <= 0 {
         return Ok(json!({"owners": mine}));
@@ -396,7 +413,7 @@ pub fn on_push_build(app: &App, body: &Value) -> Result<Value> {
     let url = body_str(body, "url");
     let branch = body_str(body, "branch");
     let (host, repo, num) = event_pr(body);
-    let by_owner = owner_email(app, &body_str(body, "author").to_lowercase());
+    let by_owner = owner_author(app, &body_str(body, "author"))?;
     let pr = if by_owner { None } else { owner_pr_on(app, &repo, &branch)? };
     let hand = if pr.is_none() { hand_pr_on(app, &host, &repo, num, &branch) } else { None };
     let mine = by_owner || as_bool(body.get("mine"), false) || pr.is_some() || hand.is_some();

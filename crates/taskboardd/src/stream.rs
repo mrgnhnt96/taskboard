@@ -203,6 +203,7 @@ fn push(ev: &Value) -> Check {
         need(ev, k)?;
     }
     bool_or_null(ev, "forced")?;
+    bool_or_null(ev, "mine")?;
     list(ev, "commits", |c| need(c, "sha").map(|_| ()))
 }
 
@@ -211,6 +212,7 @@ fn build(ev: &Value) -> Check {
         need(ev, k)?;
     }
     need_one_of(ev, "state", BUILD_STATES)?;
+    bool_or_null(ev, "mine")?;
     if ev.get("pr").is_some_and(|v| !v.is_null()) {
         pr_ref(&ev["pr"], "pr")?;
     }
@@ -356,6 +358,10 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
             })
         }
         "review" | "comment" => pr_hint(app, kind, ev),
+        "push" => {
+            feed::note_event_for(app, "builds", kind, ev, None)?;
+            Ok(json!({"builds": crate::prbuilds::on_push_build(app, &as_push_build(ev))?}))
+        }
         "heartbeat" => {
             let named: Vec<&str> = ev["sources"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
             let sources = if named.is_empty() { SOURCES.to_vec() } else { named };
@@ -511,7 +517,14 @@ fn as_feed_build(ev: &Value) -> Value {
     let repo = if body_str(pr, "repo").is_empty() { ev["repo"].clone() } else { pr["repo"].clone() };
     json!({"kind": "build", "url": pr["url"], "host": pr["provider"], "repo": repo, "num": pr["num"], "state": ev["state"], "head": ev["head"],
            "branch": ev["branch"], "provider": ev["provider"], "pipeline": ev["pipeline"], "build_url": ev["url"], "author": ev["author"],
-           "source": ev["source"]})
+           "mine": ev["mine"], "source": ev["source"]})
+}
+
+/// A push as the build it starts on its new head, for the owner's PR builds (`prbuilds::on_push_build`,
+/// as `POST /pr-builds/event` takes one): a push to one of the owner's PRs' branches, or by the owner.
+fn as_push_build(ev: &Value) -> Value {
+    json!({"kind": "build", "repo": ev["repo"], "branch": ev["branch"], "head": ev["after"], "state": "started", "author": ev["author"],
+           "mine": ev["mine"], "provider": ev["provider"], "source": ev["source"]})
 }
 
 #[cfg(test)]

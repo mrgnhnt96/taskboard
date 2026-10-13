@@ -80,7 +80,7 @@ incomplete pr event, so the stage changes without waiting for the next PR poll.
 ### `push`
 
 `repo`, `branch`, `after` (the new head sha), and optionally `before?`, `author?`,
-`commits?: [{sha, message?, author?}]` and `forced?: bool`.
+`commits?: [{sha, message?, author?}]`, `forced?: bool` and `mine?: bool`.
 
 ### `build`
 
@@ -89,10 +89,15 @@ incomplete pr event, so the stage changes without waiting for the next PR poll.
 | `repo`, `head` | the repo and the commit built (required) |
 | `state` | `queued`, `started`, `running`, `passed`, `failed`, `stopped` (required) |
 | `branch?`, `pipeline?`, `author?` | |
+| `mine?` | `true` when the relay knows the build is the owner's |
 | `pr?` | the PR the build is for, if any |
 | `url?` | the build's link |
 | `build_id?` | the CI's id for the build (else the last number in `url`) |
 | `provider?` | the CI that ran it |
+
+A `build` or `push` is the owner's when `mine` is `true`, or its `author` is one of `owner_emails` or
+`[reviewers] me`, or another name, email or host id of a roster row that names one of those (its aliases), in
+any case. A display name, a username or an account id all match once they're in `me` or on the owner's roster row.
 
 ### `jira.issue`: an issue changed
 
@@ -120,7 +125,7 @@ doesn't count it as stuck or silent.
 | `jira.comment` | qa | QA comments, as `POST /jira/comment` does |
 | `jira.issue` | jira | the task, goal epic and backlog issue with that key, see below |
 | `review`, `comment` | prs | a hint, like an incomplete pr event: a PR on the board is read from its host and stepped (in either mode), and the result names its task; any other PR only counts for the source's health |
-| `push` | builds | the source's health; kept only, for now |
+| `push` | builds | the owner's PR builds, as `POST /pr-builds/event` does: a push to the branch of a PR on the board or of one of the owner's open PRs opened by hand, or a push by the owner, is a started build on `after`; other pushes are kept only |
 
 ### Ticket statuses
 
