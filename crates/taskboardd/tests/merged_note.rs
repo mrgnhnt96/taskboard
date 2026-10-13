@@ -208,3 +208,54 @@ fn the_handoff_tells_the_agent_about_the_note() {
     let t = off.ticketed();
     assert!(!jira::handoff_block(&off.app, &off.task(t)).unwrap().join("\n").contains("note for testers"));
 }
+
+/// A ticketed task with its note written and an open PR, stacked on `parent` with `mode` when given.
+fn stacked(b: &Board, key: &str, pr: i64, on: Option<(i64, &str)>) -> i64 {
+    let t = b.post("/tasks", json!({"title": format!("Work for {key}"), "project": "webapp", "jira": {"mode": "link", "key": key}}))["id"].as_i64().unwrap();
+    b.post(&format!("/tasks/T{t}"), json!({"merged_note": format!("Test {key}")}));
+    b.app.db.x("UPDATE tasks SET status = 'done', pr_num = ?, pr_url = ? WHERE id = ?", p![pr, format!("https://github.com/acme/webapp/pull/{pr}"), t]).unwrap();
+    if let Some((parent, mode)) = on {
+        board::update_task(&b.app, t, fields!["pr_after" => parent, "stack_merge" => if mode == "head" { json!("head") } else { Value::Null }]).unwrap();
+    }
+    t
+}
+
+fn mark_merged(b: &Board, t: i64) {
+    b.app.db.tx(|| prflow::mark_merged(&b.app, &b.task(t), "Pat")).unwrap();
+}
+
+fn note_keys(b: &Board) -> Vec<String> {
+    b.note_jobs().iter().map(|j| board::job_args(j).st("key")).collect()
+}
+
+#[test]
+fn a_head_merged_ticket_moves_once_its_stack_reaches_main() {
+    let b = board_with(|_| {});
+    let bottom = stacked(&b, "PROJ-4", 9, None);
+    let mid = stacked(&b, "PROJ-5", 10, Some((bottom, "head")));
+    let top = stacked(&b, "PROJ-6", 11, Some((mid, "head")));
+    b.app.db.x("DELETE FROM jobs WHERE kind = 'jira'", vec![]).unwrap();
+
+    mark_merged(&b, top);
+    mark_merged(&b, mid);
+    assert!(note_keys(&b).is_empty(), "merged into its parent's branch, not main");
+    assert!(b.task(mid).s("merged_note_wait").is_none());
+
+    mark_merged(&b, bottom);
+    assert_eq!(note_keys(&b), vec!["PROJ-4", "PROJ-5", "PROJ-6"]);
+    let comments: Vec<String> = b.note_jobs().iter().map(|j| board::job_args(j).st("comment")).collect();
+    assert_eq!(comments[2], "PR #11 was merged: https://github.com/acme/webapp/pull/11");
+    assert!(b.task(top).s("merged_note_wait").is_some());
+}
+
+#[test]
+fn a_tail_merged_ticket_moves_when_its_pr_merges() {
+    let b = board_with(|_| {});
+    let bottom = stacked(&b, "PROJ-4", 9, None);
+    let child = stacked(&b, "PROJ-5", 10, Some((bottom, "tail")));
+    b.app.db.x("DELETE FROM jobs WHERE kind = 'jira'", vec![]).unwrap();
+    mark_merged(&b, bottom);
+    assert_eq!(note_keys(&b), vec!["PROJ-4"]);
+    mark_merged(&b, child);
+    assert_eq!(note_keys(&b), vec!["PROJ-4", "PROJ-5"]);
+}

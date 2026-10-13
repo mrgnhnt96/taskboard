@@ -141,11 +141,56 @@ fn pr_declined(o: &Row) -> bool {
     matches!(o.st("pr_state").to_uppercase().as_str(), "CLOSED" | "DECLINED" | "SUPERSEDED") || o.s("pr_phase") == Some("declined")
 }
 
-/// Done and not failed, and its work is on the base branch: its PR merged, or it ships no PR.
+/// Whether the task's PR, once merged, has its work on the main branch: it isn't a head merge (`stack.rs`),
+/// or the parent it merged into is there too. A head merge lands in its parent's branch, so it only
+/// reaches the main branch with the bottom PR of its stack.
+pub fn stack_landed(app: &App, t: &Row) -> Result<bool> {
+    let mut t = t.clone();
+    for _ in 0..64 {
+        if !crate::stack::head(&t) {
+            return Ok(true);
+        }
+        let Some(p) = crate::stack::parent(app, &t)? else { return Ok(true) };
+        if !pr_merged(&p) {
+            return Ok(false);
+        }
+        t = p;
+    }
+    Ok(false)
+}
+
+/// Its PR merged and its work is on the main branch.
+pub fn on_main(app: &App, t: &Row) -> Result<bool> {
+    Ok(pr_merged(t) && stack_landed(app, t)?)
+}
+
+/// The head-merge tasks whose PR merged into this task's branch, to count as merged once it reaches the main branch.
+pub fn head_merged_children(app: &App, id: i64) -> Result<Vec<Row>> {
+    let kids = app.db.q("SELECT * FROM tasks WHERE pr_after = ? AND id != ? AND stack_merge = 'head' ORDER BY id", p![id, id])?;
+    Ok(kids.into_iter().filter(pr_merged).collect())
+}
+
+/// The bottom PR of a head-merged task's stack, the one that takes it to the main branch.
+fn stack_bottom(app: &App, t: &Row) -> Result<Option<Row>> {
+    let mut b = None;
+    let mut t = t.clone();
+    for _ in 0..64 {
+        if !crate::stack::head(&t) {
+            break;
+        }
+        let Some(p) = crate::stack::parent(app, &t)? else { break };
+        b = Some(p.clone());
+        t = p;
+    }
+    Ok(b)
+}
+
+/// Done and not failed, and its work is on the base branch: its PR merged (with its stack, for a head
+/// merge), or it ships no PR.
 pub fn merged(app: &App, other: Option<&Row>) -> Result<bool> {
     let Some(o) = other.filter(|o| ready(Some(o))) else { return Ok(false) };
     if pr_merged(o) {
-        return Ok(true);
+        return stack_landed(app, o);
     }
     if o.i("pr_num").is_some() {
         return Ok(false);
@@ -173,6 +218,15 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
         let pr = other.i("pr_num").map(|p| format!("PR #{p}"));
         return Ok(Some(match other.s("status") {
             Some("done") if !other.b("failed") => match pr {
+                Some(pr) if pr_merged(&other) => match stack_bottom(app, &other)? {
+                    Some(bt) => format!(
+                        "Blocked by {who}: its {pr} merged into {}'s branch, and reaches the main branch once {}'s{} merges",
+                        rf("task", bt.id()),
+                        rf("task", bt.id()),
+                        bt.i("pr_num").map(|n| format!(" PR #{n}")).unwrap_or_else(|| " PR".into())
+                    ),
+                    None => format!("Blocked by {who} until {pr} merges"),
+                },
                 Some(pr) if pr_declined(&other) => format!("Blocked by {who}, whose {pr} was declined, so its work isn't merged"),
                 Some(pr) => format!("Blocked by {who} until {pr} merges"),
                 None => format!("Blocked by {who} until its PR merges"),
@@ -288,9 +342,17 @@ pub fn head_of(t: &Row) -> Option<String> {
 fn where_it_is(app: &App, other: &Row) -> Result<String> {
     let branch = branch_of(other);
     let mut bits = vec![format!("{} “{}”", label(app, other)?, short(&other.st("title"), 60))];
-    let merged = other.st("pr_state").eq_ignore_ascii_case("MERGED");
+    let merged = on_main(app, other)?;
     if merged {
         bits.push(format!("is merged (PR #{}), so its work is on the main branch", other.i0("pr_num")));
+    } else if pr_merged(other) {
+        let into = crate::stack::parent(app, other)?;
+        bits.push(format!(
+            "is merged (PR #{}) into {}'s branch {}, not the main branch yet",
+            other.i0("pr_num"),
+            into.as_ref().map(|p| rf("task", p.id())).unwrap_or_else(|| "its parent".into()),
+            into.as_ref().and_then(crate::stack::branch).unwrap_or_else(|| "its parent's branch".into())
+        ));
     } else if other.i("pr_num").is_some() {
         bits.push(format!(
             "is in PR #{} ({}) on branch {}",
@@ -314,7 +376,7 @@ fn where_it_is(app: &App, other: &Row) -> Result<String> {
 /// Where another project's task's work is, for a task that waits for it.
 fn elsewhere(app: &App, other: &Row) -> Result<String> {
     let mut line = format!("{} “{}” in {}", label(app, other)?, short(&other.st("title"), 60), other.st("project"));
-    if other.st("pr_state").eq_ignore_ascii_case("MERGED") {
+    if on_main(app, other)? {
         line += &format!(" is merged (PR #{} {})", other.i0("pr_num"), other.st("pr_url"));
     } else if other.i("pr_num").is_some() {
         line += &format!(" is in PR #{} ({}), not merged yet", other.i0("pr_num"), other.st("pr_url"));
@@ -461,7 +523,7 @@ pub fn follow_ups(app: &App) -> Result<i64> {
                 continue;
             }
             let other = other.unwrap();
-            let now = json!({"head": head_of(&other), "merged": other.st("pr_state").eq_ignore_ascii_case("MERGED")});
+            let now = json!({"head": head_of(&other), "merged": other.st("pr_state").eq_ignore_ascii_case("MERGED") && stack_landed(app, &other)?});
             let key = n.to_string();
             let Some(before) = seen.get(&key) else {
                 changes.insert(key, now);
