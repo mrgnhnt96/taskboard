@@ -391,7 +391,7 @@ ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when i
 # {base} is the PR's real base (a stacked task's parent branch) and {base_ref} has the remote on it
 # (origin/main). The board refuses the PR and `tb done` until they pass. A step with per_head = true passes
 # once per head commit (every push is checked again, and a push to the open PR waits for it);
-# min_gap_mins keeps its rounds apart; bar = "WD" shows it in the app's PR bar. A check can write its
+# min_gap_mins keeps its rounds apart; bar = "Review" shows it in the app's PR bar. A check can write its
 # verdict, headline and findings to $TASKBOARD_RESULT. A per_head step's `publish` script republishes its
 # passing round for the PR (`tb step publish`, listed in the rebase commands after the push); unset, a step
 # with a `bar` is still listed there, in words. Values fill scripts as single shell words ('' when empty, so
@@ -402,10 +402,10 @@ ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when i
 # projects = "work-app|work-api"
 # prompt = "Run /author-review on {branch} against {base_ref}, and fix what it finds."
 # check = "author-review --since {base_ref} --result $TASKBOARD_RESULT"
-# publish = "wd review publish {worktree} {pr}"
+# publish = "author-review publish {worktree} {pr}"
 # per_head = true
 # min_gap_mins = 10
-# bar = "WD"
+# bar = "Review"
 #
 # [[steps]]
 # name = "Lint and unit tests"
