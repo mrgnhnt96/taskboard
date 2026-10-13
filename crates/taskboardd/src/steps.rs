@@ -175,11 +175,53 @@ struct File {
     steps: Vec<toml::Value>,
 }
 
-/// A `[[steps]]` entry that can't be done, and is left out: what to call it (its name, else "#3") and why.
+/// A `[[steps]]` entry that can't be done, and is left out: what to call it (its name, else "#3"), why,
+/// and the projects it was for (as written; empty for every project).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bad {
     pub step: String,
     pub why: String,
+    pub projects: String,
+}
+
+/// Every placeholder the board fills, so a script is checked as it will run.
+const PLACEHOLDERS: &[&str] = &["task", "title", "project", "branch", "base", "base_ref", "repo", "pr_url", "pr", "jira", "head", "worktree", "step"];
+
+/// Why a script isn't valid `sh` (`sh -n` on it, its placeholders filled with sample values), naming the
+/// line: "line 3: unexpected EOF while looking for matching `\"'". None when it parses, or when `sh` can't
+/// be run to tell. Kept per text, as config.toml is read on every request.
+pub fn shell_error(script: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    if script.trim().is_empty() {
+        return None;
+    }
+    if let Some(e) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(script) {
+        return e.clone();
+    }
+    let sample: BTreeMap<String, String> = PLACEHOLDERS.iter().map(|k| (k.to_string(), "x".to_string())).collect();
+    let filled = fill_shell(script, &sample);
+    let out = crate::proc::run_with(std::path::Path::new("/bin/sh"), &["-n".into()], None, 5.0, &[], Some(filled.as_bytes())).ok()?;
+    let e = (out.code != Some(0)).then(|| {
+        let why: Vec<&str> = out.stderr.lines().map(|l| l.trim_start_matches("/bin/sh: ").trim()).filter(|l| !l.is_empty()).collect();
+        if why.is_empty() {
+            "sh can't parse it".to_string()
+        } else {
+            why.join("; ")
+        }
+    });
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(script.to_string(), e.clone());
+    e
+}
+
+impl Step {
+    /// Why one of the step's scripts (`check`, `run`, `publish`) isn't valid `sh`, naming the script.
+    fn script_error(&self) -> Option<String> {
+        [("check", &self.check), ("run", &self.run), ("publish", &self.publish)]
+            .into_iter()
+            .find_map(|(k, text)| shell_error(text).map(|e| format!("its {k} script isn't valid sh: {e}")))
+    }
 }
 
 /// Every step in a config file's text that can be done, and the ones left out with why. Err only when the
@@ -189,6 +231,7 @@ pub fn parse_lenient(text: &str) -> std::result::Result<(Vec<Step>, Vec<Bad>), S
     let mut seen = HashSet::new();
     let (mut good, mut bad) = (vec![], vec![]);
     for (i, raw) in f.steps.into_iter().enumerate() {
+        let projects = raw.get("projects").and_then(|p| p.as_str()).unwrap_or("").to_string();
         let label = raw.get("name").and_then(|n| n.as_str()).map(str::trim).filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| format!("#{}", i + 1));
         let why = match raw.try_into::<Step>() {
             Err(e) => Some(e.to_string().trim().to_string()),
@@ -196,13 +239,16 @@ pub fn parse_lenient(text: &str) -> std::result::Result<(Vec<Step>, Vec<Bad>), S
             Ok(s) if s.prompt.trim().is_empty() && s.run.trim().is_empty() && !s.owner => Some("it needs a prompt, a run script, or owner = true".into()),
             Ok(s) if s.owner && !s.run.trim().is_empty() => Some("it's the owner's, so it can't have a run script".into()),
             Ok(s) if !seen.insert(key(&s.name)) => Some(format!("another step is called “{}”", s.name)),
-            Ok(s) => {
-                good.push(s);
-                None
-            }
+            Ok(s) => match s.script_error() {
+                Some(e) => Some(e),
+                None => {
+                    good.push(s);
+                    None
+                }
+            },
         };
         if let Some(why) = why {
-            bad.push(Bad { step: label, why });
+            bad.push(Bad { step: label, why, projects });
         }
     }
     Ok((good, bad))
@@ -221,22 +267,36 @@ pub fn parse(text: &str) -> std::result::Result<Vec<Step>, String> {
 /// The steps in config.toml. One that can't be done is left out, logged, and named in a board alert
 /// (key `steps:<name>`) until it's fixed; the others still apply.
 pub fn load(app: &App) -> Vec<Step> {
+    load_all(app).0
+}
+
+/// `load`, with the steps left out.
+fn load_all(app: &App) -> (Vec<Step>, Vec<Bad>) {
     let path = &app.cfg.config_path;
-    let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+    let Ok(text) = std::fs::read_to_string(path) else { return (vec![], vec![]) };
     let (good, bad) = match parse_lenient(&text) {
         Ok(x) => x,
-        Err(e) => (vec![], vec![Bad { step: "file".into(), why: e.trim().to_string() }]),
+        Err(e) => (vec![], vec![Bad { step: "file".into(), why: e.trim().to_string(), projects: String::new() }]),
     };
     note_bad(app, &bad);
     let gaps = crate::limits::review_gaps(app);
-    good.into_iter()
+    let good = good
+        .into_iter()
         .map(|mut s| {
             if let Some(m) = gaps.get(&key(&s.name)) {
                 s.min_gap_mins = Some(*m);
             }
             s
         })
-        .collect()
+        .collect();
+    (good, bad)
+}
+
+/// The steps left out that a task's project would have (a broken file counts for every task), so `tb
+/// steps` and the handoff can say which aren't asked for and why.
+pub fn ignored_for(app: &App, t: &Row) -> Vec<Bad> {
+    let project = t.st("project");
+    load_all(app).1.into_iter().filter(|b| hooks::matches(&b.projects, &project)).collect()
 }
 
 /// Keeps an alert up for each step left out, and clears the ones fixed (logging when that changes).
@@ -634,6 +694,9 @@ pub fn find(app: &App, t: &Row, name: &str) -> Result<Step> {
     if let Some(s) = all.iter().find(|s| key(&s.name) == key(name)) {
         return Ok(s.clone());
     }
+    if let Some(b) = ignored_for(app, t).iter().find(|b| key(&b.step) == key(name)) {
+        return err(400, format!("“{}” is left out until config.toml is fixed: {}. It isn't asked for.", b.step, b.why));
+    }
     if all.is_empty() {
         return err(400, format!("{} has no steps.", rf("task", t.id())));
     }
@@ -675,7 +738,8 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
             v
         })
         .collect();
-    Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "vars": vars_at(app, t, head),
+    let ignored: Vec<Value> = ignored_for(app, t).iter().map(|b| json!({"name": b.step, "why": b.why})).collect();
+    Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "ignored": ignored, "vars": vars_at(app, t, head),
               "head": known, "aim": aim_now(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t),
               "passed_rounds": passed_rounds(app, t, &rounds, known.as_deref())?}))
 }
@@ -754,11 +818,25 @@ pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
             s += &format!("\n{}. {}: {}. Then: {}.", i + 1, st.name, st.what(), st.how(tb));
         }
     }
+    let ignored = ignored_for(app, t);
+    let off = if ignored.is_empty() {
+        String::new()
+    } else {
+        let each: Vec<String> = ignored
+            .iter()
+            .map(|b| if b.step == "file" { format!("every step (config.toml isn't valid TOML: {})", one_line(&b.why, 200)) } else { format!("{} ({})", b.step, b.why) })
+            .collect();
+        format!(
+            "\nLeft out until {} fixes config.toml, and not asked for: {}.",
+            app.cfg.owner,
+            each.join("; ")
+        )
+    };
     if s.is_empty() {
-        return s;
+        return off.trim_start().to_string();
     }
     format!(
-        "{}\nThe board won't let the PR open or the task finish until they pass. A script or check can take a while: \
+        "{}{off}\nThe board won't let the PR open or the task finish until they pass. A script or check can take a while: \
          give it time. If one can't pass, {tb} step fail \"<name>\" --why \"…\" and end your turn. {tb} steps lists them.",
         s.trim_start()
     )
@@ -1001,6 +1079,29 @@ mod tests {
         assert!(parse("[[steps]]\nname = \"x\"\nprompt = \"y\"\nchek = \"z\"\n").is_err(), "a misspelt key");
         assert!(parse("[[steps]]\nname = \"x\"\nprompt = \"y\"\n[[steps]]\nname = \"X\"\nprompt = \"z\"\n").is_err());
         assert!(parse("port = 1\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_script_that_isnt_valid_sh_is_left_out_naming_the_line() {
+        // #332: the '"'"' idiom inside "…" leaves a quote open, so sh refuses the whole check.
+        let toml = r#"
+[[steps]]
+name = "WD review"
+prompt = "x"
+check = '''
+rc=0
+case $rc in 0) ;; *) printf "%s" "{\"headline\":\"WD couldn'"'"'t review\"}" > "$TASKBOARD_RESULT" ;; esac; exit $rc
+'''
+"#;
+        let (good, bad) = parse_lenient(toml).unwrap();
+        assert!(good.is_empty());
+        assert_eq!(bad[0].step, "WD review");
+        assert!(bad[0].why.starts_with("its check script isn't valid sh: line "), "{}", bad[0].why);
+        let why = |extra: &str| parse_lenient(&format!("[[steps]]\nname = \"x\"\n{extra}")).unwrap().1.first().map(|b| b.why.clone());
+        assert!(why("run = \"if true; then\"\n").unwrap().starts_with("its run script"));
+        assert!(why("prompt = \"x\"\npublish = \"echo 'a\"\n").unwrap().starts_with("its publish script"));
+        let fine = r#"run = '''git diff {base}...{branch} -- '{repo}' "{pr_url}" {unknown}'''"#;
+        assert_eq!(why(&format!("{fine}\n")), None, "placeholders are filled before it's checked");
     }
 
     #[test]

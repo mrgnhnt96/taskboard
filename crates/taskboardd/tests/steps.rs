@@ -134,6 +134,49 @@ fn an_unknown_step_is_refused_with_the_names() {
 }
 
 #[test]
+fn a_step_whose_check_isnt_valid_sh_is_left_out_and_said_everywhere() {
+    let bad = r#"
+[[steps]]
+name = "WD review"
+prompt = "Review it."
+check = '''
+echo ok
+echo "open
+'''
+"#;
+    let b = board(&format!("{STEPS}{bad}"));
+    let id = b.new_task();
+    let h = handoff::build(&b.app, id).unwrap();
+    assert!(h.contains("1. Author-side review"), "the others still apply: {h}");
+    assert!(h.contains("Left out until") && h.contains("WD review (its check script isn't valid sh: line 2:"), "{h}");
+    let v = b.steps();
+    assert!(v["steps"].as_array().unwrap().iter().all(|s| s["name"] != "WD review"), "{v}");
+    assert_eq!(v["ignored"][0]["name"], "WD review", "{v}");
+    let alerts = taskboardd::dispatch::alerts(&b.app);
+    assert!(alerts.iter().any(|a| a["key"] == "steps:wd review" && a["text"].as_str().unwrap_or("").contains("line 2")), "{alerts:?}");
+    let (code, why) = b.report("tb.step", json!({"name": "wd review"})).unwrap_err();
+    assert_eq!(code, 400);
+    assert!(why.contains("left out until config.toml is fixed"), "{why}");
+}
+
+#[test]
+fn another_terminals_head_isnt_the_tasks() {
+    let b = board(STEPS);
+    let id = b.new_task();
+    let head = |from: &str| {
+        let mut q = Query::new();
+        q.insert("task".into(), format!("T{id}"));
+        q.insert("head".into(), "abc123".into());
+        q.insert("from".into(), from.into());
+        api::dispatch(&b.app, "GET", "/steps", &q, &Value::Null).unwrap()["head"].clone()
+    };
+    let session = b.task(id).st("session_id");
+    assert_eq!(head(&session), json!("abc123"), "the task's own terminal");
+    assert_ne!(head("s2"), json!("abc123"), "#332: tb steps --task from another checkout");
+    assert_ne!(head(""), json!("abc123"));
+}
+
+#[test]
 fn a_broken_steps_table_turns_them_off() {
     let b = board("[[steps]]\nname = \"x\"\nbefore = \"later\"\nprompt = \"y\"\n");
     let id = b.new_task();
