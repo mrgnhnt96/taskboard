@@ -51,6 +51,8 @@ pub struct State {
     show_dropped: bool,
     deprio_open: bool,
     note_dialog: Option<Value>,
+    /// The device whose dialog is open, by name.
+    device_dialog: Option<String>,
     dialog_focus: Option<FocusHandle>,
     // Kept across goals, like the web's S.notes / S.busy.
     notes: HashMap<String, (String, bool)>,
@@ -71,6 +73,7 @@ impl State {
         self.show_dropped = false;
         self.deprio_open = false;
         self.note_dialog = None;
+        self.device_dialog = None;
     }
 }
 
@@ -1506,6 +1509,7 @@ fn pick(m: &mut MainWindow, r: &str, on: bool, shift: bool, pickable: &[String])
 fn close_dialog(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
     m.goal_page.deprio_open = false;
     m.goal_page.note_dialog = None;
+    m.goal_page.device_dialog = None;
     m.goal_page.dialog_focus = None;
     cx.notify();
 }
@@ -2979,7 +2983,9 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
             .child(note_dialog_title(n));
         shell().child(head(title.into_any_element())).child(note_body(t, &note_blocks(s(n, "text")), i(n, "id")))
     } else {
-        return None;
+        let d = m.goal_page.device_dialog.as_deref().and_then(|name| pool::device_detail(g, name))?;
+        let title = div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).child(d.label.clone());
+        shell().child(head(title.into_any_element())).child(pool::device_dialog_body(t, &d, cx))
     };
     Some(
         deferred(
@@ -2989,7 +2995,7 @@ fn dialog(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                 // Esc closes the read-only note dialog (`READ_ONLY_MODALS`); in the Deprioritize
                 // dialog it does nothing, and either way it goes no further.
                 .on_action(cx.listener(|m, _: &crate::app::CloseOverlay, _, cx| {
-                    if m.goal_page.note_dialog.is_some() && !m.goal_page.deprio_open {
+                    if (m.goal_page.note_dialog.is_some() || m.goal_page.device_dialog.is_some()) && !m.goal_page.deprio_open {
                         close_dialog(m, cx);
                     }
                 }))

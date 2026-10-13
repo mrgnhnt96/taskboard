@@ -613,10 +613,53 @@ pub fn goal_card(app: &App, goal_id: i64) -> Result<Value> {
         v["reserved"] = json!(own.is_some_and(|r| r.b("reserved")));
         devices.push(v);
     }
+    let uses = uses_in_goal(app, goal_id, &tasks, &held)?;
+    for v in devices.iter_mut() {
+        let name = v["name"].as_str().unwrap_or("").to_string();
+        v["uses"] = uses.get(&name).cloned().unwrap_or_else(|| json!({"has": [], "can": [], "had": []}));
+    }
     devices.sort_by_key(|v| v["in_pool"] != true);
     let ours: Vec<i64> = tasks.iter().map(|t| t.id()).collect();
     let lent = held.iter().filter(|(_, t)| ours.contains(t)).count();
-    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "devices": devices, "lent_here": lent, "pool": mine.len()}))
+    let empty_why = mine.is_empty().then_some(if all.is_empty() {
+        "The device pool is empty. Terminals add emulators and simulators to it. Each task gets its own while it runs."
+    } else {
+        "None picked yet, so tasks here can use any free device in the pool. Each task gets its own while it runs."
+    });
+    Ok(json!({"needs": needs_json(&needs), "needs_text": needs_text(&needs), "devices": devices, "lent_here": lent, "pool": mine.len(), "empty_why": empty_why}))
+}
+
+/// Per device, the goal's tasks that have it now, can get it when they start, or had it before, each
+/// task once per device (has, then had, then can) as `{ref, n, title}` with `n` its place in the goal.
+/// A task that isn't done can get every device in its goal's view that meets one of its needs.
+fn uses_in_goal(app: &App, goal_id: i64, tasks: &[Row], held: &HashMap<String, i64>) -> Result<HashMap<String, Value>> {
+    let (seen, _) = view(app, Some(goal_id))?;
+    let mut out: HashMap<String, [Vec<Value>; 3]> = HashMap::new();
+    for (ix, t) in tasks.iter().enumerate() {
+        let entry = json!({"ref": rf("task", t.id()), "n": ix + 1, "title": t.v("title")});
+        let had: Vec<String> = app
+            .db
+            .q("SELECT DISTINCT device FROM device_loans WHERE task_id = ?", p![t.id()])?
+            .iter()
+            .filter_map(|r| r.s("device").map(str::to_string))
+            .collect();
+        let open = !matches!(t.s("status"), Some("done")) && !t.b("failed");
+        let needs = if open { needs(app, t)? } else { vec![] };
+        for d in &seen {
+            let name = d.st("name");
+            let slot = if held.get(&name) == Some(&t.id()) {
+                0
+            } else if had.contains(&name) {
+                2
+            } else if !d.b("off") && needs.iter().any(|n| answers(d, &n.tag) && (!d.b("name_only") || n.tag == name)) {
+                1
+            } else {
+                continue;
+            };
+            out.entry(name).or_default()[slot].push(entry.clone());
+        }
+    }
+    Ok(out.into_iter().map(|(k, [has, can, had])| (k, json!({"has": has, "can": can, "had": had}))).collect())
 }
 
 /// A goal's own devices, for `GET /goals/:id/devices`.
@@ -776,14 +819,112 @@ fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
     device_dict(&get(app, &new_name)?, &held(app)?, app)
 }
 
-fn remove(app: &App, name: &str) -> Result<Value> {
+/// A need only this device meets: it names the device, and no other device in the pool answers it.
+fn only_this(need: &Need, d: &Row, others: &[Row]) -> bool {
+    need.tag == d.st("name") && !others.iter().any(|o| answers(o, &need.tag))
+}
+
+/// The device_needs rows with a need only this device meets, as (owner ref, its needs).
+fn needing(app: &App, d: &Row) -> Result<Vec<(String, Vec<Need>)>> {
+    let others: Vec<Row> = pool(app)?.into_iter().filter(|o| o.id() != d.id()).collect();
+    let mut out = vec![];
+    for r in app.db.q("SELECT owner FROM device_needs ORDER BY owner", p![])? {
+        let owner = r.st("owner");
+        let needs = read_needs(app, &owner)?.unwrap_or_default();
+        if needs.iter().any(|n| only_this(n, d, &others)) {
+            out.push((owner, needs));
+        }
+    }
+    Ok(out)
+}
+
+/// A device_needs owner ("T4", "G2") as a task or goal id.
+enum Owner {
+    Task(i64),
+    Goal(i64),
+    Other,
+}
+
+fn owner_of(owner: &str) -> Owner {
+    let id = owner.get(1..).and_then(|n| n.parse().ok());
+    match (owner.chars().next(), id) {
+        (Some('T'), Some(id)) => Owner::Task(id),
+        (Some('G'), Some(id)) => Owner::Goal(id),
+        _ => Owner::Other,
+    }
+}
+
+/// The tasks not finished and the goals not archived among those owners: the ones still waiting on it.
+fn still_needing(app: &App, owners: &[(String, Vec<Need>)]) -> Result<Vec<String>> {
+    let mut out = vec![];
+    for (owner, _) in owners {
+        let live = match owner_of(owner) {
+            Owner::Task(t) => board::find_task(app, Some(t))?.is_some_and(|t| !matches!(t.s("status"), Some("done")) && !t.b("failed")),
+            Owner::Goal(g) => board::find_goal(app, Some(g))?.is_some_and(|g| !g.b("archived")),
+            Owner::Other => false,
+        };
+        if live {
+            out.push(owner.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Removes a device from the pool. Refused while a task has it, or while tasks or goals still need it
+/// (by name, with no other device to meet it); `force` removes it anyway and drops it from their needs.
+fn remove(app: &App, name: &str, body: &Value) -> Result<Value> {
     let d = get(app, name)?;
-    if let Some(t) = held(app)?.get(&d.st("name")) {
-        return err(409, format!("{} has {} now. Remove it once that task is done, or switch it off with tb device set {} --off.", rf("task", *t), d.st("name"), d.st("name")));
+    let dev = d.st("name");
+    if let Some(t) = held(app)?.get(&dev) {
+        return err(409, format!("{} has {dev} now. Remove it once that task is done, or switch it off with tb device set {dev} --off.", rf("task", *t)));
+    }
+    let owners = needing(app, &d)?;
+    let live = still_needing(app, &owners)?;
+    let force = as_bool(body.get("force"), false);
+    if !live.is_empty() && !force {
+        return err(
+            409,
+            format!("{} still {} {dev}. Change what they need first, or remove it anyway with tb device remove {dev} --force, which drops it from their needs.", goals_list(&live), if live.len() == 1 { "needs" } else { "need" }),
+        );
+    }
+    let others: Vec<Row> = pool(app)?.into_iter().filter(|o| o.id() != d.id()).collect();
+    for (owner, needs) in &owners {
+        let left: Vec<Need> = needs.iter().filter(|n| !only_this(n, &d, &others)).cloned().collect();
+        // A task's empty row is its own "needs none"; a goal that needs nothing has no row.
+        if left.is_empty() && !matches!(owner_of(owner), Owner::Task(_)) {
+            app.db.x("DELETE FROM device_needs WHERE owner = ?", p![owner])?;
+        } else {
+            app.db.x("UPDATE device_needs SET needs = ? WHERE owner = ?", p![jdumps(&needs_json(&left)), owner])?;
+        }
+        if !live.contains(owner) {
+            continue;
+        }
+        let line = format!("{dev} was removed from the device pool, so it no longer needs it");
+        match owner_of(owner) {
+            Owner::Task(t) => {
+                board::log_event(app, t, &board::caller(app, body, &app.cfg.owner), "note", &line)?;
+                board::bump_ctx(app, t)?;
+            }
+            Owner::Goal(g) => {
+                board::add_goal_note(app, g, "finding", &line, Some("board"), false, None)?;
+                for t in board::goal_tasks(app, g)? {
+                    board::bump_ctx(app, t.id())?;
+                }
+            }
+            Owner::Other => {}
+        }
     }
     app.db.x("DELETE FROM devices WHERE id = ?", p![d.id()])?;
-    app.db.x("DELETE FROM goal_devices WHERE device = ?", p![d.st("name")])?;
-    Ok(json!({"ok": true, "removed": d.v("name")}))
+    app.db.x("DELETE FROM goal_devices WHERE device = ?", p![dev])?;
+    Ok(json!({"ok": true, "removed": d.v("name"), "dropped_from": live}))
+}
+
+/// "T4", "T4 and G2", "T4, T5 and G2".
+fn goals_list(refs: &[String]) -> String {
+    match refs.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => refs.join(""),
+    }
 }
 
 /// The command that raises a device's window: its own, else `[devices] focus`, with `{name}` filled in.
@@ -799,15 +940,20 @@ fn focus(app: &App, name: &str) -> Result<Value> {
     };
     let dev = d.st("name");
     let timeout = app.cfg.devices.focus_timeout_secs.unwrap_or(15.0);
-    app.defer(Box::new(move |a: &App| {
-        let env = vec![("TASKBOARD_DEVICE".to_string(), dev.clone())];
-        match crate::proc::run_with(std::path::Path::new("/bin/sh"), &["-c".to_string(), cmd], None, timeout, &env, None) {
-            Ok(o) if o.code == Some(0) => {}
-            Ok(o) => a.info(format!("devices: focusing {dev} exited {:?}: {}", o.code, one_line(&o.stderr, 300))),
-            Err(crate::proc::RunError::TimedOut) => a.info(format!("devices: focusing {dev} took over {timeout}s")),
-            Err(crate::proc::RunError::Spawn(e)) => a.info(format!("devices: couldn't focus {dev}: {e}")),
+    let env = vec![("TASKBOARD_DEVICE".to_string(), dev.clone())];
+    // Waited for, so the person or agent who asked sees it when nothing came up.
+    let failed = match crate::proc::run_with(std::path::Path::new("/bin/sh"), &["-c".to_string(), cmd], None, timeout, &env, None) {
+        Ok(o) if o.code == Some(0) => None,
+        Ok(o) => {
+            let said = one_line(if o.stderr.trim().is_empty() { &o.stdout } else { &o.stderr }, 300);
+            Some(if said.is_empty() { format!("its focus command exited {}", o.code.map(|c| c.to_string()).unwrap_or_else(|| "on a signal".into())) } else { said })
         }
-    }));
+        Err(crate::proc::RunError::TimedOut) => Some(format!("its focus command took over {timeout} seconds")),
+        Err(crate::proc::RunError::Spawn(e)) => Some(format!("its focus command couldn't start: {e}")),
+    };
+    if let Some(why) = failed {
+        return err(409, format!("Couldn't bring up {dev}: {why}"));
+    }
     Ok(json!({"ok": true, "device": d.v("name")}))
 }
 
@@ -818,7 +964,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], body: &Value) -> Result<Val
         ("POST", []) => app.db.tx(|| add(app, body)),
         ("GET", [name]) => device_dict(&get(app, name)?, &held(app)?, app),
         ("POST", [name]) => app.db.tx(|| set(app, name, body)),
-        ("POST", [name, "remove"]) => app.db.tx(|| remove(app, name)),
+        ("POST", [name, "remove"]) => app.db.tx(|| remove(app, name, body)),
         ("POST", [name, "focus"]) => focus(app, name),
         _ => err(404, "There's nothing at that address."),
     }

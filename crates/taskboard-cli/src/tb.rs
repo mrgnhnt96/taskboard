@@ -518,7 +518,12 @@ enum DeviceCmd {
         on: bool,
     },
     /// Take a device out of the pool
-    Remove { name: String },
+    Remove {
+        name: String,
+        /// Remove it even though tasks or goals still need it, dropping it from their needs
+        #[arg(long)]
+        force: bool,
+    },
     /// Raise the device's window (runs its focus command)
     Focus { name: String },
 }
@@ -1922,6 +1927,16 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
     Ok(0)
 }
 
+/// "Took pixel-7 out of the pool and out of T4's and G2's needs." for `tb device remove`.
+fn removed_line(name: &str, v: &Value) -> String {
+    let from: Vec<String> = v["dropped_from"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(|r| format!("{r}'s")).collect()).unwrap_or_default();
+    match from.split_last() {
+        None => format!("Took {name} out of the pool."),
+        Some((last, [])) => format!("Took {name} out of the pool and out of {last} needs."),
+        Some((last, rest)) => format!("Took {name} out of the pool and out of {} and {last} needs.", rest.join(", ")),
+    }
+}
+
 /// "dev-a (Android emulator, emulator-5554) · android · lent to T4" for `tb devices`.
 fn device_line(d: &Value) -> String {
     let tags: Vec<&str> = d["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
@@ -2024,13 +2039,13 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             let v = c.call("POST", &format!("/devices/{name}"), Some(b))?;
             out(&format!("Changed {}.", device_line(&v)));
         }
-        DeviceCmd::Remove { name } => {
-            c.call("POST", &format!("/devices/{name}/remove"), Some(json!({})))?;
-            out(&format!("Took {name} out of the pool."));
+        DeviceCmd::Remove { name, force } => {
+            let v = c.call("POST", &format!("/devices/{name}/remove"), Some(json!({"force": force})))?;
+            out(&removed_line(&name, &v));
         }
         DeviceCmd::Focus { name } => {
             c.call("POST", &format!("/devices/{name}/focus"), Some(json!({})))?;
-            out(&format!("Raising {name}'s window."));
+            out(&format!("Brought up {name}."));
         }
     }
     Ok(0)
@@ -5061,6 +5076,9 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "device", "add", "pixel-7", "--tag", "android", "--focus", "open -a Simulator"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "set", "pixel-7", "--off"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "device", "focus", "pixel-7"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "device", "remove", "pixel-7", "--force"]).is_ok());
+        assert_eq!(removed_line("pixel-7", &json!({"dropped_from": []})), "Took pixel-7 out of the pool.");
+        assert_eq!(removed_line("pixel-7", &json!({"dropped_from": ["G2", "T4"]})), "Took pixel-7 out of the pool and out of G2's and T4's needs.");
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--device", "android:2", "--bit", "newCheckout"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--device", "none", "--not-bit", "a"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--device", "ios"]).is_ok());
