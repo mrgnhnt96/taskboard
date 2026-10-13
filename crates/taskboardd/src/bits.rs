@@ -246,9 +246,8 @@ fn project_for(app: &App, body: &Value, tasks: &[i64], goals: &[i64]) -> Result<
     Ok(None)
 }
 
-fn who_of(body: &Value) -> String {
-    let w = body_str(body, "who");
-    if w.is_empty() { board::OWNER.to_string() } else { w }
+fn who_of(app: &App, body: &Value) -> String {
+    board::caller(app, body, board::OWNER)
 }
 
 fn add(app: &App, body: &Value) -> Result<Value> {
@@ -273,14 +272,14 @@ fn add(app: &App, body: &Value) -> Result<Value> {
     for g in &goals {
         link(app, &b, None, Some(*g))?;
     }
-    let who = who_of(body);
+    let who = who_of(app, body);
     log_on_tasks(app, &b, &who, &format!("Uses the {kind} bit {name}"))?;
     dict(app, &b)
 }
 
 fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
     let b = get(app, name)?;
-    let who = who_of(body);
+    let who = who_of(app, body);
     let mut f: Vec<(&str, Value)> = vec![];
     let mut name = b.st("name");
     if body_has(body, "name") {
@@ -339,7 +338,7 @@ fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
 /// The bit is made in the flag tool (or, with `undo`, not after all).
 fn made(app: &App, name: &str, body: &Value) -> Result<Value> {
     let b = get(app, name)?;
-    let who = who_of(body);
+    let who = who_of(app, body);
     let undo = as_bool(body.get("undo"), false);
     if undo {
         if b.s("made_at").is_none() {
@@ -362,7 +361,7 @@ fn made(app: &App, name: &str, body: &Value) -> Result<Value> {
 
 fn remove(app: &App, name: &str, body: &Value) -> Result<Value> {
     let b = get(app, name)?;
-    log_on_tasks(app, &b, &who_of(body), &format!("No longer uses the bit {}", b.st("name")))?;
+    log_on_tasks(app, &b, &who_of(app, body), &format!("No longer uses the bit {}", b.st("name")))?;
     app.db.x("DELETE FROM bit_links WHERE bit_id = ?", p![b.id()])?;
     app.db.x("DELETE FROM bits WHERE id = ?", p![b.id()])?;
     Ok(json!({"ok": true, "removed": b.v("name")}))

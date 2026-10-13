@@ -27,9 +27,8 @@ fn host(app: &App, pr: &PrRef) -> Result<std::sync::Arc<dyn prhost::PrHost>> {
     prhost::host_for(app, &pr.host).map_err(|e| ApiError::new(409, format!("Can't work with PR #{}: {e}.", pr.num)))
 }
 
-fn who_of(body: &Value) -> String {
-    let w = body_str(body, "who");
-    if w.is_empty() { "the owner".to_string() } else { w }
+fn who_of(app: &App, body: &Value) -> String {
+    board::caller(app, body, "the owner")
 }
 
 /// Someone to ask or take off: (host id, name).
@@ -192,7 +191,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         Err(e) => return err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
     };
     let t = board::get_task(app, id)?;
-    let by = who_of(body);
+    let by = who_of(app, body);
     let fail = |what: &str, e: String| ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num));
     let drop = body_str(body, "drop");
     let replace = body_str(body, "replace");

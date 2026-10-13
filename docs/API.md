@@ -17,6 +17,9 @@ routes under the same prefix (see `crates/taskboard-cli`).
   numbers (or `null`). Objects always carry both `id` (number) and `ref` (string) where listed.
 - **Times.** ISO 8601 strings. UTC with `Z` is fine everywhere except `work_hours.next_open` (see there). `state.now`
   is used to correct for clock skew between the server and the browser.
+- **Who did it.** `tb` adds `by_session` (the terminal it runs in, `MIDNA_SESSION`) to every change it posts. A
+  change is credited to the body's `who` if it has one, else to that terminal by its name, else (the app, or a
+  shell outside Midna) to the owner: in the task's log, a break's `verdict_by`, a bit's or QA comment's history.
 - **Booleans** must be real JSON booleans (the UI also tolerates 0/1 for `auto_close` and `run_in_order`).
 - **Polling.** The app polls every 3 s: `GET /state` and `GET /goals` always, plus the open
   task, issue, goal, backlog list or sessions pages as below.
@@ -763,7 +766,7 @@ the `breaks` table.
 |---|---|---|
 | `GET /master?open=1&limit=20` | | `tb master [--open] [--limit N]`. **Response:** `{open: [break], closed: [break], watched: [{project, branch, checked_at, green_head, error}]}`: the open breaks, then the closed ones (at most 10; none with `open=1`), each newest first, at most `limit` (20, 1–500) in all. `branch` is `[master.projects.<name>] branch`, else the one the import carried over (the old board's), else the repo's default branch read from the host (else the clone's `origin/HEAD`); null before the first read. |
 | `GET /master/:ref` | | `tb master M3`. **Response:** the break. |
-| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why?, title?, who?, proof?: [url]}` | `tb master M3 ours\|not-ours\|unsure [--title "<cause>"] [--proof <url>]…`: the owner's word, never decided again. `title` is the cause in a few plain words (80 characters at most; 400 over that), kept as the break's `verdict_title` and shown on its card and alert; a verdict without one clears the old title. The fault check gives a title too, and an `ours` break with a title names its fix task `Fix master <pipeline>: <title>` (the pipeline of the build in its evidence, else its failing checks). `not-ours` needs at least one http(s) `proof` link (a build or an issue that shows it; 400 without). `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
+| `POST /master/:ref` | `{verdict: "ours"\|"not-ours"\|"unsure", why, title?, who?, by_session?, proof?: [url]}` | `tb master M3 ours\|not-ours\|unsure --why "<reason>" [--title "<cause>"] [--proof <url>]…`: the owner's word, never decided again. `why` is required: what broke it and how it was checked, 20 to 300 characters (400 otherwise, and nothing changes). `verdict_by` is `who`, else the terminal `by_session` names, else the owner. `title` is the cause in a few plain words (80 characters at most; 400 over that), kept as the break's `verdict_title` and shown on its card and alert; a verdict without one clears the old title. `not-ours` needs a `title` (400 without); `ours` and `unsure` may leave it out, and the card then shows the verdict's label. The fault check gives a title too, and an `ours` break with a title names its fix task `Fix master <pipeline>: <title>` (the pipeline of the build in its evidence, else its failing checks). `not-ours` needs at least one http(s) `proof` link (a build or an issue that shows it; 400 without). `ours` makes the fix task (if it has none) and raises the urgent alert; the others take the alert down. 409 once it's closed. **Response:** the break. |
 | `POST /master/check` | `{}` | `tb master check`: read every watched branch now. **Response:** as `GET /master`. |
 
 The old board's listener and tools (docs/CUTOVER.md) keep working: these count as feed events (`last_event_at`, so
@@ -775,7 +778,7 @@ not silent) and answer as the old board did.
 | `POST /pr-builds/event` | `{repo, branch, pr?, sha?, host?}` | A push to, or a PR opened or updated on, one of the owner's branches: `POST /prs/event` with `kind: "build"`, `mine: true`, `num: pr`, `head: sha`, `state: "started"`, `source: "pr-builds"`. While PR builds are stopped its builds are cancelled, with the follow-up sweeps. **Response:** as `POST /prs/event`. |
 | `GET /master-breaks?limit=20` | | **Response:** `{breaks: [break]}`: the open breaks, then the closed ones, each newest first, at most `limit` (1–500) in all. |
 | `GET /master-breaks/:ref` | | As `GET /master/:ref`. |
-| `POST /master-breaks/:ref/verdict` | `{verdict: "yours"\|"not_yours"\|"unsure", why?, who?, proof?: [url]}` | As `POST /master/:ref`, `yours` being `ours` and `not_yours` `not-ours` (the new words work too). |
+| `POST /master-breaks/:ref/verdict` | `{verdict: "yours"\|"not_yours"\|"unsure", why, title?, who?, proof?: [url]}` | As `POST /master/:ref`, `yours` being `ours` and `not_yours` `not-ours` (the new words work too). |
 
 `break = {id, ref: "M3", project, host, repo, branch, state: "open"|"closed", head, last_head, green_head, fixed_head,
 checks: [str], evidence: {checks: [{name, url, steps, tests}], build?}, suspects: [{sha, name, email, message, ours}], verdict:

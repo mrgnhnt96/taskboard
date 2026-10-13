@@ -77,7 +77,7 @@ fn pr_skip_checks(app: &App, id: i64, body: &Value) -> Result<Value> {
     if reason.is_empty() {
         return err(400, "Say why the checks don't need to pass: --reason \"<why>\" (a hook cancelled the builds, say).");
     }
-    let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+    let who = board::caller(app, body, OWNER);
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         if t.i("pr_num").is_none() && !has(t.s("pr_url")) {
@@ -308,13 +308,13 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["goals", id, "waves", n, "hold"]) => {
             let (g, n) = (gid(id)?, wave_n(n)?);
-            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            let who = board::caller(app, body, OWNER);
             app.db.tx(|| crate::waves::hold(app, g, n, as_bool(body.get("on"), true), &who))?;
             goal_detail(app, g)
         }
         ("POST", ["goals", id, "waves", n, "continue"]) => {
             let (g, n) = (gid(id)?, wave_n(n)?);
-            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            let who = board::caller(app, body, OWNER);
             let started = app.db.tx(|| crate::waves::release(app, g, n, &who))?;
             let mut d = goal_detail(app, g)?;
             d["let_start"] = json!(started);
@@ -374,7 +374,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["qa-comments", id]) => Ok(qa::card(app, &qa::get(app, need_ref(&json!(id), "qa")?)?)),
         ("POST", ["qa-comments", id]) => {
             let cid = need_ref(&json!(id), "qa")?;
-            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+            let who = board::caller(app, body, OWNER);
             let note = clip(&body_str(body, "note"), 2000);
             let pr = body.get("pr").filter(|v| !v.is_null()).map(|v| as_bool(Some(v), true));
             let t = app.db.tx(|| qa::resolve(app, &qa::get(app, cid)?, &body_str(body, "action"), &who, if note.is_empty() { None } else { Some(&note) }, pr))?;
@@ -804,7 +804,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mut warnings: Vec<String> = vec![];
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
-        let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+        let who = board::caller(app, body, OWNER);
         crate::devices::take_needs(app, "task", id, body, &who)?;
         crate::bits::take_task_bits(app, id, body, &who)?;
         let mut f: Vec<(&str, Value)> = vec![];
@@ -927,7 +927,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push(("jira_none", json!(0)));
                 if !has(t.s("jira_key")) && !jira::ticket_asked(app, id)? {
                     jira::request_create_for_task(app, &t)?;
-                    board::log_event(app, id, OWNER, "jira", "Asked Jira for a ticket")?;
+                    board::log_event(app, id, &who, "jira", "Asked Jira for a ticket")?;
                 }
             } else {
                 let key = ops::jira_key(&k)?;
@@ -938,13 +938,12 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                     f.push(("jira_status_at", Value::Null));
                 f.push(("jira_status_at", Value::Null));
                     jira::request(app, "status", id, &key, None, None)?;
-                    board::log_event(app, id, OWNER, "jira", &format!("Linked {key}"))?;
+                    board::log_event(app, id, &who, "jira", &format!("Linked {key}"))?;
                     bump = true;
                 }
             }
         }
         if !also.is_empty() || !not_also.is_empty() {
-            let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
             let mut nt = t.clone();
             if let Some(g) = new_goal_id {
                 nt.insert("goal_id".into(), json!(g));
@@ -961,10 +960,10 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         // Stacking (`--stack-on`) and the PR plan (`--pr yes|no`) log their own change.
         let mut planned = false;
         if has_key("stack_on") {
-            planned |= crate::stack::set(app, &t, &body["stack_on"], OWNER)?;
+            planned |= crate::stack::set(app, &t, &body["stack_on"], &who)?;
         }
         if has_key("ships_pr") {
-            planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], OWNER)?;
+            planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], &who)?;
         }
         if planned && f.is_empty() {
             return board::bump_ctx(app, id);
@@ -981,33 +980,33 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             board::bump_ctx(app, id)?;
         }
         if let Some(st) = new_status {
-            board::log_event(app, id, OWNER, "status", if st == "queued" { "Queued" } else { "Moved back to planned" })?;
+            board::log_event(app, id, &who, "status", if st == "queued" { "Queued" } else { "Moved back to planned" })?;
         } else if let Some(g) = new_goal_id {
             let name = match g {
                 Some(g) => format!("Moved to the goal “{}”", board::get_goal(app, g)?.st("name")),
                 None => "Taken out of its goal".into(),
             };
-            board::log_event(app, id, OWNER, "status", &name)?;
+            board::log_event(app, id, &who, "status", &name)?;
         } else if edited {
-            board::log_event(app, id, OWNER, "note", "Edited the task")?;
+            board::log_event(app, id, &who, "note", "Edited the task")?;
         }
         if let Some(w) = wave_changed {
-            board::log_event(app, id, OWNER, "note", &match w { Some(n) => format!("In wave {n}"), None => "In no wave".into() })?;
+            board::log_event(app, id, &who, "note", &match w { Some(n) => format!("In wave {n}"), None => "In no wave".into() })?;
         }
         if let Some(wf) = waits_changed {
             let names: Vec<String> = jloads_arr(wf.as_deref()).iter().filter_map(|v| v.as_i64()).map(|n| rf("task", n)).collect();
-            board::log_event(app, id, OWNER, "note", &if names.is_empty() { "Waits for no other task".to_string() } else { format!("Waits for {}", names.join(", ")) })?;
+            board::log_event(app, id, &who, "note", &if names.is_empty() { "Waits for no other task".to_string() } else { format!("Waits for {}", names.join(", ")) })?;
         }
         if let Some(lk) = locks_changed {
             let names: Vec<String> = jloads_arr(lk.as_deref()).iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            board::log_event(app, id, OWNER, "note", &if names.is_empty() {
+            board::log_event(app, id, &who, "note", &if names.is_empty() {
                 "Holds no lock".to_string()
             } else {
                 format!("Holds the lock{} {} while it runs", if names.len() > 1 { "s" } else { "" }, names.join(", "))
             })?;
         }
         if let Some(al) = alone_changed {
-            board::log_event(app, id, OWNER, "note", crate::locks::alone_text(al.as_deref().unwrap_or("")))?;
+            board::log_event(app, id, &who, "note", crate::locks::alone_text(al.as_deref().unwrap_or("")))?;
         }
         if let Some(g) = t.i("goal_id") {
             board::renumber_goal(app, g)?;
@@ -1916,6 +1915,7 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     if as_bool(body.get("check"), false) {
         return Ok(json!({"ok": true, "goal": rf("goal", id), "would_run": true}));
     }
+    let who = if from_app(query) { OWNER.to_string() } else { board::caller(app, body, &board::session_name(app, Some(&via), None)) };
     let n = app.db.tx(|| {
         let g = board::get_goal(app, id)?;
         let until = if now { hours::until_open(app) } else { None };
@@ -1926,11 +1926,11 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         for t in board::goal_tasks(app, id)? {
             if t.s("status") == Some("planned") {
                 board::update_task(app, t.id(), fields!["status" => "queued"])?;
-                board::log_event(app, t.id(), OWNER, "status", "Queued with the rest of the goal")?;
+                board::log_event(app, t.id(), &who, "status", "Queued with the rest of the goal")?;
                 n += 1;
             } else if t.s("status") == Some("needs") && t.s("needs_reason") == Some("start_failed") {
                 board::update_task(app, t.id(), fields!["status" => "queued", "needs_reason" => null, "start_job" => null, "start_tries" => 0, "retry_at" => null])?;
-                board::log_event(app, t.id(), OWNER, "status", "Queued again with the rest of the goal")?;
+                board::log_event(app, t.id(), &who, "status", "Queued again with the rest of the goal")?;
             }
         }
         if g.b("paused") || g.b("deprioritized") {
@@ -2078,7 +2078,7 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
             "tb" => "tb",
             _ => "the Backlog page",
         };
-        let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+        let who = board::caller(app, body, OWNER);
         let source = match body_str(body, "source").as_str() {
             "answer" => "answer",
             "review_log" => "review_log",
@@ -2194,7 +2194,7 @@ fn reopen_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
 /// Retitles an issue or rewrites its detail; terminals do this through `tb backlog set`.
 fn patch_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     let b = board::get_issue(app, id)?;
-    let who = { let w = body_str(body, "who"); if w.is_empty() { OWNER.to_string() } else { w } };
+    let who = board::caller(app, body, OWNER);
     let mut f: Vec<(&str, Value)> = vec![];
     let mut said = vec![];
     if body.get("title").is_some() {
@@ -2372,7 +2372,7 @@ fn pr_merged(app: &App, id: i64, body: &Value) -> Result<Value> {
         if t.i("pr_num").is_none() {
             return err(404, format!("{} has no PR linked.", rf("task", id)));
         }
-        let who = { let w = body_str(body, "who"); if w.is_empty() { board::BOARD.to_string() } else { w } };
+        let who = board::caller(app, body, board::BOARD);
         prflow::mark_merged(app, &t, &who)
     })?;
     // PRs stacked on this one go into its base now.
