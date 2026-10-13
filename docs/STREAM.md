@@ -195,10 +195,18 @@ for a source, the source's health is its relays':
 
 - the source is stuck or silent while any of its relays is, each timed on its own, so one relay's heartbeat or
   idle state doesn't make another's silence look fine;
-- a relay that never sent a heartbeat is never stuck, but counts as silent after `silent_secs` like any other;
+- a relay that never sent a heartbeat (a webhook relay, which only posts when its host fires a webhook) is
+  *event-only*: it's never stuck or silent, so its quiet doesn't count against the source, doesn't hold the
+  review loop and never runs the source's `restart_cmd` (which is the heartbeating listener's). `GET /stream`
+  still lists it, with its last event and `event_only: true`;
 - the PR poll rests only for PRs a healthy, active relay covers by its heartbeats (`covers`), and the whole poll
   rests only while one covers every PR. Other PRs are polled as in board mode. A relay that never sent a heartbeat
-  covers nothing. `POST /prs/refresh` still reads every PR.
+  covers nothing, so the poll keeps reading its PRs. `POST /prs/refresh` still reads every PR.
+
+Each relay in `GET /stream` says what it covers: `"all"` when its heartbeats left `covers` out, `[]` when it never
+sent one, else the list. A source's `polling_some` is true while the PR poll runs but skips the PRs a relay covers.
+`tb stream` prints each relay under its source (health, idle state, last event and heartbeat, covers), the source
+line says `polling some PRs` then, and `tb stream --json` prints `GET /stream` as it is.
 
 Without stream relays (only the older endpoints below), health and the poll work as before.
 

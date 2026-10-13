@@ -366,6 +366,9 @@ enum Cmd {
     Stream {
         #[command(subcommand)]
         action: Option<StreamCmd>,
+        /// Print GET /stream as JSON (with no action)
+        #[arg(long)]
+        json: bool,
     },
     /// Stop or resume the board's PR builds, only on the owner's word (no action: whether they're stopped)
     PrBuilds {
@@ -3180,14 +3183,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Device { action } => device_cmd(c, action),
         Cmd::Feed { action } => feed_cmd(c, action),
-        Cmd::Stream { action: Some(StreamCmd::Send { json }) } => stream_send(c, json),
-        Cmd::Stream { action: Some(StreamCmd::Mode { source, mode }) } => {
+        Cmd::Stream { action: Some(StreamCmd::Send { json }), .. } => stream_send(c, json),
+        Cmd::Stream { action: Some(StreamCmd::Mode { source, mode }), .. } => {
             let v = c.call("POST", "/stream/mode", Some(json!({"source": source, "mode": mode})))?;
             out(&stream_lines(&v));
             Ok(0)
         }
-        Cmd::Stream { action: None } => {
-            out(&stream_lines(&c.call("GET", "/stream", None)?));
+        Cmd::Stream { action: None, json } => {
+            let v = c.call("GET", "/stream", None)?;
+            out(&if json { serde_json::to_string_pretty(&v).unwrap_or_default() } else { stream_lines(&v) });
             Ok(0)
         }
         Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
@@ -4316,7 +4320,8 @@ fn rate_lines(v: &Value) -> Vec<String> {
     lines
 }
 
-/// One line per source: its mode (and where it's set), its stream's health and whether its poll runs.
+/// One line per source: its mode (and where it's set), its stream's health and whether its poll runs,
+/// then a line per relay under it.
 fn stream_lines(v: &Value) -> String {
     let mut lines = vec![];
     for s in v["sources"].as_array().into_iter().flatten() {
@@ -4337,10 +4342,48 @@ fn stream_lines(v: &Value) -> String {
                 }
             }
         }
-        line += if s["polling"] == true { " · polling" } else { " · poll resting" };
+        line += match (s["polling"] == true, s["polling_some"] == true) {
+            (true, true) => " · polling some PRs",
+            (true, false) => " · polling",
+            _ => " · poll resting",
+        };
         lines.push(line);
+        let relays = s["relays"].as_array().cloned().unwrap_or_default();
+        let width = relays.iter().filter_map(|r| r["relay"].as_str()).map(|n| n.chars().count()).max().unwrap_or(0).max(6);
+        for r in &relays {
+            lines.push(format!("  {:<width$} {}", r["relay"].as_str().unwrap_or("?"), relay_line(r)));
+        }
     }
     lines.join("\n")
+}
+
+/// One relay's health, idle state, last event and heartbeat, and what it covers.
+fn relay_line(r: &Value) -> String {
+    let mut parts = vec![match r["problem"].as_str() {
+        Some(p) => format!("{p}: {}", r["why"].as_str().unwrap_or("")),
+        None => "healthy".to_string(),
+    }];
+    if r["idle"] == true {
+        parts.push(match r["idle_until"].as_str() {
+            Some(t) => format!("idle until {}", taskboardd::util::local_clock(Some(t))),
+            None => "idle".to_string(),
+        });
+    }
+    for (k, label) in [("last_event_at", "last event"), ("last_heartbeat_at", "last heartbeat")] {
+        if let Some(t) = r[k].as_str() {
+            parts.push(format!("{label} {}", taskboardd::util::local_clock(Some(t))));
+        }
+    }
+    parts.push(match &r["covers"] {
+        Value::String(s) if s == "all" => "covers every PR".to_string(),
+        Value::Array(a) if a.is_empty() => "no heartbeats, covers nothing".to_string(),
+        Value::Array(a) => {
+            let each: Vec<String> = a.iter().map(|c| format!("{} {}", c["provider"].as_str().unwrap_or("?"), c["repo"].as_str().unwrap_or("every repo")).trim().to_string()).collect();
+            format!("covers {}", each.join(", "))
+        }
+        _ => "covers nothing".to_string(),
+    });
+    parts.join(" · ")
 }
 
 fn stream_send(c: &Ctx, json: Option<String>) -> Result<i32, String> {
@@ -4583,6 +4626,29 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_stream_lists_each_relay_and_what_it_covers() {
+        let v = json!({"sources": [{
+            "source": "prs", "mode": "stream", "mode_from": "config", "watched": true, "problem": null, "polling": true, "polling_some": true,
+            "relays": [
+                {"relay": "fi", "problem": null, "idle": false, "last_heartbeat_at": "2026-10-12T22:41:00Z",
+                 "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}, {"provider": "bitbucket", "repo": "acme/api"}]},
+                {"relay": "github", "problem": null, "idle": false, "last_event_at": "2026-10-12T22:12:00Z", "covers": [], "event_only": true},
+                {"relay": "all", "problem": "stuck", "why": "prs's relay all hasn't sent a heartbeat for 4 minutes", "idle": false, "covers": "all"}
+            ]
+        }]});
+        assert!(Cli::try_parse_from(["tb", "stream", "--json"]).is_ok());
+        let text = stream_lines(&v);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("prs     stream (config.toml) · healthy") && lines[0].ends_with(" · polling some PRs"), "{}", lines[0]);
+        assert!(lines[1].starts_with("  fi     healthy · last heartbeat "), "{}", lines[1]);
+        assert!(lines[1].ends_with(" · covers bitbucket acme/webapp, bitbucket acme/api"), "{}", lines[1]);
+        assert!(lines[2].starts_with("  github healthy · last event ") && lines[2].ends_with(" · no heartbeats, covers nothing"), "{}", lines[2]);
+        let at = lines[1].split("last heartbeat ").nth(1).unwrap().split(' ').next().unwrap().to_lowercase();
+        assert!(at.ends_with("am") || at.ends_with("pm"), "12-hour time: {at}");
+        assert_eq!(lines[3], "  all    stuck: prs's relay all hasn't sent a heartbeat for 4 minutes · covers every PR");
+    }
 
     #[test]
     fn tb_feed_says_who_is_rate_limited_and_the_board_s_calls() {
