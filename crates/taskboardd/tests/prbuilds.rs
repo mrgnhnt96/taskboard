@@ -473,3 +473,85 @@ fn the_old_listener_s_push_is_the_owner_s_build_event() {
     let feed: Value = serde_json::from_str(&b.app.db.get_setting("pr_feed").unwrap().unwrap()).unwrap();
     assert_eq!((feed["last_event"]["kind"].as_str(), feed["last_event"]["source"].as_str()), (Some("build"), Some("pr-builds")), "{feed}");
 }
+
+fn stream(b: &Board, kind: &str, extra: Value) -> Value {
+    let n = b.app.db.count("SELECT COUNT(*) FROM stream_events", taskboardd::p![]).unwrap();
+    let mut ev = json!({"id": format!("e-{n}"), "kind": kind, "at": "2026-10-12T15:00:00Z", "source": "relay"});
+    for (k, v) in extra.as_object().unwrap() {
+        ev[k] = v.clone();
+    }
+    let v = b.post("/stream/events", json!({"v": 1, "events": [ev]}));
+    assert_eq!(v["results"][0]["status"], "accepted", "{v}");
+    v["results"][0]["result"].clone()
+}
+
+/// The queue's items without their due time, which depends on when each was queued.
+fn queued(b: &Board) -> Vec<Value> {
+    b.queue().into_iter().map(|mut x| {
+        x.as_object_mut().unwrap().remove("next_at");
+        x
+    }).collect()
+}
+
+#[test]
+fn a_v1_push_to_a_board_pr_s_branch_queues_the_cancel_the_old_listener_s_does() {
+    let b = board_with(|_, _| {});
+    let id = b.pr_task(GH);
+    let mut rec = running();
+    rec.branch = "feature/x".into();
+    prhost::install(&b.app, FakeHost::new("github", rec));
+    prflow::refresh(&b.app).unwrap();
+
+    let push = |branch: &str| json!({"repo": "acme/webapp", "branch": branch, "after": "p1", "author": "pat@acme.dev"});
+    let v = stream(&b, "push", push("feature/x"));
+    assert_eq!(v["builds"]["owners"], true, "{v}");
+    assert!(b.queue().is_empty(), "PR builds are running: nothing is queued");
+
+    b.post("/pr-builds", json!({"stopped": true}));
+    b.app.db.set_setting("pr_build_cancels", None).unwrap();
+    let v = stream(&b, "push", push("feature/x"));
+    assert_eq!((v["builds"]["task"].as_str(), v["builds"]["cancel"].as_str()), (Some(format!("T{id}").as_str()), Some("queued")), "{v}");
+    let from_stream = queued(&b);
+    assert_eq!(from_stream.len(), 1);
+    assert_eq!(from_stream[0]["key"], format!("T{id}:p1"));
+    b.app.db.set_setting("pr_build_cancels", None).unwrap();
+    b.post("/pr-builds/event", json!({"repo": "acme/webapp", "branch": "feature/x", "sha": "p1"}));
+    assert_eq!(queued(&b), from_stream, "the same cancel as /pr-builds/event");
+
+    b.app.db.set_setting("pr_build_cancels", None).unwrap();
+    let v = stream(&b, "push", push("other"));
+    assert_eq!(v["builds"]["owners"], false);
+    assert!(b.queue().is_empty(), "a push to a branch with no PR of the owner's queues nothing");
+}
+
+#[test]
+fn a_v1_build_or_push_is_the_owner_s_by_me_names_aliases_or_mine() {
+    let b = board_with(|c, _| {
+        c.owner_emails = vec!["owner@example.com".into()];
+        c.reviewers.me = vec!["owner@example.com".into(), "Owner".into(), "Owner Name".into()];
+    });
+    b.post("/reviewers", json!({"project": "webapp", "reviewer": "Owen Ner", "user": "owner-gh", "emails": ["owner@example.com"], "aliases": ["oner"]}));
+    b.post("/reviewers", json!({"project": "webapp", "reviewer": "Pat", "user": "pat-gh", "emails": ["pat@example.com"]}));
+    b.post("/pr-builds", json!({"stopped": true}));
+    let build = |head: &str, extra: Value| {
+        let mut e = json!({"repo": "acme/webapp", "branch": "wip", "head": head, "state": "started", "provider": "github"});
+        for (k, v) in extra.as_object().unwrap() {
+            e[k] = v.clone();
+        }
+        e
+    };
+    let v = stream(&b, "build", build("b1", json!({"author": "owner name"})));
+    assert_eq!(v["builds"]["owners"], true, "a name in [reviewers] me, in any case: {v}");
+    let v = stream(&b, "build", build("b2", json!({"author": "OWNER-GH"})));
+    assert_eq!(v["builds"]["owners"], true, "the owner's roster row's host id: {v}");
+    let v = stream(&b, "build", build("b3", json!({"author": "Pat", "mine": true})));
+    assert_eq!(v["builds"]["owners"], true, "mine: true whatever its author: {v}");
+    let v = stream(&b, "build", build("b4", json!({"author": "pat-gh"})));
+    assert_eq!(v["builds"]["owners"], false, "another author's build: {v}");
+    let v = stream(&b, "push", json!({"repo": "acme/webapp", "branch": "wip", "after": "p9", "author": "Owner"}));
+    assert_eq!((v["builds"]["owners"].as_bool(), v["builds"]["cancel"].as_str()), (Some(true), Some("queued")), "the owner's push: {v}");
+    let heads: Vec<String> = b.queue().iter().map(|x| x["head"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(heads, ["b1", "b2", "b3", "p9"]);
+    let bad = b.post("/stream/events", json!({"v": 1, "events": [{"id": "bad", "kind": "build", "at": "2026-10-12T15:00:00Z", "source": "relay", "repo": "acme/webapp", "head": "x", "state": "started", "mine": "yes"}]}));
+    assert_eq!(bad["results"][0]["why"], "mine is true or false.");
+}
