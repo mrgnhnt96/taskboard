@@ -178,14 +178,23 @@ pub const WRITES: [&str; 14] = [
     "deleteConfluencePage",
 ];
 
-/// The flags that keep a Jira call to the connector's tools: no built-in tools, no prompt that
-/// approves itself (`-p` denies whatever `--allowedTools` leaves out, whatever the owner's
-/// `defaultMode`), and every write the op doesn't need denied outright.
+/// Built-in tools a Jira call never needs. Denied by name rather than with `--tools ""`, which also
+/// takes away the connector's tools (they come through ToolSearch, which stays).
+pub const BUILT_INS: [&str; 14] =
+    ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "Agent", "Task", "Skill"];
+
+/// The older Atlassian connector. With both connected, ToolSearch can offer its tools first; denying
+/// the server by name (it doesn't match `SERVER`) keeps the call on the v2 one.
+const OLD_SERVER: &str = "mcp__claude_ai_Atlassian";
+
+/// The flags that keep a Jira call to the connector's tools: built-ins and the older connector
+/// denied, no prompt that approves itself (`-p` denies whatever `--allowedTools` leaves out,
+/// whatever the owner's `defaultMode`), and every write the op doesn't need denied outright.
 pub fn tool_flags(allowed: &[String]) -> Vec<String> {
-    let denied: Vec<String> = WRITES.iter().map(|n| tool(n)).filter(|t| !allowed.contains(t)).collect();
+    let mut denied: Vec<String> = WRITES.iter().map(|n| tool(n)).filter(|t| !allowed.contains(t)).collect();
+    denied.push(OLD_SERVER.into());
+    denied.extend(BUILT_INS.iter().map(|b| b.to_string()));
     vec![
-        "--tools".into(),
-        "".into(),
         "--permission-mode".into(),
         "default".into(),
         "--allowedTools".into(),
@@ -318,13 +327,16 @@ mod tests {
         let a = args(&app, "p".into(), &default_tools("comment", &json!({})));
         let at = |flag: &str| a[a.iter().position(|x| x == flag).unwrap_or_else(|| panic!("no {flag}: {a:?}")) + 1].clone();
         assert_eq!(at("--setting-sources"), "user", "the claude.ai connectors are the user's");
-        assert_eq!(at("--tools"), "");
+        assert!(!a.contains(&"--tools".to_string()), "--tools also hides the connector's tools: {a:?}");
         assert_eq!(at("--permission-mode"), "default", "never the owner's bypassPermissions");
         let denied = at("--disallowedTools");
         assert!(denied.contains(&tool("createJiraIssue")) && denied.contains(&tool("executeWrite")), "{denied}");
         assert!(!denied.contains(&tool("addOrEditJiraIssueComment")), "the op's own write stays: {denied}");
+        let denied: Vec<&str> = denied.split(',').collect();
+        assert!(denied.contains(&"Bash") && denied.contains(&"Read") && denied.contains(&"mcp__claude_ai_Atlassian"), "{denied:?}");
+        assert!(!denied.contains(&SERVER), "the v2 connector stays: {denied:?}");
         let status = tool_flags(&default_tools("status", &json!({})));
-        assert_eq!(status[7].split(',').count(), WRITES.len(), "a read denies every write: {status:?}");
+        assert_eq!(status[5].split(',').count(), WRITES.len() + 1 + BUILT_INS.len(), "a read denies every write: {status:?}");
     }
 
     #[test]

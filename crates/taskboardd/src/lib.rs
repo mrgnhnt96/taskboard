@@ -52,6 +52,7 @@ pub mod proc;
 pub mod projects;
 pub mod propen;
 pub mod qa;
+pub mod report;
 pub mod reports;
 pub mod reviewers;
 pub mod runner;
