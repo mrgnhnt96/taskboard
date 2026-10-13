@@ -257,7 +257,9 @@ fn reviewers(pr: &Value) -> Vec<Reviewer> {
     arr(&pr["bar"], "reviewer_rows")
         .iter()
         .map(|r| {
-            let name = opt_s(r, "user").filter(|u| !u.is_empty()).or(opt_s(r, "name")).unwrap_or("").to_string();
+            // A GitHub login is short; a Bitbucket `{uuid}` or `account_id` is not a name.
+            let handle = opt_s(r, "user").filter(|u| !u.is_empty() && !u.starts_with('{') && !u.contains(':'));
+            let name = handle.or(opt_s(r, "name")).unwrap_or("").to_string();
             let state = match s(r, "state") {
                 "approved" => Review::Approved,
                 "changes" => Review::Changes,
@@ -860,14 +862,16 @@ fn reviewer_chip(t: &Theme, r: &Reviewer) -> Div {
         .h(px(22.))
         .pl(px(3.))
         .pr(px(7.))
+        .max_w_full()
+        .min_w_0()
         .rounded_full()
         .border_1()
         .border_color(line)
         .bg(t.card)
         .text_size(px(11.5))
         .text_color(fg)
-        .child(div().flex().items_center().justify_center().size(px(16.)).rounded_full().bg(t.seg).text_color(t.text_2).text_size(px(8.5)).font_weight(FontWeight::BOLD).child(r.initials.clone()))
-        .child(r.name.clone())
+        .child(div().flex().flex_none().items_center().justify_center().size(px(16.)).rounded_full().bg(t.seg).text_color(t.text_2).text_size(px(8.5)).font_weight(FontWeight::BOLD).child(r.initials.clone()))
+        .child(div().min_w_0().truncate().child(r.name.clone()))
         .child(mark_icon(mark, 12., fg))
 }
 
@@ -943,11 +947,12 @@ mod tests {
     fn a_pr_tile_names_its_stage_and_reviewers() {
         let pr = |phase: &str| {
             card(json!({"status": "done", "pr": {"num": 119, "url": "https://x/pr/119", "state": "OPEN", "stage": {"phase": phase, "label": "Watching checks"},
-                "bar": {"reviewer_rows": [{"name": "Jo Lee", "user": "jlee", "state": "approved"}, {"name": "M Park", "user": "mpark", "state": "waiting"}, {"name": "K", "user": "kwong", "state": "changes"}]}}}))
+                "bar": {"reviewer_rows": [{"name": "Jo Lee", "user": "jlee", "state": "approved"}, {"name": "M Park", "user": "mpark", "state": "waiting"}, {"name": "K", "user": "kwong", "state": "changes"},
+                    {"name": "Sam Ortiz", "user": "{52009081-5c95-408e-8570-0231381f3dec}", "state": "waiting"}]}}}))
         };
         let t = tile_vm(&pr("review"));
         assert_eq!((t.status.as_str(), t.line.as_str()), ("In review", "PR #119"));
-        assert_eq!(t.reviewers.iter().map(|r| (r.name.as_str(), r.state)).collect::<Vec<_>>(), vec![("jlee", Review::Approved), ("mpark", Review::Pending), ("kwong", Review::Changes)]);
+        assert_eq!(t.reviewers.iter().map(|r| (r.name.as_str(), r.state)).collect::<Vec<_>>(), vec![("jlee", Review::Approved), ("mpark", Review::Pending), ("kwong", Review::Changes), ("Sam Ortiz", Review::Pending)]);
         assert_eq!(t.reviewers[0].initials, "JL");
         assert_eq!(tile_vm(&pr("checks")).line, "PR #119 · Watching checks");
         assert_eq!(tile_vm(&pr("merge")).status, "Ready to merge");
