@@ -348,6 +348,12 @@ enum Cmd {
         /// With --generated: that project's own globs, on top of everyone's
         #[arg(long)]
         project: Option<String>,
+        /// Minutes between a branch's review rounds (a step's min_gap_mins), 0 to 240 (0 = no gap)
+        #[arg(long = "review-gap")]
+        review_gap: Option<i64>,
+        /// With --review-gap: the step it's for, when more than one step has a gap
+        #[arg(long)]
+        step: Option<String>,
         /// Forget every change and go back to config.toml's [limits]
         #[arg(long)]
         reset: bool,
@@ -2888,7 +2894,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             for (st, done) in all {
                 let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
                 let st = st.filled(&vars);
-                out(&format!("[{}] {} ({when}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
+                let gap = st.gap_text().filter(|_| st.gap_secs().is_some()).map(|g| format!("; {g}")).unwrap_or_default();
+                out(&format!("[{}] {} ({when}{gap}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
             }
             if v["aim"].is_object() {
                 let a = &v["aim"];
@@ -3835,7 +3842,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
-        Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, reset } => {
+        Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, review_gap, step, reset } => {
             let mut b = json!({});
             for (k, v) in [("compact_window", compact_window), ("cold_idle_mins", cold_idle_mins), ("warm_tokens", warm_tokens), ("warm_idle_mins", warm_idle_mins)] {
                 if let Some(n) = v {
@@ -3849,6 +3856,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
             } else if project.is_some() {
                 return Err("--project goes with --generated".to_string());
+            }
+            if let Some(n) = review_gap {
+                if !(0..=taskboardd::limits::MAX_REVIEW_GAP).contains(&n) {
+                    return Err(format!("--review-gap takes 0 to {} minutes (0 = no gap).", taskboardd::limits::MAX_REVIEW_GAP));
+                }
+                b["review_gap"] = json!(n);
+                if let Some(s) = step {
+                    b["step"] = json!(s);
+                }
+            } else if step.is_some() {
+                return Err("--step goes with --review-gap".to_string());
             }
             if reset {
                 b["reset"] = json!(true);
@@ -4900,6 +4918,7 @@ mod tests {
     #[test]
     fn parses_commands() {
         assert!(Cli::try_parse_from(["tb", "checkpoint", "--done", "a", "--next", "b", "--decision", "c"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "limits", "--review-gap", "10", "--step", "Author review"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "found", "x", "--kind", "nope"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--goal", "G1", "--also", "G2", "--also", "G3"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--also", "G2", "--not-also", "G3"]).is_ok());

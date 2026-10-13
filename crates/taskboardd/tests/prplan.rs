@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::util::{PrLink, Row, RowExt};
+use taskboardd::util::{parse_iso, PrLink, Row, RowExt};
 use taskboardd::{board, handoff, midna, p, prflow, reports, stack, steps};
 
 struct Board {
@@ -292,6 +292,73 @@ fn a_per_head_step_passes_once_per_commit() {
     assert_eq!(s["steps"][0]["done"], false);
     assert!(s["steps"][0]["next_round_at"].is_string(), "rounds are 10 minutes apart: {s}");
     assert_eq!(s["steps"][0]["per_head"], true);
+}
+
+const TWO_GAPS: &str = r#"
+[[steps]]
+name = "Author review"
+prompt = "Run the review"
+check = "true"
+per_head = true
+min_gap_mins = 10
+
+[[steps]]
+name = "Lint"
+run = "true"
+min_gap_mins = 5
+"#;
+
+#[test]
+fn tb_limits_review_gap_changes_the_step_s_gap() {
+    let b = new_board_with(REVIEW, |_| {});
+    let id = b.task("Add login", json!({}));
+    b.take(id);
+    let head = "a".repeat(40);
+    round(&b, &head, true, json!(null));
+    let next = |b: &Board| {
+        let mut q = Query::new();
+        q.insert("session".into(), "s1".into());
+        q.insert("head".into(), head.clone());
+        let s = api::dispatch(&b.app, "GET", "/steps", &q, &Value::Null).unwrap();
+        s["steps"][0]["next_round_at"].as_str().and_then(parse_iso)
+    };
+    let at_10 = next(&b).expect("rounds are 10 minutes apart");
+
+    let v = b.post("limits", json!({"review_gap": 25}));
+    assert!(v["line"].as_str().unwrap().contains("Review rounds, Author review: one round per branch every 25 min"), "{v}");
+    assert_eq!(v["review_gaps"][0]["mins"], 25.0);
+    let at_25 = next(&b).expect("still apart");
+    assert!((at_25 - at_10 - 15.0 * 60.0).abs() < 2.0, "the next round's earliest start moves with the gap");
+
+    let v = b.post("limits", json!({"review_gap": 0}));
+    assert!(v["line"].as_str().unwrap().contains("Author review: no gap between rounds"), "{v}");
+    assert!(next(&b).is_none(), "0 means no gap");
+
+    let (code, why) = b.post_err("limits", json!({"review_gap": 300}));
+    assert_eq!(code, 400);
+    assert!(why.contains("0 to 240"), "{why}");
+    let (code, why) = b.post_err("limits", json!({"review_gap": 10, "step": "Nope"}));
+    assert_eq!((code, why.contains("“Nope” isn't a step")), (400, true), "{why}");
+}
+
+#[test]
+fn a_review_gap_names_its_step_when_several_have_one_and_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config::for_tests(dir.path());
+    std::fs::write(&cfg.config_path, TWO_GAPS).unwrap();
+    let app = App::new(cfg.clone(), false).unwrap();
+    let e = taskboardd::limits::set(&app, &json!({"review_gap": 15})).unwrap_err();
+    assert!(e.message.contains("More than one step has a review gap: “Author review”, “Lint”"), "{}", e.message);
+    taskboardd::limits::set(&app, &json!({"review_gap": 15, "step": "author review"})).unwrap();
+    drop(app);
+
+    let app = App::new(cfg.clone(), false).unwrap();
+    let gaps: Vec<(String, Option<f64>)> = steps::load(&app).into_iter().map(|s| (s.name, s.min_gap_mins)).collect();
+    assert_eq!(gaps, vec![("Author review".to_string(), Some(15.0)), ("Lint".to_string(), Some(5.0))], "the other step is untouched");
+    assert_eq!(std::fs::read_to_string(&cfg.config_path).unwrap(), TWO_GAPS, "config.toml isn't rewritten");
+    let line = taskboardd::limits::state(&app)["line"].as_str().unwrap().to_string();
+    assert!(line.contains("Review rounds, Author review: one round per branch every 15 min"), "{line}");
+    assert!(line.contains("Review rounds, Lint: one round per branch every 5 min"), "{line}");
 }
 
 #[test]
