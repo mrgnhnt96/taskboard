@@ -15,11 +15,19 @@
 //!   The evidence is the failing checks (with their failed steps and tests where the CI can be read)
 //!   and the suspects.
 //! - **Decide.** No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` reads the
-//!   evidence and answers `ours`, `not_ours` or `unsure` with a reason (`[master] fault_check`); when
-//!   it can't be asked, every suspect being the owner's makes it `ours`, else `unsure`.
+//!   evidence and answers `ours`, `not_ours` or `unsure` with a reason, a title and proof links
+//!   (`[master] fault_check`). Its `not_ours` needs an http(s) proof link, else it's `unsure`. When the
+//!   check can't give a verdict (claude missing, a timeout, a crash, an answer it can't read) the break
+//!   is `unsure` with the error kept (`check_error`), so no fix starts. With the check off, every
+//!   suspect being the owner's makes it `ours`, else `unsure`.
 //! - **Act.** Only `ours` gets a fix task (high priority, in the project, with a new Jira ticket when
 //!   Jira is on, started at once: `[master] start_fix`) and an urgent alert (`master:M<n>`, with the
 //!   task). `unsure` isn't the owner's to fix.
+//! - **Follow.** The urgent alert follows the fix task (`fix_state`): it needs the owner (its
+//!   question), it stopped, it hasn't started after 5 minutes, it finished without a fix PR, its PR's
+//!   agent didn't wake, its PR's checks fail, its PR waits for the owner's review, or the branch is
+//!   still red 2 hours on. Each new state raises the alert again, so it notifies; the fix task's own
+//!   alerts wait behind the urgent one, so this is how its question reaches the owner.
 //! - **Override.** `tb master M<n> ours|not-ours|unsure` is the owner's word: it acts the same way and
 //!   is never re-decided. `not-ours` takes at least one proof link (`--proof`: a build, an issue).
 //! - **Re-check.** While a break is open, a new head brings new suspects and decides again (unless a
@@ -56,7 +64,9 @@
 //! | `verdict_why`, `verdict_at` | the reason, and when |
 //! | `verdict_title` | the cause in a few plain words (80 characters at most), from the fault check or the person; NULL when nobody gave one |
 //! | `task_id` | the fix task (`ours` only) |
-//! | `proof` | JSON list of the links a person gave with `not-ours` |
+//! | `proof` | JSON list of the proof links: a person's with `not-ours`, or the fault check's |
+//! | `check_error` | why the fault check couldn't give a verdict (the break is then `unsure`) |
+//! | `alert_state` | the fix's state the urgent alert last said (`fix_state`) |
 //! | `escalated_at` | when the urgent alert was raised again after the fix task finished |
 //! | `queued_at` | when the failing build on `last_head` was queued (NULL when the host doesn't say); `seen_at` when the board first saw `last_head` red |
 //! | `opened_at`, `closed_at`, `checked_at` | ISO times |
@@ -89,7 +99,8 @@ CREATE INDEX IF NOT EXISTS breaks_project ON breaks(project, state);
 
 /// Columns added to `breaks` since it was made: (table, column, type).
 pub const ADDED: &[(&str, &str, &str)] =
-    &[("breaks", "proof", "TEXT"), ("breaks", "queued_at", "TEXT"), ("breaks", "seen_at", "TEXT"), ("breaks", "verdict_title", "TEXT")];
+    &[("breaks", "proof", "TEXT"), ("breaks", "queued_at", "TEXT"), ("breaks", "seen_at", "TEXT"), ("breaks", "verdict_title", "TEXT"),
+      ("breaks", "check_error", "TEXT"), ("breaks", "alert_state", "TEXT")];
 
 /// A break's cause title is at most this long, as `tb pr not-ours --title` is.
 pub const TITLE_MAX: usize = crate::prcmds::TITLE_MAX;
@@ -468,6 +479,11 @@ pub fn tick(app: &App) -> Result<()> {
         }
         check_project(app, &name, &p)?;
     }
+    for b in app.db.q("SELECT * FROM breaks WHERE state = 'open' AND verdict = 'ours' ORDER BY id", p![])? {
+        let made = app.db.tx(|| escalate(app, &b))?;
+        start_fix(app, made)?;
+        app.db.tx(|| follow(app, &get(app, b.id())?, false))?;
+    }
     Ok(())
 }
 
@@ -735,19 +751,31 @@ struct Verdict {
     by: String,
     why: String,
     title: Option<String>,
+    /// The fault check's proof links (its `not_ours` needs one).
+    proof: Vec<String>,
+    /// Why the fault check couldn't give a verdict.
+    error: Option<String>,
+}
+
+impl Verdict {
+    fn new(verdict: &str, by: &str, why: String) -> Verdict {
+        Verdict { verdict: verdict.into(), by: by.into(), why, title: None, proof: vec![], error: None }
+    }
 }
 
 fn decide(app: &App, b: &Row) -> Verdict {
     let suspects = jloads_arr(b.s("suspects"));
     let ours: Vec<&Value> = suspects.iter().filter(|s| s["ours"] == true).collect();
-    let made = |v: &str, by: &str, why: String| Verdict { verdict: v.into(), by: by.into(), why, title: None };
+    let made = Verdict::new;
     if ours.is_empty() {
         return made("not_ours", "commits", format!("None of the suspect commits ({}) are {}.", shas(&suspects), app.cfg.owners()));
     }
     if app.cfg.master.fault_check {
-        if let Some(v) = ask_claude(app, b) {
-            return v;
-        }
+        // Only a verdict the check reached can start a fix; one it couldn't reach is unsure.
+        return ask_claude(app, b).unwrap_or_else(|e| Verdict {
+            error: Some(e.clone()),
+            ..made("unsure", "claude", format!("The fault check couldn't decide: {e}."))
+        });
     }
     if ours.len() == suspects.len() {
         made("ours", "fallback", format!("Every suspect commit ({}) is {}.", shas(&suspects), app.cfg.owners()))
@@ -766,8 +794,9 @@ fn shas(list: &[Value]) -> String {
 }
 
 fn verdict_schema() -> Value {
-    json!({"type": "object", "required": ["verdict", "why", "title"], "properties": {
-        "verdict": {"enum": ["ours", "not_ours", "unsure"]}, "why": {"type": "string"}, "title": {"type": "string", "maxLength": TITLE_MAX}}})
+    json!({"type": "object", "required": ["verdict", "why", "title", "proof"], "properties": {
+        "verdict": {"enum": ["ours", "not_ours", "unsure"]}, "why": {"type": "string"}, "title": {"type": "string", "maxLength": TITLE_MAX},
+        "proof": {"type": "array", "items": {"type": "string"}}}})
 }
 
 fn fault_prompt(app: &App, b: &Row) -> String {
@@ -807,7 +836,9 @@ fn fault_prompt(app: &App, b: &Row) -> String {
          among the suspects broke it.\n- ours: the failure clearly comes from a change in one of {owner}'s commits.\n- not_ours: \
          it clearly comes from someone else's commit, or from the CI itself (a flaky test, an outage).\n- unsure: you can't \
          tell. Don't guess.\nGive the reason in one or two plain sentences, and a title: the cause in a few plain words \
-         (80 characters at most, for example \"Android NDK download failed\").\n\nFailing checks:\n{}\n\nSuspect commits, newest \
+         (80 characters at most, for example \"Android NDK download failed\"). For not_ours, give proof: links (http or https) \
+         to what shows it isn't {owner}'s, such as the same failure on an earlier build or an issue about it; without one it \
+         counts as unsure. Otherwise proof is an empty list.\n\nFailing checks:\n{}\n\nSuspect commits, newest \
          first:\n{}",
         failing.join("\n"),
         suspects.join("\n"),
@@ -816,9 +847,10 @@ fn fault_prompt(app: &App, b: &Row) -> String {
     )
 }
 
-/// Asks a headless `claude -p` for the verdict, or None when it can't be asked.
-fn ask_claude(app: &App, b: &Row) -> Option<Verdict> {
-    let claude = proc::which(&app.cfg.claude)?;
+/// Asks a headless `claude -p` for the verdict, or why it couldn't give one. A `not_ours` without an
+/// http(s) proof link comes back `unsure`.
+fn ask_claude(app: &App, b: &Row) -> std::result::Result<Verdict, String> {
+    let claude = proc::which(&app.cfg.claude).ok_or_else(|| format!("{} isn't installed", app.cfg.claude))?;
     let m = &app.cfg.master;
     let args: Vec<String> = vec![
         "-p".into(),
@@ -838,11 +870,33 @@ fn ask_claude(app: &App, b: &Row) -> Option<Verdict> {
         "--output-format".into(),
         "json".into(),
     ];
-    let out = proc::run(&claude, &args, Some(&app.cfg.data), m.timeout_secs as f64).ok()?;
-    let d: Value = serde_json::from_str(out.stdout.trim()).ok()?;
-    let v = d.get("structured_output").cloned().or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))?;
-    let verdict = v["verdict"].as_str().filter(|x| matches!(*x, "ours" | "not_ours" | "unsure"))?.to_string();
-    Some(Verdict { verdict, by: "claude".into(), why: one_line(v["why"].as_str().unwrap_or(""), 500), title: title_of(v["title"].as_str().unwrap_or("")) })
+    let out = match proc::run(&claude, &args, Some(&app.cfg.data), m.timeout_secs as f64) {
+        Ok(o) => o,
+        Err(proc::RunError::TimedOut) => return Err(format!("it took longer than {} seconds", m.timeout_secs)),
+        Err(proc::RunError::Spawn(e)) => return Err(format!("it couldn't start ({e})")),
+    };
+    let unreadable = || {
+        let said = if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() };
+        format!("its answer couldn't be read (exit {}: {})", out.code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()), one_line(said, 200))
+    };
+    let d: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| unreadable())?;
+    let v = d
+        .get("structured_output")
+        .cloned()
+        .or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))
+        .ok_or_else(unreadable)?;
+    let verdict = v["verdict"].as_str().filter(|x| matches!(*x, "ours" | "not_ours" | "unsure")).ok_or_else(|| format!("it gave no verdict ({})", one_line(&v.to_string(), 200)))?;
+    let why = one_line(v["why"].as_str().unwrap_or(""), 500);
+    let proof: Vec<String> = v["proof"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|p| p.as_str()).map(str::trim).filter(|p| p.starts_with("http://") || p.starts_with("https://")).map(str::to_string).collect())
+        .unwrap_or_default();
+    let mut out = Verdict { title: title_of(v["title"].as_str().unwrap_or("")), proof, ..Verdict::new(verdict, "claude", why) };
+    if out.verdict == "not_ours" && out.proof.is_empty() {
+        out.verdict = "unsure".into();
+        out.why = format!("It looked like someone else's, but nothing proved it: {}", out.why);
+    }
+    Ok(out)
 }
 
 fn decide_and_act(app: &App, b: &Row) -> Result<()> {
@@ -879,21 +933,23 @@ fn start_fix(app: &App, made: Option<i64>) -> Result<()> {
 /// takes the alert down. The fix task, when it made one.
 fn set_verdict(app: &App, b: &Row, v: &Verdict, proof: Option<&[String]>) -> Result<Option<i64>> {
     let (verdict, by, why) = (v.verdict.as_str(), v.by.as_str(), v.why.as_str());
+    let proof = proof.map(|p| p.to_vec()).or_else(|| Some(v.proof.clone()).filter(|p| !p.is_empty()));
     app.db.update("breaks", &json!(b.id()), fields!["verdict" => verdict, "verdict_by" => by, "verdict_why" => why, "verdict_at" => now_iso(),
-                                                   "verdict_title" => v.title, "proof" => proof.map(|p| jdumps(&json!(p)))])?;
+                                                   "verdict_title" => v.title, "proof" => proof.map(|p| jdumps(&json!(p))), "check_error" => v.error])?;
     let b = get(app, b.id())?;
     if let Some(tid) = b.i("task_id") {
         board::log_event(app, tid, board::BOARD, "status", &format!("{}: {} ({by}): {why}", bref(b.id()), verdict_label(verdict)))?;
     }
     if verdict != "ours" {
         dispatch::clear_alert_key(app, &alert_key(b.id()))?;
+        app.db.update("breaks", &json!(b.id()), fields!["alert_state" => null])?;
         return Ok(None);
     }
-    let (tid, made) = match fix_for(app, &b)? {
-        Fix::Own(t) | Fix::Joined(t) | Fix::Unfixed(t) => (t.id(), None),
-        Fix::New => new_fix(app, &b)?,
+    let made = match fix_for(app, &b)? {
+        Fix::Own | Fix::Joined | Fix::Unfixed(_) => None,
+        Fix::New => new_fix(app, &b)?.1,
     };
-    alert(app, &get(app, b.id())?, tid, false)?;
+    follow(app, &get(app, b.id())?, false)?;
     Ok(made)
 }
 
@@ -908,9 +964,9 @@ fn new_fix(app: &App, b: &Row) -> Result<(i64, Option<i64>)> {
 /// Who fixes an `ours` break.
 enum Fix {
     /// Its own task still covers it.
-    Own(Row),
+    Own,
     /// Another break's fix covers it: the break now points at that task (logged there).
-    Joined(Row),
+    Joined,
     /// Its own task finished without a fix PR (or its PR was declined) and nothing else covers it.
     Unfixed(Row),
     /// Nothing covers it: it needs a new fix task.
@@ -971,7 +1027,7 @@ fn fix_for(app: &App, b: &Row) -> Result<Fix> {
     let own = board::find_task(app, b.i("task_id"))?;
     if let Some(t) = &own {
         if covers(app, t, b)? {
-            return Ok(Fix::Own(t.clone()));
+            return Ok(Fix::Own);
         }
     }
     let others = app.db.q(
@@ -995,7 +1051,7 @@ fn fix_for(app: &App, b: &Row) -> Result<Fix> {
         if let Some(old) = &own {
             board::log_event(app, old.id(), board::BOARD, "status", &format!("{} handed over to {}, which covers it", bref(b.id()), rf("task", t.id())))?;
         }
-        return Ok(Fix::Joined(t));
+        return Ok(Fix::Joined);
     }
     Ok(match own {
         Some(t) if no_fix_pr(&t) => Fix::Unfixed(t),
@@ -1007,20 +1063,87 @@ fn alert_key(id: i64) -> String {
     format!("master:{}", bref(id))
 }
 
-fn alert(app: &App, b: &Row, tid: i64, again: bool) -> Result<()> {
-    let text = format!(
-        "{} is red on {}{}: {} fails{}. It's yours to fix: {} is on it.",
-        b.st("branch"),
-        b.st("project"),
-        if again { ", still" } else { "" },
-        jloads_arr(b.s("checks")).iter().filter_map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
-        b.s("verdict_title").map(|t| format!(" ({t})")).unwrap_or_default(),
-        rf("task", tid)
-    );
-    if again {
-        dispatch::clear_alert_key(app, &alert_key(b.id()))?;
+/// A fix task still queued this long after it was made hasn't started on time.
+const START_LATE_SECS: f64 = 300.0;
+/// A break of the owner's still red this long after it opened says so.
+const STILL_RED_SECS: f64 = 7200.0;
+
+/// Where an `ours` break's fix stands, as (state, the master alert's text): `no_fix`, `stopped`,
+/// `needs`, `late`, `no_pr`, `stuck`, `checks`, `review`, `still_red`, or `on` while it's under way.
+fn fix_state(app: &App, b: &Row) -> Result<(&'static str, String)> {
+    let p = b.st("project");
+    let Some(t) = board::find_task(app, b.i("task_id"))? else {
+        return Ok(("no_fix", format!("Master {p} broke on your change and no fix is running.")));
+    };
+    let n = rf("task", t.id());
+    let fix = format!("{n}, the fix for master {p},");
+    let pr = t.i0("pr_num");
+    let pr_open = t.i("pr_num").is_some() && !pr_merged(&t) && !pr_declined(&t);
+    let status = t.st("status");
+    if status == "done" && t.b("failed") {
+        return Ok(("stopped", format!("{fix} has stopped: {}", one_line(t.s("summary").filter(|s| !s.is_empty()).unwrap_or("it ended without finishing"), 200))));
     }
-    dispatch::raise(app, &text, Some(tid), None, Some(&alert_key(b.id())), true).map(|_| ())
+    if status == "needs" {
+        if t.b("lost") {
+            return Ok(("stopped", format!("{fix} has stopped: its terminal was lost.")));
+        }
+        let asked = t.s("question").or(t.s("needs_reason")).filter(|q| !q.is_empty()).unwrap_or("it's waiting on you");
+        return Ok(("needs", format!("{fix} needs you: {}", one_line(asked, 300))));
+    }
+    if status == "queued" && age_secs(t.s("created_at")).unwrap_or(0.0) >= START_LATE_SECS {
+        let last = app.db.q1("SELECT text FROM events WHERE task_id = ? ORDER BY id DESC LIMIT 1", p![t.id()])?;
+        let why = last.and_then(|e| e.s("text").map(|s| one_line(s, 200))).unwrap_or_else(|| "it's still queued".into());
+        return Ok(("late", format!("{n} hasn't started after 5 minutes: {why}")));
+    }
+    if no_fix_pr(&t) {
+        return Ok(("no_pr", format!("{fix} finished without a fix PR, and {} is still red.", b.st("branch"))));
+    }
+    if status == "done" && pr_open {
+        if crate::prflow::wake_stuck(&t) {
+            return Ok(("stuck", format!("The fix PR #{pr} for master {p} needs its agent, but it didn't wake.")));
+        }
+        if t.s("pr_phase") == Some("fix") {
+            return Ok(("checks", format!("The fix PR #{pr}'s checks are failing; {n} is fixing them.")));
+        }
+        if crate::prflow::awaiting_owner(&t) {
+            return Ok(("review", format!("The fix PR #{pr} for master {p} is waiting for your review.")));
+        }
+    }
+    let red_for = age_secs(b.s("opened_at")).unwrap_or(0.0);
+    if red_for >= STILL_RED_SECS {
+        let hours = (red_for / 3600.0).floor() as i64;
+        return Ok(("still_red", format!("Master {p} is still red {} after your change broke it; {n} is on it.", plural(hours, "hour"))));
+    }
+    Ok((
+        "on",
+        format!(
+            "{} is red on {p}: {} fails{}. It's yours to fix: {n} is on it.",
+            b.st("branch"),
+            jloads_arr(b.s("checks")).iter().filter_map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
+            b.s("verdict_title").map(|t| format!(" ({t})")).unwrap_or_default(),
+        ),
+    ))
+}
+
+/// Keeps an `ours` break's urgent alert (`master:M<n>`) in step with its fix: a new state takes the
+/// alert down and raises it again with its own line, so it notifies anew; `again` does that even when
+/// the state is the same. The fix's own alerts wait behind an urgent one, so its question reaches the
+/// owner here.
+fn follow(app: &App, b: &Row, again: bool) -> Result<()> {
+    if b.s("verdict") != Some("ours") || b.s("state") != Some("open") {
+        return Ok(());
+    }
+    let (state, text) = fix_state(app, b)?;
+    if !again && b.s("alert_state") == Some(state) {
+        return Ok(());
+    }
+    dispatch::clear_alert_key(app, &alert_key(b.id()))?;
+    dispatch::raise(app, &text, b.i("task_id"), None, Some(&alert_key(b.id())), true)?;
+    app.db.update("breaks", &json!(b.id()), fields!["alert_state" => state])?;
+    if let (Some(tid), Some(_)) = (b.i("task_id"), b.s("alert_state").filter(|s| *s != state)) {
+        board::log_event(app, tid, board::BOARD, "status", &format!("{}'s alert: {text}", bref(b.id())))?;
+    }
+    Ok(())
 }
 
 fn fix_task(app: &App, b: &Row) -> Value {
@@ -1088,10 +1211,10 @@ fn escalate(app: &App, b: &Row) -> Result<Option<i64>> {
         return Ok(None);
     }
     let t = match fix_for(app, b)? {
-        Fix::Own(_) | Fix::Joined(_) => return Ok(None),
+        Fix::Own | Fix::Joined => return Ok(None),
         Fix::New => {
-            let (tid, made) = new_fix(app, b)?;
-            alert(app, &get(app, b.id())?, tid, true)?;
+            let (_, made) = new_fix(app, b)?;
+            follow(app, &get(app, b.id())?, true)?;
             return Ok(made);
         }
         Fix::Unfixed(t) => t,
@@ -1103,7 +1226,7 @@ fn escalate(app: &App, b: &Row) -> Result<Option<i64>> {
     }
     app.db.update("breaks", &json!(b.id()), fields!["escalated_at" => now_iso()])?;
     board::log_event(app, t.id(), board::BOARD, "status", &format!("{} is still red after this task finished", b.st("branch")))?;
-    alert(app, b, t.id(), true)?;
+    follow(app, b, true)?;
     Ok(None)
 }
 
@@ -1138,7 +1261,7 @@ pub fn dict(app: &App, b: &Row) -> Result<Value> {
         "checks": jloads_arr(b.s("checks")), "evidence": serde_json::from_str::<Value>(b.s("evidence").unwrap_or("null")).unwrap_or(Value::Null),
         "suspects": jloads_arr(b.s("suspects")), "verdict": b.v("verdict"), "verdict_label": b.s("verdict").map(verdict_label),
         "verdict_by": b.v("verdict_by"), "verdict_why": b.v("verdict_why"), "verdict_title": b.v("verdict_title"), "verdict_at": b.v("verdict_at"),
-        "proof": jloads_arr(b.s("proof")), "task": task,
+        "proof": jloads_arr(b.s("proof")), "check_error": b.v("check_error"), "task": task,
         "opened_at": b.v("opened_at"), "closed_at": b.v("closed_at"), "checked_at": b.v("checked_at"),
     }))
 }
@@ -1226,7 +1349,7 @@ pub fn override_verdict(app: &App, id: i64, body: &Value) -> Result<Value> {
     if v == "not_ours" && raw_title.is_empty() {
         return err(400, format!("Name the cause for not-ours in a few plain words, {TITLE_MAX} characters at most (--title)."));
     }
-    let verdict = Verdict { verdict: v, by: who, why, title: title_of(&raw_title) };
+    let verdict = Verdict { title: title_of(&raw_title), ..Verdict::new(&v, &who, why) };
     let made = app.db.tx(|| set_verdict(app, &b, &verdict, (!proof.is_empty()).then_some(proof.as_slice())))?;
     start_fix(app, made)?;
     dict(app, &get(app, id)?)

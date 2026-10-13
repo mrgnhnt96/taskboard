@@ -24,6 +24,8 @@ fn board_with(f: impl FnOnce(&mut Config, &std::path::Path)) -> (Board, tempfile
     let mut cfg = Config::for_tests(dir.path());
     cfg.owner_emails = vec!["sam@acme.dev".into()];
     cfg.master.projects.insert("webapp".into(), MasterProject { host: Some("github".into()), repo: Some("acme/webapp".into()), branch: None });
+    // The commit fallback decides unless a test turns the fault check on with a scripted claude.
+    cfg.master.fault_check = false;
     f(&mut cfg, dir.path());
     let app = App::for_tests(cfg);
     let ci = Arc::new(FakeBranch::default());
@@ -157,13 +159,69 @@ fn an_unsure_break_is_not_the_owner_s_until_they_say_so() {
 fn the_fault_check_reads_the_evidence() {
     let (b, _d) = board_with(|c, dir| {
         let script = dir.join("claude");
-        std::fs::write(&script, "#!/bin/sh\necho '{\"structured_output\": {\"verdict\": \"not_ours\", \"why\": \"The test is flaky on main.\"}}'\n").unwrap();
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho '{\"structured_output\": {\"verdict\": \"not_ours\", \"why\": \"The test is flaky on main.\", \"proof\": [\"https://ci/7\", \"flaky\"]}}'\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         c.claude = script.to_string_lossy().to_string();
+        c.master.fault_check = true;
     });
     b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
     let m = b.get("/master/M1");
     assert_eq!((m["verdict"].as_str(), m["verdict_by"].as_str(), m["verdict_why"].as_str()), (Some("not_ours"), Some("claude"), Some("The test is flaky on main.")));
+    assert_eq!(m["proof"], json!(["https://ci/7"]), "only the http(s) links");
+    assert_eq!(b.tasks(), 0);
+}
+
+/// A board whose fault check is the script `body` (a shell command line run as claude).
+fn with_check(body: &str) -> (Board, tempfile::TempDir) {
+    let body = body.to_string();
+    board_with(move |c, dir| {
+        let script = dir.join("claude");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        c.claude = script.to_string_lossy().to_string();
+        c.master.fault_check = true;
+    })
+}
+
+#[test]
+fn a_fault_check_that_can_t_decide_is_unsure_and_starts_no_fix() {
+    for (body, want) in [
+        ("echo 'boom' >&2; exit 3", "its answer couldn't be read (exit 3: boom)"),
+        ("echo '{\"structured_output\": {\"verdict\": \"maybe\"}}'", "it gave no verdict"),
+    ] {
+        let (b, _d) = with_check(body);
+        b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+        let m = b.get("/master/M1");
+        assert_eq!((m["verdict"].as_str(), m["verdict_by"].as_str()), (Some("unsure"), Some("claude")), "{body}");
+        assert!(m["check_error"].as_str().unwrap().contains(want), "{}", m["check_error"]);
+        assert!(m["verdict_why"].as_str().unwrap().starts_with("The fault check couldn't decide: "), "{}", m["verdict_why"]);
+        assert_eq!(b.tasks(), 0, "only a verdict the check reached starts a fix");
+        assert!(dispatch::alerts(&b.app).is_empty());
+    }
+
+    let (b, _d) = board_with(|c, _| {
+        c.claude = "/nowhere/claude".into();
+        c.master.fault_check = true;
+    });
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let m = b.get("/master/M1");
+    assert_eq!(m["verdict"], "unsure", "a missing claude can't decide either");
+    assert!(m["check_error"].as_str().unwrap().contains("isn't installed"), "{}", m["check_error"]);
+    assert_eq!(b.tasks(), 0);
+}
+
+#[test]
+fn the_fault_check_s_not_ours_without_proof_is_unsure() {
+    let (b, _d) = with_check("echo '{\"structured_output\": {\"verdict\": \"not_ours\", \"why\": \"Looks like a flaky runner.\", \"title\": \"Flaky runner\", \"proof\": []}}'");
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let m = b.get("/master/M1");
+    assert_eq!(m["verdict"], "unsure");
+    assert_eq!(m["verdict_why"], "It looked like someone else's, but nothing proved it: Looks like a flaky runner.");
+    assert_eq!(m["check_error"], Value::Null, "the check did decide");
     assert_eq!(b.tasks(), 0);
 }
 
@@ -457,6 +515,7 @@ fn the_fault_check_s_title_names_the_fix_task() {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         c.claude = script.to_string_lossy().to_string();
+        c.master.fault_check = true;
     });
     b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
     *b.ci.read.lock() = BranchRead {
@@ -524,4 +583,61 @@ fn the_fix_task_says_how_to_finish_and_its_agent_may_rule_the_break_out() {
     assert_eq!(e.status, 409, "{}", e.message);
     assert!(e.message.contains("their word stands"), "{}", e.message);
     assert_eq!(b.get("/master/M1")["verdict"], "ours", "the owner's word wins");
+}
+
+#[test]
+fn the_master_alert_follows_its_fix_and_notifies_on_each_change() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let tid = b.fix_of("M1");
+    let t = format!("T{tid}");
+    let master = || dispatch::alerts(&b.app).into_iter().find(|a| a["key"] == "master:M1").expect("the master alert is up");
+    let first = master();
+    assert!(first["text"].as_str().unwrap().contains(&format!("It's yours to fix: {t} is on it.")), "{first}");
+    breaks::tick(&b.app).unwrap();
+    assert_eq!(master()["id"], first["id"], "nothing changed, so it isn't raised again");
+
+    let set = |sql: &str| b.app.db.x(&format!("UPDATE tasks SET {sql} WHERE id = ?"), p![tid]).unwrap();
+    let mut last = first["id"].clone();
+    let mut expect = |want: String| {
+        breaks::tick(&b.app).unwrap();
+        let a = master();
+        assert_eq!(a["text"], want.as_str());
+        assert_eq!(a["urgent"], true);
+        assert_ne!(a["id"], last, "a new state raises it again, so it notifies");
+        last = a["id"].clone();
+    };
+
+    set(&format!("created_at = '{}'", iso(now_ts() - 600.0)));
+    expect(format!("{t} hasn't started after 5 minutes: Couldn't start it at once: The board doesn't know the folder for the project “webapp”.. It waits in the queue."));
+
+    set("status = 'needs', needs_reason = 'question', question = 'Which NDK version should the build pin?'");
+    dispatch::add_alert(&b.app, "the fix's own question", Some(tid), None, None, None).unwrap();
+    expect(format!("{t}, the fix for master webapp, needs you: Which NDK version should the build pin?"));
+
+    set("status = 'done', failed = 1, summary = 'The build machine is out of disk.'");
+    expect(format!("{t}, the fix for master webapp, has stopped: The build machine is out of disk."));
+
+    set(&format!("failed = 0, finished_at = '{}', pr_num = 5, pr_state = 'OPEN', pr_phase = 'fix', pr_flow = '{{}}'", iso(now_ts())));
+    expect(format!("The fix PR #5's checks are failing; {t} is fixing them."));
+
+    set("pr_phase = 'review'");
+    expect("The fix PR #5 for master webapp is waiting for your review.".into());
+
+    set("pr_phase = 'comments', pr_flow = '{\"wake_tries\": 3}'");
+    expect("The fix PR #5 for master webapp needs its agent, but it didn't wake.".into());
+
+    set("pr_num = NULL, pr_state = NULL, pr_phase = NULL, pr_flow = NULL");
+    expect(format!("{t}, the fix for master webapp, finished without a fix PR, and main is still red."));
+
+    set("status = 'working'");
+    b.app.db.x("UPDATE breaks SET opened_at = ? WHERE id = 1", p![iso(now_ts() - 3.0 * 3600.0 - 60.0)]).unwrap();
+    expect(format!("Master webapp is still red 3 hours after your change broke it; {t} is on it."));
+
+    b.app.db.x("UPDATE breaks SET task_id = NULL WHERE id = 1", p![]).unwrap();
+    expect("Master webapp broke on your change and no fix is running.".into());
+
+    b.branch("passed", vec![commit("c3", "sam@acme.dev")]);
+    breaks::tick(&b.app).unwrap();
+    assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M1"), "green takes it down for good");
 }
