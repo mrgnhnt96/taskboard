@@ -334,6 +334,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().map(|k| k.starts_with("jira:")).unwrap_or(false) {
         return crate::jira_status::alert_resolved(app, a);
     }
+    if a["key"].as_str().map(|k| k.starts_with("master:")).unwrap_or(false) {
+        return crate::breaks::alert_resolved(app, a);
+    }
     let at = a["at"].as_str().unwrap_or("");
     let sid = if let Some(tid) = a["task_id"].as_i64() {
         let Some(t) = board::find_task(app, Some(tid))? else { return Ok(true) };
@@ -343,8 +346,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
         if t.s("status") == Some("done") && !(a["pr"] == true && prflow::wake_stuck(&t)) {
             return Ok(true);
         }
+        // The board's own lines (its PR stages, the owner's hooks) aren't the agent moving on.
         let moved = app.db.count(
-            "SELECT COUNT(*) FROM events WHERE task_id = ? AND at > ? AND who NOT IN (?, ?, ?)",
+            "SELECT COUNT(*) FROM events WHERE task_id = ? AND at > ? AND who NOT IN (?, ?, ?, 'PR', 'Hook')",
             p![t.id(), at, board::BOARD, board::MIDNA, board::OWNER],
         )?;
         if moved > 0 {

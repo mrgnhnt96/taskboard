@@ -663,7 +663,13 @@ pub fn intake_from(app: &App, body: &Value, sources: &[&str], pr: Option<&Value>
     if !matches!(kind.as_str(), "pr" | "build") {
         return err(400, "An event's kind is pr, build or heartbeat.");
     }
-    let t = task_of_event(app, body)?;
+    let mut t = task_of_event(app, body)?;
+    if t.is_none() && kind == "pr" {
+        // The owner's PR opened outside the board, on a task's branch.
+        if let Some(id) = prflow::link_by_branch(app, body)? {
+            t = Some(board::get_task(app, id)?);
+        }
+    }
     for name in sources {
         note_event_for(app, name, &kind, body, t.as_ref().map(|t| t.id()))?;
     }

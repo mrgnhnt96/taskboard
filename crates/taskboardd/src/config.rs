@@ -183,6 +183,9 @@ pub struct PrConfig {
     pub gh: String,
     /// Minutes after the head was pushed with no checks before the checks count as passed.
     pub no_checks_after_mins: f64,
+    /// Seconds after a stream review or comment hint before its PR is read once more: a review's
+    /// changes request often follows its comments as its own event, or none. 0: no second read.
+    pub comment_settle_secs: f64,
     /// Bitbucket Cloud's REST API (2.0).
     pub bitbucket_api: String,
     /// The environment variable holding an Azure DevOps personal access token, for reading the failed
@@ -204,6 +207,7 @@ impl Default for PrConfig {
             owner_review: None,
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
+            comment_settle_secs: 90.0,
             bitbucket_api: "https://api.bitbucket.org/2.0".into(),
             azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
             approvals: DEFAULT_APPROVALS,

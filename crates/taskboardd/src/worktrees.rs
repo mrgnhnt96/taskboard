@@ -106,8 +106,7 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     }
     // A stacked task starts from its parent's branch while the parent's PR is unmerged.
     let start = match crate::stack::base_branch(app, t)? {
-        Some(b) if remote => format!("origin/{b}"),
-        Some(b) => b,
+        Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),
         None => base,
     };
     let r = git(&repo, &["worktree", "add", "--detach", &path, &start], GIT_SECS);
@@ -116,6 +115,16 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     }
     record(app, t, &path, Some(&start))?;
     Ok(Some(path))
+}
+
+/// Where a stacked task starts: its parent's branch on the remote, else the local one; None when
+/// neither exists yet (not pushed, or the child ran ahead of its parent), so it starts from the base.
+fn stack_start(repo: &str, branch: &str, remote: bool) -> Option<String> {
+    let has = |r: &str| git(repo, &["rev-parse", "--verify", "--quiet", r], GIT_SECS).code == 0;
+    if remote && has(&format!("refs/remotes/origin/{branch}")) {
+        return Some(format!("origin/{branch}"));
+    }
+    has(&format!("refs/heads/{branch}")).then(|| branch.to_string())
 }
 
 fn record(app: &App, t: &Row, path: &str, start: Option<&str>) -> Result<()> {
@@ -138,8 +147,16 @@ fn record(app: &App, t: &Row, path: &str, start: Option<&str>) -> Result<()> {
     })
 }
 
-fn finished(t: &Row) -> bool {
-    t.b("failed") || !board::pr_still_open(t)
+/// Done with its worktree: failed, its PR merged or closed, or it ends without a PR. A task that ships
+/// a PR keeps it while the PR isn't linked yet.
+fn finished(app: &App, t: &Row) -> Result<bool> {
+    if t.b("failed") {
+        return Ok(true);
+    }
+    if t.i("pr_num").is_some() {
+        return Ok(!board::pr_still_open(t));
+    }
+    Ok(!t.st("no_pr").trim().is_empty() || !crate::projects::task_ships_pr(app, t)?)
 }
 
 fn terminal_open(app: &App, t: &Row) -> Result<bool> {
@@ -153,7 +170,7 @@ pub fn clean_up(app: &App) -> Result<Vec<i64>> {
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'done' AND context LIKE '%worktree_made%'", p![])? {
         let ctx = board::task_context(&t);
         let Some(path) = ctx.s("worktree_made").filter(|p| !p.is_empty()).map(|s| s.to_string()) else { continue };
-        if ctx.get("worktree_removed").is_some() || ctx.get("worktree_kept").is_some() || !finished(&t) || terminal_open(app, &t)? {
+        if ctx.get("worktree_removed").is_some() || ctx.get("worktree_kept").is_some() || !finished(app, &t)? || terminal_open(app, &t)? {
             continue;
         }
         if !Path::new(&path).is_dir() {

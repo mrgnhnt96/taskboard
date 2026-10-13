@@ -56,6 +56,7 @@ A field marked `?` may be left out or set to null. Times are ISO 8601. A PR refe
 | `state` | `open`, `merged`, `declined` |
 | `draft`, `mergeable` | bool (`mergeable` is null while unknown) |
 | `branch`, `base`, `head` | source branch, target branch, head commit sha |
+| `created_at?`, `mine?` | when the PR was opened; `true` when the relay knows it's the owner's |
 | `checks` | `[{name, state: passed\|failed\|running\|stopped, url?, started_at?, finished_at?}]` |
 | `reviewers` | `[{who, state: approved\|changes\|commented\|pending, at?}]` |
 | `threads` | `[{id, path?, line?, resolved?, comments: [{id, author, body, at}]}]` |
@@ -71,7 +72,10 @@ from its host either way.
 time of the review.
 
 A review or comment on a PR the board has is a hint: the board reads that PR from its host, as it does for an
-incomplete pr event, so the stage changes without waiting for the next PR poll.
+incomplete pr event, so the stage changes without waiting for the next PR poll. A review's changes request
+often follows its comments as its own event, or none, so the board reads the PR once more `[pr]
+comment_settle_secs` (90 by default, 0 for never) after the last hint; hints within that window fold into one
+read, even while the poll rests.
 
 ### `comment`: a PR comment
 
@@ -121,7 +125,7 @@ name). Left out, the relay covers every PR. Each heartbeat replaces what the las
 
 | Kind | Source | Goes to |
 |---|---|---|
-| `pr` | prs | the PR feed, as `POST /prs/event` does: the task's PR is read and stepped (in stream mode a complete event is applied instead, see Modes) |
+| `pr` | prs | the PR feed, as `POST /prs/event` does: the task's PR is read and stepped (in stream mode a complete event is applied instead, see Modes). The owner's open or merged PR (`mine`, or an `author` matched as for builds) that no task has is linked to the one not-done task that ships a PR, has none yet and works on its `branch`, when it was opened after the task was made (`created_at`, when given); a branch two such tasks work on links neither |
 | `build` | builds | the PR feed, as `POST /prs/event` does, and the owner's PR builds are run; a build on the branch of a project under `[master.projects]` (its repo and branch) also goes to the master-break watch, as `POST /master-builds` does, with `head` as its `sha` and `at` as its `ts` (the watch keeps the last green head itself), and its `result` is `{feed, master}` |
 | `heartbeat` | each in `sources` (all when left out) | that source's health, as `POST /prs/heartbeat` does for prs |
 | `jira.comment` | qa | QA comments, as `POST /jira/comment` does |

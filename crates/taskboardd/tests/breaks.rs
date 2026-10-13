@@ -641,3 +641,28 @@ fn the_master_alert_follows_its_fix_and_notifies_on_each_change() {
     breaks::tick(&b.app).unwrap();
     assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M1"), "green takes it down for good");
 }
+
+#[test]
+fn the_master_alert_and_a_task_alert_outlive_the_board_s_own_lines() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let fix = b.fix_of("M1");
+    let other = b.post("/tasks", json!({"title": "Probe", "detail": "d", "project": "webapp"}))["id"].as_i64().unwrap();
+    dispatch::add_alert(&b.app, "Probe needs you", Some(other), None, None, None).unwrap();
+    let keys = || dispatch::alerts(&b.app).into_iter().map(|a| a["task_id"].as_i64().unwrap_or(0)).collect::<Vec<_>>();
+    let later = iso(now_ts() + 5.0);
+    for (tid, who, text) in [(fix, "PR", "PR #5: checks passed"), (other, "PR", "PR #6: checks passed"), (other, "Hook", "pr.checks hook failed")] {
+        b.app.db.x("INSERT INTO events(task_id, at, who, kind, text) VALUES (?, ?, ?, 'status', ?)", p![tid, later.clone(), who, text]).unwrap();
+    }
+    dispatch::prune_alerts(&b.app).unwrap();
+    assert!(dispatch::alerts(&b.app).iter().any(|a| a["key"] == "master:M1"), "a PR stage doesn't take the break's alert down");
+    assert!(keys().contains(&other), "the board's own lines aren't the agent moving on");
+
+    b.app.db.x("INSERT INTO events(task_id, at, who, kind, text) VALUES (?, ?, 'Fix agent', 'turn', 'Pinned the NDK')", p![fix, later.clone()]).unwrap();
+    dispatch::prune_alerts(&b.app).unwrap();
+    assert!(dispatch::alerts(&b.app).iter().any(|a| a["key"] == "master:M1"), "nor does the fix's own work while main is red");
+
+    b.app.db.x("UPDATE breaks SET state = 'closed' WHERE id = 1", p![]).unwrap();
+    dispatch::prune_alerts(&b.app).unwrap();
+    assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M1"), "a closed break's alert goes");
+}

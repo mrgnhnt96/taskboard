@@ -493,6 +493,7 @@ pub fn prs(app: &App) -> Result<()> {
     if crate::feed::poll_due(app) {
         prflow::poll(app)?;
     }
+    prflow::late_reads(app)?;
     app.db.tx(|| crate::prbuilds::sweep(app))?;
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
     worktrees::clean_up(app).map(|_| ())
