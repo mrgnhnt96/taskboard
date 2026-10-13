@@ -70,6 +70,9 @@ from its host either way.
 `pr`, `who`, `state` (`approved`, `changes`, `commented`, `dismissed`), and `body?`. The event's `at` is the
 time of the review.
 
+A review or comment on a PR the board has is a hint: the board reads that PR from its host, as it does for an
+incomplete pr event, so the stage changes without waiting for the next PR poll.
+
 ### `comment`: a PR comment
 
 `pr`, `comment_id`, `author`, `body`, and optionally `thread_id?`, `path?` and `line?` (a line number of 1 or more).
@@ -115,7 +118,8 @@ doesn't count it as stuck or silent.
 | `heartbeat` | each in `sources` (all when left out) | that source's health, as `POST /prs/heartbeat` does for prs |
 | `jira.comment` | qa | QA comments, as `POST /jira/comment` does |
 | `jira.issue` | jira | the task, goal epic and backlog issue with that key, see below |
-| `review`, `comment`, `push` | prs, prs, builds | the source's health; kept only, for now |
+| `review`, `comment` | prs | a hint, like an incomplete pr event: a PR on the board is read from its host and stepped (in either mode), and the result names its task; any other PR only counts for the source's health |
+| `push` | builds | the source's health; kept only, for now |
 
 ### Ticket statuses
 

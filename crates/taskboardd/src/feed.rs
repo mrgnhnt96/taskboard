@@ -508,6 +508,14 @@ pub fn intake_from(app: &App, body: &Value, sources: &[&str], pr: Option<&Value>
     if kind == "build" {
         out["builds"] = crate::prbuilds::on_build_event(app, &t, body)?;
     }
+    read_pr(app, &t, pr, &mut out)?;
+    Ok(out)
+}
+
+/// Brings a task's open, watched PR up to date after an event about it: applies a complete stream pr
+/// event when there is one, else reads the PR from its host. Says how in `out` (`applied`, `refreshed`,
+/// `phase` or `read_error`).
+pub fn read_pr(app: &App, t: &Row, pr: Option<&Value>, out: &mut Value) -> Result<()> {
     if crate::prhost::watched(t.s("pr_host")) && t.i("pr_num").is_some() && !matches!(t.s("pr_phase"), Some("merged" | "declined")) {
         let applied = match pr {
             Some(ev) => prflow::apply_event(app, t.id(), ev)?,
@@ -531,7 +539,7 @@ pub fn intake_from(app: &App, body: &Value, sources: &[&str], pr: Option<&Value>
     } else {
         out["refreshed"] = json!(false);
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Runs on every runner tick: for each watched source, notices its feed going bad or coming back,
