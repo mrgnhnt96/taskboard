@@ -751,7 +751,7 @@ pub fn old_route(app: &App, method: &str, rest: &[&str], limit: i64, body: &Valu
         ("GET", [id]) => dict(app, &get(app, need_ref(&json!(id), "break")?)?),
         ("POST", [id, "verdict"]) => {
             let v = body_str(body, "verdict").to_lowercase().replace('-', "_");
-            let mut b = body.clone();
+            let mut b = Value::Object(body.as_object().cloned().unwrap_or_default());
             b["verdict"] = json!(match v.as_str() {
                 "yours" => "ours",
                 "not_yours" => "not_ours",
