@@ -758,9 +758,10 @@ pub fn github_cancel(app: &App) -> Result<Value> {
     status(app, false)
 }
 
-/// gh's "First copy your one-time code: ABCD-1234" and "…in your web browser: <url>".
+/// gh's "First copy your one-time code: ABCD-1234" (gh 2.101 and older) or "One-time code (ABCD-1234)
+/// copied to clipboard" (2.102 on), and "…in your web browser: <url>".
 fn device_prompt(text: &str) -> Option<(String, String)> {
-    let code = regex::Regex::new(r"one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})").unwrap().captures(text)?[1].to_string();
+    let code = regex::Regex::new(r"(?i)one-time code\W{1,3}([A-Z0-9]{4}-[A-Z0-9]{4})\b").unwrap().captures(text)?[1].to_string();
     let url = regex::Regex::new(r"(https://\S+/login/device)").unwrap().captures(text).map(|c| c[1].to_string()).unwrap_or_else(|| GITHUB_DEVICE_URL.into());
     Some((code, url))
 }
@@ -928,6 +929,9 @@ mod tests {
         let text = "\n! First copy your one-time code: 1445-0A8C\nOpen this URL to continue in your web browser: https://github.com/login/device\n";
         assert_eq!(device_prompt(text), Some(("1445-0A8C".into(), "https://github.com/login/device".into())));
         assert_eq!(device_prompt("! First copy your one-time"), None);
+        let text = "\n! One-time code (1445-0A8C) copied to clipboard\nOpen this URL to continue in your web browser: https://github.com/login/device\n";
+        assert_eq!(device_prompt(text), Some(("1445-0A8C".into(), "https://github.com/login/device".into())));
+        assert_eq!(device_prompt("! One-time code (1445-"), None);
     }
 
     #[test]
