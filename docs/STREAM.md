@@ -91,6 +91,7 @@ incomplete pr event, so the stage changes without waiting for the next PR poll.
 | `branch?`, `pipeline?`, `author?` | |
 | `pr?` | the PR the build is for, if any |
 | `url?` | the build's link |
+| `build_id?` | the CI's id for the build (else the last number in `url`) |
 | `provider?` | the CI that ran it |
 
 ### `jira.issue`: an issue changed
@@ -114,7 +115,7 @@ doesn't count it as stuck or silent.
 | Kind | Source | Goes to |
 |---|---|---|
 | `pr` | prs | the PR feed, as `POST /prs/event` does: the task's PR is read and stepped (in stream mode a complete event is applied instead, see Modes) |
-| `build` | builds | the PR feed, as `POST /prs/event` does, and the owner's PR builds are run |
+| `build` | builds | the PR feed, as `POST /prs/event` does, and the owner's PR builds are run; a build on the branch of a project under `[master.projects]` (its repo and branch) also goes to the master-break watch, as `POST /master-builds` does, with `head` as its `sha` and `at` as its `ts` (the watch keeps the last green head itself), and its `result` is `{feed, master}` |
 | `heartbeat` | each in `sources` (all when left out) | that source's health, as `POST /prs/heartbeat` does for prs |
 | `jira.comment` | qa | QA comments, as `POST /jira/comment` does |
 | `jira.issue` | jira | the task, goal epic and backlog issue with that key, see below |

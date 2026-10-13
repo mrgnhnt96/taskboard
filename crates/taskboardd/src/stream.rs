@@ -348,7 +348,13 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
             let apply = (complete && streams(app, "prs")).then_some(ev);
             feed::intake_from(app, &as_feed_pr(ev), &["prs"], apply)
         }
-        "build" => feed::intake_from(app, &as_feed_build(ev), &["builds"], None),
+        "build" => {
+            let out = feed::intake_from(app, &as_feed_build(ev), &["builds"], None)?;
+            Ok(match crate::breaks::stream_build(app, ev)? {
+                Some(watch) => json!({"feed": out, "master": watch}),
+                None => out,
+            })
+        }
         "review" | "comment" => pr_hint(app, kind, ev),
         "heartbeat" => {
             let named: Vec<&str> = ev["sources"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
