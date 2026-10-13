@@ -27,6 +27,14 @@ fn list(ctx: &Row, k: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A stored time with the local 12-hour clock after it: `2026-10-12T20:15:00Z (1:15pm)`.
+fn stamp(at: &str) -> String {
+    match local_clock(Some(at)) {
+        clock if clock.is_empty() => at.to_string(),
+        clock => format!("{at} ({clock})"),
+    }
+}
+
 pub fn render(app: &App, t: &Row) -> Result<String> {
     let ctx = board::task_context(t);
     let w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
@@ -46,6 +54,11 @@ pub fn render(app: &App, t: &Row) -> Result<String> {
         ("Claude conversation", t.s("claude_session_id").map(|s| s.to_string())),
         ("Jira", t.s("jira_key").filter(|k| !k.is_empty()).map(|k| format!("{k} · {}", t.s("jira_status").unwrap_or("status unknown")))),
         ("PR", t.s("pr_url").filter(|u| !u.is_empty()).map(|u| format!("#{} · {u}", t.i0("pr_num")))),
+        ("Priority", t.s("priority").map(|s| s.to_string())),
+        ("Created", t.s("created_at").map(stamp)),
+        ("Updated", t.s("updated_at").map(stamp)),
+        ("Question", t.s("question").filter(|_| t.s("status") == Some("needs")).map(|q| q.trim().to_string())),
+        ("Summary", t.s("summary").filter(|_| t.s("status") == Some("done")).map(|s| s.trim().to_string())),
     ];
     for (k, v) in rows {
         if let Some(v) = v.filter(|v| !v.is_empty()) {
@@ -63,7 +76,15 @@ pub fn render(app: &App, t: &Row) -> Result<String> {
             cl.extend(items.iter().map(|i| format!("- {i}")));
         }
     }
-    let wl: Vec<String> = ["branch", "worktree", "last_commit", "uncommitted"]
+    if let Some(saved) = ctx.get("saved_at").and_then(|v| v.as_str()) {
+        cl.push(format!(
+            "Saved at {} · {} · {}",
+            stamp(saved),
+            plural(ctx.i("turns").unwrap_or(0), "turn"),
+            plural(ctx.i("checkpoints").unwrap_or(0), "checkpoint")
+        ));
+    }
+    let wl: Vec<String> = ["branch", "worktree", "last_commit", "uncommitted", "conversation"]
         .iter()
         .filter_map(|k| w.get(*k).filter(|v| !v.is_null()).map(|v| format!("{k}: {}", v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))))
         .collect();
@@ -85,7 +106,7 @@ pub fn render(app: &App, t: &Row) -> Result<String> {
     }
     lines.extend(["".into(), "## Log".into(), "".into()]);
     for e in app.db.q("SELECT * FROM events WHERE task_id = ? ORDER BY at, id", p![t.id()])? {
-        lines.push(format!("- {} · {} · {}", e.st("at"), e.st("who"), e.st("text").replace('\n', " ")));
+        lines.push(format!("- {} · {} · {} · {}", stamp(&e.st("at")), e.st("who"), e.st("kind"), e.st("text").replace('\n', " ")));
     }
     Ok(lines.join("\n") + "\n")
 }

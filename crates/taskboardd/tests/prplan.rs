@@ -248,7 +248,7 @@ fn done_without_the_pr_keeps_why_and_withdraws_the_ticket() {
     let j = b.app.db.q1("SELECT args FROM jobs WHERE kind = 'jira' AND task_id = ? ORDER BY id DESC", p![id]).unwrap().unwrap();
     let args: Value = serde_json::from_str(j.s("args").unwrap()).unwrap();
     assert_eq!(args["status"], "Withdrawn", "{args}");
-    assert!(args["comment"].as_str().unwrap().contains("PR canceled: T3 fixed it"), "{args}");
+    assert_eq!(args["comment"], "PR canceled: T3 fixed it in ABC-7\n\nAlready fixed", "the summary follows the reason");
 }
 
 #[test]
