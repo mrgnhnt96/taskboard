@@ -157,8 +157,8 @@ fn a_notifications_snooze_counts_once_however_late() {
 
     // One waiter per alert: a repeat only moves it on to the newer notification.
     let waiters = app.shared.lock().alert_waiters.clone();
-    assert!(dispatch::Waiter::start(waiters.clone(), id, "a").is_some());
-    assert!(dispatch::Waiter::start(waiters.clone(), id, "b").is_none());
+    assert!(dispatch::Waiter::start(waiters.clone(), id, "a", "n").is_some());
+    assert!(dispatch::Waiter::start(waiters.clone(), id, "b", "n").is_none());
     assert_eq!(waiters.lock().get(id).map(String::as_str), Some("b"));
     post(&app, &format!("alerts/{id}/dismiss"), json!({})).unwrap();
     dispatch::tick(&app).unwrap();
