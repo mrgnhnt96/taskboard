@@ -1219,11 +1219,16 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         // "Not asked" has nowhere to go.
         step(review.0, review.1, review.2.as_deref(), if review.1 == StepSt::Todo { None } else { url })
     });
-    out.push(if phase == "waits" && pr_open(p) { step("Merge", StepSt::Wait, Some("Waits on base"), None) } else { step(merge.0, merge.1, merge.2.as_deref(), None) });
+    out.push(match phase {
+        "waits" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on base"), None),
+        // A head-merge child's PR has to merge into this one first.
+        "stack" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on stack"), None),
+        _ => step(merge.0, merge.1, merge.2.as_deref(), None),
+    });
     out
 }
 
-/// "Stacks on T3 · PR #12": the task it builds on opens in the panel, its PR on the host.
+/// "Stacks on T3 · PR #12 · Head merge": the task it builds on opens in the panel, its PR on the host.
 fn stacks_line(c: &Ctx, so: &Value) -> Node {
     let r = s(so, "ref");
     let merged = b(so, "merged");
@@ -1236,6 +1241,11 @@ fn stacks_line(c: &Ctx, so: &Value) -> Node {
         });
     } else if let Some(br) = opt_s(so, "branch") {
         kids.push(txt(format!("branch {br}"), St::Small));
+    }
+    match opt_s(so, "merge") {
+        Some("head") => kids.push(txt_tip("Head merge", St::Small, format!("Its PR merges into {r}'s branch; {r}'s PR takes it to the main branch"))),
+        Some("tail") => kids.push(txt_tip("Tail merge", St::Small, format!("Its PR moves to the main branch once {r}'s merges"))),
+        _ => {}
     }
     el(K::Line, kids)
 }
@@ -1475,6 +1485,10 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
     }
     if let Some(line) = bar.and_then(|bar| obj(bar, "stacks_on")).map(|so| stacks_line(c, so)) {
         body.push(line);
+    }
+    // Phase `stack`: which head-merge PR has to merge into this one first.
+    if let Some(why) = bar.and_then(|bar| opt_s(bar, "waits_on_stack")).filter(|_| pr_open(p)) {
+        body.push(el(K::Line, vec![txt(why, St::Small)]));
     }
     body.extend(bar.map(reviewer_rows).unwrap_or_default());
     body.extend(bar.and_then(|bar| comments_line(p, bar)));

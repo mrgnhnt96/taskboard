@@ -450,6 +450,18 @@ fn the_pr_bar_has_every_step_once_the_board_sends_it() {
 }
 
 #[::core::prelude::v1::test]
+fn the_stack_card_says_how_it_merges_and_the_parent_waits_on_its_stack() {
+    let so = |merge: &str| json!({"ref": "T3", "num": 12, "url": "https://github.com/acme/webapp/pull/12", "merged": false, "merge": merge});
+    let tail = panel_text(with_bar(json!({"stacks_on": so("tail")}), json!({"phase": "waits", "label": "Waits on base"}), "approved"), json!({}));
+    assert!(tail.contains("Stacks on T3 PR #12 Tail merge") && tail.contains("Merge Waits on base"), "{tail}");
+    let head = panel_text(with_bar(json!({"stacks_on": so("head")}), json!({"phase": "merge", "label": "Merging"}), "approved"), json!({}));
+    assert!(head.contains("Stacks on T3 PR #12 Head merge") && !head.contains("Waits on base"), "{head}");
+    let why = "T5's PR #14 head-merges into it and has to merge first";
+    let parent = panel_text(with_bar(json!({"waits_on_stack": why}), json!({"phase": "stack", "label": "Waits on stack"}), "approved"), json!({}));
+    assert!(parent.contains("Merge Waits on stack") && parent.contains(why), "{parent}");
+}
+
+#[::core::prelude::v1::test]
 fn the_review_step_counts_approvals_against_the_ones_needed() {
     let review = |approvals: i64, reviewers: i64, need: Value| {
         let bar = json!({"approvals": approvals, "reviewers": reviewers, "need": need, "new_comments": 0, "reviewer_rows": []});
