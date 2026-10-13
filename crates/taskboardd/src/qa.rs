@@ -353,7 +353,7 @@ pub fn act(app: &App, c: &Row, src: &Row, who: &str, note: Option<&str>) -> Resu
     handled(app, c, who, Some(t.id()))?;
     board::log_event(app, src.id(), who, "jira", &format!("{} commented on {key}; {} is doing it", author(c), rf("task", t.id())))?;
     if who == board::BOARD {
-        dispatch::notify(app, &format!("{} on {key}: {}. {} is on it.", author(c), what(c), rf("task", t.id())), &dispatch::alert_url(app, Some(t.id()), None, None), None);
+        dispatch::notify(app, &format!("{} on {key}: {}. {} is on it.", author(c), what(c), rf("task", t.id())), &dispatch::alert_url(app, Some(t.id()), None, None));
     }
     Ok(t)
 }

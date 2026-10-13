@@ -403,11 +403,12 @@ pub fn notification_id(alert_id: &str) -> String {
     format!("taskboard-alert-{alert_id}")
 }
 
-/// `notify.send`'s params for an alert: its id, its text, the link to it and the snooze buttons.
+/// `notify.send`'s params for an alert: its id, its text, the link to it and the snooze buttons. The text
+/// is the title, since Midna's collapsed card shows only that.
 pub fn alert_params(app: &App, a: &Value) -> Value {
     let goal = a["goal"].as_str().and_then(|g| parse_ref_str(g, "goal").ok().flatten());
-    let mut p = json!({"title": if a["urgent"] == true { "Task board · urgent" } else { "Task board" },
-                       "body": a["text"], "category": "board", "sound": true,
+    let mut p = json!({"title": a["text"], "body": if a["urgent"] == true { "Task board · urgent" } else { "Task board" },
+                       "category": "board", "sound": true,
                        "open": alert_url(app, a["task_id"].as_i64(), goal, a["session_id"].as_str()),
                        "id": notification_id(a["id"].as_str().unwrap_or(""))});
     let actions = snooze_actions(app);
@@ -513,12 +514,12 @@ fn withdraw(app: &App, alert_id: &str) {
     });
 }
 
-/// A desktop notification through Midna, sent on its own thread.
-pub fn notify(app: &App, text: &str, url: &str, title: Option<&str>) {
+/// A desktop notification through Midna, sent on its own thread. The text is the title, as for alerts.
+pub fn notify(app: &App, text: &str, url: &str) {
     if !app.cfg.notify || !app.cfg.runner {
         return;
     }
-    let params = json!({"title": title.unwrap_or("Task board"), "body": text, "category": "board", "sound": true, "open": url});
+    let params = json!({"title": text, "body": "Task board","category": "board", "sound": true, "open": url});
     let midna = app.cfg.midna.clone();
     std::thread::spawn(move || {
         let _ = midna::call_exe(&midna, "notify.send", &params, 30.0);

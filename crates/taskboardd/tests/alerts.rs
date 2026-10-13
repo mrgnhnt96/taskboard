@@ -77,6 +77,7 @@ fn notifications_carry_the_alert_id_and_snooze_buttons() {
 
     let p = dispatch::alert_params(&app, &a);
     assert_eq!(p["id"], dispatch::notification_id(id));
+    assert_eq!((p["title"].as_str(), p["body"].as_str()), (Some("T1 didn't start"), Some("Task board")), "the text shows on Midna's collapsed card");
     assert_eq!(p["actions"], json!(["Snooze 5 min", "Snooze 30 min", "Snooze 2 hours"]));
     assert_eq!(dispatch::snooze_label(60), "Snooze 1 hour");
 
