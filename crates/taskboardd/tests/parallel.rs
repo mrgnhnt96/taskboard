@@ -428,3 +428,20 @@ fn a_merged_pr_closes_a_board_tab_that_never_became_the_task_s_terminal() {
     let closing: Vec<String> = prflow::pr_tabs_to_close(&b.app).unwrap().into_iter().map(|(s, _, _)| s.st("id")).collect();
     assert_eq!(closing, vec!["S-LOST".to_string()], "the board's lost tab closes; the owner's stays");
 }
+
+#[test]
+fn only_a_task_that_ships_a_pr_picks_one_up_from_a_stop_or_a_push() {
+    let b = new_board();
+    for (sid, ships, num) in [("s1", false, 7), ("s2", true, 8)] {
+        b.add_session(sid);
+        let t = b.task(&format!("Task {sid}"), json!({"ships_pr": ships}));
+        b.report("tb.take", sid, json!({"task": format!("T{t}")}));
+        b.report("hook.stop", sid, json!({"last_message": format!("Looked at https://github.com/acme/webapp/pull/{num}, the race is there.")}));
+        let stop_pr = board::get_task(&b.app, t).unwrap().i("pr_num");
+        b.app.db.x("UPDATE tasks SET pr_num = NULL, pr_url = NULL, pr_repo = NULL WHERE id = ?", p![t]).unwrap();
+        b.report("hook.commit", sid, json!({"command": "git push -u origin feat", "output": format!("remote: View pull request: https://github.com/acme/webapp/pull/{num}")}));
+        let push_pr = board::get_task(&b.app, t).unwrap().i("pr_num");
+        let want = ships.then_some(num);
+        assert_eq!((stop_pr, push_pr), (want, want), "ships_pr = {ships}");
+    }
+}
