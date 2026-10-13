@@ -144,6 +144,12 @@ enum Cmd {
         #[arg(long)]
         midna: bool,
     },
+    /// Open a new GitHub issue on Taskboard's repo with this Mac's versions and board counts filled in (no names, paths or text)
+    Report {
+        /// Print the issue's link instead of opening it
+        #[arg(long)]
+        print: bool,
+    },
     /// Print the preview card Midna shows for a hovered taskboard:// task or goal link, as JSON. Only reads
     Preview {
         url: String,
@@ -3191,6 +3197,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Preview { url, port } => crate::preview::run(&url, port),
+        Cmd::Report { print } => {
+            let url = taskboardd::report::issue_url(&taskboardd::report::gather(&c.cfg, "tb"));
+            if print || !std::process::Command::new("open").arg(&url).status().is_ok_and(|s| s.success()) {
+                out(&url);
+            } else {
+                out("Opened a new issue on GitHub with this Mac's details. Fill in what happened, then submit it.");
+            }
+            Ok(0)
+        }
         Cmd::Peek { midna } => {
             // whoami, not a tb.status report: a report marks the terminal active and hands it deliveries.
             if c.session.is_empty() {
@@ -4827,6 +4842,18 @@ mod tests {
         let mut cfg = Config::for_tests(&data);
         cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         (Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: data.to_string_lossy().to_string() }, data)
+    }
+
+    #[test]
+    fn tb_report_prints_a_prefilled_issue_link() {
+        let Cmd::Report { print } = Cli::try_parse_from(["tb", "report", "--print"]).unwrap().cmd else { panic!("not tb report") };
+        assert!(print);
+        let (c, data) = board_down_ctx("report");
+        let url = taskboardd::report::issue_url(&taskboardd::report::gather(&c.cfg, "tb"));
+        assert!(url.starts_with("https://github.com/mrgnhnt96/taskboard/issues/new?body="), "{url}");
+        assert!(url.contains("taskboardd%20%7C%20not%20running"), "{url}");
+        assert_eq!(run_cmd(&c, Cmd::Report { print: true }).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]
