@@ -14,6 +14,9 @@ use serde_json::{json, Value};
 use crate::api;
 use crate::app::App;
 
+/// When this daemon started serving: the root answer's `uptime_secs`, which the debug export reads.
+pub static STARTED: once_cell::sync::Lazy<std::time::Instant> = once_cell::sync::Lazy::new(std::time::Instant::now);
+
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
 pub fn router(app: Arc<App>) -> Router {
@@ -71,7 +74,7 @@ async fn handle(
     let path = uri.path().to_string();
     if path == "/" || path == "/tasks" || path == "/tasks/" {
         return json_response(StatusCode::OK, &json!({"board": "taskboardd", "version": env!("CARGO_PKG_VERSION"),
-            "api": "/tasks/api", "app": "Open Taskboard.app to see the board."}));
+            "uptime_secs": STARTED.elapsed().as_secs(), "api": "/tasks/api", "app": "Open Taskboard.app to see the board."}));
     }
     let Some(rest) = path.strip_prefix("/tasks/") else { return error(404, "There's nothing at that address.") };
     if method == Method::OPTIONS {

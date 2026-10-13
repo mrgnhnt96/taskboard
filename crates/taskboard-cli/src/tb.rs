@@ -144,6 +144,12 @@ enum Cmd {
         #[arg(long)]
         midna: bool,
     },
+    /// Write a redacted zip of the board, its logs and state for debugging on another machine, and print its path
+    Export {
+        /// The folder to write it in (default: Downloads)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Print the preview card Midna shows for a hovered taskboard:// task or goal link, as JSON. Only reads
     Preview {
         url: String,
@@ -3191,6 +3197,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Preview { url, port } => crate::preview::run(&url, port),
+        Cmd::Export { out: dir } => {
+            let path = taskboardd::export::run(&c.cfg, "tb", &dir.unwrap_or_else(taskboardd::export::default_dir))?;
+            out(&path.display().to_string());
+            Ok(0)
+        }
         Cmd::Peek { midna } => {
             // whoami, not a tb.status report: a report marks the terminal active and hands it deliveries.
             if c.session.is_empty() {
@@ -4876,6 +4887,18 @@ mod tests {
             panic!("not tb backlog note")
         };
         assert_eq!((issue.as_str(), text.as_str()), ("B2", "seen again on the tablet build"));
+    }
+
+    #[test]
+    fn tb_export_writes_a_zip_and_prints_its_path() {
+        let Cmd::Export { out } = Cli::try_parse_from(["tb", "export", "--out", "/tmp/x"]).unwrap().cmd else { panic!("not tb export") };
+        assert_eq!(out, Some(std::path::PathBuf::from("/tmp/x")));
+        let (c, data) = board_down_ctx("export");
+        let into = data.join("out");
+        assert_eq!(run_cmd(&c, Cmd::Export { out: Some(into.clone()) }).unwrap(), 0);
+        let zips: Vec<_> = std::fs::read_dir(&into).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(zips.len() == 1 && zips[0].starts_with("taskboard-debug-") && zips[0].ends_with(".zip"), "{zips:?}");
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

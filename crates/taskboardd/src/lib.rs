@@ -20,6 +20,7 @@ pub mod deliver;
 pub mod devfocus;
 pub mod devices;
 pub mod dispatch;
+pub mod export;
 pub mod feed;
 pub mod gitattrs;
 pub mod handoff;

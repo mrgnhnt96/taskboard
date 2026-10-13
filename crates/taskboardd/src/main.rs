@@ -132,6 +132,7 @@ fn serve(cfg: Config) -> i32 {
                 return 1;
             }
         };
+        once_cell::sync::Lazy::force(&taskboardd::server::STARTED);
         app.info(format!(
             "taskboardd {} on http://{addr}/tasks/ · data {} · runner {}",
             env!("CARGO_PKG_VERSION"),
