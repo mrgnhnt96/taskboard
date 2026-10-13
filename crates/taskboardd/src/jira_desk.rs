@@ -235,8 +235,18 @@ pub fn state(app: &App) -> Result<Value> {
         "via": if app.cfg.jira_via_claude() { "claude" } else { "rest" },
         "auto_ticket": j.auto_ticket, "desk": on(app), "desk_session": session(app)?,
         "products": j.products.iter().map(|(k, p)| json!({"name": k, "what": p.what})).collect::<Vec<_>>(),
+        "ticket_template": file_state(&j.ticket_template, false), "ticket_guide": file_state(&j.ticket_guide, true),
         "jobs": jobs,
     }))
+}
+
+/// A `[jira]` file setting for `tb jira`: its path, and its text (`with_text`) or why it can't be read.
+fn file_state(path: &str, with_text: bool) -> Value {
+    match jira::config_file(path) {
+        None => Value::Null,
+        Some(Ok(text)) => json!({"path": path.trim(), "text": if with_text { Some(text) } else { None }}),
+        Some(Err(e)) => json!({"path": path.trim(), "error": e}),
+    }
 }
 
 /// `POST /jira/jobs/:id {ok, key, status, found, added, product, message}`: the desk's report on a job

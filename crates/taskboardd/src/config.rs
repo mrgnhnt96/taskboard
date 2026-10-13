@@ -393,6 +393,13 @@ pub struct JiraConfig {
     pub desk_dir: String,
     /// The product a ticket gets when its goal has none and nothing in the work picks one.
     pub default_product: String,
+    /// A markdown file every new task and bug ticket's description is made from: `{description}`,
+    /// `{summary}`, `{title}`, `{detail}`, `{task}`, `{goal}`, `{outcome}`, `{epic}` and `{project}` are
+    /// filled in (`jira::render_template`). Empty: the description is the ticket text as it is.
+    pub ticket_template: String,
+    /// A markdown file of how this board's tickets are written. Agents read it in `tb jira` and write
+    /// each new ticket's summary and text to it (`tb task new --jira new --ticket-text …`).
+    pub ticket_guide: String,
 }
 
 impl Default for JiraConfig {
@@ -425,6 +432,8 @@ impl Default for JiraConfig {
             desk: false,
             desk_dir: String::new(),
             default_product: String::new(),
+            ticket_template: String::new(),
+            ticket_guide: String::new(),
         }
     }
 }

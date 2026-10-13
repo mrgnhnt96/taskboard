@@ -15,6 +15,10 @@ Only when the owner's board has Jira on: your handoff has a `Jira:` line or name
 - It needs none: `tb task set T<n> --jira none`.
 - A ticket that couldn't be made ("Couldn't make the ticket: …" on the task): fix what the reason says if it's yours to fix, then `tb task set T<n> --jira new` to try again, or link the right one.
 
+## Writing a new ticket
+
+When `tb jira` shows a ticket guide, every new ticket you ask for is written to it: read it, then give the ticket its own summary and text with the ticket, `--jira new --ticket-summary "…" --ticket-text "…"` (on `tb task new` or `tb task set`). The text is markdown (headings, lists, code, links show as such in Jira). Without a guide they're optional: the ticket gets the task's title and detail. A ticket template (also in `tb jira`) wraps the text on its own; don't repeat its headings.
+
 Find or make the ticket yourself; never ask the owner which ticket. Settle the ticket and the branch right away, before the first commit, so every commit carries the key.
 
 ## The Jira desk

@@ -103,11 +103,75 @@ pub fn request_create_by_board(app: &App, t: &Row) -> Result<i64> {
 fn create_for_task(app: &App, t: &Row, by: Option<&str>) -> Result<i64> {
     let g = board::find_goal(app, t.i("goal_id"))?;
     ensure_epic(app, g.as_ref())?;
+    let summary = t.s("ticket_summary").filter(|s| !s.trim().is_empty()).unwrap_or(&t.st("title")).to_string();
+    let text = t.s("ticket_text").filter(|s| !s.trim().is_empty()).unwrap_or(&t.st("detail")).to_string();
+    let vars = [("summary", summary.clone()), ("title", t.st("title")), ("detail", t.st("detail")), ("task", rf("task", t.id()))];
     request_job(
         app,
-        json!({"op": "create", "summary": t.v("title"), "description": t.v("detail"), "issue_type": app.cfg.jira.task_type, "by": by}),
+        json!({"op": "create", "summary": summary, "description": described(app, &text, &vars, g.as_ref(), &t.st("project")),
+               "issue_type": app.cfg.jira.task_type, "by": by}),
         json!({"task": t.id()}),
     )
+}
+
+/// The text of a `[jira]` file setting (`ticket_template`, `ticket_guide`): None when it's not set,
+/// Err when it can't be read.
+pub fn config_file(path: &str) -> Option<std::result::Result<String, String>> {
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(std::fs::read_to_string(expand_home(path)).map_err(|e| format!("can't read {path}: {e}")))
+}
+
+/// A new ticket an agent asks for when the board has a ticket guide needs its text written to it:
+/// the task's own title and detail aren't.
+pub fn refuse_unguided(app: &App, who: &str, ticket_text: Option<&str>) -> Result<()> {
+    if who == board::OWNER || ticket_text.is_some_and(|t| !t.trim().is_empty()) || guide(app).is_none() {
+        return Ok(());
+    }
+    err(
+        400,
+        "This board writes its tickets to a guide: read it in `tb jira`, then give the ticket its text with --ticket-text \
+         (and --ticket-summary) alongside --jira new.",
+    )
+}
+
+/// `[jira] ticket_guide`'s text, when it's set and there.
+pub fn guide(app: &App) -> Option<String> {
+    config_file(&app.cfg.jira.ticket_guide).and_then(|r| r.ok()).filter(|g| !g.trim().is_empty())
+}
+
+/// Fills a ticket template's `{name}`s; a name it doesn't know stays as it is.
+pub fn render_template(template: &str, vars: &[(&str, String)]) -> String {
+    let mut out = template.to_string();
+    for (k, v) in vars {
+        out = out.replace(&format!("{{{k}}}"), v.trim());
+    }
+    out.trim().to_string()
+}
+
+/// A new ticket's description: its text, in `[jira] ticket_template` when there is one.
+fn described(app: &App, text: &str, vars: &[(&str, String)], g: Option<&Row>, project: &str) -> String {
+    let template = match config_file(&app.cfg.jira.ticket_template) {
+        None => return text.to_string(),
+        Some(Err(e)) => {
+            app.info(format!("jira: ticket_template: {e}; the ticket gets its text as it is"));
+            return text.to_string();
+        }
+        Some(Ok(t)) => t,
+    };
+    let mut all = vec![("description", text.to_string()), ("project", project.to_string())];
+    all.extend(vars.iter().cloned());
+    all.push(("goal", g.map(|g| g.st("name")).unwrap_or_default()));
+    all.push(("outcome", g.map(|g| g.st("outcome")).unwrap_or_default()));
+    all.push(("epic", g.map(|g| g.st("epic_key")).unwrap_or_default()));
+    for k in ["summary", "title", "detail", "task"] {
+        if !all.iter().any(|(n, _)| *n == k) {
+            all.push((k, String::new()));
+        }
+    }
+    render_template(&template, &all)
 }
 
 pub fn request_create_for_issue(app: &App, b: &Row) -> Result<i64> {
@@ -118,9 +182,11 @@ pub fn request_create_for_issue(app: &App, b: &Row) -> Result<i64> {
     if !snap.is_empty() {
         desc += &format!("\n\nWhat was happening when it was found: {snap}");
     }
+    let vars = [("summary", b.st("title")), ("title", b.st("title")), ("detail", b.st("detail"))];
     request_job(
         app,
-        json!({"op": "create", "summary": b.v("title"), "description": desc, "issue_type": app.cfg.jira.bug_type}),
+        json!({"op": "create", "summary": b.v("title"), "description": described(app, &desc, &vars, g.as_ref(), &b.st("project")),
+               "issue_type": app.cfg.jira.bug_type}),
         json!({"issue": b.id()}),
     )
 }
@@ -413,7 +479,7 @@ pub fn ticket_fields(app: &App, a: &Row, g: Option<&Row>) -> (Value, Option<Stri
     });
     let desc = a.st("description");
     if !desc.trim().is_empty() {
-        f["description"] = adf(&desc);
+        f["description"] = crate::adf::from_markdown(&desc);
     }
     if !j.assignee_account_id.is_empty() {
         f["assignee"] = json!({"accountId": j.assignee_account_id});

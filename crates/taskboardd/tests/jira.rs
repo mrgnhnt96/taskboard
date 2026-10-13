@@ -946,3 +946,56 @@ fn the_board_s_own_jira_move_doesn_t_clear_a_task_s_alert() {
     taskboardd::dispatch::prune_alerts(&b.app).unwrap();
     assert_eq!(task_alerts(), 0, "the agent's own line clears it");
 }
+
+// --- ticket_template and ticket_guide ---
+
+#[test]
+fn a_ticket_is_made_from_its_own_text_in_the_template() {
+    let b = board_with(|c, d| {
+        std::fs::write(d.join("tpl.md"), "## Why\n{description}\n\n## Board\n{task} in {project}{goal}").unwrap();
+        c.jira.ticket_template = d.join("tpl.md").to_string_lossy().into();
+    });
+    let id = b.new_task(json!({"detail": "the detail", "jira": {"mode": "create"}, "ticket_summary": "[Web] Add login", "ticket_text": "- users sign in\n- with SSO"}));
+    let job = b.jobs("kind = 'jira'").pop().unwrap();
+    let a = board::job_args(&job);
+    assert_eq!(a.st("summary"), "[Web] Add login");
+    assert_eq!(a.st("description"), format!("## Why\n- users sign in\n- with SSO\n\n## Board\nT{id} in webapp"));
+    let (f, _) = jira::ticket_fields(&b.app, &a, None);
+    assert_eq!(f["summary"], "[Web] Add login");
+    assert_eq!(f["description"]["content"][0]["type"], "heading");
+    assert_eq!(f["description"]["content"][1]["type"], "bulletList");
+
+    // Without ticket text, the title and detail stand in.
+    let id2 = b.new_task(json!({"title": "Fix logout", "detail": "it hangs", "jira": {"mode": "create"}}));
+    let a = board::job_args(&b.jobs("kind = 'jira'").pop().unwrap());
+    assert_eq!(a.st("summary"), "Fix logout");
+    assert_eq!(a.st("description"), format!("## Why\nit hangs\n\n## Board\nT{id2} in webapp"));
+}
+
+#[test]
+fn an_unreadable_template_leaves_the_text_as_it_is() {
+    let b = board_with(|c, _| c.jira.ticket_template = "/nowhere/tpl.md".into());
+    b.new_task(json!({"detail": "the detail", "jira": {"mode": "create"}}));
+    assert_eq!(board::job_args(&b.jobs("kind = 'jira'").pop().unwrap()).st("description"), "the detail");
+    assert!(b.get("/jira")["ticket_template"]["error"].as_str().unwrap().contains("can't read /nowhere/tpl.md"));
+}
+
+#[test]
+fn with_a_guide_an_agent_writes_the_ticket_text() {
+    let b = board_with(|c, d| {
+        std::fs::write(d.join("guide.md"), "Start with a user story.").unwrap();
+        c.jira.ticket_guide = d.join("guide.md").to_string_lossy().into();
+    });
+    assert_eq!(b.get("/jira")["ticket_guide"]["text"], "Start with a user story.");
+    let body = json!({"title": "Add login", "project": "webapp", "jira": {"mode": "create"}});
+    let e = b.app.db.tx(|| ops::new_task(&b.app, &body, "agent-1", None)).unwrap_err();
+    assert!(e.message.contains("tb jira"), "{}", e.message);
+    assert!(b.jobs("kind = 'jira'").is_empty());
+
+    let id = b.new_task(json!({}));
+    let (code, msg) = b.post_err(&format!("/tasks/{id}"), json!({"jira_key": "new", "who": "agent-1"}));
+    assert_eq!((code, msg.contains("--ticket-text")), (400, true));
+    b.post(&format!("/tasks/{id}"), json!({"jira_key": "new", "who": "agent-1", "ticket_text": "As a user, I sign in."}));
+    assert_eq!(board::job_args(&b.jobs("kind = 'jira'").pop().unwrap()).st("description"), "As a user, I sign in.");
+    assert_eq!(b.task(id).st("ticket_text"), "As a user, I sign in.");
+}
