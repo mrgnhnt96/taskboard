@@ -383,7 +383,6 @@ pub fn close_for_usage(app: &App) -> Result<()> {
                 hours::clock(&local_hhmm(Some(&out)))
             ),
             &app.cfg.page_url,
-            None,
         );
     }
     Ok(())
