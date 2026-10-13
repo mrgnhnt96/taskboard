@@ -1,5 +1,6 @@
-//! How a goal's work is sliced into tasks: the board's built-in rules, unless `[planning]` names a
-//! file of the owner's own for the whole board or for one project. Planners get it in their prompt and
+//! How a goal's work is sliced into tasks: the board's built-in rules, unless the owner wrote their own in
+//! the board's folder (`planning.md` for the board, `planning/<project>.md` for one project) or named a
+//! file elsewhere under `[planning]`. Planners get it in their prompt and
 //! from `tb planning`; the skill's `planning.md` keeps the mechanics (waves, locks, `tb propose`).
 
 use std::collections::BTreeMap;
@@ -17,9 +18,10 @@ use crate::util::Result;
 #[serde(default)]
 pub struct PlanningConfig {
     /// A markdown file of how this board slices goals into tasks, in place of the built-in rules.
-    /// Empty, missing or blank: the built-in rules.
+    /// Empty: `planning.md` in the board's folder, when it's there with something in it.
     pub guide: String,
-    /// `[planning.projects]`: project name → its own file, in place of the board's.
+    /// `[planning.projects]`: project name → its own file, in place of the board's. Not named:
+    /// `planning/<project>.md` in the board's folder, when it's there with something in it.
     pub projects: BTreeMap<String, String>,
 }
 
@@ -38,18 +40,31 @@ struct Pick {
     skipped: Vec<Value>,
 }
 
-fn pick(app: &App, project: Option<&str>) -> Pick {
+/// A file the owner named in config.toml, else the one in its usual place in the board's folder
+/// (`planning.md`, `planning/<project>.md`), which is used only when it's there with something in it.
+fn file_for(app: &App, project: Option<&str>) -> Option<(String, bool)> {
     let p = &app.cfg.planning;
-    let own = project.filter(|n| !n.is_empty()).and_then(|n| p.projects.get(n));
+    let (named, usual) = match project {
+        Some(n) => (p.projects.get(n), Some(n).filter(|n| !n.contains(['/', '\\']) && !n.starts_with('.')).map(|n| app.cfg.data.join("planning").join(format!("{n}.md")))),
+        None => (Some(&p.guide), Some(app.cfg.data.join("planning.md"))),
+    };
+    match named.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(path) => Some((path.to_string(), true)),
+        None => usual.map(|u| (u.to_string_lossy().to_string(), false)),
+    }
+}
+
+fn pick(app: &App, project: Option<&str>) -> Pick {
+    let project = project.filter(|n| !n.is_empty());
     let mut skipped = vec![];
-    for (from, path) in [("project", own.map(|s| s.as_str()).unwrap_or("")), ("board", p.guide.as_str())] {
-        match config_file(path) {
+    let candidates = [project.and_then(|n| file_for(app, Some(n))).map(|f| ("project", f)), file_for(app, None).map(|f| ("board", f))];
+    for (from, (path, named)) in candidates.into_iter().flatten() {
+        match config_file(&path) {
             None => {}
-            Some(Ok(text)) if !text.trim().is_empty() => {
-                return Pick { text: text.trim().to_string(), from, path: Some(path.trim().to_string()), skipped };
-            }
-            Some(Ok(_)) => skipped.push(json!({"from": from, "path": path.trim(), "error": "it's empty"})),
-            Some(Err(e)) => skipped.push(json!({"from": from, "path": path.trim(), "error": e})),
+            Some(Ok(text)) if !text.trim().is_empty() => return Pick { text: text.trim().to_string(), from, path: Some(path), skipped },
+            Some(Ok(_)) if named => skipped.push(json!({"from": from, "path": path, "error": "it's empty"})),
+            Some(Err(e)) if named => skipped.push(json!({"from": from, "path": path, "error": e})),
+            Some(_) => {}
         }
     }
     Pick { text: BUILT_IN.to_string(), from: "built-in", path: None, skipped }
