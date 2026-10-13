@@ -463,7 +463,7 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     if matches!(t.s("status"), Some("working") | Some("queued")) && sentence != "Turn finished" {
         board::update_task(app, t.id(), fields!["latest" => one_line(&sentence, 200)])?;
     }
-    if let Some(pr) = find_pr(&msg) {
+    if let Some(pr) = find_pr(&msg).filter(|_| crate::projects::task_ships_pr(app, &t).unwrap_or(false)) {
         prflow::link_pr(app, &t, &pr, &r.name())?;
     }
     r.stalled = stalled(r, &t)?;
@@ -778,8 +778,10 @@ fn on_commit(r: &mut Report) -> Result<Value> {
     if cmd.contains("git push") {
         let branch = r.git.s("branch").filter(|b| !b.is_empty()).unwrap_or("the branch").to_string();
         r.log(t.id(), "commit", &format!("Pushed {branch}"), None)?;
-        if let Some(pr) = find_pr(&out) {
-            prflow::link_pr(app, &board::get_task(app, t.id())?, &pr, &r.name())?;
+        let t = board::get_task(app, t.id())?;
+        // Only a task that ends in a PR picks one up from a push; others may push a branch without shipping it.
+        if let Some(pr) = find_pr(&out).filter(|_| crate::projects::task_ships_pr(app, &t).unwrap_or(false)) {
+            prflow::link_pr(app, &t, &pr, &r.name())?;
         }
     }
     Ok(ok(Some(&t), None))
