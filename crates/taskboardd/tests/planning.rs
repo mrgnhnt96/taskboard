@@ -79,3 +79,23 @@ fn an_empty_or_unreadable_file_falls_back_and_says_why() {
     assert_eq!((skipped[0]["from"].as_str(), skipped[0]["error"].as_str()), (Some("project"), Some("it's empty")));
     assert!(skipped[1]["error"].as_str().unwrap().contains("can't read /nowhere/planning.md"));
 }
+
+#[test]
+fn files_in_the_boards_folder_need_no_config() {
+    let (d, app) = board_with(|_, d| {
+        std::fs::create_dir_all(d.join("planning")).unwrap();
+        std::fs::write(d.join("planning.md"), "One task per screen.").unwrap();
+        std::fs::write(d.join("planning/api.md"), "One task per endpoint.").unwrap();
+        std::fs::write(d.join("planning/webapp.md"), "").unwrap();
+    });
+    let api = planning_for(&app, "project", "api");
+    assert_eq!((api["from"].as_str(), api["text"].as_str()), (Some("project"), Some("One task per endpoint.")));
+    assert_eq!(api["path"].as_str().unwrap(), d.path().join("planning/api.md").to_string_lossy());
+    let web = planning_for(&app, "project", "webapp");
+    assert_eq!((web["from"].as_str(), web["text"].as_str()), (Some("board"), Some("One task per screen.")));
+    assert_eq!(web["skipped"], json!([]), "an empty file in its usual place is a placeholder, not a mistake");
+
+    std::fs::remove_file(d.path().join("planning.md")).unwrap();
+    let web = planning_for(&app, "project", "webapp");
+    assert_eq!((web["from"].as_str(), web["skipped"].clone()), (Some("built-in"), json!([])));
+}
