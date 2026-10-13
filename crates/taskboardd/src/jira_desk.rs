@@ -236,6 +236,8 @@ pub fn state(app: &App) -> Result<Value> {
         "auto_ticket": j.auto_ticket, "desk": on(app), "desk_session": session(app)?,
         "products": j.products.iter().map(|(k, p)| json!({"name": k, "what": p.what})).collect::<Vec<_>>(),
         "ticket_template": file_state(&j.ticket_template, false), "ticket_guide": file_state(&j.ticket_guide, true),
+        "merged_note": crate::merged_note::on(app), "merged_status": j.merged,
+        "merged_note_guide": file_state(&j.merged_note_guide, true),
         "jobs": jobs,
     }))
 }

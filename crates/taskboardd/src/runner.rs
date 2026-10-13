@@ -468,6 +468,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| jobs::expire(app))?;
     app.db.tx(|| jira::expire(app))?;
     app.db.tx(|| jira::ensure_tickets(app))?;
+    app.db.tx(|| crate::merged_note::tick(app))?;
     jira::run_pending(app)?;
     crate::qa::tick(app)?;
     app.db.tx(|| crate::lines::tick(app))?;

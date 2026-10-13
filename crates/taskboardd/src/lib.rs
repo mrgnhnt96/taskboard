@@ -41,6 +41,7 @@ pub mod limits;
 pub mod lines;
 pub mod locks;
 pub mod mdcopy;
+pub mod merged_note;
 pub mod midna;
 pub mod ops;
 pub mod picker;

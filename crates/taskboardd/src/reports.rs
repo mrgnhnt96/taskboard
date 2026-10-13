@@ -1492,6 +1492,11 @@ fn on_done(r: &mut Report) -> Result<Value> {
         board::update_task(r.app, t.id(), fields!["no_pr" => no_pr])?;
         r.log(t.id(), "status", &format!("PR canceled: {no_pr}"), None)?;
     }
+    let note = clip(r.b("merged_note").trim(), crate::merged_note::MAX);
+    if !note.is_empty() {
+        board::update_task(r.app, t.id(), fields!["merged_note" => note])?;
+        r.log(t.id(), "status", "Wrote the note for testers", None)?;
+    }
     let no_evidence = one_line(&r.b("no_evidence"), 1000);
     if !no_evidence.is_empty() {
         board::update_task(r.app, t.id(), fields!["no_evidence" => no_evidence])?;
@@ -1567,6 +1572,9 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     }
     if !no_pr && has_pr && !r.spooled && app.cfg.ticket_required() && !has(t.s("jira_key")) {
         return err(409, no_ticket_refusal(t));
+    }
+    if !no_pr && !r.spooled && r.b("merged_note").trim().is_empty() && !crate::merged_note::has_note(t) && crate::merged_note::needed(app, t)? {
+        return err(409, crate::merged_note::refusal(app, t));
     }
     let atts = board::attachments(app, Some(t.id()), None)?;
     let design = atts.iter().find(|a| a["kind"] == "design");

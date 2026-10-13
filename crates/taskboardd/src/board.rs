@@ -253,6 +253,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "also": crate::shared::goals_of(app, t.id())?,
         "wave": t.v("wave"),
         "jira": jira_card(app, t)?,
+        "merged_note": crate::merged_note::card(t),
         "pr": pr,
         "position": position,
         "starting": t.i("start_job").is_some() && status == "queued",

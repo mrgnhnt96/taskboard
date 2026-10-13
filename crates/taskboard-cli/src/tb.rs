@@ -93,6 +93,9 @@ enum Cmd {
         /// It finishes without evidence (screenshots, results), and why
         #[arg(long = "no-evidence", value_name = "WHY")]
         no_evidence: Option<String>,
+        /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`; see tb jira)
+        #[arg(long = "merged-note", value_name = "MARKDOWN", conflicts_with = "no_pr")]
+        merged_note: Option<String>,
         /// How long the work would have taken a developer by hand: 3h, 90m, 1h30m, 2d
         #[arg(long)]
         human: Option<String>,
@@ -1049,6 +1052,9 @@ enum TaskCmd {
         /// Planned (waits for its goal's run) or queued (picked up on its own); only a task in one of these two
         #[arg(long, value_parser = ["planned", "queued"])]
         status: Option<String>,
+        /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`); none clears it
+        #[arg(long = "merged-note", value_name = "MARKDOWN|none")]
+        merged_note: Option<String>,
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
@@ -1946,6 +1952,18 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
                     text.trim()
                 )),
                 (None, None) => out(&format!("{what}: {path}")),
+            }
+        }
+        if v["merged_note"] == true {
+            let to = v["merged_status"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or("its merged status");
+            out(&format!(
+                "Note for testers: a task that ships a PR on a ticket finishes with tb done \"<summary>\" --merged-note \"<markdown>\"; at merge the board posts it on the ticket, then moves it to {to}."
+            ));
+            let f = &v["merged_note_guide"];
+            match (f["path"].as_str(), f["error"].as_str(), f["text"].as_str()) {
+                (Some(_), Some(e), _) => out(&format!("Note guide: {e}")),
+                (Some(path), None, Some(text)) => out(&format!("Note guide ({path}): write the note to it.\n{}", text.trim())),
+                _ => {}
             }
         }
         for j in v["jobs"].as_array().cloned().unwrap_or_default() {
@@ -3142,8 +3160,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             res
         }
-        Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, human, t } => {
-            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence});
+        Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, merged_note, human, t } => {
+            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
             let Some(file) = pr_body else {
                 return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(v)));
             };
@@ -3731,7 +3749,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, pr, status } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, pr, status, merged_note } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -3790,6 +3808,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = status {
                     b["status"] = json!(x);
+                }
+                if let Some(x) = merged_note {
+                    b["merged_note"] = if x.eq_ignore_ascii_case("none") { json!("") } else { json!(x) };
                 }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());

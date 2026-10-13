@@ -400,6 +400,11 @@ pub struct JiraConfig {
     /// A markdown file of how this board's tickets are written. Agents read it in `tb jira` and write
     /// each new ticket's summary and text to it (`tb task new --jira new --ticket-text …`).
     pub ticket_guide: String,
+    /// A task that ships a PR on a ticket finishes with a note for testers (`tb done --merged-note`); at
+    /// merge the board posts it on the ticket before it moves the ticket to `merged`.
+    pub merged_note: bool,
+    /// A markdown file of the parts that note has. Agents read it in `tb jira`.
+    pub merged_note_guide: String,
 }
 
 impl Default for JiraConfig {
@@ -434,6 +439,8 @@ impl Default for JiraConfig {
             default_product: String::new(),
             ticket_template: String::new(),
             ticket_guide: String::new(),
+            merged_note: false,
+            merged_note_guide: String::new(),
         }
     }
 }

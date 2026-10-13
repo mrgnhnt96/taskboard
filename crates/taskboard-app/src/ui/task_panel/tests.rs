@@ -615,3 +615,13 @@ fn reviewer_pills_say_when_each_was_asked_and_the_ask_stage_shows_its_bar() {
     assert!(text.contains(&format!("Ana Waiting Asked {when}")), "{text}");
     assert!(text.contains("Asking for reviews"), "{text}");
 }
+
+#[::core::prelude::v1::test]
+fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
+    let t = |note: Value| json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "merged_note": note});
+    let text = panel_text(t(json!({"text": "What changed: the login page", "waiting": false})), json!({}));
+    assert!(text.contains("Note for testers") && text.contains("What changed: the login page") && !text.contains("Waiting"), "{text}");
+    let text = panel_text(t(json!({"text": null, "waiting": true})), json!({}));
+    assert!(text.contains("Note for testers Waiting Merged without one; the ticket waits"), "{text}");
+    assert!(!panel_text(t(Value::Null), json!({})).contains("Note for testers"));
+}

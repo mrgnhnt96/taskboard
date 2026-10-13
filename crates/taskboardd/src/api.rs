@@ -948,6 +948,11 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push((k, v));
             }
         }
+        let note_changed = has_key("merged_note");
+        if note_changed {
+            let v = clip(body_str(body, "merged_note").trim(), crate::merged_note::MAX);
+            f.push(("merged_note", if v.is_empty() { Value::Null } else { json!(v) }));
+        }
         if has_key("jira_key") && app.cfg.jira_on() {
             let k = body_str(body, "jira_key");
             if k.is_empty() || k.eq_ignore_ascii_case("none") {
@@ -1051,6 +1056,11 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if let Some(al) = alone_changed {
             board::log_event(app, id, &who, "note", crate::locks::alone_text(al.as_deref().unwrap_or("")))?;
+        }
+        if note_changed {
+            let t = board::get_task(app, id)?;
+            board::log_event(app, id, &who, "note", if crate::merged_note::has_note(&t) { "Wrote the note for testers" } else { "Cleared the note for testers" })?;
+            crate::merged_note::note_set(app, &t)?;
         }
         if let Some(g) = t.i("goal_id") {
             board::renumber_goal(app, g)?;
