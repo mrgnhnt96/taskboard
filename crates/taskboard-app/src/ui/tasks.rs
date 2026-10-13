@@ -2,7 +2,7 @@
 //! board will start them), Running, Needs you and Done, each as tall as its cards. Chips narrow it
 //! to one project; a switch adds the tasks in goals. A card opens its task.
 use crate::app::{MainWindow, Page};
-use crate::fmt::{arr, i, s};
+use crate::fmt::{arr, i, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::home::{Tile, tile_vm};
 use crate::ui::kit;
@@ -25,8 +25,6 @@ pub struct State {
 
 pub struct Card {
     pub project: String,
-    /// Queued only: "Next", "2nd", "3rd"…
-    pub order: Option<String>,
     /// The tile's pill when it says more than the lane does ("Starting", "In review", "Failed"…).
     pub pill: Option<(String, &'static str)>,
     pub tile: Tile,
@@ -41,17 +39,6 @@ pub struct Lane {
 /// (lane key, label, the tile status the lane already says).
 const LANES: [(&str, &str, &str); 4] = [("queued", "Queued", "Queued"), ("running", "Running", "Working"), ("needs", "Needs you", "Needs you"), ("done", "Done", "Done")];
 
-pub fn ordinal(n: usize) -> String {
-    let suffix = match (n % 10, n % 100) {
-        (_, 11..=13) => "th",
-        (1, _) => "st",
-        (2, _) => "nd",
-        (3, _) => "rd",
-        _ => "th",
-    };
-    if n == 1 { "Next".into() } else { format!("{n}{suffix}") }
-}
-
 pub fn lanes_vm(v: &Value, project: Option<&str>) -> Vec<Lane> {
     LANES
         .iter()
@@ -59,12 +46,14 @@ pub fn lanes_vm(v: &Value, project: Option<&str>) -> Vec<Lane> {
             let cards = arr(v, key)
                 .iter()
                 .filter(|c| project.is_none_or(|p| s(c, "project") == p))
-                .enumerate()
-                .map(|(ix, c)| {
-                    let tile = tile_vm(c);
+                .map(|c| {
+                    let mut tile = tile_vm(c);
+                    // A queued card says only what holds it back, not that it waits for Start.
+                    if *key == "queued" && !c["starting"].as_bool().unwrap_or(false) && opt_s(c, "waiting").is_none_or(|w| w.ends_with("press Start")) {
+                        tile.line.clear();
+                    }
                     Card {
                         project: s(c, "project").to_string(),
-                        order: (*key == "queued").then(|| ordinal(ix + 1)),
                         pill: (tile.status != *plain).then(|| (tile.status.clone(), tile.tone)),
                         tile,
                     }
@@ -127,9 +116,6 @@ fn card(t: &Theme, lane: &str, c: &Card, cx: &mut Context<MainWindow>) -> Statef
     let open = c.tile.r.clone();
     let hover = t.border_2;
     let mut top = div().flex().items_center().gap(px(6.)).child(div().flex_1().min_w_0().truncate().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.muted).child(c.project.clone()));
-    if let Some(o) = &c.order {
-        top = top.child(div().flex_none().px(px(7.)).rounded_full().bg(t.seg).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted).child(o.clone()));
-    }
     if let Some((label, tone)) = &c.pill {
         top = top.child(kit::tone_pill(t, tone, label.clone()));
     }
@@ -153,7 +139,7 @@ fn card(t: &Theme, lane: &str, c: &Card, cx: &mut Context<MainWindow>) -> Statef
                     .with_highlights([(0..c.tile.r.len(), HighlightStyle { color: Some(t.faint), font_weight: Some(FontWeight::NORMAL), ..Default::default() })]),
             ),
         )
-        .child(div().text_size(px(12.)).text_color(if lane == "needs" { t.warn_fg } else { t.muted }).line_clamp(2).child(c.tile.line.clone()))
+        .when(!c.tile.line.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(if lane == "needs" { t.warn_fg } else { t.muted }).line_clamp(2).child(c.tile.line.clone())))
 }
 
 fn lane(t: &Theme, l: &Lane, cx: &mut Context<MainWindow>) -> Div {
@@ -180,7 +166,7 @@ fn lane(t: &Theme, l: &Lane, cx: &mut Context<MainWindow>) -> Div {
 
 pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let shell = div().id("tasks-page").flex_1().min_w_0().h_full().overflow_y_scroll();
+    let shell = div().id("tasks-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis();
     let goals = m.tasks.goals;
     let toggle = div()
         .id("tasks-goals")
@@ -238,7 +224,8 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         let msg = if goals { "Nothing is queued, running or done today." } else { "Nothing outside a goal is queued, running or done today." };
         return shell.child(page.child(kit::empty(&t, msg))).into_any_element();
     }
-    let mut row = div().flex().flex_wrap().items_start().gap(px(14.));
+    // The lanes sit side by side and scroll sideways rather than wrapping into a grid.
+    let mut row = div().id("tasks-lanes").flex().items_start().gap(px(14.)).overflow_x_scroll().restrict_scroll_to_axis();
     for l in &lanes {
         row = row.child(lane(&t, l, cx));
     }
@@ -261,13 +248,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn ordinals_say_next_then_count() {
-        let got: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22, 23].into_iter().map(ordinal).collect();
-        assert_eq!(got, ["Next", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd"]);
-    }
-
-    #[test]
-    fn lanes_number_the_queue_within_the_picked_project() {
+    fn lanes_keep_the_queue_within_the_picked_project() {
         let card = |r: &str, project: &str, status: &str| json!({"ref": r, "title": r, "project": project, "status": status});
         let mut starting = card("T3", "web", "queued");
         starting["starting"] = json!(true);
@@ -281,7 +262,9 @@ mod tests {
         });
         let all = lanes_vm(&v, None);
         assert_eq!(all.iter().map(|l| l.key).collect::<Vec<_>>(), ["queued", "running", "needs", "done"]);
-        assert_eq!(all[0].cards.iter().map(|c| c.order.clone().unwrap()).collect::<Vec<_>>(), ["Next", "2nd", "3rd"]);
+        assert_eq!(all[0].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T2", "T3"]);
+        // Nothing holds T1 back but Start, so it has no line.
+        assert!(all[0].cards[0].tile.line.is_empty());
         // The lane already says Queued and Working; a card says more only when it differs.
         assert!(all[0].cards[0].pill.is_none());
         assert_eq!(all[0].cards[2].pill.as_ref().map(|p| p.0.as_str()), Some("Starting"));
@@ -289,7 +272,7 @@ mod tests {
         assert_eq!(all[3].cards[0].pill.as_ref().map(|p| p.0.as_str()), Some("Failed"));
 
         let web = lanes_vm(&v, Some("web"));
-        assert_eq!(web[0].cards.iter().map(|c| (c.tile.r.clone(), c.order.clone().unwrap())).collect::<Vec<_>>(), [("T1".to_string(), "Next".to_string()), ("T3".to_string(), "2nd".to_string())]);
+        assert_eq!(web[0].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T3"]);
         assert!(web[3].cards.is_empty());
     }
 }
