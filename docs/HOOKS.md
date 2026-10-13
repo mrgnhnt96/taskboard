@@ -309,10 +309,10 @@ A review tool that runs on every push is a step with a check, plus three keys:
 name = "Author-side review"
 prompt = "Run the review on {branch} against {base_ref} and deal with each finding."
 check = "author-review --since {base_ref} --json > $TASKBOARD_RESULT"
-publish = "wd review publish {worktree} {pr}"   # optional: republishes a passing round for the PR (tb step publish)
+publish = "author-review publish {worktree} {pr}"   # optional: republishes a passing round for the PR (tb step publish)
 per_head = true       # it passes for the head commit it ran on; every new push needs another round
 min_gap_mins = 10     # at least this long between two rounds (on the same commit or not)
-bar = "WD"            # its name in the app's PR bar
+bar = "Review"        # its name in the app's PR bar
 ```
 
 - **Per head.** `tb` sends the checkout's head with each round. With `per_head`, the PR and `tb done` wait for a
@@ -326,7 +326,7 @@ bar = "WD"            # its name in the app's PR bar
 - **On the task.** The app shows each step's latest headline ("2 open findings", "No findings", "Answered, not
   approved", "Couldn't review this round") with its findings in a fold, open ones first, then by severity, and
   "Moved since" once the branch has a newer commit. The `bar` step is the PR bar's first step on a task that ends in a PR
-  (until the PR is merged or closed): "Not reviewed by WD yet" before its first round, then its headline, which opens
+  (until the PR is merged or closed): "Not reviewed by <bar> yet" before its first round, then its headline, which opens
   the findings. "N new comments" shows in every review state (beside the reviewers while changes are asked).
 - **The agent's commands.** `tb steps` lists the steps and the latest findings; `tb step triage "Author-side review"
   F2 --state fixed --commit <sha> --note "…"` (or `answered`, `dismissed`, `open`) answers one; `tb step again
