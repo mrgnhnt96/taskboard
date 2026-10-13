@@ -41,6 +41,7 @@ pub struct FileConfig {
     pub devices: crate::devices::DevicesConfig,
     pub app_origin: crate::apporigin::AppOriginConfig,
     pub bits: crate::bits::BitsConfig,
+    pub planning: crate::planning::PlanningConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     /// `[hosts.<host>]`: each PR host's call budget (`prhost/limit.rs`).
@@ -575,6 +576,7 @@ pub struct Config {
     pub devices: crate::devices::DevicesConfig,
     pub app_origin: crate::apporigin::AppOriginConfig,
     pub bits: crate::bits::BitsConfig,
+    pub planning: crate::planning::PlanningConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
@@ -734,6 +736,7 @@ impl Config {
             devices: f.devices,
             app_origin: f.app_origin,
             bits: f.bits,
+            planning: f.planning,
             reviewers: f.reviewers,
             feed: f.feed,
             hosts: f.hosts,

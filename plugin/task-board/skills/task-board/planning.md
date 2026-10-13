@@ -16,9 +16,9 @@ If the owner's board has products configured, give the goal one: `--product <nam
 
 ## Slice the work
 
-- Each task that changes code ends in one PR. It holds finished code that builds, breaks nothing that works today, and can be merged on its own. It can be several commits.
-- Aim for PRs that are easy to review and have a small impact, not for as many PRs as possible.
-- A goal runs its tasks in order, so list them in the order they should run; a task that needs an earlier one's code goes after it.
+Run `tb planning` first (`--project <name>` for another project's goal) and slice the work by the rules it prints: the owner's planning file for the project or the board when there is one, else the board's built-in rules. They win over anything below.
+
+- A goal runs its tasks in order, so list them in the order they should run.
 - A goal's run picks up its planned tasks only. Moving a queued task that hasn't started into a goal (`tb task set T<n> --goal G<n>`) makes it planned; switch one either way with `tb task set T<n> --status planned|queued`.
 - A task that needs work from another goal: say so in its detail. Mid-task, the agent runs `tb wait-for T<n>` (see `questions.md`). Never assume the other goal will have it merged in time.
 - A task that needs another project's work first (taskboard needs a midna change): `--waits-for T<m>` works across projects only when the waiting project lists the other with `tb project set <this> --waits-on <other>` (the owner's word; one way only). Otherwise the board refuses and says the command.
