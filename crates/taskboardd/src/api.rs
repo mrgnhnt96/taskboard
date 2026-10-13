@@ -163,8 +163,10 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                     }
                 }
             };
+            // `tb … --task T<n>` from another terminal: its checkout's head isn't the task's.
+            let other = |t: &Row| query.get("from").is_some_and(|f| f.is_empty() || t.s("session_id") != Some(f.as_str()));
             match t {
-                Some(t) => steps::list(app, &t, query.get("head").map(|s| s.as_str()).filter(|h| !h.is_empty())),
+                Some(t) => steps::list(app, &t, query.get("head").map(|s| s.as_str()).filter(|h| !h.is_empty() && !other(&t))),
                 None => Ok(json!({"task": null, "steps": []})),
             }
         }

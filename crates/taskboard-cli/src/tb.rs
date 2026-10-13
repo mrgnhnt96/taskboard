@@ -2476,7 +2476,8 @@ fn find_step(c: &Ctx, task: Option<String>, name: &str) -> Result<(Value, Step),
 fn steps_path(c: &Ctx, task: Option<String>) -> Result<String, String> {
     let head = local_head(&c.cwd).map(|h| format!("&head={h}")).unwrap_or_default();
     Ok(match task {
-        Some(x) => format!("/steps?task={}{head}", task_ref(&x)?),
+        // Who asks, so the board takes this checkout's head only from the task's own terminal.
+        Some(x) => format!("/steps?task={}{head}&from={}", task_ref(&x)?, c.session),
         None => format!("/steps?session={}{head}", c.session),
     })
 }
@@ -2543,15 +2544,21 @@ fn branch_in(dir: &str) -> Option<String> {
     git_out(dir, &["symbolic-ref", "--short", "-q", "HEAD"]).filter(|b| !b.is_empty())
 }
 
-/// The checkout a round starts from: this folder's, when it's a checkout of the task's repo, else the repo.
+/// The checkout a round starts from: this folder's, when it's a checkout of the task's repo and this is
+/// the task's terminal (or the folder is the task's worktree); else the task's worktree, else the repo. So
+/// `tb steps --task T<n>` from another checkout of the repo fills in the task's branch, not this one's.
 fn home_checkout(c: &Ctx, v: &Value) -> String {
     let repo = v["vars"]["repo"].as_str().unwrap_or("");
     let common = |d: &str| {
         git_out(d, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).and_then(|p| std::fs::canonicalize(p).ok())
     };
+    let canon = |d: &str| std::fs::canonicalize(d).ok();
+    let theirs = v["vars"]["worktree"].as_str().filter(|w| !w.is_empty() && std::path::Path::new(w).is_dir()).map(|w| w.to_string());
+    let mine = !c.session.is_empty() && v["session"].as_str() == Some(c.session.as_str());
     match git_out(&c.cwd, &["rev-parse", "--show-toplevel"]).filter(|t| !t.is_empty()) {
-        Some(top) if repo.is_empty() || common(&top) == common(repo) || common(repo).is_none() => top,
-        _ => repo.to_string(),
+        Some(top) if theirs.as_deref().is_some_and(|w| canon(w) == canon(&top)) => top,
+        Some(top) if (mine || theirs.is_none()) && (repo.is_empty() || common(&top) == common(repo) || common(repo).is_none()) => top,
+        _ => theirs.unwrap_or_else(|| repo.to_string()),
     }
 }
 
@@ -3057,7 +3064,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             };
             let all = steps::from_listing(&v);
-            if all.is_empty() {
+            let ignored = v["ignored"].as_array().cloned().unwrap_or_default();
+            if all.is_empty() && ignored.is_empty() {
                 out(&format!("{task} has no steps."));
             }
             // Placeholders follow the aim (`{branch}` is the aimed branch), else this checkout.
@@ -3068,6 +3076,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let st = st.filled(&vars);
                 let gap = st.gap_text().filter(|_| st.gap_secs().is_some()).map(|g| format!("; {g}")).unwrap_or_default();
                 out(&format!("[{}] {} ({when}{gap}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
+            }
+            // Steps config.toml has but can't run: left out, so not asked for, until the owner fixes them.
+            for b in &ignored {
+                out(&format!("[left out] {}: {}", b["name"].as_str().unwrap_or("?"), b["why"].as_str().unwrap_or("")));
             }
             if v["aim"].is_object() {
                 let a = &v["aim"];
