@@ -879,12 +879,25 @@ fn cmd_lines(app: &App, t: &Row, d: &Row) -> Vec<String> {
 /// did from the task's loans), so one reserved for another goal since it was lent keeps its details.
 /// A task that needs devices but has none still hears which ones to leave alone. `starting`: the
 /// handoff it starts with (it has started, though `started_at` isn't set yet).
+/// A task that asks for no devices, while the pool has some: how to get one rather than grabbing one.
+fn pick_none_line(app: &App, t: &Row) -> Result<Vec<String>> {
+    if pool(app)?.is_empty() {
+        return Ok(vec![]);
+    }
+    let tb = board::tb_cmd(app);
+    Ok(vec![format!(
+        "If this task needs an emulator, simulator or phone, don't pick one yourself: run {tb} task set {} --device tag:<tag> \
+         ({tb} devices lists them) and the board lends you a free one that no other terminal is using.",
+        rf("task", t.id())
+    )])
+}
+
 pub fn handoff_lines(app: &App, t: &Row, starting: bool) -> Result<Vec<String>> {
     let names = lent(app, t.id())?;
     if names.is_empty() {
         let needs = needs(app, t)?;
         if needs.is_empty() {
-            return Ok(vec![]);
+            return pick_none_line(app, t);
         }
         let mut text = if starting || has(t.s("started_at")) {
             format!(

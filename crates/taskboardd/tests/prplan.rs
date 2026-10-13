@@ -203,7 +203,14 @@ fn a_task_can_end_in_a_pr_or_not_whatever_its_project_does() {
     assert_eq!(b.card(a)["ships_pr_set"], Value::Null);
     assert_eq!(b.card(n)["ships_pr"], false);
     assert_eq!(b.card(n)["ships_pr_set"], false);
-    assert!(handoff::build(&b.app, n).unwrap().contains("This task ends without a pull request."));
+    let h = handoff::build(&b.app, n).unwrap();
+    assert!(
+        h.contains("This task ends without a PR, so it has no Jira ticket. Don't make or link one; a branch it needs is named <type>/<short-slug>."),
+        "{h}"
+    );
+    board::update_task(&b.app, n, vec![("jira_key", json!("ZZZ-11"))]).unwrap();
+    let h = handoff::build(&b.app, n).unwrap();
+    assert!(!h.contains("ZZZ-11"), "a key it kept from before isn't shown: {h}");
     let gd = b.get(&format!("goals/G{g}"));
     assert_eq!(gd["prs_planned"], 1, "{gd}");
 
