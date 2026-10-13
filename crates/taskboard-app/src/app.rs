@@ -1100,6 +1100,12 @@ fn banner(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Vec<AnyEle
                 .child(kit::btn_small(t, "open-login-items", "Open Login Items").on_click(|_, _, _| crate::install::open_login_items()))
                 .into_any_element(),
         ),
+        crate::install::LoginItem::Blocked => out.push(
+            bar(t.warn_soft, t.warn_text, t.warn_line)
+                .child(kit::dot(t.warn, 8.))
+                .child(div().flex_1().min_w_0().child("Another board holds the port, so this one didn't start its background service or link tb. Stop the other board, then open Taskboard again."))
+                .into_any_element(),
+        ),
         crate::install::LoginItem::Failed(e) => out.push(
             bar(t.warn_soft, t.warn_text, t.warn_line)
                 .child(kit::dot(t.warn, 8.))

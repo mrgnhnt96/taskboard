@@ -114,6 +114,28 @@ Then open Taskboard.app: it links `~/.local/bin/tb` and its status bar offers to
 Opening Taskboard.app registers its LaunchAgent, which starts `taskboardd serve` on the port. Run
 `taskboardd check` to confirm nothing is in the way, and the board shows the imported work.
 
+## Rolling back to the old board
+
+Stop Taskboard and give the port back:
+
+```sh
+/Applications/Taskboard.app/Contents/MacOS/taskboard-app --uninstall   # unregisters the daemon, removes the tb link, withdraws its alerts
+launchctl print gui/$(id -u)/com.mrgnhnt.taskboard.daemon              # should say it can't find the service
+readlink ~/.local/bin/tb                                              # shouldn't point into Taskboard.app
+```
+
+Then start the old board's LaunchAgent again (`launchctl bootstrap gui/$(id -u) <its plist>`) and put its
+plugin back. While the old board holds the port, opening Taskboard.app (a click on an old alert does it)
+doesn't register the daemon or link `tb` again: its banner says another board holds the port.
+
+## Moving over again
+
+The board's data folder still has the first import, and `taskboardd import` refuses a board that
+already has tasks. Stop the old board (step 1) and quit Taskboard.app. In the board's data folder (the
+folder `config.toml` is in, unless it sets `data`), move `tasks.db` with its `tasks.db-wal` and
+`tasks.db-shm` into a folder of their own and leave `config.toml` where it is. Then import again
+(step 2) and carry on from step 3. The refusal's message names the database to move.
+
 ## What an old listener keeps working
 
 A listener (or script) written for the old board can keep posting to the same port; Taskboard takes
