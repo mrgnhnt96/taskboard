@@ -433,6 +433,39 @@ pub fn keep_ends(text: &str, n: usize) -> String {
     format!("{a}{}{CUT_MARK}{}{b}", edge(h), edge(t))
 }
 
+/// A task or goal named by its number with the word before it ("task 45", "task #45", "goal 3", "tasks
+/// 45 and 46", "goals #3, #4"): read as its ref (T45, G3). A bare number ("start 45") names nothing. A
+/// list goes on only after "tasks"/"goals" or with a "#" ("task 45 and 2 more" names only T45).
+static NUMBERED_REF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?P<word>task|goal)(?P<s>s?)\s+#?(?P<n>\d+)\b(?P<more>(?:\s*,?\s*(?:and\s+|&\s*|\+\s*)?#?\d+\b)*)").unwrap()
+});
+/// One number of a list after [`NUMBERED_REF_RE`]'s first.
+static LIST_NUMBER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?P<hash>#?)(?P<n>\d+)\b").unwrap());
+
+/// `text` with tasks and goals named by number read as their refs ([`NUMBERED_REF_RE`]).
+fn numbered_refs(text: &str) -> String {
+    NUMBERED_REF_RE
+        .replace_all(text, |c: &regex::Captures| {
+            let letter = if c["word"].eq_ignore_ascii_case("task") { "T" } else { "G" };
+            let plural = !c["s"].is_empty();
+            // "task 45" reads as "task T45"; "tasks 45 and 46" as "T45 and T46".
+            let word = if plural { String::new() } else { format!("{} ", &c["word"]) };
+            let first = format!("{word}{letter}{}", &c["n"]);
+            let more = &c["more"];
+            // How far the list goes: every number after "tasks", else only as far as each has a "#".
+            let mut end = 0;
+            for m in LIST_NUMBER_RE.captures_iter(more) {
+                if !plural && m["hash"].is_empty() {
+                    break;
+                }
+                end = m.get(0).unwrap().end();
+            }
+            let list = LIST_NUMBER_RE.replace_all(&more[..end], |m: &regex::Captures| format!("{letter}{}", &m["n"]));
+            format!("{first}{list}{}", &more[end..])
+        })
+        .to_string()
+}
+
 /// A task or goal ref as inline code ("`T8` - start it"): the ref, not code.
 static CODE_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"`\s*((?:task\s+|goal\s+)?[TtGg]\d+)\s*`").unwrap());
 /// Bold or italic marks around words ("**start T8**", "__T8__", "*now*").
@@ -498,12 +531,14 @@ fn fix_typo(w: &str) -> Option<&'static str> {
     TYPO_WORDS.iter().copied().find(|t| one_slip(&l, t))
 }
 
-/// `text` with the marks that dress words up taken off and slips read as meant: a ref as inline code,
+/// `text` with the marks that dress words up taken off and slips read as meant: a task or goal named by
+/// number ("task 45", [`numbered_refs`]), a ref as inline code,
 /// bold and italics, a heading's "#" and the bullets of the list under it, emoji that say yes (only those,
 /// "yes"; else nothing), short forms ("plz", "u", "em", "w/") and one-letter slips of the start and yes
 /// words ([`fix_typo`]).
 fn plain(text: &str) -> String {
-    let text = CODE_REF_RE.replace_all(text, "$1");
+    let text = numbered_refs(text);
+    let text = CODE_REF_RE.replace_all(&text, "$1");
     let text = EMPHASIS_RE.replace_all(&text, "$1$2$3$4");
     let mut lines = vec![];
     let mut listed = false;
@@ -3273,6 +3308,59 @@ mod tests {
         }
         assert_eq!(read("start T8, don't start anything else").asks, vec![Ask::Named(vec![8])]);
         assert!(read("start T8, don't start anything").asks.is_empty());
+    }
+
+    #[test]
+    fn a_task_or_goal_named_by_its_number_is_named() {
+        for (yes, ids) in [
+            ("start task 45", vec![45]),
+            ("Start Task 45.", vec![45]),
+            ("start task #45", vec![45]),
+            ("queue task 45", vec![45]),
+            ("kick off task 45", vec![45]),
+            ("kick task 45 off", vec![45]),
+            ("put task 45 in the queue", vec![45]),
+            ("start tasks 45 and 46", vec![45, 46]),
+            ("start tasks #45, #46 and #47", vec![45, 46, 47]),
+            ("start task #45 and #46", vec![45, 46]),
+            ("start task 45 and task 46", vec![45, 46]),
+            ("start T45 and task 46", vec![45, 46]),
+            ("ok, start task T45", vec![45]),
+        ] {
+            assert_eq!(asks(yes), vec![Ask::Named(ids)], "{yes}");
+        }
+        for no in [
+            "start 45",
+            "start #45",
+            "queue 45 and 46",
+            "don't start task 45",
+            "start task 45 tomorrow",
+            "did you start task 45?",
+            "the log says: start task 45",
+            "start task 45. jk",
+        ] {
+            assert!(asks(no).is_empty(), "{no}");
+        }
+        assert!(read("don't start task 45").holds(45));
+        assert!(read("hold off on tasks 45 and 46").holds(46));
+        assert_eq!(named_tasks(&owners_text("task 45 and 2 more")), vec![45], "a plain number after it names nothing");
+
+        // A take-back in one form cancels an ask in the other (newest first).
+        assert_eq!(word_in(&prompts(&["start task 45"], None), 45), Some(0));
+        assert_eq!(word_in(&prompts(&["don't start task 45", "start T45"], None), 45), None);
+        assert_eq!(word_in(&prompts(&["don't start T45", "start task #45"], None), 45), None);
+        assert_eq!(word_in(&prompts(&["wait, don't start task 46", "start tasks 45 and 46"], None), 46), None);
+        assert_eq!(word_in(&prompts(&["wait, don't start task 46", "start tasks 45 and 46"], None), 45), Some(1));
+        assert_eq!(word_in(&prompts(&["start 45"], None), 45), None);
+
+        let goal = |t: &str| read_of(&GOALS, t).asks;
+        for (yes, ids) in [("run goal 3", vec![3]), ("start goal #3", vec![3]), ("run the goal 3", vec![3]), ("run goals 3 and 4", vec![3, 4])] {
+            assert_eq!(goal(yes), vec![Ask::Named(ids)], "{yes}");
+        }
+        for no in ["run 3", "run #3", "don't run goal 3", "run goal 3 tomorrow", "start task 3"] {
+            assert!(goal(no).is_empty(), "{no}");
+        }
+        assert!(!says_start("start goal 3"), "a goal ask is no word for a task");
     }
 
     #[test]
