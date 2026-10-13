@@ -776,7 +776,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -788,6 +788,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-5", GoTasks, Some("MainWindow")),
         KeyBinding::new("cmd-6", GoGoals, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
+        KeyBinding::new("cmd-shift-c", CopyRef, Some("MainWindow")),
     ]);
 }
 
@@ -827,6 +828,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &GoTasks, _, cx| m.go(Page::Tasks, cx)))
             .on_action(cx.listener(|m, _: &GoGoals, _, cx| m.go(Page::Goals, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
+            .on_action(cx.listener(|m, _: &CopyRef, _, cx| copy_ref(m, cx)))
             .relative()
             .flex()
             .flex_col()
@@ -1148,6 +1150,21 @@ pub fn copy_text(m: &mut MainWindow, text: &str, cx: &mut Context<MainWindow>) {
     m.toast("Copied".to_string(), false, cx);
 }
 
+/// ⌘⇧C: what's open on the clipboard, to hand to a session. The side panel's task or issue wins
+/// over the goal page under it; elsewhere there's nothing to copy.
+pub fn open_ref(m: &MainWindow) -> Option<&str> {
+    match (&m.panel, &m.page) {
+        (Some(Panel::Task { r, .. } | Panel::Issue { r }), _) | (None, Page::Goal(r)) => Some(r),
+        _ => None,
+    }
+}
+
+fn copy_ref(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    let Some(r) = open_ref(m).map(str::to_string) else { return };
+    cx.write_to_clipboard(ClipboardItem::new_string(r.clone()));
+    m.toast(format!("Copied {r}"), false, cx);
+}
+
 /// `alert-open`: close the alerts dialog, then the task (or else the goal).
 pub fn open_alert(m: &mut MainWindow, task: Option<&str>, goal: Option<&str>, window: &mut Window, cx: &mut Context<MainWindow>) {
     if matches!(m.modal, Some(ui::modals::Modal::Alerts)) {
@@ -1440,6 +1457,23 @@ mod tests {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| super::copy_text(m, "T4 didn't start: no folder", cx)).unwrap();
         assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("T4 didn't start: no folder"));
+    }
+
+    #[gpui_kit::test]
+    fn cmd_shift_c_copies_the_open_ref(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.page = Page::Board;
+            m.panel = None;
+            assert_eq!(super::open_ref(m), None, "nothing open");
+            m.page = Page::Goal("G3".into());
+            assert_eq!(super::open_ref(m), Some("G3"));
+            m.panel = Some(Panel::Task { r: "T12".into(), tab: TaskTab::Log });
+            assert_eq!(super::open_ref(m), Some("T12"), "the task panel wins over its goal");
+            super::copy_ref(m, cx);
+        })
+        .unwrap();
+        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("T12"));
     }
 
     #[gpui_kit::test]
