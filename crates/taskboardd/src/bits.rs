@@ -30,6 +30,19 @@ pub struct BitsConfig {
     /// The tool's "new flag" page. `{name}` is the bit's name and `{project}` its project (both URL-encoded).
     /// Empty: no create link.
     pub create_url: String,
+    /// How to turn a local bit on while testing (the project's bit override), for the handoff. Empty: not said.
+    pub local_hint: String,
+}
+
+/// The flag tool's create form takes one line of this many characters, and the owner copies a bit's note into it.
+const NOTE_MAX: usize = 120;
+
+fn clean_note(body: &Value) -> Result<Option<String>> {
+    let note = body_str(body, "note").split_whitespace().collect::<Vec<_>>().join(" ");
+    if note.chars().count() > NOTE_MAX {
+        return err(400, format!("A bit's description is one short line, {NOTE_MAX} characters at most."));
+    }
+    Ok(if note.is_empty() { None } else { Some(note) })
 }
 
 const KINDS: [&str; 2] = ["backend", "local"];
@@ -259,11 +272,11 @@ fn add(app: &App, body: &Value) -> Result<Value> {
     let tasks = refs(body.get("tasks"), "task")?;
     let goals = refs(body.get("goals"), "goal")?;
     let now = now_iso();
-    let note = one_line(&body_str(body, "note"), 300);
+    let note = clean_note(body)?;
     app.db.insert(
         "bits",
         fields!["name" => name, "kind" => kind, "project" => project_for(app, body, &tasks, &goals)?,
-                "note" => if note.is_empty() { None } else { Some(note) }, "created_at" => now, "updated_at" => now],
+                "note" => note, "created_at" => now, "updated_at" => now],
     )?;
     let b = get(app, &name)?;
     for t in &tasks {
@@ -304,8 +317,7 @@ fn set(app: &App, name: &str, body: &Value) -> Result<Value> {
         }
     }
     if body.get("note").is_some() {
-        let v = one_line(&body_str(body, "note"), 300);
-        f.push(("note", if v.is_empty() { Value::Null } else { json!(v) }));
+        f.push(("note", json!(clean_note(body)?)));
     }
     if body_has(body, "project") {
         f.push(("project", json!(body_str(body, "project"))));
@@ -409,12 +421,21 @@ pub fn handoff_lines(app: &App, t: &Row) -> Result<Vec<String>> {
                 (_, true) => format!("backend: made in {tool}"),
                 _ => format!("backend: not made in {tool} yet"),
             };
-            format!("{} ({state})", b.st("name"))
+            match b.s("note").filter(|n| !n.is_empty()) {
+                Some(note) => format!("{}: {note} ({state})", b.st("name")),
+                None => format!("{} ({state})", b.st("name")),
+            }
         })
         .collect();
     let unmade = bits.iter().any(waits);
+    let hint = app.cfg.bits.local_hint.trim();
+    let local = match (bits.iter().any(|b| b.s("kind") == Some("local")), hint.is_empty()) {
+        (false, _) => String::new(),
+        (true, true) => format!(" A local bit is never made in {tool}: read it with its default (off), and turn it on for testing with a bit override."),
+        (true, false) => format!(" A local bit is never made in {tool}: read it with its default (off), and turn it on for testing with a bit override ({hint})."),
+    };
     Ok(vec![format!(
-        "This task's work sits behind {} {}. Gate the new code on {}.{} A new flag goes on the board with {} bit add NAME --backend|--local --task {}.",
+        "This task's work sits behind {} {}. Put the new behaviour behind {}, off unless the bit is on, and say so in the PR.{local}{} A new flag goes on the board with {} bit add NAME --backend|--local --task {}.",
         if bits.len() == 1 { "the bit" } else { "the bits" },
         each.join(", "),
         if bits.len() == 1 { "it" } else { "them" },

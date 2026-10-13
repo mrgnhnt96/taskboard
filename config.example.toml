@@ -321,6 +321,7 @@ goal_pool_only = true                # a goal with devices of its own (tb goal d
 [bits]
 tool = ""                            # its name, as the app says it ("Create in Flagsmith"); empty = "the flag tool"
 create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
+local_hint = ""                      # how to turn a local bit on while testing, for the handoff; example: "a BitOverride in DebugSettings"
 
 # Who reviews a PR (`tb pr reviewers` with no names, and the `ask` stage): `count` people from the
 # project's roster (`tb reviewers`), one a main contributor of the changed files, the rest in turn.

@@ -705,7 +705,7 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     Ok(Some(format!(
         "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
          Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
-         --detail \"<what {owner} asked for and what you changed>\" --here.{switch} Then end your turn without repeating your answer. \
+         --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR).{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn."
     )))
 }
