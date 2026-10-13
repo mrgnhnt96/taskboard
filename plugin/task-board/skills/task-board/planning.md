@@ -19,6 +19,7 @@ If the owner's board has products configured, give the goal one: `--product <nam
 - Each task that changes code ends in one PR. It holds finished code that builds, breaks nothing that works today, and can be merged on its own. It can be several commits.
 - Aim for PRs that are easy to review and have a small impact, not for as many PRs as possible.
 - A goal runs its tasks in order, so list them in the order they should run; a task that needs an earlier one's code goes after it.
+- A goal's run picks up its planned tasks only. Moving a queued task that hasn't started into a goal (`tb task set T<n> --goal G<n>`) makes it planned; switch one either way with `tb task set T<n> --status planned|queued`.
 - A task that needs work from another goal: say so in its detail. Mid-task, the agent runs `tb wait-for T<n>` (see `questions.md`). Never assume the other goal will have it merged in time.
 - A task that needs another project's work first (taskboard needs a midna change): `--waits-for T<m>` works across projects only when the waiting project lists the other with `tb project set <this> --waits-on <other>` (the owner's word; one way only). Otherwise the board refuses and says the command.
 - Review findings are in scope only when this task's change caused them. Say so in a task's detail when it runs a review: findings on base code go to the backlog and are dismissed, and an earlier decision is never reversed for one.

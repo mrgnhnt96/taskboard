@@ -892,6 +892,18 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 new_status = Some(want.to_string());
             }
         }
+        // A queued task that never started joins its new goal's plan, so the goal's run picks it up.
+        let mut goal_planned = false;
+        if matches!(new_goal_id, Some(Some(_)))
+            && !has_key("status")
+            && t.s("status") == Some("queued")
+            && t.s("session_id").is_none()
+            && t.i("start_job").is_none()
+            && t.s("started_at").is_none()
+        {
+            f.push(("status", json!("planned")));
+            goal_planned = true;
+        }
         if has_key("pickup") {
             let (mode, sid) = ops::pickup(app, body)?;
             f.push(("pickup_session", json!(if mode == "attach" { sid } else { None })));
@@ -1015,7 +1027,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             board::log_event(app, id, &who, "status", if st == "queued" { "Queued" } else { "Moved back to planned" })?;
         } else if let Some(g) = new_goal_id {
             let name = match g {
-                Some(g) => format!("Moved to the goal “{}”", board::get_goal(app, g)?.st("name")),
+                Some(g) => format!("Moved to the goal “{}”{}", board::get_goal(app, g)?.st("name"), if goal_planned { " as planned" } else { "" }),
                 None => "Taken out of its goal".into(),
             };
             board::log_event(app, id, &who, "status", &name)?;
