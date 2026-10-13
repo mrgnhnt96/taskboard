@@ -609,3 +609,42 @@ fn tb_moves_issues_by_ref_and_unattaches_by_link() {
     let e = reports::handle(&b.app, body, false).expect_err("nothing left to remove");
     assert_eq!(e.status, 404);
 }
+
+#[test]
+fn a_queued_task_moved_into_a_goal_becomes_planned_and_the_run_picks_it_up() {
+    let b = new_board();
+    let gid = b.post("/goals", json!({"name": "Checkout", "project": "webapp", "outcome": "people can pay"}))["id"].as_i64().unwrap();
+    let t = new_task(&b, "Cart", json!({}));
+    b.post(&format!("/tasks/T{t}"), json!({"pickup": "manual"}));
+    assert_eq!(b.task(t).s("status"), Some("queued"));
+    b.post(&format!("/tasks/T{t}"), json!({"goal_id": gid}));
+    assert_eq!(b.task(t).s("status"), Some("planned"));
+    let log = b.get(&format!("/tasks/T{t}/log"));
+    assert!(log["log"].as_array().unwrap().iter().any(|e| e["text"] == "Moved to the goal “Checkout” as planned"));
+
+    let run = api::dispatch(&b.app, "POST", &format!("/goals/G{gid}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
+    assert_eq!(run["queued_now"], 1);
+    assert_eq!(b.task(t).s("status"), Some("queued"));
+}
+
+#[test]
+fn a_task_that_started_or_is_switched_explicitly_keeps_its_status_on_a_goal_move() {
+    let b = new_board();
+    let g1 = b.post("/goals", json!({"name": "One", "project": "webapp", "outcome": "x"}))["id"].as_i64().unwrap();
+    let g2 = b.post("/goals", json!({"name": "Two", "project": "webapp", "outcome": "y"}))["id"].as_i64().unwrap();
+    let started = new_task(&b, "Started", json!({}));
+    board::update_task(&b.app, started, vec![("started_at", json!("2026-10-01T10:00:00Z"))]).unwrap();
+    b.post(&format!("/tasks/T{started}"), json!({"goal_id": g1}));
+    assert_eq!(b.task(started).s("status"), Some("queued"));
+
+    let asked = new_task(&b, "Asked", json!({}));
+    b.post(&format!("/tasks/T{asked}"), json!({"goal_id": g1, "status": "queued"}));
+    assert_eq!(b.task(asked).s("status"), Some("queued"));
+
+    b.post(&format!("/tasks/T{asked}"), json!({"status": "planned"}));
+    assert_eq!(b.task(asked).s("status"), Some("planned"));
+    b.post(&format!("/tasks/T{asked}"), json!({"goal_id": g2}));
+    assert_eq!(b.task(asked).s("status"), Some("planned"));
+    b.post(&format!("/tasks/T{asked}"), json!({"status": "queued"}));
+    assert_eq!(b.task(asked).s("status"), Some("queued"));
+}

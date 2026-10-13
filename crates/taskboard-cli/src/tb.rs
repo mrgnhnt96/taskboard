@@ -1046,6 +1046,9 @@ enum TaskCmd {
         /// Whether it ends in a PR: yes, no, or auto (its project's default)
         #[arg(long, value_parser = ["yes", "no", "auto"])]
         pr: Option<String>,
+        /// Planned (waits for its goal's run) or queued (picked up on its own); only a task in one of these two
+        #[arg(long, value_parser = ["planned", "queued"])]
+        status: Option<String>,
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
@@ -3728,7 +3731,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, pr } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, pr, status } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -3784,6 +3787,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = pr {
                     b["ships_pr"] = json!(x);
+                }
+                if let Some(x) = status {
+                    b["status"] = json!(x);
                 }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
@@ -5305,6 +5311,9 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "pr", "reviewers", "T3", "--replace", "bo", "--with", "cy"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "reviewers", "--with", "cy"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--wave", "none"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--status", "planned"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--status", "queued"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--status", "done"]).is_err());
         assert!(Cli::try_parse_from(["tb", "backlog", "set", "B3", "--title", "x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "set", "G1", "--paused", "on"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "goal", "setup", "G1", "Run make bootstrap in {task}'s worktree"]).is_ok());
