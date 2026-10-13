@@ -12,6 +12,7 @@ fn schema() -> Value {
     let s = json!({"type": "string"});
     json!({"type": "object", "required": ["ok"], "properties": {
         "ok": {"type": "boolean"}, "error": s, "key": s, "status": s, "found": {"type": "boolean"}, "product": s,
+        "added": {"type": "array", "items": s},
         "author": s, "author_account_id": s, "author_email": s, "text": s,
         "comments": {"type": "array", "items": {"type": "object", "properties": {
             "key": s, "id": s, "created": s, "author": s, "author_account_id": s, "author_email": s, "text": s}}},
@@ -68,7 +69,7 @@ pub fn prompt(app: &App, op: &str, input: &Value) -> String {
             t + " Answer status: its status's name once you're done."
         }
         "comment" => format!("Add this comment to {key}, as it is:\n{}", s("comment")),
-        "create" => format!("{}\n\nAnswer key: the ticket's key, status: its status's name, found: true when it was already there, product: the product you picked (if you picked one).", s("brief")),
+        "create" => format!("{}\n\nAnswer key: the ticket's key, status: its status's name, found: true when it was already there, added: on a ticket that was already there, what you gave it (e.g. \"labels web\", \"parent PROJ-1\"; empty when it lacked nothing), product: the product you picked (if you picked one).", s("brief")),
         "comments" => {
             // QA's check: the comments and, with `statuses` (the jira source in board mode), each ticket's status.
             let mut t = format!("Make exactly one JQL search, with this query as it is: {}\n", s("jql"));

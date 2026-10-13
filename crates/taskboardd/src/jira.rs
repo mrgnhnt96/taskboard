@@ -407,6 +407,63 @@ pub fn ticket_fields(app: &App, a: &Row, g: Option<&Row>) -> (Value, Option<Stri
     (f, product)
 }
 
+/// The fields a new ticket gets that route it (team, labels, parent epic, components, a product's
+/// own fields): what a reused ticket is given when it lacks them. Not its summary, description,
+/// type, project or assignee.
+fn routing_keys(f: &Value) -> Vec<String> {
+    f.as_object()
+        .map(|o| o.keys().filter(|k| !["project", "summary", "issuetype", "description", "assignee"].contains(&k.as_str())).cloned().collect())
+        .unwrap_or_default()
+}
+
+/// What a found ticket (`have`, its current fields) lacks of a new ticket's routing fields (`f`), as
+/// a REST update, and what was added in words. Labels are merged with its own (Jira sets them, so
+/// the whole list goes); the parent epic only when it has none; any other field only when it's empty.
+pub fn fill_in(f: &Value, have: &Value) -> (Value, Vec<String>) {
+    let empty = |v: &Value| v.is_null() || v.as_str() == Some("") || v.as_array().is_some_and(|a| a.is_empty()) || v.as_object().is_some_and(|o| o.is_empty());
+    let mut update = json!({});
+    let mut added = vec![];
+    for k in routing_keys(f) {
+        match k.as_str() {
+            "labels" => {
+                let mut labels: Vec<String> = have["labels"].as_array().map(|a| a.iter().filter_map(|l| l.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+                let missing: Vec<String> = f["labels"].as_array().map(|a| a.iter().filter_map(|l| l.as_str()).filter(|l| !labels.iter().any(|x| x == l)).map(|l| l.to_string()).collect()).unwrap_or_default();
+                if !missing.is_empty() {
+                    added.push(format!("labels {}", missing.join(", ")));
+                    labels.extend(missing);
+                    update["labels"] = json!(labels);
+                }
+            }
+            "parent" if empty(&have["parent"]) => {
+                added.push(format!("parent {}", f["parent"]["key"].as_str().unwrap_or("epic")));
+                update["parent"] = f["parent"].clone();
+            }
+            "parent" => {}
+            _ if empty(&have[&k]) => {
+                added.push(k.clone());
+                update[&k] = f[&k].clone();
+            }
+            _ => {}
+        }
+    }
+    (update, added)
+}
+
+/// Gives a found ticket what it lacks of the job's routing fields (REST). What was added; nothing when
+/// it lacked nothing or Jira wouldn't say (the link still stands).
+fn fill_in_found(app: &App, cr: &(String, String), key: &str, f: &Value) -> Vec<String> {
+    let keys = routing_keys(f);
+    if keys.is_empty() {
+        return vec![];
+    }
+    let Ok(d) = call(app, cr, "GET", &format!("issue/{key}?fields={}", keys.join(",")), None) else { return vec![] };
+    let (update, added) = fill_in(f, &d["fields"]);
+    if added.is_empty() || call(app, cr, "PUT", &format!("issue/{key}"), Some(json!({"fields": update}))).is_err() {
+        return vec![];
+    }
+    added
+}
+
 /// What Claude (headless or the desk) is told to find or make: search first, then the fields.
 pub fn ticket_brief(app: &App, a: &Row, g: Option<&Row>) -> String {
     let j = &app.cfg.jira;
@@ -420,20 +477,29 @@ pub fn ticket_brief(app: &App, a: &Row, g: Option<&Row>) -> String {
     let first = if epic {
         format!(
             "First pick an open epic (not done) in {} that already covers this work, even when it's worded differently: search \
-             the open epics by the words of the summary and description below. If one covers it, use it: don't make another \
-             and don't change it.",
+             the open epics by the words of the summary and description below. If one covers it, use it: don't make another.",
             j.project.trim()
         )
     } else {
         format!(
             "First search {} for an open ticket (not done) that already covers it, by its summary and description. If one does, \
-             use it: don't make another and don't change it.",
+             use it: don't make another.",
             j.project.trim()
         )
+    };
+    let reuse = if routing_keys(&extra).is_empty() {
+        "Don't change a ticket you use.".to_string()
+    } else {
+        "On a ticket you use, set only what it lacks of the fields below: add the labels it doesn't have to its own (send \
+         the whole merged list), give it the parent epic only when it has none, and set any other field only when it's empty. \
+         Change nothing else (summary, description, status, assignee), never move it from a different parent, and say what you \
+         added."
+            .to_string()
     };
     let mut lines = vec![
         format!("Find or make the Jira {} for this work in project {}.", if epic { "epic" } else { "ticket" }, j.project.trim()),
         first,
+        reuse,
         format!(
             "Only if none {}, make a {issue_type} with this summary and description{}",
             if epic { "fits" } else { "does" },
@@ -523,15 +589,17 @@ fn create(app: &App, c: &Conn, a: &Row, g: Option<&Row>) -> std::result::Result<
                 return Err(JiraError::new("Claude gave no ticket key"));
             }
             let product = d["product"].as_str().filter(|p| !p.is_empty()).map(|p| json!(p)).unwrap_or(Value::Null);
-            return Ok((key, d["status"].as_str().unwrap_or("").to_string(), json!({"found": d["found"] == true, "product": product})));
+            let added = if d["found"] == true { d["added"].clone() } else { Value::Null };
+            return Ok((key, d["status"].as_str().unwrap_or("").to_string(), json!({"found": d["found"] == true, "product": product, "added": added})));
         }
     };
     let (f, product) = ticket_fields(app, a, g);
     let product = json!(product);
     // A failed search only means the board makes the ticket.
     if let Ok(Some(key)) = find_open(app, cr, &f) {
+        let added = fill_in_found(app, cr, &key, &f);
         let status = status_of(app, c, &key).unwrap_or_default();
-        return Ok((key, status, json!({"found": true, "product": product})));
+        return Ok((key, status, json!({"found": true, "product": product, "added": added})));
     }
     let d = call(app, cr, "POST", "issue", Some(json!({"fields": f})))?;
     let key = d["key"].as_str().unwrap_or("").to_string();
@@ -777,7 +845,8 @@ pub fn finish(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: Optio
 }
 
 /// A Jira job's result. `extra` carries what a new ticket's job learned: `found` (it was already
-/// there) and `product` (the one picked for it, which a goal with none takes).
+/// there), `product` (the one picked for it, which a goal with none takes) and, on a found ticket,
+/// `added` (what it was given of the job's routing fields: a list, or a comma-separated string).
 pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: Option<&str>, message: Option<&str>, extra: &Value) -> Result<Option<Row>> {
     let Some(job) = app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![job_id])? else { return Ok(None) };
     if matches!(job.s("state"), Some("done") | Some("failed") | Some("expired")) && !ok {
@@ -788,7 +857,14 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
     let op = a.st("op");
     let found = extra["found"] == true;
     let key = key.map(|s| s.to_string()).or_else(|| a.s("key").map(|s| s.to_string())).filter(|k| !k.is_empty());
-    let result = json!({"ok": ok, "key": key, "status": status, "message": message, "found": found, "product": extra["product"]});
+    let added: Vec<String> = match &extra["added"] {
+        Value::Array(a) => a.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        Value::String(s) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+        _ => vec![],
+    };
+    let added = if found { added } else { vec![] };
+    let said = |line: String| if added.is_empty() { line } else { format!("{line}, and gave it {}", added.join("; ")) };
+    let result = json!({"ok": ok, "key": key, "status": status, "message": message, "found": found, "product": extra["product"], "added": added});
     app.db.x(
         "UPDATE jobs SET state = ?, result = ?, updated_at = ? WHERE id = ?",
         p![if ok { "done" } else { "failed" }, jdumps(&result), now_iso(), job_id],
@@ -822,7 +898,7 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
                         board::bump_ctx(app, t.id())?;
                     }
                 }
-                board::log_event(app, t.id(), "Jira", "jira", &describe(&op, key.as_deref(), status.as_deref(), found))?;
+                board::log_event(app, t.id(), "Jira", "jira", &said(describe(&op, key.as_deref(), status.as_deref(), found)))?;
                 if op == "create" && matches!(t.s("status"), Some("working") | Some("needs")) {
                     let st = app.cfg.jira.in_progress.clone();
                     board::jira_keep_in_step(app, &board::get_task(app, t.id())?, Some(&st), None)?;
@@ -849,7 +925,7 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
         if board::find_issue(app, Some(bid))?.is_some() {
             if ok {
                 app.db.update("issues", &json!(bid), fields!["jira_key" => key, "state" => "ticket", "updated_at" => now_iso()])?;
-                board::add_issue_event(app, bid, "Jira", "ticket", &describe(&op, key.as_deref(), None, found), None)?;
+                board::add_issue_event(app, bid, "Jira", "ticket", &said(describe(&op, key.as_deref(), None, found)), None)?;
             } else {
                 app.db.update("issues", &json!(bid), fields!["state" => "open", "updated_at" => now_iso()])?;
                 board::add_issue_event(app, bid, board::BOARD, "ticket", &format!("Couldn't make the ticket: {why}"), None)?;
