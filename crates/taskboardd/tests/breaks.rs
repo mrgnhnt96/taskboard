@@ -402,6 +402,10 @@ fn the_old_listener_s_routes_read_the_branch_and_answer_as_before() {
     q.insert("limit".into(), "0".into());
     assert_eq!(api::dispatch(&b.app, "GET", "/master-breaks", &q, &json!({})).unwrap()["breaks"].as_array().unwrap().len(), 1, "at least one");
 
+    for body in [json!([]), json!(5), json!("x")] {
+        let e = api::dispatch(&b.app, "POST", "/master-breaks/M1/verdict", &Query::new(), &body).unwrap_err();
+        assert_eq!(e.status, 400, "a body that isn't an object is refused, not a crash: {body}");
+    }
     let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "yours", "who": "Sam", "why": WHY}));
     assert_eq!(m["verdict"], "ours");
     assert!(api::dispatch(&b.app, "POST", "/master-breaks/M1/verdict", &Query::new(), &json!({"verdict": "not_yours", "why": WHY, "title": "Flaky test"})).is_err(), "still needs a proof link");
