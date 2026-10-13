@@ -811,7 +811,7 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(manage_box(c, t));
     }
 
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
+    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), merged_note_row(t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
     out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
     let what = match opt_s(t, "detail") {
         Some(d) => note_body(d),
@@ -1025,6 +1025,20 @@ fn terminal_row(c: &Ctx, t: &Value) -> Node {
 }
 
 /// `jiraRow(t)`.
+/// The note for testers the board posts on the ticket at merge (`[jira] merged_note`), or that it's waiting for one.
+fn merged_note_row(t: &Value) -> Option<Node> {
+    let n = obj(t, "merged_note")?;
+    let mut body = Vec::new();
+    if b(n, "waiting") {
+        let state = if opt_s(n, "text").is_some() { "Posting it, then moving the ticket" } else { "Merged without one; the ticket waits" };
+        body.push(el(K::Line, vec![pill("Waiting", Tone::Needs), txt(state, St::Small)]));
+    }
+    if let Some(text) = opt_s(n, "text") {
+        body.push(note_body(text));
+    }
+    Some(lrow("Note for testers", body))
+}
+
 fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
     let j = obj(t, "jira");
     let key = j.and_then(|j| opt_s(j, "key"));

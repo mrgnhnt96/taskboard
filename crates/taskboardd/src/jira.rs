@@ -729,7 +729,35 @@ fn run_one(app: &App, job: &Row, c: &Conn) -> std::result::Result<Done, JiraErro
             add_comment(app, c, &key, &a.st("comment"))?;
             Ok((Some(key), None, Value::Null))
         }
+        "merged_note" => merged_note(app, c, &key, &a, target.i("task")),
         op => Err(JiraError::new(format!("the board doesn't know the Jira job {op}"))),
+    }
+}
+
+/// The note for testers, then the "PR #n was merged" line, then the move: each comment once, however
+/// many tries the move takes.
+fn merged_note(app: &App, c: &Conn, key: &str, a: &Row, task: Option<i64>) -> std::result::Result<Done, JiraError> {
+    let posted = task.map(|t| crate::merged_note::posted(app, t)).unwrap_or_default();
+    if posted.is_empty() {
+        add_markdown_comment(app, c, key, &a.st("note"))?;
+        task.inspect(|t| crate::merged_note::set_posted(app, *t, "note"));
+    }
+    if posted != "both" {
+        add_comment(app, c, key, &a.st("comment"))?;
+        task.inspect(|t| crate::merged_note::set_posted(app, *t, "both"));
+    }
+    let target = a.st("status");
+    if target.trim().is_empty() {
+        return Ok((Some(key.to_string()), None, Value::Null));
+    }
+    let st = transition(app, c, key, &target, None)?;
+    Ok((Some(key.to_string()), Some(st), Value::Null))
+}
+
+fn add_markdown_comment(app: &App, c: &Conn, key: &str, text: &str) -> std::result::Result<(), JiraError> {
+    match c {
+        Conn::Rest(cr) => call(app, cr, "POST", &format!("issue/{key}/comment"), Some(json!({"body": crate::adf::from_markdown(text)}))).map(|_| ()),
+        Conn::Claude => claude(app, "comment", json!({"key": key, "comment": text})).map(|_| ()),
     }
 }
 
@@ -920,6 +948,10 @@ fn describe(op: &str, key: Option<&str>, status: Option<&str>, found: bool) -> S
         "transition" => format!("Moved {key} to {}", status.unwrap_or("its new status")),
         "status" => format!("{key} is {}", status.unwrap_or("in an unknown status")),
         "comment" => format!("Commented on {key}"),
+        "merged_note" => match status {
+            Some(st) => format!("Posted the note for testers on {key} and moved it to {st}"),
+            None => format!("Posted the note for testers on {key}"),
+        },
         _ => format!("Jira: {op} {key}"),
     }
 }
@@ -930,6 +962,7 @@ fn op_line(op: &str) -> &str {
         "transition" => "move the ticket",
         "status" => "read the ticket's status",
         "comment" => "comment on the ticket",
+        "merged_note" => "post the note for testers and move the ticket",
         other => other,
     }
 }
@@ -1000,6 +1033,9 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
                 }
             } else {
                 board::log_event(app, t.id(), board::BOARD, "jira", &format!("Couldn't {}: {why}", op_line(&op)))?;
+            }
+            if op == "merged_note" {
+                crate::merged_note::finished(app, &board::get_task(app, t.id())?, ok, why)?;
             }
         }
     }
@@ -1198,7 +1234,9 @@ pub fn handoff_block(app: &App, t: &Row) -> Result<Vec<String>> {
             app.cfg.owner
         ));
     }
-    Ok(if lines.is_empty() { lines } else { vec![lines.join(" ")] })
+    let mut out = if lines.is_empty() { lines } else { vec![lines.join(" ")] };
+    out.extend(crate::merged_note::handoff_line(app, t)?);
+    Ok(out)
 }
 
 pub mod base64_lite {

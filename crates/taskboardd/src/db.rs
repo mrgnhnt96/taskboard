@@ -229,6 +229,11 @@ const ADDED: &[(&str, &str, &str)] = &[
     // place of the task's title and detail.
     ("tasks", "ticket_summary", "TEXT"),
     ("tasks", "ticket_text", "TEXT"),
+    // `[jira] merged_note`: the agent's note for testers; since when its merged PR's ticket waits to be
+    // moved (cleared once it moved); and how far the posting got ("note", then "both" with the merged line).
+    ("tasks", "merged_note", "TEXT"),
+    ("tasks", "merged_note_wait", "TEXT"),
+    ("tasks", "merged_note_posted", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
