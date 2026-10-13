@@ -363,6 +363,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["qa"]) => app.db.tx(|| qa::set_settings(app, body)),
         ("POST", ["jira", "comment"]) => qa::intake(app, body),
         ("GET", ["jira"]) => crate::jira_desk::state(app),
+        ("GET", ["planning"]) => crate::planning::get(app, query),
         ("GET", ["jira", "jobs", id]) => {
             let n = need_ref(&json!(id), "job")?;
             match app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![n])? {
@@ -1896,10 +1897,10 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
         lines.extend(["".into(), "Open backlog issues:".into()]);
         lines.extend(issues.iter().map(|b| format!("- {} {}", rf("issue", b.id()), b.st("title"))));
     }
-    lines.push(String::new());
+    lines.extend(["".into(), crate::planning::block(app, g.s("project")), "".into()]);
     if for_planner {
         lines.extend([
-            "Suggest the tasks still needed to reach the outcome, in order, each small enough for one terminal. Read the code as much as you need, but don't change anything.".to_string(),
+            "Suggest the tasks still needed to reach the outcome, sliced by those rules. Read the code as much as you need, but don't change anything.".to_string(),
             format!("Before adding a task, check the project's other open goals ({tb} goals --project {}, then {tb} goal show G<n>) for a task that already does that work (same files, same change). Don't add a second one: make the existing task finish this goal too with {tb} task set T<n> --also {gref}, without asking {owner}.", g.st("project")),
             "Send them to the board with:".to_string(),
             format!("  {tb} propose {gref} --task \"title::what to do\" --task \"title::what to do\""),
@@ -1910,7 +1911,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
     } else {
         lines.extend([
             format!("This is how the goal stood when the terminal opened. Before changing anything, run {tb} goal show {gref} for how it stands now."),
-            format!("Load the task-board skill and its planning guide before you change the plan. Make every change with tb ({tb} goal set, {tb} task set, {tb} task new, {tb} propose and the rest). Read the code as much as you need, but don't change it, and don't queue or start tasks: {owner} starts them from the board."),
+            format!("Load the task-board skill and its planning guide before you change the plan; slice the work by the rules above. Make every change with tb ({tb} goal set, {tb} task set, {tb} task new, {tb} propose and the rest). Read the code as much as you need, but don't change it, and don't queue or start tasks: {owner} starts them from the board."),
             format!("Wait for {owner} to say what they want; don't start on anything by yourself."),
         ]);
     }

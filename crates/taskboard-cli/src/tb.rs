@@ -257,6 +257,13 @@ enum Cmd {
         /// key=… status=… found=yes added=… product=…, or (with fail) why
         rest: Vec<String>,
     },
+    /// How this board slices a goal into tasks: the owner's planning file for the project or the board,
+    /// else the built-in rules
+    Planning {
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Add, change or delete a task
     Task {
         #[command(subcommand)]
@@ -1924,6 +1931,25 @@ fn jira_job_line(j: &Value) -> String {
     format!("{}  {what} · {how}{}", j["ref"].as_str().unwrap_or(""), j["task_id"].as_i64().map(|t| format!(" · T{t}")).unwrap_or_default())
 }
 
+fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
+    let q = match &project {
+        Some(p) => format!("project={}", qv(p)),
+        None => format!("cwd={}", qv(&c.cwd)),
+    };
+    let v = c.call("GET", &format!("/planning?{q}"), None)?;
+    for s in v["skipped"].as_array().cloned().unwrap_or_default() {
+        out(&format!("Not used: the {} planning file {}: {}", s["from"].as_str().unwrap_or(""), s["path"].as_str().unwrap_or(""), s["error"].as_str().unwrap_or("")));
+    }
+    let whose = match (v["from"].as_str(), v["project"].as_str()) {
+        (Some("project"), Some(p)) => format!("{p}'s planning file"),
+        (Some("board"), _) => "the board's planning file".to_string(),
+        _ => "the built-in rules".to_string(),
+    };
+    let path = v["path"].as_str().map(|p| format!(" ({p})")).unwrap_or_default();
+    out(&format!("Slice goals into tasks by {whose}{path}:\n{}", v["text"].as_str().unwrap_or("").trim()));
+    Ok(0)
+}
+
 fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<String>) -> Result<i32, String> {
     let Some(job) = job else {
         let v = c.call("GET", "/jira", None)?;
@@ -3322,6 +3348,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
+        Cmd::Planning { project } => planning_cmd(c, project),
         Cmd::Close { done: _, project, goal } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let v = c.call("POST", "/done/close-terminals", Some(json!({"project": project, "goal": goal})))?;

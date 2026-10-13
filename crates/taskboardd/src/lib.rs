@@ -45,6 +45,7 @@ pub mod merged_note;
 pub mod midna;
 pub mod ops;
 pub mod picker;
+pub mod planning;
 pub mod prcmds;
 pub mod presence;
 pub mod prbar;
