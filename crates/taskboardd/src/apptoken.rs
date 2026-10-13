@@ -80,9 +80,14 @@ fn spellings(dir: &Path) -> Vec<String> {
 /// Shell variables (`$X`, `${X}`) and a word-leading `~`.
 static VAR_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?").unwrap());
 static TILDE_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"(^|[\s=:;|&(<>])~(/|$|[\s;|&)])").unwrap());
-/// Commands that walk a folder's tree.
+/// Commands that walk a folder's tree, where a shell runs them: at a command's start (after `;`, `|`,
+/// `&`, `(`, `$(`, a backquote, `then`, …), behind wrappers (`sudo`, `xargs -0`, `sh -c`, `X=1`) or a
+/// folder (`/usr/bin/find`). The same word in an argument's prose (`--detail "… a zip …"`) isn't one.
 static RECURSIVE_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
-    regex::Regex::new(r"(?i)\b(find|rg|ag|ack|fd|tar|zip|rsync|du|tree|ditto)\b|\b(grep|egrep|ls|cp|chmod|chown)\b[^\n;|&]*\s-[a-zA-Z]*[rRa]").unwrap()
+    let at = r"(?:^|[;|&({!]|\$\(|\b(?:then|do|else|if|while|until)\b)\s*";
+    let wrappers = r"(?:(?:(?:sudo|xargs|exec|command|builtin|env|time|nice|nohup|(?:ba|z|da|k)?sh)(?:\s+-\S+)*|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*";
+    let tool = r"(?:\S*/)?(?:(?:find|rg|ag|ack|fd|tar|zip|rsync|du|tree|ditto)\b|(?:grep|egrep|ls|cp|chmod|chown)\b[^\n;|&]*\s-[a-zA-Z]*[rRa])";
+    regex::Regex::new(&format!("(?im){at}{wrappers}{tool}")).unwrap()
 });
 
 /// The call's text as a shell would read it: quotes and backslashes gone (`app-to''ken` is
@@ -211,7 +216,7 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
     // Paths are only read where they're paths: a command, or a read or search tool's arguments (a
     // file being written can hold `/*` or `find /` as text).
     let paths = matches!(tool, "Bash" | "Read" | "Grep" | "Glob" | "LS");
-    let recursive = matches!(tool, "Grep" | "Glob") || (tool == "Bash" && RECURSIVE_RE.is_match(&text));
+    let recursive = matches!(tool, "Grep" | "Glob") || (tool == "Bash" && RECURSIVE_RE.is_match(&as_shell_reads(&raw.replace('`', ";"), dir)));
     let words = text.split(|c: char| c.is_whitespace() || ";|&()<>=,:".contains(c)).filter(|w| !w.is_empty());
     for w in words {
         // A glob for the token's name, anywhere (`cat $D/app-*`): one that matches it and not every
@@ -433,5 +438,34 @@ mod tests {
         assert!(!matches(Some(&t[..63]), &t));
         assert!(!matches(Some(&fresh()), &t));
         assert!(!matches(Some(""), ""), "no token, no match");
+    }
+
+    /// A lone `/` in a tb command's prose read as the root folder, and `zip` or `tree` in the same
+    /// prose read as a command walking it.
+    #[test]
+    fn a_tree_walking_word_in_prose_is_not_a_command() {
+        let dir = std::path::PathBuf::from("/srv/board-data");
+        let bash = |c: &str| tool_reaches("Bash", &serde_json::json!({"command": c}), &dir, None);
+        for no in [
+            "tb task new x --detail 'what happened / what was expected; attach the export zip (T113)'",
+            "tb task new \"tree-walking words\" --detail \"a lone slash / between words\"",
+            "git commit -m 'find / and grep -r / in prose'",
+        ] {
+            assert!(!bash(no), "{no}");
+        }
+        for yes in [
+            "find / -name x",
+            "/usr/bin/find / -type f",
+            "sudo find / -type f",
+            "echo x | xargs -0 grep -r tok /",
+            "sh -c 'tar c /'",
+            "X=1 rg . /",
+            "echo $(find / -type f)",
+            "echo `find / -type f`",
+            "cd /tmp && ls -R /",
+            "if find / -type f; then :; fi",
+        ] {
+            assert!(bash(yes), "{yes}");
+        }
     }
 }
