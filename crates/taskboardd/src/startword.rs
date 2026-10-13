@@ -3,10 +3,11 @@
 //! it reads the prompts the human typed in that terminal (the UserPromptSubmit hook reports each one)
 //! and starts the task only when one of them asks for it.
 //!
-//! This is what keeps an agent from starting work outside work hours, so it errs on the side of no: a
-//! prompt is the word only when a clause of it asks for the start now ("start T8", "queue it", "kick
-//! off T8"), not when it asks about one, tells of one, puts one off or sets a condition on one ("why
-//! did T8 start failing?", "T8 started", "start T8 tomorrow", "start T8 once T7 lands", "start T8?").
+//! This is what keeps an agent from starting work outside work hours, but a word the board misses
+//! leaves a dead session, so it refuses only the known no's: a start word on one ("start T8", "queue
+//! it", "make it and kick it off", "resume T8") is the word unless its clause asks about the start,
+//! tells of one, says no, puts it off or sets a condition on it ("how do I start T8", "start T8
+//! failed", "don't start T8", "start T8 tomorrow", "start T8 once T7 lands", "start T8?").
 //! Text the owner pasted or quoted (code, quotes, a log, the line after "says:") is no one's word.
 //!
 //! A no, a time or a condition holds only the start it's about: one in the start's own clause ("don't
@@ -62,10 +63,6 @@ pub const CLEARED: &str = "Cleared its conversation and started again";
 /// Any board marker (`[task-board:T4]`, `[task-board:G2]`, `[task-board:J7]`, …): the prompt is the board's.
 pub static MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[task-board:[^\]\n]*\]").unwrap());
 
-/// Where an ask can begin: the start of a sentence or of a clause.
-const EDGE: &str = r"(?:^|[:,(\[—–]|\s-+\s|\b(?:and|then|but|so|also)\b)";
-/// What may come before the start word in an ask ("ok,", "please", "actually", "go ahead and", "can you").
-const LEAD: &str = r"(?:(?:ok(?:ay)?|alright|all\s+right|yes|yeah|yep|sure|great|cool|perfect|lgtm|looks\s+good|sounds\s+good|thanks|please|pls|now|then|so|also|just|actually|go|go\s+ahead(?:\s+and)?|you\s+can|you\s+may|(?:can|could|would|will)\s+(?:you|u)|i\s+want\s+you\s+to|i[’']?d\s+like\s+you\s+to|let[’']?s|let\s+us|feel\s+free\s+to|time\s+to)\s*,?\s+)*";
 /// The tasks an ask names: "T4", "task T4", "T4, T5 and T6".
 const NAMED: &str = r"(?:task\s+)?[Tt]\d+(?:\s*,?\s*(?:and\s+|&\s*|\+\s*)?(?:task\s+)?[Tt]\d+)*";
 /// What may come between the start word and the tasks it names: "both", "them:".
@@ -99,19 +96,56 @@ static BARE_ASK_RE: Lazy<Regex> = Lazy::new(|| {
     ))
     .unwrap()
 });
-/// What may follow the task in an ask: the end of the clause, or a word that goes on with it ("start T8
-/// without the migration", "start T8 on Monday"). Anything else ("start T8 failed", "start T8 is
-/// broken") makes it no ask. A time, a condition or a question is read with the clause and the sentence.
-const TAIL: &str = concat!(
-    r"(?:\s*$|\s*[:,()\[\]—–]|\s+-|\s+(?:and|then|now|please|pls|too|again|up|off|asap|instead|for|right\s+away|right\s+now|",
-    r"without|with|but|so|also|or|not|first|next|immediately|today|tomorrow|tonight|later|on|in|at|by|after|before|when|whenever|",
-    r"once|if|unless|until|till|as|this|down|around|during|thanks|thank|thx|ty|it|it[’']s|its|from|using|via|to|while|since|because|anyway|jk)\b)"
-);
+/// What may follow the task after a start word that's a start only on a task ("do T8", "work on T8",
+/// [`Mention::soft`]): the end of the clause, or a word that goes on with it ("do T8 without the
+/// migration", "work on T8 tomorrow"), not more of a name ("do T8 reviews", "work on T8 docs").
+static SOFT_TAIL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)^(?:\s*$|\s*[:,()\[\]—–.!?;]|\s+-|\s+(?:and|then|now|please|pls|too|again|up|off|asap|instead|for|right\s+away|right\s+now|",
+        r"without|with|but|so|also|or|not|first|next|immediately|today|tomorrow|tonight|later|on|in|at|by|after|before|when|whenever|",
+        r"once|if|unless|until|till|as|this|down|around|during|thanks|thank|thx|ty|it|it[’']s|its|from|using|via|to|while|since|because|anyway|jk)\b)"
+    ))
+    .unwrap()
+});
+/// What after the task tells of a start instead of asking for one: "start T8 failed", "start T8 is
+/// broken", "run T8 keeps timing out".
+static STORY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)^\s+(?:still\s+|just\s+|never\s+|always\s+|now\s+|also\s+)?(?:fail(?:s|ed|ing)?|is|was|are|were|isn[’']?t|wasn[’']?t|has|had|have|does|did|do|doesn[’']?t|didn[’']?t|won[’']?t|can[’']?t|will|would|should|could|might|may|must|",
+        r"br(?:oke|eaks|oken)|crash(?:es|ed)?|error(?:s|ed)|hang(?:s)?|hung|work(?:s|ed)|time[sd]\s+out|timing\s+out|keeps?|kept|throws?|threw|gives?|gave|returns?|returned|",
+        r"says?|said|shows?|showed|seems?|seemed|looks?|looked|takes?|took|stops?|stopped|gets?|got|goes|went|means?|meant|happen(?:s|ed)?|ran|runs|starts|started)\b"
+    ))
+    .unwrap()
+});
+/// What before a start word, in its own clause, makes the clause a question without a "?" ("how do I
+/// start T8", "why did start T8 fail", "should I run it"), though not a polite ask ("can you start T8").
+static QUESTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)\b(?:how|why|who|whom|whose|what|which|whether|where)\b|",
+        r"^[\s_,]*(?:(?:hey|so|ok(?:ay)?|and|also|then|now|wait)[\s,]+)*(?:do|does|did|should|shall|is|are|was|were|have|has|had|may|might|must|am|"
+        ,r"(?:can|could|would|will)\s+(?:i|we|they|he|she|it|someone|anyone))\b"
+    ))
+    .unwrap()
+});
+/// Who, just before a start word, tells of it instead of asking for it ("I'll start T8", "we should run
+/// it", "they kicked off T8"): a start word with someone else as its subject is no ask of the agent.
+static SPEAKER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?i)\b(?:i|we|he|she|they|someone|somebody|nobody|everyone)(?:[’'](?:ll|d|ve|m|re))?",
+        r"(?:\s+(?:will|would|could|can|should|might|may|must|shall|did|do|does|also|just|already|then|probably|maybe|gonna|wanna|going\s+to|want\s+to|wanted\s+to|need\s+to|have\s+to|had\s+to|tried\s+to|try\s+to|plan\s+to|meant\s+to|was\s+going\s+to|am\s+going\s+to|are\s+going\s+to|to))*\s+$"
+    ))
+    .unwrap()
+});
+/// What just before a start word makes it someone else's words ("the log says start T8", "it printed
+/// run T8").
+static REPORTED_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\b(?:says?|said|saying|reads?|wrote|writes|prints?|printed|shows?|showed|outputs?)\s*["“‘']?\s*$"#).unwrap()
+});
 /// The start words.
 const VERB: &str = r"(?:start|strat|satrt|queue|begin|launch|kick\s+off|get\s+going)(?:\s+up)?(?:\s+(?:work(?:ing)?\s+)?on)?";
-/// The start words that ask only with a task named ("run T8", "pick up T8", "go ahead with T8", "do
-/// T8", "spin up T8", "work on T8", "go T8", but not "run it" or "do it").
-const NAMED_VERB: &str = r"(?:run|pick\s+up|do|go\s+ahead\s+with|go\s+for|fire\s+off|fire\s+up|spin\s+up|work\s+on|go)";
+/// The start words that ask only with a task named ("run T8", "resume T8", "continue T8", "pick up T8",
+/// "go ahead with T8", "do T8", "spin up T8", "work on T8", "go T8", but not "run it" or "do it").
+const NAMED_VERB: &str = r"(?:run|resume|continue(?:\s+(?:with|on))?|pick\s+up|do|go\s+ahead\s+with|go\s+for|fire\s+off|fire\s+up|spin\s+up|work\s+on|go)";
 /// A task named and then the word to go, as the whole clause ("T8 go", "T8: go"). Only the owner's: in
 /// the agent's question it asks nothing ("Should I close T8 now?", [`asked_in`]).
 const NAMED_GO: &str = r"\s*[:,—–-]?\s*(?:go(?:\s+ahead)?|next|now)(?:\s+(?:now|please|pls))?\s*$";
@@ -131,8 +165,6 @@ const GOAL_VERB: &str = r"(?:start|queue|begin|launch|kick\s+off|run|ship|get\s+
 
 /// What a start is read on: tasks (`tb start T4`) or goals (`tb start G2`).
 pub struct Kind {
-    /// A start word at the start of a clause, on one, with nothing after it that makes it a story.
-    ask: Regex,
     /// A start word on one anywhere: an ask, or (when it's no ask) a mention that takes the start back.
     mention: Regex,
     /// One named, with its number.
@@ -150,7 +182,7 @@ fn kind(named: &str, unnamed: &str, verb: &str, named_verb: Option<&str>, ids: &
     }
     on.push_str(&format!(r"|\b{QUEUE_PUT}\s+(?:{LISTED}(?P<named4>{named})|(?P<unnamed4>{unnamed}))\s+{QUEUE_TO}"));
     on.push(')');
-    Kind { ask: Regex::new(&format!(r"(?i){EDGE}\s*{LEAD}{on}{TAIL}")).unwrap(), mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(ids).unwrap(), goal }
+    Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(ids).unwrap(), goal }
 }
 
 /// Starts of tasks.
@@ -683,6 +715,8 @@ fn takes_back(line: &str) -> bool {
 struct Mention {
     verb: usize,
     span: (usize, usize),
+    /// Where the start word ends: after the task, or after "go" in "T8 go".
+    end: usize,
     ask: Ask,
     /// A start word that asks only in an ask's shape ("run T8", not "run T8's tests"): out of that shape
     /// it says nothing on the start.
@@ -697,10 +731,10 @@ fn of_a_tasks(s: &str, m: &Mention) -> bool {
 
 /// The task span and the ask of one mention.
 fn mention_of(k: &Kind, c: &regex::Captures<'_>) -> Option<Mention> {
-    let verb = c.get(0)?.start();
+    let (verb, end) = (c.get(0)?.start(), c.get(0)?.end());
     let soft = c.name("named3").or(c.name("named5"));
     if let Some(n) = c.name("named").or(c.name("named2")).or(c.name("named4")).or(c.name("named6")).or(c.name("named7")).or(soft) {
-        return Some(Mention { verb, span: (n.start(), n.end()), ask: Ask::Named(ids_in(k, n.as_str())), soft: soft.is_some() });
+        return Some(Mention { verb, span: (n.start(), n.end()), end, ask: Ask::Named(ids_in(k, n.as_str())), soft: soft.is_some() });
     }
     let u = c.name("unnamed").or(c.name("unnamed2")).or(c.name("unnamed4")).or(c.name("unnamed6")).or(c.name("unnamed7"))?;
     let ask = if k.goal {
@@ -716,7 +750,7 @@ fn mention_of(k: &Kind, c: &regex::Captures<'_>) -> Option<Mention> {
     } else {
         Ask::Unnamed
     };
-    Some(Mention { verb, span: (u.start(), u.end()), ask, soft: false })
+    Some(Mention { verb, span: (u.start(), u.end()), end, ask, soft: false })
 }
 
 /// The words in `s` that say no, less the "no" of "no problem".
@@ -893,24 +927,13 @@ pub fn read_of(k: &Kind, text: &str) -> Reading {
     r
 }
 
-/// The steps of sentence `s` (at `base` in `own`), clause by clause. A start is an ask when it has an
-/// ask's shape, the sentence isn't a question, and nothing in its own clause, nor a bare no, time or
-/// condition in a clause just before it, holds it. A clause that's only a time after the starts ("start
+/// The steps of sentence `s` (at `base` in `own`), clause by clause. A start word on one is an ask
+/// unless something says no: the sentence is a question, its own clause asks about the start or tells
+/// of it, is quoted, or has a no, a time or a condition, or a bare no, time or condition in a clause
+/// just before it holds it. A clause that's only a time after the starts ("start
 /// T8, the moment T7 lands") or puts off "it" ("do it tomorrow") holds every start before it.
 fn sentence(k: &Kind, own: &str, base: usize, s: &str, asked: bool, steps: &mut Vec<(usize, Step)>) {
-    let mut ask_spans = vec![];
-    let mut at = 0;
-    while let Some(m) = k.ask.captures_at(s, at) {
-        let Some(m) = mention_of(k, &m) else { break };
-        ask_spans.push(m.span);
-        at = m.span.1;
-    }
-    let mentions: Vec<Mention> = k
-        .mention
-        .captures_iter(s)
-        .filter_map(|c| mention_of(k, &c))
-        .filter(|m| ask_spans.contains(&m.span) || !of_a_tasks(s, m))
-        .collect();
+    let mentions: Vec<Mention> = k.mention.captures_iter(s).filter_map(|c| mention_of(k, &c)).filter(|m| !of_a_tasks(s, m)).collect();
     // "start T9 instead": the asks before this one are off.
     if !mentions.is_empty() && INSTEAD_RE.is_match(&NOT_A_TIME_RE.replace_all(s, "")) {
         steps.push((base, Step::Hold(Ask::Unnamed)));
@@ -967,11 +990,15 @@ fn sentence(k: &Kind, own: &str, base: usize, s: &str, asked: bool, steps: &mut 
         let named_after = closed && DASH_SOURCE_RE.is_match(&s[to..]);
         let quoted = dash && ((!DASH_LEAD_RE.is_match(lead) && (source || closed)) || named_after);
         for m in mentions.iter().filter(|m| from <= m.verb && m.verb < to) {
-            let shaped = ask_spans.contains(&m.span);
-            if m.soft && !shaped && !asked && !timed && !pending {
+            let lead = &s[from..m.verb];
+            let after = &s[m.end..];
+            // Told of, not asked for: "start T8 failed", "how do I start T8", "I'll start T8", "the log
+            // says start T8".
+            let told = STORY_RE.is_match(after) || QUESTION_RE.is_match(lead) || SPEAKER_RE.is_match(lead) || REPORTED_RE.is_match(lead);
+            if m.soft && (told || !SOFT_TAIL_RE.is_match(after)) && !asked && !timed && !pending {
                 continue;
             }
-            let clean = shaped && !asked && !pending && !timed && !quoted && negs_in(&s[from..m.verb]).is_empty();
+            let clean = !told && !asked && !pending && !timed && !quoted && negs_in(lead).is_empty();
             let ask = if clean { resolved(k, own, base + m.verb, &m.ask, s, m.span) } else { m.ask.clone() };
             steps.push((base + m.span.0, if clean { Step::Ask(ask) } else { Step::Hold(ask) }));
         }
@@ -1426,7 +1453,7 @@ pub static MERGES: Lazy<Kind> = Lazy::new(|| {
     let on = format!(
         r"(?:\b{MERGE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_PR}))|\bget\s+(?:(?P<named6>{NAMED})|(?P<unnamed6>{UNNAMED_PR}))\s+(?:merged|landed|in\b))"
     );
-    Kind { ask: Regex::new(&format!(r"(?i){EDGE}\s*{LEAD}{on}{TAIL}")).unwrap(), mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
+    Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
 });
 /// A PR named by its number: "PR #194", "the PR 194", "pull request 194", "#194".
 static PR_REF_RE: Lazy<Regex> =
@@ -2714,6 +2741,44 @@ mod tests {
         // A polite ask in a question's shape asks.
         for yes in ["can you start T8?", "Could you please queue T8?", "would you kick off T8?", "hey, can you start T8?", "Will you start T8?"] {
             assert!(says_start(yes), "{yes}");
+        }
+    }
+
+    #[test]
+    fn a_start_word_on_one_is_the_word_unless_a_known_no_holds_it() {
+        // No phrasing to learn: a start word on one asks wherever it falls in the clause.
+        for yes in [
+            "make it and start it",
+            "make a task for that and kick it off",
+            "great work, now start T8",
+            "I want you to start T8",
+            "honestly just start T8",
+            "resume T8",
+            "continue T8",
+            "continue with T8",
+            "pick up T8",
+            "fire off T8",
+            "T8 go",
+            "start T8 with the new schema",
+        ] {
+            assert!(says_start(yes), "{yes}");
+        }
+        // A question without a "?", a start told of, someone else's start, or someone else's words.
+        for no in [
+            "how do I start T8",
+            "why would start T8 fail",
+            "should I start T8",
+            "did you start T8",
+            "start T8 failed yesterday",
+            "start T8 keeps timing out",
+            "run T8 is broken",
+            "I'll start T8 myself",
+            "we should start T8 at some point",
+            "they kicked off T8",
+            "the log says start T8",
+            "do T8 reviews",
+        ] {
+            assert!(!says_start(no), "{no}");
         }
     }
 
