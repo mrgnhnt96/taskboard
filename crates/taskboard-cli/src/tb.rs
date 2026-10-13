@@ -970,6 +970,12 @@ enum TaskCmd {
         /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
+        /// The new ticket's summary, written to the board's ticket guide (`tb jira`); the title when left out
+        #[arg(long = "ticket-summary")]
+        ticket_summary: Option<String>,
+        /// The new ticket's description in markdown, written to the board's ticket guide (`tb jira`); the detail when left out
+        #[arg(long = "ticket-text")]
+        ticket_text: Option<String>,
         /// Devices from the pool it needs while it runs, by tag or name: android, android:2. Repeat for more,
         /// none for none (even when its goal asks for some)
         #[arg(long = "device", value_name = "TAG[:N]|none")]
@@ -1015,9 +1021,15 @@ enum TaskCmd {
         /// Nothing else in its goal runs while it does (board: nothing else on the board); none to run alongside others
         #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
         alone: Option<String>,
-        /// A Jira key to link, `new` for a new ticket, or `none`
+        /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
+        /// The new ticket's summary, written to the board's ticket guide (`tb jira`); the title when left out
+        #[arg(long = "ticket-summary")]
+        ticket_summary: Option<String>,
+        /// The new ticket's description in markdown, written to the board's ticket guide (`tb jira`); the detail when left out
+        #[arg(long = "ticket-text")]
+        ticket_text: Option<String>,
         /// Devices from the pool it needs while it runs: android, android:2. Repeat for more, none for none
         /// (even when its goal asks for some), goal for its goal's
         #[arg(long = "device", value_name = "TAG[:N]|none|goal")]
@@ -1920,6 +1932,18 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
         ));
         for p in v["products"].as_array().cloned().unwrap_or_default() {
             out(&format!("Product {}: {}", p["name"].as_str().unwrap_or(""), p["what"].as_str().unwrap_or("")));
+        }
+        for (key, what) in [("ticket_template", "Ticket template"), ("ticket_guide", "Ticket guide")] {
+            let f = &v[key];
+            let Some(path) = f["path"].as_str() else { continue };
+            match (f["error"].as_str(), f["text"].as_str()) {
+                (Some(e), _) => out(&format!("{what}: {e}")),
+                (None, Some(text)) => out(&format!(
+                    "{what} ({path}): write each new ticket to it and give it with --ticket-summary and --ticket-text alongside --jira new.\n{}",
+                    text.trim()
+                )),
+                (None, None) => out(&format!("{what}: {path}")),
+            }
         }
         for j in v["jobs"].as_array().cloned().unwrap_or_default() {
             out(&jira_job_line(&j));
@@ -3624,7 +3648,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -3668,6 +3692,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(j) = jira {
                     body["jira"] = jira_arg(&j);
                 }
+                if let Some(x) = ticket_summary {
+                    body["ticket_summary"] = json!(x);
+                }
+                if let Some(x) = ticket_text {
+                    body["ticket_text"] = json!(x);
+                }
                 if let Some(x) = stack_on {
                     body["stack_on"] = json!(task_ref(&x)?);
                 }
@@ -3698,7 +3728,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, devices, bits, not_bits, stack_on, pr } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, pr } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -3733,6 +3763,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = jira {
                     b["jira_key"] = json!(x);
+                }
+                if let Some(x) = ticket_summary {
+                    b["ticket_summary"] = json!(x);
+                }
+                if let Some(x) = ticket_text {
+                    b["ticket_text"] = json!(x);
                 }
                 if !devices.is_empty() {
                     b["devices"] = device_arg(&devices);

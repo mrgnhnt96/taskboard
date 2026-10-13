@@ -2087,7 +2087,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
             &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
                     "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
-                    "jira": item.get("jira"),
+                    "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "ships_pr": item.get("ships_pr"),
                     "devices": item.get("devices"), "bits": item.get("bits"),
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
@@ -2158,6 +2158,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
+                           "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
                            "devices": r.body.get("devices"), "bits": r.body.get("bits")}]);
         let mut warnings = vec![];
@@ -2175,7 +2176,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         &json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
                 "status": if planned_flag { "planned" } else { "queued" },
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
-                "jira": r.body.get("jira"),
+                "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
                 "devices": r.body.get("devices"), "bits": r.body.get("bits"),
                 "origin": {"from": "Added by an agent", "by": r.name()}}),
@@ -2230,7 +2231,7 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
     let c = ops::new_task(
         app,
         &json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
-                "jira": r.body.get("jira"),
+                "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "ships_pr": r.body.get("ships_pr"),
                 "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}}),
         &name,

@@ -225,6 +225,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "jira_status_at", "TEXT"),
     ("goals", "jira_status_at", "TEXT"),
     ("issues", "jira_status_at", "TEXT"),
+    // The ticket's own summary and text, written to `[jira] ticket_guide`: what a new ticket gets in
+    // place of the task's title and detail.
+    ("tasks", "ticket_summary", "TEXT"),
+    ("tasks", "ticket_text", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

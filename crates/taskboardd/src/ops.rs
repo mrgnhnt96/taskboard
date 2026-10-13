@@ -120,6 +120,11 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     if quiet_none {
         jmode = "none".into();
     }
+    let ticket_summary = clip(&one_line(&body_str(body, "ticket_summary"), 250), 250);
+    let ticket_text = clip(body_str(body, "ticket_text").trim(), 20_000);
+    if jmode == "create" {
+        jira::refuse_unguided(app, who, Some(&ticket_text))?;
+    }
     let jkey = if jmode == "link" { Some(jira_key(jopt["key"].as_str().unwrap_or(""))?) } else { None };
     let now = now_iso();
     let repo = g
@@ -142,7 +147,9 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
                 "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone,
-                "latest" => if latest.is_empty() { None } else { Some(latest) }],
+                "latest" => if latest.is_empty() { None } else { Some(latest) },
+                "ticket_summary" => if ticket_summary.is_empty() { None } else { Some(ticket_summary) },
+                "ticket_text" => if ticket_text.is_empty() { None } else { Some(ticket_text) }],
     )?;
     if let Some(w) = body.get("wave").filter(|w| !w.is_null()) {
         let w = wave_of(w)?;

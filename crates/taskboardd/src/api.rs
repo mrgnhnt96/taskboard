@@ -925,6 +925,17 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 bump = true;
             }
         }
+        // The ticket's own text: what a ticket made after this gets (a linked one keeps its own).
+        let mut t = t;
+        for (k, limit) in [("ticket_summary", 250), ("ticket_text", 20_000)] {
+            if has_key(k) {
+                let v = clip(body_str(body, k).trim(), limit);
+                let v = if k == "ticket_summary" { one_line(&v, limit) } else { v };
+                let v = if v.is_empty() { Value::Null } else { json!(v) };
+                t.insert(k.into(), v.clone());
+                f.push((k, v));
+            }
+        }
         if has_key("jira_key") && app.cfg.jira_on() {
             let k = body_str(body, "jira_key");
             if k.is_empty() || k.eq_ignore_ascii_case("none") {
@@ -936,6 +947,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 projects::refuse_without_prs(app, &t.st("project"))?;
                 f.push(("jira_none", json!(0)));
                 if !has(t.s("jira_key")) && !jira::ticket_asked(app, id)? {
+                    jira::refuse_unguided(app, &who, t.s("ticket_text"))?;
                     jira::request_create_for_task(app, &t)?;
                     board::log_event(app, id, &who, "jira", "Asked Jira for a ticket")?;
                 }
