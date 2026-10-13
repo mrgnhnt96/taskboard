@@ -109,6 +109,20 @@ fn tb_limits_shows_changes_and_resets() {
 }
 
 #[test]
+fn a_compact_window_under_50k_is_refused_and_k_means_thousands() {
+    let b = board_with(|_| {});
+    for small in [json!(150), json!("49999")] {
+        let (code, msg) = b.post("/limits", json!({"compact_window": small})).unwrap_err();
+        assert_eq!((code, msg.as_str()), (400, "Claude Code won't compact below about 50k. Use 0 to leave it to Claude Code."));
+    }
+    assert_eq!(b.get("/limits")["compact_window"], 150_000, "nothing is stored");
+    assert_eq!(b.post("/limits", json!({"compact_window": "120k"})).unwrap()["compact_window"], 120_000);
+    assert_eq!(b.post("/limits", json!({"warm_tokens": "80k"})).unwrap()["warm_tokens"], 80_000);
+    assert_eq!(b.post("/limits", json!({"compact_window": 0})).unwrap()["compact_window"], 0, "0 leaves it to Claude Code");
+    assert_eq!(b.post("/limits", json!({"cold_idle_mins": "5k"})).unwrap_err().0, 400, "k is for token counts only");
+}
+
+#[test]
 fn a_pr_wake_resumes_only_a_warm_small_conversation() {
     let b = board_with(|c| {
         c.pr.watch = true;

@@ -343,15 +343,15 @@ enum Cmd {
     /// Show or change the context limits: the compact window, when a cold conversation is compacted,
     /// how big and how fresh a conversation must be to resume, and the generated-file globs
     Limits {
-        /// Tokens at which Claude compacts a board terminal's conversation (0 = off)
+        /// Tokens at which Claude compacts a board terminal's conversation, e.g. 150000 or 150k (0 = off; at least 50k)
         #[arg(long = "compact-window")]
-        compact_window: Option<i64>,
+        compact_window: Option<String>,
         /// Minutes idle after which a conversation is compacted before it resumes (0 = off)
         #[arg(long = "cold-idle-mins")]
         cold_idle_mins: Option<i64>,
         /// A task or PR conversation resumes only under this many tokens, else starts fresh (0 = off)
         #[arg(long = "warm-tokens")]
-        warm_tokens: Option<i64>,
+        warm_tokens: Option<String>,
         /// …and only when idle under this many minutes (0 = off)
         #[arg(long = "warm-idle-mins")]
         warm_idle_mins: Option<i64>,
@@ -3966,7 +3966,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, review_gap, step, reset } => {
             let mut b = json!({});
-            for (k, v) in [("compact_window", compact_window), ("cold_idle_mins", cold_idle_mins), ("warm_tokens", warm_tokens), ("warm_idle_mins", warm_idle_mins)] {
+            for (k, v) in [("compact_window", compact_window), ("warm_tokens", warm_tokens)] {
+                if let Some(n) = v {
+                    b[k] = json!(n);
+                }
+            }
+            for (k, v) in [("cold_idle_mins", cold_idle_mins), ("warm_idle_mins", warm_idle_mins)] {
                 if let Some(n) = v {
                     b[k] = json!(n);
                 }
