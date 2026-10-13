@@ -1138,7 +1138,7 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         }
         "Started in the UI".to_string()
     } else {
-        if crate::startword::owners_word(app, &via, id)?.is_none() {
+        if !crate::startword::granted(app, &via, id, false)? && crate::startword::owners_word(app, &via, id)?.is_none() {
             // An ask for the goal ("start the goal") is no word for each of its tasks; the goal runs them.
             let goal = board::find_goal(app, t.i("goal_id"))?
                 .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
@@ -2012,7 +2012,7 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         );
     } else {
         board::get_goal(app, id)?;
-        if crate::startword::owners_goal_word(app, &via, id)?.is_none() {
+        if !crate::startword::granted(app, &via, id, true)? && crate::startword::owners_goal_word(app, &via, id)?.is_none() {
             let asked = alerts::ask_start(app, "goal", id, &via, json!({"now": now}))?;
             let how = if asked {
                 owner_asked(app, true, "run", "Start")

@@ -1531,3 +1531,61 @@ fn the_goal_runs_as_155_found() {
     let wrong = goal_cases_wrong(&runs, &refused);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+impl Board {
+    /// What the board tells the agent as prompt `prompt` is typed.
+    fn told(&self, prompt: &str) -> String {
+        self.report("hook.prompt", json!({"prompt": prompt}))["context"].as_str().unwrap_or("").to_string()
+    }
+}
+
+#[test]
+fn the_prompt_is_read_as_its_typed_and_the_agent_told() {
+    let b = board();
+    let id = b.new_task();
+    let said = b.told(&format!("start T{id}"));
+    assert!(said.contains(&format!("covers T{id}")), "{said}");
+    assert!(b.tb_start(id).is_ok());
+
+    let said = b.told("make a task for the login page and start it");
+    assert!(said.contains("what you create this turn"), "{said}");
+
+    let said = b.told(&format!("don't start T{id}"));
+    assert!(said.contains("not a start word"), "{said}");
+    assert_eq!(b.told("thanks, looks good"), "", "a prompt that says nothing of a start gets no word");
+    assert!(!b.told(&format!("[task-board:T{id}] Start T{id}.")).contains("start word"), "the board's prompt is no one's word");
+}
+
+#[test]
+fn the_grant_covers_what_is_made_this_turn_and_ends_with_the_next_prompt() {
+    let b = board();
+    b.said("make a task for the login page and start it");
+    let first = b.new_task();
+    let second = b.new_task();
+    assert!(startword::granted(&b.app, "s1", first, false).unwrap());
+    assert!(!startword::granted(&b.app, "s1", second, false).unwrap(), "\"it\" is the first one made");
+
+    b.said("make two tasks and start them");
+    let (one, two) = (b.new_task(), b.new_task());
+    assert!(startword::granted(&b.app, "s1", one, false).unwrap());
+    assert!(startword::granted(&b.app, "s1", two, false).unwrap());
+
+    b.said("ok");
+    assert!(!startword::granted(&b.app, "s1", one, false).unwrap(), "a later prompt ends the grant");
+
+    b.said(&format!("start T{first}"));
+    b.report("hook.session_start", json!({"source": "clear"}));
+    assert!(!startword::granted(&b.app, "s1", first, false).unwrap(), "a new conversation ends the grant");
+}
+
+#[test]
+fn a_goal_run_on_the_grant_spends_it() {
+    let b = board();
+    let g = b.goal();
+    b.planned(g);
+    b.said(&format!("run G{g}"));
+    assert!(startword::granted(&b.app, "s1", g, true).unwrap());
+    assert!(b.tb_run(g).is_ok());
+    assert!(!startword::granted(&b.app, "s1", g, true).unwrap());
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+}
