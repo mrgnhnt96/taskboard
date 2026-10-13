@@ -201,7 +201,9 @@ pub fn clean_needs(value: Option<&Value>) -> Result<Vec<Need>> {
     }
     let mut out: Vec<Need> = vec![];
     for (tag, n) in words {
+        // The handoff tells agents `tag:<tag>`, and the old board took `device:<name>`: both name the word after.
         let tag = tag.trim().to_lowercase();
+        let tag = tag.strip_prefix("tag:").or_else(|| tag.strip_prefix("device:")).unwrap_or(&tag).to_string();
         if tag.is_empty() || tag == "none" {
             continue;
         }
@@ -1243,6 +1245,11 @@ mod tests {
         assert!(clean_needs(Some(&json!("android:0"))).is_err());
         assert!(clean_needs(Some(&json!("Bad Tag!"))).is_err());
         assert_eq!(needs_text(&clean_needs(Some(&json!("android:2 ios"))).unwrap()), "2 android, ios");
+        assert_eq!(
+            clean_needs(Some(&json!("tag:phone, tag:android:2, device:pixel-7"))).unwrap(),
+            vec![Need { tag: "phone".into(), n: 1 }, Need { tag: "android".into(), n: 2 }, Need { tag: "pixel-7".into(), n: 1 }]
+        );
+        assert_eq!(clean_needs(Some(&json!([{"tag": "tag:ios"}]))).unwrap(), vec![Need { tag: "ios".into(), n: 1 }]);
     }
 
     #[test]
