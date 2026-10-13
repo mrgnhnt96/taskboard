@@ -1429,15 +1429,25 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
         }
     }
     if !failed {
-        let in_review = prflow::IN_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
-        let canceled = t.s("no_pr").filter(|w| !w.is_empty() && !app.cfg.jira.canceled.is_empty());
-        if let Some(why) = canceled {
-            // `tb done --no-pr`: the ticket is withdrawn, with the reason as its comment.
-            board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.canceled.clone()), Some(&format!("PR canceled: {why}")))?;
-            app.wake_runner();
-            return Ok(t);
+        let in_review = prflow::IN_CODE_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
+        if let Some(why) = t.s("no_pr").filter(|w| !w.is_empty()) {
+            // `tb done --no-pr`: a ticket that shipped on another task goes back to QA with the summary;
+            // otherwise it's withdrawn, with the reason as its comment.
+            let shipped = board::ticket_shipped(app, &t)?;
+            if shipped || !app.cfg.jira.canceled.is_empty() {
+                if shipped {
+                    board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.merged.clone()), Some(&text))?;
+                } else {
+                    board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.canceled.clone()), Some(&format!("PR canceled: {why}")))?;
+                }
+                app.wake_runner();
+                return Ok(t);
+            }
         }
-        let target = if in_review {
+        let target = if !projects::task_ships_pr(app, &t)? {
+            // A task that doesn't ship a PR only comments on its ticket.
+            None
+        } else if in_review {
             Some(app.cfg.jira.in_review.clone())
         } else if t.i("pr_num").is_none() && !app.cfg.jira.done.is_empty() {
             Some(app.cfg.jira.done.clone())

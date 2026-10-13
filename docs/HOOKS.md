@@ -380,7 +380,8 @@ bar = "WD"            # its name in the app's PR bar
   project does.
 - `tb done "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open (the why is one short line,
   200 characters at most, and can't be blank); `--no-evidence "<why>"` likewise for evidence. With `[jira] canceled`,
-  the ticket moves there with the reason as a comment. A plain `tb done` on a task that ends in a PR, whose project
+  the ticket moves there with the reason as a comment, unless another task on the ticket already merged its PR:
+  then it goes back to `[jira] merged` with the summary. A plain `tb done` on a task that ends in a PR, whose project
   has a remote, with no PR linked is refused and asks for `--pr-body` or `--no-pr "<why>"` (or `--pr <link>`). A
   task with a design attached is refused without evidence (`tb attach … --kind evidence`) or `--no-evidence`.
 - Evidence (and results) links on a task are added to its open PR's description under `## Context` (GitHub or

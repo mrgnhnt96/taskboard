@@ -1025,10 +1025,19 @@ pub fn set_working(app: &App, t: &Row, who: &str, text: Option<&str>) -> Result<
     }
     if was != "working" {
         let t = get_task(app, t.id())?;
-        let status = app.cfg.jira.in_progress.clone();
-        jira_keep_in_step(app, &t, Some(&status), None)?;
+        // A follow-up on a ticket that already shipped leaves it in QA unless this task ships a PR too.
+        if crate::projects::task_ships_pr(app, &t)? || !ticket_shipped(app, &t)? {
+            let status = app.cfg.jira.in_progress.clone();
+            jira_keep_in_step(app, &t, Some(&status), None)?;
+        }
     }
     Ok(())
+}
+
+/// Another task on the same Jira ticket has merged its PR.
+pub fn ticket_shipped(app: &App, t: &Row) -> Result<bool> {
+    let Some(key) = t.s("jira_key").filter(|k| !k.is_empty()) else { return Ok(false) };
+    Ok(!app.db.val("SELECT 1 FROM tasks WHERE jira_key = ? AND id != ? AND pr_state = 'MERGED' LIMIT 1", p![key, t.id()])?.is_null())
 }
 
 pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&str>, how: &str, reopen_pr: bool) -> Result<std::result::Result<(), String>> {

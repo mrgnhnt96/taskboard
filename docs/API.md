@@ -1212,7 +1212,10 @@ use it instead of the project's default.
 
 **`tb done --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
 canceled: <why>", skips the before-the-PR steps, and with `[jira] canceled` set moves the ticket there with the reason
-as a comment. The why can't be blank (400) and is one line of at most 100 characters (400 past that). **`--no-evidence
+as a comment. A ticket that already shipped (another task on it has a merged PR) goes to `[jira] merged` with the
+summary instead. A follow-up task on a shipped ticket moves it to In Progress only when it ships a PR, and a task that
+doesn't ship a PR only comments its summary when it finishes. The ticket moves to `[jira] in_review` once reviewers
+have been asked (stage `review`, `rereview`, `comments`, `merge` or `waits`), not at `ask`. The why can't be blank (400) and is one line of at most 100 characters (400 past that). **`--no-evidence
 "<why>"`** stores `tasks.no_evidence`. The app shows both with task refs as buttons and ticket keys linked to Jira; the
 goal row says "PR canceled: <why>" (its task and ticket refs linked) and the wave rail's "PR canceled" chip carries
 the why.
