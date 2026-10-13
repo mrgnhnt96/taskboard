@@ -19,6 +19,30 @@ static BOARD_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[TGB]\d+\b").unwr
 static BOARD_WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\btask[ -]?board\b").unwrap());
 static HEADING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#{1,6}\s+(.+?)\s*#*\s*$").unwrap());
 static BULLET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s+\S").unwrap());
+static RULE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$").unwrap());
+
+/// A description split before its footer: a rule (`---`) with no heading after it, and what follows
+/// (an attribution line). The footer stays last, below the board's `## Context`.
+fn split_footer(body: &str) -> (&str, &str) {
+    let mut fenced = false;
+    let mut at = None;
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fenced = !fenced;
+        } else if !fenced && RULE_RE.is_match(t) {
+            at = Some(offset);
+        } else if !fenced && HEADING_RE.is_match(t) {
+            at = None;
+        }
+        offset += line.len();
+    }
+    match at {
+        Some(i) => (&body[..i], &body[i..]),
+        None => (body, ""),
+    }
+}
 
 /// What's wrong with a PR description, one line each; empty when it's fine.
 pub fn body_problems(cfg: &PrBodyConfig, body: &str) -> Vec<String> {
@@ -30,7 +54,9 @@ pub fn body_problems(cfg: &PrBodyConfig, body: &str) -> Vec<String> {
     let mut sections: Vec<(String, Vec<String>)> = vec![];
     let mut fenced = false;
     let mut prose: Vec<String> = vec![];
-    for line in body.lines() {
+    let (main, footer) = split_footer(body);
+    prose.extend(footer.lines().filter(|l| !RULE_RE.is_match(l.trim())).map(str::to_string));
+    for line in main.lines() {
         if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
             fenced = !fenced;
             continue;
@@ -239,8 +265,9 @@ pub fn with_evidence(body: &str, links: &[(String, String)]) -> Option<String> {
     let lines: Vec<&str> = body.trim_end().lines().collect();
     let ctx = lines.iter().position(|l| HEADING_RE.captures(l.trim_end()).map(|c| c[1].eq_ignore_ascii_case("context")).unwrap_or(false));
     let Some(start) = ctx else {
-        let sep = if body.trim().is_empty() { "" } else { "\n\n" };
-        return Some(format!("{}{sep}## Context\n{}", body.trim_end(), new.join("\n")));
+        let (main, footer) = split_footer(body);
+        let sep = if main.trim().is_empty() { "" } else { "\n\n" };
+        return Some(with_footer(format!("{}{sep}## Context\n{}", main.trim_end(), new.join("\n")), footer));
     };
     let end = lines[start + 1..].iter().position(|l| HEADING_RE.is_match(l.trim_end())).map(|i| start + 1 + i).unwrap_or(lines.len());
     let last = lines[start..end].iter().rposition(|l| !l.trim().is_empty()).map(|i| start + i + 1).unwrap_or(start + 1);
@@ -248,6 +275,14 @@ pub fn with_evidence(body: &str, links: &[(String, String)]) -> Option<String> {
     out.extend(new);
     out.extend(lines[last..].iter().map(|l| l.to_string()));
     Some(out.join("\n"))
+}
+
+/// `text`, then the footer [`split_footer`] took off, after a blank line.
+fn with_footer(text: String, footer: &str) -> String {
+    match footer.trim() {
+        "" => text,
+        f => format!("{}\n\n{f}", text.trim_end()),
+    }
 }
 
 /// Minutes before trying again to add evidence to a PR whose host said no.
@@ -382,13 +417,15 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     let Some(dir) = dir_for(t, cwd) else { return err(409, "The board can't find this task's checkout to open the PR from.") };
     let base = steps::real_base(app, t)?;
     let branch = check_branch(cfg, &dir, &base).map_err(|e| ApiError::new(409, e))?;
-    let mut text = body.trim_end().to_string();
+    let (main, footer) = split_footer(body);
+    let mut text = main.trim_end().to_string();
     if cfg.context {
         let ctx = context_block(app, t)?;
         if !ctx.is_empty() {
             text += &format!("\n\n{ctx}");
         }
     }
+    let text = with_footer(text, footer);
     let title = title(cfg, t, given_title);
     host::open(app, &dir, &base, &branch, &title, &text).map_err(|e| ApiError::new(502, format!("Couldn't open the PR: {e}")))
 }
@@ -497,6 +534,26 @@ mod tests {
         // Code isn't prose.
         let p = body_problems(&c, &format!("{GOOD}\n```\nT12 {}\n```\n", "x".repeat(500)));
         assert!(p.is_empty(), "{p:?}");
+    }
+
+    /// A rule and an attribution line after the last section is a footer, not part of `## Testing`,
+    /// and it stays below what the board adds.
+    #[test]
+    fn a_footer_after_the_last_section_is_allowed_and_stays_last() {
+        let c = PrBodyConfig::default();
+        let body = format!("{GOOD}\n---\n\nGenerated with a tool\n");
+        assert!(body_problems(&c, &body).is_empty(), "{:?}", body_problems(&c, &body));
+        // Without the rule it's still part of Testing.
+        let p = body_problems(&c, &format!("{GOOD}\nGenerated with a tool\n"));
+        assert!(p.iter().any(|x| x.contains("bullet list")), "{p:?}");
+        // A rule followed by another section isn't a footer.
+        assert_eq!(split_footer("## A\n---\n## B\nx\n").1, "");
+        // Board refs in the footer are still caught.
+        let p = body_problems(&c, &format!("{GOOD}\n---\nFor T12\n"));
+        assert!(p.iter().any(|x| x.contains("T12")), "{p:?}");
+        let out = with_evidence(&body, &[("Shot".into(), "https://x.test/a.png".into())]).unwrap();
+        let (ctx, foot) = (out.find("## Context").unwrap(), out.find("Generated with a tool").unwrap());
+        assert!(ctx < foot && out.trim_end().ends_with("Generated with a tool"), "{out}");
     }
 
     #[test]
