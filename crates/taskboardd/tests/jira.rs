@@ -186,6 +186,65 @@ fn claude_finds_or_makes_a_ticket_and_picks_the_product() {
 }
 
 #[test]
+fn a_reused_ticket_gets_only_the_routing_fields_it_lacks() {
+    let f = json!({
+        "project": {"key": "PROJ"}, "summary": "Sign in screen", "issuetype": {"name": "Task"}, "assignee": {"accountId": "me"},
+        "labels": ["web", "board"], "parent": {"key": "PROJ-1"}, "customfield_10001": "team-web",
+    });
+    let have = json!({"labels": ["qa", "web"], "parent": null, "customfield_10001": null});
+    let (update, added) = jira::fill_in(&f, &have);
+    assert_eq!(update, json!({"labels": ["qa", "web", "board"], "parent": {"key": "PROJ-1"}, "customfield_10001": "team-web"}));
+    assert_eq!(added, vec!["labels board", "parent PROJ-1", "customfield_10001"]);
+
+    let complete = json!({"labels": ["web", "board"], "parent": {"key": "PROJ-7"}, "customfield_10001": "team-ios"});
+    let (update, added) = jira::fill_in(&f, &complete);
+    assert_eq!(update, json!({}), "a ticket with its own parent and team keeps them");
+    assert!(added.is_empty());
+}
+
+#[test]
+fn claude_and_the_desk_are_told_to_fill_in_a_reused_ticket_and_say_what_they_added() {
+    let b = board_with(|c, d| {
+        c.jira.via = "claude".into();
+        c.jira.labels = vec!["board".into()];
+        fake_claude(c, d);
+    });
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.app.db.update("goals", &json!(g), fields!["epic_key" => "PROJ-1"]).unwrap();
+    let t = b.new_task(json!({"goal_id": g, "jira": "create", "title": "Sign in screen"}));
+    b.answer(json!({"ok": true, "key": "PROJ-9", "status": "To Do", "found": true, "added": ["labels board", "parent PROJ-1"]}));
+    b.tick();
+    let args = b.claude_args();
+    assert!(args.contains("use it: don't make another."), "{args}");
+    assert!(args.contains("set only what it lacks of the fields below"), "{args}");
+    assert!(args.contains("never move it from a different parent"), "{args}");
+    assert!(!args.contains("don't change it"), "{args}");
+    let log = b.get(&format!("/tasks/T{t}/log")).to_string();
+    assert!(log.contains("Linked PROJ-9 (To Do), which already covers it, and gave it labels board; parent PROJ-1"), "{log}");
+
+    let intro = jira_desk::intro(&b.app);
+    assert!(intro.contains("Give a ticket you use only what it lacks"), "{intro}");
+    assert!(intro.contains("added=\"labels web; parent PROJ-1\""), "{intro}");
+}
+
+#[test]
+fn the_desk_reports_what_it_gave_a_reused_ticket() {
+    let b = board_with(|c, _| {
+        c.jira.auto_ticket = true;
+        c.jira.desk = true;
+    });
+    let t = b.new_task(json!({}));
+    b.tick();
+    let jid = b.jobs("kind = 'jira'")[0].id();
+    b.post(&format!("/jira/jobs/J{jid}"), json!({"ok": true, "key": "PROJ-31", "status": "To Do", "found": true, "added": "labels web; parent PROJ-1"}));
+    let job = b.jobs(&format!("id = {jid}")).remove(0);
+    let result: Value = serde_json::from_str(job.s("result").unwrap()).unwrap();
+    assert_eq!(result["added"], json!(["labels web", "parent PROJ-1"]));
+    let log = b.get(&format!("/tasks/T{t}/log")).to_string();
+    assert!(log.contains("Linked PROJ-31 (To Do), which already covers it, and gave it labels web; parent PROJ-1"), "{log}");
+}
+
+#[test]
 fn qa_checks_jira_through_claude_with_one_batched_search() {
     let b = board_with(|c, d| {
         c.jira.via = "claude".into();

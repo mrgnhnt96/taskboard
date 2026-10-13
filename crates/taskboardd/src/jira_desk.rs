@@ -118,11 +118,11 @@ pub fn intro(app: &App) -> String {
             crate::jira_claude::cloud_id(app)
         ),
         "The board sends each job here as a message starting with [task-board:J<n>]. For each one:".into(),
-        "1. Search Jira for an open ticket that already covers the work (its summary, its description, the goal's epic). If one does, use it; never make a duplicate.".into(),
+        "1. Search Jira for an open ticket that already covers the work (its summary, its description, the goal's epic). If one does, use it; never make a duplicate. Give a ticket you use only what it lacks of the fields the job gives: the labels it doesn't have added to its own (send the whole merged list), the parent epic when it has none, any other field when it's empty. Change nothing else on it, and never move it from a different parent.".into(),
         "2. Only if none does, make the ticket with exactly the fields the job gives.".into(),
         format!(
-            "3. Report right away: {tb} jira J<n> ok key=PROJ-123 status=\"To Do\" (add found=yes when it was already there, and \
-             product=<name> when the job asked you to pick one), or {tb} jira J<n> fail \"<why>\" when it can't be done."
+            "3. Report right away: {tb} jira J<n> ok key=PROJ-123 status=\"To Do\" (add found=yes when it was already there, with \
+             added=\"labels web; parent PROJ-1\" for what you gave it, and product=<name> when the job asked you to pick one), or {tb} jira J<n> fail \"<why>\" when it can't be done."
         ),
         format!(
             "Never ask {} anything, never change code, and don't take board tasks. Keep this terminal open: the next job comes here. \
@@ -146,7 +146,7 @@ pub fn job_text(app: &App, j: &Row) -> Result<String> {
     }
     Ok(format!(
         "[task-board:{n}] Jira desk job {n}.\n{what}\n\nWhen it's done: {tb} jira {n} ok key=<KEY> status=\"<status>\" (found=yes if it was \
-         already there{}), or {tb} jira {n} fail \"<why>\".",
+         already there, with added=\"<what you gave it>\"{}), or {tb} jira {n} fail \"<why>\".",
         if g.as_ref().is_some_and(|g| has(g.s("product"))) || app.cfg.jira.products.is_empty() { "" } else { ", product=<name> for the product you picked" }
     ))
 }
@@ -242,7 +242,7 @@ pub fn state(app: &App) -> Result<Value> {
     }))
 }
 
-/// `POST /jira/jobs/:id {ok, key, status, found, product, message}`: the desk's report on a job
+/// `POST /jira/jobs/:id {ok, key, status, found, added, product, message}`: the desk's report on a job
 /// (`tb jira J12 ok key=PROJ-1 status="To Do"`).
 pub fn report(app: &App, job_id: i64, body: &Value) -> Result<Value> {
     let Some(j) = app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![job_id])? else {
@@ -267,7 +267,7 @@ pub fn report(app: &App, job_id: i64, body: &Value) -> Result<Value> {
         p if p.is_empty() => Value::Null,
         p => json!(jira::clean_product(app, &p)?),
     };
-    let extra = json!({"found": as_bool(body.get("found"), false), "product": product});
+    let extra = json!({"found": as_bool(body.get("found"), false), "product": product, "added": body_str(body, "added").replace(';', ",")});
     app.db.tx(|| {
         jira::finish_with(
             app,

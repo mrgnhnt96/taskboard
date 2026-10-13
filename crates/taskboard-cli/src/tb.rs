@@ -228,14 +228,14 @@ enum Cmd {
         goal: Option<String>,
     },
     /// Jira: how it's set up and its jobs, one job (J12), or the Jira desk's report on one:
-    /// tb jira J12 ok key=PROJ-1 status="To Do" [found=yes] [product=web] / tb jira J12 fail "<why>"
+    /// tb jira J12 ok key=PROJ-1 status="To Do" [found=yes [added="labels web"]] [product=web] / tb jira J12 fail "<why>"
     Jira {
         /// J12
         job: Option<String>,
         /// ok or fail
         #[arg(value_parser = ["ok", "fail"])]
         result: Option<String>,
-        /// key=… status=… found=yes product=…, or (with fail) why
+        /// key=… status=… found=yes added=… product=…, or (with fail) why
         rest: Vec<String>,
     },
     /// Add, change or delete a task
@@ -1907,7 +1907,7 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
     let mut why = vec![];
     for r in rest {
         match r.split_once('=') {
-            Some((k, v)) if ["key", "status", "found", "product"].contains(&k.to_lowercase().as_str()) => {
+            Some((k, v)) if ["key", "status", "found", "added", "product"].contains(&k.to_lowercase().as_str()) => {
                 let k = k.to_lowercase();
                 b[&k] = if k == "found" { json!(matches!(v.to_lowercase().as_str(), "yes" | "true" | "1")) } else { json!(v) };
             }
