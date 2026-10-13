@@ -701,9 +701,72 @@ fn it_is_the_goal_only_when_the_goal_was_spoken_of_last() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// #T45: a prompt that asks for a new goal and its start in one breath, or a bare "start it" after the
+/// prompt that made it, runs the goal the conversation made after that prompt.
+#[test]
+fn a_prompt_that_asks_for_a_new_goal_and_its_start_runs_it() {
+    let mut runs: Vec<Vec<&str>> = vec![];
+    for ask in [
+        "say:explain that in a new goal to midna in taskboard and start it",
+        "say:create a new goal and start it",
+        "say:make a goal for the export screen and run it",
+        "say:put this in a goal and kick it off",
+        "say:write this up as a new goal and queue it",
+    ] {
+        runs.push(vec![ask, "goal new"]);
+    }
+    for then in ["say:start it", "say:run it", "say:queue it"] {
+        runs.push(vec!["say:explain that in a new goal to midna in taskboard", "goal new", then]);
+        runs.push(vec!["say:put this in a goal", "goal new", "agent:Made G with two tasks.", "say:thanks", then]);
+    }
+    let refused: Vec<Vec<&str>> = vec![
+        // Take-backs, questions, conditions and times.
+        vec!["say:create a new goal but don't start it", "goal new"],
+        vec!["say:explain that in a new goal to midna in taskboard and start it", "goal new", "say:wait"],
+        vec!["say:create a new goal and start it tomorrow", "goal new"],
+        vec!["say:make a goal for the export screen and run it once T3 lands", "goal new"],
+        vec!["say:can you make a goal for the export screen and run it?", "goal new"],
+        vec!["say:should I put this in a goal and start it?", "goal new"],
+        // Quoted or pasted text.
+        vec!["say:> create a new goal and start it", "goal new"],
+        // "It" with no goal made after the prompt.
+        vec!["say:create a new goal and start it"],
+        vec!["say:start it"],
+        // "Put it in the goal" adds to a goal; it asks for no new one.
+        vec!["say:put the fix in the goal and run it", "goal new"],
+        // The prompt made a goal and a task beside it: "it" could be either.
+        vec!["say:make a goal for the export screen and a task for the footer, and start it", "goal new", "task alone"],
+        vec!["say:make a goal for the export screen and a task for the footer", "goal new", "task alone", "say:start it"],
+        vec!["say:put this in a goal", "goal new", "say:and make a task for the footer", "task alone", "say:start it"],
+    ];
+    let wrong = goal_cases_wrong(&runs, &refused);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// When the prompt made a goal, "start it" is the goal: not one of its planned tasks, and not a task made
+/// beside it.
+#[test]
+fn start_it_after_a_new_goal_starts_none_of_its_tasks() {
+    let b = board();
+    b.said("make a goal for the export screen and start it");
+    let g = b.goal_new();
+    let planned = b.app.db.q("SELECT id FROM tasks WHERE goal_id = ? ORDER BY id", p![g]).unwrap()[0].i("id").unwrap();
+    let (code, why) = b.tb_start(planned).unwrap_err();
+    assert_eq!(code, 403, "{why}");
+
+    let b = board();
+    b.said("make a goal for the export screen and a task for the footer, and queue it");
+    let g = b.goal_new();
+    let alone = b.new_task();
+    let (code, why) = b.tb_start(alone).unwrap_err();
+    assert_eq!(code, 403, "{why}");
+    assert!(why.contains("Only a human can start"), "{why}");
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+}
+
 /// Each case is a fresh conversation with a planned goal G, the steps in order ("say:" a prompt the
-/// owner types, "agent:" the message the agent ends its turn on, "goal new" / "propose" / "task new" what
-/// the agent's `tb` reports, "plan" the board opening this terminal to edit the goal's plan), then `tb
+/// owner types, "agent:" the message the agent ends its turn on, "goal new" / "propose" / "task new" / "task
+/// alone" (a task in no goal) what the agent's `tb` reports, "plan" the board opening this terminal to edit the goal's plan), then `tb
 /// start G<n>` on the goal: the cases the board gets wrong.
 fn goal_cases_wrong(runs: &[Vec<&str>], refused: &[Vec<&str>]) -> Vec<String> {
     let b = board();
@@ -724,6 +787,9 @@ fn goal_cases_wrong(runs: &[Vec<&str>], refused: &[Vec<&str>]) -> Vec<String> {
                     }
                     "task new" => {
                         b.report("tb.new_task", json!({"title": "Toggle", "goal": format!("G{g}")}));
+                    }
+                    "task alone" => {
+                        b.report("tb.new_task", json!({"title": "Footer"}));
                     }
                     "plan" | "plan other" => {
                         let other = if *step == "plan" { g } else { b.goal() };

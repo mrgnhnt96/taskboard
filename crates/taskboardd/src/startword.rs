@@ -1035,6 +1035,9 @@ pub struct Prompt {
     pub text: String,
     /// The tasks the conversation made in reply to this prompt (after it, before the next one), in order.
     pub made: Vec<i64>,
+    /// The conversation made a goal in reply to it (`tb goal new`): "start it" there means the goal, not
+    /// its tasks or a task made beside it.
+    pub made_goal: bool,
     /// Only the start of the prompt reached the board (the hook before beta.16 dropped the rest): what
     /// it says past that is unknown. A prompt cut by [`keep_ends`] keeps its end, and isn't this.
     pub clipped: bool,
@@ -1073,6 +1076,9 @@ fn unnamed_tasks(prompts: &[Prompt], r: &Reading, ask: &Ask) -> Vec<i64> {
     let Some(p) = prompts.first() else { return vec![] };
     let first = |made: &[i64]| made.first().copied().into_iter().collect();
     if r.makes {
+        if p.made_goal {
+            return vec![];
+        }
         return if *ask == Ask::Them { p.made.clone() } else { first(&p.made) };
     }
     // The latest prompt the conversation made tasks in reply to, and the prompts since, which made none
@@ -1083,7 +1089,7 @@ fn unnamed_tasks(prompts: &[Prompt], r: &Reading, ask: &Ask) -> Vec<i64> {
     if !prompts[1..1 + back].iter().all(quiet) {
         return vec![];
     }
-    if prev.boards() || prev.clipped || !read(&prev.text).makes || !BARE_ASK_RE.is_match(owners_text(&p.text).trim()) {
+    if prev.boards() || prev.clipped || prev.made_goal || !read(&prev.text).makes || !BARE_ASK_RE.is_match(owners_text(&p.text).trim()) {
         return vec![];
     }
     match ask {
@@ -1268,13 +1274,17 @@ fn prompts_of(app: &App, sid: &str) -> Result<Vec<Prompt>> {
         match r.st("kind").as_str() {
             "reply" => reply = reply_end(r),
             k if k == MADE => {
-                if let (Some(p), Ok(made)) = (prompts.last_mut(), r.st("data").parse()) {
+                let Some(p) = prompts.last_mut() else { continue };
+                let data = r.st("data");
+                if let Ok(made) = data.parse() {
                     p.made.push(made);
+                } else if data.starts_with(['G', 'g']) {
+                    p.made_goal = true;
                 }
             }
             _ => {
                 let (text, clipped) = typed(r);
-                prompts.push(Prompt { text, made: vec![], clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: reply.take() });
+                prompts.push(Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: reply.take(), ..Prompt::default() });
             }
         }
     }
@@ -1824,7 +1834,8 @@ fn prompt_topic(owners: &str) -> Option<Topic> {
 static MAKE_GOAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(concat!(
         r"(?i)\b(?:make|create|add|set\s+up|draft|write\s+up|put\s+together|plan\s+out|a\s+new)\b[^.!?;\n]*\bgoals?\b(?:[^-]|$)|",
-        r"\b(?:plan|make|turn|put)\b[^.!?;\n]*\b(?:as|into)\s+(?:a|one|the)\s+(?:new\s+|single\s+)?goal\b"
+        r"\b(?:plan|make|turn|put)\b[^.!?;\n]*\b(?:as|into)\s+(?:a|one|the)\s+(?:new\s+|single\s+)?goal\b|",
+        r"\b(?:put|write|explain|describe|capture|lay\s+out|spell\s+out|sum\s+up|wrap)\b[^.!?;\n]*\bin(?:to)?\s+(?:a|one)\s+(?:new\s+|single\s+)?goal\b"
     ))
     .unwrap()
 });
@@ -2309,7 +2320,8 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
         theirs.extend(r.i("goal"));
     }
     let ours = theirs.contains(&id);
-    // Oldest first: (prompt, goals made in reply to it, the agent's message before it).
+    // Oldest first: (prompt, goals made in reply to it, the agent's message before it). The prompt's
+    // `made` is the tasks made in reply to it in no goal: with them, "start it" could mean either.
     let mut said: Vec<(Prompt, Vec<i64>, Option<String>)> = vec![];
     let mut reply: Option<String> = None;
     // The goals the conversation made, oldest first.
@@ -2325,6 +2337,13 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
                 }
             }
             k if k == MADE => {
+                if let (Some(p), Ok(task)) = (said.last_mut(), r.st("data").parse::<i64>()) {
+                    let goal = app.db.q("SELECT goal_id FROM tasks WHERE id = ?", p![task])?.first().and_then(|t| t.i("goal_id"));
+                    if goal.is_none() {
+                        p.0.made.push(task);
+                    }
+                    continue;
+                }
                 let made: Option<i64> = r.st("data").strip_prefix(['G', 'g']).and_then(|n| n.parse().ok());
                 made_goals.extend(made);
                 if let (Some(p), Some(g)) = (said.last_mut(), made) {
@@ -2333,7 +2352,7 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
             }
             _ => {
                 let (text, clipped) = typed(r);
-                said.push((Prompt { text, made: vec![], clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: None }, vec![], reply.take()));
+                said.push((Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), ..Prompt::default() }, vec![], reply.take()));
             }
         }
     }
@@ -2375,7 +2394,9 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
                 let spoke = before.as_deref().and_then(|b| antecedent(&CODE_RE.replace_all(b, "\n"), true));
                 let reply_other = matches!(spoke, Some(Antecedent::Topic(Topic::Other))) || before.as_deref().is_some_and(asks_other);
                 let only = (only || newest) && (spoke.is_some() || prompt != Some(Topic::Other));
-                let asked_for = |p: &Prompt, made: &[i64]| !p.boards() && !p.clipped && made.last() == Some(&id) && MAKE_GOAL_RE.is_match(&owners_text(&p.text));
+                let asked_for = |p: &Prompt, made: &[i64]| {
+                    !p.boards() && !p.clipped && made.last() == Some(&id) && p.made.is_empty() && MAKE_GOAL_RE.is_match(&owners_text(&p.text))
+                };
                 // Only the word to go ("do it") answers whatever the agent just asked or offered: the run
                 // only when it asked about that (`asked`), or asked nothing.
                 let go = GOAL_GO_RE.is_match(own.trim()) && !before.as_deref().is_some_and(asks_any);
@@ -2386,7 +2407,10 @@ pub fn owners_goal_word(app: &App, sid: &str, id: i64) -> Result<Option<String>>
                 let before = said.iter().skip(1).take(UNNAMED_REACH).position(|(_, m, _)| !m.is_empty()).map(|b| 1 + b);
                 let quiet = |q: &Prompt| !q.boards() && !q.clipped && ACK_RE.is_match(owners_text(&q.text).trim());
                 let earlier = before.is_some_and(|b| said[1..b].iter().all(|(q, ..)| quiet(q)) && asked_for(&said[b].0, &said[b].1));
-                it = asked || names || asked_for(p, made_here) || (bare && !reply_other && (earlier || only));
+                // The latest prompt the conversation made something in reply to also got a task outside the
+                // goal: "start it" could be that.
+                let mixed = said.iter().take(1 + UNNAMED_REACH).find(|(q, m, _)| !m.is_empty() || !q.made.is_empty()).is_some_and(|(q, ..)| !q.made.is_empty());
+                it = asked || names || asked_for(p, made_here) || (bare && !reply_other && !mixed && (earlier || only));
             }
             GoalPrompt { prompt: p.clone(), ours, it, asked }
         })
