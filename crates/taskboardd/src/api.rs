@@ -1009,6 +1009,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
             planned |= crate::stack::set(app, &moved, &body["stack_on"], &who)?;
         }
+        if has_key("stack_merge") {
+            planned |= crate::stack::set_merge(app, &board::get_task(app, id)?, &body["stack_merge"], &who)?;
+        }
         if has_key("ships_pr") {
             planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], &who)?;
         }

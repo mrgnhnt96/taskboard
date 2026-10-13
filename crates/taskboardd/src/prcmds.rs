@@ -236,8 +236,14 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
     if let Some(e) = rec["tasks_error"].as_str() {
         out.push(format!("couldn't read its PR tasks ({e})"));
     }
-    if let Some(b) = stacked_base(app, t, rec)? {
-        out.push(b);
+    // A head-merge PR merges into its parent's unmerged branch: that's where it goes, not a hold.
+    if !crate::stack::head(t) {
+        if let Some(b) = stacked_base(app, t, rec)? {
+            out.push(b);
+        }
+    }
+    if let Some(h) = crate::stack::stack_hold(app, t)? {
+        out.push(h);
     }
     Ok(out)
 }

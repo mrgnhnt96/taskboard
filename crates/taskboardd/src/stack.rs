@@ -2,6 +2,10 @@
 //! before that PR merges. The task waits for its parent like `waits_for` (in any goal), its worktree
 //! starts from the parent's branch, its PR goes into the parent's branch and waits there (`waits`)
 //! until the parent's PR merges, and then the board points it at the parent's own base.
+//!
+//! That's a tail merge, the default. A head merge (`--stack-merge head`) doesn't wait: the child's PR
+//! goes through review and merges into the parent's branch, it's never pointed anywhere else, and the
+//! parent's PR holds (`stack`) until each of its head-merge children has merged into it.
 
 use serde_json::{json, Value};
 
@@ -12,6 +16,44 @@ use crate::{board, fields, p, prflow, waitsfor};
 /// The task this one stacks on.
 pub fn parent_id(t: &Row) -> Option<i64> {
     t.i("pr_after").filter(|n| *n > 0)
+}
+
+/// How the task's PR leaves its parent's branch: `head` merges into it, `tail` (the default) waits for
+/// the parent to merge and is then pointed at the parent's base.
+pub fn mode(t: &Row) -> &'static str {
+    if head(t) { "head" } else { "tail" }
+}
+
+pub fn head(t: &Row) -> bool {
+    parent_id(t).is_some() && t.s("stack_merge") == Some("head")
+}
+
+/// A stack-merge value from a body: `head` is stored, `tail` (or none) is the default and stored as NULL.
+pub fn clean_merge(value: &Value) -> Result<Option<&'static str>> {
+    match value.as_str().map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("") | Some("tail") => Ok(None),
+        Some("head") => Ok(Some("head")),
+        Some(other) => err(400, format!("“{other}” isn't a stack merge; give head or tail.")),
+    }
+}
+
+/// Sets how a stacked task's PR merges from a body's `stack_merge`, logging the change. Refused for a
+/// task that stacks on nothing. False when it didn't change.
+pub fn set_merge(app: &App, t: &Row, value: &Value, who: &str) -> Result<bool> {
+    let m = clean_merge(value)?;
+    if parent_id(t).is_none() {
+        return err(400, format!("{} doesn't stack on another task, so it has no stack merge; give it one with --stack-on T<n>.", rf("task", t.id())));
+    }
+    if m.is_some() == head(t) {
+        return Ok(false);
+    }
+    board::update_task(app, t.id(), fields!["stack_merge" => m])?;
+    let text = match m {
+        Some(_) => "Head-merges its stack: its PR merges into its parent's branch",
+        None => "Tail-merges its stack: its PR moves to the main branch once its parent's merges",
+    };
+    board::log_event(app, t.id(), who, "note", text)?;
+    Ok(true)
 }
 
 pub fn parent(app: &App, t: &Row) -> Result<Option<Row>> {
@@ -114,7 +156,10 @@ pub fn set(app: &App, t: &Row, value: &Value, who: &str) -> Result<bool> {
     if n == parent_id(t) {
         return Ok(false);
     }
-    board::update_task(app, t.id(), fields!["pr_after" => n])?;
+    match n {
+        Some(_) => board::update_task(app, t.id(), fields!["pr_after" => n])?,
+        None => board::update_task(app, t.id(), fields!["pr_after" => n, "stack_merge" => Value::Null])?,
+    };
     let text = match n {
         Some(n) => format!("Stacks on {}: its PR builds on that task's PR", rf("task", n)),
         None => "Stacks on no other task".into(),
@@ -146,20 +191,38 @@ pub fn base_branch(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(branch(&p))
 }
 
-/// The task's PR has to wait for its parent's to merge first.
+/// The task's PR has to wait for its parent's to merge first. A head merge doesn't: it merges into it.
 pub fn holds(app: &App, t: &Row) -> Result<bool> {
+    if head(t) {
+        return Ok(false);
+    }
     Ok(parent(app, t)?.map(|p| !merged(&p)).unwrap_or(false))
+}
+
+/// Why this task's PR holds for its stack: the first head-merge child that has to merge into it first,
+/// while it's open or its PR is.
+pub fn stack_hold(app: &App, t: &Row) -> Result<Option<String>> {
+    let Some(k) = children(app, t.id())?.into_iter().find(head) else { return Ok(None) };
+    let r = rf("task", k.id());
+    Ok(Some(match k.i("pr_num") {
+        Some(n) => format!("{r}'s PR #{n} head-merges into it and has to merge first"),
+        None => format!("{r} head-merges into it, so its PR has to merge first"),
+    }))
 }
 
 /// What the app and `tb` show about the PR a task stacks on.
 pub fn card(app: &App, t: &Row) -> Result<Value> {
     let Some(p) = parent(app, t)? else { return Ok(Value::Null) };
     Ok(json!({"ref": rf("task", p.id()), "title": p.v("title"), "num": p.v("pr_num"), "url": p.v("pr_url"),
-              "branch": branch(&p), "merged": merged(&p), "line": line(&p)}))
+              "branch": branch(&p), "merged": merged(&p), "merge": mode(t), "line": line(&p, t)}))
 }
 
-/// "Stacks on T3's PR #12" (or its branch, before the PR is open).
-pub fn line(p: &Row) -> String {
+/// "Stacks on T3's PR #12 · head merge" (or its branch, before the PR is open).
+pub fn line(p: &Row, t: &Row) -> String {
+    format!("{} · {} merge", parent_line(p), mode(t))
+}
+
+fn parent_line(p: &Row) -> String {
     let r = rf("task", p.id());
     match p.i("pr_num") {
         Some(n) if merged(p) => format!("Stacked on {r}'s PR #{n}, which is merged"),
@@ -181,6 +244,14 @@ pub fn handoff_line(app: &App, t: &Row, remote: &str) -> Result<Option<String>> 
     let Some(b) = branch(&p) else {
         return Ok(Some(format!("This task stacks on {r}: its PR builds on that task's branch, once it's known (tb status {r}).")));
     };
+    if head(t) {
+        return Ok(Some(format!(
+            "This task head-merges into {r} (branch {b}{}): cut this task's branch from {remote}/{b}, rebase onto it (never merge), \
+             and open the PR into {b}, not the main branch. Once it's reviewed, tb pr merge merges it into {b}; it's never moved \
+             to the main branch: {r}'s PR takes it there.",
+            p.i("pr_num").map(|n| format!(", PR #{n}")).unwrap_or_default()
+        )));
+    }
     Ok(Some(format!(
         "This task stacks on {r} (branch {b}{}): cut this task's branch from {remote}/{b}, rebase onto it (never merge), \
          and open the PR into {b}, not the main branch. The PR waits there until {r}'s merges; then the board points it at \
@@ -214,6 +285,9 @@ pub fn retarget(app: &App) -> Result<i64> {
     )?;
     let mut moved = 0;
     for t in rows {
+        if head(&t) {
+            continue;
+        }
         let Some(p) = parent(app, &t)? else { continue };
         if !merged(&p) || !board::pr_still_open(&t) {
             continue;

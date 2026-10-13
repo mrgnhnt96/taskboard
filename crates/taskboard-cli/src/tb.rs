@@ -996,6 +996,10 @@ enum TaskCmd {
         /// Its PR builds on this task's PR (any goal): it starts once that's done, from its branch
         #[arg(long = "stack-on", value_name = "T12")]
         stack_on: Option<String>,
+        /// How its stacked PR merges: tail (the default) moves it to the main branch once its parent's
+        /// merges; head merges it into its parent's branch, and the parent's PR takes it to main
+        #[arg(long = "stack-merge", value_parser = ["head", "tail"], requires = "stack_on")]
+        stack_merge: Option<String>,
         /// It ends in a PR, whatever its project does
         #[arg(long, conflicts_with = "no_pr")]
         pr: bool,
@@ -1053,6 +1057,10 @@ enum TaskCmd {
         /// Its PR builds on this task's PR (any goal), or none
         #[arg(long = "stack-on", value_name = "T12|none")]
         stack_on: Option<String>,
+        /// How its stacked PR merges: tail (the default) moves it to the main branch once its parent's
+        /// merges; head merges it into its parent's branch, and the parent's PR takes it to main
+        #[arg(long = "stack-merge", value_parser = ["head", "tail"])]
+        stack_merge: Option<String>,
         /// Whether it ends in a PR: yes, no, or auto (its project's default)
         #[arg(long, value_parser = ["yes", "no", "auto"])]
         pr: Option<String>,
@@ -1442,6 +1450,9 @@ fn print_pr_status(t: &str, v: &Value) {
     }
     if let Some(l) = pr["bar"]["stacks_on"]["line"].as_str() {
         out(l);
+    }
+    if let Some(h) = pr["bar"]["waits_on_stack"].as_str() {
+        out(&format!("Waits on its stack: {h}"));
     }
     if let Some(n) = live["builds_note"].as_str() {
         out(n);
@@ -2428,6 +2439,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
             if let Some(w) = t["waits_for"].as_array().filter(|a| !a.is_empty()) {
                 line += &format!(" · waits for {}", w.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "));
             }
+            if let Some(l) = t["stack_on"]["line"].as_str() {
+                line += &format!(" · {l}");
+            }
             for b in lock_bits(t) {
                 line += &format!(" · {b}");
             }
@@ -3298,6 +3312,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = t.task {
                 let v = c.call("GET", &format!("/tasks/{}", task_ref(&x)?), None)?;
                 out(&format!("{} · {} · {}", v["ref"].as_str().unwrap_or(""), v["title"].as_str().unwrap_or(""), v["status"].as_str().unwrap_or("")));
+                if let Some(l) = v["stack_on"]["line"].as_str() {
+                    out(l);
+                }
                 return Ok(0);
             }
             let v = c.ask("tb.status")?;
@@ -3696,7 +3713,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -3749,6 +3766,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = stack_on {
                     body["stack_on"] = json!(task_ref(&x)?);
                 }
+                if let Some(x) = stack_merge {
+                    body["stack_merge"] = json!(x);
+                }
                 if pr || no_pr {
                     body["ships_pr"] = json!(pr);
                 }
@@ -3776,7 +3796,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, pr, status, merged_note } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -3829,6 +3849,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = stack_on {
                     b["stack_on"] = if x.eq_ignore_ascii_case("none") { json!("none") } else { json!(task_ref(&x)?) };
+                }
+                if let Some(x) = stack_merge {
+                    b["stack_merge"] = json!(x);
                 }
                 if let Some(x) = pr {
                     b["ships_pr"] = json!(x);
@@ -5396,6 +5419,10 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--pr", "--no-pr"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-on", "none", "--pr", "auto"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--pr", "maybe"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--stack-on", "T3", "--stack-merge", "head"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--stack-merge", "head"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "tail"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "sideways"]).is_err());
         assert!(Cli::try_parse_from(["tb", "done", "x", "--no-pr", "covered by T3", "--no-evidence", "no UI"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "done", "x", "--pr-body", "body.md", "--title", "Add x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "done", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());

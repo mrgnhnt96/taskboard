@@ -167,6 +167,13 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         let t = board::get_task(app, tid)?;
         board::update_task(app, tid, fields!["pr_after" => crate::stack::clean(app, &body["stack_on"], Some(&t))?])?;
     }
+    if body_has(body, "stack_merge") {
+        let t = board::get_task(app, tid)?;
+        if crate::stack::parent_id(&t).is_none() {
+            return err(400, "--stack-merge goes with --stack-on T<n>: only a stacked task has a stack merge.");
+        }
+        board::update_task(app, tid, fields!["stack_merge" => crate::stack::clean_merge(&body["stack_merge"])?])?;
+    }
     if body_has(body, "ships_pr") {
         board::update_task(app, tid, fields!["ships_pr" => projects::clean_ships_pr(&body["ships_pr"])?])?;
     }

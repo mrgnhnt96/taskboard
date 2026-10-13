@@ -185,7 +185,8 @@ fn a_stacked_task_waits_for_its_parent_in_any_goal() {
     b.link(parent, 12, "feat/endpoint");
     let c = b.card(child);
     assert_eq!(c["blocked"], false, "{c}");
-    assert_eq!(c["stack_on"]["line"], format!("Stacks on T{parent}'s PR #12"));
+    assert_eq!(c["stack_on"]["line"], format!("Stacks on T{parent}'s PR #12 · tail merge"));
+    assert_eq!(c["stack_on"]["merge"], "tail");
     let h = handoff::build(&b.app, child).unwrap();
     assert!(h.contains("cut this task's branch from origin/feat/endpoint") && h.contains("open the PR into feat/endpoint"), "{h}");
     let v = steps::vars_for(&b.app, &b.row(child));
@@ -219,6 +220,84 @@ fn a_stacked_pr_waits_on_its_base_then_is_pointed_at_main() {
     assert_eq!(c["pr"]["bar"]["retargeted"], "main", "{c}");
     // Only once.
     assert_eq!(stack::retarget(&b.app).unwrap(), 0);
+}
+
+#[test]
+fn a_stack_merge_needs_a_stack_parent() {
+    let b = new_board();
+    let lone = b.task("Add the endpoint", json!({}));
+    let (code, why) = b.post_err(&format!("/tasks/T{lone}"), json!({"stack_merge": "head"}));
+    assert_eq!(code, 400, "{why}");
+    assert!(why.contains("--stack-on"), "{why}");
+    let (code, why) = b.post_err("/tasks", json!({"title": "Use it", "detail": "Do it.", "project": "webapp", "stack_merge": "head"}));
+    assert_eq!(code, 400, "{why}");
+
+    let child = b.task("Use the endpoint", json!({"stack_on": format!("T{lone}"), "stack_merge": "head"}));
+    assert_eq!(b.row(child).s("stack_merge"), Some("head"));
+    let (code, _) = b.post_err(&format!("/tasks/T{child}"), json!({"stack_merge": "sideways"}));
+    assert_eq!(code, 400);
+    b.post(&format!("/tasks/T{child}"), json!({"stack_merge": "tail"}));
+    assert_eq!(b.row(child).s("stack_merge"), None);
+    b.post(&format!("/tasks/T{child}"), json!({"stack_merge": "head"}));
+    assert_eq!(b.card(child)["stack_on"]["merge"], "head");
+
+    // Moving off the stack drops its merge mode with it.
+    b.post(&format!("/tasks/T{child}"), json!({"stack_on": "none"}));
+    assert_eq!(b.row(child).s("stack_merge"), None);
+}
+
+#[test]
+fn a_head_merge_pr_merges_into_its_parent_and_holds_the_parent() {
+    let b = new_board();
+    let parent = b.task("Add the endpoint", json!({}));
+    let child = b.task("Use the endpoint", json!({"stack_on": format!("T{parent}"), "stack_merge": "head"}));
+    b.link(parent, 12, "feat/endpoint");
+    let c = b.card(child);
+    assert_eq!(c["stack_on"]["line"], format!("Stacks on T{parent}'s PR #12 · head merge"), "{c}");
+    let h = handoff::build(&b.app, child).unwrap();
+    assert!(h.contains(&format!("head-merges into T{parent}")) && h.contains("open the PR into feat/endpoint"), "{h}");
+    assert!(h.contains("never moved to the main branch"), "{h}");
+
+    // The parent holds while the child is open, before it has a PR.
+    let pt = b.row(parent);
+    assert_eq!(prflow::phase_of(&b.app, &pt, &jrec(&pt)), "stack");
+    assert_eq!(prflow::label("stack"), "Waits on stack");
+    let why = taskboardd::prcmds::merge_blockers(&b.app, &pt, &jrec(&pt), false).unwrap();
+    assert!(why.iter().any(|w| w.contains(&format!("T{child} head-merges into it"))), "{why:?}");
+
+    // The child's PR goes into the parent's branch and may merge there: no wait on its base.
+    b.link(child, 13, "feat/use");
+    prflow::merge_flow(&b.app, child, vec![("rec", json!({"state": "OPEN", "head": "1".repeat(40), "branch": "feat/use", "base": "feat/endpoint",
+        "checks": [{"name": "build", "state": "passed", "url": "https://ci.example/2"}], "failed": [], "running": 0, "comments": 0, "approvals": 1,
+        "review_decision": "APPROVED", "requested": 1}))]).unwrap();
+    let t = b.row(child);
+    assert_eq!(prflow::phase_of(&b.app, &t, &jrec(&t)), "merge");
+    let why = taskboardd::prcmds::merge_blockers(&b.app, &t, &jrec(&t), false).unwrap();
+    assert!(why.is_empty(), "{why:?}");
+    let pt = b.row(parent);
+    let why = taskboardd::prcmds::merge_blockers(&b.app, &pt, &jrec(&pt), false).unwrap();
+    assert!(why.iter().any(|w| w.contains(&format!("T{child}'s PR #13 head-merges into it"))), "{why:?}");
+
+    // Once it merges into the parent's branch, the parent may merge; nothing is ever retargeted.
+    b.post(&format!("/tasks/T{child}/pr/merged"), json!({}));
+    let pt = b.row(parent);
+    assert_eq!(prflow::phase_of(&b.app, &pt, &jrec(&pt)), "merge");
+    b.post(&format!("/tasks/T{parent}/pr/merged"), json!({}));
+    assert_eq!(stack::retarget(&b.app).unwrap(), 0);
+    let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap_or_default();
+    assert!(!log.contains("--base main"), "{log}");
+}
+
+#[test]
+fn a_tail_merge_child_does_not_hold_its_parent() {
+    let b = new_board();
+    let parent = b.task("Add the endpoint", json!({}));
+    let child = b.task("Use the endpoint", json!({"stack_on": format!("T{parent}"), "stack_merge": "tail"}));
+    b.link(parent, 12, "feat/endpoint");
+    b.link(child, 13, "feat/use");
+    let pt = b.row(parent);
+    assert_eq!(prflow::phase_of(&b.app, &pt, &jrec(&pt)), "merge");
+    assert!(stack::stack_hold(&b.app, &pt).unwrap().is_none());
 }
 
 fn jrec(t: &Row) -> Value {
