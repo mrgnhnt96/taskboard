@@ -27,18 +27,7 @@ mod ui;
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, ReportIssue]);
-
-/// Gathers this Mac's details off the UI thread, then opens the prefilled GitHub issue (`tb report`).
-fn report_issue() {
-    std::thread::spawn(|| {
-        let url = match taskboardd::config::Config::load() {
-            Ok(cfg) => taskboardd::report::issue_url(&taskboardd::report::gather(&cfg, "app")),
-            Err(_) => format!("https://github.com/{}/issues/new", taskboardd::report::REPO),
-        };
-        let _ = std::process::Command::new("open").arg(url).status();
-    });
-}
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings]);
 
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
@@ -71,7 +60,6 @@ fn main() {
         cx.on_action(move |_: &OpenSettings, cx| {
             let _ = settings::open(b.clone(), cx);
         });
-        cx.on_action(|_: &ReportIssue, _| report_issue());
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -111,11 +99,6 @@ fn main() {
                     MenuItem::separator(),
                     MenuItem::action("Refresh", app::Refresh),
                 ],
-                disabled: false,
-            },
-            Menu {
-                name: "Help".into(),
-                items: vec![MenuItem::action("Report an Issue…", ReportIssue)],
                 disabled: false,
             },
         ]);
