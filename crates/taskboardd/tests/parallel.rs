@@ -316,6 +316,51 @@ fn a_finished_clean_worktree_is_removed_and_a_dirty_one_kept() {
 }
 
 #[test]
+fn a_pr_task_keeps_its_worktree_until_its_pr_is_linked_and_finished() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let (waiting, canceled, merged) =
+        (b.task("No PR yet", json!({"goal_id": g, "ships_pr": true})), b.task("Canceled", json!({"goal_id": g, "ships_pr": true})), b.task("Merged", json!({"goal_id": g, "ships_pr": true})));
+    runner::start_queued(&b.app).unwrap();
+    for t in [waiting, canceled, merged] {
+        b.app.db.x("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?", p![t]).unwrap();
+    }
+    b.app.db.x("UPDATE tasks SET no_pr = 'nothing to change' WHERE id = ?", p![canceled]).unwrap();
+    b.app.db.x("UPDATE tasks SET pr_num = 3, pr_repo = 'acme/webapp', pr_state = 'MERGED', pr_phase = 'merged' WHERE id = ?", p![merged]).unwrap();
+    assert_eq!(worktrees::clean_up(&b.app).unwrap(), vec![canceled, merged], "a PR task with no PR yet keeps its worktree");
+    assert!(Path::new(&format!("{}/.claude/worktrees/T{waiting}", b.repo())).exists());
+
+    b.app.db.x("UPDATE tasks SET pr_num = 4, pr_repo = 'acme/webapp', pr_state = 'OPEN', pr_phase = 'review' WHERE id = ?", p![waiting]).unwrap();
+    assert!(worktrees::clean_up(&b.app).unwrap().is_empty(), "nor while its PR is open");
+    b.app.db.x("UPDATE tasks SET pr_state = 'CLOSED', pr_phase = 'declined' WHERE id = ?", p![waiting]).unwrap();
+    assert_eq!(worktrees::clean_up(&b.app).unwrap(), vec![waiting]);
+}
+
+#[test]
+fn a_stacked_task_starts_from_its_parent_s_branch_where_it_exists() {
+    let b = new_board();
+    git_repo(&b);
+    let repo = b.repo();
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let parent = b.task("Parent", json!({}));
+    b.app.db.x("UPDATE tasks SET status = 'done', context = '{\"where\": {\"branch\": \"feature/parent\"}}' WHERE id = ?", p![parent]).unwrap();
+    let start_of = |title: &str| {
+        let t = b.task(title, json!({"goal_id": g}));
+        b.app.db.x("UPDATE tasks SET pr_after = ? WHERE id = ?", p![parent, t]).unwrap();
+        worktrees::ensure(&b.app, &board::get_task(&b.app, t).unwrap()).unwrap();
+        board::task_context(&board::get_task(&b.app, t).unwrap()).s("worktree_base").unwrap_or("").to_string()
+    };
+    assert_eq!(start_of("Ahead of its parent"), "origin/main", "a parent branch that exists nowhere falls back to the base");
+    git(Path::new(&repo), &["branch", "feature/parent"]);
+    assert_eq!(start_of("Parent not pushed"), "feature/parent", "then the local branch");
+    git(Path::new(&repo), &["push", "-q", "origin", "feature/parent"]);
+    assert_eq!(start_of("Parent pushed"), "origin/feature/parent", "then the remote one");
+}
+
+#[test]
 fn a_hook_from_another_tasks_worktree_leaves_the_task_where_it_was() {
     let b = new_board();
     let wt = |n: &str| format!("{}/.claude/worktrees/{n}", b.repo());

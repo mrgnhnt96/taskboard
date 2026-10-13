@@ -822,3 +822,76 @@ fn the_qa_poll_s_read_and_the_board_s_own_move_still_apply_over_a_stream_status(
     b.send(batch(vec![jira_at("e2", "PROJ-1", "In Progress", &ago(30.0))]));
     assert_eq!(board::get_task(&b.app, t).unwrap().st("jira_status"), "In Review", "an event from before the board's move doesn't undo it");
 }
+
+#[test]
+fn the_owner_s_pr_opened_outside_the_board_is_linked_to_its_task_by_branch() {
+    let b = board();
+    prhost::install(&b.app, FakeHost::new("bitbucket", host_rec("h1")));
+    let task_on = |branch: &str, ships: bool| {
+        let id = b.post("/tasks", json!({"title": format!("On {branch}"), "detail": "Do it.", "project": "webapp", "ships_pr": ships}))["id"].as_i64().unwrap();
+        let ctx = json!({"where": {"branch": branch}}).to_string();
+        b.app.db.x("UPDATE tasks SET context = ?, created_at = ? WHERE id = ?", taskboardd::p![ctx, ago(3600.0), id]).unwrap();
+        id
+    };
+    let pr_ev = |id: &str, num: i64, branch: &str, extra: Value| {
+        let mut e = ev(id, "pr", json!({"provider": "bitbucket", "repo": "acme/webapp", "num": num,
+            "url": format!("https://bitbucket.org/acme/webapp/pull-requests/{num}"), "branch": branch, "author": "pat", "state": "open"}));
+        for (k, v) in extra.as_object().unwrap() {
+            e[k] = v.clone();
+        }
+        e
+    };
+    let pr_of = |id: i64| board::get_task(&b.app, id).unwrap().i("pr_num");
+
+    let login = task_on("feature/login", true);
+    let r = b.send(batch(vec![pr_ev("p1", 12, "feature/login", json!({"mine": true, "created_at": ago(60.0)}))]));
+    assert_eq!(r["results"][0]["result"]["task"], format!("T{login}"), "{r}");
+    assert_eq!(pr_of(login), Some(12));
+    assert!(b.get(&format!("tasks/T{login}"))["log"].to_string().contains("Linked PR #12 (acme/webapp)"));
+
+    let theirs = task_on("feature/theirs", true);
+    b.send(batch(vec![pr_ev("p2", 13, "feature/theirs", json!({}))]));
+    assert_eq!(pr_of(theirs), None, "only the owner's PRs count");
+
+    let (dup1, dup2) = (task_on("feature/dup", true), task_on("feature/dup", true));
+    b.send(batch(vec![pr_ev("p3", 14, "feature/dup", json!({"mine": true}))]));
+    assert_eq!((pr_of(dup1), pr_of(dup2)), (None, None), "a branch two tasks work on links neither");
+
+    let older = task_on("feature/older", true);
+    b.send(batch(vec![pr_ev("p4", 15, "feature/older", json!({"mine": true, "created_at": ago(7200.0)}))]));
+    assert_eq!(pr_of(older), None, "a PR opened before the task was made isn't its");
+
+    let no_pr = task_on("feature/research", false);
+    b.send(batch(vec![pr_ev("p5", 16, "feature/research", json!({"mine": true}))]));
+    assert_eq!(pr_of(no_pr), None, "a task that ships no PR gets none");
+
+    let shipped = task_on("feature/shipped", true);
+    b.send(batch(vec![pr_ev("p6", 17, "feature/shipped", json!({"mine": true, "state": "merged"}))]));
+    assert_eq!(pr_of(shipped), Some(17), "a merged one counts too");
+}
+
+#[test]
+fn a_review_hint_reads_its_pr_once_more_after_the_settle_window() {
+    let b = board_with(|c| c.pr.comment_settle_secs = 90.0);
+    let id = b.pr_task(BB);
+    let h = FakeHost::new("bitbucket", host_rec("h1"));
+    prhost::install(&b.app, h.clone());
+    let reread_at = || -> Option<String> {
+        let f: Value = serde_json::from_str(&board::get_task(&b.app, id).unwrap().st("pr_flow")).unwrap();
+        f["reread_at"].as_str().map(|s| s.to_string())
+    };
+    let pr = json!({"provider": "bitbucket", "repo": "acme/webapp", "num": 9});
+    b.send(batch(vec![ev("r1", "review", json!({"pr": pr, "who": "pat", "state": "commented"}))]));
+    assert_eq!(b.rec(id)["head"], "h1", "read at once");
+    let first = reread_at().expect("a second read is due");
+    b.send(batch(vec![ev("c1", "comment", json!({"pr": pr, "comment_id": "c1", "author": "pat", "body": "Why?"}))]));
+    assert!(reread_at().unwrap() >= first, "hints in the window fold into one later read");
+
+    h.rec.lock().head = "h2".into();
+    prflow::late_reads(&b.app).unwrap();
+    assert_eq!(b.rec(id)["head"], "h1", "not before the window is over");
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.reread_at', ?) WHERE id = ?", taskboardd::p![ago(1.0), id]).unwrap();
+    prflow::late_reads(&b.app).unwrap();
+    assert_eq!(b.rec(id)["head"], "h2", "the settled read sees what came after the comments");
+    assert_eq!(reread_at(), None, "once");
+}

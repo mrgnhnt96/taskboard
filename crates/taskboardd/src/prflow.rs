@@ -89,6 +89,78 @@ pub fn link_pr(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// After a review or comment hint: read the PR once more `comment_settle_secs` on (`late_reads`). Hints
+/// within the window fold into one read, at the window after the last.
+pub fn settle_after_hint(app: &App, t: &Row) -> Result<()> {
+    let secs = app.cfg.pr.comment_settle_secs;
+    if secs <= 0.0 {
+        return Ok(());
+    }
+    merge_flow(app, t.id(), fields!["reread_at" => iso(now_ts() + secs)]).map(|_| ())
+}
+
+/// Reads each PR whose settle window after a hint is over, once, whether or not the poll rests.
+pub fn late_reads(app: &App) -> Result<()> {
+    let due = app.db.q(
+        "SELECT * FROM tasks WHERE json_extract(pr_flow, '$.reread_at') IS NOT NULL AND json_extract(pr_flow, '$.reread_at') <= ?",
+        p![now_iso()],
+    )?;
+    for t in due {
+        app.db.tx(|| merge_flow(app, t.id(), fields!["reread_at" => null]).map(|_| ()))?;
+        if !crate::prhost::watched(t.s("pr_host")) || !board::pr_still_open(&t) {
+            continue;
+        }
+        if let Err(e) = refresh_task(app, t.id())? {
+            app.info(format!("prs: reading PR #{} after a review hint: {e}", t.i0("pr_num")));
+        }
+    }
+    Ok(())
+}
+
+/// A pr event for a PR no task has: the owner's open or merged PR whose source branch exactly one
+/// not-done task works on, a task that ships a PR and has none yet, opened after that task was made
+/// (when the event says when, `created_at`). Links it; None when no task fits, or more than one does.
+pub fn link_by_branch(app: &App, ev: &Value) -> Result<Option<i64>> {
+    let branch = body_str(ev, "branch");
+    let state = body_str(ev, "state").to_lowercase();
+    if branch.is_empty() || matches!(state.as_str(), "declined" | "closed" | "superseded") || !crate::prbuilds::owners_event(app, ev)? {
+        return Ok(None);
+    }
+    let Some(pr) = event_link(ev) else { return Ok(None) };
+    let opened = ev["created_at"].as_str().and_then(parse_iso);
+    let mut fits = vec![];
+    for t in app.db.q("SELECT * FROM tasks WHERE status != 'done' AND (pr_repo IS NULL OR pr_repo = '') ORDER BY id", p![])? {
+        if crate::waitsfor::branch_of(&t).as_deref() != Some(branch.as_str()) || !crate::projects::task_ships_pr(app, &t)? {
+            continue;
+        }
+        if opened.is_some_and(|o| t.s("created_at").and_then(parse_iso).is_some_and(|made| o < made)) {
+            continue;
+        }
+        fits.push(t);
+    }
+    if fits.len() != 1 {
+        return Ok(None);
+    }
+    let t = &fits[0];
+    Ok(link_pr(app, t, &pr, board::BOARD)?.then(|| t.id()))
+}
+
+/// The PR an event names, as a link: its `url`, else a GitHub or Bitbucket link built from `host`,
+/// `repo` and `num`.
+fn event_link(ev: &Value) -> Option<PrLink> {
+    if let Some(l) = find_pr(&body_str(ev, "url")) {
+        return Some(l);
+    }
+    let (host, repo) = (body_str(ev, "host").to_lowercase(), body_str(ev, "repo"));
+    let num = ev["num"].as_i64().filter(|n| *n > 0)?;
+    let url = match host.as_str() {
+        "github" => format!("https://github.com/{repo}/pull/{num}"),
+        "bitbucket" => format!("https://bitbucket.org/{repo}/pull-requests/{num}"),
+        _ => return None,
+    };
+    (!repo.is_empty()).then_some(PrLink { host, repo, num, url })
+}
+
 pub fn card(t: &Row) -> Value {
     let Some(phase) = t.s("pr_phase").filter(|p| !p.is_empty()) else { return Value::Null };
     if t.i("pr_num").is_none() {

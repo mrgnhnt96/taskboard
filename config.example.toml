@@ -82,6 +82,7 @@ wake = true                          # bring a done task back when its PR has fa
 # agents_merge = false               # let agents merge an approved, green PR (unset: off; a project can say otherwise; tb project agents-merge sets it on the board, and taskboardd import turns it on unless this says false)
 gh = "gh"
 no_checks_after_mins = 15.0
+comment_settle_secs = 90.0           # read a PR once more this long after a stream review or comment hint (0: never)
 bitbucket_api = "https://api.bitbucket.org/2.0"
 azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, to read failed steps and tests, when none is stored with `tb ci-token set`
 # owner_review = true                # a green PR waits for your review before it moves on (false: the board marks it reviewed for you; tb project owner-review sets it on the board)

@@ -331,7 +331,7 @@ fn owner_author(app: &App, author: &str) -> Result<bool> {
 }
 
 /// The event is the owner's: `mine: true`, or its `author` is the owner (`owner_author`).
-fn owners_event(app: &App, body: &Value) -> Result<bool> {
+pub fn owners_event(app: &App, body: &Value) -> Result<bool> {
     Ok(as_bool(body.get("mine"), false) || owner_author(app, &body_str(body, "author"))?)
 }
 

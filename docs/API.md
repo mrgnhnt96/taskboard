@@ -1010,7 +1010,7 @@ runs nothing else in its scope starts ("Waits while T13 runs alone").
 |---|---|---|
 | `POST /tasks/:id` | `{locks: [str]\|"a, b"\|"none", alone: "goal"\|"board"\|"none"\|bool}` | Lock names are lowercase letters, digits, `.`, `_`, `:` and `-` (400 otherwise). A name no other task uses comes back in `warnings` (a spelling hint). Also on `POST /tasks` and `tb.new_task` / `tb.propose` items. |
 | `GET /locks` | | `{locks: [{name, held_by: "T12"\|null, tasks: ["T13"]}], alone: [{ref, title, scope, goal, running}]}` (`tb locks`). |
-| `POST /goals/:id` | `{worktree_base: "origin/main"\|"off"}` | Each task starts in `<repo>/.claude/worktrees/T<n>`, made with `git fetch` and `git worktree add --detach` at the base. Once the task is finished (failed, or no open PR) and its terminal is gone, the board removes the worktree, or keeps one with uncommitted changes. |
+| `POST /goals/:id` | `{worktree_base: "origin/main"\|"off"}` | Each task starts in `<repo>/.claude/worktrees/T<n>`, made with `git fetch` and `git worktree add --detach` at the base. Once the task is finished (failed, its PR merged or closed, or it ends without a PR; a task that ships a PR keeps it while its PR isn't linked yet) and its terminal is gone, the board removes the worktree, or keeps one with uncommitted changes. A stacked task starts from its parent's branch on the remote, else the local one, else the base. |
 
 `tb propose` and `--task` items take a fourth `::` field, what the task waits for: `"title::detail::2::#1, T14"`, where
 `#k` is the k-th task in the same request (400 when it doesn't point at an earlier one). A fifth field is the files

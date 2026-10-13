@@ -1063,6 +1063,15 @@ fn alert_key(id: i64) -> String {
     format!("master:{}", bref(id))
 }
 
+/// A `master:M<n>` alert holds while its break is open and the owner's: `follow` swaps its line as the
+/// fix moves, and it goes when the break closes or is ruled someone else's, never on task events.
+pub fn alert_resolved(app: &App, a: &Value) -> Result<bool> {
+    let key = a["key"].as_str().unwrap_or("");
+    let Ok(Some(id)) = parse_ref_str(key.trim_start_matches("master:"), "break") else { return Ok(true) };
+    let b = app.db.q1("SELECT state, verdict FROM breaks WHERE id = ?", p![id])?;
+    Ok(b.map(|b| b.s("state") != Some("open") || b.s("verdict") != Some("ours")).unwrap_or(true))
+}
+
 /// A fix task still queued this long after it was made hasn't started on time.
 const START_LATE_SECS: f64 = 300.0;
 /// A break of the owner's still red this long after it opened says so.

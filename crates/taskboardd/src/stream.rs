@@ -516,13 +516,14 @@ fn pr_hint(app: &App, kind: &str, ev: &Value) -> Result<Value> {
     let Some(t) = t else { return Ok(Value::Null) };
     let mut out = json!({"ok": true, "kind": kind, "task": rf("task", t.id())});
     feed::read_pr(app, &t, None, &mut out)?;
+    app.db.tx(|| crate::prflow::settle_after_hint(app, &t))?;
     Ok(out)
 }
 
 /// A pr event as the PR feed's own event (`POST /prs/event`).
 fn as_feed_pr(ev: &Value) -> Value {
     json!({"kind": "pr", "url": ev["url"], "host": ev["provider"], "repo": ev["repo"], "num": ev["num"], "state": ev["state"],
-           "author": ev["author"], "branch": ev["branch"], "head": ev["head"], "source": ev["source"]})
+           "author": ev["author"], "branch": ev["branch"], "head": ev["head"], "created_at": ev["created_at"], "mine": ev["mine"], "source": ev["source"]})
 }
 
 /// A build event as the PR feed's own build event: the PR it's on (if any) names the task.
