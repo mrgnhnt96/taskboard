@@ -609,3 +609,15 @@ fn a_focus_command_gets_the_target_and_kind_and_a_simulator_needs_none() {
     assert_eq!(code, 409);
     assert!(msg.contains("Give it --kind ios or android and its --target"), "{msg}");
 }
+
+#[test]
+fn a_tag_need_in_the_handoff_s_form_gets_the_device() {
+    let b = new_board();
+    b.post("devices", json!({"name": "probe-pixel", "tags": "probephone"}));
+    let t = b.task("Needs a phone", json!({}));
+    b.post(&format!("tasks/T{t}"), json!({"devices": "tag:probephone"}));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["needs_text"], "probephone");
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![t]);
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"]["lent"], json!(["probe-pixel"]));
+}
