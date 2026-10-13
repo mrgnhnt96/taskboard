@@ -1377,6 +1377,55 @@ pub fn note_made(app: &App, sid: &str, id: i64) -> Result<()> {
     crate::board::session_event_with(app, sid, MADE, &format!("Added {}", rf("task", id)), None, Some(&id.to_string()))
 }
 
+/// The plugin's `/start` command as typed (`/start T8`, `/task-board:start G2`, `/start the goal`).
+static START_COMMAND_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)^\s*/(?:task-board:)?start(?:\s+(?P<args>.*))?$").unwrap());
+/// The same command as the transcript writes it: `<command-name>/start</command-name>` and its args.
+static START_TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<command-name>/?(?:task-board:)?start</command-name>").unwrap());
+static COMMAND_ARGS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<command-args>(.*?)</command-args>").unwrap());
+/// A prompt that ends in a lone "go" ("make a task for the footer. go", "T8 go", "go"): its own token,
+/// after a stop, a comma, a dash or a ref, so "ready to go" and "where did it go?" aren't it.
+static GO_END_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[.,;:!?—–\n]|\s-+|\b[TtGg]-?\d+)\s*(?P<go>go)[.!]*\s*$").unwrap());
+
+/// What the owner's `/start` command or a prompt's trailing "go" asks, as a plain ask the check always
+/// takes ("start T8.", "run G2.", "start it."): both are the owner's word, whatever else the prompt
+/// says. `/start` with no task or goal means the terminal's own task or what the turn makes; with "the
+/// goal", the goal. A trailing "go" starts what the prompt before it makes ("make a task for X. go"),
+/// keeping that prompt, or else the tasks and goals it names, or else "it". `None` for any other prompt.
+pub fn start_command(text: &str) -> Option<String> {
+    let (rest, refs) = if let Some(c) = START_COMMAND_RE.captures(text) {
+        (None, c.name("args").map_or("", |m| m.as_str()).to_string())
+    } else if text.trim_start().starts_with('<') && START_TAG_RE.is_match(text) {
+        (None, COMMAND_ARGS_RE.captures(text).map_or(String::new(), |c| c[1].to_string()))
+    } else if text.trim_start().starts_with(['/', '<']) {
+        // Another command ("/review T8 go") is no one's word.
+        return None;
+    } else {
+        let go = GO_END_RE.captures(text)?.name("go")?.start();
+        let rest = &text[..go];
+        // "T7 broke the footer, make a task for it. go" starts the task it makes, not T7.
+        let makes = read(rest).makes || read_of(&GOALS, rest).makes;
+        // Otherwise only the ask counts: what came before may be a question or a no ("should I start T8?").
+        if makes { (Some(rest), String::new()) } else { (Some(""), rest.to_string()) }
+    };
+    let refs = plain(&refs);
+    let and = |k: &Kind, verb: &str, mark: char| {
+        let mut ids = ids_in(k, &refs);
+        ids.sort();
+        ids.dedup();
+        (!ids.is_empty()).then(|| format!("{verb} {}.", ids.iter().map(|id| format!("{mark}{id}")).collect::<Vec<_>>().join(" and ")))
+    };
+    let mut asks: Vec<String> = [and(&TASKS, "start", 'T'), and(&GOALS, "run", 'G')].into_iter().flatten().collect();
+    if asks.is_empty() {
+        asks.push(if rest.is_none() && refs.to_lowercase().contains("goal") { "run the goal." } else { "start it." }.into());
+    }
+    let ask = asks.join(" ");
+    // A blank line ends a paste the prompt hands over, so the ask after it is read as the owner's.
+    Some(match rest {
+        Some(r) if !r.trim().is_empty() => format!("{}\n\n{ask}", r.trim_end()),
+        _ => ask,
+    })
+}
+
 /// A prompt as typed (`session_events.full`), or, for one stored before the board kept that, the line it
 /// shows; and whether only its start reached the board. Today the hook and the board keep a long
 /// prompt's start and end ([`keep_ends`]); the hook before beta.16 kept its first 7999 characters and
@@ -1386,12 +1435,14 @@ fn typed(row: &Row) -> (String, bool) {
     let cut = |t: &str, at: std::ops::RangeInclusive<usize>| t.ends_with('…') && at.contains(&t.chars().count());
     // A hook that says how it cut ([`hook_prompt`]) sent the prompt whole or with both ends.
     let kept = row.s("data") == Some(KEPT_ENDS);
+    // The start command reads as its ask; any other command ("/review T8 go") says nothing.
+    let word = |t: &str| start_command(t).unwrap_or_else(|| if t.trim_start().starts_with('/') { String::new() } else { t.to_string() });
     match row.s("full") {
-        Some(full) => (full.to_string(), !kept && cut(full, OLD_HOOK_KEEP - 10..=OLD_HOOK_KEEP)),
+        Some(full) => (word(full), !kept && cut(full, OLD_HOOK_KEEP - 10..=OLD_HOOK_KEEP)),
         None => {
             let text = row.st("text");
             let clipped = cut(&text, 590..=600);
-            (text, clipped)
+            (word(&text), clipped)
         }
     }
 }
