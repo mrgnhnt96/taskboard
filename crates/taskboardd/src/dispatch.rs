@@ -331,6 +331,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().map(|k| k.starts_with("retarget:")).unwrap_or(false) {
         return crate::stack::retarget_resolved(app, a);
     }
+    if a["key"].as_str().map(|k| k.starts_with("jira:")).unwrap_or(false) {
+        return crate::jira_status::alert_resolved(app, a);
+    }
     let at = a["at"].as_str().unwrap_or("");
     let sid = if let Some(tid) = a["task_id"].as_i64() {
         let Some(t) = board::find_task(app, Some(tid))? else { return Ok(true) };
