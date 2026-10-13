@@ -17,6 +17,7 @@ pub mod config;
 pub mod days;
 pub mod db;
 pub mod deliver;
+pub mod devfocus;
 pub mod devices;
 pub mod dispatch;
 pub mod feed;

@@ -454,21 +454,33 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     } else if !everyone.iter().any(|d| tags_of(d).contains(&first.tag)) && !pools.iter().any(|r| purposes(r).contains(&first.tag)) {
         return Ok(Some(format!("No {} yet (tb device add)", first.tag)));
     }
-    if have < want && app.cfg.devices.goal_pool_only && !ours.is_empty() {
+    let tag = &first.tag;
+    let one = format!("{} {tag} device", a_or_an(tag));
+    // The devices that would answer it but are switched off (in its goal's own pool, when it's lent
+    // only from that), named with a way to switch one on.
+    let only_ours = app.cfg.devices.goal_pool_only && !ours.is_empty();
+    let mut off: Vec<String> = all.iter().filter(|d| d.b("off") && answers(d, tag) && (!only_ours || ours.contains(&d.st("name")))).map(|d| d.st("name")).collect();
+    off.sort();
+    let switch_on = off.first().map(|n| format!("; switch one on with tb device set {n} --on")).unwrap_or_default();
+    let off_why: Vec<String> = off.iter().map(|n| format!("{n} is off")).collect();
+    if have < want && only_ours {
         // Lent only from its goal's own devices.
         let g = rf("goal", t.i0("goal_id"));
-        return Ok(Some(if have == 0 {
-            format!("Needs a {} device, and {g}'s own devices have none (tb goal devices {g} --add)", first.tag)
+        let why = if off.is_empty() { String::new() } else { format!(" ({}{switch_on})", off_why.join("; ")) };
+        return Ok(Some(if have == 0 && off.is_empty() {
+            format!("Needs {one}, and {g}'s own devices have none (tb goal devices {g} --add)")
+        } else if have == 0 {
+            format!("Needs {one}, and {g}'s own devices have none on{why}")
         } else {
-            format!("Needs {want} {} devices, and {g}'s own devices have {have}", first.tag)
+            format!("Needs {want} {tag} devices, and {g}'s own devices have {have}{why}")
         }));
     }
     if have < want {
-        // Devices that would answer it but are reserved for other goals.
+        // Devices that would answer it but are reserved for other goals, or switched off.
         let res = reserved(&pools);
         let mut kept: Vec<String> = everyone
             .iter()
-            .filter(|d| !d.b("off") && answers(d, &first.tag))
+            .filter(|d| !d.b("off") && answers(d, tag))
             .filter_map(|d| {
                 res.get(&d.st("name"))
                     .filter(|gs| !gs.iter().any(|g| Some(*g) == t.i("goal_id")))
@@ -476,25 +488,56 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
             })
             .collect();
         kept.sort();
-        let kept = if kept.is_empty() { String::new() } else { format!(" ({})", kept.join("; ")) };
+        kept.extend(off_why);
+        let why = if kept.is_empty() { String::new() } else { format!(" ({}{switch_on})", kept.join("; ")) };
         return Ok(Some(if have == 0 && kept.is_empty() {
-            format!("Needs a {} device, and the pool has none (tb device add)", first.tag)
+            format!("Needs {one}, and the pool has none (tb device add)")
         } else if have == 0 {
-            format!("Needs a {} device, and the pool has none for it{kept}", first.tag)
+            format!("Needs {one}, and the pool has none for it{why}")
         } else {
-            format!("Needs {want} {} devices, and the pool has {have}{kept}", first.tag)
+            format!("Needs {want} {tag} devices, and the pool has {have}{why}")
         }));
     }
+    // Enough are on, but others have them: say which device each task has.
     let held = held(app)?;
-    let mut by: Vec<String> = all
+    let mut with: Vec<(String, String)> = all
         .iter()
-        .filter(|d| answers(d, &first.tag))
-        .filter_map(|d| held.get(&d.st("name")).filter(|x| **x != t.id()).map(|x| rf("task", *x)))
+        .filter(|d| answers(d, tag))
+        .filter_map(|d| held.get(&d.st("name")).filter(|x| **x != t.id()).map(|x| (rf("task", *x), d.st("name"))))
         .collect();
-    by.sort();
-    by.dedup();
-    let what = if want > 1 { format!("{want} {} devices", first.tag) } else { format!("a {} device", first.tag) };
-    Ok(Some(if by.is_empty() { format!("Waits for {what}") } else { format!("Waits for {what} ({} {} them)", by.join(", "), if by.len() == 1 { "has" } else { "have" }) }))
+    with.sort();
+    let mut by: Vec<String> = vec![];
+    for (task, _) in &with {
+        if by.last() != Some(task) {
+            by.push(task.clone());
+        }
+    }
+    let why: Vec<String> = by
+        .iter()
+        .map(|task| {
+            let names: Vec<String> = with.iter().filter(|(t, _)| t == task).map(|(_, n)| n.clone()).collect();
+            format!("{} {} with {task}", and_list(&names), if names.len() == 1 { "is" } else { "are" })
+        })
+        .collect();
+    let what = if want > 1 { format!("{want} {tag} devices") } else { one };
+    Ok(Some(if why.is_empty() { format!("Waits for {what}") } else { format!("Waits for {what} ({})", why.join("; ")) }))
+}
+
+/// "a phone", "an android".
+fn a_or_an(word: &str) -> &'static str {
+    if word.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    }
+}
+
+/// "pixel-7", "pixel-7 and pixel-8", "pixel-6, pixel-7 and pixel-8".
+fn and_list(names: &[String]) -> String {
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.join(""),
+    }
 }
 
 /// Lends the task the devices it asks for (as many as are free), in place of any it had. The names.
@@ -563,7 +606,9 @@ fn device_dict(d: &Row, held: &HashMap<String, i64>, app: &App) -> Result<Value>
         },
         None => Value::Null,
     };
-    let focus = d.s("focus").filter(|f| !f.trim().is_empty()).is_some() || !app.cfg.devices.focus.trim().is_empty();
+    let focus = d.s("focus").filter(|f| !f.trim().is_empty()).is_some()
+        || !app.cfg.devices.focus.trim().is_empty()
+        || crate::devfocus::builtin_for(&d.st("kind"), &d.st("target")).is_some();
     let pools: Vec<Row> = goal_pools(app)?.into_iter().filter(|r| r.s("device") == d.s("name")).collect();
     let by: Vec<i64> = pools.iter().filter(|r| r.b("reserved")).map(|r| r.i0("goal_id")).collect();
     let reserved_for = (!by.is_empty()).then(|| goals_text(&by));
@@ -712,7 +757,7 @@ fn goal_pool_set(app: &App, goal_id: i64, body: &Value) -> Result<Value> {
 }
 
 fn goal_pool_remove(app: &App, goal_id: i64, name: &str) -> Result<Value> {
-    let n = name.trim().to_lowercase();
+    let n = from_path(name).trim().to_lowercase();
     if app.db.q1("SELECT 1 FROM goal_devices WHERE goal_id = ? AND device = ?", p![goal_id, n])?.is_none() {
         return err(404, format!("{n} isn't one of {}'s devices.", rf("goal", goal_id)));
     }
@@ -733,8 +778,29 @@ pub fn goal_route(app: &App, method: &str, goal_id: i64, rest: &[&str], body: &V
     }
 }
 
+/// A name from a URL path, %-escapes decoded ("pixel%20live" is "pixel live").
+fn from_path(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%' && i + 2 < bytes.len()).then(|| std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())).flatten();
+        match hex {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| name.to_string())
+}
+
 fn get(app: &App, name: &str) -> Result<Row> {
-    let n = name.trim().to_lowercase();
+    let n = from_path(name).trim().to_lowercase();
     match app.db.q1("SELECT * FROM devices WHERE name = ?", p![n])? {
         Some(d) => Ok(d),
         None => err(404, format!("There's no device called {n}. tb devices lists the pool.")),
@@ -884,7 +950,7 @@ fn remove(app: &App, name: &str, body: &Value) -> Result<Value> {
     if !live.is_empty() && !force {
         return err(
             409,
-            format!("{} still {} {dev}. Change what they need first, or remove it anyway with tb device remove {dev} --force, which drops it from their needs.", goals_list(&live), if live.len() == 1 { "needs" } else { "need" }),
+            format!("{} still {} {dev}. Change what they need first, or remove it anyway with tb device remove {dev} --force, which drops it from their needs.", and_list(&live), if live.len() == 1 { "needs" } else { "need" }),
         );
     }
     let others: Vec<Row> = pool(app)?.into_iter().filter(|o| o.id() != d.id()).collect();
@@ -919,28 +985,34 @@ fn remove(app: &App, name: &str, body: &Value) -> Result<Value> {
     Ok(json!({"ok": true, "removed": d.v("name"), "dropped_from": live}))
 }
 
-/// "T4", "T4 and G2", "T4, T5 and G2".
-fn goals_list(refs: &[String]) -> String {
-    match refs.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => refs.join(""),
-    }
-}
-
-/// The command that raises a device's window: its own, else `[devices] focus`, with `{name}` filled in.
+/// The command that raises a device's window: its own, else `[devices] focus`, with `{name}`, `{target}`
+/// and `{kind}` filled in. None: the board's own focus for a simulator or emulator (`devfocus`), if any.
 pub fn focus_command(app: &App, d: &Row) -> Option<String> {
     let cmd = d.s("focus").filter(|f| !f.trim().is_empty()).map(|s| s.to_string()).or_else(|| Some(app.cfg.devices.focus.clone()).filter(|f| !f.trim().is_empty()))?;
-    Some(cmd.replace("{name}", &d.st("name")))
+    Some(cmd.replace("{name}", &d.st("name")).replace("{target}", &d.st("target")).replace("{kind}", &d.st("kind")))
 }
 
 fn focus(app: &App, name: &str) -> Result<Value> {
     let d = get(app, name)?;
-    let Some(cmd) = focus_command(app, &d) else {
-        return err(409, format!("{} has no focus command. Give it one with tb device set {} --focus \"…\", or set [devices] focus in config.toml.", d.st("name"), d.st("name")));
-    };
     let dev = d.st("name");
     let timeout = app.cfg.devices.focus_timeout_secs.unwrap_or(15.0);
-    let env = vec![("TASKBOARD_DEVICE".to_string(), dev.clone())];
+    let Some(cmd) = focus_command(app, &d) else {
+        if crate::devfocus::builtin_for(&d.st("kind"), &d.st("target")).is_some() {
+            return match crate::devfocus::focus(&dev, &d.st("kind"), &d.st("target"), timeout) {
+                Ok(()) => Ok(json!({"ok": true, "device": d.v("name")})),
+                Err(why) => err(409, why),
+            };
+        }
+        return err(
+            409,
+            format!("{dev} has no focus command. Give it --kind ios or android and its --target (the board raises those itself), or a command with tb device set {dev} --focus \"…\", or set [devices] focus in config.toml."),
+        );
+    };
+    let env = vec![
+        ("TASKBOARD_DEVICE".to_string(), dev.clone()),
+        ("TASKBOARD_DEVICE_TARGET".to_string(), d.st("target")),
+        ("TASKBOARD_DEVICE_KIND".to_string(), d.st("kind")),
+    ];
     // Waited for, so the person or agent who asked sees it when nothing came up.
     let failed = match crate::proc::run_with(std::path::Path::new("/bin/sh"), &["-c".to_string(), cmd], None, timeout, &env, None) {
         Ok(o) if o.code == Some(0) => None,

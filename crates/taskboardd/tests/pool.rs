@@ -84,7 +84,7 @@ fn a_task_waits_for_free_devices_is_lent_them_and_gives_them_back() {
     assert_eq!(b.started(), vec![a, i], "C waits: A has both android devices");
     let card = b.get(&format!("tasks/T{a}"));
     assert_eq!(card["devices"]["lent"], json!(["pixel-8", "pixel-7"]), "the narrowest devices go first");
-    assert_eq!(b.waiting(c), format!("Waits for a android device (T{a} has them)"));
+    assert_eq!(b.waiting(c), format!("Waits for an android device (pixel-7 and pixel-8 are with T{a})"));
     let h = handoff::build(&b.app, a).unwrap();
     assert!(h.contains("The board lent this task the devices pixel-8 (android, Android 15), pixel-7 (android, phone)"), "{h}");
 
@@ -321,7 +321,7 @@ fn a_task_started_by_hand_without_free_devices_says_so() {
     let c = b.task("C", json!({"devices": "android"}));
     api::dispatch(&b.app, "POST", &format!("tasks/T{c}/start"), &app_query(), &json!({"mode": "new"})).unwrap();
     assert_eq!(b.get(&format!("tasks/T{c}"))["devices"]["lent"], json!([]));
-    let want = format!("Waits for a android device (T{a} has them); it started without");
+    let want = format!("Waits for an android device (pixel-7 is with T{a}); it started without");
     let said = b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = ?", p![c, want]).unwrap();
     assert_eq!(said, 1, "{:?}", b.app.db.q("SELECT text FROM events WHERE task_id = ?", p![c]).unwrap());
     // Switched off while lent: the task keeps it.
@@ -357,10 +357,10 @@ fn a_goal_keeps_its_own_devices() {
     assert_eq!(b.get(&format!("tasks/T{other}"))["devices"]["lent"], json!(["pixel-7"]));
     let loose = b.task("Loose", json!({"devices": "android"}));
     let why = b.waiting(loose).as_str().unwrap_or("").to_string();
-    assert_eq!(why, format!("Waits for a android device (T{other} has them)"), "pixel-8 isn't its to wait for");
+    assert_eq!(why, format!("Waits for an android device (pixel-7 is with T{other})"), "pixel-8 isn't its to wait for");
     b.post("devices/pixel-7", json!({"off": true}));
     let why = b.waiting(loose).as_str().unwrap_or("").to_string();
-    assert_eq!(why, format!("Needs a android device, and the pool has none for it (pixel-8 is reserved for G{g3})"));
+    assert_eq!(why, format!("Needs an android device, and the pool has none for it (pixel-8 is reserved for G{g3}; pixel-7 is off; switch one on with tb device set pixel-7 --on)"));
 
     // G3's task gets its own pool first, and the purpose counts as a tag there only.
     let mine = b.task("Mine", json!({"goal_id": g3, "devices": "android measure"}));
@@ -474,7 +474,7 @@ fn a_named_device_another_task_has_says_who_has_it() {
     assert_eq!(b.waiting(named), format!("Waiting for a free dev-a (dev-a is with T{holder})"));
     // The tag still reads as a tag.
     let tagged = b.task("Tagged", json!({"devices": "android"}));
-    assert_eq!(b.waiting(tagged), format!("Waits for a android device (T{holder} has them)"));
+    assert_eq!(b.waiting(tagged), format!("Waits for an android device (dev-a is with T{holder})"));
 }
 
 #[test]
@@ -571,4 +571,41 @@ fn the_goal_card_says_which_tasks_have_can_get_or_had_each_device() {
     assert_eq!(pixel["uses"]["had"][0]["ref"], format!("T{first}"));
     assert_eq!(pixel["uses"]["has"][0]["ref"], format!("T{second}"));
     assert_eq!(pixel["uses"]["can"], json!([]), "each task once per device");
+}
+
+#[test]
+fn a_tag_whose_devices_are_off_names_them_and_a_missing_name_reads_plainly() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices/pixel-7", json!({"off": true}));
+    let t = b.task("Phone test", json!({"devices": "android"}));
+    assert_eq!(b.waiting(t), "Needs an android device, and the pool has none for it (pixel-7 is off; switch one on with tb device set pixel-7 --on)");
+    let g = b.goal();
+    b.post(&format!("goals/G{g}/devices"), json!({"device": "pixel-7"}));
+    let own = b.task("Own", json!({"goal_id": g, "devices": "android"}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
+    assert_eq!(b.waiting(own), format!("Needs an android device, and G{g}'s own devices have none on (pixel-7 is off; switch one on with tb device set pixel-7 --on)"));
+    let ios = b.task("Sim test", json!({"devices": "ios"}));
+    assert_eq!(b.waiting(ios), "No ios yet (tb device add)");
+
+    let (code, msg) = b.post_err("devices/Pixel%20Live", json!({"off": true}));
+    assert_eq!((code, msg.as_str()), (404, "There's no device called pixel live. tb devices lists the pool."));
+}
+
+#[test]
+fn a_focus_command_gets_the_target_and_kind_and_a_simulator_needs_none() {
+    let b = new_board();
+    b.post(
+        "devices",
+        json!({"name": "emu-1", "kind": "android", "target": "emulator-5554",
+               "focus": "test \"{target}:{kind}\" = emulator-5554:android && test \"$TASKBOARD_DEVICE_TARGET:$TASKBOARD_DEVICE_KIND\" = emulator-5554:android"}),
+    );
+    assert_eq!(b.post("devices/emu-1/focus", json!({}))["ok"], true);
+    b.post("devices", json!({"name": "sim-a", "kind": "ios", "target": "A1B2-UDID"}));
+    assert_eq!(b.get("devices/sim-a")["can_focus"], true, "the board raises a simulator with a target itself");
+    b.post("devices", json!({"name": "sim-b", "kind": "ios"}));
+    assert_eq!(b.get("devices/sim-b")["can_focus"], false, "without a target there's nothing to find");
+    let (code, msg) = b.post_err("devices/sim-b/focus", json!({}));
+    assert_eq!(code, 409);
+    assert!(msg.contains("Give it --kind ios or android and its --target"), "{msg}");
 }
