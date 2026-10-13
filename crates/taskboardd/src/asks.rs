@@ -134,6 +134,29 @@ pub fn wanted(app: &App, t: &Row, rec: &Value, count: Option<usize>) -> usize {
     n.saturating_sub(on_pr(&flow(t), rec).len())
 }
 
+/// The roster gave fewer reviewers than the PR still needs: what to say, naming how many it found.
+fn short_roster(t: &Row, num: i64, found: usize, needs: usize) -> String {
+    format!(
+        "{}'s roster has only {found} of the {needs} reviewers PR #{num} needs. Add some with tb reviewers add <email> --name \"<name>\".",
+        t.st("project")
+    )
+}
+
+fn short_key(id: i64) -> String {
+    format!("roster:{id}")
+}
+
+/// A short-roster alert clears once the PR has the reviewers or approvals it needs, or isn't open.
+pub fn short_resolved(app: &App, a: &Value) -> Result<bool> {
+    let Some(t) = board::find_task(app, a["task_id"].as_i64())? else { return Ok(true) };
+    if !board::pr_still_open(&t) {
+        return Ok(true);
+    }
+    let f = flow(&t);
+    let Some(rec) = f.get("rec").filter(|r| r.is_object()) else { return Ok(false) };
+    Ok(wanted(app, &t, rec, None) == 0 || prflow::approved(app, &t, &prflow::review_of(&f, rec)))
+}
+
 /// Why asking this PR's reviewers waits for the PR feed (`feed::holding`), if it does: the PR's
 /// first ask goes out when the feed is merely quiet outside the work hours, later ones don't.
 pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
@@ -238,11 +261,15 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
             want.push((w, why.clone().unwrap_or_else(|| "ask".into())));
         }
     }
+    let mut short = None;
     if picking {
         let n = wanted(app, &t, &rec, count);
         want = pick(app, &t, &rec, n, &[])?.into_iter().map(|(w, _)| (w, why.clone().unwrap_or_else(|| "pick".into()))).collect();
         if want.is_empty() && n > 0 && on_pr(&flow(&t), &rec).is_empty() {
             return err(409, format!("Nobody on {}'s roster can review this PR: add reviewers with tb reviewers add, or name one with --ask.", t.st("project")));
+        }
+        if want.len() < n {
+            short = Some(short_roster(&t, pr.num, want.len(), n));
         }
     }
     if !want.is_empty() {
@@ -298,6 +325,7 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         "asked": asked.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>(),
         "dropped": dropped.iter().map(|w| json!({"user": w.user, "name": w.name})).collect::<Vec<_>>(),
         "replaced": replaced.as_ref().map(|(o, n)| json!({"old": o.name, "new": n.name})),
+        "short": short,
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
         "pr": board::pr_card(app, &t),
     }))
@@ -365,12 +393,18 @@ fn stage_one(app: &App, t: &Row) -> Result<bool> {
                     }
                 }
                 note_asked(app, t.id(), &names, board::BOARD)?;
-                let text = if names.is_empty() {
+                let text = if names.is_empty() && n == 0 {
                     format!("PR #{} already has its reviewers", pr.num)
+                } else if names.is_empty() {
+                    format!("PR #{} has nobody else to ask", pr.num)
                 } else {
                     format!("Asked {} to review PR #{}", names.join(", "), pr.num)
                 };
-                reviewers::note(app, t, board::BOARD, &text)
+                reviewers::note(app, t, board::BOARD, &text)?;
+                if picks.len() < n {
+                    crate::dispatch::add_alert_keyed(app, &short_roster(t, pr.num, picks.len(), n), Some(t.id()), t.i("goal_id"), &short_key(t.id()))?;
+                }
+                Ok(())
             })?;
             let _ = prflow::refresh_task(app, t.id())?;
             Ok(true)

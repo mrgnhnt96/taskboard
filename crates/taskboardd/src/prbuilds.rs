@@ -317,7 +317,7 @@ fn hand_pr_on(app: &App, host: &str, repo: &str, num: i64, branch: &str) -> Opti
 
 /// An event's `author` is the owner: one of `owner_emails` or `[reviewers] me`, or another name, email
 /// or host id of a roster row that one of those names (its aliases), in any case.
-fn owner_author(app: &App, author: &str) -> Result<bool> {
+pub fn owner_author(app: &App, author: &str) -> Result<bool> {
     let a = author.trim().to_lowercase();
     if a.is_empty() {
         return Ok(false);

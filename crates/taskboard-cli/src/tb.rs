@@ -2292,6 +2292,9 @@ fn pr_reviewers_line(t: &str, v: &Value) -> String {
     }
     let s = parts.join("; ");
     let s = format!("{}{}", s[..1].to_uppercase(), &s[1..]);
+    if let Some(short) = v["short"].as_str() {
+        return format!("{s} on {t}'s PR. {short}");
+    }
     format!("{s} on {t}'s PR. The board watches it and brings this conversation back when it needs you. You can stop here.")
 }
 

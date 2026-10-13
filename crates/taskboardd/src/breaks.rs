@@ -519,7 +519,7 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
         return Ok(());
     }
     let green = watch_state(app).get(name).and_then(|v| v["green_head"].as_str()).map(|s| s.to_string());
-    let suspects = suspects(app, ci.as_ref(), &repo, &r, green.as_deref());
+    let suspects = suspects(app, name, ci.as_ref(), &repo, &r, green.as_deref());
     let evidence = evidence(app, name, &host, &repo, &r);
     match open {
         None => {
@@ -585,16 +585,34 @@ fn suspect_commits(ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<
     list
 }
 
-fn suspects(app: &App, ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<&str>) -> Value {
+fn suspects(app: &App, project: &str, ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<&str>) -> Value {
     json!(suspect_commits(ci, repo, r, green)
         .iter()
-        .map(|c| json!({"sha": c.sha, "name": c.name, "email": c.email, "message": c.message, "ours": is_owners(app, &c.email)}))
+        .map(|c| json!({"sha": c.sha, "name": c.name, "email": c.email, "message": c.message, "ours": is_owners(app, project, &c.email)}))
         .collect::<Vec<_>>())
 }
 
-pub fn is_owners(app: &App, email: &str) -> bool {
+/// A commit's email is the owner's by the same rule as the owner's builds (`prbuilds::owner_author`:
+/// `owner_emails`, `[reviewers] me` and their roster aliases). With none of those set, the project's
+/// own `git config user.email` stands in.
+pub fn is_owners(app: &App, project: &str, email: &str) -> bool {
     let e = email.trim();
-    !e.is_empty() && app.cfg.owner_emails.iter().any(|o| o.trim().eq_ignore_ascii_case(e))
+    if e.is_empty() {
+        return false;
+    }
+    let set = app.cfg.owner_emails.iter().chain(app.cfg.reviewers.me.iter()).any(|s| !s.trim().is_empty());
+    if set {
+        return crate::prbuilds::owner_author(app, e).unwrap_or(false);
+    }
+    git_email(app, project).is_some_and(|g| g.eq_ignore_ascii_case(e))
+}
+
+fn git_email(app: &App, project: &str) -> Option<String> {
+    let path = crate::projects::project_path(app, Some(project)).ok().flatten()?;
+    let git = crate::proc::which("git")?;
+    let out = crate::proc::run(&git, &["-C".into(), path, "config".into(), "user.email".into()], None, 5.0).ok()?;
+    let email = out.stdout.trim().to_string();
+    (out.code == Some(0) && !email.is_empty()).then_some(email)
 }
 
 /// The failing checks, with their failed steps and tests where the CI can be read.

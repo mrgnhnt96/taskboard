@@ -666,3 +666,27 @@ fn the_master_alert_and_a_task_alert_outlive_the_board_s_own_lines() {
     dispatch::prune_alerts(&b.app).unwrap();
     assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M1"), "a closed break's alert goes");
 }
+
+#[test]
+fn the_owner_s_commits_are_matched_like_their_builds_by_roster_aliases() {
+    let (b, _d) = board_with(|c, _| c.reviewers.me = vec!["Sam".into()]);
+    b.post("/reviewers", json!({"project": "webapp", "reviewer": "Sam", "user": "sam-gh", "emails": ["sam@acme.dev", "sam@home.dev"]}));
+    b.branch("failed", vec![commit("c2", "sam@home.dev")]);
+    let m = b.get("/master/M1");
+    assert_eq!(m["suspects"][0]["ours"], true, "a roster alias of the owner's email is the owner's");
+    assert_eq!(m["verdict"], "ours");
+}
+
+#[test]
+fn with_no_owner_set_the_project_s_git_email_stands_in() {
+    let (b, d) = board_with(|c, _| c.owner_emails.clear());
+    let repo = d.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success());
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "sam@acme.dev"]);
+    b.app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    b.branch("failed", vec![commit("c2", "Sam@acme.dev"), commit("c1", "bob@acme.dev")]);
+    let m = b.get("/master/M1");
+    assert_eq!((m["suspects"][0]["ours"].as_bool(), m["suspects"][1]["ours"].as_bool()), (Some(true), Some(false)));
+}
