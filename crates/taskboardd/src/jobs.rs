@@ -125,6 +125,8 @@ pub fn after_result(app: &App, j: &Row, ok: bool, res: &Value) -> Result<()> {
                     "Started in a new Midna terminal".into()
                 };
                 board::log_event(app, t.id(), board::MIDNA, "midna", &text)?;
+            } else if why.starts_with(crate::midna::COMPACT_FAILED) && t.s("status") != Some("done") {
+                compact_failed(app, &t, &why)?;
             } else if !(purpose == "pr" && prflow::wake_failed(app, &t, &format!("Midna refused: {why}"))?) {
                 start_failed(app, &t, &format!("Midna refused: {why}"), true, !you_said_no(&why))?;
             }
@@ -263,6 +265,31 @@ pub fn rename_state(app: &App, sid: &str) -> Result<Row> {
         _ => {}
     }
     Ok(out)
+}
+
+/// The headless compact before a cold resume failed: no retry, since resuming at full size is what the
+/// compact was there to avoid. The task waits for the owner to resume it as it is or start fresh.
+pub fn compact_failed(app: &App, t: &Row, why: &str) -> Result<()> {
+    let t = board::get_task(app, t.id())?;
+    if t.s("status") == Some("done") {
+        return Ok(());
+    }
+    board::update_task(
+        app,
+        t.id(),
+        fields!["status" => "needs", "needs_reason" => "compact_failed", "start_job" => null, "latest" => why,
+                "start_tries" => 0, "retry_at" => null],
+    )?;
+    board::log_event(app, t.id(), board::BOARD, "handoff", &format!("{why}, so it waits for you: resume it as it is, or start fresh with the handoff"))?;
+    dispatch::add_alert(
+        app,
+        &format!("{} didn't resume: {}. Resume it as it is, or start fresh with the handoff.", rf("task", t.id()), one_line(why, 200)),
+        Some(t.id()),
+        t.i("goal_id"),
+        None,
+        None,
+    )?;
+    Ok(())
 }
 
 const START_RETRY_WAITS: [i64; 3] = [60, 300, 900];

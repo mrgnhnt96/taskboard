@@ -218,18 +218,37 @@ fn compact_first(app: &App, j: &Row, sid: &str) -> MResult<()> {
     Ok(())
 }
 
-/// A conversation resumed in a new terminal after going cold is compacted first, headless.
-fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) {
+/// How a refused start says its headless compact failed; `jobs::after_result` holds the task for the owner.
+pub const COMPACT_FAILED: &str = "The board couldn't compact its conversation";
+
+/// A conversation resumed in a new terminal after going cold is compacted first, headless. While it
+/// runs, the job's target carries `compacting_at` for the task's card. A failed compact refuses the job
+/// rather than resuming the conversation at full size, unless the owner chose to resume it as it is
+/// (`resume_as_is` in the task's context).
+fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) -> MResult<()> {
     if !limits::is_cold(app, &limits::conversation(app, cwd, cid, None)) {
-        return;
+        return Ok(());
     }
-    let what = match limits::compact(app, cwd, cid) {
-        Ok(()) => "Compacted its cold conversation before resuming it".to_string(),
-        Err(e) => format!("Couldn't compact its cold conversation before resuming it ({e}); resuming it as it is"),
+    let task = j.i("task_id").and_then(|tid| board::get_task(app, tid).ok());
+    let log = |what: &str| {
+        app.info(format!("job {}: {what}", rf("job", j.id())));
+        if let Some(tid) = j.i("task_id") {
+            let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "handoff", what).map(|_| ()));
+        }
     };
-    app.info(format!("job {}: {what}", rf("job", j.id())));
-    if let Some(tid) = j.i("task_id") {
-        let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "handoff", &what).map(|_| ()));
+    if task.as_ref().is_some_and(|t| board::task_context(t).get("resume_as_is").and_then(|v| v.as_str()) == Some(cid)) {
+        log("Resuming its cold conversation as it is, without compacting it, as the owner chose");
+        return Ok(());
+    }
+    set_target(app, j.id(), "compacting_at", json!(now_iso()))?;
+    let res = limits::compact(app, cwd, cid);
+    set_target(app, j.id(), "compacting_at", Value::Null)?;
+    match res {
+        Ok(()) => {
+            log("Compacted its cold conversation before resuming it");
+            Ok(())
+        }
+        Err(e) => Err(MidnaError::Refused(format!("{COMPACT_FAILED}: {e}"))),
     }
 }
 
@@ -254,7 +273,7 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     }
     let (agent_args, resume) = claude_args(&a)?;
     if let Some(cid) = &resume {
-        compact_before_resume(app, j, &cwd, cid);
+        compact_before_resume(app, j, &cwd, cid)?;
     }
     let mut params = json!({"kind": "agent", "agent": "claude", "cwd": cwd,
                             "name": tab_title(a.s("title").unwrap_or("Claude"), j.i("task_id")),

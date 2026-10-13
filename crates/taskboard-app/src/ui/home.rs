@@ -284,11 +284,13 @@ pub fn tile_vm(c: &Value) -> Tile {
     let (status, tone, line): (&str, &str, String) = match s(c, "status") {
         "needs" if b(c, "lost") => ("Lost", "down", format!("Terminal closed {}", fmt::hhmm(s(c, "when")))),
         "needs" if s(c, "needs_reason") == "start_failed" => ("Couldn’t start", "down", "Midna didn’t start it".into()),
+        "needs" if s(c, "needs_reason") == "compact_failed" => ("Couldn’t compact", "down", "Its conversation didn’t compact".into()),
         "needs" if s(c, "needs_reason") == "question" => ("Question", "needs", since("Asked")),
         "needs" => ("Needs you", "needs", since("Updated")),
         "working" if c["compacting"].is_string() => ("Compacting", "working", fmt::compacting(c).unwrap_or_default()),
         "working" => ("Working", "working", busy(c)),
-        "queued" if b(c, "starting") => ("Starting", "working", opt_s(c, "waiting").unwrap_or("Opening a terminal").to_string()),
+        "queued" if c["compacting"].is_string() => ("Compacting", "working", fmt::compacting(c).unwrap_or_default()),
+        "queued" if b(c, "starting") =>("Starting", "working", opt_s(c, "waiting").unwrap_or("Opening a terminal").to_string()),
         "queued" => ("Queued", "queued", opt_s(c, "waiting").unwrap_or("When a terminal is free").to_string()),
         // A merged or closed PR has nothing left to wait on: the task is plain Done.
         "done" if pr.is_some_and(crate::ui::goal::pr_open) => {

@@ -98,13 +98,30 @@ fn capital(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-/// The earlier wave that holds this task back, or its own wave when that's held.
-pub fn holding_wave(t: &Row, wl: &[Value]) -> Option<Value> {
+/// The earlier wave that holds this task back, or its own wave when that's held. `wanted_elsewhere`: a
+/// task in another goal waits on this one, so a running earlier wave doesn't hold it, unless it's the
+/// goal's first wave, stopped for the owner's review or has a failed task.
+pub fn holding_wave(t: &Row, wl: &[Value], wanted_elsewhere: bool) -> Option<Value> {
     let n = t.i("wave")?;
     wl.iter()
-        .take_while(|w| w["wave"].as_i64().unwrap_or(0) <= n)
-        .find(|w| (w["wave"].as_i64().unwrap_or(0) < n && w["passed"] != true) || (w["wave"].as_i64() == Some(n) && w["held"] == true))
-        .cloned()
+        .enumerate()
+        .take_while(|(_, w)| w["wave"].as_i64().unwrap_or(0) <= n)
+        .find(|(i, w)| {
+            if w["wave"].as_i64() == Some(n) {
+                return w["held"] == true;
+            }
+            if w["passed"] == true {
+                return false;
+            }
+            let failed = w["failed"].as_array().is_some_and(|a| !a.is_empty());
+            w["state"] == "stopped" || failed || *i == 0 || !wanted_elsewhere
+        })
+        .map(|(_, w)| w.clone())
+}
+
+/// An open task in another goal waits on this one (`tb wait-for`, or stacked on its PR).
+pub fn wanted_by_another_goal(app: &App, t: &Row) -> Result<bool> {
+    Ok(crate::waitsfor::waiting_on(app, t)?.iter().any(|o| o.i("goal_id") != t.i("goal_id")))
 }
 
 /// Why a goal's waves hold this queued task back.
@@ -113,7 +130,7 @@ pub fn wave_block(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
         return Ok(None);
     }
     let tasks = board::goal_tasks(app, g.id())?;
-    Ok(holding_wave(t, &waves(app, g, &tasks)?).map(|w| hold_reason(&w)))
+    Ok(holding_wave(t, &waves(app, g, &tasks)?, wanted_by_another_goal(app, t)?).map(|w| hold_reason(&w)))
 }
 
 /// The goal is stopped at a wave for the owner (review stop or a failed task): one line, or None.

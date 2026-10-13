@@ -126,3 +126,35 @@ fn a_task_moves_between_waves() {
     let e = api::dispatch(&b.app, "POST", &format!("tasks/T{loose}"), &Query::new(), &json!({"wave": 1})).expect_err("no goal");
     assert!(e.message.contains("Only a task in a goal"));
 }
+
+#[test]
+fn a_task_another_goal_waits_on_skips_a_running_earlier_wave_but_not_the_first_or_a_failed_one() {
+    let b = new_board();
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Planner", "agent": "claude", "cwd": b.dir.path().join("webapp").to_string_lossy(), "status": {"state": "idle"}})], &[]).unwrap();
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp", "run_in_order": true}))["id"].as_i64().unwrap();
+    let r = reports::handle(&b.app, json!({"event": "tb.propose", "session": "s1", "goal": format!("G{g}"),
+        "tasks": ["Setup::prep it::1", "Model::add it::2", "Form::build it::2", "Wire::connect them::3"]}), false).unwrap();
+    let t: Vec<i64> = r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()[1..].parse().unwrap()).collect();
+    let other = b.post("/goals", json!({"name": "Billing", "project": "webapp"}))["id"].as_i64().unwrap();
+    let waiter = b.post("/tasks", json!({"title": "Use the wiring", "detail": "Do it.", "project": "webapp", "goal": format!("G{other}")}))["id"].as_i64().unwrap();
+    let wait_on = |id: Option<i64>| {
+        let v = id.map(|i| json!([i]).to_string());
+        b.app.db.x("UPDATE tasks SET waits_for = ? WHERE id = ?", taskboardd::p![v, waiter]).unwrap();
+    };
+
+    assert_eq!(b.waiting(t[1]), "Waits for wave 1");
+    wait_on(Some(t[1]));
+    assert_eq!(b.waiting(t[1]), "Waits for wave 1", "the goal's first wave still runs first");
+
+    b.set(t[0], "done", false);
+    b.set(t[1], "working", false);
+    wait_on(None);
+    assert_eq!(b.waiting(t[3]), "Waits for wave 2");
+    wait_on(Some(t[3]));
+    let line = b.waiting(t[3]);
+    assert!(!line.as_str().is_some_and(|l| l.contains("wave")), "another goal waits on it, so wave 2 doesn't hold it: {line}");
+
+    b.set(t[1], "done", true);
+    b.set(t[2], "done", false);
+    assert_eq!(b.waiting(t[3]), format!("T{} in wave 2 failed. Try again, or continue past it", t[1]), "a failed wave still holds it");
+}
