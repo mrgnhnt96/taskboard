@@ -140,6 +140,36 @@ fn a_question_flags_the_owner_until_they_say_what_to_do() {
 }
 
 #[test]
+fn the_list_narrows_to_one_goal_s_tickets() {
+    let b = board_with(true);
+    b.post("/qa", json!({"on": true}));
+    let (g1, _) = b.shipped();
+    let g2 = b.post("/goals", json!({"name": "Signup", "project": "webapp"}))["id"].as_i64().unwrap();
+    let t2 = b.post("/tasks", json!({"title": "Add signup", "project": "webapp", "goal_id": g2}))["id"].as_i64().unwrap();
+    board::update_task(&b.app, t2, taskboardd::fields!["status" => "done", "jira_key" => "PROJ-8", "pr_num" => 13]).unwrap();
+
+    let on_g1 = b.comment("400", "Should login remember me?");
+    b.decide(on_g1, json!({"verdict": "flag", "title": "Remember me?", "ask": "Should login remember me?"}));
+    let on_g2 = |id: &str, text: &str| {
+        let r = b.post("/jira/comment", json!({"key": "PROJ-8", "comment_id": id, "author": "Sam QA", "text": text}));
+        r["comment"].as_str().unwrap()[1..].parse::<i64>().unwrap()
+    };
+    let asked = on_g2("401", "Is the email confirmed?");
+    b.decide(asked, json!({"verdict": "flag", "title": "Confirm email?", "ask": "Is the email confirmed?"}));
+    let handled = on_g2("402", "Should signup need a phone?");
+    b.decide(handled, json!({"verdict": "flag", "title": "Phone?", "ask": "Should signup need a phone?"}));
+    b.post(&format!("/qa-comments/Q{handled}"), json!({"action": "ignore"}));
+
+    let refs = |path: &str| -> Vec<String> {
+        b.get(path)["comments"].as_array().unwrap().iter().map(|c| c["ref"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(refs(&format!("/qa-comments?goal=G{g2}")), vec![format!("Q{asked}"), format!("Q{handled}")], "waiting first");
+    assert_eq!(refs(&format!("/qa-comments?goal=G{g2}&waiting=1")), vec![format!("Q{asked}")]);
+    assert_eq!(refs(&format!("/qa-comments?goal=G{g1}")), vec![format!("Q{on_g1}")]);
+    assert_eq!(refs("/qa-comments").len(), 3, "without a goal it lists every ticket's");
+}
+
+#[test]
 fn switching_it_off_hides_the_tab_and_its_alerts() {
     let b = board_with(true);
     b.post("/qa", json!({"on": true}));

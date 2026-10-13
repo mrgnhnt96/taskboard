@@ -520,15 +520,24 @@ pub fn listing(app: &App, limit: i64, waiting: bool) -> Result<Vec<Value>> {
 
 /// The goal page's QA tab: comments on its tickets that need or needed something, waiting ones first.
 pub fn for_goal(app: &App, goal_id: i64) -> Result<Vec<Value>> {
+    goal_listing(app, goal_id, -1, false)
+}
+
+/// `GET /qa-comments?goal=G2` (`tb qa --goal`): the goal's QA tab, at most `limit` (-1: all), or with
+/// `waiting` only the flagged ones nobody has handled.
+pub fn goal_listing(app: &App, goal_id: i64, limit: i64, waiting: bool) -> Result<Vec<Value>> {
     if !on(app) {
         return Ok(vec![]);
     }
+    let w = if waiting { "AND q.verdict = 'flag' AND q.handled_at IS NULL " } else { "" };
     let rows = app.db.q(
-        "SELECT q.*, f.title AS task_title, f.status AS task_status FROM qa_comments q \
-         LEFT JOIN tasks s ON s.id = q.source_task_id LEFT JOIN tasks f ON f.id = q.task_id \
-         WHERE (s.goal_id = ? OR f.goal_id = ?) AND COALESCE(q.verdict, '') != 'none' \
-         ORDER BY q.verdict = 'flag' AND q.handled_at IS NULL DESC, q.id DESC",
-        p![goal_id, goal_id],
+        &format!(
+            "SELECT q.*, f.title AS task_title, f.status AS task_status FROM qa_comments q \
+             LEFT JOIN tasks s ON s.id = q.source_task_id LEFT JOIN tasks f ON f.id = q.task_id \
+             WHERE (s.goal_id = ? OR f.goal_id = ?) AND COALESCE(q.verdict, '') != 'none' {w}\
+             ORDER BY q.verdict = 'flag' AND q.handled_at IS NULL DESC, q.id DESC LIMIT ?"
+        ),
+        p![goal_id, goal_id, limit],
     )?;
     Ok(rows.iter().map(|c| card(app, c)).collect())
 }
