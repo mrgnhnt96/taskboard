@@ -10,7 +10,7 @@ use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::prhost::{self, Check, FakeHost, Record, Reviewer};
 use taskboardd::util::RowExt;
-use taskboardd::{board, midna, prflow, reports};
+use taskboardd::{board, dispatch, midna, prflow, reports};
 
 pub struct Board {
     pub app: Arc<App>,
@@ -1343,4 +1343,42 @@ fn an_open_ask_counts_from_the_swap_window() {
     assert_eq!(w[1], ("Bo".to_string(), cfg.no_speed_yet));
     assert!(cfg.slow_speed < cfg.no_speed_yet);
     assert_eq!(median_of(&b, "Ana").map(f64::round), Some(180.0));
+}
+
+#[test]
+fn a_short_roster_asks_who_it_can_and_says_how_many_are_missing() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    poll(&b);
+    b.mark_reviewed(id);
+    b.add("Ana", json!({"user": "{ana}"}));
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
+    assert_eq!(v["asked"].as_array().unwrap().len(), 1);
+    assert!(v["short"].as_str().unwrap().contains("has only 1 of the 2 reviewers PR #9 needs"), "{}", v["short"]);
+    assert!(h.calls().contains(&"request {ana}".to_string()), "{:?}", h.calls());
+}
+
+#[test]
+fn the_board_s_own_short_ask_alerts_once_until_the_pr_has_enough() {
+    let b = board_with(|c| c.reviewers.ask_stage = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    poll(&b);
+    closed_hours(&b);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.mark_reviewed(id);
+    assert!(h.calls().contains(&"request {ana}".to_string()), "{:?}", h.calls());
+    let short = |b: &Board| dispatch::alerts(&b.app).into_iter().filter(|a| a["key"] == format!("roster:{id}")).count();
+    assert_eq!(short(&b), 1, "{:?}", dispatch::alerts(&b.app));
+    poll(&b);
+    dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(short(&b), 1, "it stays while the PR is short");
+    {
+        let mut r = h.rec.lock();
+        r.reviewers.push(Reviewer { user: "{bo}".into(), name: "Bo".into(), state: "pending".into(), requested: true, ..Default::default() });
+    }
+    poll(&b);
+    dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(short(&b), 0, "enough reviewers clear it");
 }

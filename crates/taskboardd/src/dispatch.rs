@@ -334,6 +334,9 @@ fn resolved(app: &App, a: &Value) -> Result<bool> {
     if a["key"].as_str().map(|k| k.starts_with("jira:")).unwrap_or(false) {
         return crate::jira_status::alert_resolved(app, a);
     }
+    if a["key"].as_str().map(|k| k.starts_with("roster:")).unwrap_or(false) {
+        return crate::asks::short_resolved(app, a);
+    }
     if a["key"].as_str().map(|k| k.starts_with("master:")).unwrap_or(false) {
         return crate::breaks::alert_resolved(app, a);
     }
