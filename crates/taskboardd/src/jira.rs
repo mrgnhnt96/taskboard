@@ -27,6 +27,12 @@ pub fn request(app: &App, op: &str, task_id: i64, key: &str, status: Option<&str
     request_job(app, json!({"op": op, "key": key, "status": status, "comment": comment}), json!({"task": task_id}))
 }
 
+/// A move or comment the board makes by itself to keep the ticket in step with its task. Its result is
+/// logged as the board's, so it never counts as the agent moving on.
+pub fn request_by_board(app: &App, op: &str, task_id: i64, key: &str, status: Option<&str>, comment: Option<&str>) -> Result<i64> {
+    request_job(app, json!({"op": op, "key": key, "status": status, "comment": comment, "by": "board"}), json!({"task": task_id}))
+}
+
 pub fn clean_product(app: &App, v: &str) -> Result<Option<String>> {
     let v = v.trim();
     if v.is_empty() || v.eq_ignore_ascii_case("none") {
@@ -910,7 +916,8 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
                         board::bump_ctx(app, t.id())?;
                     }
                 }
-                board::log_event(app, t.id(), "Jira", "jira", &said(describe(&op, key.as_deref(), status.as_deref(), found)))?;
+                let who = if a.s("by") == Some("board") { board::BOARD } else { "Jira" };
+                board::log_event(app, t.id(), who, "jira", &said(describe(&op, key.as_deref(), status.as_deref(), found)))?;
                 if op == "create" && matches!(t.s("status"), Some("working") | Some("needs")) {
                     let st = app.cfg.jira.in_progress.clone();
                     board::jira_keep_in_step(app, &board::get_task(app, t.id())?, Some(&st), None)?;

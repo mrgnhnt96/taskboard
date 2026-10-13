@@ -906,3 +906,24 @@ fn a_merge_comments_which_pr_merged_on_the_ticket() {
     assert_eq!(moves.len(), 1);
     assert_eq!(jira_args(&moves[0])["comment"], "PR #9 was merged: https://github.com/acme/webapp/pull/9");
 }
+
+#[test]
+fn the_board_s_own_jira_move_doesn_t_clear_a_task_s_alert() {
+    let b = board_with(|_, _| {});
+    let t = b.new_task(json!({}));
+    board::update_task(&b.app, t, fields!["status" => "working", "jira_key" => "PROJ-1", "jira_sync" => 1, "jira_status" => "In Progress"]).unwrap();
+    taskboardd::dispatch::add_alert(&b.app, "T1 looks stuck", Some(t), None, None, None).unwrap();
+    let task_alerts = || taskboardd::dispatch::alerts(&b.app).into_iter().filter(|a| a["task_id"] == t).count();
+    assert_eq!(task_alerts(), 1);
+
+    let jid = board::jira_keep_in_step(&b.app, &b.task(t), Some("In Code Review"), None).unwrap().expect("a move");
+    jira::finish(&b.app, jid, true, None, Some("In Code Review"), None).unwrap();
+    b.app.db.x("UPDATE events SET at = '2099-01-01T00:00:00Z' WHERE task_id = ? AND kind = 'jira'", taskboardd::p![t]).unwrap();
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(task_alerts(), 1, "the board moving the ticket isn't the agent moving on");
+
+    board::log_event(&b.app, t, "Term", "note", "Pushed the fix").unwrap();
+    b.app.db.x("UPDATE events SET at = '2099-01-01T00:00:01Z' WHERE task_id = ? AND who = 'Term'", taskboardd::p![t]).unwrap();
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(task_alerts(), 0, "the agent's own line clears it");
+}
