@@ -108,6 +108,15 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     if !app.cfg.jira_on() {
         jmode = "none".into();
     }
+    let ships = projects::ships_prs(app, &project)?;
+    if body_has(body, "ships_pr") && projects::clean_ships_pr(&body["ships_pr"])? == Some(1) {
+        projects::refuse_without_prs(app, &project)?;
+    }
+    // A new ticket for a project whose work gets none is quietly dropped, as the old board did.
+    let quiet_none = jmode == "create" && !ships;
+    if quiet_none {
+        jmode = "none".into();
+    }
     let jkey = if jmode == "link" { Some(jira_key(jopt["key"].as_str().unwrap_or(""))?) } else { None };
     let now = now_iso();
     let repo = g
@@ -125,7 +134,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "priority" => priority, "status" => status, "goal_id" => goal_id, "position" => board::next_position(app, goal_id)?,
                 "pickup" => mode, "pickup_session" => if mode == "attach" { sid } else { None },
                 "auto_close" => auto_close as i64, "jira_key" => jkey, "jira_sync" => as_bool(body.get("jira_sync"), true) as i64,
-                "jira_none" => (jopt["mode"] == "none") as i64,
+                "jira_none" => (jopt["mode"] == "none" || quiet_none) as i64,
                 "from_issue_id" => body.get("from_issue_id"), "context" => "{}",
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
@@ -192,6 +201,9 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
     let mut emode = epic["mode"].as_str().unwrap_or("none").to_string();
     if !app.cfg.jira_on() {
         emode = "none".into();
+    }
+    if emode == "create" {
+        projects::refuse_without_prs(app, &project)?;
     }
     let ekey = if emode == "link" { Some(jira_key(epic["key"].as_str().unwrap_or(""))?) } else { None };
     let product = jira::clean_product(app, &body_str(body, "product"))?;

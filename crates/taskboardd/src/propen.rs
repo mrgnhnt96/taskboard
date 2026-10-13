@@ -376,8 +376,8 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     if !problems.is_empty() {
         return err(400, format!("The PR description needs work before the board opens the PR:\n- {}\nFix the file and run tb done again.", problems.join("\n- ")));
     }
-    if cfg.require_ticket && !has(t.s("jira_key")) {
-        return err(409, format!("{} has no Jira ticket, and PRs here need one: link it with tb task set {} --jira <KEY> (or new).", rf("task", t.id()), rf("task", t.id())));
+    if app.cfg.ticket_required() && !has(t.s("jira_key")) {
+        return err(409, crate::reports::no_ticket_refusal(t));
     }
     let Some(dir) = dir_for(t, cwd) else { return err(409, "The board can't find this task's checkout to open the PR from.") };
     let base = steps::real_base(app, t)?;

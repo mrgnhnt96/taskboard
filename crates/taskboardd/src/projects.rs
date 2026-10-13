@@ -149,7 +149,11 @@ pub fn set_pr_flow(app: &App, name: &str, flow: &str) -> Result<()> {
     } else {
         flows.insert(name.into(), json!(flow));
     }
-    app.db.set_setting(PR_FLOW_SETTING, Some(&jdumps(&Value::Object(flows))))
+    app.db.set_setting(PR_FLOW_SETTING, Some(&jdumps(&Value::Object(flows))))?;
+    if !ships_prs(app, name)? {
+        crate::jira::drop_pending_creates(app, name)?;
+    }
+    Ok(())
 }
 
 fn pr_rule_overrides(app: &App) -> Result<Row> {
@@ -341,6 +345,15 @@ pub fn ships_prs(app: &App, name: &str) -> Result<bool> {
     Ok(has_remote(app, name)? != Some(false))
 }
 
+/// Refuses an explicit ticket, epic or ends-in-a-PR ask on a project whose work ends without PRs.
+pub fn refuse_without_prs(app: &App, name: &str) -> Result<()> {
+    if ships_prs(app, name)? {
+        return Ok(());
+    }
+    let why = if has_remote(app, name)? == Some(false) { "has no git remote" } else { "has its PR flow off" };
+    err(409, format!("{name} {why}, so its work gets no PR and no Jira ticket. To change that: tb project set {name} --pr-flow on"))
+}
+
 /// Whether a task ends in a PR: its own setting (`tb task set --pr yes|no`), else its project's.
 pub fn task_ships_pr(app: &App, t: &Row) -> Result<bool> {
     match t.i("ships_pr") {
@@ -370,6 +383,9 @@ pub fn set_task_ships_pr(app: &App, t: &Row, v: &Value, who: &str) -> Result<boo
     let want = clean_ships_pr(v)?;
     if want == t.i("ships_pr") {
         return Ok(false);
+    }
+    if want == Some(1) {
+        refuse_without_prs(app, &t.st("project"))?;
     }
     let ends_in_pr = match want {
         Some(v) => v != 0,

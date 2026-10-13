@@ -301,8 +301,9 @@ pub struct PrBodyConfig {
     pub forbid: Vec<String>,
     /// The branch must sit on top of the remote base (rebased), with no merge commits.
     pub rebased: bool,
-    /// Refuse to open a PR for a task with no Jira ticket.
-    pub require_ticket: bool,
+    /// Refuse a PR (opened by the board or linked with `tb done --pr`) for a task with no Jira ticket. Unset:
+    /// on while Jira is set up (`Config::ticket_required`).
+    pub require_ticket: Option<bool>,
     /// Start the PR title with the ticket key ("ABC-12 Add login").
     pub title_prefix: bool,
     /// Add a `## Context` section: the ticket, the PR it stacks on, the task's evidence.
@@ -320,7 +321,7 @@ impl Default for PrBodyConfig {
             no_board_refs: true,
             forbid: vec![],
             rebased: true,
-            require_ticket: false,
+            require_ticket: None,
             title_prefix: true,
             context: true,
             remote: "origin".into(),
@@ -771,6 +772,10 @@ impl Config {
     }
     pub fn jira_on(&self) -> bool {
         !self.jira.site.trim().is_empty() && !self.jira.project.trim().is_empty()
+    }
+    /// Every PR needs a Jira ticket: `[pr_body] require_ticket`, else whether Jira is set up.
+    pub fn ticket_required(&self) -> bool {
+        self.pr_body.require_ticket.unwrap_or_else(|| self.jira_on())
     }
     /// Jira goes through headless Claude and the Atlassian connector instead of the REST API.
     pub fn jira_via_claude(&self) -> bool {

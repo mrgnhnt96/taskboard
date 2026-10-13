@@ -1221,8 +1221,20 @@ goal row says "PR canceled: <why>" (its task and ticket refs linked) and the wav
 the why.
 
 **`tb done` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), unless its repo has
-no remote at all (one the board can't read counts), with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; and a task with a `design` attachment and
-no `evidence`/`results` attachment, without `no_evidence`. **Evidence on the PR**: each PR refresh adds the task's
+no remote at all (one the board can't read counts), with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; a PR
+(`pr`, `pr_body`, or one already linked) on a task with no Jira ticket while `[pr_body] require_ticket` is on (unset: on
+while Jira is set up): "Every PR needs a Jira ticket, and T<n> has none. Link one with tb task set T<n> --jira ABC-123 (or
+ask the Jira desk with --jira new), …" (a spooled replay isn't refused); and a task with a `design` attachment and
+no `evidence`/`results` attachment, without `no_evidence`. `POST /tasks/:id/requeue` clears `no_pr`, and a finished task
+with a PR is never withdrawn for a stale one. When a PR merges, the ticket's move to `[jira] merged` carries the comment
+"PR #n was merged: <url>".
+
+**A project that doesn't ship PRs** (no git remote, or `--pr-flow off`) gets no tickets: `tb task set --jira new`,
+`POST /tasks/:id/jira {op: "create"}`, a goal's `--epic new` (new or edited) and an "ends in a PR" override on one of its
+tasks are 409 "{project} has no git remote, so its work gets no PR and no Jira ticket. To change that: tb project set
+{project} --pr-flow on" (or "has its PR flow off"). A new task made with `--jira new` there is quietly set to no
+ticket, the goal's epic isn't asked for before its first ticket, and turning the PR flow off cancels the project's
+pending ticket and epic asks. **Evidence on the PR**: each PR refresh adds the task's
 evidence and results links (web links) that its open PR's description lacks, under `## Context`, through
 `PrHost::description` / `set_description`; `pr_flow.evidence_added` keeps the ones added, and a host error waits 30
 minutes (`evidence_retry_at`). A failed fetch in `--pr-body`'s branch check shows the whole of the error.

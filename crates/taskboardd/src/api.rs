@@ -933,6 +933,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push(("jira_status_at", Value::Null));
                 f.push(("jira_none", json!(1)));
             } else if k.eq_ignore_ascii_case("new") {
+                projects::refuse_without_prs(app, &t.st("project"))?;
                 f.push(("jira_none", json!(0)));
                 if !has(t.s("jira_key")) && !jira::ticket_asked(app, id)? {
                     jira::request_create_for_task(app, &t)?;
@@ -1371,7 +1372,7 @@ fn requeue(app: &App, id: i64) -> Result<Value> {
             id,
             fields!["status" => "queued", "failed" => 0, "lost" => 0, "needs_reason" => null, "question" => null,
                     "finished_at" => null, "summary" => null, "session_id" => null, "start_job" => null, "start_tries" => 0,
-                    "retry_at" => null, "pickup" => pickup, "latest" => null],
+                    "retry_at" => null, "pickup" => pickup, "latest" => null, "no_pr" => null],
         )?;
         board::log_event(app, id, OWNER, "status", if t.b("failed") { "Queued to try again" } else { "Queued again" })?;
         Ok(())
@@ -1412,6 +1413,7 @@ fn task_jira(app: &App, id: i64, body: &Value) -> Result<Value> {
                 if jira::ticket_asked(app, id)? {
                     return err(409, "Its ticket is already being found or made.");
                 }
+                projects::refuse_without_prs(app, &t.st("project"))?;
                 board::update_task(app, id, fields!["jira_none" => 0])?;
                 let j = jira::request_create_for_task(app, &t)?;
                 board::log_event(app, id, OWNER, "jira", "Asked Jira for a ticket")?;
@@ -1592,6 +1594,7 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if let Some(e) = body.get("epic").and_then(|e| e.as_object()) {
             if e.s("mode") == Some("create") && !has(g.s("epic_key")) && app.cfg.jira_on() {
+                projects::refuse_without_prs(app, &g.st("project"))?;
                 jira::request_epic(app, &board::get_goal(app, id)?)?;
             }
         }

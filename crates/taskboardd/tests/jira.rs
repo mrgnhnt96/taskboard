@@ -737,3 +737,116 @@ fn branch_templates() {
     assert_eq!(handoff::fill_branch("{task}-{slug}", "feat", "", "A", 12), "T12-a");
     assert!(handoff::slug("a very long title that keeps going and going past forty chars").len() <= 40);
 }
+
+// --- tickets and PRs ---
+
+fn report(b: &Board, event: &str, sid: &str, extra: Value, spooled: bool) -> Result<Value, String> {
+    let mut body = json!({"event": event, "session": sid, "claude_session": format!("c-{sid}"), "cwd": "", "git": {}});
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    taskboardd::reports::handle(&b.app, body, spooled).map_err(|e| e.message)
+}
+
+fn on_terminal(b: &Board, sid: &str, t: i64) {
+    let repo = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": sid, "name": format!("Term {sid}"), "agent": "claude", "cwd": repo, "status": {"state": "working"}})], &[]).unwrap();
+    report(b, "tb.take", sid, json!({"task": format!("T{t}")}), false).unwrap();
+}
+
+fn jira_args(j: &Row) -> Value {
+    serde_json::from_str(j.s("args").unwrap_or("{}")).unwrap()
+}
+
+#[test]
+fn a_pr_needs_a_ticket_while_jira_is_on() {
+    let b = board_with(|_, _| {});
+    let t = b.new_task(json!({}));
+    on_terminal(&b, "s1", t);
+    let pr = "https://github.com/acme/webapp/pull/9";
+    let e = report(&b, "tb.done", "s1", json!({"summary": "Done", "pr": pr}), false).unwrap_err();
+    assert!(e.starts_with(&format!("Every PR needs a Jira ticket, and T{t} has none.")), "{e}");
+    assert!(e.contains(&format!("tb task set T{t} --jira ABC-123")), "{e}");
+    assert_eq!(b.task(t).s("status"), Some("working"));
+
+    report(&b, "tb.done", "s1", json!({"summary": "Nothing to change", "no_pr": "already fixed"}), false).unwrap();
+    assert_eq!(b.task(t).s("status"), Some("done"), "no PR, no ticket needed");
+
+    let spooled = b.new_task(json!({}));
+    on_terminal(&b, "s2", spooled);
+    report(&b, "tb.done", "s2", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/10"}), true).unwrap();
+    assert_eq!(b.task(spooled).s("status"), Some("done"), "a spooled replay isn't refused");
+
+    let linked = b.new_task(json!({"jira": {"mode": "link", "key": "PROJ-7"}}));
+    on_terminal(&b, "s3", linked);
+    report(&b, "tb.done", "s3", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/11"}), false).unwrap();
+    assert_eq!(b.task(linked).s("status"), Some("done"));
+
+    let optout = board_with(|c, _| c.pr_body.require_ticket = Some(false));
+    let t = optout.new_task(json!({}));
+    on_terminal(&optout, "s1", t);
+    report(&optout, "tb.done", "s1", json!({"summary": "Done", "pr": pr}), false).unwrap();
+}
+
+#[test]
+fn requeue_clears_a_canceled_pr_so_the_next_pr_doesn_t_withdraw_the_ticket() {
+    let b = board_with(|c, _| c.jira.canceled = "Withdrawn".into());
+    let t = b.new_task(json!({"jira": {"mode": "link", "key": "PROJ-3"}}));
+    on_terminal(&b, "s1", t);
+    report(&b, "tb.done", "s1", json!({"summary": "Not needed", "no_pr": "already fixed"}), false).unwrap();
+    assert!(b.task(t).s("no_pr").is_some());
+    b.post(&format!("tasks/T{t}/requeue"), json!({}));
+    assert!(b.task(t).s("no_pr").is_none(), "queueing again clears the canceled PR");
+
+    b.app.db.x("UPDATE tasks SET no_pr = 'stale', pr_num = 9, pr_url = 'https://github.com/acme/webapp/pull/9' WHERE id = ?", taskboardd::p![t]).unwrap();
+    let withdrawn = || b.jobs("kind = 'jira' AND json_extract(args, '$.status') = 'Withdrawn'").len();
+    let before = withdrawn();
+    b.app.db.tx(|| taskboardd::reports::finish_task(&b.app, &b.task(t), "Pat", "Done", false, None).map(|_| ())).unwrap();
+    assert_eq!(withdrawn(), before, "a task with a PR isn't withdrawn");
+}
+
+#[test]
+fn a_project_without_prs_refuses_ticket_epic_and_pr_asks() {
+    let b = board_with(|_, _| {});
+    let t = b.new_task(json!({}));
+    projects::set_pr_flow(&b.app, "webapp", "off").unwrap();
+    let flow_on = "To change that: tb project set webapp --pr-flow on";
+    let (code, e) = b.post_err(&format!("tasks/T{t}/jira"), json!({"op": "create"}));
+    assert_eq!((code, e.contains(flow_on)), (409, true), "{e}");
+    let (code, e) = b.post_err(&format!("tasks/T{t}"), json!({"jira_key": "new"}));
+    assert_eq!((code, e.contains(flow_on)), (409, true), "{e}");
+    let (code, e) = b.post_err(&format!("tasks/T{t}"), json!({"ships_pr": "yes"}));
+    assert_eq!((code, e.contains(flow_on)), (409, true), "{e}");
+    let (code, e) = b.post_err("/tasks", json!({"title": "Add login", "project": "webapp", "ships_pr": true}));
+    assert_eq!((code, e.contains(flow_on)), (409, true), "{e}");
+    let (code, e) = b.post_err("/goals", json!({"name": "Login", "project": "webapp", "epic": "create"}));
+    assert_eq!((code, e.contains(flow_on)), (409, true), "{e}");
+
+    let quiet = b.new_task(json!({"jira": "create"}));
+    assert!(b.task(quiet).b("jira_none"), "a new task's ticket ask is quietly dropped");
+    assert!(b.jobs("kind = 'jira'").is_empty());
+
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    jira::ensure_epic(&b.app, Some(&board::get_goal(&b.app, g).unwrap())).unwrap();
+    assert!(b.jobs("kind = 'jira'").is_empty(), "no epic for a project without PRs");
+}
+
+#[test]
+fn turning_the_pr_flow_off_drops_pending_ticket_asks() {
+    let b = board_with(|_, _| {});
+    let t = b.new_task(json!({"jira": "create"}));
+    assert_eq!(b.jobs(&format!("kind = 'jira' AND state = 'pending' AND task_id = {t}")).len(), 1);
+    projects::set_pr_flow(&b.app, "webapp", "off").unwrap();
+    assert!(b.jobs("kind = 'jira' AND state = 'pending'").is_empty());
+}
+
+#[test]
+fn a_merge_comments_which_pr_merged_on_the_ticket() {
+    let b = board_with(|c, _| c.jira.merged = "Ready for QA".into());
+    let t = b.new_task(json!({"jira": {"mode": "link", "key": "PROJ-4"}}));
+    b.app.db.x("UPDATE tasks SET pr_num = 9, pr_url = 'https://github.com/acme/webapp/pull/9' WHERE id = ?", taskboardd::p![t]).unwrap();
+    b.app.db.tx(|| taskboardd::prflow::mark_merged(&b.app, &b.task(t), "Pat")).unwrap();
+    let moves = b.jobs("kind = 'jira' AND json_extract(args, '$.status') = 'Ready for QA'");
+    assert_eq!(moves.len(), 1);
+    assert_eq!(jira_args(&moves[0])["comment"], "PR #9 was merged: https://github.com/acme/webapp/pull/9");
+}

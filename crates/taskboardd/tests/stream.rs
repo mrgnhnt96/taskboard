@@ -28,6 +28,8 @@ fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     cfg.pr.watch = true;
+    // These PR tasks are about the stream, not their tickets.
+    cfg.pr_body.require_ticket = Some(false);
     f(&mut cfg);
     cfg.jira.site = "acme.atlassian.net".into();
     cfg.jira.project = "PROJ".into();
