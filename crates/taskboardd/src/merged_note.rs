@@ -66,8 +66,34 @@ fn alert_key(t: &Row) -> String {
 }
 
 /// At merge: posts the note and moves the ticket, or holds the ticket and asks for the note.
-/// `comment` is the "PR #n was merged" line.
+/// `comment` is the "PR #n was merged" line. A head merge (`stack.rs`) lands in its parent's branch, not
+/// the main branch, so its ticket waits for the stack's bottom PR; when that merges, every head-merged
+/// task in its stack goes with it.
 pub fn ticket_merged(app: &App, t: &Row, comment: &str) -> Result<()> {
+    if !crate::waitsfor::stack_landed(app, t)? {
+        let into = crate::stack::parent_id(t).map(|n| rf("task", n)).unwrap_or_default();
+        let text = format!("PR #{} merged into {into}'s branch; the ticket moves once its stack reaches the main branch", t.i0("pr_num"));
+        board::log_event(app, t.id(), board::BOARD, "jira", &text)?;
+        return Ok(());
+    }
+    landed(app, t, comment)?;
+    for k in crate::waitsfor::head_merged_children(app, t.id())? {
+        board::log_event(app, k.id(), board::BOARD, "jira", &format!("Its stack reached the main branch with {}'s PR", rf("task", t.id())))?;
+        stack_landed(app, &k)?;
+    }
+    Ok(())
+}
+
+/// A head-merged task whose stack just reached the main branch, and the head-merged tasks above it.
+fn stack_landed(app: &App, t: &Row) -> Result<()> {
+    landed(app, t, &crate::prflow::merged_comment(t))?;
+    for k in crate::waitsfor::head_merged_children(app, t.id())? {
+        stack_landed(app, &k)?;
+    }
+    Ok(())
+}
+
+fn landed(app: &App, t: &Row, comment: &str) -> Result<()> {
     if !on(app) || !has(t.s("jira_key")) || !t.b("jira_sync") {
         let st = app.cfg.jira.merged.clone();
         board::jira_keep_in_step(app, t, Some(&st), Some(comment))?;

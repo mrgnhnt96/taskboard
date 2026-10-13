@@ -168,3 +168,43 @@ fn waiting_for_none_forgets_the_merge_waits() {
     b.report("tb.wait_for", "s2", json!({"tasks": "none"}));
     assert!(waitsfor::merged_ids(&b.row(two)).is_empty());
 }
+
+/// T3 stacks on T1 with the given merge mode, is done, and its PR #10 merged into T1's branch.
+fn stacked_and_merged(b: &Board, parent: i64, mode: &str) -> i64 {
+    let three = b.task("Polish the endpoint");
+    let mode = if mode == "head" { json!("head") } else { Value::Null };
+    board::update_task(
+        &b.app,
+        three,
+        vec![("pr_after", json!(parent)), ("stack_merge", mode), ("status", json!("done")), ("pr_num", json!(10)),
+             ("pr_url", json!("https://github.com/acme/webapp/pull/10")), ("pr_state", json!("MERGED")), ("pr_phase", json!("merged"))],
+    )
+    .unwrap();
+    three
+}
+
+#[test]
+fn a_head_merged_pr_counts_as_merged_once_its_stack_reaches_main() {
+    let b = new_board();
+    let (one, two) = done_with_open_pr(&b);
+    let three = stacked_and_merged(&b, one, "head");
+    assert!(!waitsfor::merged(&b.app, Some(&b.row(three))).unwrap());
+
+    let out = b.report("tb.wait_for", "s2", json!({"tasks": [format!("T{three}")], "merged": true}));
+    assert_eq!(out["parked"], true, "{out}");
+    let w = b.card(two)["waiting"].as_str().unwrap().to_string();
+    assert!(w.contains(&format!("merged into T{one}'s branch")) && w.contains(&format!("once T{one}'s PR #9 merges")), "{w}");
+    assert!(runner::start_queued(&b.app).unwrap().is_empty(), "its work isn't on main yet");
+
+    board::update_task(&b.app, one, vec![("pr_state", json!("MERGED")), ("pr_phase", json!("merged"))]).unwrap();
+    assert!(waitsfor::merged(&b.app, Some(&b.row(three))).unwrap());
+    assert_eq!(runner::start_queued(&b.app).unwrap(), vec![two]);
+}
+
+#[test]
+fn a_tail_merged_pr_counts_as_merged_when_it_merges() {
+    let b = new_board();
+    let (one, _) = done_with_open_pr(&b);
+    let three = stacked_and_merged(&b, one, "tail");
+    assert!(waitsfor::merged(&b.app, Some(&b.row(three))).unwrap());
+}
