@@ -621,7 +621,7 @@ fn ref_link(t: &Theme, id: String, text: String, weight: FontWeight, size: f32) 
         .child(text)
 }
 
-fn ask_tile(t: &Theme, a: &Ask, w: f32, cx: &mut Context<MainWindow>) -> Div {
+fn ask_tile(t: &Theme, a: &Ask, w: f32, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let (fg, bg, line) = sev_colors(t, a.sev);
     let mut head = div().flex().items_center().justify_between().gap(px(8.)).child(
         div().text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(fg).child(a.kind.to_uppercase()),
@@ -640,7 +640,10 @@ fn ask_tile(t: &Theme, a: &Ask, w: f32, cx: &mut Context<MainWindow>) -> Div {
                 .cursor_pointer()
                 .hover(move |s| s.bg(hsla(0., 0., 0., 0.06)))
                 .tooltip(kit::tip("Dismiss"))
-                .on_click(cx.listener(move |m, _, _, cx| dismiss(m, &id, cx)))
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    cx.stop_propagation();
+                    dismiss(m, &id, cx)
+                }))
                 .child(kit::glyph(kit::Glyph::X, 12., muted)),
         );
     }
@@ -649,7 +652,10 @@ fn ask_tile(t: &Theme, a: &Ask, w: f32, cx: &mut Context<MainWindow>) -> Div {
         let open = r.clone();
         body = body.child(
             ref_link(t, format!("ask-task-{}", a.id), format!("{r} {title}"), FontWeight::SEMIBOLD, 13.)
-                .on_click(cx.listener(move |m, _, _, cx| m.open_task(open.clone(), cx))),
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    cx.stop_propagation();
+                    m.open_task(open.clone(), cx)
+                })),
         );
     }
     if let Some((g, name)) = &a.goal {
@@ -658,16 +664,40 @@ fn ask_tile(t: &Theme, a: &Ask, w: f32, cx: &mut Context<MainWindow>) -> Div {
         body = body.child(
             ref_link(t, format!("ask-goal-{}", a.id), text, FontWeight::NORMAL, 12.5)
                 .text_color(t.text_2)
-                .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(open.clone()), cx))),
+                .on_click(cx.listener(move |m, _, _, cx| {
+                    cx.stop_propagation();
+                    m.go(Page::Goal(open.clone()), cx)
+                })),
         );
     }
     let mut foot = div().flex().items_center().gap(px(8.)).mt(px(4.));
     if let Some(act) = &a.act {
         let act2 = act.clone();
-        foot = foot.child(kit::btn_primary(t, SharedString::from(format!("ask-act-{}", a.id)), act.label()).h(px(28.)).text_size(px(12.5)).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act2, cx))));
+        foot = foot.child(kit::btn_primary(t, SharedString::from(format!("ask-act-{}", a.id)), act.label()).h(px(28.)).text_size(px(12.5)).on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            run_act(m, &act2, cx)
+        })));
     }
     foot = foot.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(a.time.clone()));
-    div().w(px(w)).flex_none().flex().flex_col().p(px(12.)).rounded(px(12.)).border_1().border_color(line).bg(bg).child(body.child(foot))
+    let mut tile = div()
+        .id(SharedString::from(format!("ask-{}", a.id)))
+        .w(px(w))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .p(px(12.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(line)
+        .bg(bg)
+        .child(body.child(foot));
+    // The whole tile opens its task, or its goal when it has none.
+    let open = a.task.as_ref().map(|(r, _)| Act::OpenTask(r.clone())).or_else(|| a.goal.as_ref().map(|(g, _)| Act::OpenGoal(g.clone())));
+    if let Some(open) = open {
+        let hover = fg;
+        tile = tile.cursor_pointer().hover(move |s| s.border_color(hover)).on_click(cx.listener(move |m, _, _, cx| run_act(m, &open, cx)));
+    }
+    tile
 }
 
 fn today_section(t: &Theme, stats: &[Stat], w: f32) -> Div {

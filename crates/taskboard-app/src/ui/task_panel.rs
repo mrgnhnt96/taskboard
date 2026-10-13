@@ -846,7 +846,7 @@ impl Draw<'_> {
             St::Small | St::Help => d.text_size(px(12.5)).text_color(t.muted),
             St::Muted => d.text_color(t.muted).when(self.parent() == Some(K::Body), |d| d.text_size(px(13.))),
             St::WarnHelp => d.text_size(px(12.5)).text_color(t.warn_fg),
-            St::BoxLabel => div().child(s.to_uppercase()).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(match boxed {
+            St::BoxLabel => div().min_w_0().child(s.to_uppercase()).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(match boxed {
                 Some(BoxTone::Ask) => t.warn_fg,
                 Some(BoxTone::Lost | BoxTone::Failed) => t.down,
                 Some(BoxTone::Done) => t.up_fg,
@@ -1001,7 +1001,15 @@ impl Draw<'_> {
                     Some(BoxTone::Ask) => t.warn_fg,
                     _ => t.up_fg,
                 };
-                div().id(self.id("fold")).flex().items_center().gap(px(8.)).cursor_pointer().child(chevron(open, c)).children(summary)
+                // The label wraps rather than running off the box's edge.
+                div()
+                    .id(self.id("fold"))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .cursor_pointer()
+                    .child(div().flex_none().child(chevron(open, c)))
+                    .child(div().flex_1().min_w_0().children(summary))
             }
             // `.tl-more > summary`: 12.5px muted, the browser's disclosure triangle.
             Fold::Terms | Fold::Findings => div()
