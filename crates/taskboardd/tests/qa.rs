@@ -90,6 +90,7 @@ fn a_clear_direction_becomes_a_follow_up_task_and_more_comments_add_to_it() {
     let fu = board::get_task(&b.app, c.i0("task_id")).unwrap();
     assert_eq!(fu.s("title"), Some("QA on PROJ-7: Fix the overlap"));
     assert_eq!(fu.s("priority"), Some("high"));
+    assert!(taskboardd::projects::task_ships_pr(&b.app, &fu).unwrap(), "a follow-up that needs code ends in a PR");
     assert_eq!(fu.i("goal_id"), Some(g));
     assert!(fu.st("detail").contains("Move the button below the logo"));
     assert!(fu.st("detail").contains(&format!("T{src}")));
@@ -136,7 +137,8 @@ fn a_question_flags_the_owner_until_they_say_what_to_do() {
     let r = b.post(&format!("/qa-comments/Q{q3}"), json!({"action": "task", "note": "Yes, log them at warn.", "pr": false}));
     let t = board::get_task(&b.app, r["started"].as_str().unwrap()[1..].parse().unwrap()).unwrap();
     assert!(t.st("detail").contains("says: Yes, log them at warn."));
-    assert!(t.st("detail").contains("No PR") || t.st("detail").contains("report back"));
+    assert!(t.st("detail").contains("No PR: do it and report back"));
+    assert_eq!(t.i("ships_pr"), Some(0), "a follow-up that needs no code ends without a PR");
 }
 
 #[test]

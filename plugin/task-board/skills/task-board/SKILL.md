@@ -40,7 +40,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Jira** (when the board has it on: your handoff has a `Jira:` line or names a ticket): read `jira.md`. Never ask the owner which ticket.
 - **At the end**: `tb done "<one-paragraph summary>" --human <time>`, or `tb fail "<why>"` if it can't be done. When this terminal has a line, `tb done`, `tb fail` and a `tb wait-for` that parks the task move it on to the next task and print its handoff: carry straight on with it. Outside work hours or with the 5-hour usage used up nothing moves on; the next task is sent here once they open or the usage resets. `--human` is your honest estimate of how long this task would have taken a developer by hand (`3h`, `90m`, `1d`); the Days page compares it with your time. A PR, now or later? Read `pr.md` first.
 
-`tb status` shows this terminal's task and its line. Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
+`tb status` shows this terminal's task and its line (with the board down it says so and fails; it saves nothing). Every command takes `--task T<n>`. If the board is down, `tb` saves reports and sends them later.
 
 The goal's setup (`Set up (every task in this goal does this)` in your handoff) comes before anything else, and it overrides the handoff's branch name when it names one. Set it only when the owner asks: `tb goal setup G<n> "<what every task does first>"` ({task}, {n}, {wave}, {goal} and {jira} (the ticket key, else the task ref) are filled in per task, {device} and {target} ({device2}, {target2}…) with the devices lent to it; `none` clears it).
 

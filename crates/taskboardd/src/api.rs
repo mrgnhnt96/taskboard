@@ -245,6 +245,10 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "pr", "reviewers"]) => crate::asks::pr_reviewers(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reviewed"]) => {
             let t = tid(id)?;
+            // The owner's review is their word: only the app's button marks it.
+            if !from_app(query) {
+                return err(403, "Only the owner marks a PR reviewed, from its task page.");
+            }
             app.db.tx(|| {
                 board::get_task(app, t)?;
                 prflow::merge_flow(app, t, fields!["reviewed" => now_iso()])?;

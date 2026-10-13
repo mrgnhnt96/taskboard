@@ -615,9 +615,20 @@ fn swap_slow(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             continue;
         }
         let t = board::get_task(app, t.id())?;
+        let key = a.id().to_string();
+        let tries = flow(&t).get("swap_tries").and_then(|m| m.get(&key)).cloned().unwrap_or(Value::Null);
+        if tries["retry_at"].as_str().is_some_and(|r| r > now_iso().as_str()) {
+            continue;
+        }
         let old = a.st("host_user");
-        let Some((new, _)) = pick(app, &t, rec, 1, std::slice::from_ref(&old))?.into_iter().next() else { continue };
-        host(app, &pr)?.replace_reviewer(&pr, &old, &new.user).map_err(|e| ApiError::new(502, e))?;
+        let Some((new, _)) = pick(app, &t, rec, 1, std::slice::from_ref(&old))?.into_iter().next() else {
+            nobody_to_swap_in(app, &t, &a, pr.num)?;
+            continue;
+        };
+        if let Err(e) = host(app, &pr)?.replace_reviewer(&pr, &old, &new.user) {
+            swap_failed(app, &t, &a, pr.num, tries["tries"].as_i64().unwrap_or(0) + 1, &e)?;
+            continue;
+        }
         changed = true;
         app.db.tx(|| {
             reviewers::close_ask(app, a.id(), "swapped")?;
@@ -628,6 +639,34 @@ fn swap_slow(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         })?;
     }
     Ok(changed)
+}
+
+/// A swap the host refused waits this long before the next try (then the last wait again).
+const SWAP_RETRY_WAITS: [i64; 3] = [60, 300, 900];
+
+/// The host refused a swap: noted on the task, tried again after a wait. No strike against the reviewer.
+fn swap_failed(app: &App, t: &Row, a: &Row, num: i64, tries: i64, e: &str) -> Result<()> {
+    let wait = SWAP_RETRY_WAITS[(tries as usize).min(SWAP_RETRY_WAITS.len()) - 1];
+    app.db.tx(|| {
+        let mut all = flow(t).get("swap_tries").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        all.insert(a.id().to_string(), json!({"tries": tries, "retry_at": iso(now_ts() + wait as f64)}));
+        prflow::merge_flow(app, t.id(), fields!["swap_tries" => Value::Object(all)])?;
+        let e = e.trim_end_matches(['.', ' ']);
+        reviewers::note(app, t, board::BOARD, &format!("Couldn't swap {} off PR #{num}: {e}. Trying again soon", a.st("name")))
+    })
+}
+
+/// An overdue reviewer with nobody to swap in: said once per ask.
+fn nobody_to_swap_in(app: &App, t: &Row, a: &Row, num: i64) -> Result<()> {
+    let mut noted: Vec<Value> = flow(t).get("swap_none").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if noted.contains(&json!(a.id())) {
+        return Ok(());
+    }
+    noted.push(json!(a.id()));
+    app.db.tx(|| {
+        prflow::merge_flow(app, t.id(), fields!["swap_none" => Value::Array(noted.clone())])?;
+        reviewers::note(app, t, board::BOARD, &format!("{} hasn't reviewed PR #{num} in time, and there's nobody to swap in", a.st("name")))
+    })
 }
 
 /// `tb pr addressed` asked these reviewers (host id, name) to look again: each gets an ask (`rereview`)

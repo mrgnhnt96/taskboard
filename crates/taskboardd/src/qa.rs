@@ -335,12 +335,17 @@ pub fn act(app: &App, c: &Row, src: &Row, who: &str, note: Option<&str>) -> Resu
         meta.push(json!(["Earlier PR", format!("#{n}")]));
     }
     let title = c.s("title").filter(|t| !t.is_empty()).map(|t| t.to_string()).unwrap_or(src.st("title"));
+    let mut body = json!({"title": clip(&format!("QA on {key}: {title}"), 300), "project": src.v("project"), "goal_id": g.as_ref().map(|g| g.id()),
+                          "priority": "high", "pickup": {"mode": "new"}, "jira": {"mode": "link", "key": key},
+                          "detail": brief(app, c, src, note), "meta": meta,
+                          "origin": {"from": format!("Jira comment on {key}"), "by": author(c), "url": url}});
+    // A follow-up that needs no code change ends without a PR; one that does follows the project.
+    if !c.b("pr") {
+        body["ships_pr"] = json!(false);
+    }
     let made = ops::new_task(
         app,
-        &json!({"title": clip(&format!("QA on {key}: {title}"), 300), "project": src.v("project"), "goal_id": g.as_ref().map(|g| g.id()),
-                "priority": "high", "pickup": {"mode": "new"}, "jira": {"mode": "link", "key": key},
-                "detail": brief(app, c, src, note), "meta": meta,
-                "origin": {"from": format!("Jira comment on {key}"), "by": author(c), "url": url}}),
+        &body,
         who,
         Some(&format!("From {}'s comment on {key}{}", author(c), if who != board::BOARD { format!(", on {}'s word", app.cfg.owner) } else { String::new() })),
     )?;
@@ -382,7 +387,7 @@ fn brief(app: &App, c: &Row, src: &Row, note: Option<&str>) -> String {
              If you find it needs nothing after all, finish with no PR and say why."
         ));
     } else {
-        lines.push(format!("Do it and report back. Your done summary goes on {key} as a comment, so write it to {who}. If it turns out to need a code change, say what in the summary."));
+        lines.push(format!("No PR: do it and report back. Your done summary goes on {key} as a comment, so write it to {who}. If it turns out to need a code change, say what in the summary."));
     }
     lines.join("\n")
 }

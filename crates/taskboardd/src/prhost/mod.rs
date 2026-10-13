@@ -489,11 +489,13 @@ pub struct FakeHost {
     pub open_prs: Mutex<Vec<OpenPr>>,
     /// The builds `cancel_builds` stops.
     pub stops: Mutex<Vec<String>>,
+    /// What `request_reviews` answers instead of asking, while set.
+    pub review_error: Mutex<Option<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -532,6 +534,9 @@ impl PrHost for FakeHost {
     }
     fn request_reviews(&self, _pr: &PrRef, users: &[String]) -> HostResult<()> {
         self.log(format!("request {}", users.join(",")));
+        if let Some(e) = self.review_error.lock().clone() {
+            return Err(e);
+        }
         let mut r = self.rec.lock();
         for u in users {
             match r.reviewers.iter_mut().find(|x| &x.user == u) {

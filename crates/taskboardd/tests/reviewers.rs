@@ -38,6 +38,11 @@ impl Board {
     pub fn try_post(&self, path: &str, body: Value) -> Result<Value, String> {
         api::dispatch(&self.app, "POST", path, &Query::new(), &body).map_err(|e| e.message)
     }
+    /// The owner's "I reviewed it" from the app.
+    pub fn mark_reviewed(&self, id: i64) {
+        let q: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+        api::dispatch(&self.app, "POST", &format!("/tasks/{id}/pr/reviewed"), &q, &json!({})).unwrap_or_else(|e| panic!("reviewed: {}", e.message));
+    }
     pub fn get(&self, path: &str, query: &[(&str, &str)]) -> Value {
         let q: Query = query.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         api::dispatch(&self.app, "GET", path, &q, &json!({})).unwrap_or_else(|e| panic!("GET {path}: {}", e.message))
@@ -512,6 +517,47 @@ fn a_slow_reviewer_is_swapped_and_comes_back() {
     assert_eq!(b.flow(id)["swapped_off"], json!(["{bo}"]));
 }
 
+fn log_texts(b: &Board, id: i64, has: &str) -> usize {
+    b.app.db.q("SELECT text FROM events WHERE task_id = ?", vec![json!(id)]).unwrap().iter().filter(|r| r.st("text").contains(has)).count()
+}
+
+#[test]
+fn a_refused_swap_is_noted_and_tried_again_after_a_wait() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    *h.review_error.lock() = Some("rate limited".into());
+    age_asks(&b, 100.0);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")], "the swap didn't happen");
+    assert_eq!(log_texts(&b, id, "Couldn't swap Ana off PR #9: rate limited. Trying again soon"), 1);
+    poll(&b);
+    assert_eq!(log_texts(&b, id, "Couldn't swap Ana"), 1, "it waits before trying again");
+    assert_eq!(b.flow(id)["swap_tries"].as_object().unwrap().values().next().unwrap()["tries"], 1);
+
+    *h.review_error.lock() = None;
+    let past = json!({b.asks(id)[0].id().to_string(): {"tries": 1, "retry_at": "2000-01-01T00:00:00Z"}});
+    prflow::merge_flow(&b.app, id, vec![("swap_tries", past)]).unwrap();
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "swapped"), pair("Bo", "open")], "tried again once the wait is over");
+}
+
+#[test]
+fn an_overdue_reviewer_with_nobody_to_swap_in_is_noted_once() {
+    let b = board_with(|c| c.reviewers.swap = true);
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    age_asks(&b, 100.0);
+    poll(&b);
+    poll(&b);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")]);
+    assert_eq!(log_texts(&b, id, "Ana hasn't reviewed PR #9 in time, and there's nobody to swap in"), 1);
+}
+
 #[test]
 fn a_swapped_off_request_for_changes_is_waived_and_someone_else_asked() {
     let b = board_with(|c| c.reviewers.swap = true);
@@ -596,7 +642,10 @@ fn after_the_owner_s_review_the_agent_is_woken_to_ask_for_reviews() {
     poll(&b);
     assert_eq!(b.phase(id), "review");
     assert!(pr_jobs(&b, id).is_empty());
-    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewed"), json!({})).unwrap_err();
+    assert_eq!(e, "Only the owner marks a PR reviewed, from its task page.");
+    assert_eq!(b.phase(id), "review", "an agent can't mark the owner's review");
+    b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask");
     assert_eq!(prflow::label("ask"), "Asking for reviews");
     let jobs = pr_jobs(&b, id);
@@ -620,7 +669,7 @@ fn outside_work_hours_the_board_asks_for_reviews_itself_and_retries() {
     poll(&b);
     closed_hours(&b);
     // Nobody on the roster yet: it can't ask, and tries again later.
-    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask");
     assert_eq!(b.flow(id)["ask_tries"], 1);
     assert!(pr_jobs(&b, id).is_empty(), "no agent outside work hours");
@@ -644,7 +693,7 @@ fn without_the_ask_stage_the_review_goes_straight_to_reviewers() {
     let _h = fake(&b, green());
     let id = b.pr_task(BB);
     poll(&b);
-    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    b.mark_reviewed(id);
     poll(&b);
     assert_eq!(b.phase(id), "review");
 }
@@ -877,7 +926,7 @@ fn with_the_ask_stage_reviewers_wait_for_the_owner_s_review() {
     assert_eq!(v["pr_rules"]["ask_stage"], true);
     let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]})).unwrap_err();
     assert!(e.contains("hasn't reviewed PR #9 yet"), "{e}");
-    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask", "the project's switch turns the stage on");
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"who": "The agent"}));
     assert_eq!(b.phase(id), "review");
@@ -897,7 +946,7 @@ fn the_agent_isn_t_woken_to_ask_while_the_feed_holds_and_is_once_it_s_back() {
     crew(&b);
     poll(&b);
     feed_state(&b, json!({"since": ago(4000.0), "last_heartbeat_at": ago(400.0)}));
-    b.post(&format!("/tasks/{id}/pr/reviewed"), json!({}));
+    b.mark_reviewed(id);
     assert_eq!(b.phase(id), "ask");
     assert!(pr_jobs(&b, id).is_empty(), "held: no wake");
     taskboardd::runner::reviews(&b.app).unwrap();
