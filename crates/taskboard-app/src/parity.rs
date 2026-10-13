@@ -199,6 +199,21 @@ mod tests {
         .unwrap();
         w.update(cx, |m, _, cx| m.open_link("taskboard://", cx)).unwrap();
         w.update(cx, |m, _, _| assert_eq!(m.page, Page::Board)).unwrap();
+        // The web board's routes, which `tb` prints after its page URL.
+        w.update(cx, |m, _, cx| m.open_link("taskboard-dev://tasks#/goals/G1?view=backlog", cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, _| {
+            assert_eq!(m.page, Page::Goal("G1".into()));
+            assert!(m.goal_page.backlog_view);
+        })
+        .unwrap();
+        w.update(cx, |m, _, cx| m.open_link("taskboard-dev://tasks#/?task=T3", cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, _| {
+            assert_eq!(m.page, Page::Board);
+            assert!(matches!(&m.panel, Some(Panel::Task { r, .. }) if r == "T3"));
+        })
+        .unwrap();
     }
 
     /// `loadTask`: a failed fetch keeps the panel open with the board's sentence in place of
