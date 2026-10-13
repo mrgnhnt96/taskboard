@@ -467,6 +467,11 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<HooksCmd>,
     },
+    /// The start check's words: misses lists the starts it refused, with the prompt it read
+    Words {
+        #[command(subcommand)]
+        action: WordsCmd,
+    },
     /// Tell the board where this tb is
     Hello,
     /// Claude Code hook (used by the plugin)
@@ -699,6 +704,15 @@ enum ReviewersCmd {
         other: String,
         #[arg(long)]
         project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WordsCmd {
+    /// The latest task starts and goal runs refused for want of the owner's word, newest first
+    Misses {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 
@@ -1414,6 +1428,28 @@ fn mark(state: &str) -> &'static str {
 
 /// The State line's review: "approved" only once it has the approvals it needs; short of them,
 /// "1 of 2 approved".
+/// Refused starts (`tb words misses`): when, what, which terminal, and the prompt the check read.
+fn misses_lines<Tz: chrono::TimeZone>(misses: &Value, now: &chrono::DateTime<Tz>) -> Vec<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let rows = misses.as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        return vec!["No start has been refused.".into()];
+    }
+    let mut lines = vec![];
+    for m in &rows {
+        let at = m["at"].as_str().and_then(|a| crate::preview::clock(a, now)).unwrap_or_default();
+        let term = m["session_name"].as_str().or(m["session_id"].as_str()).unwrap_or("?");
+        lines.push(format!("{at} · {} · {term}", m["ref"].as_str().unwrap_or("?")));
+        match m["prompt"].as_str() {
+            Some(p) => lines.extend(p.lines().map(|l| format!("  > {l}"))),
+            None => lines.push("  (no prompt typed in this conversation)".into()),
+        }
+    }
+    lines
+}
+
 fn review_words(pr: &Value) -> String {
     let review = pr["review"].as_str().unwrap_or("unknown");
     let (have, need) = (pr["approvals"]["have"].as_i64().unwrap_or(0), pr["approvals"]["need"].as_i64());
@@ -4232,6 +4268,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
         },
         Cmd::Hooks { action } => hooks_cmd(c, action.unwrap_or(HooksCmd::List)),
+        Cmd::Words { action: WordsCmd::Misses { limit } } => {
+            let v = c.call("GET", &format!("/start-misses?limit={limit}"), None)?;
+            for line in misses_lines(&v["misses"], &chrono::Local::now()) {
+                out(&line);
+            }
+            Ok(0)
+        }
         Cmd::Hello => {
             let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "tb".into());
             match c.report("tb.hello", json!({"tb_path": exe, "plugin_version": env!("CARGO_PKG_VERSION")}), None, TB_TIMEOUT)? {
@@ -4934,6 +4977,21 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_words_misses_lists_each_refused_start_with_its_prompt() {
+        assert!(matches!(Cli::try_parse_from(["tb", "words", "misses", "--limit", "5"]).unwrap().cmd, Cmd::Words { action: WordsCmd::Misses { limit: 5 } }));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-12T15:00:00Z").unwrap();
+        let misses = json!([
+            {"at": "2026-10-12T13:30:00Z", "ref": "T8", "session_id": "s1", "session_name": "Term", "prompt": "make it\nand start it"},
+            {"at": "2026-10-11T09:05:00Z", "ref": "G2", "session_id": "s2", "session_name": null, "prompt": null},
+        ]);
+        assert_eq!(
+            misses_lines(&misses, &now),
+            ["1:30 PM · T8 · Term", "  > make it", "  > and start it", "Oct 11, 9:05 AM · G2 · s2", "  (no prompt typed in this conversation)"]
+        );
+        assert_eq!(misses_lines(&json!([]), &now), ["No start has been refused."]);
+    }
 
     #[test]
     fn tb_status_with_the_board_down_saves_nothing_and_fails() {
