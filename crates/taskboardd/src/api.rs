@@ -1143,17 +1143,66 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             let goal = board::find_goal(app, t.i("goal_id"))?
                 .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
                 .unwrap_or_default();
+            let asked = alerts::ask_start(app, "task", id, &via, json!({"mode": mode, "session_id": body["session_id"]}))?;
             return err(
                 403,
                 format!(
-                    "Only a human can start {}: nobody asked for it in this terminal's conversation. {} can press Start on the board, or tell you to start it.{goal}",
+                    "Only a human can start {}: nobody asked for it in this terminal's conversation. {}{goal}",
                     rf("task", id),
-                    app.cfg.owner
+                    owner_asked(app, asked, "start", "Start")
                 ),
             );
         }
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
+    launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
+}
+
+/// What a refused `tb start` tells the agent about the owner: asked in a notification (don't try again), or how
+/// they can start it themselves.
+fn owner_asked(app: &App, asked: bool, verb: &str, button: &str) -> String {
+    if asked {
+        format!("{} was asked in a notification and it {verb}s when they tap {button}; don't run it again or ask them.", app.cfg.owner)
+    } else {
+        format!("{} can press {button} on the board, or tell you to {verb} it.", app.cfg.owner)
+    }
+}
+
+/// The owner's Start from a start ask's notification (`dispatch::answer_start`): the board's Start, or outside
+/// the work hours, queued to start when they open.
+pub fn start_from_notification(app: &App, id: i64, mode: &str, session_id: Option<&str>) -> Result<Value> {
+    let by = format!("Started by {} from a notification", app.cfg.owner);
+    let Some(at) = hours::until_open(app) else { return launch(app, id, mode, session_id, &by, "") };
+    app.db.tx(|| {
+        let t = board::get_task(app, id)?;
+        if t.s("status") == Some("done") {
+            return err(409, "This task is done. Queue it again first.");
+        }
+        board::update_task(
+            app,
+            id,
+            fields!["status" => "queued", "pickup" => mode, "pickup_session" => if mode == "attach" { session_id } else { None }],
+        )?;
+        board::log_event(app, id, OWNER, "status", &format!("{by}; it starts when work hours open ({})", hours::say_when(&at)))?;
+        Ok(())
+    })?;
+    alerts::drop_start_ask(app, &rf("task", id))?;
+    task_detail(app, id)
+}
+
+/// The owner's Run from a start ask's notification: the board's Run, which outside the work hours queues the
+/// goal's tasks for when they open.
+pub fn run_goal_from_notification(app: &App, id: i64) -> Result<Value> {
+    let query: Query = [(FROM.to_string(), "app".to_string())].into_iter().collect();
+    let d = run_goal(app, id, &query, &json!({}))?;
+    app.db.tx(|| board::add_goal_note(app, id, "decision", &format!("Started by {} from a notification", app.cfg.owner), None, false, None))?;
+    Ok(d)
+}
+
+/// Starts task `id` once it may: `started` is the line logged for who started it, `via` the terminal whose word
+/// it was (empty for the owner's own Start).
+fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &str, via: &str) -> Result<Value> {
+    let t = board::get_task(app, id)?;
     // Starting ahead of its wave or its turn is fine; an agent starting ahead of the work it needs is
     // not. The owner's Start runs it now anyway ("Start runs it now anyway").
     if !via.is_empty() {
@@ -1184,17 +1233,18 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             crate::lines::leave(app, &t)?;
             board::log_event(app, id, board::OWNER, "status", &format!("Taken out of {name}'s line"))?;
         }
-        let sid = body["session_id"].as_str().map(|s| s.to_string());
+        let sid = session_id.map(|s| s.to_string());
         board::update_task(
             app,
             id,
             fields!["pickup" => mode, "pickup_session" => if mode == "attach" { sid.clone() } else { None }, "lost" => 0,
                     "session_id" => if t.b("lost") { None } else { t.s("session_id").map(|s| s.to_string()) }],
         )?;
-        board::log_event(app, id, board::OWNER, "status", &started)?;
-        runner::start_task(app, &board::get_task(app, id)?, &mode, sid.as_deref(), None, None, None)?;
+        board::log_event(app, id, board::OWNER, "status", started)?;
+        runner::start_task(app, &board::get_task(app, id)?, mode, sid.as_deref(), None, None, None)?;
         Ok(())
     })?;
+    alerts::drop_start_ask(app, &rf("task", id))?;
     task_detail(app, id)
 }
 
@@ -1963,14 +2013,15 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     } else {
         board::get_goal(app, id)?;
         if crate::startword::owners_goal_word(app, &via, id)?.is_none() {
+            let asked = alerts::ask_start(app, "goal", id, &via, json!({"now": now}))?;
+            let how = if asked {
+                owner_asked(app, true, "run", "Start")
+            } else {
+                format!("{} can press Run on the board, or tell you to run {} by name.", app.cfg.owner, rf("goal", id))
+            };
             return err(
                 403,
-                format!(
-                    "Only a human can run {}: nobody asked for it in this terminal's conversation since it last ran here. {} can press Run on the board, or tell you to run {} by name.",
-                    rf("goal", id),
-                    app.cfg.owner,
-                    rf("goal", id)
-                ),
+                format!("Only a human can run {}: nobody asked for it in this terminal's conversation since it last ran here. {how}", rf("goal", id)),
             );
         }
     }
@@ -2006,6 +2057,7 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     if spend {
         crate::startword::note_ran_goal(app, &via, id)?;
     }
+    alerts::drop_start_ask(app, &rf("goal", id))?;
     let mut d = goal_detail(app, id)?;
     d["queued_now"] = json!(n);
     Ok(d)

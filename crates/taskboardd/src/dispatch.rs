@@ -274,7 +274,13 @@ pub fn handle_response(app: &App, alert_id: &str, response: &Value) -> Result<bo
 /// Handles the notification responses Midna has reported since the last tick.
 fn take_responses(app: &App) -> Result<()> {
     let inbox = app.shared.lock().notify_inbox.clone();
-    let got: Vec<(String, Value)> = std::mem::take(&mut *inbox.lock());
+    // A start ask's answer waits for `start_answers`, which runs outside the tick's transaction.
+    let got: Vec<(String, Value)> = {
+        let mut i = inbox.lock();
+        let (asks, got) = std::mem::take(&mut *i).into_iter().partition(|(id, _)| id.starts_with("start:"));
+        *i = asks;
+        got
+    };
     for (id, r) in got {
         handle_response(app, &id, &r)?;
     }
@@ -436,30 +442,32 @@ fn notify_alert(app: &App, a: &Value) {
         if midna::call_exe(&midna, "notify.send", &params, 30.0).is_err() || !wait {
             return;
         }
-        if let Some(w) = Waiter::start(waiters, &alert_id, &sent_at) {
+        if let Some(w) = Waiter::start(waiters, &alert_id, &sent_at, &notification_id(&alert_id)) {
             w.listen(&midna, &inbox);
         }
     });
 }
 
-/// The one thread per alert that waits on its notification's response for as long as the alert is up
-/// (`Shared::alert_waiters` maps the alert's id to the `notified_at` of its latest notification).
+/// The one thread per alert (or start ask, `start:T12`) that waits on its notification's response for as long
+/// as the alert is up (`Shared::alert_waiters` maps the alert's id to the `notified_at` of its latest notification).
 pub struct Waiter {
     waiters: Arc<Mutex<HashMap<String, String>>>,
     alert_id: String,
+    nid: String,
 }
 
 impl Waiter {
-    /// Records that the alert was notified at `sent_at`; a Waiter only when the alert had none yet.
-    pub fn start(waiters: Arc<Mutex<HashMap<String, String>>>, alert_id: &str, sent_at: &str) -> Option<Waiter> {
+    /// Records that the alert was notified at `sent_at` as Midna's notification `nid`; a Waiter only when the
+    /// alert had none yet.
+    pub fn start(waiters: Arc<Mutex<HashMap<String, String>>>, alert_id: &str, sent_at: &str, nid: &str) -> Option<Waiter> {
         let fresh = waiters.lock().insert(alert_id.to_string(), sent_at.to_string()).is_none();
-        fresh.then(|| Waiter { waiters, alert_id: alert_id.to_string() })
+        fresh.then(|| Waiter { waiters, alert_id: alert_id.to_string(), nid: nid.to_string() })
     }
 
     /// Waits on `notify.response` 600 s at a time, reports each notification's pick once (tagged with its
     /// `sent_at`, for `handle_response`), and stops once the alert is gone.
     fn listen(self, midna: &Path, inbox: &Mutex<Vec<(String, Value)>>) {
-        let nid = notification_id(&self.alert_id);
+        let nid = self.nid.clone();
         let mut answered: Option<String> = None;
         loop {
             let Some(sent_at) = self.waiters.lock().get(&self.alert_id).cloned() else { return };
@@ -488,14 +496,28 @@ impl Waiter {
 fn tend_waiters(app: &App) {
     let waiters = app.shared.lock().alert_waiters.clone();
     let rows = alerts(app);
-    waiters.lock().retain(|id, _| rows.iter().any(|a| a["id"].as_str() == Some(id.as_str())));
-    if !app.cfg.notify || !app.cfg.runner || snooze_actions(app).is_empty() {
+    let asks = start_asks(app);
+    waiters.lock().retain(|id, _| match id.strip_prefix("start:") {
+        Some(g) => asks.iter().any(|a| a["group"] == g),
+        None => rows.iter().any(|a| a["id"].as_str() == Some(id.as_str())),
+    });
+    if !app.cfg.notify || !app.cfg.runner {
         return;
     }
     let (midna, inbox) = (app.cfg.midna.clone(), app.shared.lock().notify_inbox.clone());
-    for a in &rows {
-        let (Some(id), Some(at)) = (a["id"].as_str(), a["notified_at"].as_str().or(a["at"].as_str())) else { continue };
-        if let Some(w) = Waiter::start(waiters.clone(), id, at) {
+    let mut up: Vec<(String, String, String)> = vec![];
+    if !snooze_actions(app).is_empty() {
+        for a in &rows {
+            let (Some(id), Some(at)) = (a["id"].as_str(), a["notified_at"].as_str().or(a["at"].as_str())) else { continue };
+            up.push((id.to_string(), at.to_string(), notification_id(id)));
+        }
+    }
+    for a in &asks {
+        let (Some(g), Some(at)) = (a["group"].as_str(), a["notified_at"].as_str()) else { continue };
+        up.push((start_key(g), at.to_string(), start_notification_id(g)));
+    }
+    for (id, at, nid) in up {
+        if let Some(w) = Waiter::start(waiters.clone(), &id, &at, &nid) {
             let (midna, inbox) = (midna.clone(), inbox.clone());
             std::thread::spawn(move || w.listen(&midna, &inbox));
         }
@@ -504,11 +526,16 @@ fn tend_waiters(app: &App) {
 
 /// Takes a cleared alert's notification away (Notification Center, Midna's card and badge).
 fn withdraw(app: &App, alert_id: &str) {
+    withdraw_id(app, &notification_id(alert_id));
+}
+
+/// Takes Midna's notification `nid` away.
+fn withdraw_id(app: &App, nid: &str) {
     if !app.cfg.notify || !app.cfg.runner {
         return;
     }
     let midna = app.cfg.midna.clone();
-    let params = json!({"id": notification_id(alert_id)});
+    let params = json!({"id": nid});
     std::thread::spawn(move || {
         let _ = midna::call_exe(&midna, "notify.withdraw", &params, 30.0);
     });
@@ -526,8 +553,235 @@ pub fn notify(app: &App, text: &str, url: &str) {
     });
 }
 
+/// The refused starts (`tb start T12`, `tb start G3`) waiting on the owner's tap on a notification: one per
+/// ref, newest last. Asks a terminal made in one turn share a `group` (the first one's ref) and one notification.
+pub fn start_asks(app: &App) -> Vec<Value> {
+    jloads_arr(app.db.get_setting("start_asks").ok().flatten().as_deref())
+}
+
+/// The id a group of start asks' notification goes by in Midna: `taskboard-start-T12`.
+pub fn start_notification_id(group: &str) -> String {
+    format!("taskboard-start-{group}")
+}
+
+/// What a group of start asks goes by among the waiters and the inbox, apart from alerts' ids.
+fn start_key(group: &str) -> String {
+    format!("start:{group}")
+}
+
+/// Saves the start asks and withdraws the notifications of groups that are gone.
+fn keep_asks(app: &App, rows: &[Value]) -> Result<()> {
+    let mut gone: Vec<String> = start_asks(app)
+        .iter()
+        .filter_map(|a| a["group"].as_str())
+        .filter(|g| !rows.iter().any(|r| r["group"] == *g))
+        .map(str::to_string)
+        .collect();
+    gone.dedup();
+    app.db.set_setting("start_asks", Some(&jdumps(&Value::Array(rows.to_vec()))))?;
+    for g in gone {
+        withdraw_id(app, &start_notification_id(&g));
+    }
+    Ok(())
+}
+
+/// The newest prompt a human typed in terminal `sid` (its id, which marks the turn, and its text).
+fn latest_prompt(app: &App, sid: &str) -> Result<(i64, String)> {
+    let r = app.db.q1(
+        "SELECT id, text FROM session_events WHERE session_id = ? AND kind = 'prompt' AND COALESCE(data, '') != ? ORDER BY id DESC LIMIT 1",
+        p![sid, crate::startword::BOARD_PROMPT],
+    )?;
+    Ok(r.map(|r| (r.i("id").unwrap_or(0), r.st("text"))).unwrap_or_default())
+}
+
+/// Records that terminal `via` was refused starting `kind` `id` (`run`: how it asked to start, `{"mode",
+/// "session_id"}` for a task or `{"now"}` for a goal) and asks the owner with a notification. A new ask for the
+/// same ref replaces the old one; asks from one turn of one terminal go out as one notification. Whether the
+/// owner is asked.
+pub fn ask_start(app: &App, kind: &str, id: i64, via: &str, run: Value) -> Result<bool> {
+    let r = rf(kind, id);
+    let (turn, prompt) = latest_prompt(app, via)?;
+    let mut rows: Vec<Value> = start_asks(app).into_iter().filter(|a| a["ref"] != r.as_str()).collect();
+    // The asks its old group still holds go by the next of them now.
+    let mut moved = None;
+    if let Some(head) = rows.iter().find(|a| a["group"] == r.as_str()).and_then(|a| a["ref"].as_str()).map(str::to_string) {
+        for a in rows.iter_mut().filter(|a| a["group"] == r.as_str()) {
+            a["group"] = json!(head);
+        }
+        moved = Some(head);
+    }
+    let group = rows
+        .iter()
+        .find(|a| a["session_id"] == via && a["turn"] == turn)
+        .and_then(|a| a["group"].as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| r.clone());
+    let now = now_iso();
+    rows.push(json!({"ref": r, "kind": kind, "id": id, "session_id": via, "prompt": clip(&prompt, 300), "turn": turn,
+                     "group": group, "run": run, "at": now}));
+    for a in rows.iter_mut().filter(|a| a["group"] == group.as_str()) {
+        a["notified_at"] = json!(now);
+    }
+    keep_asks(app, &rows)?;
+    for g in moved.iter().filter(|g| **g != group).chain([&group]) {
+        notify_start(app, g, &rows);
+    }
+    Ok(app.cfg.notify)
+}
+
+/// Drops the start ask for `r` (`T12`, `G3`): it started, on the board or on a terminal's word.
+pub fn drop_start_ask(app: &App, r: &str) -> Result<()> {
+    let rows = start_asks(app);
+    if !rows.iter().any(|a| a["ref"] == r) {
+        return Ok(());
+    }
+    keep_asks(app, &rows.into_iter().filter(|a| a["ref"] != r).collect::<Vec<_>>())
+}
+
+/// "T12", "T12 and T13", "T12, T13 and G2".
+fn say_refs(refs: &[String]) -> String {
+    match refs {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// `notify.send`'s params for a group of start asks: what would start, who asked and how, and Start / Not now.
+pub fn start_params(app: &App, group: &str, rows: &[Value]) -> Value {
+    let mine: Vec<&Value> = rows.iter().filter(|a| a["group"] == group).collect();
+    let refs: Vec<String> = mine.iter().filter_map(|a| a["ref"].as_str().map(str::to_string)).collect();
+    let mut lines: Vec<String> = mine
+        .iter()
+        .map(|a| {
+            let id = a["id"].as_i64();
+            let title = if a["kind"] == "goal" {
+                board::find_goal(app, id).ok().flatten().map(|g| g.st("title"))
+            } else {
+                board::find_task(app, id).ok().flatten().map(|t| t.st("title"))
+            };
+            format!("{} {}", a["ref"].as_str().unwrap_or(""), title.unwrap_or_default()).trim_end().to_string()
+        })
+        .collect();
+    let first = mine.first().copied().cloned().unwrap_or_default();
+    let who = board::session_name(app, first["session_id"].as_str(), None);
+    let prompt = first["prompt"].as_str().unwrap_or("");
+    lines.push(if prompt.is_empty() { format!("Asked in {who}") } else { format!("{who}: “{}”", one_line(prompt, 160)) });
+    if let Some(at) = hours::until_open(app) {
+        lines.push(format!("Outside work hours: Start queues it for {}.", hours::say_when(&at)));
+    }
+    let (task, goal) = if first["kind"] == "goal" { (None, first["id"].as_i64()) } else { (first["id"].as_i64(), None) };
+    json!({"title": format!("Start {}?", say_refs(&refs)), "body": lines.join("\n"), "category": "board", "sound": true,
+           "open": alert_url(app, task, goal, None), "id": start_notification_id(group), "actions": ["Start", "Not now"]})
+}
+
+/// A group of start asks' notification, and the group's one waiter for the owner's pick.
+fn notify_start(app: &App, group: &str, rows: &[Value]) {
+    if !app.cfg.notify || !app.cfg.runner {
+        return;
+    }
+    let params = start_params(app, group, rows);
+    let Some(sent_at) = rows.iter().find(|a| a["group"] == group).and_then(|a| a["notified_at"].as_str()).map(str::to_string) else { return };
+    let (midna, inbox, waiters) = {
+        let sh = app.shared.lock();
+        (app.cfg.midna.clone(), sh.notify_inbox.clone(), sh.alert_waiters.clone())
+    };
+    let (key, nid) = (start_key(group), start_notification_id(group));
+    std::thread::spawn(move || {
+        if midna::call_exe(&midna, "notify.send", &params, 30.0).is_err() {
+            return;
+        }
+        if let Some(w) = Waiter::start(waiters, &key, &sent_at, &nid) {
+            w.listen(&midna, &inbox);
+        }
+    });
+}
+
+/// Acts on the owner's answers to start asks' notifications, outside a transaction (a start runs hooks and
+/// makes worktrees).
+pub fn start_answers(app: &App) -> Result<()> {
+    let inbox = app.shared.lock().notify_inbox.clone();
+    let got: Vec<(String, Value)> = {
+        let mut i = inbox.lock();
+        let (got, rest) = std::mem::take(&mut *i).into_iter().partition(|(id, _)| id.starts_with("start:"));
+        *i = rest;
+        got
+    };
+    for (key, r) in got {
+        answer_start(app, &key["start:".len()..], &r)?;
+    }
+    Ok(())
+}
+
+/// What the owner did with a group of start asks' notification: Start starts each as the board's Start button
+/// does, Not now or a dismissal drops them, a click (it opens the page) leaves them. Only a group the board keeps,
+/// and only its latest notification (`sent_at`), counts.
+pub fn answer_start(app: &App, group: &str, response: &Value) -> Result<()> {
+    let r = response.get("response").filter(|r| r.is_object()).unwrap_or(response);
+    let rows = start_asks(app);
+    let mine: Vec<Value> = rows.iter().filter(|a| a["group"] == group).cloned().collect();
+    let Some(first) = mine.first() else { return Ok(()) };
+    if let Some(at) = response.get("sent_at").and_then(|x| x.as_str()) {
+        if first["notified_at"].as_str() != Some(at) {
+            return Ok(());
+        }
+    }
+    let start = match (r["kind"].as_str(), r["action"].as_str()) {
+        (Some("action"), Some("Start")) => true,
+        (Some("action"), Some("Not now")) | (Some("dismissed"), _) => false,
+        _ => return Ok(()),
+    };
+    // Off the list first, so a start that fails isn't started again by the same tap.
+    keep_asks(app, &rows.into_iter().filter(|a| a["group"] != group).collect::<Vec<_>>())?;
+    if !start {
+        return Ok(());
+    }
+    for a in &mine {
+        let Some(id) = a["id"].as_i64() else { continue };
+        let out = if a["kind"] == "goal" {
+            crate::api::run_goal_from_notification(app, id)
+        } else {
+            crate::api::start_from_notification(app, id, a["run"]["mode"].as_str().unwrap_or("new"), a["run"]["session_id"].as_str())
+        };
+        if let Err(e) = out {
+            let r = a["ref"].as_str().unwrap_or("");
+            let (task, goal) = if a["kind"] == "goal" { (None, Some(id)) } else { (Some(id), None) };
+            notify(app, &format!("{r} didn't start: {}", e.message), &alert_url(app, task, goal, None), None);
+        }
+    }
+    Ok(())
+}
+
+/// Whether a start ask still stands: its task or goal is there and hasn't started some other way.
+fn ask_stands(app: &App, a: &Value) -> Result<bool> {
+    let id = a["id"].as_i64();
+    if a["kind"] == "goal" {
+        return Ok(board::find_goal(app, id)?.is_some());
+    }
+    let Some(t) = board::find_task(app, id)? else { return Ok(false) };
+    if matches!(t.s("status"), Some("done") | Some("working")) || (t.s("status") == Some("needs") && t.s("needs_reason") != Some("start_failed")) {
+        return Ok(false);
+    }
+    Ok(board::live_start_job(app, &t)?.is_none())
+}
+
+fn prune_asks(app: &App) -> Result<()> {
+    let rows = start_asks(app);
+    let mut kept = vec![];
+    for a in &rows {
+        if ask_stands(app, a)? {
+            kept.push(a.clone());
+        }
+    }
+    if kept.len() != rows.len() {
+        keep_asks(app, &kept)?;
+    }
+    Ok(())
+}
+
 pub fn tick(app: &App) -> Result<()> {
     take_responses(app)?;
+    prune_asks(app)?;
     prune_alerts(app)?;
     repeat_alerts(app)?;
     tend_waiters(app);

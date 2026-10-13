@@ -482,6 +482,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     crate::prhost::limit::check(app)?;
     crate::prbuilds::tick(app)?;
     crate::breaks::tick(app)?;
+    dispatch::start_answers(app)?;
     let made = start_queued(app)?;
     app.db.tx(|| {
         deliver::tick(app)?;
