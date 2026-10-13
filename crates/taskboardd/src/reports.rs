@@ -400,7 +400,9 @@ fn on_prompt(r: &mut Report) -> Result<Value> {
 /// Whether a prompt is an ask the owner typed (not a slash command, the board's words, or a tool's tags).
 fn owners_ask(prompt: &str) -> bool {
     let p = LEADING_MARKER_RE.replace(prompt, "").trim().to_string();
-    !p.is_empty() && !p.starts_with('/') && !p.starts_with('<') && !p.starts_with("[task-board")
+    // The plugin's start command is the owner's word ([`crate::startword::start_command`]).
+    let command = (p.starts_with('/') || p.starts_with('<')) && crate::startword::start_command(&p).is_some();
+    !p.is_empty() && (command || (!p.starts_with('/') && !p.starts_with('<'))) && !p.starts_with("[task-board")
 }
 
 fn ledger_files(app: &App, sid: &str, task_id: i64, event_id: i64) -> Result<()> {
@@ -2365,7 +2367,8 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
         }
         "hook.prompt" => {
             let text = LEADING_MARKER_RE.replace(b["prompt"].as_str().unwrap_or(""), "").trim().to_string();
-            if text.is_empty() || text.starts_with('<') {
+            // Tags are no one's prompt, but the start command's are the owner's word.
+            if text.is_empty() || (text.starts_with('<') && crate::startword::start_command(&text).is_none()) {
                 None
             } else {
                 Some(("prompt", text))

@@ -1589,3 +1589,51 @@ fn a_goal_run_on_the_grant_spends_it() {
     assert!(!startword::granted(&b.app, "s1", g, true).unwrap());
     assert_eq!(b.tb_run(g).unwrap_err().0, 403);
 }
+
+/// The plugin's `/start` command and a prompt's trailing "go" are the owner's word whatever else the
+/// prompt says; another command, or "go" inside a sentence, isn't.
+#[test]
+fn the_start_command_and_a_trailing_go_always_count() {
+    let tag = |args: &str| format!("<command-message>task-board:start</command-message>\n<command-name>/task-board:start</command-name>\n<command-args>{args}</command-args>");
+    let cases: Vec<(Box<dyn Fn(i64) -> String>, bool)> = vec![
+        (Box::new(|id| format!("/start T{id}")), true),
+        (Box::new(|id| format!("/task-board:start T-{id}")), true),
+        (Box::new(move |id| tag(&format!("T{id}"))), true),
+        (Box::new(|id| format!("should I start T{id}? go")), true),
+        (Box::new(|id| format!("don't start T{id} yet, T{id} go")), true),
+        (Box::new(|id| format!("/review T{id} go")), false),
+        (Box::new(|id| format!("is T{id} ready to go")), false),
+        (Box::new(|id| format!("/startup T{id}")), false),
+    ];
+    for (said, ok) in cases {
+        let b = board();
+        let id = b.new_task();
+        let said = said(id);
+        b.typed(&said);
+        assert_eq!(b.tb_start(id).is_ok(), ok, "{said}");
+    }
+
+    // A task the turn makes, even with a no before the "go".
+    let b = board();
+    b.typed("make a task for the login page, but don't start it yet. go");
+    let made = b.new_task();
+    assert!(b.tb_start(made).is_ok());
+
+    // `/start` alone: the terminal's own task.
+    let b = board();
+    let id = b.new_task();
+    let other = b.new_task();
+    b.app.db.x("UPDATE tasks SET session_id = 's1' WHERE id = ?", p![id]).unwrap();
+    b.typed("/start");
+    assert_eq!(b.tb_start(other).unwrap_err().0, 403, "another task isn't it");
+    assert!(b.tb_start(id).is_ok());
+
+    // A goal by name.
+    let b = board();
+    b.said("make a goal for dark mode");
+    let g = b.goal_new();
+    b.typed("thanks");
+    assert_eq!(b.tb_run(g).unwrap_err().0, 403);
+    b.typed(&format!("/start G{g}"));
+    assert!(b.tb_run(g).is_ok());
+}
