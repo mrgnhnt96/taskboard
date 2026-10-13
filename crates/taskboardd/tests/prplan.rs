@@ -491,3 +491,19 @@ fn done_with_a_pr_body_checks_it_and_opens_the_pr() {
     assert_eq!(t.st("status"), "done");
     assert_eq!(t.i("pr_num"), Some(77));
 }
+
+#[test]
+fn a_change_from_a_terminal_is_credited_to_that_terminal() {
+    let b = new_board();
+    b.session();
+    let id = b.task("Write it up", json!({}));
+    let log = |text: &str| -> Vec<String> {
+        b.app.db.q("SELECT who FROM events WHERE task_id = ? AND text = ?", p![id, text]).unwrap().iter().map(|r| r.st("who")).collect()
+    };
+    b.post(&format!("tasks/T{id}"), json!({"ships_pr": false, "by_session": "s1"}));
+    assert_eq!(log("Ends without a PR"), vec!["Term"]);
+    b.post(&format!("tasks/T{id}"), json!({"locks": ["db"]}));
+    assert_eq!(log("Holds the lock db while it runs"), vec![board::OWNER], "the app's change stays the owner's");
+    b.post(&format!("tasks/T{id}"), json!({"locks": ["cache"], "by_session": "s1", "who": "Sam"}));
+    assert_eq!(log("Holds the lock cache while it runs"), vec!["Sam"], "--who wins over the terminal");
+}

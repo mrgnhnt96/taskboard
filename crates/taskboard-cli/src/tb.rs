@@ -1661,11 +1661,24 @@ impl Ctx {
     }
 
     fn call(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let body = self.credited_here(method, body);
         match client::request(&self.cfg, method, path, body.as_ref(), TB_TIMEOUT) {
             Ok(v) => Ok(v),
             Err(CallError::Refused(m)) => Err(m),
             Err(CallError::Unreachable(e)) => Err(format!("the board isn't answering ({e}). Is `taskboard serve` running?")),
         }
+    }
+
+    /// A change names this terminal (`by_session`), so the board credits it here rather than to the owner.
+    fn credited_here(&self, method: &str, body: Option<Value>) -> Option<Value> {
+        if method == "GET" || self.session.is_empty() {
+            return body;
+        }
+        let mut b = body.unwrap_or_else(|| json!({}));
+        if let Value::Object(m) = &mut b {
+            m.entry("by_session").or_insert_with(|| json!(self.session));
+        }
+        Some(b)
     }
 
     fn run_report(&self, event: &str, fields: Value, task: Option<String>, needs_task: bool, done: impl Fn(&Value) -> String) -> Result<i32, String> {
@@ -1681,11 +1694,6 @@ impl Ctx {
             }
         }
         Ok(0)
-    }
-
-    /// Who a PR command is from, for the task's log.
-    fn pr_who(&self) -> &'static str {
-        if self.session.is_empty() { "tb" } else { "The agent" }
     }
 
     /// The task a PR command is about: the one named, or this terminal's (including a PR it's visiting).
@@ -2039,14 +2047,14 @@ fn bit_cmd(c: &Ctx, action: BitCmd) -> Result<i32, String> {
                 "POST",
                 "/bits",
                 Some(json!({"name": name, "kind": if local { "local" } else { "backend" }, "tasks": refs(&tasks, task_ref)?,
-                            "goals": refs(&goals, goal_ref)?, "project": project, "note": note, "who": c.who()})),
+                            "goals": refs(&goals, goal_ref)?, "project": project, "note": note})),
             )?;
             out(&format!("Added the bit {}.", v["name"].as_str().unwrap_or("")));
             v
         }
-        BitCmd::Made { name, undo } => c.call("POST", &format!("/bits/{name}/made"), Some(json!({"undo": undo, "who": c.who()})))?,
+        BitCmd::Made { name, undo } => c.call("POST", &format!("/bits/{name}/made"), Some(json!({"undo": undo})))?,
         BitCmd::Set { name, rename, backend, local, tasks, not_tasks, goals, not_goals, note } => {
-            let mut b = json!({"who": c.who()});
+            let mut b = json!({});
             if let Some(x) = rename {
                 b["name"] = json!(x);
             }
@@ -2067,7 +2075,7 @@ fn bit_cmd(c: &Ctx, action: BitCmd) -> Result<i32, String> {
             c.call("POST", &format!("/bits/{name}"), Some(b))?
         }
         BitCmd::Remove { name } => {
-            c.call("POST", &format!("/bits/{name}/remove"), Some(json!({"who": c.who()})))?;
+            c.call("POST", &format!("/bits/{name}/remove"), Some(json!({})))?;
             out(&format!("Removed the bit {name}."));
             return Ok(0);
         }
@@ -3374,7 +3382,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     out(&format!("Named wave {wave} of {g}."));
                 }
                 if let Some(h) = hold {
-                    c.call("POST", &format!("/goals/{g}/waves/{wave}/hold"), Some(json!({"on": h == "on", "who": c.who()})))?;
+                    c.call("POST", &format!("/goals/{g}/waves/{wave}/hold"), Some(json!({"on": h == "on"})))?;
                     out(&if h == "on" {
                         format!("Holding wave {wave} of {g}: none of its tasks start until tb goal continue {g} {wave}.")
                     } else {
@@ -3385,7 +3393,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             GoalCmd::Continue { goal, wave } => {
                 let g = goal_ref(&goal)?;
-                let v = c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({"who": c.who()})))?;
+                let v = c.call("POST", &format!("/goals/{g}/waves/{wave}/continue"), Some(json!({})))?;
                 out(&if v["let_start"] == true { format!("Wave {wave} of {g} can start now.") } else { format!("{g} goes on past wave {wave}.") });
                 Ok(0)
             }
@@ -3500,7 +3508,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let Some(r) = r#ref.filter(|_| what == "task" || what == "ignore") else {
                 return Err("say tb qa, tb qa waiting, tb qa Q3, tb qa task Q3 [--note TEXT] or tb qa ignore Q3".into());
             };
-            let mut b = json!({"action": what, "who": c.who()});
+            let mut b = json!({"action": what});
             if let Some(n) = note {
                 b["note"] = json!(n);
             }
@@ -3608,9 +3616,6 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if !not_also.is_empty() {
                     b["not_also"] = json!(not_also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?);
                 }
-                if !also.is_empty() || !not_also.is_empty() {
-                    b["who"] = json!(c.who());
-                }
                 if let Some(x) = priority {
                     b["priority"] = json!(x);
                 }
@@ -3646,9 +3651,6 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
-                }
-                if !devices.is_empty() || !bits.is_empty() || !not_bits.is_empty() {
-                    b["who"] = json!(c.who());
                 }
                 let v = c.call("POST", &format!("/tasks/{t}"), Some(b))?;
                 let mut bits = String::new();
@@ -3922,20 +3924,20 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             PrCmd::Reply { args, resolve } => {
                 let (task, rest) = task_and(args, 2);
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/reply"), Some(json!({"thread": rest[0], "text": rest[1], "resolve": resolve, "who": c.pr_who()})))?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/reply"), Some(json!({"thread": rest[0], "text": rest[1], "resolve": resolve})))?;
                 out(&format!("Replied on thread {}{}. {} open.", rest[0], if v["resolved"] == true { " and resolved it" } else { "" }, plural_threads(&v)));
                 Ok(0)
             }
             PrCmd::Ack { args } => {
                 let (task, rest) = task_and(args, 1);
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0], "who": c.pr_who()})))?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0]})))?;
                 out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v)));
                 Ok(0)
             }
             PrCmd::Addressed { task } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({"who": c.pr_who()})))?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({})))?;
                 let asked: Vec<&str> = v["asked"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
                 if asked.is_empty() {
                     out(&format!("Recorded {t}'s review as addressed. The board watches the PR and brings this conversation back when it needs you. You can stop here."));
@@ -3946,7 +3948,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Reviewers { task, ask, replace, with, drop, count, dry_run } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "count": count, "dry_run": dry_run, "who": c.pr_who()})))?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "count": count, "dry_run": dry_run})))?;
                 if dry_run {
                     let picks: Vec<String> = v["picks"].as_array().cloned().unwrap_or_default().iter().map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["why"].as_str().unwrap_or(""))).collect();
                     out(&if picks.is_empty() { "The board would ask nobody.".to_string() } else { format!("The board would ask {}.", picks.join(", ")) });
@@ -3957,13 +3959,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Merge { task } => {
                 let t = c.pr_task(task)?;
-                c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"who": c.pr_who(), "agent": !c.session.is_empty(), "via_session": c.session})))?;
+                c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
                 Ok(0)
             }
             PrCmd::NotOurs { task, reason, title, proof, check } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/not-ours"), Some(json!({"reason": reason, "title": title, "proof": proof, "checks": check, "who": c.pr_who()})))?;
+                let v = c.call("POST", &format!("/tasks/{t}/pr/not-ours"), Some(json!({"reason": reason, "title": title, "proof": proof, "checks": check})))?;
                 let cleared: Vec<&str> = v["cleared"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
                 out(&format!("Cleared {} for this push of {t}'s PR: they failed, but not because of it.", cleared.join(", ")));
                 Ok(0)
@@ -3992,7 +3994,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Merged { task } => {
                 let t = c.pr_task(task)?;
-                c.call("POST", &format!("/tasks/{t}/pr/merged"), Some(json!({"who": if c.session.is_empty() { "tb" } else { "The agent" }})))?;
+                c.call("POST", &format!("/tasks/{t}/pr/merged"), Some(json!({})))?;
                 out(&format!("Recorded {t}'s PR as merged."));
                 Ok(0)
             }
@@ -4617,6 +4619,24 @@ struct Verdict {
     title: Option<String>,
 }
 
+/// A verdict says why in 20 to 300 characters, and a not-ours names its cause in at most 80, as the board
+/// checks: refused here, nothing is sent.
+fn verdict_check(verdict: &str, v: &Verdict) -> Result<(), String> {
+    let why = v.why.as_deref().map(|w| w.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    let n = why.chars().count();
+    if !(20..=300).contains(&n) {
+        return Err(format!("say why in 20 to 300 characters with --why: what broke it and how you checked (that's {n})"));
+    }
+    let title = v.title.as_deref().map(str::trim).unwrap_or("");
+    if title.chars().count() > TITLE_MAX {
+        return Err(format!("the --title is {} characters; name the cause in {TITLE_MAX} or fewer", title.chars().count()));
+    }
+    if matches!(verdict, "not-ours" | "not_ours") && title.is_empty() {
+        return Err(format!("not-ours needs --title: the cause in a few plain words, {TITLE_MAX} characters at most"));
+    }
+    Ok(())
+}
+
 fn master_cmd(c: &Ctx, args: Vec<String>, verdict: Verdict, open_only: bool, limit: i64) -> Result<i32, String> {
     let (refs, words): (Vec<String>, Vec<String>) = args.into_iter().partition(|a| break_ref(a).is_some());
     let r = refs.first().and_then(|r| break_ref(r));
@@ -4643,6 +4663,7 @@ fn master_cmd(c: &Ctx, args: Vec<String>, verdict: Verdict, open_only: bool, lim
         }
         (Some(r), None | Some("show")) => out(&break_detail(&c.call("GET", &format!("/master/{r}"), None)?)),
         (Some(r), Some(v @ ("ours" | "not-ours" | "not_ours" | "unsure"))) => {
+            verdict_check(v, &verdict)?;
             let Verdict { why, who, proof, title } = verdict;
             let m = c.call("POST", &format!("/master/{r}"), Some(json!({"verdict": v, "why": why, "who": who, "proof": proof, "title": title})))?;
             out(&break_line(&m));
@@ -4967,6 +4988,29 @@ mod tests {
         assert_eq!(task_ref("12").unwrap(), "T12");
         assert!(task_ref("G3").is_err());
         assert_eq!(goal_ref("3").unwrap(), "G3");
+    }
+
+    #[test]
+    fn a_master_verdict_needs_a_reason_and_not_ours_a_title() {
+        let v = |why: Option<&str>, title: Option<&str>| Verdict { why: why.map(String::from), who: None, proof: vec![], title: title.map(String::from) };
+        let why = "Sam's change broke the build; checked the log.";
+        assert!(verdict_check("unsure", &v(None, None)).unwrap_err().contains("--why"));
+        assert!(verdict_check("ours", &v(Some("too short"), None)).unwrap_err().contains("--why"));
+        assert!(verdict_check("ours", &v(Some(why), None)).is_ok());
+        assert!(verdict_check("not-ours", &v(Some(why), None)).unwrap_err().contains("--title"));
+        assert!(verdict_check("not-ours", &v(Some(why), Some(&"x".repeat(81)))).unwrap_err().contains("80"));
+        assert!(verdict_check("not-ours", &v(Some(why), Some("Android NDK download failed"))).is_ok());
+    }
+
+    #[test]
+    fn a_change_names_the_terminal_it_came_from() {
+        let root = std::env::temp_dir().join(format!("tb-from-here-{}", std::process::id()));
+        let c = Ctx { cfg: Config::for_tests(&root), session: "s1".into(), claude: String::new(), cwd: String::new() };
+        assert_eq!(c.credited_here("POST", Some(json!({"wave": 2}))), Some(json!({"wave": 2, "by_session": "s1"})));
+        assert_eq!(c.credited_here("POST", None), Some(json!({"by_session": "s1"})));
+        assert_eq!(c.credited_here("GET", None), None, "a read sends nothing");
+        let outside = Ctx { session: String::new(), ..c };
+        assert_eq!(outside.credited_here("POST", Some(json!({"wave": 2}))), Some(json!({"wave": 2})), "outside Midna it stays the owner's");
     }
 
     #[test]

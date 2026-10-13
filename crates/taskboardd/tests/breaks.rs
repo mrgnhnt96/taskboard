@@ -31,6 +31,9 @@ fn board_with(f: impl FnOnce(&mut Config, &std::path::Path)) -> (Board, tempfile
     (Board { app, ci }, dir)
 }
 
+/// A verdict reason long enough for the board.
+const WHY: &str = "Sam's change broke the build; checked the log.";
+
 fn commit(sha: &str, email: &str) -> Commit {
     Commit { sha: sha.into(), name: email.split('@').next().unwrap().into(), email: email.into(), message: format!("Change {sha}") }
 }
@@ -132,17 +135,17 @@ fn an_unsure_break_is_not_the_owner_s_until_they_say_so() {
     assert_eq!(m["verdict"], "unsure");
     assert_eq!(b.tasks(), 0);
 
-    let m = b.post("/master/M1", json!({"verdict": "ours", "who": "Sam"}));
+    let m = b.post("/master/M1", json!({"verdict": "ours", "who": "Sam", "why": WHY}));
     assert_eq!((m["verdict"].as_str(), m["verdict_by"].as_str()), (Some("ours"), Some("Sam")));
     assert_eq!(b.tasks(), 1);
     assert!(dispatch::alerts(&b.app).iter().any(|a| a["key"] == "master:M1" && a["urgent"] == true));
 
     b.branch("failed", vec![commit("c3", "bob@acme.dev"), commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev")]);
     assert_eq!(b.get("/master/M1")["verdict_by"], "Sam", "the owner's word isn't decided again");
-    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "not-ours"})).unwrap_err();
+    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "not-ours", "why": WHY, "title": "Flaky test"})).unwrap_err();
     assert!(e.message.contains("--proof"), "{}", e.message);
-    assert!(api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "not-ours", "proof": ["flaky"]})).is_err());
-    let m = b.post("/master/M1", json!({"verdict": "not-ours", "proof": ["https://github.com/acme/webapp/actions/runs/77"]}));
+    assert!(api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "not-ours", "why": WHY, "title": "Flaky test", "proof": ["flaky"]})).is_err());
+    let m = b.post("/master/M1", json!({"verdict": "not-ours", "why": WHY, "title": "Flaky test", "proof": ["https://github.com/acme/webapp/actions/runs/77"]}));
     assert_eq!(m["verdict"], "not_ours");
     assert_eq!(m["proof"], json!(["https://github.com/acme/webapp/actions/runs/77"]));
     assert!(dispatch::alerts(&b.app).iter().all(|a| a["key"] != "master:M1"));
@@ -341,10 +344,10 @@ fn the_old_listener_s_routes_read_the_branch_and_answer_as_before() {
     q.insert("limit".into(), "0".into());
     assert_eq!(api::dispatch(&b.app, "GET", "/master-breaks", &q, &json!({})).unwrap()["breaks"].as_array().unwrap().len(), 1, "at least one");
 
-    let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "yours", "who": "Sam"}));
+    let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "yours", "who": "Sam", "why": WHY}));
     assert_eq!(m["verdict"], "ours");
-    assert!(api::dispatch(&b.app, "POST", "/master-breaks/M1/verdict", &Query::new(), &json!({"verdict": "not_yours"})).is_err(), "still needs a proof link");
-    let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "not_yours", "proof": [url]}));
+    assert!(api::dispatch(&b.app, "POST", "/master-breaks/M1/verdict", &Query::new(), &json!({"verdict": "not_yours", "why": WHY, "title": "Flaky test"})).is_err(), "still needs a proof link");
+    let m = b.post("/master-breaks/M1/verdict", json!({"verdict": "not_yours", "why": WHY, "title": "Flaky test", "proof": [url]}));
     assert_eq!(m["verdict"], "not_ours");
     assert!(api::dispatch(&b.app, "DELETE", "/master-breaks/M1", &Query::new(), &json!({})).is_err());
 }
@@ -397,15 +400,50 @@ fn a_verdict_s_title_names_the_cause_on_the_card() {
     b.branch("passed", vec![commit("c0", "bob@acme.dev")]);
     b.branch("failed", vec![commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev"), commit("c0", "bob@acme.dev")]);
     let long = "x".repeat(81);
-    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "unsure", "title": long})).unwrap_err();
+    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "unsure", "why": WHY, "title": long})).unwrap_err();
     assert!(e.message.contains("80 at most"), "{}", e.message);
     assert_eq!(b.get("/master/M1")["verdict_by"], "fallback", "a refused title changes nothing");
-    let m = b.post("/master/M1", json!({"verdict": "not-ours", "why": "The NDK mirror was down.", "title": "Android NDK download failed",
+    let m = b.post("/master/M1", json!({"verdict": "not-ours", "why": "The NDK mirror was down for every build.", "title": "Android NDK download failed",
                                         "proof": ["https://github.com/acme/webapp/actions/runs/77"]}));
     assert_eq!(m["verdict_title"], "Android NDK download failed");
     assert_eq!(b.get("/master/M1")["verdict_title"], "Android NDK download failed");
-    let m = b.post("/master/M1", json!({"verdict": "ours"}));
+    let m = b.post("/master/M1", json!({"verdict": "ours", "why": WHY}));
     assert_eq!(m["verdict_title"], Value::Null, "a new word without a title drops the old one");
+}
+
+#[test]
+fn a_verdict_needs_a_reason_and_not_ours_a_cause() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("passed", vec![commit("c0", "bob@acme.dev")]);
+    b.branch("failed", vec![commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev"), commit("c0", "bob@acme.dev")]);
+    let post = |body: Value| api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &body);
+    let proof = json!(["https://github.com/acme/webapp/actions/runs/77"]);
+    for body in [json!({"verdict": "ours"}), json!({"verdict": "unsure"}), json!({"verdict": "unsure", "why": "too short"})] {
+        let e = post(body.clone()).unwrap_err();
+        assert_eq!(e.status, 400, "{body}");
+        assert!(e.message.contains("--why"), "{}", e.message);
+    }
+    assert_eq!(b.get("/master/M1")["verdict_by"], "fallback", "a refused verdict changes nothing");
+    let e = post(json!({"verdict": "not-ours", "why": WHY, "proof": proof})).unwrap_err();
+    assert!(e.status == 400 && e.message.contains("--title"), "{}", e.message);
+    let m = post(json!({"verdict": "not-ours", "why": WHY, "proof": proof, "title": "Android NDK download failed"})).unwrap();
+    assert_eq!(m["verdict_title"], "Android NDK download failed");
+    let m = post(json!({"verdict": "unsure", "why": WHY})).unwrap();
+    assert_eq!((m["verdict_title"].clone(), m["verdict_label"].as_str()), (Value::Null, Some("unsure, so not yours to fix")), "the card falls back to the label");
+}
+
+#[test]
+fn a_verdict_from_a_terminal_is_credited_to_it() {
+    let (b, _d) = board_with(|_, _| {});
+    taskboardd::midna::sync(&b.app, &[json!({"id": "s1", "name": "Fixer", "agent": "claude", "cwd": "/tmp", "status": {"state": "working"}})], &[]).unwrap();
+    b.branch("passed", vec![commit("c0", "bob@acme.dev")]);
+    b.branch("failed", vec![commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev"), commit("c0", "bob@acme.dev")]);
+    let m = b.post("/master/M1", json!({"verdict": "unsure", "why": WHY, "by_session": "s1"}));
+    assert_eq!(m["verdict_by"], "Fixer");
+    let m = b.post("/master/M1", json!({"verdict": "unsure", "why": WHY}));
+    assert_eq!(m["verdict_by"], b.app.cfg.owner.as_str(), "from the app it's the owner's");
+    let m = b.post("/master/M1", json!({"verdict": "unsure", "why": WHY, "by_session": "s1", "who": "Sam"}));
+    assert_eq!(m["verdict_by"], "Sam", "--who wins over the terminal");
 }
 
 #[test]

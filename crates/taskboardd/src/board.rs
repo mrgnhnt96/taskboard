@@ -457,6 +457,19 @@ pub fn opened_by_board(app: &App, sid: Option<&str>) -> Result<bool> {
     Ok(!app.db.val("SELECT 1 FROM jobs WHERE kind = 'agent' AND json_extract(target, '$.session') = ? LIMIT 1", p![sid])?.is_null())
 }
 
+/// Who a change posted to the board is credited to: the body's `who`, else the terminal `tb` ran in
+/// (`by_session`, by its name), else `fallback` (the owner: the app, or a shell outside Midna).
+pub fn caller(app: &App, body: &Value, fallback: &str) -> String {
+    let who = one_line(&body_str(body, "who"), 80);
+    if !who.is_empty() {
+        return who;
+    }
+    match body["by_session"].as_str().filter(|s| !s.is_empty()) {
+        Some(sid) => session_name(app, Some(sid), None),
+        None => fallback.to_string(),
+    }
+}
+
 pub fn session_name(app: &App, sid: Option<&str>, fallback: Option<&str>) -> String {
     if let Ok(Some(s)) = get_session(app, sid) {
         if let Some(n) = s.s("name").filter(|n| !n.is_empty()) {

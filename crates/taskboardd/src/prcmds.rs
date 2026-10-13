@@ -67,13 +67,8 @@ fn ack_locally(app: &App, id: i64, th: &Thread) -> Result<()> {
     prflow::merge_flow(app, id, fields!["threads_acked" => Value::Object(acks)]).map(|_| ())
 }
 
-fn who_of(body: &Value) -> String {
-    let w = body_str(body, "who");
-    if w.is_empty() {
-        "the owner".to_string()
-    } else {
-        w
-    }
+fn who_of(app: &App, body: &Value) -> String {
+    board::caller(app, body, "the owner")
 }
 
 /// `tb pr reply <thread> "<text>" [--resolve]`.
@@ -95,7 +90,7 @@ pub fn reply(app: &App, id: i64, body: &Value) -> Result<Value> {
             ack_locally(app, id, &th)?;
         }
         let what = if resolved { "Replied to and resolved" } else { "Replied to" };
-        board::log_event(app, id, &who_of(body), "status", &format!("{what} {} on PR #{}: {}", thread_name(&th), pr.num, one_line(&text, 200))).map(|_| ())
+        board::log_event(app, id, &who_of(app, body), "status", &format!("{what} {} on PR #{}: {}", thread_name(&th), pr.num, one_line(&text, 200))).map(|_| ())
     })?;
     after(app, id, json!({"thread": th.id, "resolved": resolved}))
 }
@@ -112,7 +107,7 @@ pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
     };
     app.db.tx(|| {
         ack_locally(app, id, &th)?;
-        board::log_event(app, id, &who_of(body), "status", &format!("Acknowledged {} on PR #{} without a reply", thread_name(&th), pr.num)).map(|_| ())
+        board::log_event(app, id, &who_of(app, body), "status", &format!("Acknowledged {} on PR #{} without a reply", thread_name(&th), pr.num)).map(|_| ())
     })?;
     after(app, id, json!({"thread": th.id, "resolved": resolved}))
 }
@@ -164,7 +159,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         prflow::waited(app, &t)?;
-        crate::asks::asked_again(app, &t, &review.requesters, &who_of(body))?;
+        crate::asks::asked_again(app, &t, &review.requesters, &who_of(app, body))?;
         prflow::merge_flow(
             app,
             id,
@@ -177,7 +172,7 @@ pub fn addressed(app: &App, id: i64, body: &Value) -> Result<Value> {
         } else {
             format!("Addressed the review on PR #{} and asked {} to look again", pr.num, asked.join(", "))
         };
-        board::log_event(app, id, &who_of(body), "status", &text).map(|_| ())
+        board::log_event(app, id, &who_of(app, body), "status", &text).map(|_| ())
     })?;
     after(app, id, json!({"asked": asked}))
 }
@@ -272,7 +267,7 @@ pub fn checks_running(app: &App, id: i64, body: &Value) -> Result<Value> {
         return Ok(json!({"task": rf("task", id), "noted": false}));
     }
     app.db.tx(|| {
-        prflow::note_checks_running(app, &t, &head, &checks, &who_of(body))?;
+        prflow::note_checks_running(app, &t, &head, &checks, &who_of(app, body))?;
         if rec.is_object() {
             prflow::step(app, &board::get_task(app, id)?, &rec)?;
         }
@@ -328,7 +323,7 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     host(app, &pr)?.merge(&pr, &opts).map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
     let who = match &word {
         Some(_) => format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)),
-        None => who_of(body),
+        None => who_of(app, body),
     };
     app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who))?;
     let t = board::get_task(app, id)?;
@@ -450,7 +445,7 @@ pub fn not_ours(app: &App, id: i64, body: &Value) -> Result<Value> {
     if checks.is_empty() {
         checks = failed.clone();
     }
-    let who = who_of(body);
+    let who = who_of(app, body);
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let f = flow(&t);

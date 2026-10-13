@@ -74,6 +74,7 @@ use crate::prhost::bitbucket::Http;
 use crate::prhost::github::Gh;
 use crate::prhost::{Check, HostResult, PrRef};
 use crate::util::*;
+use crate::prcmds::{REASON_MAX, REASON_MIN};
 use crate::{board, dispatch, fields, p, proc, projects};
 
 pub const SCHEMA: &str = r#"
@@ -1192,11 +1193,21 @@ pub fn override_verdict(app: &App, id: i64, body: &Value) -> Result<Value> {
     if let Some(bad) = proof.iter().find(|p| !crate::prcmds::is_link(p)) {
         return err(400, format!("{bad} isn't a link: proof is http(s) links."));
     }
-    let who = { let w = one_line(&body_str(body, "who"), 80); if w.is_empty() { app.cfg.owner.clone() } else { w } };
-    let why = { let w = one_line(&body_str(body, "why"), 300); if w.is_empty() { format!("{who} said so.") } else { w } };
+    let who = board::caller(app, body, &app.cfg.owner);
+    let why = one_line(&body_str(body, "why"), 1000);
+    let n = why.chars().count();
+    if !(REASON_MIN..=REASON_MAX).contains(&n) {
+        return err(
+            400,
+            format!("The reason is {n} characters: say in plain words what broke it and how you checked, in {REASON_MIN} to {REASON_MAX} (--why)."),
+        );
+    }
     let raw_title = one_line(&body_str(body, "title"), 1000);
     if raw_title.chars().count() > TITLE_MAX {
         return err(400, format!("The title is {} characters: name the cause in {TITLE_MAX} at most.", raw_title.chars().count()));
+    }
+    if v == "not_ours" && raw_title.is_empty() {
+        return err(400, format!("Name the cause for not-ours in a few plain words, {TITLE_MAX} characters at most (--title)."));
     }
     let verdict = Verdict { verdict: v, by: who, why, title: title_of(&raw_title) };
     let made = app.db.tx(|| set_verdict(app, &b, &verdict, (!proof.is_empty()).then_some(proof.as_slice())))?;
