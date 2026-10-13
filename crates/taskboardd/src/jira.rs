@@ -813,6 +813,7 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
                 }
                 if let Some(s) = &status {
                     f.push(("jira_status", json!(s)));
+                    f.push(("jira_status_at", json!(now_iso())));
                 }
                 let new_key = key.is_some() && key.as_deref() != t.s("jira_key");
                 if !f.is_empty() {
@@ -839,6 +840,7 @@ pub fn finish_with(app: &App, job_id: i64, ok: bool, key: Option<&str>, status: 
             }
             if let Some(s) = &status {
                 f.push(("epic_status", json!(s)));
+                f.push(("jira_status_at", json!(now_iso())));
             }
             app.db.update("goals", &json!(gid), f)?;
         }
