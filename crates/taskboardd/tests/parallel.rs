@@ -410,3 +410,21 @@ fn done_leaves_a_tab_the_owner_opened() {
     runner::auto_close_done(&b.app).unwrap();
     assert_eq!(b.app.db.count("SELECT COUNT(*) FROM jobs WHERE kind = 'close'", p![]).unwrap(), 1, "a tab the board opened closes");
 }
+
+#[test]
+fn a_merged_pr_closes_a_board_tab_that_never_became_the_task_s_terminal() {
+    let b = new_board();
+    b.add_session("s1");
+    let t = b.task("Fix the tab bar", json!({"ships_pr": true}));
+    b.report("tb.take", "s1", json!({"task": format!("T{t}")}));
+    b.report("tb.done", "s1", json!({"summary": "Fixed it.", "pr": "https://github.com/acme/webapp/pull/7"}));
+    b.app.db.x("UPDATE tasks SET pr_phase = 'merged', pr_state = 'MERGED' WHERE id = ?", p![t]).unwrap();
+    for sid in ["S-LOST", "S-OWN"] {
+        midna::sync(&b.app, &[json!({"id": sid, "name": format!("Term {sid}"), "agent": "claude", "cwd": b.repo(), "status": {"state": "idle"}})], &[]).unwrap();
+    }
+    b.app.db.x("UPDATE sessions SET status = 'idle', status_at = '2000-01-01T00:00:00Z' WHERE id IN ('S-LOST', 'S-OWN')", p![]).unwrap();
+    b.open_for("S-LOST", t);
+    b.app.db.x("INSERT INTO task_terminals(task_id, session_id, why, at) VALUES (?, 'S-OWN', 'owner', '2000-01-01T00:00:00Z')", p![t]).unwrap();
+    let closing: Vec<String> = prflow::pr_tabs_to_close(&b.app).unwrap().into_iter().map(|(s, _, _)| s.st("id")).collect();
+    assert_eq!(closing, vec!["S-LOST".to_string()], "the board's lost tab closes; the owner's stays");
+}
