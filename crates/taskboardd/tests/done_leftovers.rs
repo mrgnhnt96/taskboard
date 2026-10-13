@@ -152,3 +152,25 @@ fn the_handoff_bits_line_gives_each_note_the_local_hint_and_the_default() {
     let e = api::dispatch(&b.app, "POST", "/bits", &Query::new(), &json!({"name": "longnote", "kind": "backend", "note": long})).unwrap_err();
     assert_eq!((e.status, e.message.as_str()), (400, "A bit's description is one short line, 120 characters at most."));
 }
+
+#[test]
+fn the_task_copy_says_what_it_waits_on_what_it_did_and_each_event_s_kind() {
+    let b = new_board("");
+    let id = b.task(json!({}));
+    let ctx = json!({"saved_at": "2026-10-12T20:15:00Z", "turns": 3, "checkpoints": 1, "where": {"conversation": "c-42"}});
+    board::update_task(&b.app, id, vec![("status", json!("needs")), ("question", json!("Which API key?")), ("context", json!(ctx.to_string()))]).unwrap();
+    board::log_event(&b.app, id, "Term", "note", "Asked about the key").unwrap();
+    let md = taskboardd::mdcopy::render(&b.app, &b.row(id)).unwrap();
+    assert!(md.contains("- **Question:** Which API key?"), "{md}");
+    assert!(md.contains("- **Priority:** normal"), "{md}");
+    assert!(md.contains("- **Created:** "), "{md}");
+    assert!(md.contains("Saved at 2026-10-12T20:15:00Z ("), "{md}");
+    assert!(md.contains(" · 3 turns · 1 checkpoint"), "{md}");
+    assert!(md.contains("conversation: c-42"), "{md}");
+    assert!(md.contains(" · Term · note · Asked about the key"), "{md}");
+    assert!(!md.contains("**Summary:**"), "no summary until it's done");
+    board::update_task(&b.app, id, vec![("status", json!("done")), ("summary", json!("Used the staging key"))]).unwrap();
+    let md = taskboardd::mdcopy::render(&b.app, &b.row(id)).unwrap();
+    assert!(md.contains("- **Summary:** Used the staging key"), "{md}");
+    assert!(!md.contains("**Question:**"), "a done task has no open question");
+}

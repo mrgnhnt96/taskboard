@@ -1432,13 +1432,13 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
         let in_review = prflow::IN_CODE_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
         if let Some(why) = t.s("no_pr").filter(|w| !w.is_empty() && t.i("pr_num").is_none()) {
             // `tb done --no-pr`: a ticket that shipped on another task goes back to QA with the summary;
-            // otherwise it's withdrawn, with the reason as its comment.
+            // otherwise it's withdrawn, with the reason and the summary as its comment.
             let shipped = board::ticket_shipped(app, &t)?;
             if shipped || !app.cfg.jira.canceled.is_empty() {
                 if shipped {
                     board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.merged.clone()), Some(&text))?;
                 } else {
-                    board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.canceled.clone()), Some(&format!("PR canceled: {why}")))?;
+                    board::jira_keep_in_step(app, &t, Some(&app.cfg.jira.canceled.clone()), Some(&format!("PR canceled: {why}\n\n{text}")))?;
                 }
                 app.wake_runner();
                 return Ok(t);
