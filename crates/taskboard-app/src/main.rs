@@ -27,7 +27,22 @@ mod ui;
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings]);
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, ExportForDebugging]);
+
+/// Writes the same redacted zip as `tb export` into Downloads and shows it in Finder, off the UI thread.
+fn export_for_debugging() {
+    std::thread::spawn(|| {
+        let made = taskboardd::config::Config::load()
+            .map_err(|e| e.to_string())
+            .and_then(|cfg| taskboardd::export::run(&cfg, "app", &taskboardd::export::default_dir()));
+        let _ = match made {
+            Ok(path) => std::process::Command::new("open").arg("-R").arg(path).status(),
+            Err(e) => std::process::Command::new("osascript")
+                .args(["-e", "on run argv", "-e", "display alert \"Couldn't export the board\" message (item 1 of argv)", "-e", "end run", &e])
+                .status(),
+        };
+    });
+}
 
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
@@ -60,6 +75,7 @@ fn main() {
         cx.on_action(move |_: &OpenSettings, cx| {
             let _ = settings::open(b.clone(), cx);
         });
+        cx.on_action(|_: &ExportForDebugging, _| export_for_debugging());
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -85,9 +101,11 @@ fn main() {
             },
             Menu {
                 name: "File".into(),
-                items: vec![
-                    MenuItem::action("Close Window", CloseWindow),
-                ],
+                items: if backend.label() == "fake" {
+                    vec![MenuItem::action("Close Window", CloseWindow)]
+                } else {
+                    vec![MenuItem::action("Close Window", CloseWindow), MenuItem::separator(), MenuItem::action("Export for Debugging…", ExportForDebugging)]
+                },
                 disabled: false,
             },
             Menu {

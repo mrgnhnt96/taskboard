@@ -31,6 +31,10 @@ mime_guess = "2"
 dirs = "5"
 once_cell.workspace = true
 libc = "0.2"
+# export.rs: the debug bundle is a deflated zip, its logs scrubbed of the board's own strings.
+flate2 = "1"
+crc32fast = "1"
+aho-corasick = "1"
 
 # apporigin.rs: the app socket's peer is checked against the app's code signature.
 [target.'cfg(target_os = "macos")'.dependencies]
