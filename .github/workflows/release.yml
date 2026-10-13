@@ -79,7 +79,7 @@ jobs:
           TASKBOARD_NOTARY_ISSUER: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           packaging/notarize.sh dist/release/Taskboard.app
-          xcrun stapler validate dist/release/Taskboard.app
+          packaging/retry.sh xcrun stapler validate dist/release/Taskboard.app
 
       # The branded window: background, icon positions and size come from
       # scripts/dmg-settings.py and packaging/assets/dmg.
@@ -101,7 +101,7 @@ jobs:
         run: |
           codesign --force --timestamp --sign "$IDENTITY" "$DMG"
           xcrun notarytool submit "$DMG" --key "$TASKBOARD_NOTARY_KEY" --key-id "$KEY_ID" --issuer "$ISSUER" --wait
-          xcrun stapler staple "$DMG"
+          packaging/retry.sh xcrun stapler staple "$DMG"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 
       - name: Clean up signing

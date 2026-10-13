@@ -28,6 +28,6 @@ else
   AUTH=(--keychain-profile "$PROFILE")
 fi
 "$XCRUN" notarytool submit "$ZIP" "${AUTH[@]}" --wait
-"$XCRUN" stapler staple "$APP"
+"$(dirname "$0")/retry.sh" "$XCRUN" stapler staple "$APP"
 /usr/sbin/spctl -a -t exec -vv "$APP"
 echo "==> notarized and stapled $APP"
