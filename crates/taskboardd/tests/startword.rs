@@ -1447,6 +1447,33 @@ fn the_start_word_reads_the_asks_154_found() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// Refs as Kass dictation writes them ("T-104", "T 104", "task number 104"), through the hook's path:
+/// each starts its task, and a no in the same form holds it.
+#[test]
+fn a_dictated_ref_names_the_task() {
+    let b = board();
+    let forms = ["T-{}", "T–{}", "T—{}", "T {}", "T #{}", "t{}.", "task number {}"];
+    for said in ["Start {}.", "Make it and start {}.", "OK, go ahead and start {}", "Queue {} please."] {
+        for form in forms {
+            b.report("hook.session_start", json!({"source": "clear"}));
+            let id = b.new_task();
+            let prompt = said.replace("{}", &form.replace("{}", &id.to_string()));
+            assert!(b.tb_start(id).is_err(), "no word yet: {prompt}");
+            b.typed(&prompt);
+            assert!(b.tb_start(id).is_ok(), "{prompt}");
+        }
+    }
+    for said in ["Don't start {} yet.", "Start {} tomorrow.", "Did you start {}?"] {
+        for form in forms {
+            b.report("hook.session_start", json!({"source": "clear"}));
+            let id = b.new_task();
+            let prompt = said.replace("{}", &form.replace("{}", &id.to_string()));
+            b.typed(&prompt);
+            assert!(b.tb_start(id).is_err(), "{prompt}");
+        }
+    }
+}
+
 /// Every phrase in #155, both ways, as #126's are read: a goal word before the thing's name only says
 /// which ("the goal's migration" is a migration), and a summary of the goal, a list of its tasks or a
 /// sentence that only says more of it leaves "it" the goal.
