@@ -153,7 +153,14 @@ pub fn master_rows(st: &Value) -> Vec<MasterRow> {
             let checks: Vec<&str> = arr(m, "checks").iter().filter_map(|c| c.as_str()).collect();
             MasterRow {
                 r#ref: s(m, "ref").to_string(),
-                text: format!("Master is red on {}: {} {} on {}. Yours to fix.", s(m, "project"), checks.join(", "), if checks.len() == 1 { "fails" } else { "fail" }, s(m, "branch")),
+                text: format!(
+                    "Master is red on {}: {} {} on {}{}. Yours to fix.",
+                    s(m, "project"),
+                    checks.join(", "),
+                    if checks.len() == 1 { "fails" } else { "fail" },
+                    s(m, "branch"),
+                    fmt::opt_s(m, "verdict_title").map(|t| format!(" ({t})")).unwrap_or_default()
+                ),
                 ago: fmt::ago(s(m, "opened_at")),
                 task: fmt::opt_s(&m["task"], "ref").map(str::to_string),
             }
@@ -260,12 +267,12 @@ mod tests {
         let st = json!({"master": [
             {"ref": "M3", "project": "webapp", "branch": "main", "checks": ["build"], "verdict": "ours", "task": {"ref": "T12"}, "opened_at": "2026-10-08T10:00:00Z"},
             {"ref": "M4", "project": "api", "branch": "master", "checks": ["lint", "test"], "verdict": "unsure", "task": null},
-            {"ref": "M5", "project": "ios", "branch": "master", "checks": ["lint", "test"], "verdict": "ours", "task": null}]});
+            {"ref": "M5", "project": "ios", "branch": "master", "checks": ["lint", "test"], "verdict": "ours", "verdict_title": "Android NDK download failed", "task": null}]});
         let rows = master_rows(&st);
         assert_eq!(rows.len(), 2, "not the unsure one");
         assert_eq!(rows[0].text, "Master is red on webapp: build fails on main. Yours to fix.");
         assert_eq!(rows[0].task.as_deref(), Some("T12"));
-        assert_eq!(rows[1].text, "Master is red on ios: lint, test fail on master. Yours to fix.");
+        assert_eq!(rows[1].text, "Master is red on ios: lint, test fail on master (Android NDK download failed). Yours to fix.", "the cause's title");
         assert_eq!(rows[1].task, None);
         assert!(shown_as_master(&st, &json!({"key": "master:M3", "urgent": true})), "its urgent alert isn't a second line");
         assert!(!shown_as_master(&st, &json!({"key": "master:M4", "urgent": true})));

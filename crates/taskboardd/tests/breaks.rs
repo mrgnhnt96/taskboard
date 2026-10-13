@@ -390,3 +390,73 @@ fn a_v1_build_on_the_watched_branch_reaches_the_break_watch() {
     assert_eq!(r["result"]["master"]["break"], Value::Null, "{r}");
     assert!(b.get("/master")["open"].as_array().unwrap().is_empty(), "a passed build closes it");
 }
+
+#[test]
+fn a_verdict_s_title_names_the_cause_on_the_card() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("passed", vec![commit("c0", "bob@acme.dev")]);
+    b.branch("failed", vec![commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev"), commit("c0", "bob@acme.dev")]);
+    let long = "x".repeat(81);
+    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &json!({"verdict": "unsure", "title": long})).unwrap_err();
+    assert!(e.message.contains("80 at most"), "{}", e.message);
+    assert_eq!(b.get("/master/M1")["verdict_by"], "fallback", "a refused title changes nothing");
+    let m = b.post("/master/M1", json!({"verdict": "not-ours", "why": "The NDK mirror was down.", "title": "Android NDK download failed",
+                                        "proof": ["https://github.com/acme/webapp/actions/runs/77"]}));
+    assert_eq!(m["verdict_title"], "Android NDK download failed");
+    assert_eq!(b.get("/master/M1")["verdict_title"], "Android NDK download failed");
+    let m = b.post("/master/M1", json!({"verdict": "ours"}));
+    assert_eq!(m["verdict_title"], Value::Null, "a new word without a title drops the old one");
+}
+
+#[test]
+fn the_fault_check_s_title_names_the_fix_task() {
+    let (b, _d) = board_with(|c, dir| {
+        let script = dir.join("claude");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho '{\"structured_output\": {\"verdict\": \"ours\", \"why\": \"The new Gradle plugin pins an NDK that no longer downloads.\", \"title\": \"Android NDK download failed\"}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        c.claude = script.to_string_lossy().to_string();
+    });
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    *b.ci.read.lock() = BranchRead {
+        head: "c2".into(),
+        checks: vec![Check { name: "build".into(), state: "failed".into(), url: None, at: None }],
+        commits: vec![commit("c2", "sam@acme.dev"), commit("c1", "bob@acme.dev")],
+        queued_at: None,
+    };
+    b.post("/master-builds", json!({"pipeline": "android", "build_id": 41, "url": "https://github.com/acme/webapp/actions/runs/41", "sha": "c2", "state": "failed"}));
+    let m = b.get("/master/M1");
+    assert_eq!((m["verdict"].as_str(), m["verdict_by"].as_str(), m["verdict_title"].as_str()), (Some("ours"), Some("claude"), Some("Android NDK download failed")));
+    let t = board::get_task(&b.app, b.fix_of("M1")).unwrap();
+    assert_eq!(t.st("title"), "Fix master android: Android NDK download failed");
+    let alert = dispatch::alerts(&b.app).into_iter().find(|a| a["key"] == "master:M1").unwrap();
+    assert!(alert["text"].as_str().unwrap().contains("build fails (Android NDK download failed)"), "{alert}");
+}
+
+#[test]
+fn tb_master_lists_only_the_red_ones_or_the_newest() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("failed", vec![commit("c1", "bob@acme.dev")]);
+    b.branch("passed", vec![commit("c2", "bob@acme.dev"), commit("c1", "bob@acme.dev")]);
+    b.branch("failed", vec![commit("c3", "bob@acme.dev"), commit("c2", "bob@acme.dev")]);
+    let v = b.get("/master");
+    assert_eq!((v["open"][0]["ref"].as_str(), v["closed"][0]["ref"].as_str()), (Some("M2"), Some("M1")));
+
+    let mut q = Query::new();
+    q.insert("open".into(), "1".into());
+    let v = api::dispatch(&b.app, "GET", "/master", &q, &json!({})).unwrap();
+    assert_eq!(v["open"].as_array().unwrap().len(), 1);
+    assert_eq!(v["open"][0]["ref"], "M2");
+    assert!(v["closed"].as_array().unwrap().is_empty(), "only the red one");
+
+    b.branch("passed", vec![commit("c4", "bob@acme.dev"), commit("c3", "bob@acme.dev")]);
+    let mut q = Query::new();
+    q.insert("limit".into(), "1".into());
+    let v = api::dispatch(&b.app, "GET", "/master", &q, &json!({})).unwrap();
+    let listed: Vec<&Value> = v["open"].as_array().unwrap().iter().chain(v["closed"].as_array().unwrap()).collect();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["ref"], "M2", "the newest");
+}
