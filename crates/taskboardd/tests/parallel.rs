@@ -445,3 +445,33 @@ fn only_a_task_that_ships_a_pr_picks_one_up_from_a_stop_or_a_push() {
         assert_eq!((stop_pr, push_pr), (want, want), "ships_pr = {ships}");
     }
 }
+
+#[test]
+fn taking_back_a_pr_task_drops_the_owner_s_review_until_a_peer_is_asked() {
+    let b = new_board();
+    let flow = |t: i64| -> Value { serde_json::from_str(board::get_task(&b.app, t).unwrap().s("pr_flow").unwrap_or("{}")).unwrap() };
+    let green = json!({"state": "OPEN", "head": "h2", "checks": [{"name": "ci", "state": "passed"}], "failed": [], "running": 0, "comments": 0, "approvals": 0, "review_decision": ""});
+    for (sid, peers) in [("s1", false), ("s2", true)] {
+        b.add_session(sid);
+        let t = b.task(&format!("Fix {sid}"), json!({"ships_pr": true}));
+        b.report("tb.take", sid, json!({"task": format!("T{t}")}));
+        b.report("tb.done", sid, json!({"summary": "Fixed it.", "pr": format!("https://github.com/acme/webapp/pull/{}", if peers { 12 } else { 11 })}));
+        let mut marks = vec![("reviewed", json!("2026-10-12T10:00:00Z")), ("review_alerted", json!("2026-10-12T09:00:00Z"))];
+        if peers {
+            marks.push(("asked", json!({"at": "2026-10-12T10:05:00Z", "names": ["Pat"], "by": "board"})));
+        }
+        prflow::merge_flow(&b.app, t, marks).unwrap();
+        b.report("tb.take", sid, json!({"task": format!("T{t}")}));
+        let f = flow(t);
+        if peers {
+            assert!(f.get("reviewed").is_some() && f.get("asked").is_some(), "peers are on it, so it goes to re-review as it is");
+            continue;
+        }
+        assert!(f.get("reviewed").is_none() && f.get("review_alerted").is_none(), "{f}");
+        b.report("tb.done", sid, json!({"summary": "Moved the fix to the shared widget."}));
+        b.app.db.tx(|| prflow::step(&b.app, &board::get_task(&b.app, t).unwrap(), &green)).unwrap();
+        assert_eq!(board::get_task(&b.app, t).unwrap().s("pr_phase"), Some("review"));
+        let alerts = taskboardd::dispatch::alerts(&b.app);
+        assert!(alerts.iter().any(|a| a["text"].as_str().unwrap().contains(&format!("T{t} is green and ready for review"))), "{alerts:?}");
+    }
+}

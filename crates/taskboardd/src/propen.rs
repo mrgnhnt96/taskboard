@@ -149,6 +149,7 @@ pub fn context_block(app: &App, t: &Row) -> Result<String> {
             _ => {}
         }
     }
+    lines.extend(bit_lines(&crate::bits::of_task(app, t.id())?));
     let atts = board::attachments(app, Some(t.id()), None)?;
     let of = |kinds: &[&str]| -> Vec<(String, String)> {
         atts.iter()
@@ -175,6 +176,32 @@ pub fn context_block(app: &App, t: &Row) -> Result<String> {
         lines.extend(designs);
     }
     Ok(if lines.is_empty() { String::new() } else { format!("## Context\n{}", lines.join("\n")) })
+}
+
+/// The task's bits, so a reviewer knows the change ships dark and how to turn it on: one line for the
+/// backend ones (behind a flag in the flag tool) and one for the local ones (a default and an override).
+fn bit_lines(bits: &[Row]) -> Vec<String> {
+    let named = |kind: &str| -> Vec<String> { bits.iter().filter(|b| b.s("kind") == Some(kind)).map(|b| format!("`{}`", b.st("name"))).collect() };
+    let mut out = vec![];
+    match named("backend").as_slice() {
+        [] => {}
+        [one] => out.push(format!("- Behind the feature flag {one}: off unless it's on.")),
+        many => out.push(format!("- Behind the feature flags {}: off unless they're on.", and_list(many))),
+    }
+    match named("local").as_slice() {
+        [] => {}
+        [one] => out.push(format!("- {one} is local: not in the flag tool, so it reads its default (off); turn it on with a bit override.")),
+        many => out.push(format!("- {} are local: not in the flag tool, so they read their defaults (off); turn them on with a bit override.", and_list(many))),
+    }
+    out
+}
+
+fn and_list(items: &[String]) -> String {
+    match items {
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        [] => String::new(),
+    }
 }
 
 fn is_web(url: &str) -> bool {
