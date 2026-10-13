@@ -1877,6 +1877,12 @@ fn on_take(r: &mut Report) -> Result<Value> {
     }
     if reopening {
         crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
+        // The owner hasn't seen the changes that come next: until a peer is asked, their review mark goes, so
+        // the PR waits for their look again. With peers already on it, it goes to re-review as it is.
+        let f = jloads_obj(t.s("pr_flow"));
+        if !f.contains_key("asked") {
+            prflow::merge_flow(app, t.id(), fields!["reviewed" => null, "review_alerted" => null])?;
+        }
     }
     let t = board::get_task(app, t.id())?;
     // Lent before the handoff is built, so it names them, the same as a runner start.

@@ -85,6 +85,22 @@ fn a_task_that_ends_in_a_pr_needs_one_even_when_the_remote_cant_be_read() {
 }
 
 #[test]
+fn the_pr_body_names_the_task_s_bits() {
+    let b = new_board("");
+    let id = b.task(json!({}));
+    let ctx = || propen::context_block(&b.app, &b.row(id)).unwrap();
+    assert_eq!(ctx(), "", "no bits, no line");
+    b.post("/bits", json!({"name": "new-tab-bar", "kind": "local", "tasks": [format!("T{id}")]}));
+    assert_eq!(ctx(), "## Context\n- `new-tab-bar` is local: not in the flag tool, so it reads its default (off); turn it on with a bit override.");
+    b.post("/bits", json!({"name": "checkout-v2", "kind": "backend", "tasks": [format!("T{id}")]}));
+    b.post("/bits", json!({"name": "wallet", "kind": "backend", "tasks": [format!("T{id}")]}));
+    assert_eq!(
+        ctx(),
+        "## Context\n- Behind the feature flags `checkout-v2` and `wallet`: off unless they're on.\n- `new-tab-bar` is local: not in the flag tool, so it reads its default (off); turn it on with a bit override.",
+    );
+}
+
+#[test]
 fn the_pr_body_lists_design_links_and_local_evidence() {
     let b = new_board("");
     let id = b.task(json!({}));
