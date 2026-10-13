@@ -123,11 +123,8 @@ fn pr_block(app: &App, t: &Row, tb: &str) -> Result<String> {
 
 fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
     if !ships {
-        return Ok(if t.i("ships_pr") == Some(0) {
-            "This task ends without a pull request.".into()
-        } else {
-            "This project has no git remote, so the task ends without a pull request.".into()
-        });
+        let why = if t.i("ships_pr") == Some(0) { "This task ends without a PR" } else { "This project has no git remote, so the task ends without a PR" };
+        return Ok(format!("{why}, so it has no Jira ticket. Don't make or link one; a branch it needs is named <type>/<short-slug>."));
     }
     let mut s = "If this task changes code, it ends in one pull request: finished code that builds, breaks nothing \
                  that works today, and can be merged on its own. Keep it small and easy to review; split anything \
@@ -162,7 +159,8 @@ fn first_line(t: &Row) -> String {
         t.st("title"),
         t.s("project").filter(|p| !p.is_empty()).unwrap_or("this project")
     );
-    if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty()) {
+    // A task that ends without a PR has no ticket, whatever key it kept from before.
+    if let Some(k) = t.s("jira_key").filter(|k| !k.is_empty() && t.i("ships_pr") != Some(0)) {
         first += &format!(" ({k})");
     }
     first + "."

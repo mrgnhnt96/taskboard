@@ -1009,7 +1009,7 @@ pub fn card(app: &App, t: &Row) -> Result<Value> {
 
 /// The handoff's Jira lines, while Jira is on and the project ships PRs.
 pub fn handoff_block(app: &App, t: &Row) -> Result<Vec<String>> {
-    if !app.cfg.jira_on() || !crate::projects::ships_prs(app, &t.st("project"))? {
+    if !app.cfg.jira_on() || !crate::projects::task_ships_pr(app, t)? {
         return Ok(vec![]);
     }
     let tb = board::tb_cmd(app);

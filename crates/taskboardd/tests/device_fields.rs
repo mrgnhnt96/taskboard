@@ -315,3 +315,20 @@ fn a_task_with_no_device_lent_still_hears_which_to_leave_alone() {
         assert!(!h.contains("lends it to this task when it starts") && h.contains(&others), "{h}");
     }
 }
+
+#[test]
+fn a_task_with_no_device_needs_hears_how_to_ask_for_one_once_the_pool_has_any() {
+    let b = new_board();
+    let t = b.task("Copy", "");
+    let tb = board::tb_cmd(&b.app);
+    let line = format!(
+        "If this task needs an emulator, simulator or phone, don't pick one yourself: run {tb} task set T{t} --device tag:<tag> \
+         ({tb} devices lists them) and the board lends you a free one that no other terminal is using."
+    );
+    assert!(!handoff::build(&b.app, t).unwrap().contains("don't pick one yourself"), "an empty pool says nothing");
+    b.post("devices", json!({"name": "pixel-a", "tags": "android"}));
+    let h = handoff::build(&b.app, t).unwrap();
+    assert!(h.contains(&line), "{h}");
+    let a = b.task("A", "android");
+    assert!(!handoff::build(&b.app, a).unwrap().contains("don't pick one yourself"), "a task that asks for devices hears about those");
+}
