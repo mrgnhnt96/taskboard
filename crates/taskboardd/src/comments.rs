@@ -26,6 +26,8 @@ struct Syntax {
     raw: bool,
     /// A line comment starts only at the start of a word (shell's `$#` isn't one).
     word_start: bool,
+    /// Python: a triple-quoted string that starts a statement is a docstring, a comment.
+    docstrings: bool,
 }
 
 const C_BLOCK: &[(&str, &str)] = &[("/*", "*/")];
@@ -34,7 +36,7 @@ const HASH: &[&str] = &["#"];
 const DASHES: &[&str] = &["--"];
 
 fn syntax(lang: &str) -> Option<Syntax> {
-    let s = |line, block, quotes, triple, char_lit| Syntax { line, block, quotes, triple, char_lit, raw: false, word_start: false };
+    let s = |line, block, quotes, triple, char_lit| Syntax { line, block, quotes, triple, char_lit, raw: false, word_start: false, docstrings: false };
     Some(match lang {
         "rust" => Syntax { raw: true, ..s(SLASHES, C_BLOCK, &['"'], false, true) },
         "dart" => s(SLASHES, C_BLOCK, &['"', '\''], true, false),
@@ -46,7 +48,7 @@ fn syntax(lang: &str) -> Option<Syntax> {
         "php" => s(&["//", "#"], C_BLOCK, &['"', '\''], false, false),
         "scss" | "less" => s(SLASHES, C_BLOCK, &['"', '\''], false, false),
         "css" => s(&[], C_BLOCK, &['"', '\''], false, false),
-        "python" => s(HASH, &[], &['"', '\''], true, false),
+        "python" => Syntax { docstrings: true, ..s(HASH, &[], &['"', '\''], true, false) },
         "ruby" | "yaml" | "toml" | "elixir" | "r" => s(HASH, &[], &['"', '\''], false, false),
         "shell" => Syntax { word_start: true, ..s(HASH, &[], &['"', '\''], false, false) },
         "sql" | "lua" | "haskell" => s(DASHES, if lang == "lua" { &[("--[[", "]]")] } else { C_BLOCK }, &['"', '\''], false, false),
@@ -107,10 +109,26 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
     let mut string: Option<(String, bool)> = None;
     // In a block comment: what closes it, where it started, what it says so far.
     let mut block: Option<(&str, usize, String)> = None;
+    // In a docstring: its quotes, where it started, its text so far with its opening quotes.
+    let mut doc: Option<(&str, usize, String)> = None;
     for (n, line) in text.lines().enumerate() {
         let c: Vec<char> = line.chars().collect();
         let mut i = 0;
         while i < c.len() {
+            if let Some((close, from, buf)) = doc.as_mut() {
+                if c[i] == '\\' {
+                    buf.extend(c[i..(i + 2).min(c.len())].iter());
+                    i += 2;
+                } else if at(&c, i, close) {
+                    i += 3;
+                    out.push((*from, docstring_text(buf, close)));
+                    doc = None;
+                } else {
+                    buf.push(c[i]);
+                    i += 1;
+                }
+                continue;
+            }
             if let Some((close, from, buf)) = block.as_mut() {
                 if at(&c, i, close) {
                     i += close.chars().count();
@@ -158,6 +176,11 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
             }
             if sx.triple {
                 if let Some(q) = ["\"\"\"", "'''"].iter().find(|q| at(&c, i, q) && sx.quotes.contains(&q.chars().next().unwrap())) {
+                    if let Some(prefix) = statement_prefix(&c, i).filter(|_| sx.docstrings) {
+                        doc = Some((*q, n + 1, format!("{prefix}{q}")));
+                        i += 3;
+                        continue;
+                    }
                     string = Some((q.to_string(), true));
                     i += 3;
                     continue;
@@ -181,14 +204,29 @@ pub fn comments_in(text: &str, lang: &str) -> Vec<(usize, String)> {
             }
             i += 1;
         }
-        if let Some((_, _, buf)) = block.as_mut() {
+        if let Some((_, _, buf)) = block.as_mut().or(doc.as_mut()) {
             buf.push('\n');
         }
     }
     if let Some((_, from, buf)) = block {
         out.push((from, block_text(&buf)));
     }
+    if let Some((close, from, buf)) = doc {
+        out.push((from, docstring_text(&buf, close)));
+    }
     out
+}
+
+/// The string prefix (`r`, `b`, `f`, `u`, or two of them) before the quotes at `i`, when only it and
+/// whitespace come before them on the line: the string starts a statement.
+fn statement_prefix(c: &[char], i: usize) -> Option<String> {
+    let start = (i.saturating_sub(2)..i).find(|&j| c[j..i].iter().all(|x| "rRbBfFuU".contains(*x))).unwrap_or(i);
+    c[..start].iter().all(|x| x.is_whitespace()).then(|| c[start..i].iter().collect())
+}
+
+/// A docstring as it reads in the source, quotes and all, each line's indent dropped.
+fn docstring_text(buf: &str, close: &str) -> String {
+    format!("{buf}{close}").lines().map(|l| l.trim()).collect::<Vec<_>>().join("\n")
 }
 
 /// A block comment's text: a doc marker (`/**`, `/*!`) and each line's leading `*` dropped.
@@ -265,7 +303,7 @@ pub fn rule_line(cfg: &Config) -> Option<String> {
     let c = &cfg.comments;
     c.guard.then(|| {
         format!(
-            "No code comments: {} wants none added (in {}). Make the code say it with names and small functions, and put the why in the commit \
+            "No code comments or docstrings: {} wants none added (in {}). Make the code say it with names and small functions, and put the why in the commit \
              or PR. Pragmas the tools read ({}…) are fine. The board refuses an edit that adds a comment, and the PR, a review round and tb done \
              while the branch adds any.",
             cfg.owner.clone(),
@@ -531,6 +569,25 @@ mod tests {
         assert_eq!(texts(comments_in("echo $# ${#x} # real", "shell")), vec!["real"]);
         assert_eq!(texts(comments_in("const u = `http://x` // ok", "typescript")), vec!["ok"]);
         assert_eq!(texts(comments_in("<p>hi</p> <!-- note -->", "html")), vec!["note"]);
+    }
+
+    #[test]
+    fn a_python_docstring_is_a_comment_but_a_triple_quoted_value_isn_t() {
+        let c = on();
+        let adds = |new: &str| texts(added("", new, "python", &c.pragmas));
+        assert_eq!(adds("def f():\n    \"\"\"Return one.\"\"\""), vec!["\"\"\"Return one.\"\"\""]);
+        assert_eq!(adds("\"\"\"The module.\"\"\"\nimport os"), vec!["\"\"\"The module.\"\"\""]);
+        assert_eq!(adds("class A:\n    '''An A.'''"), vec!["'''An A.'''"]);
+        assert_eq!(adds("def f():\n    \"\"\"\n    Return one.\n    \"\"\"\n    return 1"), vec!["\"\"\"\nReturn one.\n\"\"\""]);
+        assert_eq!(adds("def f():\n    r\"\"\"Return \\d.\"\"\""), vec!["r\"\"\"Return \\d.\"\"\""]);
+        assert_eq!(adds("def f():\n    Rb'''Bytes \\''' still.'''"), vec!["Rb'''Bytes \\''' still.'''"]);
+        assert!(adds("x = \"\"\"data\"\"\"\nprint(\"\"\"data\"\"\")\nreturn f(\n    1, '''a # b''')").is_empty(), "values stay strings");
+        assert_eq!(comments_in("x = 1\ndef f():\n    \"\"\"Return one.\"\"\"", "python")[0].0, 3, "the docstring's line");
+        let stub = serde_json::json!({"file_path": "/nowhere/m.pyi", "content": "def f() -> int:\n    \"\"\"Return one.\"\"\"\n    ..."});
+        assert_eq!(edit_adds(&c, "Write", &stub), vec![Found { file: "/nowhere/m.pyi".into(), line: 2, text: "\"\"\"Return one.\"\"\"".into() }]);
+        let diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,0 +2,4 @@\n+def f():\n+    \"\"\"\n+    Return one.\n+    \"\"\"\n\
+                    diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1,0 +1 @@\n+SQL = \"\"\"select 1\"\"\"\n";
+        assert_eq!(diff_adds(&c, diff), vec![Found { file: "a.py".into(), line: 3, text: "\"\"\"\nReturn one.\n\"\"\"".into() }], "the branch check too");
     }
 
     #[test]

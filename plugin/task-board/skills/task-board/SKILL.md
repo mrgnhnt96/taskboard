@@ -29,7 +29,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..."` (`--goal G<n>` for the goal). Don't attach writing as a loose file (.md, .txt, .rst, .html): publish it as a brief artifact and attach that link; the board refuses those files.
 - **Written results**: attach a link with `--kind results`. Lead with the answer.
 - **A design is attached**: open it before you touch UI and build to it; note anything that can't match.
-- **No code comments** when your handoff says so: the owner's comment guard is on. Make the code say it (names, small functions) and put the why in the commit or PR; pragmas the tools read (`# noqa`, `// eslint-disable-next-line`, …) are fine. The board refuses an edit that adds a comment, and the PR, `tb pr wait` and `tb done` while the branch adds any.
+- **No code comments** (Python docstrings count too) when your handoff says so: the owner's comment guard is on. Make the code say it (names, small functions) and put the why in the commit or PR; pragmas the tools read (`# noqa`, `// eslint-disable-next-line`, …) are fine. The board refuses an edit that adds a comment, and the PR, `tb pr wait` and `tb done` while the branch adds any.
 - **The owner's steps** (in your handoff, or `tb steps`): work the owner wants on every task in this project, before the PR or before `tb done`, in order. Each says how to get past it:
   - agent work: do it as its prompt says, then `tb step done "<name>" --note "what came of it"` (it runs the step's check first; fix what fails);
   - a script: `tb step run "<name>"`, fix what it reports and run it again (it can take a while: give it time);
