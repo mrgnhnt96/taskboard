@@ -160,10 +160,6 @@ pub fn allowed_tools(app: &App) -> Vec<String> {
         tools.extend(crate::jira_claude::DESK_READS.iter().map(|n| crate::jira_claude::tool(n)));
     }
     tools.push("Bash(tb jira:*)".into());
-    let tb = board::tb_cmd(app);
-    if tb != "tb" && !tb.contains(['\'', ',', '(', ')']) {
-        tools.push(format!("Bash({tb} jira:*)"));
-    }
     tools
 }
 

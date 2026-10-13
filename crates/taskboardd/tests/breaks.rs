@@ -498,3 +498,30 @@ fn tb_master_lists_only_the_red_ones_or_the_newest() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["ref"], "M2", "the newest");
 }
+
+#[test]
+fn the_fix_task_says_how_to_finish_and_its_agent_may_rule_the_break_out() {
+    let (b, _d) = board_with(|_, _| {});
+    taskboardd::midna::sync(&b.app, &[json!({"id": "s1", "name": "Fixer", "agent": "claude", "cwd": "/tmp", "status": {"state": "working"}})], &[]).unwrap();
+    b.branch("failed", vec![commit("c2", "sam@acme.dev")]);
+    let t = board::get_task(&b.app, b.fix_of("M1")).unwrap();
+    let detail = t.st("detail");
+    for want in [
+        "Branch from origin/main, make the smallest change that turns it green, and open the PR.",
+        "If it goes green on its own, check tb master M1 before doing more, then finish with tb done \"<summary>\" --no-pr \"<why>\".",
+        "run tb master M1 not-ours --title \"<cause>\" --why \"<how you checked>\" --proof <build or artifact link>",
+        "tb master M1 unsure --why",
+    ] {
+        assert!(detail.contains(want), "{want} in {detail}");
+    }
+
+    let not_ours = json!({"verdict": "not-ours", "title": "Runner image lost its SDK", "why": "The same step fails on main before Sam's commit.", "proof": "https://ci/1", "by_session": "s1"});
+    let m = b.post("/master/M1", not_ours.clone());
+    assert_eq!((m["verdict"].as_str(), m["verdict_by"].as_str()), (Some("not_ours"), Some("Fixer")), "the fix task's agent rules it out, credited to its terminal");
+
+    b.post("/master/M1", json!({"verdict": "ours", "why": WHY}));
+    let e = api::dispatch(&b.app, "POST", "/master/M1", &Query::new(), &not_ours).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
+    assert!(e.message.contains("their word stands"), "{}", e.message);
+    assert_eq!(b.get("/master/M1")["verdict"], "ours", "the owner's word wins");
+}

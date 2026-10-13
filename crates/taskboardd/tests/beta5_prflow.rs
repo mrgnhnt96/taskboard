@@ -367,6 +367,41 @@ fn a_task_with_a_design_finishes_with_evidence() {
 }
 
 #[test]
+fn the_design_check_says_how_to_show_the_screens() {
+    let b = new_board();
+    let id = b.task("New sign-in screen", json!({"ships_pr": false}));
+    b.post(&format!("/tasks/T{id}/attachments"), json!({"url": "https://figma.com/file/abc", "title": "Sign-in mock", "kind": "design"}));
+    let text = b.get(&format!("/tasks/T{id}/handoff"))["text"].as_str().unwrap().to_string();
+    let dir = b.app.cfg.data.join("evidence").join(format!("T{id}"));
+    for want in [
+        "tb done needs evidence for a task with a design: a screenshot of each changed screen, or --no-evidence \"<why>\" when no screen changed.".to_string(),
+        "Run the app on this task's emulator or simulator (the device the board lent it) and take a screenshot of each changed screen.".into(),
+        format!("Save each screenshot in {}/, outside the worktree", dir.display()),
+        "tb attach <file> --kind evidence --title \"<screen>: matches <design>\"".into(),
+        "In tb done, list the screens you checked and anything that still differs.".into(),
+    ] {
+        assert!(text.contains(&want), "{want} in {text}");
+    }
+    assert!(dir.is_dir(), "the evidence folder is made with the handoff");
+}
+
+#[test]
+fn agent_text_names_a_bare_tb_not_the_plugin_s_path() {
+    let b = new_board();
+    let path = "/x/cache/taskboard/task-board/0.1.0/bin/tb";
+    b.app.db.set_setting("tb_path", Some(path)).unwrap();
+    let id = b.task("Fix the tab bar", json!({}));
+    let handoff = b.get(&format!("/tasks/T{id}/handoff"))["text"].as_str().unwrap().to_string();
+    let offer = taskboardd::runner::offer_text(&b.app, &b.row(id));
+    for text in [&handoff, &offer] {
+        assert!(!text.contains(path), "{text}");
+        assert!(text.contains("tb "), "{text}");
+    }
+    assert!(offer.contains(&format!("Run tb take T{id}")), "{offer}");
+    assert_eq!(board::tb_program(&b.app), path, "what runs outside Claude's Bash still gets the path");
+}
+
+#[test]
 fn evidence_is_added_to_the_open_pr_once() {
     let b = new_board();
     let id = b.task("Add passkeys", json!({}));
