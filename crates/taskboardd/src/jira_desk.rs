@@ -163,7 +163,8 @@ pub fn allowed_tools(app: &App) -> Vec<String> {
     tools
 }
 
-fn open(app: &App) -> Result<i64> {
+/// Opens the desk for a Jira job; a refused open fails that job (`jobs::after_result`).
+fn open(app: &App, jira_job: i64) -> Result<i64> {
     let dir = if app.cfg.jira.desk_dir.trim().is_empty() { app.cfg.data.clone() } else { expand_home(app.cfg.jira.desk_dir.trim()) };
     let flags = format!("--allowedTools '{}'", allowed_tools(app).join(","));
     let id = board::create_job(
@@ -172,7 +173,7 @@ fn open(app: &App) -> Result<i64> {
         json!({"cwd": dir.to_string_lossy(), "title": "Jira desk", "prompt": intro(app), "flags": flags}),
         None,
         PURPOSE,
-        None,
+        Some(json!({"jira_job": jira_job})),
     )?;
     app.info(format!("jira desk: opening its terminal ({})", rf("job", id)));
     Ok(id)
@@ -198,7 +199,7 @@ pub fn tick(app: &App) -> Result<()> {
     let Some(j) = pending.into_iter().find(|j| jira::for_desk(app, j)) else { return Ok(()) };
     let Some(sid) = kept else {
         if !unsynced && !opening(app)? {
-            app.db.tx(|| open(app))?;
+            app.db.tx(|| open(app, j.id()))?;
         }
         return Ok(());
     };

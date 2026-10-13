@@ -893,7 +893,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
         }
         if has_key("pickup") {
-            let (mode, sid) = ops::pickup(body)?;
+            let (mode, sid) = ops::pickup(app, body)?;
             f.push(("pickup_session", json!(if mode == "attach" { sid } else { None })));
             f.push(("pickup", json!(mode)));
         }

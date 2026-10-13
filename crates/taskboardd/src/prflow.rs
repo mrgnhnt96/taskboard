@@ -356,7 +356,8 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
         }
         Some(cid) => {
             args["flags"] = json!(format!("--resume {cid}"));
-            if let Some(l) = last.filter(|l| l.s("status") != Some("gone")) {
+            // Never the Jira desk, even if the task ever landed on it.
+            if let Some(l) = last.filter(|l| l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false)) {
                 args["replace"] = l.v("id");
             }
         }

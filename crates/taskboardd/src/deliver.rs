@@ -74,14 +74,20 @@ fn unwanted(app: &App, j: &Row, t: Option<&Row>) -> Result<Option<&'static str>>
     Ok(None)
 }
 
+/// Where a message goes: never the Jira desk, even if a task ever lands on it.
 fn to(app: &App, j: &Row, t: Option<&Row>) -> Result<Option<Row>> {
-    if j.s("purpose") == Some("offer") {
-        return board::get_session(app, board::job_args(j).s("to"));
-    }
-    match t {
-        Some(t) if t.s("status") == Some("done") => board::get_session(app, prflow::visitor(t).as_deref()),
-        Some(t) => board::get_session(app, t.s("session_id")),
-        None => Ok(None),
+    let s = if j.s("purpose") == Some("offer") {
+        board::get_session(app, board::job_args(j).s("to"))?
+    } else {
+        match t {
+            Some(t) if t.s("status") == Some("done") => board::get_session(app, prflow::visitor(t).as_deref())?,
+            Some(t) => board::get_session(app, t.s("session_id"))?,
+            None => None,
+        }
+    };
+    match s {
+        Some(s) if crate::jira_desk::is_desk(app, s.s("id"))? => Ok(None),
+        s => Ok(s),
     }
 }
 
@@ -167,7 +173,7 @@ pub fn send_failed(app: &App, deliver_id: i64, why: &str) -> Result<()> {
 /// Hands this terminal's waiting messages to a live hook report.
 pub fn take(app: &App, sid: Option<&str>, event: &str) -> Result<Option<Value>> {
     let Some(sid) = sid.filter(|s| !s.is_empty()) else { return Ok(None) };
-    if !DELIVER_EVENTS.contains(&event) {
+    if !DELIVER_EVENTS.contains(&event) || crate::jira_desk::is_desk(app, Some(sid))? {
         return Ok(None);
     }
     let mine = match board::task_for_session(app, Some(sid))? {

@@ -106,6 +106,13 @@ pub fn after_result(app: &App, j: &Row, ok: bool, res: &Value) -> Result<()> {
             if purpose == "plan" || purpose == "reopen" {
                 return Ok(());
             }
+            if purpose == crate::jira_desk::PURPOSE {
+                // A refused desk fails the Jira job that asked for it, so the desk isn't opened again for it.
+                if let Some(jid) = board::job_target(j).i("jira_job").filter(|_| !ok) {
+                    crate::jira::finish(app, jid, false, None, None, Some(&format!("Midna refused: {why}")))?;
+                }
+                return Ok(());
+            }
             let Some(t) = t else { return Ok(()) };
             if ok {
                 let text = if let Some(to) = stdout.strip_prefix("Queued in ") {

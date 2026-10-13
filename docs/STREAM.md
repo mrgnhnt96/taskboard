@@ -135,7 +135,8 @@ A `jira.issue` event, in either mode, sets the Jira status of every task, goal e
 key, and logs who moved it (`changed_by`, else "Jira") in the task's or issue's log. A status that's already the
 stored one changes nothing. The board skips a status it caused itself: a Jira job in the last 15 minutes that
 moved that ticket to that status. It never changes a task: when an open task's ticket moves to done, or a done
-task's ticket is reopened, it raises an alert instead. Done means `status_category` is `done`, or, without one,
+task's ticket is reopened, it raises an alert instead: one per ticket and status, naming every task it covers
+("…, reopening it, but T1, T23 and T24 are done.") and opening the newest. Done means `status_category` is `done`, or, without one,
 a status named like `[jira] done`, `merged` or `canceled`, or Jira's usual done names (Done, Closed, Resolved…).
 A done task's ticket counts as reopened only when it moves back to a new status (category `new`, or, without
 one, To Do, Open, Backlog…), or from a really done status (`done`, `canceled` or Jira's usual done names) to a

@@ -36,6 +36,7 @@ pub fn apply(app: &App, ev: &Value) -> Result<Value> {
 
     let mut tasks = vec![];
     let mut alerts = 0;
+    let (mut still_open, mut reopened): (Vec<Row>, Vec<Row>) = (vec![], vec![]);
     for t in app.db.q("SELECT * FROM tasks WHERE UPPER(jira_key) = ?", p![key.clone()])? {
         let was = t.st("jira_status");
         if stored_newer(&t, at) {
@@ -53,18 +54,23 @@ pub fn apply(app: &App, ev: &Value) -> Result<Value> {
         board::update_task(app, t.id(), fields!["jira_status" => status.clone(), "jira_status_at" => at_iso.clone()])?;
         board::log_event(app, t.id(), who, "jira", &text)?;
         let open = t.s("status") != Some("done");
-        let alert = if open && done && !was_done {
-            Some(format!("{text}, but {} is still open.", rf("task", t.id())))
+        if open && done && !was_done {
+            still_open.push(t.clone());
         } else if !open && !done && (was_finished || is_new(&status, &category)) {
-            Some(format!("{text}, reopening it, but {} is done.", rf("task", t.id())))
-        } else {
-            None
-        };
-        if let Some(line) = alert {
-            dispatch::add_alert_keyed(app, &line, Some(t.id()), t.i("goal_id"), &format!("jira:{}:{}", t.id(), status.to_lowercase()))?;
-            alerts += 1;
+            reopened.push(t.clone());
         }
         tasks.push(json!(rf("task", t.id())));
+    }
+    // One alert per ticket and status, on its newest task: a ticket with a follow-up or a retry has several.
+    for (group, reopening, one, many) in [(&still_open, "", "is still open", "are still open"), (&reopened, ", reopening it", "is done", "are done")] {
+        let Some(newest) = group.iter().max_by_key(|t| (t.st("finished_at"), t.id())) else { continue };
+        let mut ids: Vec<i64> = group.iter().map(|t| t.id()).collect();
+        ids.sort();
+        let refs: Vec<String> = ids.iter().map(|id| rf("task", *id)).collect();
+        let verb = if group.len() == 1 { one } else { many };
+        let line = format!("{text}{reopening}, but {} {verb}.", and_list(&refs));
+        dispatch::add_alert_keyed(app, &line, Some(newest.id()), newest.i("goal_id"), &format!("jira:{}:{}", newest.id(), status.to_lowercase()))?;
+        alerts += 1;
     }
 
     let mut goals = vec![];
@@ -101,6 +107,14 @@ pub fn apply(app: &App, ev: &Value) -> Result<Value> {
         return Ok(json!({"key": key, "skipped": "older than the stored status"}));
     }
     Ok(json!({"key": key, "status": status, "tasks": tasks, "goals": goals, "issues": issues, "alerts": alerts}))
+}
+
+/// "T1", "T1 and T2", "T1, T2 and T3".
+fn and_list(items: &[String]) -> String {
+    match items {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.join(""),
+    }
 }
 
 /// The status the board keeps for this row was true after `at`.

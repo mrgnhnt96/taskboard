@@ -521,6 +521,62 @@ fn the_desk_fails_a_job_with_its_reason() {
 }
 
 #[test]
+fn a_refused_desk_fails_the_jira_job_and_isn_t_opened_again_for_it() {
+    let b = board_with(|c, _| {
+        c.jira.desk = true;
+        c.jira.auto_ticket = true;
+    });
+    let t = b.new_task(json!({"jira": "create"}));
+    b.tick();
+    let desk = b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
+    assert_eq!(desk.len(), 1);
+    let jid = b.jobs("kind = 'jira'")[0].id();
+    assert_eq!(board::job_target(&desk[0]).i("jira_job"), Some(jid), "the desk's open carries the job that needs it");
+
+    taskboardd::jobs::result(&b.app, desk[0].id(), false, "", "denied by policy rule r_probe", 1).unwrap();
+    let job = b.jobs("kind = 'jira'").remove(0);
+    assert_eq!(job.st("state"), "failed");
+    let log = b.get(&format!("/tasks/T{t}/log")).to_string();
+    assert!(log.contains("Midna refused: denied by policy rule r_probe"), "{log}");
+    assert!(taskboardd::dispatch::alerts(&b.app).iter().any(|a| a["task_id"] == t), "the usual ticket-failure alert");
+    for _ in 0..5 {
+        b.tick();
+    }
+    assert_eq!(b.jobs("kind = 'agent' AND purpose = 'jira_desk'").len(), 1, "not opened again for that job");
+}
+
+#[test]
+fn a_task_never_goes_to_the_jira_desk() {
+    let b = board_with(|c, _| c.jira.desk = true);
+    b.new_task(json!({"jira": "create"}));
+    b.tick();
+    let desk = b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
+    b.app.db.x("UPDATE jobs SET state = 'done', target = ? WHERE id = ?", taskboardd::p![json!({"session": "s9"}).to_string(), desk[0].id()]).unwrap();
+    let cwd = b.dir.path().join("webapp").to_string_lossy().to_string();
+    midna::sync(
+        &b.app,
+        &[
+            json!({"id": "s9", "name": "TB Jira desk", "agent": "claude", "cwd": cwd, "status": {"state": "idle"}}),
+            json!({"id": "s1", "name": "Term s1", "agent": "claude", "cwd": cwd, "status": {"state": "idle"}}),
+        ],
+        &[],
+    )
+    .unwrap();
+    let t = b.new_task(json!({"jira": "none"}));
+    let attachable: Vec<String> = b.get(&format!("/tasks/T{t}"))["attachable"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
+    assert!(attachable.contains(&"s1".to_string()), "{attachable:?}");
+    assert!(!attachable.contains(&"s9".to_string()), "the desk isn't offered: {attachable:?}");
+
+    let mut from_app = Query::new();
+    from_app.insert(api::FROM.into(), "app".into());
+    let e = api::dispatch(&b.app, "POST", &format!("/tasks/T{t}/start"), &from_app, &json!({"mode": "attach", "session_id": "s9"})).expect_err("refused");
+    assert_eq!((e.status, e.message.as_str()), (409, "Tasks can't go to the Jira desk."));
+    assert_ne!(b.task(t).st("status"), "working");
+    let (code, _) = b.post_err("/tasks", json!({"title": "On the desk", "detail": "d", "project": "webapp", "jira": "none", "pickup": {"mode": "attach", "session_id": "s9"}}));
+    assert_eq!(code, 409);
+}
+
+#[test]
 fn a_backlog_tickets_failure_names_the_issue_and_the_retry() {
     let b = board_with(|c, _| c.jira.desk = true);
     let i = b.post("/backlog", json!({"title": "Totals round wrong", "project": "webapp"}))["id"].as_i64().unwrap();
