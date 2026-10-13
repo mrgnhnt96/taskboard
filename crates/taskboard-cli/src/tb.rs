@@ -223,6 +223,9 @@ enum Cmd {
         no_pr: bool,
         #[arg(long, default_value_t = 20)]
         limit: i64,
+        /// Only the comments on this goal's tickets (G2), waiting ones first
+        #[arg(long)]
+        goal: Option<String>,
     },
     /// Jira: how it's set up and its jobs, one job (J12), or the Jira desk's report on one:
     /// tb jira J12 ok key=PROJ-1 status="To Do" [found=yes] [product=web] / tb jira J12 fail "<why>"
@@ -1152,6 +1155,8 @@ enum ProjectCmd {
 
 #[derive(Subcommand)]
 enum PrCmd {
+    /// Read every PR on the board now, instead of waiting for the next poll
+    Check,
     /// The PR's stage, checks and review
     Status { task: Option<String> },
     /// Finished this visit to the PR; the board brings you back when it needs you
@@ -1494,6 +1499,27 @@ fn print_pr_status(t: &str, v: &Value) {
         out(&format!("Before it can merge: {}", b.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("; ")));
     }
     out(&format!("Merging: {}", if v["agents_merge"] == true { "agents may merge once it's approved and green (tb pr merge)" } else { "the owner merges it" }));
+}
+
+/// `tb pr check`'s answer to `POST /prs/refresh`.
+fn pr_check_line(v: &Value) -> String {
+    match v["changed"].as_i64().unwrap_or(0) {
+        0 => "Checked the PRs: nothing changed.".to_string(),
+        1 => "Checked the PRs: 1 task changed.".to_string(),
+        n => format!("Checked the PRs: {n} tasks changed."),
+    }
+}
+
+/// `tb qa [list|waiting] [--goal G2]`'s read of `GET /qa-comments`.
+fn qa_list_url(limit: i64, waiting: bool, goal: Option<&str>) -> String {
+    let mut url = format!("/qa-comments?limit={limit}");
+    if waiting {
+        url.push_str("&waiting=1");
+    }
+    if let Some(g) = goal.filter(|g| !g.trim().is_empty()) {
+        url.push_str(&format!("&goal={}", g.trim()));
+    }
+    url
 }
 
 fn plural_threads(v: &Value) -> String {
@@ -3410,7 +3436,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
         },
-        Cmd::Qa { what, r#ref, note, pr, no_pr, limit } => {
+        Cmd::Qa { what, r#ref, note, pr, no_pr, limit, goal } => {
             let what = what.unwrap_or_default();
             let line = |c: &Value| {
                 let state = if c["waiting"] == true {
@@ -3436,13 +3462,19 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 )
             };
             if what.is_empty() || what == "list" || what == "waiting" {
-                let v = c.call("GET", &format!("/qa-comments?limit={limit}{}", if what == "waiting" { "&waiting=1" } else { "" }), None)?;
+                let v = c.call("GET", &qa_list_url(limit, what == "waiting", goal.as_deref()), None)?;
                 if v["on"] == false {
                     out("QA comments are off. The owner switches them on in Taskboard's Settings ▸ QA.");
                 }
                 let rows = v["comments"].as_array().cloned().unwrap_or_default();
                 if rows.is_empty() {
-                    out(if what == "waiting" { "No QA comment is waiting on the owner." } else { "No Jira comments on board tickets yet." });
+                    out(if goal.is_some() {
+                        "No QA questions on this goal's tickets."
+                    } else if what == "waiting" {
+                        "No QA comment is waiting on the owner."
+                    } else {
+                        "No Jira comments on board tickets yet."
+                    });
                 }
                 for row in rows {
                     out(&line(&row));
@@ -3858,6 +3890,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Pr { action } => match action {
+            PrCmd::Check => {
+                let v = c.call("POST", "/prs/refresh", Some(json!({})))?;
+                out(&pr_check_line(&v));
+                Ok(0)
+            }
             PrCmd::Status { task } => {
                 let t = c.pr_task(task)?;
                 let v = c.call("GET", &format!("/tasks/{t}/pr?full=1"), None)?;
@@ -4626,6 +4663,23 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_pr_check_reads_the_prs_and_says_what_changed() {
+        assert!(matches!(Cli::try_parse_from(["tb", "pr", "check"]).unwrap().cmd, Cmd::Pr { action: PrCmd::Check }));
+        assert_eq!(pr_check_line(&json!({"ok": true, "changed": 2})), "Checked the PRs: 2 tasks changed.");
+        assert_eq!(pr_check_line(&json!({"ok": true, "changed": 1})), "Checked the PRs: 1 task changed.");
+        assert_eq!(pr_check_line(&json!({"ok": true, "changed": 0})), "Checked the PRs: nothing changed.");
+    }
+
+    #[test]
+    fn tb_qa_goal_narrows_the_list_to_that_goal() {
+        let Cmd::Qa { what, goal, .. } = Cli::try_parse_from(["tb", "qa", "waiting", "--goal", "G2"]).unwrap().cmd else { panic!("not tb qa") };
+        assert_eq!((what.as_deref(), goal.as_deref()), (Some("waiting"), Some("G2")));
+        assert_eq!(qa_list_url(20, true, Some("G2")), "/qa-comments?limit=20&waiting=1&goal=G2");
+        assert_eq!(qa_list_url(20, false, Some("G2")), "/qa-comments?limit=20&goal=G2");
+        assert_eq!(qa_list_url(20, false, None), "/qa-comments?limit=20");
+    }
 
     #[test]
     fn tb_stream_lists_each_relay_and_what_it_covers() {

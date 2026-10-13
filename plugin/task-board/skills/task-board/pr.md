@@ -48,7 +48,7 @@ The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` comma
    - **Asking for reviews** (the owner has reviewed it): run `tb pr reviewers T<n>`. The board picks and asks the reviewers; `--ask <name>` asks someone in particular. It finishes the visit.
    - **Ready to merge**: merge only if the wake prompt says merging is allowed, or the owner tells you in this terminal to merge it (their "approved" there counts as the approval), with `tb pr merge T<n>`: it checks the PR once more (checks, approvals, threads, PR tasks, a stacked base) and merges it, deleting its branch. Don't merge with the host's own tools.
 3. Push the fixes. If the base branch has moved, rebase onto it first and push with `--force-with-lease`. Don't push only to rebase. A step that runs on every push (`per_head`) has to pass on the new commit first: the push is held until it does (`tb steps`).
-4. Finish every visit with `tb pr wait T<n>` (or `tb pr addressed` / `tb pr merge`, which finish it too): the board closes the terminal and keeps watching the PR. `tb pr merged T<n>` records a PR someone merged outside the board.
+4. Finish every visit with `tb pr wait T<n>` (or `tb pr addressed` / `tb pr merge`, which finish it too): the board closes the terminal and keeps watching the PR. `tb pr merged T<n>` records a PR someone merged outside the board. When the owner asks you to check the PRs now, `tb pr check` reads every PR on the board from its host at once, instead of waiting for the next poll.
 
 ## The owner wants changes to a done task's PR
 

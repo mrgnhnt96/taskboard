@@ -369,7 +369,12 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["jira", "jobs", id]) => crate::jira_desk::report(app, need_ref(&json!(id), "job")?, body),
         ("GET", ["qa-comments"]) => {
             let limit = q(query, "limit", "50").parse::<i64>().unwrap_or(50).clamp(1, 200);
-            Ok(json!({"on": qa::on(app), "comments": qa::listing(app, limit, as_bool(query.get("waiting").map(|s| json!(s)).as_ref(), false))?}))
+            let waiting = as_bool(query.get("waiting").map(|s| json!(s)).as_ref(), false);
+            let comments = match query.get("goal").filter(|g| !g.is_empty()) {
+                Some(g) => qa::goal_listing(app, board::get_goal(app, need_ref(&json!(g), "goal")?)?.id(), limit, waiting)?,
+                None => qa::listing(app, limit, waiting)?,
+            };
+            Ok(json!({"on": qa::on(app), "comments": comments}))
         }
         ("GET", ["qa-comments", id]) => Ok(qa::card(app, &qa::get(app, need_ref(&json!(id), "qa")?)?)),
         ("POST", ["qa-comments", id]) => {
