@@ -9,8 +9,9 @@
 //! before the @. Someone none of those finds is taken off the roster with `drop_not_on_slack` ("not
 //! on Slack"; `tb reviewers back` undoes it), else skipped; someone a lookup couldn't be tried for
 //! (Slack refused the user list), or who fits more than one person on Slack, is neither. The picker checks at most `pick_tries` candidates per pick, in turn
-//! order, and takes the first online one, else the best tier it saw. Outside the board's work hours
-//! it checks nobody, but an out status seen within `out_keeps_hours` still holds.
+//! order, and takes the first online one, else the best tier it saw. While the ask can't go out (the
+//! PR's goal isn't open: `hours::goal_open`, outside work hours unless it was started now, or usage
+//! out) it checks nobody, but an out status seen within `out_keeps_hours` still holds.
 //!
 //! The board never messages anyone: the Slack client only calls the read methods in [`READ_ONLY`]
 //! (with Taskboard's Slack account, Settings ▸ Accounts), and refuses every other.
@@ -28,7 +29,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::picker::Pick;
 use crate::util::*;
-use crate::{fields, hours, reviewers};
+use crate::{fields, reviewers};
 
 /// The Slack methods the board may call.
 pub const READ_ONLY: &[&str] = &["users.lookupByEmail", "users.list", "users.info", "users.getPresence", "search.messages"];
@@ -333,12 +334,12 @@ fn kept_out(app: &App, r: &Row) -> Option<Presence> {
     (now_ts() - at < app.cfg.reviewers.out_keeps_hours * 3600.0).then(|| Presence { tier: Tier::Out, why: v.get("why").and_then(|w| w.as_str()).unwrap_or("out").to_string() })
 }
 
-/// A reviewer's presence now (cached for `cache_mins`); Unknown outside work hours (unless they were
-/// out recently) or without a provider.
-pub fn of(app: &App, r: &Row) -> Presence {
+/// A reviewer's presence now (cached for `cache_mins`); Unknown while the ask can't go out (`open`:
+/// `hours::goal_open` for the PR's goal), unless they were out recently, or without a provider.
+pub fn of(app: &App, r: &Row, open: bool) -> Presence {
     let unknown = |why: &str| Presence { tier: Tier::Unknown, why: why.into() };
     let Some(p) = provider(app) else { return unknown("no availability check") };
-    if !hours::is_open(app) {
+    if !open {
         return kept_out(app, r).unwrap_or_else(|| unknown("outside work hours"));
     }
     let key = format!("{}:{}", app.cfg.data.display(), r.id());
@@ -378,11 +379,11 @@ fn drop_missing(app: &App, r: &Row, why: &str) -> Result<()> {
 
 /// Whether `r` could be reached now: not out, and known to the provider (someone it doesn't know is
 /// taken off the roster, as `best` does). Always, without a provider.
-pub fn reachable(app: &App, r: &Row) -> Result<bool> {
+pub fn reachable(app: &App, r: &Row, open: bool) -> Result<bool> {
     if provider(app).is_none() {
         return Ok(true);
     }
-    let pr = of(app, r);
+    let pr = of(app, r, open);
     if pr.tier == Tier::Missing {
         drop_missing(app, r, &pr.why)?;
     }
@@ -391,18 +392,18 @@ pub fn reachable(app: &App, r: &Row) -> Result<bool> {
 
 /// The candidate to take from `pool` (indexes into `cands`, in turn order): the first one online
 /// among the first `pick_tries` checked, else the best tier seen; never one who's out. Sets each
-/// checked candidate's `tier`.
-pub fn best(app: &App, cands: &mut [Pick], pool: &[usize]) -> Result<Option<usize>> {
+/// checked candidate's `tier`. `open` as for `of`.
+pub fn best(app: &App, cands: &mut [Pick], pool: &[usize], open: bool) -> Result<Option<usize>> {
     if pool.is_empty() {
         return Ok(None);
     }
     if provider(app).is_none() {
         return Ok(pool.first().copied());
     }
-    if !hours::is_open(app) {
+    if !open {
         // Nobody's checked; only someone recently out is passed over.
         for &i in pool {
-            let pr = of(app, &cands[i].reviewer);
+            let pr = of(app, &cands[i].reviewer, open);
             cands[i].tier = pr.tier.name().to_string();
             if pr.tier != Tier::Out {
                 return Ok(Some(i));
@@ -419,7 +420,7 @@ pub fn best(app: &App, cands: &mut [Pick], pool: &[usize]) -> Result<Option<usiz
                 _ => Some(i),
             });
         }
-        let pr = of(app, &cands[i].reviewer);
+        let pr = of(app, &cands[i].reviewer, open);
         cands[i].tier = pr.tier.name().to_string();
         if pr.tier == Tier::Missing {
             drop_missing(app, &cands[i].reviewer, &pr.why)?;

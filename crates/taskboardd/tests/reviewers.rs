@@ -354,6 +354,54 @@ fn availability_tiers_steer_the_picker_and_the_out_are_never_picked() {
     assert_eq!((bo["removed"].clone(), bo["removed_why"].clone()), (json!(true), json!("canned")), "not on Slack: off the roster");
 }
 
+/// Work hours that are never open now: a day of the week that isn't today.
+fn close_hours(b: &Board) {
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap().format("%a").to_string().to_lowercase();
+    b.post("/hours", json!({"on": true, "start": "00:00", "end": "23:59", "days": tomorrow}));
+}
+
+#[test]
+fn pick_checks_slack_for_a_goal_started_after_hours() {
+    use taskboardd::presence::Tier;
+    let b = board_with(|c| c.reviewers.availability = "slack".into());
+    let _h = fake(&b, green());
+    taskboardd::presence::install(&b.app, Arc::new(Around(vec![("Pat", Tier::Off), ("Quinn", Tier::Online)])));
+    b.add("Pat", json!({"user": "{pat}"}));
+    b.add("Quinn", json!({"user": "{quinn}"}));
+    close_hours(&b);
+    let g = b.post("/goals", json!({"name": "Tonight", "project": "webapp"}))["id"].as_i64().unwrap();
+    let until = (chrono::Local::now().naive_local() + chrono::Duration::hours(2)).format("%Y-%m-%dT%H:%M").to_string();
+    b.app.db.x("UPDATE goals SET hours_until = ? WHERE id = ?", vec![json!(until), json!(g)]).unwrap();
+    let id = b.pr_task(BB);
+    b.app.db.x("UPDATE tasks SET goal_id = ? WHERE id = ?", vec![json!(g), json!(id)]).unwrap();
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    assert_eq!(picks(&v), vec![pair("Quinn", "turn"), pair("Pat", "turn")], "the goal is open, so Slack is checked: Quinn online before Pat off");
+}
+
+struct Counted(std::sync::atomic::AtomicUsize);
+impl taskboardd::presence::Availability for Counted {
+    fn check(&self, _r: &serde_json::Map<String, Value>) -> Result<taskboardd::presence::Presence, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(taskboardd::presence::Presence { tier: taskboardd::presence::Tier::Online, why: "canned".into() })
+    }
+}
+
+#[test]
+fn pick_skips_slack_while_usage_is_out() {
+    let b = board_with(|c| c.reviewers.availability = "slack".into());
+    let _h = fake(&b, green());
+    let slack = Arc::new(Counted(std::sync::atomic::AtomicUsize::new(0)));
+    taskboardd::presence::install(&b.app, slack.clone());
+    b.add("Pat", json!({"user": "{pat}"}));
+    b.add("Quinn", json!({"user": "{quinn}"}));
+    let resets = taskboardd::util::now_ts() + 3600.0;
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 100, "resets_at": taskboardd::util::iso(resets)}}));
+    let id = b.pr_task(BB);
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
+    assert_eq!(picks(&v), vec![pair("Pat", "turn"), pair("Quinn", "turn")], "picked in turn order");
+    assert_eq!(slack.0.load(std::sync::atomic::Ordering::SeqCst), 0, "no presence call while the ask can't go out");
+}
+
 /// A comment of Ana's on PR `pr` of the repo (anyone's PR), `mins_ago` minutes ago, its marker in a footer.
 fn bot_comment(pr: i64, id: &str, mins_ago: f64) -> taskboardd::prhost::Comment {
     taskboardd::prhost::Comment {
