@@ -289,7 +289,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
             .text_size(px(13.))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(if sel { t.text } else { t.muted })
-            .when(sel, |x| x.bg(t.card).shadow(crate::ui::sidebar::shadow_seg(&t)))
+            .when(sel, |x| x.bg(t.card).shadow(crate::ui::kit::shadow_seg(&t)))
             .when(!on, |x| x.opacity(0.5))
             .tooltip(kit::tip(fmt::cap(d)))
             .child(l);
@@ -306,7 +306,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
     let (start, end, today, open, err) = (st.start.clone(), st.end.clone(), st.today.clone(), st.open, st.err.clone());
     let menu = kit::menu_box(&t, 280.)
         .id("hours-menu")
-        .shadow(crate::ui::sidebar::shadow_modal(&t))
+        .shadow(crate::ui::kit::shadow_modal(&t))
         .p(px(10.))
         .gap(px(10.))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

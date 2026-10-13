@@ -6,6 +6,22 @@ use crate::ui::text_input::TextField;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+// ------------------------------------------------------------------ shadows
+
+/// `--shadow-modal`: 0 24px 64px.
+pub fn shadow_modal(t: &Theme) -> Vec<BoxShadow> {
+    let dark = t.mode == crate::theme::ThemeMode::Dark;
+    let color: Hsla = if dark { rgba(0x00000099).into() } else { rgba(0x10182840).into() };
+    vec![BoxShadow { color, offset: point(px(0.), px(24.)), blur_radius: px(64.), spread_radius: px(0.), inset: false }]
+}
+
+/// `--shadow-seg`: the selected segment's lift.
+pub fn shadow_seg(t: &Theme) -> Vec<BoxShadow> {
+    let dark = t.mode == crate::theme::ThemeMode::Dark;
+    let color: Hsla = if dark { rgba(0x00000066).into() } else { rgba(0x1018281a).into() };
+    vec![BoxShadow { color, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]
+}
+
 // ------------------------------------------------------------------ text
 
 /// `.h3`: 12px semibold uppercase muted section label.
@@ -392,8 +408,6 @@ pub fn glyph(g: Glyph, size: f32, color: Hsla) -> impl IntoElement {
 pub enum Icon {
     /// `ICON.chev`: a down chevron (stroke 2.2).
     Chev,
-    /// `ICON.fwd`: a right chevron (stroke 2.2).
-    Fwd,
     /// `ICON.board`: the logo's three columns (stroke 2).
     Board,
     /// Midna's mark: a rounded window with its crescent moon.
@@ -473,7 +487,6 @@ pub fn icon(kind: Icon, size: f32, color: Hsla) -> impl IntoElement {
             };
             match kind {
                 Icon::Chev => poly(&[(6., 9.), (12., 15.), (18., 9.)], 2.2, window),
-                Icon::Fwd => poly(&[(9., 6.), (15., 12.), (9., 18.)], 2.2, window),
                 Icon::Board => {
                     rect(3., 4., 5., 16., 1.5, 2., window);
                     rect(10., 4., 5., 11., 1.5, 2., window);

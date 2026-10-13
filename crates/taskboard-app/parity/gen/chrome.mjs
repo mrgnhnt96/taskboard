@@ -1,5 +1,6 @@
-// The chrome around the pages (app.js): the goals rail and the goal page's goal list (now the
-// sidebar), goal status / ring / peek card, banner + alerts dialog, status-bar pills, the work
+// The chrome around the pages (app.js): the goals rail and the goal page's goal list (the app
+// has neither now; only goalCounts, goalsLanding and railClear are still checked), goal status /
+// ring / peek card, banner + alerts dialog, status-bar pills, the work
 // hours menu (and what it posts), the page title, and mdLite.
 import { web, writeGolden, text, acts, NOW } from '../web.mjs';
 

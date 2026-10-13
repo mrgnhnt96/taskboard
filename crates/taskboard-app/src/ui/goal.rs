@@ -3115,7 +3115,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
         let err = m.data.errs.goal.clone();
         return div()
             .flex_1()
-            .pt(px(44.))
+            .pt(px(22.))
             .px(px(28.))
             .child(match err {
                 Some(e) => div().text_size(px(12.5)).text_color(t.down).font_weight(FontWeight::MEDIUM).child(e),
@@ -3179,8 +3179,9 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .flex()
                 .flex_col()
                 .gap(px(22.))
-                .pt(px(32.))
-                .px(px(40.))
+                // The Board's margins, so the page sits under the header like the tabbed pages.
+                .pt(px(22.))
+                .px(px(28.))
                 .pb(px(48.))
                 .child(header(m, &t, &g, cx))
                 .child(div().flex().items_start().gap(px(24.)).child(left).child(right)),

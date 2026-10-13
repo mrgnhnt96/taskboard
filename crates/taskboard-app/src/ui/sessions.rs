@@ -1717,7 +1717,7 @@ fn header(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
             .on_click(cx.listener(move |m, _, _, cx| set_filter(m, FILTERS[idx].0, cx)));
         seg = seg.child(item);
     }
-    // `.back` (only when it came from a task; the rail is the way back to the board).
+    // `.back` (only when it came from a task; the header's Board tab is the way back to the board).
     let back = vm.back.clone().zip(m.sessions.back.clone()).map(|(label, r)| {
         let (muted, hover) = (t.muted, t.text);
         div()
@@ -2581,7 +2581,7 @@ mod tests {
                 let live = i.get("list").filter(|l| !l.is_null()).map(arr_of);
                 let h = header_vm(live.as_deref(), i["f"].as_str().unwrap_or(""), back_task(&i["back"]).as_deref());
                 // ↔ The web header always had a back link; with no task to go back to it read
-                // "Task board". The app's sidebar is that link, so the header shows none then.
+                // "Task board". The app's Board tab is that link, so the header shows none then.
                 json!({"back": h.back.clone().unwrap_or_else(|| "Task board".into()), "text": h.text(), "pressed": h.pressed})
             }
             "ssMenuItems" => {

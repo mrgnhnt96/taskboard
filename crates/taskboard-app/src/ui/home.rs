@@ -460,8 +460,8 @@ pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
 
 // ================================================================== render
 
-/// The header over the Board, Tasks, Backlog, Days and Sessions pages in place of the sidebar: the brand
-/// and those pages as tabs. It is the window's title bar too (drag to move, double click to zoom),
+/// The header over every page: the brand and the Board, Tasks, Backlog, Days and Sessions pages
+/// as tabs. It is the window's title bar too (drag to move, double click to zoom),
 /// clear of the traffic lights.
 pub fn header(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
     let (active, idle, shadow) = (t.text, t.muted, t.border);
@@ -515,7 +515,8 @@ pub fn header(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyEle
                 .bg(t.seg)
                 // A press on the tabs is a click, not a window drag.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(tab("tab-board", "Board", Page::Board, page == Page::Board))
+                // A goal opens from its card on the board, so Board stays lit on its page.
+                .child(tab("tab-board", "Board", Page::Board, matches!(page, Page::Board | Page::Goal(_))))
                 .child(tab("tab-tasks", "Tasks", Page::Tasks, page == Page::Tasks))
                 .child(tab("tab-backlog", "Backlog", Page::Backlog, page == Page::Backlog))
                 .child(tab("tab-days", "Days", Page::Days, page == Page::Days))
