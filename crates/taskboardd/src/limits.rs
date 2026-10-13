@@ -15,6 +15,8 @@ use crate::util::*;
 use crate::{proc, transcript};
 
 const KEY: &str = "limits";
+/// The longest gap `tb limits --review-gap` sets between a step's rounds, in minutes.
+pub const MAX_REVIEW_GAP: i64 = 240;
 pub const NUMBERS: [&str; 4] = ["compact_window", "cold_idle_mins", "warm_tokens", "warm_idle_mins"];
 /// How long a headless `/compact` may take before the resume goes ahead without it.
 const COMPACT_TIMEOUT: f64 = 600.0;
@@ -118,6 +120,33 @@ pub fn get(app: &App) -> Limits {
     l
 }
 
+/// The gaps `tb limits --review-gap` set between a step's rounds (step key → minutes, 0 for none), over
+/// the steps' `min_gap_mins` in config.toml.
+pub fn review_gaps(app: &App) -> BTreeMap<String, f64> {
+    let saved = jloads_obj(app.db.get_setting(KEY).ok().flatten().as_deref());
+    saved.get("review_gaps").and_then(|v| v.as_object()).map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_f64()?))).collect()).unwrap_or_default()
+}
+
+/// The step `--review-gap` changes: the one named, else the only step with a gap (else the only one that
+/// runs per head).
+fn gap_step(app: &App, named: &str) -> Result<String> {
+    let all = crate::steps::load(app);
+    if !named.is_empty() {
+        return match all.iter().find(|s| crate::steps::key(&s.name) == crate::steps::key(named)) {
+            Some(s) => Ok(crate::steps::key(&s.name)),
+            None if all.is_empty() => err(400, "There are no steps in config.toml, so there's no review gap to change."),
+            None => err(400, format!("“{named}” isn't a step: {}.", crate::steps::names(&all))),
+        };
+    }
+    let gapped: Vec<_> = all.iter().filter(|s| s.min_gap_mins.is_some()).cloned().collect();
+    let pick = if gapped.is_empty() { all.iter().filter(|s| s.per_head).cloned().collect() } else { gapped };
+    match pick.as_slice() {
+        [one] => Ok(crate::steps::key(&one.name)),
+        [] => err(400, "No step keeps its rounds apart. Name the step: tb limits --review-gap MINS --step \"<step>\"."),
+        many => err(400, format!("More than one step has a review gap: {}. Name one with --step \"<step>\".", crate::steps::names(many))),
+    }
+}
+
 /// Changes the limits. Numbers are tokens or minutes (0 turns one off, null puts config.toml's back);
 /// `generated` replaces the globs, for `project` when it's given; `reset` forgets every change.
 pub fn set(app: &App, body: &Value) -> Result<Limits> {
@@ -140,6 +169,17 @@ pub fn set(app: &App, body: &Value) -> Result<Limits> {
                 }
             }
         }
+    }
+    if body.as_object().is_some_and(|o| o.contains_key("review_gap")) {
+        let v = &body["review_gap"];
+        let n = v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()));
+        let Some(n) = n.filter(|n| (0..=MAX_REVIEW_GAP).contains(n)) else {
+            return err(400, format!("review_gap must be a whole number of minutes from 0 to {MAX_REVIEW_GAP} (0 for no gap)."));
+        };
+        let step = gap_step(app, &body_str(body, "step"))?;
+        let mut m = saved.get("review_gaps").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        m.insert(step, json!(n));
+        saved.insert("review_gaps".into(), Value::Object(m));
     }
     if body.as_object().is_some_and(|o| o.contains_key("generated")) {
         let globs = globs_of(&body["generated"])?;
@@ -194,7 +234,15 @@ pub fn state(app: &App) -> Value {
     let l = get(app);
     let mut out = l.to_json();
     out["defaults"] = defaults(app).to_json();
-    out["line"] = json!(line(&l));
+    let mut text = line(&l);
+    let mut gaps = vec![];
+    for s in crate::steps::load(app) {
+        let Some(g) = s.gap_text() else { continue };
+        text.push_str(&format!("\nReview rounds, {}: {g}", s.name));
+        gaps.push(json!({"step": s.name, "mins": s.min_gap_mins}));
+    }
+    out["review_gaps"] = json!(gaps);
+    out["line"] = json!(text);
     out
 }
 

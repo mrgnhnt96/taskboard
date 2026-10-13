@@ -113,6 +113,14 @@ impl Step {
         self.min_gap_mins.filter(|m| *m > 0.0).map(|m| m * 60.0)
     }
 
+    /// How often the step may run, when it keeps its rounds apart: "one round per branch every 20 min".
+    pub fn gap_text(&self) -> Option<String> {
+        match self.min_gap_mins? {
+            m if m > 0.0 => Some(format!("one round per branch every {} min", m.round() as i64)),
+            _ => Some("no gap between rounds".into()),
+        }
+    }
+
     /// The step with its placeholders filled; its scripts as they run (`fill_shell`), so what's shown is
     /// what runs.
     pub fn filled(&self, vars: &BTreeMap<String, String>) -> Step {
@@ -220,7 +228,15 @@ pub fn load(app: &App) -> Vec<Step> {
         Err(e) => (vec![], vec![Bad { step: "file".into(), why: e.trim().to_string() }]),
     };
     note_bad(app, &bad);
-    good
+    let gaps = crate::limits::review_gaps(app);
+    good.into_iter()
+        .map(|mut s| {
+            if let Some(m) = gaps.get(&key(&s.name)) {
+                s.min_gap_mins = Some(*m);
+            }
+            s
+        })
+        .collect()
 }
 
 /// Keeps an alert up for each step left out, and clears the ones fixed (logging when that changes).

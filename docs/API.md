@@ -855,9 +855,14 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 | `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
 ### Context limits (`tb limits`)
-`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, line: str}`.
+`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, review_gaps: [{step, mins}], line: str}`.
+`review_gaps` lists each step that keeps its rounds apart (its `min_gap_mins`, or the board's change), and `line` adds
+"Review rounds, <step>: one round per branch every N min" for each.
 `POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
-comma-separated string, or `"none"`) with an optional `project` for that project's own globs, and `reset: true`.
+comma-separated string, or `"none"`) with an optional `project` for that project's own globs, `review_gap` (`tb limits
+--review-gap`: minutes between a branch's rounds of a step, 0 to 240, 0 for no gap; 400 otherwise) with an optional `step`
+(needed when more than one step has a gap; without any, the only per-head step), and `reset: true`. A review gap is kept
+on the board over the step's `min_gap_mins`: config.toml isn't rewritten, and the other steps keep theirs.
 It answers like `GET`, and the board rewrites the `.git/info/attributes` blocks at once (else every 5 minutes),
 and takes the block out of a repo it no longer looks after (its project off Midna's list with no open goal, task, PR or terminal
 there; its work done). The Python board's block (`# task-board: generated files …` to `# task-board: end`) is replaced
