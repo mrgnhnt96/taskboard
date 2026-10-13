@@ -1430,7 +1430,7 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
     }
     if !failed {
         let in_review = prflow::IN_CODE_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
-        if let Some(why) = t.s("no_pr").filter(|w| !w.is_empty()) {
+        if let Some(why) = t.s("no_pr").filter(|w| !w.is_empty() && t.i("pr_num").is_none()) {
             // `tb done --no-pr`: a ticket that shipped on another task goes back to QA with the summary;
             // otherwise it's withdrawn, with the reason as its comment.
             let shipped = board::ticket_shipped(app, &t)?;
@@ -1530,6 +1530,15 @@ pub const NO_PR_MAX: usize = 100;
 /// in a PR and has none, finishing without `--pr-body` or `--no-pr` (unless its repo has no remote at all; a
 /// remote the board can't read still counts); and a task with a design attached finishing with no evidence
 /// and no `--no-evidence`.
+/// Why a PR can't go up for a task with no Jira ticket, and the way out.
+pub fn no_ticket_refusal(t: &Row) -> String {
+    let me = rf("task", t.id());
+    format!(
+        "Every PR needs a Jira ticket, and {me} has none. Link one with tb task set {me} --jira ABC-123 (or ask the Jira desk with --jira new), \
+         put the key in the PR title, then run tb done again."
+    )
+}
+
 fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     let app = r.app;
     let Some(t) = t.filter(|t| t.s("status") != Some("done")) else { return Ok(()) };
@@ -1555,6 +1564,9 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
                  --pr <link> if you opened it, or --no-pr \"<why>\" if it won't have one."
             ),
         );
+    }
+    if !no_pr && has_pr && !r.spooled && app.cfg.ticket_required() && !has(t.s("jira_key")) {
+        return err(409, no_ticket_refusal(t));
     }
     let atts = board::attachments(app, Some(t.id()), None)?;
     let design = atts.iter().find(|a| a["kind"] == "design");

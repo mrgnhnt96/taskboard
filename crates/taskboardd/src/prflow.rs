@@ -1015,7 +1015,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         if phase == "merged" {
             board::log_event(app, t.id(), "PR", "status", &format!("PR #{} was merged", t.i0("pr_num")))?;
             let st = app.cfg.jira.merged.clone();
-            board::jira_keep_in_step(app, t, Some(&st), None)?;
+            board::jira_keep_in_step(app, t, Some(&st), Some(&merged_comment(t)))?;
         }
         if phase == "declined" {
             board::log_event(app, t.id(), "PR", "status", &format!("PR #{} was closed without merging", t.i0("pr_num")))?;
@@ -1244,6 +1244,14 @@ impl HasPhase for Row {
     }
 }
 
+/// The ticket's comment when its PR merges, so whoever reads the ticket sees what merged.
+fn merged_comment(t: &Row) -> String {
+    match t.s("pr_url").filter(|u| !u.is_empty()) {
+        Some(url) => format!("PR #{} was merged: {url}", t.i0("pr_num")),
+        None => format!("PR #{} was merged", t.i0("pr_num")),
+    }
+}
+
 pub fn mark_merged(app: &App, t: &Row, who: &str) -> Result<()> {
     if t.s("pr_phase") == Some("merged") {
         return Ok(());
@@ -1252,7 +1260,7 @@ pub fn mark_merged(app: &App, t: &Row, who: &str) -> Result<()> {
     merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null])?;
     board::log_event(app, t.id(), who, "status", &format!("Merged PR #{}", t.i0("pr_num")))?;
     let st = app.cfg.jira.merged.clone();
-    board::jira_keep_in_step(app, &board::get_task(app, t.id())?, Some(&st), None)?;
+    board::jira_keep_in_step(app, &board::get_task(app, t.id())?, Some(&st), Some(&merged_comment(t)))?;
     dispatch::clear_alerts(app, Some(t.id()), None)?;
     Ok(())
 }

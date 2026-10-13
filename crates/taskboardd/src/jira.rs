@@ -64,11 +64,23 @@ pub fn request_epic(app: &App, g: &Row) -> Result<i64> {
 
 pub fn ensure_epic(app: &App, g: Option<&Row>) -> Result<()> {
     let Some(g) = g else { return Ok(()) };
-    if has(g.s("epic_key")) || epic_asked(app, g.id())? {
+    if has(g.s("epic_key")) || epic_asked(app, g.id())? || !crate::projects::ships_prs(app, &g.st("project"))? {
         return Ok(());
     }
     request_epic(app, g)?;
     app.info(format!("jira: asked for an epic for {} before its first ticket", rf("goal", g.id())));
+    Ok(())
+}
+
+/// The project no longer ships PRs: its tickets and epics that haven't been asked for yet aren't wanted.
+pub fn drop_pending_creates(app: &App, project: &str) -> Result<()> {
+    app.db.x(
+        "UPDATE jobs SET state = 'cancelled', updated_at = ? WHERE kind = 'jira' AND state = 'pending' \
+         AND json_extract(args, '$.op') = 'create' AND ( \
+           json_extract(target, '$.task') IN (SELECT id FROM tasks WHERE project = ?) \
+           OR json_extract(target, '$.goal') IN (SELECT id FROM goals WHERE project = ?))",
+        p![now_iso(), project, project],
+    )?;
     Ok(())
 }
 
