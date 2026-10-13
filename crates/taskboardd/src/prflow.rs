@@ -410,7 +410,11 @@ pub fn answer_in_new_tab(app: &App, t: &Row, text: &str) -> Result<Option<i64>> 
 /// Terminals that worked on a done task's PR and can close now.
 pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
     let rows = app.db.q(
-        "SELECT DISTINCT s.*, t.id AS pr_task FROM sessions s JOIN task_terminals tt ON tt.session_id = s.id \
+        // A tab the board opened for the task counts even when it never reported back as one of its terminals.
+        "SELECT DISTINCT s.*, t.id AS pr_task FROM sessions s \
+         JOIN (SELECT task_id, session_id FROM task_terminals \
+               UNION SELECT task_id, json_extract(target, '$.session') FROM jobs WHERE kind = 'agent' AND task_id IS NOT NULL) tt \
+           ON tt.session_id = s.id \
          JOIN tasks t ON t.id = tt.task_id WHERE s.status IS NOT 'gone' AND t.status = 'done' AND t.pr_num IS NOT NULL",
         p![],
     )?;
