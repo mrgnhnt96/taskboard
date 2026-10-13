@@ -908,6 +908,25 @@ fn a_merge_comments_which_pr_merged_on_the_ticket() {
 }
 
 #[test]
+fn the_board_s_own_ticket_create_doesn_t_clear_a_task_s_alert() {
+    let b = board_with(|c, _| c.jira.auto_ticket = true);
+    let t = b.new_task(json!({}));
+    b.app.db.x("DELETE FROM jobs WHERE kind = 'jira'", vec![]).unwrap();
+    board::update_task(&b.app, t, fields!["status" => "needs", "question" => "Which API key?"]).unwrap();
+    taskboardd::dispatch::add_alert(&b.app, "T1 needs you: Which API key?", Some(t), None, None, None).unwrap();
+    let task_alerts = || taskboardd::dispatch::alerts(&b.app).into_iter().filter(|a| a["task_id"] == t).count();
+    assert_eq!(task_alerts(), 1);
+
+    jira::ensure_tickets(&b.app).unwrap();
+    let create = b.jobs("kind = 'jira'").pop().expect("the board asked for a ticket");
+    assert!(create.s("args").unwrap().contains("\"op\":\"create\""), "{:?}", create.s("args"));
+    jira::finish(&b.app, create.id(), true, Some("PROJ-9"), None, None).unwrap();
+    b.app.db.x("UPDATE events SET at = '2099-01-01T00:00:00Z' WHERE task_id = ? AND kind = 'jira'", taskboardd::p![t]).unwrap();
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(task_alerts(), 1, "the board's own ticket coming back isn't the agent moving on");
+}
+
+#[test]
 fn the_board_s_own_jira_move_doesn_t_clear_a_task_s_alert() {
     let b = board_with(|_, _| {});
     let t = b.new_task(json!({}));
