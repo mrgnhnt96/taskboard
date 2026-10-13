@@ -30,7 +30,11 @@ pub const BUILT_IN: &str = "\
 - Each task that changes code ends in one PR. It holds finished code that builds, breaks nothing that works today, and can be merged on its own. It can be several commits.
 - Each task is small enough for one terminal.
 - Aim for PRs that are easy to review and have a small impact, not for as many PRs as possible.
-- List the tasks in the order they should run; a task that needs an earlier one's code goes after it.";
+- List the tasks in the order they should run; a task that needs an earlier one's code goes after it.
+- Stack a task on another only when it needs that task's unmerged code; otherwise it branches from main.
+- Tail merge a stack (the default) when each PR builds, breaks nothing and is safe to ship alone: main gets reviewed pieces one at a time.
+- Head merge a stack when the pieces only make sense together (a migration and the code that needs it, a feature that's half there until the last PR) or main would be in a state you wouldn't ship between them: each PR merges into the one below it, review stays small, and main gets it all in one merge.
+- Set the mode with --stack-merge and say it in the tasks' detail.";
 
 /// Where a guide came from, and why a file set for it wasn't used.
 struct Pick {
