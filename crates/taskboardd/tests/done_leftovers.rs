@@ -132,3 +132,23 @@ fn the_review_step_shows_before_its_first_round_on_tasks_that_end_in_a_pr() {
     board::update_task(&b.app, id, vec![("pr_state", json!("MERGED")), ("pr_phase", json!("merged"))]).unwrap();
     assert_eq!(steps::bar_card(&b.app, &b.row(id)).unwrap(), Value::Null);
 }
+
+#[test]
+fn the_handoff_bits_line_gives_each_note_the_local_hint_and_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    cfg.bits.tool = "Flagsmith".into();
+    cfg.bits.local_hint = "tb-override dev_overlay=on".into();
+    let b = Board { app: App::for_tests(cfg), _dir: dir };
+    let id = b.task(json!({}));
+    b.post("/bits", json!({"name": "new_checkout", "kind": "backend", "note": "Shows the new checkout flow", "tasks": [format!("T{id}")]}));
+    b.post("/bits", json!({"name": "dev_overlay", "kind": "local", "note": "Debug overlay", "tasks": [format!("T{id}")]}));
+    let line = taskboardd::bits::handoff_lines(&b.app, &b.row(id)).unwrap().join("\n");
+    assert!(line.contains("dev_overlay: Debug overlay (local: in the code only, not in Flagsmith)"), "{line}");
+    assert!(line.contains("new_checkout: Shows the new checkout flow (backend: not made in Flagsmith yet)"), "{line}");
+    assert!(line.contains("off unless the bit is on, and say so in the PR"), "{line}");
+    assert!(line.contains("turn it on for testing with a bit override (tb-override dev_overlay=on)"), "{line}");
+    let long = "x".repeat(121);
+    let e = api::dispatch(&b.app, "POST", "/bits", &Query::new(), &json!({"name": "longnote", "kind": "backend", "note": long})).unwrap_err();
+    assert_eq!((e.status, e.message.as_str()), (400, "A bit's description is one short line, 120 characters at most."));
+}

@@ -514,3 +514,14 @@ fn propose_with_no_titled_task_is_refused() {
     }
     assert!(b.get(&format!("goals/G{g}"))["tasks"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn the_no_task_ask_names_no_pr_for_work_that_won_t_end_in_one() {
+    let b = new_board();
+    b.add_session("s1");
+    b.report("hook.prompt", "s1", json!({"prompt": "tweak the config"}));
+    write_turn(&b, "s1", "tweak the config", &["config.toml"], "2099-01-01T00:00:00Z");
+    let out = b.report("hook.stop", "s1", json!({"last_message": "Tweaked."}));
+    let block = out["block"].as_str().expect("the stop is blocked");
+    assert!(block.contains("--here (add --no-pr if it won't end in a PR)"), "{block}");
+}

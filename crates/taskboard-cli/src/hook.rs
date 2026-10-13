@@ -489,16 +489,22 @@ pub fn statusline(pass: bool) -> i32 {
         return 0;
     }
     let cfg = client::config();
-    let dir = cfg.statusline_dir.clone();
-    if std::fs::create_dir_all(&dir).is_err() {
-        return 0;
-    }
+    let _ = save_private(&cfg.statusline_dir, &name, &raw);
+    0
+}
+
+/// Writes one session's status JSON to `<dir>/<name>.json`. It holds the session's folder, cost and rate
+/// limits, so the folder is kept 0700 and the file 0600.
+fn save_private(dir: &std::path::Path, name: &str, raw: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     let path = dir.join(format!("{name}.json"));
     let tmp = dir.join(format!("{name}.json.{}.tmp", std::process::id()));
-    if std::fs::write(&tmp, raw).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
-    0
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    f.write_all(raw.as_bytes())?;
+    drop(f);
+    std::fs::rename(&tmp, &path)
 }
 
 #[cfg(test)]
@@ -580,5 +586,24 @@ mod tests {
         assert!(headless(Some("sdk-ts")), "the Agent SDK");
         assert!(!headless(Some("cli")), "the terminal's own claude");
         assert!(!headless(None));
+    }
+}
+
+#[cfg(test)]
+mod private_status_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn the_status_folder_and_files_are_private_even_when_the_folder_was_open() {
+        let root = std::env::temp_dir().join(format!("tb-statusline-test-{}", std::process::id()));
+        let dir = root.join("statusline");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::save_private(&dir, "s1", "{}").unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("s1.json")), 0o600);
+        assert_eq!(std::fs::read_to_string(dir.join("s1.json")).unwrap(), "{}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
