@@ -646,6 +646,37 @@ pub fn posted(app: &App, body: &Value) -> Result<Value> {
     let Some((name, p)) = project_of_build(app, body) else {
         return Ok(json!({"ok": true, "project": null, "checked": false, "why": "no project in [master.projects] matches this build"}));
     };
+    record_build(app, &name, &p, body)
+}
+
+/// A stream `build` event (protocol v1) whose repo and branch are a watched project's: the same as
+/// `POST /master-builds` with its `pipeline`, `url`, `sha` (its `head`), `state` and `ts` (its `at`).
+/// `build_id` is the event's, else the last number in its `url`; the watch works out the last green
+/// head itself. None when no project in `[master.projects]` watches that branch.
+pub fn stream_build(app: &App, ev: &Value) -> Result<Option<Value>> {
+    let (repo, branch) = (body_str(ev, "repo"), body_str(ev, "branch"));
+    if repo.is_empty() || branch.is_empty() {
+        return Ok(None);
+    }
+    let watched = app.cfg.master.projects.iter().find(|(name, p)| {
+        let Ok((host, theirs)) = target(app, name, p) else { return false };
+        theirs.eq_ignore_ascii_case(&repo) && ci_for(app, &host).ok().and_then(|ci| branch_for(app, name, p, ci.as_ref(), &theirs).ok()).is_some_and(|b| b == branch)
+    });
+    let Some((name, p)) = watched.map(|(k, p)| (k.clone(), p.clone())) else { return Ok(None) };
+    let build_id = ev.get("build_id").filter(|v| !v.is_null() && v.as_str() != Some("")).cloned().or_else(|| id_in_url(&body_str(ev, "url")).map(|n| json!(n)));
+    let body = json!({"pipeline": ev["pipeline"], "build_id": build_id, "url": ev["url"], "sha": ev["head"], "state": ev["state"], "ts": ev["at"]});
+    record_build(app, &name, &p, &body).map(Some)
+}
+
+/// The last all-digit segment of a build link's path (`.../pipelines/results/38`, `.../actions/runs/41`).
+fn id_in_url(url: &str) -> Option<u64> {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    path.rsplit('/').find_map(|seg| seg.parse().ok())
+}
+
+/// Keeps a default-branch build as the project's latest and reads its branch now.
+fn record_build(app: &App, name: &str, p: &MasterProject, body: &Value) -> Result<Value> {
+    let name = name.to_string();
     let mut build = serde_json::Map::new();
     for k in ["pipeline", "build_id", "url", "sha", "state", "ts", "last_green"] {
         if let Some(v) = body.get(k).filter(|v| !v.is_null() && v.as_str() != Some("")) {
@@ -654,7 +685,7 @@ pub fn posted(app: &App, body: &Value) -> Result<Value> {
     }
     build.insert("at".into(), json!(now_iso()));
     note_watch(app, &name, fields!["build" => Value::Object(build)])?;
-    check_project(app, &name, &p)?;
+    check_project(app, &name, p)?;
     let open = match open_break(app, &name)? {
         Some(b) => dict(app, &b)?,
         None => Value::Null,

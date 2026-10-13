@@ -348,3 +348,45 @@ fn the_old_listener_s_routes_read_the_branch_and_answer_as_before() {
     assert_eq!(m["verdict"], "not_ours");
     assert!(api::dispatch(&b.app, "DELETE", "/master-breaks/M1", &Query::new(), &json!({})).is_err());
 }
+
+fn stream_build(b: &Board, id: &str, repo: &str, branch: &str, head: &str, state: &str) -> Value {
+    let url = "https://github.com/acme/webapp/actions/runs/41";
+    let ev = json!({"id": id, "kind": "build", "at": "2026-10-12T15:04:00Z", "source": "relay", "repo": repo, "branch": branch, "head": head,
+                    "pipeline": "ci", "state": state, "url": url});
+    b.post("/stream/events", json!({"v": 1, "events": [ev]}))["results"][0].clone()
+}
+
+#[test]
+fn a_v1_build_on_the_watched_branch_reaches_the_break_watch() {
+    let (b, _d) = board_with(|c, _| c.master.projects.get_mut("webapp").unwrap().branch = Some("master".into()));
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    *b.ci.read.lock() = BranchRead {
+        head: "c2".into(),
+        checks: vec![Check { name: "build".into(), state: "failed".into(), url: None, at: None }],
+        commits: vec![commit("c2", "bob@acme.dev"), commit("c1", "bob@acme.dev")],
+        queued_at: None,
+    };
+
+    let r = stream_build(&b, "e1", "acme/webapp", "feature/x", "c2", "failed");
+    assert_eq!(r["status"], "accepted", "{r}");
+    assert!(b.get("/master")["open"].as_array().unwrap().is_empty(), "another branch doesn't touch breaks");
+    let r = stream_build(&b, "e2", "acme/api", "master", "c2", "failed");
+    assert_eq!(r["status"], "accepted", "{r}");
+    assert!(b.get("/master")["open"].as_array().unwrap().is_empty(), "a repo not under [master.projects] doesn't either");
+
+    let r = stream_build(&b, "e3", "acme/webapp", "master", "c2", "failed");
+    assert_eq!(r["result"]["master"]["break"]["ref"], "M1", "{r}");
+    let ev = &b.get("/master/M1")["evidence"];
+    let build = &ev["build"];
+    assert_eq!((build["build_id"].as_i64(), build["sha"].as_str(), build["state"].as_str(), build["pipeline"].as_str()), (Some(41), Some("c2"), Some("failed"), Some("ci")), "{ev}");
+    assert_eq!(build["ts"], "2026-10-12T15:04:00Z");
+    assert_eq!(ev["checks"][0]["url"], "https://github.com/acme/webapp/actions/runs/41", "the failing check gets the build's link");
+    assert_eq!(b.get("/master/M1")["green_head"], "c1", "the watch keeps the last green itself");
+    let builds = b.get("/stream")["sources"].as_array().unwrap().iter().find(|s| s["source"] == "builds").cloned().unwrap();
+    assert_eq!(builds["last_event"]["kind"], "build", "{builds}");
+
+    b.ci.read.lock().checks[0].state = "passed".into();
+    let r = stream_build(&b, "e4", "acme/webapp", "master", "c2", "passed");
+    assert_eq!(r["result"]["master"]["break"], Value::Null, "{r}");
+    assert!(b.get("/master")["open"].as_array().unwrap().is_empty(), "a passed build closes it");
+}
