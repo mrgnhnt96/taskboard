@@ -512,7 +512,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
                                   // {"name", "bar", "pending": true} before its first round; null on a task that doesn't end in a PR
 }
 ```
-`stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "line": "Stacks on T3's PR #12"}`.
+`stack_on`: `{"ref": "T3", "title": str, "num": int|null, "url": str|null, "branch": str|null, "merged": bool, "merge": "tail"|"head", "line": "Stacks on T3's PR #12 · tail merge"}`
+(`merge`: the task's own stack merge, `--stack-merge`).
 The card is draggable to Working when it's queued/planned, not starting, and not in a goal unless it waits in a terminal's line (drop = start with mode `new`).
 `POST /tasks/T<n>/start` (the owner's Start, or `tb start` on their word) takes a task out of the terminal's line it waits in and runs it as asked.
 
@@ -532,7 +533,7 @@ The card is draggable to Working when it's queued/planned, not starting, and not
   "approvals": {"have": int, "need": int|null}|null,   // approvals so far against the ones it needs (null need: the host decides);
                                  // the panel's Review step reads "1 of 2" from it when there's no `bar`
   "stage": {
-    "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"merged"|"declined",
+    "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"waits"|"stack"|"merged"|"declined",
                                  // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")
                                  // ask ([reviewers] ask_stage): the owner reviewed it; reviewers are being asked ("Asking for reviews")
     "label": str,                // plain words, e.g. "Watching checks", "Fixing checks", "Awaiting reviews", "Answering comments", "Merging", "Merged"
@@ -557,6 +558,7 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
     "comments_url": str|null,   // where "N new comments" goes: the unread thread waiting longest, else the PR
     "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
+    "waits_on_stack": str|null,  // phase `stack` ("Waits on stack"): which head-merge PR has to merge into this one first
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
@@ -612,7 +614,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/close-terminal` | `{force: bool}` | `force` false from the done box; true from Manage when the terminal is busy. |
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
-| `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--pr`, `--no-pr`. `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. In the same goal, when both have a wave, the parent has to be in an earlier wave (409 otherwise, also when a `wave` change would break that). `ships_pr` "auto" (or null) goes back to the project's default. |
+| `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", stack_merge: "head"\|"tail", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--stack-merge`, `--pr`, `--no-pr`. `stack_merge` needs a stack parent (400 otherwise). `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. In the same goal, when both have a wave, the parent has to be in an earlier wave (409 otherwise, also when a `wave` change would break that). `ships_pr` "auto" (or null) goes back to the project's default. |
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. Only from the app (`X-Task-Board-From: app`): any other caller gets 403 "Only the owner marks a PR reviewed, from its task page." and the stage stays as it was. |
 | `POST /done/close-terminals` | `{project?, goal?}` | Close every done task's still-open terminal (no force; a busy one is left), within a project or goal when given: `tb close --done` (on the owner's word). **Response read:** `jobs` (how many close). |
 
@@ -1214,6 +1216,13 @@ is kept in `pr_flow.retarget_error` and tried again on later refreshes after 1, 
 (`retarget_at`); its alert (key `retarget:T<n>`) is raised once and clears when the move works. The stacked task is told to
 rebase as for any `waits_for`. A task others still stack on (open, or done with their PR open) can't be set to end
 without a PR (`--pr no`, `tb done --no-pr`): the 409 names them.
+
+That's a **tail merge**, the default. A stacked task can **head-merge** instead (`tb task new|set --stack-merge head|tail`,
+stored as `tasks.stack_merge`, `'head'` or NULL for tail; refused with a 400 on a task that stacks on nothing, and
+cleared by `--stack-on none`). Its PR still goes into the parent's branch, but it doesn't wait: once approved and green
+its phase is `merge` and `tb pr merge` merges it into the parent's branch; it's never retargeted, and its handoff says
+so. The parent's PR holds instead: while a head-merge child is open, or done with its PR open, the parent's approved
+PR is in phase `stack` ("Waits on stack", `pr.bar.waits_on_stack`), and `tb pr merge` refuses it naming that child.
 
 **The PR plan** (`tasks.ships_pr`): `tb task new --pr|--no-pr`, `tb task set --pr yes|no|auto`. The handoff and steps
 use it instead of the project's default.

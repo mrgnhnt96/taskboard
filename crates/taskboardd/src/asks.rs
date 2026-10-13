@@ -166,7 +166,7 @@ pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
 
 /// PR phases past asking: the reviewers have been at it (or the PR is done), so the owner's review
 /// no longer gates an ask.
-const PAST_ASKING: &[&str] = &["rereview", "merge", "waits", "merged", "declined"];
+const PAST_ASKING: &[&str] = &["rereview", "merge", "waits", "stack", "merged", "declined"];
 
 /// Whether the owner's review gates this ask (the `ask` stage): it's on for the project, the owner
 /// hasn't reviewed the PR, the PR isn't past asking, and nobody has been asked on it yet (by the

@@ -24,9 +24,9 @@ use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
-pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "merge", "waits"];
+pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
-pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits"];
+pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -45,6 +45,7 @@ pub fn label(phase: &str) -> &str {
         "comments" => "Addressing comments",
         "merge" => "Ready to merge",
         "waits" => "Waits on base",
+        "stack" => "Waits on stack",
         "merged" => "Merged",
         "declined" => "Closed",
         other => other,
@@ -841,8 +842,12 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     }
     if (review_skipped || approved(app, t, &review)) && !rec["tasks_error"].is_string() {
         // PR tasks that couldn't be read are unknown, not none: they hold the stage as they hold
-        // `tb pr merge`, so it stays awaiting review. A stacked PR waits for the PR it builds on to merge first (`stack.rs`).
-        return if crate::stack::holds(app, t).unwrap_or(false) { "waits" } else { "merge" }.into();
+        // `tb pr merge`, so it stays awaiting review. A stacked PR waits for the PR it builds on to merge
+        // first, and a PR waits for the head-merge PRs stacked on it to merge into it (`stack.rs`).
+        if crate::stack::holds(app, t).unwrap_or(false) {
+            return "waits".into();
+        }
+        return if crate::stack::stack_hold(app, t).ok().flatten().is_some() { "stack" } else { "merge" }.into();
     }
     if crate::reviewers::ask_stage_on(app, t.s("project")) && f.contains_key("reviewed") && !f.contains_key("asked") {
         return "ask".into();

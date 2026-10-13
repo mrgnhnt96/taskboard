@@ -193,6 +193,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("goal_waves", "held_at", "TEXT"),
     // Stacked PRs (`--stack-on T<n>`): the task whose PR this one's builds on.
     ("tasks", "pr_after", "INT"),
+    // How a stacked task's PR merges (`--stack-merge`): 'head' into its parent's branch; NULL for tail.
+    ("tasks", "stack_merge", "TEXT"),
     // Whether the task ends in a PR: 1 or 0, or NULL for its project's default.
     ("tasks", "ships_pr", "INT"),
     // Why a PR-flow task finished without a PR (`tb done --no-pr`), or without evidence (`--no-evidence`).

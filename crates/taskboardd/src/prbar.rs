@@ -104,6 +104,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "comments_url": comments_url,
         "waits_on_base": t.s("pr_phase") == Some("waits"),
         "stacks_on": stack::card(app, t)?,
+        "waits_on_stack": if t.s("pr_phase") == Some("stack") { json!(stack::stack_hold(app, t)?) } else { Value::Null },
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
         "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
         "wd": crate::steps::bar_card(app, t)?,
