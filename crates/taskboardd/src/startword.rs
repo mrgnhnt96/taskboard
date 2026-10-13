@@ -1231,6 +1231,120 @@ fn names_only(prompt: &str, id: i64) -> bool {
     ONLY_NAMED_RE.is_match(own.trim()) && named_tasks(&own).contains(&id)
 }
 
+/// What a typed prompt grants `tb start` for its turn, decided as it's typed: the tasks and goals it
+/// asks by name to start now, and, when it asks for a new one and its start without naming it ("make a
+/// task and start it", "put this in a goal and run it"), what the agent makes before the next prompt:
+/// the first one, or with "them" every one. A no, a question, a time or condition, a quote or a
+/// take-back leaves out what it holds, as [`read`] says.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grant {
+    pub tasks: Vec<i64>,
+    pub goals: Vec<i64>,
+    pub new_task: bool,
+    pub new_goal: bool,
+    /// The unnamed ask is plural ("queue them"): it covers every one made, not only the first.
+    pub all: bool,
+}
+
+impl Grant {
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty() && self.goals.is_empty() && !self.new_task && !self.new_goal
+    }
+}
+
+/// What prompt `text` grants ([`Grant`]).
+pub fn grant_of(text: &str) -> Grant {
+    let mut g = Grant::default();
+    for (r, ids, new) in [(read(text), &mut g.tasks, &mut g.new_task), (read_of(&GOALS, text), &mut g.goals, &mut g.new_goal)] {
+        for a in &r.asks {
+            match a {
+                Ask::Named(n) => ids.extend(n),
+                // "Start it" that asks for nothing new is about something else.
+                _ if !r.makes => {}
+                Ask::Them => (*new, g.all) = (true, true),
+                _ => *new = true,
+            }
+        }
+        ids.sort();
+        ids.dedup();
+    }
+    g
+}
+
+/// Whether prompt `text` speaks of a start only to hold it ("don't start T8", "start T8 tomorrow?").
+fn holds_only(text: &str) -> bool {
+    let (t, g) = (read(text), read_of(&GOALS, text));
+    t.asks.is_empty() && g.asks.is_empty() && !(t.held.is_empty() && g.held.is_empty())
+}
+
+/// Records what the prompt terminal `sid` just sent grants (`owners` false for one that's no one's word:
+/// the board's, a slash command, a tool's tags), and returns what to tell the agent about it: that the
+/// owner's start word covers what it names and what the agent makes this turn, or, for a prompt that
+/// holds a start, that it's no start word. A prompt the old hook clipped grants nothing ([`typed`]).
+pub fn note_prompt(app: &App, sid: &str, owners: bool) -> Result<Option<String>> {
+    let row = app.db.q1("SELECT id, text, full, data FROM session_events WHERE session_id = ? AND kind = 'prompt' ORDER BY id DESC LIMIT 1", p![sid])?;
+    let typed = row.as_ref().filter(|_| owners).map(|r| (r.id(), typed(r))).filter(|(_, (_, clipped))| !clipped);
+    let g = typed.as_ref().map(|(_, (text, _))| grant_of(text)).unwrap_or_default();
+    let saved = typed.as_ref().filter(|_| !g.is_empty()).map(|(at, _)| {
+        serde_json::json!({"prompt": at, "tasks": g.tasks, "goals": g.goals, "new_task": g.new_task, "new_goal": g.new_goal, "all": g.all}).to_string()
+    });
+    app.db.x("UPDATE sessions SET start_grant = ? WHERE id = ?", p![saved, sid])?;
+    let Some((_, (text, _))) = typed else { return Ok(None) };
+    if saved.is_some() {
+        let mut named: Vec<String> = g.tasks.iter().map(|&id| rf("task", id)).chain(g.goals.iter().map(|&id| rf("goal", id))).collect();
+        if g.new_task || g.new_goal {
+            named.push("what you create this turn".into());
+        }
+        let last = named.pop().unwrap_or_default();
+        let all = if named.is_empty() { last } else { format!("{} and {last}", named.join(", ")) };
+        return Ok(Some(format!("Task board: the owner's start word in this prompt covers {all}: run tb start for it.")));
+    }
+    Ok(holds_only(&text).then(|| "Task board: this prompt is not a start word: don't run tb start on it.".to_string()))
+}
+
+/// Whether the latest prompt in terminal `sid` granted the start of task (or, with `goal`, the run of
+/// goal) `id` ([`note_prompt`]): it names it, or asks for a new one and the agent made it since (the
+/// first one made, unless the ask was "them"). A later prompt or a new conversation ends the grant; a
+/// goal run on it spends it. When the turn made a goal and a task beside it, "it" could be either, so
+/// it covers neither.
+pub fn granted(app: &App, sid: &str, id: i64, goal: bool) -> Result<bool> {
+    let Some(row) = app.db.q1("SELECT start_grant FROM sessions WHERE id = ?", p![sid])? else { return Ok(false) };
+    let Some(g) = row.s("start_grant").and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else { return Ok(false) };
+    let at = g["prompt"].as_i64().unwrap_or(i64::MAX);
+    if app.db.q1("SELECT 1 FROM session_events WHERE session_id = ? AND kind IN ('prompt', 'start') AND id > ? LIMIT 1", p![sid, at])?.is_some() {
+        return Ok(false);
+    }
+    let me = if goal { rf("goal", id) } else { id.to_string() };
+    let made = |data: &str| -> Result<Vec<String>> {
+        let rows = app.db.q("SELECT data FROM session_events WHERE session_id = ? AND kind = ? AND id > ? AND data LIKE ? ORDER BY id", p![sid, MADE, at, data])?;
+        Ok(rows.iter().map(|r| r.st("data")).collect())
+    };
+    let goals = made("G%")?;
+    if goal && app.db.q1("SELECT 1 FROM session_events WHERE session_id = ? AND kind = ? AND id > ? AND data = ? LIMIT 1", p![sid, RAN, at, me])?.is_some() {
+        return Ok(false);
+    }
+    let named = g[if goal { "goals" } else { "tasks" }].as_array().is_some_and(|a| a.iter().any(|v| v.as_i64() == Some(id)));
+    if named {
+        return Ok(true);
+    }
+    if g[if goal { "new_goal" } else { "new_task" }] != true {
+        return Ok(false);
+    }
+    // The tasks made beside a goal, not in it.
+    let mut tasks = vec![];
+    for t in made("%")?.into_iter().filter(|d| !d.starts_with('G')) {
+        let in_goal = t.parse().ok().and_then(|t| crate::board::find_task(app, Some(t)).ok().flatten()).and_then(|t| t.i("goal_id"));
+        if !in_goal.is_some_and(|gid| goals.contains(&rf("goal", gid))) {
+            tasks.push(t);
+        }
+    }
+    let (mine, others) = if goal { (goals, tasks) } else { (tasks, goals) };
+    if !others.is_empty() {
+        return Ok(false);
+    }
+    Ok(if g["all"] == true { mine.contains(&me) } else { mine.first() == Some(&me) })
+}
+
 /// Notes on terminal `sid` that its conversation made task `id`: the task an unnamed "queue it" can mean.
 pub fn note_made(app: &App, sid: &str, id: i64) -> Result<()> {
     crate::board::session_event_with(app, sid, MADE, &format!("Added {}", rf("task", id)), None, Some(&id.to_string()))

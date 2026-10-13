@@ -746,7 +746,7 @@ pub fn answer_start(app: &App, group: &str, response: &Value) -> Result<()> {
         if let Err(e) = out {
             let r = a["ref"].as_str().unwrap_or("");
             let (task, goal) = if a["kind"] == "goal" { (None, Some(id)) } else { (Some(id), None) };
-            notify(app, &format!("{r} didn't start: {}", e.message), &alert_url(app, task, goal, None), None);
+            notify(app, &format!("{r} didn't start: {}", e.message), &alert_url(app, task, goal, None));
         }
     }
     Ok(())

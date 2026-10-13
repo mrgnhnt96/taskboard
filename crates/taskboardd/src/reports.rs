@@ -2603,6 +2603,17 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
                 let end = (r.event == "hook.stop" && kind == "reply").then(|| r.b("last_message_end")).filter(|e| !e.trim().is_empty());
                 board::session_event_full(app, &sid, kind, &text, Some(&r.at), data, end.as_deref())?;
             }
+            if r.event == "hook.prompt" {
+                // Decide the start word as it's typed: what it grants `tb start`, and tell the agent.
+                let prompt = r.body["prompt"].as_str().unwrap_or("");
+                let owners = !crate::startword::MARKER_RE.is_match(prompt) && owners_ask(prompt);
+                if let Some(c) = crate::startword::note_prompt(app, &sid, owners)? {
+                    out["context"] = match out["context"].as_str() {
+                        Some(had) if !had.is_empty() => json!(format!("{had}\n\n{c}")),
+                        _ => json!(c),
+                    };
+                }
+            }
         }
         if !spooled {
             let mut handed = deliver::take(app, r.sid(), &r.event)?;

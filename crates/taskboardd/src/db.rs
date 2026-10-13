@@ -203,6 +203,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     // A typed prompt as the human typed it (newlines kept, not clipped to the line `text` shows), for
     // the `tb start` word check.
     ("session_events", "full", "TEXT"),
+    // What the latest typed prompt grants `tb start`, decided as it was typed ([`crate::startword::Grant`]).
+    ("sessions", "start_grant", "TEXT"),
     // Background commands and agents its last turn left running, and when the board counted them.
     ("sessions", "background", "INT DEFAULT 0"),
     ("sessions", "background_agents", "INT DEFAULT 0"),
