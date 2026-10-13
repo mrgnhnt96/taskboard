@@ -214,7 +214,7 @@ fn task_json(t: &Row) -> Value {
 fn base(app: &App, event: &str) -> Value {
     let e = event_or_panic(event);
     json!({
-        "event": event, "at": now_iso(), "board_url": app.cfg.url(), "tb": board::tb_cmd(app),
+        "event": event, "at": now_iso(), "board_url": app.cfg.url(), "tb": board::tb_program(app),
         "can": {"block": e.can_stop(), "skip": e.can_skip()},
     })
 }

@@ -485,10 +485,10 @@ fn an_epic_is_searched_by_the_words_its_title_leads_with() {
 }
 
 #[test]
-fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
-    let tb = "/Applications/Taskboard.app/Contents/MacOS/tb";
+fn the_desk_runs_a_bare_tb_its_allow_rule_covers() {
+    let path = "/x/cache/taskboard/task-board/0.1.0/bin/tb";
     let b = board_with(|c, _| c.jira.desk = true);
-    b.app.db.set_setting("tb_path", Some(tb)).unwrap();
+    b.app.db.set_setting("tb_path", Some(path)).unwrap();
     b.new_task(json!({"jira": "create"}));
     b.tick();
     let opened = b.jobs("kind = 'agent' AND purpose = 'jira_desk'");
@@ -497,7 +497,6 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     assert_eq!(args[0], "--allowedTools");
     let rules: Vec<&str> = args[1].split(',').collect();
     let server = |n: &str| format!("mcp__claude_ai_Atlassian_MCP__{n}");
-    let (desk_tb, desk_path) = ("Bash(tb jira:*)".to_string(), format!("Bash({tb} jira:*)"));
     let want = [
         server("getJiraIssue"),
         server("executeRead"),
@@ -505,8 +504,7 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
         server("createJiraIssue"),
         server("getAccessibleAtlassianResources"),
         server("discover"),
-        desk_tb,
-        desk_path,
+        "Bash(tb jira:*)".to_string(),
     ];
     assert_eq!(rules, want.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(
@@ -524,16 +522,13 @@ fn the_desk_may_run_tb_by_its_path_without_a_prompt() {
     b.tick();
     let job = board::job_args(&b.jobs("kind = 'message' AND purpose = 'jira_desk'")[0]).st("text");
     for text in [intro.as_str(), job.as_str()] {
-        let runs: Vec<&str> = text.match_indices(tb).map(|(i, _)| &text[i..]).collect();
+        assert!(!text.contains(path), "the versioned plugin path stays out of agent text: {text}");
+        let runs: Vec<&str> = text.match_indices("tb jira").map(|(i, _)| &text[i..]).collect();
         assert!(!runs.is_empty(), "{text}");
         for r in runs {
             assert!(prefixes.iter().any(|p| r.starts_with(p)), "{r}");
         }
     }
-
-    // A path the rule can't hold falls back to plain tb.
-    b.app.db.set_setting("tb_path", Some("/odd(path)/tb")).unwrap();
-    assert_eq!(jira_desk::allowed_tools(&b.app).last().unwrap(), "Bash(tb jira:*)");
 
     // The owner's own list is the desk's as it is.
     let b = board_with(|c, _| {

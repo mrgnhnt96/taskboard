@@ -1055,6 +1055,17 @@ fn fix_task(app: &App, b: &Row) -> Value {
         .map(|s| format!("- {} {} ({})", s["sha"].as_str().unwrap_or("").chars().take(10).collect::<String>(), s["message"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or("")))
         .collect();
     detail.push(format!("Suspect commits:\n{}", suspects.join("\n")));
+    let tb = board::tb_cmd(app);
+    let m = bref(b.id());
+    detail.push(format!(
+        "How to finish:\n\
+         - Branch from origin/{branch}, make the smallest change that turns it green, and open the PR.\n\
+         - If it goes green on its own, check {tb} master {m} before doing more, then finish with {tb} done \"<summary>\" --no-pr \"<why>\".\n\
+         - If you find it isn't {owners} change after all, run {tb} master {m} not-ours --title \"<cause>\" --why \"<how you checked>\" --proof <build or artifact link> \
+         (or {tb} master {m} unsure --why \"<what you checked>\" when you can't tell), then finish with no PR.",
+        branch = b.st("branch"),
+        owners = app.cfg.owners(),
+    ));
     let title = match b.s("verdict_title") {
         Some(cause) => {
             let pipeline = ev["build"]["pipeline"].as_str().filter(|p| !p.is_empty()).map(|p| p.to_string()).unwrap_or_else(|| checks.join(", "));
@@ -1194,6 +1205,12 @@ pub fn override_verdict(app: &App, id: i64, body: &Value) -> Result<Value> {
         return err(400, format!("{bad} isn't a link: proof is http(s) links."));
     }
     let who = board::caller(app, body, &app.cfg.owner);
+    if who != app.cfg.owner && b.s("verdict_by") == Some(app.cfg.owner.as_str()) {
+        return err(
+            409,
+            format!("{} already decided {} is {}; their word stands. Ask them if you think otherwise.", app.cfg.owner, bref(id), b.st("verdict").replace('_', "-")),
+        );
+    }
     let why = one_line(&body_str(body, "why"), 1000);
     let n = why.chars().count();
     if !(REASON_MIN..=REASON_MAX).contains(&n) {

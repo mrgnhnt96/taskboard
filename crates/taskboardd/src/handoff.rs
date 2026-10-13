@@ -298,14 +298,34 @@ fn attachments_block(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>>
         .collect();
     let mut parts = vec![format!("Attached (read these before you start):\n{}", lines.join("\n"))];
     if atts.iter().any(|a| a["kind"] == "design") {
-        parts.push(
-            "Design check: the attached designs are the reference for anything on screen. Open them before you change \
-             any UI and build to them, not from memory. When a screen changes, compare it with the design side by side \
-             and say in tb done what still differs."
-                .into(),
-        );
+        parts.push(design_check(app, t));
     }
     Ok(parts)
+}
+
+/// The folder a task's screenshots go in: under the board's data dir, so they outlive the task's worktree
+/// and never end up in a commit.
+pub fn evidence_dir(app: &App, task_id: i64) -> std::path::PathBuf {
+    app.cfg.data.join("evidence").join(rf("task", task_id))
+}
+
+fn design_check(app: &App, t: &Row) -> String {
+    let tb = board::tb_cmd(app);
+    let dir = evidence_dir(app, t.id());
+    let _ = std::fs::create_dir_all(&dir);
+    format!(
+        "Design check: the attached designs are the reference for anything on screen. Open them before you change any UI \
+         and build to them, not from memory. {tb} done needs evidence for a task with a design: a screenshot of each \
+         changed screen, or --no-evidence \"<why>\" when no screen changed.\n\
+         - Run the app on this task's emulator or simulator (the device the board lent it) and take a screenshot of each \
+         changed screen.\n\
+         - Compare each one with its design side by side until they match; say why when one can't.\n\
+         - Save each screenshot in {}/, outside the worktree, so it outlives the worktree and never ends up in a commit.\n\
+         - Attach each one: {tb} attach <file> --kind evidence --title \"<screen>: matches <design>\".\n\
+         - In {tb} done, list the screens you checked and anything that still differs. The evidence goes into the PR's \
+         description.",
+        dir.display()
+    )
 }
 
 fn backlog_origin(app: &App, t: &Row) -> Result<Vec<String>> {

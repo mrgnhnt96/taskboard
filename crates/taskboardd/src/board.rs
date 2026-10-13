@@ -987,8 +987,16 @@ pub fn closing_session(app: &App, sid: &str) -> Result<bool> {
     Ok(false)
 }
 
-/// The `tb` command agents are told to run: the path the plugin reported, or a bare `tb`.
-pub fn tb_cmd(app: &App) -> String {
+/// The `tb` command agents are told to run: always a bare `tb`. The plugin puts its `bin/` on the Bash
+/// tool's PATH, so one `Bash(tb *)` rule covers every report, and no text names a versioned plugin
+/// directory that a plugin update removes.
+pub fn tb_cmd(_app: &App) -> String {
+    "tb".into()
+}
+
+/// The `tb` program for what runs outside Claude's Bash tool (the owner's hook scripts): the path the
+/// plugin reported, or a bare `tb`.
+pub fn tb_program(app: &App) -> String {
     match app.db.get_setting("tb_path") {
         Ok(Some(p)) if !p.is_empty() && !p.contains(' ') => p,
         _ => "tb".into(),
