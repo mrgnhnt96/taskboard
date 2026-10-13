@@ -224,19 +224,22 @@ pub const COMPACT_FAILED: &str = "The board couldn't compact its conversation";
 /// A conversation resumed in a new terminal after going cold is compacted first, headless. While it
 /// runs, the job's target carries `compacting_at` for the task's card. A failed compact refuses the job
 /// rather than resuming the conversation at full size, unless the owner chose to resume it as it is
-/// (`resume_as_is` in the task's context).
+/// (`resume_as_is` in the task's context, used up by this one resume).
 fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) -> MResult<()> {
     if !limits::is_cold(app, &limits::conversation(app, cwd, cid, None)) {
         return Ok(());
     }
-    let task = j.i("task_id").and_then(|tid| board::get_task(app, tid).ok());
     let log = |what: &str| {
         app.info(format!("job {}: {what}", rf("job", j.id())));
         if let Some(tid) = j.i("task_id") {
             let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "handoff", what).map(|_| ()));
         }
     };
-    if task.as_ref().is_some_and(|t| board::task_context(t).get("resume_as_is").and_then(|v| v.as_str()) == Some(cid)) {
+    let as_is = match j.i("task_id") {
+        Some(tid) => app.db.tx(|| take_resume_as_is(app, tid, cid)).unwrap_or(false),
+        None => false,
+    };
+    if as_is {
         log("Resuming its cold conversation as it is, without compacting it, as the owner chose");
         return Ok(());
     }
@@ -250,6 +253,19 @@ fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) -> MResult<()
         }
         Err(e) => Err(MidnaError::Refused(format!("{COMPACT_FAILED}: {e}"))),
     }
+}
+
+/// The owner chose to resume this conversation as it is after its compact failed: true once, and the
+/// choice is cleared, so the next cold resume compacts again.
+pub fn take_resume_as_is(app: &App, task_id: i64, cid: &str) -> Result<bool> {
+    let Some(t) = board::find_task(app, Some(task_id))? else { return Ok(false) };
+    let mut ctx = board::task_context(&t);
+    if ctx.get("resume_as_is").and_then(|v| v.as_str()) != Some(cid) {
+        return Ok(false);
+    }
+    ctx.remove("resume_as_is");
+    board::save_context(app, task_id, &ctx, false)?;
+    Ok(true)
 }
 
 fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {

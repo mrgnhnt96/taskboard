@@ -57,6 +57,11 @@ fn a_failed_compact_holds_the_task_for_the_owner_and_reopening_resumes_it_as_it_
     b.post(&format!("tasks/T{t}/resume"), json!({"mode": "reopen"}));
     let ctx: Value = serde_json::from_str(board::get_task(&b.app, t).unwrap().s("context").unwrap()).unwrap();
     assert_eq!(ctx["resume_as_is"], "c1", "the reopen skips the compact for this conversation");
+
+    assert!(midna::take_resume_as_is(&b.app, t, "c1").unwrap(), "the reopen's resume goes ahead as it is");
+    let ctx: Value = serde_json::from_str(board::get_task(&b.app, t).unwrap().s("context").unwrap()).unwrap();
+    assert!(ctx.get("resume_as_is").is_none(), "the choice covers that one resume");
+    assert!(!midna::take_resume_as_is(&b.app, t, "c1").unwrap(), "the next cold resume compacts again");
 }
 
 #[test]

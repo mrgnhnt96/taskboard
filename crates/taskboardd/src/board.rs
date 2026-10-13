@@ -1017,10 +1017,10 @@ pub fn jira_keep_in_step(app: &App, t: &Row, target_status: Option<&str>, commen
         if t.st("jira_status").to_lowercase() == target.to_lowercase() {
             return Ok(None);
         }
-        return crate::jira::request(app, "transition", t.id(), &t.st("jira_key"), Some(target), comment).map(Some);
+        return crate::jira::request_by_board(app, "transition", t.id(), &t.st("jira_key"), Some(target), comment).map(Some);
     }
     if let Some(c) = comment {
-        return crate::jira::request(app, "comment", t.id(), &t.st("jira_key"), None, Some(c)).map(Some);
+        return crate::jira::request_by_board(app, "comment", t.id(), &t.st("jira_key"), None, Some(c)).map(Some);
     }
     Ok(None)
 }
