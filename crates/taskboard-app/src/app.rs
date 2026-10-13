@@ -351,14 +351,26 @@ impl MainWindow {
         self.refresh(cx);
     }
 
-    /// A `taskboard://task/T12` / `goal/G3` / `session/<id>` link (a clicked notification).
+    /// A `taskboard://task/T12` / `goal/G3` / `session/<id>` link (a clicked notification), or
+    /// a web-board route after a `#` (`tasks#/goals/G3`, `#/?task=T6`), as `tb` prints them.
     pub fn open_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url).trim_matches('/');
-        let (kind, arg) = rest.split_once('/').unwrap_or((rest, ""));
+        let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+        let (path, query) = match rest.split_once('#') {
+            Some((_, route)) => route.split_once('?').unwrap_or((route, "")),
+            None => (rest, ""),
+        };
+        let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('='));
+        let path = path.trim_matches('/');
+        let (kind, arg) = path.split_once('/').unwrap_or((path, ""));
+        if let Some(t) = param("task").filter(|t| !t.is_empty()) {
+            self.open_link(path, cx);
+            return self.open_task(t.to_uppercase(), cx);
+        }
         match (kind, arg) {
             ("task", r) if !r.is_empty() => self.open_task(r.to_uppercase(), cx),
             ("issue", r) if !r.is_empty() => self.open_issue(r.to_uppercase(), cx),
-            ("goal", r) if !r.is_empty() => self.go(Page::Goal(r.to_uppercase()), cx),
+            ("goal" | "goals", r) if !r.is_empty() => ui::goal::open(self, &r.to_uppercase(), param("view") == Some("backlog"), cx),
+            ("goals", _) => self.open_goals(cx),
             ("session", id) if !id.is_empty() => {
                 self.sessions.selected = Some(id.to_string());
                 self.go(Page::Sessions, cx);
