@@ -1,6 +1,6 @@
 //! The main window: what the board last answered (`Data`), where the reader is (`Page`, the side
-//! panel, a modal), the 3-second poll, and the chrome around the pages: the sidebar (pages and the
-//! goals rail), the alert banner, toasts and the status bar.
+//! panel, a modal), the 3-second poll, and the chrome around the pages: the header (the pages as tabs),
+//! the alert banner, toasts and the status bar.
 //!
 //! Every page lives in its own module under `ui/` with a `State` struct held here and a
 //! `render(m, window, cx)` function. They read `m.data` and act through [`MainWindow::post`].
@@ -175,10 +175,7 @@ pub struct MainWindow {
     pub hours: ui::hours::State,
     pub days: ui::days::State,
     pub tasks: ui::tasks::State,
-    pub sidebar: ui::sidebar::State,
-    /// The sidebar's width while it's being dragged.
-    pub sidebar_width: f32,
-    /// The goal list answered at least once (before that the rail falls back to the state's).
+    /// The goal list answered at least once (before that the state's goals stand in).
     goals_loaded: bool,
     /// Bumped by every refresh so a slow, older answer never overwrites a newer one.
     generation: u64,
@@ -194,8 +191,8 @@ impl MainWindow {
         let mut m = MainWindow {
             backend,
             data: Data::default(),
-            // The rail that showed and cleared a project or goal filter is gone, so a saved one
-            // would hide work with nothing on screen to say so: start unfiltered.
+            // Nothing on screen shows or clears a project or goal filter, so a saved one would
+            // hide work silently: start unfiltered.
             filters: Filters { project: "all".into(), goal: "all".into(), ..Filters::load() },
             page: Page::Board,
             panel: None,
@@ -213,8 +210,6 @@ impl MainWindow {
             hours: Default::default(),
             days: Default::default(),
             tasks: Default::default(),
-            sidebar: Default::default(),
-            sidebar_width: ui::sidebar::rail_width(),
             goals_loaded: false,
             generation: 0,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
@@ -270,23 +265,9 @@ impl MainWindow {
         self.refresh(cx);
     }
 
-    /// The rail's goal (`goal-pick`): filter the board to it (again: unfilter), on the board.
-    pub fn rail_pick_goal(&mut self, r: &str, cx: &mut Context<Self>) {
-        self.go(Page::Board, cx);
-        ui::board::goal_pick(self, r, cx);
-    }
-
-    /// The rail's project name (`rail-project`).
-    pub fn rail_pick_project(&mut self, p: &str, cx: &mut Context<Self>) {
-        let f = ui::sidebar::pick_project(&self.filters, p);
-        self.board.keep.clear();
-        self.go(Page::Board, cx);
-        self.set_filters(f, cx);
-    }
-
     /// Esc on the board with a filter set (`railClear`).
     pub fn rail_clear(&mut self, cx: &mut Context<Self>) {
-        let f = ui::sidebar::rail_clear(&self.filters);
+        let f = ui::goals::rail_clear(&self.filters);
         self.board.keep.clear();
         self.set_filters(f, cx);
     }
@@ -294,13 +275,9 @@ impl MainWindow {
     /// "Goals" (the web's `#/goals`): the goal page of the board's goal, else the first active one.
     pub fn open_goals(&mut self, cx: &mut Context<Self>) {
         let goals: Vec<&Value> = self.data.goals.iter().filter(|g| !b(g, "archived")).collect();
-        if let Some(r) = ui::sidebar::landing(&goals, &self.filters.goal) {
+        if let Some(r) = ui::goals::landing(&goals, &self.filters.goal) {
             self.go(Page::Goal(r), cx);
         }
-    }
-
-    pub fn goals_loaded(&self) -> bool {
-        self.goals_loaded
     }
 
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -440,7 +417,7 @@ impl MainWindow {
     }
 
     /// Esc (the web's keydown handler, in its order): an open menu, then the alerts dialog, then the task panel (or an issue panel on the board),
-    /// then, on the board with nothing focused, the rail's filters.
+    /// then, on the board with nothing focused, the board's filters.
     pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // On the Backlog page esc unchecks everything, closing its menu too.
         if ui::backlog::escape(self, cx) {
@@ -606,7 +583,7 @@ impl MainWindow {
     /// `projectNames` over this window's goals (`allGoals`: non-archived).
     #[cfg(test)]
     pub fn project_names(&self) -> Vec<String> {
-        project_names(self.state(), ui::sidebar::all_goals(self.data.state.as_ref(), self.goals_loaded.then_some(self.data.goals.as_slice())))
+        project_names(self.state(), ui::goals::all_goals(self.data.state.as_ref(), self.goals_loaded.then_some(self.data.goals.as_slice())))
     }
 
 }
@@ -809,7 +786,6 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.global::<Theme>().clone();
         window.set_window_title(&self.title());
-        let tabs = matches!(self.page, Page::Board | Page::Tasks | Page::Backlog | Page::Days | Page::Sessions);
 
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
@@ -826,29 +802,12 @@ impl Render for MainWindow {
         };
         let modal = self.modal.is_some().then(|| ui::modals::render(self, window, cx));
         let hours_menu = ui::hours::render_menu(self, window, cx);
-        let peek = ui::sidebar::render_peek(self, window, cx);
 
         div()
             .id("main")
             .key_context("MainWindow")
             .track_focus(&self.focus)
             .on_action(cx.listener(|m, _: &CloseOverlay, window, cx| m.escape(window, cx)))
-            // The sidebar's width drag (the rail grip).
-            .on_mouse_move(cx.listener(|m, e: &MouseMoveEvent, _, cx| {
-                if let Some((x0, w0)) = m.sidebar.drag {
-                    m.sidebar_width = (w0 + e.position.x.as_f32() - x0).clamp(ui::sidebar::RAIL_MIN, ui::sidebar::RAIL_MAX);
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|m, _, _, cx| {
-                    if m.sidebar.drag.take().is_some() {
-                        m.sidebar_width = ui::sidebar::save_rail_width(m.sidebar_width);
-                        cx.notify();
-                    }
-                }),
-            )
             .on_action(cx.listener(|m, _: &GoBoard, _, cx| m.go(Page::Board, cx)))
             .on_action(cx.listener(|m, _: &GoBacklog, _, cx| m.go(Page::Backlog, cx)))
             .on_action(cx.listener(|m, _: &GoSessions, _, cx| m.go(Page::Sessions, cx)))
@@ -863,22 +822,19 @@ impl Render for MainWindow {
             .text_color(t.text)
             .font_family(t.ui_font.clone())
             .text_size(px(14.))
-            // The tabbed pages have no sidebar: a header holds them as tabs and goals open from
-            // their cards on the board. Only a goal's page keeps the sidebar, its goal list.
-            .when(tabs, |d| d.child(ui::home::header(self, &t, cx)))
+            // No sidebar: a header holds the pages as tabs and goals open from their cards on the board.
+            .child(ui::home::header(self, &t, cx))
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(!tabs, |d| d.child(ui::sidebar::render(self, window, cx)))
                     .child(div().flex().flex_col().flex_1().min_w_0().children(banner(self, &t, cx)).child(div().flex().flex_1().min_h_0().child(page))),
             )
             .child(status_bar(self, &t, cx))
             .children(panel)
             .children(modal)
             .children(hours_menu)
-            .children(peek)
             .children(toasts(self, &t))
             .when(self.menu.is_some(), |d| {
                 // A click anywhere outside an open menu closes it.
@@ -1348,7 +1304,7 @@ fn toasts(m: &MainWindow, t: &Theme) -> Option<AnyElement> {
                 .px(px(16.))
                 .py(px(9.))
                 .rounded(px(9.))
-                .shadow(ui::sidebar::shadow_modal(t))
+                .shadow(ui::kit::shadow_modal(t))
                 .text_size(px(13.))
                 .bg(if x.err { t.down } else { t.text })
                 .text_color(if x.err { gpui_kit::white() } else { t.bg })
@@ -1498,7 +1454,7 @@ mod tests {
             assert!(m.panel.is_none() && m.backlog.picked.len() == 2, "a task panel too");
             m.escape(window, cx);
             assert!(m.backlog.picked.is_empty(), "then Esc unchecks them");
-            // Then the rail's filters (railClear), with the board focused.
+            // Then the board's filters (railClear), with the board focused.
             m.page = Page::Board;
             m.filters = crate::app::Filters { project: "webapp".into(), goal: "G1".into(), done: "7d".into() };
             m.board.keep = vec!["B1".into()];
