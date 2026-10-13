@@ -136,6 +136,11 @@ CREATE TABLE IF NOT EXISTS day_stats(
 
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 
+-- Each `tb start` or goal run the board refused for want of the owner's word, with the prompt it read,
+-- so phrasings it misses can be fixed from what was really typed (`tb words misses`).
+CREATE TABLE IF NOT EXISTS start_misses(
+  id INTEGER PRIMARY KEY, at TEXT, ref TEXT, session_id TEXT, session_name TEXT, prompt TEXT);
+
 -- Every change of a task's status, for the Days page's timeline (`days.rs`). A trigger, so no
 -- path that moves a task can forget it. Every status change goes through `board::update_task`,
 -- which stamps `updated_at`.

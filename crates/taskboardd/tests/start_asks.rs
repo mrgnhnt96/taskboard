@@ -241,3 +241,36 @@ fn outside_work_hours_start_queues_it_and_the_notification_says_so() {
     let log = b.log(id);
     assert!(log.iter().any(|l| l.starts_with("Started by Sam from a notification; it starts when work hours open")), "{log:?}");
 }
+
+#[test]
+fn refused_starts_are_logged_with_the_prompt_and_terminal() {
+    let b = board();
+    let id = b.task("Add login");
+    let g = api::dispatch(&b.app, "POST", "/goals", &Query::new(), &json!({"name": "Settings", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    b.said("what do you think of the login page?");
+    b.tb_start(id).unwrap_err();
+    b.said("make the goal and maybe run it later");
+    b.tb_run(g).unwrap_err();
+    let limit = |n: &str| -> Query { [("limit".to_string(), n.to_string())].into_iter().collect() };
+    let v = api::dispatch(&b.app, "GET", "/start-misses", &limit("20"), &json!({})).unwrap();
+    let m = v["misses"].as_array().unwrap();
+    assert_eq!(m.len(), 2);
+    assert_eq!(m[0]["ref"], format!("G{g}"));
+    assert_eq!(m[0]["prompt"], "make the goal and maybe run it later");
+    assert_eq!(m[1]["ref"], format!("T{id}"));
+    assert_eq!(m[1]["prompt"], "what do you think of the login page?");
+    assert_eq!(m[1]["session_id"], "s1");
+    assert_eq!(m[1]["session_name"], "Term");
+    let v = api::dispatch(&b.app, "GET", "/start-misses", &limit("1"), &json!({})).unwrap();
+    assert_eq!(v["misses"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_start_on_the_owners_word_is_no_miss() {
+    let b = board();
+    let id = b.task("Add login");
+    b.said(&format!("start T{id}"));
+    b.tb_start(id).unwrap();
+    let v = api::dispatch(&b.app, "GET", "/start-misses", &Query::new(), &json!({})).unwrap();
+    assert_eq!(v["misses"], json!([]));
+}

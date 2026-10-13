@@ -123,6 +123,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["accounts", id]) => accounts::connect(app, id, body),
         ("GET", ["summary"]) => get_summary(app),
         ("GET", ["locks"]) => crate::locks::overview(app),
+        ("GET", ["start-misses"]) => start_misses(app, q(query, "limit", "20").parse().unwrap_or(20)),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
         ("GET", ["projects", "agents-merge"]) => Ok(projects::describe_agents_merge(app)),
@@ -1145,6 +1146,7 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
             let goal = board::find_goal(app, t.i("goal_id"))?
                 .map(|g| format!(" If they asked you to start its goal, run tb start {}.", rf("goal", g.id())))
                 .unwrap_or_default();
+            log_miss(app, &rf("task", id), &via)?;
             let asked = alerts::ask_start(app, "task", id, &via, json!({"mode": mode, "session_id": body["session_id"]}))?;
             return err(
                 403,
@@ -1158,6 +1160,37 @@ fn start(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         format!("Started by {} via {}", app.cfg.owner, board::session_name(app, Some(&via), None))
     };
     launch(app, id, &mode, body["session_id"].as_str(), &started, &via)
+}
+
+/// How many refused starts the board keeps for `tb words misses`.
+const MISSES_KEPT: i64 = 500;
+
+/// Logs that terminal `via` was refused starting `what` (T8, G2), with the latest prompt typed there: the
+/// one the start check read.
+fn log_miss(app: &App, what: &str, via: &str) -> Result<()> {
+    let prompt = app
+        .db
+        .q1(
+            "SELECT COALESCE(full, text) AS prompt FROM session_events WHERE session_id = ? AND kind = 'prompt' AND COALESCE(data, '') != ? ORDER BY id DESC LIMIT 1",
+            p![via, crate::startword::BOARD_PROMPT],
+        )?
+        .map(|r| r.st("prompt"));
+    app.db.x(
+        "INSERT INTO start_misses(at, ref, session_id, session_name, prompt) VALUES(?, ?, ?, ?, ?)",
+        p![now_iso(), what, via, board::session_name(app, Some(via), None), prompt],
+    )?;
+    app.db.x("DELETE FROM start_misses WHERE id <= (SELECT MAX(id) FROM start_misses) - ?", p![MISSES_KEPT])?;
+    Ok(())
+}
+
+/// The newest refused starts, newest first (`tb words misses`).
+fn start_misses(app: &App, limit: i64) -> Result<Value> {
+    let rows = app.db.q("SELECT at, ref, session_id, session_name, prompt FROM start_misses ORDER BY id DESC LIMIT ?", p![limit.clamp(1, MISSES_KEPT)])?;
+    let misses: Vec<Value> = rows
+        .iter()
+        .map(|r| json!({"at": r.s("at"), "ref": r.s("ref"), "session_id": r.s("session_id"), "session_name": r.s("session_name"), "prompt": r.s("prompt")}))
+        .collect();
+    Ok(json!({"misses": misses}))
 }
 
 /// What a refused `tb start` tells the agent about the owner: asked in a notification (don't try again), or how
@@ -2015,6 +2048,7 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
     } else {
         board::get_goal(app, id)?;
         if !crate::startword::granted(app, &via, id, true)? && crate::startword::owners_goal_word(app, &via, id)?.is_none() {
+            log_miss(app, &rf("goal", id), &via)?;
             let asked = alerts::ask_start(app, "goal", id, &via, json!({"now": now}))?;
             let how = if asked {
                 owner_asked(app, true, "run", "Start")
