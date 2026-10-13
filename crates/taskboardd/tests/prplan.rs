@@ -514,3 +514,104 @@ fn a_change_from_a_terminal_is_credited_to_that_terminal() {
     b.post(&format!("tasks/T{id}"), json!({"locks": ["cache"], "by_session": "s1", "who": "Sam"}));
     assert_eq!(log("Holds the lock cache while it runs"), vec!["Sam"], "--who wins over the terminal");
 }
+
+// ------------------------------------------------------------------ Jira moves on a shipped ticket (#233) and code review (#236)
+
+fn jira_board() -> Board {
+    new_board_with("", |c| {
+        c.jira.site = "acme.atlassian.net".into();
+        c.jira.project = "ABC".into();
+        c.jira.canceled = "Withdrawn".into();
+        c.jira.merged = "Ready for QA".into();
+        c.jira.in_review = "In Code Review".into();
+        c.reviewers.ask_stage = true;
+    })
+}
+
+fn jira_jobs(b: &Board, id: i64) -> Vec<Value> {
+    b.app.db.q("SELECT args FROM jobs WHERE kind = 'jira' AND task_id = ? ORDER BY id", p![id]).unwrap().iter().map(|r| serde_json::from_str(r.s("args").unwrap()).unwrap()).collect()
+}
+
+fn statuses(b: &Board, id: i64) -> Vec<String> {
+    jira_jobs(b, id).iter().filter_map(|a| a["status"].as_str().map(|s| s.to_string())).collect()
+}
+
+fn on_ticket(b: &Board, title: &str, extra: Value) -> i64 {
+    let id = b.task(title, extra);
+    board::update_task(&b.app, id, vec![("jira_key", json!("ABC-12"))]).unwrap();
+    id
+}
+
+#[test]
+fn a_follow_up_on_a_shipped_ticket_leaves_it_in_qa() {
+    let b = jira_board();
+    let shipped = on_ticket(&b, "Fix the tab bar", json!({}));
+    board::update_task(&b.app, shipped, vec![("pr_state", json!("MERGED")), ("status", json!("done"))]).unwrap();
+
+    let look = on_ticket(&b, "Answer QA", json!({"ships_pr": false}));
+    b.take(look);
+    assert!(statuses(&b, look).is_empty(), "a no-PR follow-up doesn't pull the ticket back");
+    b.report("tb.done", json!({"summary": "Answered QA's question"})).unwrap();
+    let jobs = jira_jobs(&b, look);
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert_eq!((jobs[0]["op"].as_str(), jobs[0]["status"].is_null()), (Some("comment"), true), "a --pr no task only comments");
+
+    let fix = on_ticket(&b, "Fix it again", json!({"ships_pr": true}));
+    b.take(fix);
+    assert_eq!(statuses(&b, fix), vec!["In Progress"], "a follow-up that ships a PR moves it");
+    b.report("tb.done", json!({"summary": "Nothing to change", "no_pr": "nothing to change", "no_evidence": "no UI change"})).unwrap();
+    assert_eq!(statuses(&b, fix).last().map(String::as_str), Some("Ready for QA"), "a shipped ticket goes back to QA, not Withdrawn");
+}
+
+#[test]
+fn no_pr_still_withdraws_a_ticket_that_never_shipped() {
+    let b = jira_board();
+    let id = on_ticket(&b, "Fix the flicker", json!({"ships_pr": true}));
+    b.take(id);
+    b.report("tb.done", json!({"summary": "Already fixed", "no_pr": "T3 fixed it", "no_evidence": "no UI change"})).unwrap();
+    assert_eq!(statuses(&b, id).last().map(String::as_str), Some("Withdrawn"));
+}
+
+#[test]
+fn the_ticket_moves_to_code_review_once_reviewers_are_asked() {
+    let b = jira_board();
+    let id = on_ticket(&b, "Fix the tab bar", json!({}));
+    b.take(id);
+    b.link(id, 7, "fix/tabs");
+    let before = statuses(&b, id).len();
+    let green = json!({"state": "OPEN", "head": "h1", "checks": [{"name": "build", "state": "passed"}], "failed": [], "running": 0,
+                       "comments": 0, "approvals": 0, "review_decision": "REVIEW_REQUIRED"});
+    let step = |phase: &str, flow: Vec<(&str, Value)>| {
+        board::update_task(&b.app, id, vec![("pr_phase", json!(phase))]).unwrap();
+        prflow::merge_flow(&b.app, id, flow).unwrap();
+        b.app.db.tx(|| prflow::step(&b.app, &b.row(id), &green)).unwrap();
+        b.row(id).st("pr_phase")
+    };
+    assert_eq!(step("checks", vec![("reviewed", json!("2026-10-12T00:00:00Z")), ("asked", Value::Null)]), "ask");
+    assert_eq!(statuses(&b, id).len(), before, "checks → ask queues nothing");
+    assert_eq!(step("ask", vec![("asked", json!({"at": "2026-10-12T00:00:00Z"}))]), "review");
+    assert_eq!(statuses(&b, id)[before..], ["In Code Review"], "ask → review queues In Code Review");
+    assert_eq!(step("review", vec![("asked", Value::Null)]), "ask");
+    assert_eq!(statuses(&b, id).len(), before + 1, "review → ask doesn't move it again");
+}
+
+#[test]
+fn done_at_the_ask_stage_only_comments() {
+    let b = jira_board();
+    let id = on_ticket(&b, "Fix the tab bar", json!({}));
+    b.take(id);
+    let pr = PrLink { host: "github".into(), repo: "acme/webapp".into(), num: 8, url: "https://github.com/acme/webapp/pull/8".into() };
+    b.app.db.tx(|| prflow::link_pr(&b.app, &b.row(id), &pr, "test")).unwrap();
+    board::update_task(&b.app, id, vec![("pr_phase", json!("ask")), ("pr_state", json!("OPEN"))]).unwrap();
+    let before = statuses(&b, id).len();
+    b.report("tb.done", json!({"summary": "Fixed it", "pr": "https://github.com/acme/webapp/pull/8"})).unwrap();
+    assert_eq!(statuses(&b, id).len(), before, "at ask the ticket only gets the summary");
+
+    let id2 = on_ticket(&b, "Fix the menu", json!({}));
+    b.take(id2);
+    let pr = PrLink { host: "github".into(), repo: "acme/webapp".into(), num: 9, url: "https://github.com/acme/webapp/pull/9".into() };
+    b.app.db.tx(|| prflow::link_pr(&b.app, &b.row(id2), &pr, "test")).unwrap();
+    board::update_task(&b.app, id2, vec![("pr_phase", json!("review")), ("pr_state", json!("OPEN"))]).unwrap();
+    b.report("tb.done", json!({"summary": "Fixed it", "pr": "https://github.com/acme/webapp/pull/9"})).unwrap();
+    assert_eq!(statuses(&b, id2).last().map(String::as_str), Some("In Code Review"));
+}

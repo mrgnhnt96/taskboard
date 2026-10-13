@@ -25,6 +25,8 @@ use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, t
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
 pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "merge", "waits"];
+/// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
+pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -1006,7 +1008,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         if !FINISHED.contains(&phase.as_str()) {
             board::log_event(app, t.id(), "PR", "status", &format!("PR #{}: {}", t.i0("pr_num"), label(&phase)))?;
         }
-        if IN_REVIEW.contains(&phase.as_str()) && !IN_REVIEW.contains(&old.as_str()) {
+        if IN_CODE_REVIEW.contains(&phase.as_str()) && !IN_CODE_REVIEW.contains(&old.as_str()) {
             let st = app.cfg.jira.in_review.clone();
             board::jira_keep_in_step(app, t, Some(&st), None)?;
         }
