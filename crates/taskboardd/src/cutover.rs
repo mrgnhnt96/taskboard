@@ -110,12 +110,22 @@ pub fn other_plugins(claude_dir: &Path) -> Vec<String> {
 
 /// The sentences for what's in the way, if anything (this board's own daemon on the port is fine).
 pub fn problems(host: &str, port: u16, path_var: &str, claude_dir: &Path) -> Vec<String> {
-    let mut out = vec![];
-    if let Listener::Other(what) = who_listens(host, port) {
-        out.push(format!(
+    port_taken(host, port).into_iter().chain(other_problems(path_var, claude_dir)).collect()
+}
+
+/// Another program holds the board's port (after a rollback, the old board): why, in one sentence.
+pub fn port_taken(host: &str, port: u16) -> Option<String> {
+    match who_listens(host, port) {
+        Listener::Other(what) => Some(format!(
             "Something else is listening on {host}:{port}: {what}. Stop it (for the old board: launchctl bootout its LaunchAgent), or give this board another port in config.toml."
-        ));
+        )),
+        _ => None,
     }
+}
+
+/// What's in the way besides the port: another `tb` first on the PATH, another task-board plugin.
+pub fn other_problems(path_var: &str, claude_dir: &Path) -> Vec<String> {
+    let mut out = vec![];
     if let Some(tb) = foreign_tb(path_var) {
         out.push(format!("The first tb on the PATH is {}, which isn't this board's, so agents would report to another board. Remove it or put ~/.local/bin first.", tb.display()));
     }

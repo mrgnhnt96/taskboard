@@ -8,8 +8,11 @@
 //! - **Dev** (`TASKBOARD_DEV=1`, or not inside a bundle, e.g. `cargo run`): nothing is
 //!   registered; run `taskboardd serve` yourself (or use `TASKBOARD_BACKEND=fake`).
 //!
-//! `taskboard-app --uninstall` unregisters the agent and removes the link (used by
-//! `scripts/dev-app.sh --uninstall`).
+//! While another program holds the board's port (a rollback to the old board), neither happens: the
+//! banner says why, so a relaunch doesn't undo the rollback.
+//!
+//! `taskboard-app --uninstall` unregisters the agent, removes the link and withdraws the board's alert
+//! notifications (used by `scripts/dev-app.sh --uninstall`).
 //!
 //! Everything here blocks; `start` runs it on its own thread and publishes the result in
 //! [`status`] for the banner.
@@ -27,6 +30,9 @@ pub enum LoginItem {
     RequiresApproval,
     NotRegistered,
     Failed(String),
+    /// Another board holds the port (a rollback to the old board), so this launch neither registered the
+    /// daemon, which couldn't bind, nor linked `tb`.
+    Blocked,
 }
 
 static STATUS: Mutex<LoginItem> = Mutex::new(LoginItem::Checking);
@@ -48,15 +54,53 @@ fn agent_path() -> String {
     parts.join(":")
 }
 
-/// Looks for another board in the way (`taskboardd::cutover`).
-fn check_in_the_way() {
-    let Ok(cfg) = taskboardd::config::Config::load() else { return };
-    let found = taskboardd::cutover::problems(&cfg.host, cfg.port, &agent_path(), &crate::hooks::claude_dir());
+/// Looks for another board in the way (`taskboardd::cutover`). True when another program holds the
+/// board's port.
+fn check_in_the_way() -> bool {
+    let Ok(cfg) = taskboardd::config::Config::load() else { return false };
+    let port = taskboardd::cutover::port_taken(&cfg.host, cfg.port);
+    let taken = port.is_some();
+    let found: Vec<String> = port.into_iter().chain(taskboardd::cutover::other_problems(&agent_path(), &crate::hooks::claude_dir())).collect();
     for p in &found {
         eprintln!("taskboard-app: {p}");
     }
     if let Ok(mut g) = IN_THE_WAY.lock() {
         *g = found;
+    }
+    taken
+}
+
+/// What this launch does about the daemon and `tb`: nothing while another board holds the port, so a
+/// rollback to the old board stays rolled back (its daemon couldn't bind, and agents would run this
+/// board's `tb` against the old one).
+fn held_back(port_taken: bool) -> Option<LoginItem> {
+    port_taken.then_some(LoginItem::Blocked)
+}
+
+/// The ids of the board's alert notifications Midna still shows, from `notify.history`.
+fn alert_notifications(history: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<String> = history["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| i["withdrawn"] != true)
+        .filter_map(|i| i["notification"]["id"].as_str())
+        .filter(|id| id.starts_with("taskboard-alert-"))
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Takes the board's alert notifications away, so clicking an old one (`taskboard://…`) can't relaunch
+/// the app and undo an uninstall.
+fn withdraw_alerts() {
+    let Ok(cfg) = taskboardd::config::Config::load() else { return };
+    let params = serde_json::json!({"limit": 1000});
+    let Ok(history) = taskboardd::midna::call_exe(&cfg.midna, "notify.history", &params, 30.0) else { return };
+    for id in alert_notifications(&history) {
+        let _ = taskboardd::midna::call_exe(&cfg.midna, "notify.withdraw", &serde_json::json!({"id": id}), 30.0);
     }
 }
 
@@ -229,6 +273,7 @@ pub fn headless(args: &[String]) -> Option<i32> {
             if std::fs::read_link(&link).is_ok_and(|t| t.starts_with(&bundle)) {
                 let _ = std::fs::remove_file(&link);
             }
+            withdraw_alerts();
             Some(code)
         }
         Some("--version") => {
@@ -251,7 +296,10 @@ pub fn start(backend: &str) {
     std::thread::Builder::new()
         .name("install".into())
         .spawn(move || {
-            check_in_the_way();
+            if let Some(held) = held_back(check_in_the_way()) {
+                set_status(held);
+                return;
+            }
             set_status(register(&bundle));
             // Taskboard Dev leaves the link to the real app (TASKBOARD_NO_TB_LINK in its LSEnvironment).
             if std::env::var_os("TASKBOARD_NO_TB_LINK").is_some() {
@@ -278,6 +326,26 @@ mod tests {
         assert!(stale_registration(retrying));
         assert!(!stale_registration(running));
         assert!(!stale_registration(exited), "an ordinary crash isn't a registration problem");
+    }
+
+    #[test]
+    fn another_board_on_the_port_holds_back_the_daemon_and_the_link() {
+        assert_eq!(held_back(true), Some(LoginItem::Blocked));
+        assert_eq!(held_back(false), None);
+    }
+
+    #[test]
+    fn uninstall_withdraws_only_the_board_s_alerts_still_showing() {
+        let history = serde_json::json!({"items": [
+            {"notification": {"id": "taskboard-alert-a1", "category": "board"}},
+            {"notification": {"id": "taskboard-alert-a1", "category": "board"}},
+            {"withdrawn": true, "notification": {"id": "taskboard-alert-old"}},
+            {"notification": {"id": "other-thing"}},
+            {"notification": {"category": "turn_done"}},
+            {"notification": {"id": "taskboard-alert-b2"}},
+        ]});
+        assert_eq!(alert_notifications(&history), vec!["taskboard-alert-a1", "taskboard-alert-b2"]);
+        assert!(alert_notifications(&serde_json::json!(null)).is_empty());
     }
 
     #[test]

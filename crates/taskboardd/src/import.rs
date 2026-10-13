@@ -247,7 +247,11 @@ pub fn import(app: &App, src: &Path) -> Result<Report> {
 pub fn import_with(app: &App, src: &Path, opts: &Options) -> Result<Report> {
     let have = app.db.count("SELECT (SELECT COUNT(*) FROM tasks) + (SELECT COUNT(*) FROM goals) + (SELECT COUNT(*) FROM issues)", vec![])?;
     if have > 0 {
-        return err(409, format!("This board already has tasks, goals or backlog issues, so the old numbers would clash. Import into a fresh data folder (taskboardd import --data <empty folder> {}).", src.display()));
+        return err(409, format!(
+            "This board already has tasks, goals or backlog issues, so the old numbers would clash. Moving over again after a rollback? Stop this board, move {} (with its -wal and -shm) aside and keep config.toml, then import again. Or import into a fresh data folder (taskboardd import --data <empty folder> {}).",
+            app.cfg.db_path().display(),
+            src.display()
+        ));
     }
     let (dir, copy) = scratch_copy(src)?;
     let out = (|| {
