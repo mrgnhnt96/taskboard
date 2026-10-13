@@ -307,6 +307,8 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     sync(app, &project, repo.as_deref(), pr.as_ref(), false)?;
     let me = selves(app, repo.as_deref(), rec);
     let skip: Vec<String> = skip.iter().map(|s| s.to_lowercase()).collect();
+    // Slack is checked only while the ask could go out, by the same rule as the rest of the ask.
+    let open = crate::hours::goal_open(app, crate::board::find_goal(app, t.i("goal_id"))?.as_ref());
     let mut cands: Vec<Pick> = vec![];
     for r in reviewers::roster(app, &project)? {
         let Some((user, due, weight)) = usable(app, &r, &me)? else { continue };
@@ -358,7 +360,7 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
         seen.push(id);
         // Someone out on Slack takes no place (checked only for those who'd take one).
         if let Some(r) = main_row(id) {
-            if crate::presence::reachable(app, r)? {
+            if crate::presence::reachable(app, r, open)? {
                 mains.push(id);
             }
         }
@@ -374,14 +376,14 @@ pub fn pick(app: &App, t: &Row, rec: &Value, n: usize, skip: &[String]) -> Resul
     let have_main = on_pr.iter().any(|(r, _)| mains.contains(&r.id()));
     if out.len() < n && !have_main {
         let pool: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| mains.contains(&c.reviewer.id())).map(|(i, _)| i).collect();
-        if let Some(i) = crate::presence::best(app, &mut cands, &pool)? {
+        if let Some(i) = crate::presence::best(app, &mut cands, &pool, open)? {
             let why = if cands[i].reviewer.b("pinned") { "pinned" } else { "main" };
             take(&mut out, &mut cands, i, why);
         }
     }
     while out.len() < n && !cands.is_empty() {
         let pool: Vec<usize> = (0..cands.len()).collect();
-        match crate::presence::best(app, &mut cands, &pool)? {
+        match crate::presence::best(app, &mut cands, &pool, open)? {
             Some(i) => take(&mut out, &mut cands, i, "turn"),
             None => break,
         }

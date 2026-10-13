@@ -1123,7 +1123,8 @@ marks an ask answered when its reviewer has reviewed (`answer`, `work_mins`: min
 minute with the hours off), and closed when the PR merged or closed first. The sweep runs every `[intervals] reviews`
 seconds (60) on its own timer, whether or not the PRs are polled: with a healthy feed the poll rests, the sweep doesn't.
 
-**Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). During the board's work hours the
+**Availability** (`presence.rs`, optional: `[reviewers] availability = "slack"`). While the PR's goal is open (the
+same rule as the rest of the ask: work hours, or a goal started now after hours, and the 5-hour usage not out) the
 picker checks candidates, in turn order and at most `pick_tries` per pick, with Taskboard's Slack account: tiers
 online (active, or posted today, or away before `quiet_from` where they are) > quiet > off (outside
 `local_start`–`local_end` in their Slack time zone, or a weekend). A status matching `out_pattern` is out and never
@@ -1132,7 +1133,7 @@ name, then by their host login or the part of an email (or a noreply email's log
 Slack's emails and handles (`users.list`). Someone none of those finds leaves the roster ("not on Slack") with
 `drop_not_on_slack`; when Slack refuses the user list, or a name or prefix fits more than one person, they're
 unknown and nobody is dropped.
-It takes the first one online, else the best tier it saw. Outside work hours, or without a provider, nobody is
+It takes the first one online, else the best tier it saw. While the goal isn't open, or without a provider, nobody is
 checked, but an out status seen within `out_keeps_hours` still keeps them from being picked. The client only
 calls `users.lookupByEmail`, `users.list`, `users.info`, `users.getPresence` and `search.messages`: the board never
 messages anyone.
