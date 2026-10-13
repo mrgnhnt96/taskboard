@@ -442,10 +442,20 @@ static NUMBERED_REF_RE: Lazy<Regex> = Lazy::new(|| {
 /// One number of a list after [`NUMBERED_REF_RE`]'s first.
 static LIST_NUMBER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?P<hash>#?)(?P<n>\d+)\b").unwrap());
 
-/// `text` with tasks and goals named by number read as their refs ([`NUMBERED_REF_RE`]).
+/// A ref as dictation writes it, the letter apart from its number ("T-104", "T–104", "T 104", "T #104",
+/// "g-3"): read as the ref (T104, G3).
+static DICTATED_REF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?P<l>[tg])(?:[ \t]?[-‐‑–—−][ \t]?|[ \t]*#[ \t]*|[ \t]+)(?P<n>\d+)\b").unwrap());
+/// The word "number" between "task" or "goal" and its number ("task number 104", "goal no. 3").
+static NUMBER_WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(task|goal)(s?)\s+(?:number|num\.?|no\.|nr\.?)\s*(#?\d)").unwrap());
+
+/// `text` with tasks and goals named by number read as their refs ([`NUMBERED_REF_RE`]), dictated refs
+/// too ([`DICTATED_REF_RE`], [`NUMBER_WORD_RE`]).
 fn numbered_refs(text: &str) -> String {
+    let text = DICTATED_REF_RE.replace_all(text, |c: &regex::Captures| format!("{}{}", c["l"].to_uppercase(), &c["n"]));
+    let text = NUMBER_WORD_RE.replace_all(&text, "$1$2 $3");
     NUMBERED_REF_RE
-        .replace_all(text, |c: &regex::Captures| {
+        .replace_all(&text, |c: &regex::Captures| {
             let letter = if c["word"].eq_ignore_ascii_case("task") { "T" } else { "G" };
             let plural = !c["s"].is_empty();
             // "task 45" reads as "task T45"; "tasks 45 and 46" as "T45 and T46".
@@ -3385,6 +3395,30 @@ mod tests {
             assert!(goal(no).is_empty(), "{no}");
         }
         assert!(!says_start("start goal 3"), "a goal ask is no word for a task");
+    }
+
+    #[test]
+    fn a_dictated_ref_is_the_ref() {
+        for yes in ["start T-104", "start T–104", "start T—104", "start T 104", "start T #104", "start T#104", "start t104.", "Start T-104.", "start task number 104", "start task no. 104", "start task T-104"] {
+            assert_eq!(asks(yes), vec![Ask::Named(vec![104])], "{yes}");
+        }
+        assert_eq!(asks("start T-104 and T-105"), vec![Ask::Named(vec![104, 105])]);
+        assert_eq!(asks("start tasks number 104 and 105"), vec![Ask::Named(vec![104, 105])]);
+        for no in ["don't start T-104", "start T 104 tomorrow", "did you start T-104?", "start task no 104", "start 104"] {
+            assert!(!asks(no).contains(&Ask::Named(vec![104])), "{no}");
+        }
+        assert!(read("don't start T-104").holds(104));
+        // A letter that's part of a word, or a time zone, is no ref.
+        assert!(named_tasks(&owners_text("at 5 we meet, GMT-5, UTC-8, the T-shirt")).is_empty());
+
+        let goal = |t: &str| read_of(&GOALS, t).asks;
+        for yes in ["run G-3", "run G 3", "run G #3", "run g3.", "run goal number 3"] {
+            assert_eq!(goal(yes), vec![Ask::Named(vec![3])], "{yes}");
+        }
+        assert!(goal("don't run G-3").is_empty());
+
+        assert_eq!(merge_word_in(&prompts(&["land T-95"], None), 95, 194, false), Some(0));
+        assert_eq!(merge_word_in(&prompts(&["don't land T-95"], None), 95, 194, false), None);
     }
 
     #[test]
