@@ -54,6 +54,7 @@
 //! | `verdict` | `ours`, `not_ours`, `unsure`, or NULL before it's decided |
 //! | `verdict_by` | `commits` (no suspect is the owner's), `claude`, `fallback`, or the person who overrode it |
 //! | `verdict_why`, `verdict_at` | the reason, and when |
+//! | `verdict_title` | the cause in a few plain words (80 characters at most), from the fault check or the person; NULL when nobody gave one |
 //! | `task_id` | the fix task (`ours` only) |
 //! | `proof` | JSON list of the links a person gave with `not-ours` |
 //! | `escalated_at` | when the urgent alert was raised again after the fix task finished |
@@ -86,7 +87,11 @@ CREATE INDEX IF NOT EXISTS breaks_project ON breaks(project, state);
 "#;
 
 /// Columns added to `breaks` since it was made: (table, column, type).
-pub const ADDED: &[(&str, &str, &str)] = &[("breaks", "proof", "TEXT"), ("breaks", "queued_at", "TEXT"), ("breaks", "seen_at", "TEXT")];
+pub const ADDED: &[(&str, &str, &str)] =
+    &[("breaks", "proof", "TEXT"), ("breaks", "queued_at", "TEXT"), ("breaks", "seen_at", "TEXT"), ("breaks", "verdict_title", "TEXT")];
+
+/// A break's cause title is at most this long, as `tb pr not-ours --title` is.
+pub const TITLE_MAX: usize = crate::prcmds::TITLE_MAX;
 
 /// At most this many suspects are kept for one break.
 const SUSPECTS_MAX: usize = 100;
@@ -723,23 +728,36 @@ pub fn old_route(app: &App, method: &str, rest: &[&str], limit: i64, body: &Valu
     }
 }
 
-/// (verdict, by, why).
-fn decide(app: &App, b: &Row) -> (String, String, String) {
+/// A verdict as it's decided: who decided it, why, and the cause in a few words when they gave one.
+struct Verdict {
+    verdict: String,
+    by: String,
+    why: String,
+    title: Option<String>,
+}
+
+fn decide(app: &App, b: &Row) -> Verdict {
     let suspects = jloads_arr(b.s("suspects"));
     let ours: Vec<&Value> = suspects.iter().filter(|s| s["ours"] == true).collect();
+    let made = |v: &str, by: &str, why: String| Verdict { verdict: v.into(), by: by.into(), why, title: None };
     if ours.is_empty() {
-        return ("not_ours".into(), "commits".into(), format!("None of the suspect commits ({}) are {}.", shas(&suspects), app.cfg.owners()));
+        return made("not_ours", "commits", format!("None of the suspect commits ({}) are {}.", shas(&suspects), app.cfg.owners()));
     }
     if app.cfg.master.fault_check {
-        if let Some((v, why)) = ask_claude(app, b) {
-            return (v, "claude".into(), why);
+        if let Some(v) = ask_claude(app, b) {
+            return v;
         }
     }
     if ours.len() == suspects.len() {
-        ("ours".into(), "fallback".into(), format!("Every suspect commit ({}) is {}.", shas(&suspects), app.cfg.owners()))
+        made("ours", "fallback", format!("Every suspect commit ({}) is {}.", shas(&suspects), app.cfg.owners()))
     } else {
-        ("unsure".into(), "fallback".into(), format!("{} of the suspect commits ({}) are {}, and the others aren't.", ours.len(), shas(&suspects), app.cfg.owners()))
+        made("unsure", "fallback", format!("{} of the suspect commits ({}) are {}, and the others aren't.", ours.len(), shas(&suspects), app.cfg.owners()))
     }
+}
+
+/// A cause title as it's kept: one line, NULL when empty.
+fn title_of(raw: &str) -> Option<String> {
+    Some(one_line(raw, TITLE_MAX)).filter(|t| !t.is_empty())
 }
 
 fn shas(list: &[Value]) -> String {
@@ -747,8 +765,8 @@ fn shas(list: &[Value]) -> String {
 }
 
 fn verdict_schema() -> Value {
-    json!({"type": "object", "required": ["verdict", "why"], "properties": {
-        "verdict": {"enum": ["ours", "not_ours", "unsure"]}, "why": {"type": "string"}}})
+    json!({"type": "object", "required": ["verdict", "why", "title"], "properties": {
+        "verdict": {"enum": ["ours", "not_ours", "unsure"]}, "why": {"type": "string"}, "title": {"type": "string", "maxLength": TITLE_MAX}}})
 }
 
 fn fault_prompt(app: &App, b: &Row) -> String {
@@ -787,7 +805,8 @@ fn fault_prompt(app: &App, b: &Row) -> String {
         "The {branch} branch of {repo} went red. Decide whether it's {owner}'s to fix: whether one of {owner}'s commits \
          among the suspects broke it.\n- ours: the failure clearly comes from a change in one of {owner}'s commits.\n- not_ours: \
          it clearly comes from someone else's commit, or from the CI itself (a flaky test, an outage).\n- unsure: you can't \
-         tell. Don't guess.\nGive the reason in one or two plain sentences.\n\nFailing checks:\n{}\n\nSuspect commits, newest \
+         tell. Don't guess.\nGive the reason in one or two plain sentences, and a title: the cause in a few plain words \
+         (80 characters at most, for example \"Android NDK download failed\").\n\nFailing checks:\n{}\n\nSuspect commits, newest \
          first:\n{}",
         failing.join("\n"),
         suspects.join("\n"),
@@ -796,8 +815,8 @@ fn fault_prompt(app: &App, b: &Row) -> String {
     )
 }
 
-/// Asks a headless `claude -p` for the verdict: (verdict, why), or None when it can't be asked.
-fn ask_claude(app: &App, b: &Row) -> Option<(String, String)> {
+/// Asks a headless `claude -p` for the verdict, or None when it can't be asked.
+fn ask_claude(app: &App, b: &Row) -> Option<Verdict> {
     let claude = proc::which(&app.cfg.claude)?;
     let m = &app.cfg.master;
     let args: Vec<String> = vec![
@@ -822,12 +841,12 @@ fn ask_claude(app: &App, b: &Row) -> Option<(String, String)> {
     let d: Value = serde_json::from_str(out.stdout.trim()).ok()?;
     let v = d.get("structured_output").cloned().or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))?;
     let verdict = v["verdict"].as_str().filter(|x| matches!(*x, "ours" | "not_ours" | "unsure"))?.to_string();
-    Some((verdict, one_line(v["why"].as_str().unwrap_or(""), 500)))
+    Some(Verdict { verdict, by: "claude".into(), why: one_line(v["why"].as_str().unwrap_or(""), 500), title: title_of(v["title"].as_str().unwrap_or("")) })
 }
 
 fn decide_and_act(app: &App, b: &Row) -> Result<()> {
-    let (v, by, why) = decide(app, b);
-    let made = app.db.tx(|| set_verdict(app, b, &v, &by, &why, None))?;
+    let v = decide(app, b);
+    let made = app.db.tx(|| set_verdict(app, b, &v, None))?;
     start_fix(app, made)
 }
 
@@ -857,9 +876,10 @@ fn start_fix(app: &App, made: Option<i64>) -> Result<()> {
 
 /// Records a verdict and acts on it: `ours` gets the fix task and the urgent alert; anything else
 /// takes the alert down. The fix task, when it made one.
-fn set_verdict(app: &App, b: &Row, verdict: &str, by: &str, why: &str, proof: Option<&[String]>) -> Result<Option<i64>> {
+fn set_verdict(app: &App, b: &Row, v: &Verdict, proof: Option<&[String]>) -> Result<Option<i64>> {
+    let (verdict, by, why) = (v.verdict.as_str(), v.by.as_str(), v.why.as_str());
     app.db.update("breaks", &json!(b.id()), fields!["verdict" => verdict, "verdict_by" => by, "verdict_why" => why, "verdict_at" => now_iso(),
-                                                   "proof" => proof.map(|p| jdumps(&json!(p)))])?;
+                                                   "verdict_title" => v.title, "proof" => proof.map(|p| jdumps(&json!(p)))])?;
     let b = get(app, b.id())?;
     if let Some(tid) = b.i("task_id") {
         board::log_event(app, tid, board::BOARD, "status", &format!("{}: {} ({by}): {why}", bref(b.id()), verdict_label(verdict)))?;
@@ -988,11 +1008,12 @@ fn alert_key(id: i64) -> String {
 
 fn alert(app: &App, b: &Row, tid: i64, again: bool) -> Result<()> {
     let text = format!(
-        "{} is red on {}{}: {} fails. It's yours to fix: {} is on it.",
+        "{} is red on {}{}: {} fails{}. It's yours to fix: {} is on it.",
         b.st("branch"),
         b.st("project"),
         if again { ", still" } else { "" },
         jloads_arr(b.s("checks")).iter().filter_map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
+        b.s("verdict_title").map(|t| format!(" ({t})")).unwrap_or_default(),
         rf("task", tid)
     );
     if again {
@@ -1033,7 +1054,14 @@ fn fix_task(app: &App, b: &Row) -> Value {
         .map(|s| format!("- {} {} ({})", s["sha"].as_str().unwrap_or("").chars().take(10).collect::<String>(), s["message"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or("")))
         .collect();
     detail.push(format!("Suspect commits:\n{}", suspects.join("\n")));
-    json!({"title": short(&format!("Fix red {} on {}: {}", b.st("branch"), b.st("project"), checks.join(", ")), 80), "detail": detail.join("\n\n"),
+    let title = match b.s("verdict_title") {
+        Some(cause) => {
+            let pipeline = ev["build"]["pipeline"].as_str().filter(|p| !p.is_empty()).map(|p| p.to_string()).unwrap_or_else(|| checks.join(", "));
+            format!("Fix master {pipeline}: {cause}")
+        }
+        None => format!("Fix red {} on {}: {}", b.st("branch"), b.st("project"), checks.join(", ")),
+    };
+    json!({"title": short(&title, 80), "detail": detail.join("\n\n"),
            "project": b.st("project"), "priority": "high", "pickup": if app.cfg.master.start_fix { "new" } else { "queue" },
            "jira": {"mode": if app.cfg.master.fix_ticket { "create" } else { "none" }},
            "origin": {"from": format!("{} ({} is red)", bref(b.id()), b.st("branch")), "by": board::BOARD}})
@@ -1097,7 +1125,8 @@ pub fn dict(app: &App, b: &Row) -> Result<Value> {
         "state": b.v("state"), "head": b.v("head"), "last_head": b.v("last_head"), "green_head": b.v("green_head"), "fixed_head": b.v("fixed_head"),
         "checks": jloads_arr(b.s("checks")), "evidence": serde_json::from_str::<Value>(b.s("evidence").unwrap_or("null")).unwrap_or(Value::Null),
         "suspects": jloads_arr(b.s("suspects")), "verdict": b.v("verdict"), "verdict_label": b.s("verdict").map(verdict_label),
-        "verdict_by": b.v("verdict_by"), "verdict_why": b.v("verdict_why"), "verdict_at": b.v("verdict_at"), "proof": jloads_arr(b.s("proof")), "task": task,
+        "verdict_by": b.v("verdict_by"), "verdict_why": b.v("verdict_why"), "verdict_title": b.v("verdict_title"), "verdict_at": b.v("verdict_at"),
+        "proof": jloads_arr(b.s("proof")), "task": task,
         "opened_at": b.v("opened_at"), "closed_at": b.v("closed_at"), "checked_at": b.v("checked_at"),
     }))
 }
@@ -1111,14 +1140,20 @@ pub fn banner(app: &App) -> Result<Vec<Value>> {
     Ok(out)
 }
 
-/// `GET /master` (`tb master`): the open breaks, then the last ten closed ones, and what's watched.
-pub fn list(app: &App) -> Result<Value> {
+/// How many breaks `GET /master` lists unless it's told.
+pub const LIST_LIMIT: i64 = 20;
+
+/// `GET /master?open=1&limit=20` (`tb master [--open] [--limit N]`): the open breaks, then the closed
+/// ones (at most ten, none with `open`), each newest first, at most `limit` in all; and what's watched.
+pub fn list(app: &App, open_only: bool, limit: i64) -> Result<Value> {
+    let limit = limit.clamp(1, 500);
     let mut open = vec![];
-    for b in app.db.q("SELECT * FROM breaks WHERE state = 'open' ORDER BY id", p![])? {
+    for b in app.db.q("SELECT * FROM breaks WHERE state = 'open' ORDER BY id DESC LIMIT ?", p![limit])? {
         open.push(dict(app, &b)?);
     }
+    let room = if open_only { 0 } else { (limit - open.len() as i64).min(10) };
     let mut closed = vec![];
-    for b in app.db.q("SELECT * FROM breaks WHERE state = 'closed' ORDER BY id DESC LIMIT 10", p![])? {
+    for b in app.db.q("SELECT * FROM breaks WHERE state = 'closed' ORDER BY id DESC LIMIT ?", p![room])? {
         closed.push(dict(app, &b)?);
     }
     let w = watch_state(app);
@@ -1159,19 +1194,24 @@ pub fn override_verdict(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let who = { let w = one_line(&body_str(body, "who"), 80); if w.is_empty() { app.cfg.owner.clone() } else { w } };
     let why = { let w = one_line(&body_str(body, "why"), 300); if w.is_empty() { format!("{who} said so.") } else { w } };
-    let made = app.db.tx(|| set_verdict(app, &b, &v, &who, &why, (!proof.is_empty()).then_some(proof.as_slice())))?;
+    let raw_title = one_line(&body_str(body, "title"), 1000);
+    if raw_title.chars().count() > TITLE_MAX {
+        return err(400, format!("The title is {} characters: name the cause in {TITLE_MAX} at most.", raw_title.chars().count()));
+    }
+    let verdict = Verdict { verdict: v, by: who, why, title: title_of(&raw_title) };
+    let made = app.db.tx(|| set_verdict(app, &b, &verdict, (!proof.is_empty()).then_some(proof.as_slice())))?;
     start_fix(app, made)?;
     dict(app, &get(app, id)?)
 }
 
-pub fn route(app: &App, method: &str, rest: &[&str], body: &Value) -> Result<Value> {
+pub fn route(app: &App, method: &str, rest: &[&str], body: &Value, open_only: bool, limit: i64) -> Result<Value> {
     match (method, rest) {
-        ("GET", []) => list(app),
+        ("GET", []) => list(app, open_only, limit),
         ("POST", ["check"]) => {
             for (name, p) in app.cfg.master.projects.clone() {
                 check_project(app, &name, &p)?;
             }
-            list(app)
+            list(app, open_only, limit)
         }
         ("GET", [id]) => dict(app, &get(app, need_ref(&json!(id), "break")?)?),
         ("POST", [id]) => override_verdict(app, need_ref(&json!(id), "break")?, body),

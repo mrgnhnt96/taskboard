@@ -386,6 +386,15 @@ enum Cmd {
         /// A link that shows it isn't yours (a build, an issue); not-ours needs one. Repeat for more.
         #[arg(long)]
         proof: Vec<String>,
+        /// The cause in a few plain words, 80 characters at most (with a verdict): shown on the break's card and alert
+        #[arg(long)]
+        title: Option<String>,
+        /// List only the breaks whose branch is still red
+        #[arg(long)]
+        open: bool,
+        /// List at most this many breaks, newest first
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
     },
     /// Which accounts are connected (GitHub, Bitbucket, Slack); connect them in Taskboard ▸ Settings
     Accounts,
@@ -3182,7 +3191,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::PrBuilds { action } => pr_builds_cmd(c, action),
-        Cmd::Master { args, why, who, proof } => master_cmd(c, args, why, who, proof),
+        Cmd::Master { args, why, who, proof, title, open, limit } => master_cmd(c, args, Verdict { why, who, proof, title }, open, limit),
         Cmd::Bits { goal, t } => {
             let mut path = "/bits".to_string();
             if let Some(g) = goal {
@@ -4455,6 +4464,9 @@ fn break_line(m: &Value) -> String {
         if m["state"] == "open" { "fails" } else { "failed" },
         checks.join(", ")
     );
+    if let Some(cause) = m["verdict_title"].as_str() {
+        line += &format!(" · {cause}");
+    }
     line += &format!(" · {}", m["verdict_label"].as_str().unwrap_or("not decided yet"));
     if let Some(t) = m["task"]["ref"].as_str() {
         line += &format!(" · {t}");
@@ -4499,18 +4511,26 @@ fn break_detail(m: &Value) -> String {
     lines.join("\n")
 }
 
-fn master_cmd(c: &Ctx, args: Vec<String>, why: Option<String>, who: Option<String>, proof: Vec<String>) -> Result<i32, String> {
+/// What `tb master M3 ours|not-ours|unsure` sends with the verdict.
+struct Verdict {
+    why: Option<String>,
+    who: Option<String>,
+    proof: Vec<String>,
+    title: Option<String>,
+}
+
+fn master_cmd(c: &Ctx, args: Vec<String>, verdict: Verdict, open_only: bool, limit: i64) -> Result<i32, String> {
     let (refs, words): (Vec<String>, Vec<String>) = args.into_iter().partition(|a| break_ref(a).is_some());
     let r = refs.first().and_then(|r| break_ref(r));
     let word = words.first().map(|w| w.to_lowercase());
     match (r, word.as_deref()) {
         (None, None) => {
-            let v = c.call("GET", "/master", None)?;
+            let v = c.call("GET", &format!("/master?limit={limit}{}", if open_only { "&open=1" } else { "" }), None)?;
             let open = v["open"].as_array().cloned().unwrap_or_default();
             if open.is_empty() {
                 out("No default branch is red.");
             }
-            for m in open.iter().chain(v["closed"].as_array().into_iter().flatten().take(3)) {
+            for m in open.iter().chain(v["closed"].as_array().into_iter().flatten()) {
                 out(&break_line(m));
             }
             for w in v["watched"].as_array().cloned().unwrap_or_default() {
@@ -4525,7 +4545,8 @@ fn master_cmd(c: &Ctx, args: Vec<String>, why: Option<String>, who: Option<Strin
         }
         (Some(r), None | Some("show")) => out(&break_detail(&c.call("GET", &format!("/master/{r}"), None)?)),
         (Some(r), Some(v @ ("ours" | "not-ours" | "not_ours" | "unsure"))) => {
-            let m = c.call("POST", &format!("/master/{r}"), Some(json!({"verdict": v, "why": why, "who": who, "proof": proof})))?;
+            let Verdict { why, who, proof, title } = verdict;
+            let m = c.call("POST", &format!("/master/{r}"), Some(json!({"verdict": v, "why": why, "who": who, "proof": proof, "title": title})))?;
             out(&break_line(&m));
         }
         (None, Some("show" | "ours" | "not-ours" | "not_ours" | "unsure")) => return Err("name the break, for example: tb master M3 ours".into()),
@@ -4843,6 +4864,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "master"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky", "--proof", "https://ci/1", "--proof", "https://ci/2"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "master", "show", "M3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "master", "M3", "not-ours", "--why", "flaky", "--title", "Android NDK download failed", "--proof", "https://ci/1"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "master", "--open", "--limit", "5"]).is_ok());
+        let line = break_line(&json!({"ref": "M3", "project": "webapp", "branch": "main", "state": "open", "checks": ["build"],
+                                      "verdict_title": "Android NDK download failed", "verdict_label": "not yours"}));
+        assert_eq!(line, "M3 · webapp main fails build · Android NDK download failed · not yours");
         assert_eq!(break_ref("m4").as_deref(), Some("M4"));
         assert_eq!(break_ref("ours"), None);
         assert!(Cli::try_parse_from(["tb", "feed", "heartbeat"]).is_ok());
