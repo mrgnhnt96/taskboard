@@ -242,8 +242,13 @@ A goal with `finished_at` (or all tasks done and no open PRs) shows as finished;
   "attachments": [attachment],      // attached to the goal itself
   "bits": {"list": [bit], "backend": int, "made": int, "waiting": int, "tool": str},
                                     // its bits (linked to it or to a task counted in it); "N of M created" counts backend ones
-  "devices": {"needs": [{"tag", "n"}], "needs_text": "2 android", "devices": [device], "lent_here": int} | null
-                                    // what each task asks for (unless it asks for its own) and the pool; null with no pool and no asks
+  "devices": {"needs": [{"tag", "n"}], "needs_text": "2 android", "devices": [device], "lent_here": int, "pool": int, "empty_why": str | null} | null
+                                    // what each task asks for (unless it asks for its own) and the pool; null with no pool and no asks.
+                                    // Each device also has "in_pool", "purpose", "reserved" (in this goal) and
+                                    // "uses": {"has", "can", "had"}: the goal's tasks as [{ref, n, title}] (n: its place in the goal)
+                                    // that hold it now, can get it when they start (not done, and it meets one of their needs),
+                                    // or held it before; each task once per device. "empty_why" says why the goal's own pool
+                                    // is empty: the device pool is empty, or none picked yet (tasks use any free device)
 }
 ```
 The UI also accepts `{"goal": {...}, ...rest}` and merges them, but a flat object is preferred.
@@ -1057,8 +1062,8 @@ goals: [{goal, purpose, reserved}], reserved_for: "G3"|"G3 and G4"|null}` (`goal
 | `POST /devices` | `{name, tags?, kind?, target?, start_cmd?, stop_cmd?, focus?, note?}` | Add one. Names and tags are lowercase letters, digits, `.`, `_`, `-` (names also `:`). 409 when the name is taken. |
 | `GET /devices/:name` | | The device. |
 | `POST /devices/:name` | `{name?, tags?, kind?, target?, start_cmd?, stop_cmd?, focus?, note?, off?}` | Change it; `off` keeps it from being lent; `none` (or empty) clears `kind`, `target`, `start_cmd`, `stop_cmd` and `focus`. |
-| `POST /devices/:name/remove` | | Take it out of the pool (409 while it's lent). |
-| `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name). 409 when there's neither. |
+| `POST /devices/:name/remove` | `{force?: bool, who?}` | Take it out of the pool. 409 while it's lent, and while tasks (not finished) or goals (not archived) still need it by name with no other device to meet that need, naming them. `force` removes it anyway and drops that need from each (a log line on each task, a goal note on each goal); the answer's `dropped_from` lists them. |
+| `POST /devices/:name/focus` | | Raise its window: runs its `focus` command, else `[devices] focus`, with `sh -c` (`{name}` and `$TASKBOARD_DEVICE` are its name), and waits for it up to `[devices] focus_timeout_secs` (15 by default). 409 when there's neither, or when the command fails or times out: "Couldn't bring up <name>: <its stderr, or what went wrong>". |
 | `GET /goals/:id/devices` | | `tb goal devices G3`. `{goal, devices: [device + {purpose, reserved}]}`: the goal's own devices. |
 | `POST /goals/:id/devices` | `{device, purpose?, reserved?}` | `tb goal devices G3 --add rig [--purpose measure] [--reserve\|--unreserve]`. Put a device in the goal's pool, or change its purpose (a tag word, or a comma list of them, stored as `measure,demo`; `none` drops it) or `reserved` (unchanged when left out; other goals may reserve it too). Same response as GET. |
 | `POST /goals/:id/devices/:name/remove` | | `tb goal devices G3 --remove rig`. 404 when it isn't one of the goal's. |

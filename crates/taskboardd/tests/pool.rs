@@ -489,3 +489,86 @@ fn with_goal_pool_only_off_a_goal_borrows_from_the_rest() {
     runner::start_queued(&b.app).unwrap();
     assert_eq!(b.get(&format!("tasks/T{two}"))["devices"]["lent"], json!(["pixel-8", "pixel-7"]), "its own first");
 }
+
+#[test]
+fn removing_a_device_tasks_or_goals_still_need_is_refused_unless_forced() {
+    let b = new_board();
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices", json!({"name": "pixel-8", "tags": "android"}));
+    let g = b.goal();
+    b.post(&format!("goals/G{g}"), json!({"devices": "pixel-7, android"}));
+    let t = b.task("Measure", json!({"devices": "pixel-7"}));
+    let done = b.task("Old", json!({"devices": "pixel-7"}));
+    b.set(done, "done");
+    let any = b.task("Any phone", json!({"devices": "android"}));
+
+    let (code, msg) = b.post_err("devices/pixel-7/remove", json!({}));
+    assert_eq!(code, 409, "{msg}");
+    assert!(msg.contains(&format!("G{g} and T{t} still need pixel-7")), "{msg}");
+    assert!(msg.contains("--force"), "{msg}");
+    assert!(!msg.contains(&format!("T{done}")) && !msg.contains(&format!("T{any}")), "a done task and a need another device meets don't count: {msg}");
+
+    let v = b.post("devices/pixel-7/remove", json!({"force": true}));
+    assert_eq!(v["dropped_from"], json!([format!("G{g}"), format!("T{t}")]));
+    assert_eq!(b.get(&format!("tasks/T{t}"))["devices"], Value::Null, "the task's need is gone");
+    assert_eq!(b.get(&format!("goals/G{g}"))["devices"]["needs_text"], "android", "the goal keeps what other devices meet");
+    assert_eq!(b.get(&format!("tasks/T{any}"))["devices"]["needs_text"], "android");
+    let line = "pixel-7 was removed from the device pool, so it no longer needs it";
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM events WHERE task_id = ? AND text = ?", p![t, line]).unwrap(), 1);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM goal_notes WHERE goal_id = ? AND text = ?", p![g, line]).unwrap(), 1);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM devices WHERE name = 'pixel-7'", p![]).unwrap(), 0);
+    b.post("devices/pixel-8/remove", json!({}));
+}
+
+#[test]
+fn a_focus_that_fails_says_why() {
+    let b = board_with(|c| c.devices.focus_timeout_secs = Some(1.0));
+    b.post("devices", json!({"name": "sim-a", "focus": "echo 'sim-a is not running.' >&2; exit 3"}));
+    b.post("devices", json!({"name": "sim-b", "focus": "exit 4"}));
+    b.post("devices", json!({"name": "sim-c", "focus": "sleep 5"}));
+    b.post("devices", json!({"name": "sim-d", "focus": "true"}));
+    let (code, msg) = b.post_err("devices/sim-a/focus", json!({}));
+    assert_eq!((code, msg.as_str()), (409, "Couldn't bring up sim-a: sim-a is not running."));
+    let (_, msg) = b.post_err("devices/sim-b/focus", json!({}));
+    assert_eq!(msg, "Couldn't bring up sim-b: its focus command exited 4");
+    let (_, msg) = b.post_err("devices/sim-c/focus", json!({}));
+    assert_eq!(msg, "Couldn't bring up sim-c: its focus command took over 1 seconds");
+    assert_eq!(b.post("devices/sim-d/focus", json!({}))["ok"], true);
+}
+
+#[test]
+fn the_goal_card_says_which_tasks_have_can_get_or_had_each_device() {
+    let b = new_board();
+    let g = b.goal();
+    assert_eq!(b.get(&format!("goals/G{g}"))["devices"], Value::Null, "no pool and no asks: no card");
+    b.post(&format!("goals/G{g}"), json!({"devices": "android"}));
+    assert_eq!(
+        b.get(&format!("goals/G{g}"))["devices"]["empty_why"],
+        "The device pool is empty. Terminals add emulators and simulators to it. Each task gets its own while it runs."
+    );
+    b.post("devices", json!({"name": "pixel-7", "tags": "android"}));
+    b.post("devices", json!({"name": "sim-a", "tags": "ios"}));
+    assert!(b.get(&format!("goals/G{g}"))["devices"]["empty_why"].as_str().unwrap().starts_with("None picked yet"));
+
+    let first = b.task("First", json!({"goal_id": g}));
+    let second = b.task("Second", json!({"goal_id": g}));
+    b.task("No devices", json!({"goal_id": g, "devices": "none"}));
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &app_query(), &json!({})).unwrap();
+    runner::start_queued(&b.app).unwrap();
+    let device = |name: &str| {
+        let card = b.get(&format!("goals/G{g}"))["devices"].clone();
+        card["devices"].as_array().unwrap().iter().find(|d| d["name"] == name).unwrap().clone()
+    };
+    let pixel = device("pixel-7");
+    assert_eq!(pixel["uses"]["has"], json!([{"ref": format!("T{first}"), "n": 1, "title": "First"}]));
+    assert_eq!(pixel["uses"]["can"], json!([{"ref": format!("T{second}"), "n": 2, "title": "Second"}]));
+    assert_eq!(pixel["uses"]["had"], json!([]));
+    assert_eq!(device("sim-a")["uses"], json!({"has": [], "can": [], "had": []}), "no task needs it");
+
+    b.set(first, "done");
+    runner::tick(&b.app).unwrap();
+    let pixel = device("pixel-7");
+    assert_eq!(pixel["uses"]["had"][0]["ref"], format!("T{first}"));
+    assert_eq!(pixel["uses"]["has"][0]["ref"], format!("T{second}"));
+    assert_eq!(pixel["uses"]["can"], json!([]), "each task once per device");
+}

@@ -58,6 +58,84 @@ pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
         .collect()
 }
 
+/// A device in this goal, for its dialog: what it is, what the goal set for it, and the goal's tasks
+/// that have it, can get it when they start, or had it before.
+#[derive(Debug, PartialEq)]
+pub struct DeviceDetail {
+    pub label: String,
+    /// "Free", "Off" or "Lent to T4".
+    pub state: String,
+    /// "Android emulator · android, phone".
+    pub what: String,
+    /// "For measure in this goal".
+    pub purpose: Option<String>,
+    pub reserved: bool,
+    pub note: Option<String>,
+    /// ("Has it now", [(T4, "1. Sim test")]), only the groups with tasks in them.
+    pub groups: Vec<(&'static str, Vec<(String, String)>)>,
+}
+
+pub fn device_detail(g: &Value, name: &str) -> Option<DeviceDetail> {
+    let d = arr(&g["devices"], "devices").iter().find(|d| s(d, "name") == name)?.clone();
+    let state = match fmt::opt_s(&d["held_by"], "ref") {
+        Some(r) => format!("Lent to {r}"),
+        None if b(&d, "off") => "Off".into(),
+        None => "Free".into(),
+    };
+    let tags = arr(&d, "tags").iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ");
+    let what = [fmt::opt_s(&d, "kind_label").unwrap_or(""), &tags].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" · ");
+    let groups = [("has", "Has it now"), ("can", "Can get it when it starts"), ("had", "Had it before")]
+        .into_iter()
+        .map(|(key, title)| (title, arr(&d["uses"], key).iter().map(|u| (s(u, "ref").to_string(), format!("{}. {}", i(u, "n"), s(u, "title")))).collect::<Vec<_>>()))
+        .filter(|(_, tasks)| !tasks.is_empty())
+        .collect();
+    Some(DeviceDetail {
+        label: fmt::opt_s(&d, "label").unwrap_or(s(&d, "name")).to_string(),
+        state,
+        what,
+        purpose: b(&d, "in_pool").then(|| fmt::opt_s(&d, "purpose").map(|p| format!("For {} in this goal", p.replace(',', ", ")))).flatten(),
+        reserved: b(&d, "in_pool") && b(&d, "reserved"),
+        note: fmt::opt_s(&d, "note").map(str::to_string),
+        groups,
+    })
+}
+
+/// The device dialog's body: what it is, then the goal's tasks by how they use it, each opening its task.
+pub fn device_dialog_body(t: &Theme, d: &DeviceDetail, cx: &mut Context<MainWindow>) -> Div {
+    let mut body = div().flex().flex_col().gap(px(14.)).text_size(px(13.5));
+    let mut facts = div().flex().flex_col().gap(px(4.)).child(div().flex().items_center().gap(px(8.)).child(chip(t.text_2, t.col, d.state.clone())).when(!d.what.is_empty(), |x| x.child(div().text_color(t.muted).child(d.what.clone()))));
+    if let Some(p) = &d.purpose {
+        facts = facts.child(div().text_color(t.accent_fg).child(p.clone()));
+    }
+    if d.reserved {
+        facts = facts.child(div().text_color(t.accent_fg).child("Reserved for this goal"));
+    }
+    if let Some(n) = &d.note {
+        facts = facts.child(div().text_color(t.muted).child(n.clone()));
+    }
+    body = body.child(facts);
+    let mut tasks = div().flex().flex_col().gap(px(10.)).child(h3(t, 12.5, "Tasks in this goal"));
+    if d.groups.is_empty() {
+        tasks = tasks.child(div().text_color(t.muted).child("No task in this goal needs it yet."));
+    }
+    for (gx, (title, list)) in d.groups.iter().enumerate() {
+        let mut col = div().flex().flex_col().gap(px(2.)).child(div().text_size(px(12.)).text_color(t.muted).child(*title));
+        for (tx, (r, line)) in list.iter().enumerate() {
+            let target = r.clone();
+            col = col.child(
+                kit::link(t, SharedString::from(format!("dev-use-{gx}-{tx}")), line.clone())
+                    .text_color(t.accent_fg)
+                    .on_click(cx.listener(move |m, _, _, cx| {
+                        close_dialog(m, cx);
+                        m.open_task(target.clone(), cx);
+                    })),
+            );
+        }
+        tasks = tasks.child(col);
+    }
+    body.child(tasks)
+}
+
 /// One bit in the aside: its name, and what it needs (made, a create link, or local).
 #[derive(Debug, PartialEq)]
 pub struct BitRow {
@@ -127,6 +205,9 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
         head = head.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}")));
     }
     let mut list = div().flex().flex_col();
+    if let Some(why) = fmt::opt_s(&g["devices"], "empty_why") {
+        list = list.child(div().pb(px(6.)).text_size(px(12.)).text_color(t.muted).child(why.to_string()));
+    }
     for (ix, d) in rows.into_iter().enumerate() {
         let busy = m.goal_page.busy.contains(&format!("device-focus:{}", d.name));
         let holder: AnyElement = match d.held_by.clone() {
@@ -154,6 +235,7 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
             None => div().flex_none().text_size(px(12.)).text_color(if d.state == "Off" { t.faint } else { t.up_fg }).child(d.state.clone()).into_any_element(),
         };
         let name = d.name.clone();
+        let open = d.name.clone();
         list = list.child(
             div()
                 .flex()
@@ -164,11 +246,17 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                 .text_size(px(13.))
                 .child(
                     div()
+                        .id(SharedString::from(format!("dev-open-{ix}")))
                         .flex()
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(d.label.clone()))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |m, _, window, cx| {
+                            m.goal_page.device_dialog = Some(open.clone());
+                            open_dialog(m, window, cx);
+                        }))
+                        .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().hover(|s| s.underline()).child(d.label.clone()))
                         .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone())))
                         .when(!d.pool.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.accent_fg).truncate().child(d.pool.clone()))),
                 )
@@ -300,6 +388,31 @@ mod tests {
         assert_eq!((b[1].state.as_str(), b[1].uses.as_str()), ("Not created", "T4, G1"));
         assert_eq!((b[2].state.as_str(), b[2].tone), ("Created", "up"));
         assert_eq!(bits_summary(&g).as_deref(), Some("1 of 2 created"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_device_s_dialog_groups_the_goal_s_tasks_by_how_they_use_it() {
+        let g = json!({"devices": {"devices": [
+            {"name": "pixel-7", "label": "pixel-7 (Android emulator)", "kind_label": "Android emulator", "tags": ["android", "phone"], "note": "Kept charged",
+             "held_by": {"ref": "T4", "title": "Measure"}, "in_pool": true, "purpose": "measure,demo", "reserved": true,
+             "uses": {"has": [{"ref": "T4", "n": 2, "title": "Measure"}], "can": [{"ref": "T5", "n": 3, "title": "Demo"}], "had": []}},
+            {"name": "sim-a", "tags": [], "held_by": null, "off": true, "reserved": true, "uses": {"has": [], "can": [], "had": []}}]}});
+        let d = device_detail(&g, "pixel-7").unwrap();
+        assert_eq!(
+            d,
+            DeviceDetail {
+                label: "pixel-7 (Android emulator)".into(),
+                state: "Lent to T4".into(),
+                what: "Android emulator · android, phone".into(),
+                purpose: Some("For measure, demo in this goal".into()),
+                reserved: true,
+                note: Some("Kept charged".into()),
+                groups: vec![("Has it now", vec![("T4".into(), "2. Measure".into())]), ("Can get it when it starts", vec![("T5".into(), "3. Demo".into())])],
+            }
+        );
+        let s = device_detail(&g, "sim-a").unwrap();
+        assert_eq!((s.state.as_str(), s.what.as_str(), s.purpose, s.reserved, s.groups.len()), ("Off", "", None, false, 0), "reserved elsewhere isn't reserved here");
+        assert!(device_detail(&g, "nope").is_none());
     }
 
     #[::core::prelude::v1::test]
