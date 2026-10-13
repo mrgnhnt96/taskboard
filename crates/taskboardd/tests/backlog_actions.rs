@@ -124,3 +124,14 @@ fn history_credits_the_terminal_that_ran_it() {
     let hist = board::issue_history(&b.app, j).unwrap();
     assert_eq!(hist.last().unwrap()["who"], board::OWNER);
 }
+
+#[test]
+fn a_backlog_note_lands_in_the_log_and_keeps_the_detail() {
+    let b = new_board();
+    let i = b.post("/backlog", json!({"title": "Tab bar flickers", "project": "webapp", "kind": "bug", "detail": "On the phone build."}))["id"].as_i64().unwrap();
+    b.post(&format!("backlog/B{i}/note"), json!({"text": "seen again on the tablet build"}));
+    assert_eq!(b.get(&format!("backlog/B{i}"))["detail"], "On the phone build.");
+    let hist = board::issue_history(&b.app, i).unwrap();
+    let last = hist.last().unwrap();
+    assert_eq!((last["kind"].as_str(), last["text"].as_str()), (Some("note"), Some("Added a note: “seen again on the tablet build”")));
+}

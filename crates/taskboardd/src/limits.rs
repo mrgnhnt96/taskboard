@@ -184,6 +184,9 @@ pub fn set(app: &App, body: &Value) -> Result<Limits> {
     if body.as_object().is_some_and(|o| o.contains_key("generated")) {
         let globs = globs_of(&body["generated"])?;
         let project = body_str(body, "project");
+        if !project.is_empty() && !crate::projects::list_projects(app)?.iter().any(|p| p["name"].as_str() == Some(project.as_str())) {
+            return err(404, format!("There's no project called {project}."));
+        }
         if project.is_empty() {
             saved.insert("generated".into(), json!(globs));
         } else {

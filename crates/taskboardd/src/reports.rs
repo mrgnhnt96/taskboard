@@ -2118,6 +2118,9 @@ fn on_propose(r: &mut Report) -> Result<Value> {
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
     let mut warnings = vec![];
     let created = planned(r, &g, &tasks, &mut warnings)?;
+    if created.is_empty() {
+        return err(400, "Name at least one task with a title: --task \"title::what to do\".");
+    }
     note_made(r, &created)?;
     Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "warnings": warnings})))
 }

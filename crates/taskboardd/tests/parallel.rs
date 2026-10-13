@@ -475,3 +475,42 @@ fn taking_back_a_pr_task_drops_the_owner_s_review_until_a_peer_is_asked() {
         assert!(alerts.iter().any(|a| a["text"].as_str().unwrap().contains(&format!("T{t} is green and ready for review"))), "{alerts:?}");
     }
 }
+
+#[test]
+fn closing_finished_tasks_terminals_leaves_a_working_one_open() {
+    let b = new_board();
+    let mut done = vec![];
+    for sid in ["s1", "s2", "s3"] {
+        b.add_session(sid);
+        let t = b.task(&format!("Task {sid}"), json!({"pickup": "manual"}));
+        b.report("tb.take", sid, json!({"task": format!("T{t}")}));
+        if sid != "s3" {
+            b.report("tb.done", sid, json!({"summary": "Done."}));
+            done.push(sid);
+        }
+    }
+    b.app.db.x("UPDATE sessions SET status = 'idle', status_at = '2000-01-01T00:00:00Z'", p![]).unwrap();
+    assert_eq!(b.post("done/close-terminals", json!({}))["jobs"], 2);
+    let closing: Vec<String> = b
+        .app
+        .db
+        .q("SELECT args FROM jobs WHERE kind = 'close' ORDER BY id", p![])
+        .unwrap()
+        .iter()
+        .filter_map(|j| board::job_args(j).s("session").map(|s| s.to_string()))
+        .collect();
+    assert_eq!(closing, done, "the working task's terminal stays open");
+}
+
+#[test]
+fn propose_with_no_titled_task_is_refused() {
+    let b = new_board();
+    b.add_session("s1");
+    let g = b.side_by_side();
+    for tasks in [json!([]), json!(["::only a detail"])] {
+        let (code, msg) = b.try_report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": tasks})).unwrap_err();
+        assert_eq!(code, 400);
+        assert!(msg.contains("at least one task with a title"), "{msg}");
+    }
+    assert!(b.get(&format!("goals/G{g}"))["tasks"].as_array().unwrap().is_empty());
+}
