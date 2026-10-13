@@ -14,12 +14,16 @@ use serde_json::{Value, json};
 
 const PREF_HIDDEN: &str = "taskboard.days.hidden";
 const SLOTS: usize = 144;
+/// Done today shows this many until expanded.
+const FINISHED_MAX: usize = 12;
 
-/// The page's own state: the day shown (`None`: today) and the projects hidden from it.
+/// The page's own state: the day shown (`None`: today), the projects hidden from it and
+/// whether the done list is expanded past [`FINISHED_MAX`].
 #[derive(Clone, Debug)]
 pub struct State {
     pub date: Option<NaiveDate>,
     pub hidden: Vec<String>,
+    pub finished_all: bool,
 }
 
 impl Default for State {
@@ -27,7 +31,7 @@ impl Default for State {
         let hidden = crate::prefs::get(PREF_HIDDEN)
             .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()))
             .unwrap_or_default();
-        State { date: None, hidden }
+        State { date: None, hidden, finished_all: false }
     }
 }
 
@@ -188,7 +192,6 @@ pub struct Saved {
 pub struct Wait {
     pub min: String,
     pub task: String,
-    pub text: String,
     pub x: f32,
 }
 
@@ -452,7 +455,7 @@ impl View {
         let usual_each = f(usual, "wait_each");
         let mut waits: Vec<Wait> = waits_json
             .iter()
-            .map(|w| Wait { min: dur(f(w, "min")), task: s(w, "ref").to_string(), text: if s(w, "text").is_empty() { s(w, "title").to_string() } else { s(w, "text").to_string() }, x: (f(w, "min").min(60.0) / 60.0) as f32 })
+            .map(|w| Wait { min: dur(f(w, "min")), task: s(w, "ref").to_string(), x: (f(w, "min").min(60.0) / 60.0) as f32 })
             .collect();
         waits.sort_by(|a, b| b.x.total_cmp(&a.x));
         let mid = {
@@ -552,6 +555,7 @@ fn set_date(m: &mut MainWindow, d: Option<NaiveDate>, cx: &mut Context<MainWindo
     let d = d.filter(|d| Some(*d) != today);
     if m.days.date != d {
         m.days.date = d;
+        m.days.finished_all = false;
         m.data.days = None;
         m.refresh(cx);
     }
@@ -697,8 +701,8 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .min_w(px(560.))
         .child(week_card(&v, &t, &pc, cx))
         .child(timeline_card(&v, &t, &pc, cx))
-        .child(finished_card(&v, &t, &pc, cx))
-        .child(tasks_card(&v, &t, &pc, cx));
+        .child(tasks_card(&v, &t, &pc, cx))
+        .child(finished_card(&v, &t, &pc, m.days.finished_all, cx));
     let rail = div()
         .flex()
         .flex_col()
@@ -965,8 +969,9 @@ fn tasks_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context
     card(t).child(div().flex().flex_wrap().items_center().justify_between().gap(px(12.)).child(h2(format!("How long tasks took · {}", v.week_label))).child(legend)).child(body)
 }
 
-fn finished_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Context<MainWindow>) -> Div {
-    let rows = v.finished.iter().map(|r| {
+fn finished_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, all: bool, cx: &mut Context<MainWindow>) -> Div {
+    let n = v.finished.len();
+    let rows = v.finished.iter().take(if all { n } else { FINISHED_MAX }).map(|r| {
         let task = r.task.clone();
         div()
             .id(SharedString::from(format!("days-finished-{}", r.task)))
@@ -996,7 +1001,16 @@ fn finished_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla, cx: &mut Cont
     });
     let title = if v.date == v.today { "Done today".to_string() } else { format!("Done on {}", v.date.format("%A, %B %-d")) };
     let body = if v.finished.is_empty() { div().text_color(t.muted).child("No tasks finished") } else { div().flex().flex_col().gap(px(2.)).children(rows) };
-    card(t).child(div().flex().items_baseline().gap(px(8.)).child(h2(title)).child(div().text_size(px(12.)).text_color(t.muted).child(count(v.finished.len() as f64)))).child(body)
+    let more = (n > FINISHED_MAX).then(|| {
+        kit::link(t, "days-finished-more", if all { "Show fewer".to_string() } else { format!("Show all {n}") })
+            .text_size(px(12.5))
+            .px(px(6.))
+            .on_click(cx.listener(|m, _, _, cx| {
+                m.days.finished_all = !m.days.finished_all;
+                cx.notify();
+            }))
+    });
+    card(t).child(div().flex().items_baseline().gap(px(8.)).child(h2(title)).child(div().text_size(px(12.)).text_color(t.muted).child(count(n as f64)))).child(body).children(more)
 }
 
 fn notes_card(v: &View, t: &Theme) -> Div {
@@ -1121,15 +1135,6 @@ fn waits_card(v: &View, t: &Theme) -> Div {
         .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(v.wait_total.clone()))
         .child(strip)
         .child(div().flex().justify_between().text_size(px(11.)).text_color(t.muted).child("0").child("30m").child("60m+"))
-        .children(v.waits.iter().map(|w| {
-            div()
-                .flex()
-                .gap(px(8.))
-                .text_size(px(12.))
-                .child(div().w(px(48.)).flex_none().font_weight(FontWeight::BOLD).child(w.min.clone()))
-                .child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(w.task.clone()))
-                .child(div().text_color(t.text_2).truncate().child(w.text.clone()))
-        }))
 }
 
 fn done_card(v: &View, t: &Theme) -> Div {
