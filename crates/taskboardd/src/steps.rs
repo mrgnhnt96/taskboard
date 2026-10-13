@@ -807,10 +807,11 @@ pub fn clean_result(v: Option<&Value>) -> Option<Value> {
 fn state_rank(state: &str) -> u8 {
     match state {
         "" | "open" | "new" => 0,
-        "answered" | "replied" => 1,
-        "fixed" | "resolved" => 2,
-        "dismissed" | "wontfix" | "false-positive" | "ignored" => 3,
-        _ => 4,
+        "escalated" => 1,
+        "answered" | "replied" => 2,
+        "fixed" | "resolved" => 3,
+        "dismissed" | "wontfix" | "false-positive" | "ignored" => 4,
+        _ => 5,
     }
 }
 
@@ -825,9 +826,10 @@ fn severity_rank(sev: &str) -> u8 {
     }
 }
 
-/// A finding counts as open until it's answered, fixed or dismissed.
+/// A finding counts as open until it's answered, fixed or dismissed. An escalated one, handed up for a
+/// person to decide, is still waiting on someone, so it counts too.
 pub fn finding_open(f: &Value) -> bool {
-    state_rank(&f["state"].as_str().unwrap_or("").to_lowercase()) == 0
+    state_rank(&f["state"].as_str().unwrap_or("").to_lowercase()) <= 1
 }
 
 /// A round's findings with later triage (`tb step triage`) on them, sorted by state, then severity.
@@ -1020,5 +1022,25 @@ mod tests {
         assert!(r.contains("- Review (Run /author-review): tb step done \"Review\""), "{r}");
         assert!(r.contains("- Tests (the script `make test`): tb step run \"Tests\""), "{r}");
         assert!(r.contains("- Sign-off (at https://x): tb step ask \"Sign-off\", then end your turn"), "{r}");
+    }
+
+    #[test]
+    fn an_escalated_finding_sorts_after_the_open_ones_and_counts_as_open() {
+        let round = Round {
+            key: "Review".into(),
+            passed: false,
+            head: None,
+            at: "2026-10-12T10:00:00Z".into(),
+            data: json!({"result": {"findings": [
+                {"id": "F1", "title": "dismissed", "state": "dismissed"},
+                {"id": "F2", "title": "escalated", "state": "escalated"},
+                {"id": "F3", "title": "fixed", "state": "fixed"},
+                {"id": "F4", "title": "open"},
+            ]}}),
+        };
+        let fs = findings(&round, &[]);
+        assert_eq!(fs.iter().map(|f| f["id"].as_str().unwrap()).collect::<Vec<_>>(), vec!["F4", "F2", "F3", "F1"]);
+        assert_eq!(fs.iter().filter(|f| finding_open(f)).count(), 2);
+        assert_eq!(headline(&round, &fs), "2 open findings");
     }
 }

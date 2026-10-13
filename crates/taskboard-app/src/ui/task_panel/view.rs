@@ -703,6 +703,21 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         ];
         bx.extend(c.note(&act));
         out.push(el(K::Box(BoxTone::Lost), bx));
+    } else if status == "needs" && s(t, "needs_reason") == "compact_failed" {
+        let grp = format!("compact:{r}");
+        let mut bx = vec![
+            txt("Couldn’t compact its conversation", St::BoxLabel),
+            txt(opt_s(t, "latest").unwrap_or("The board couldn’t compact its cold conversation before resuming it."), St::Plain),
+            el(
+                K::Row,
+                vec![
+                    c.btn("Start fresh with the handoff", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
+                    c.btn("Resume it as it is", Act::new("resume", "reopen", &r, &grp), Look::Plain, false, None),
+                ],
+            ),
+        ];
+        bx.extend(c.note(&grp));
+        out.push(el(K::Box(BoxTone::Lost), bx));
     } else if status == "needs" {
         let q = opt_s(t, "question");
         let grp = format!("ask:{r}");
