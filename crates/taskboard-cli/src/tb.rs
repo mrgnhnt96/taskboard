@@ -1655,6 +1655,15 @@ impl Ctx {
         }
     }
 
+    /// Posts a report that only asks: never spooled, since a replay would mark the terminal active for nothing.
+    fn ask(&self, event: &str) -> Result<Value, String> {
+        match client::request(&self.cfg, "POST", "/report", Some(&self.body(event, json!({}), None)), TB_TIMEOUT) {
+            Ok(v) => Ok(v),
+            Err(CallError::Refused(m)) => Err(m),
+            Err(CallError::Unreachable(_)) => Err("The board isn't reachable.".into()),
+        }
+    }
+
     /// How the board names this terminal in an issue's history.
     fn who(&self) -> String {
         if self.session.is_empty() { "tb".to_string() } else { format!("terminal {}", self.session.chars().take(8).collect::<String>()) }
@@ -3134,10 +3143,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("{} · {} · {}", v["ref"].as_str().unwrap_or(""), v["title"].as_str().unwrap_or(""), v["status"].as_str().unwrap_or("")));
                 return Ok(0);
             }
-            match c.report("tb.status", json!({}), None, TB_TIMEOUT)? {
-                None => out("The board isn't answering."),
-                Some(v) => out(v["context"].as_str().unwrap_or("No task on this terminal.")),
-            }
+            let v = c.ask("tb.status")?;
+            out(v["context"].as_str().unwrap_or("No task on this terminal."));
             Ok(0)
         }
         Cmd::WaitFor { tasks, why, merged, t } => {
@@ -4702,6 +4709,20 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tb_status_with_the_board_down_saves_nothing_and_fails() {
+        let data = std::env::temp_dir().join(format!("tb-status-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        std::fs::create_dir_all(&data).unwrap();
+        let mut cfg = Config::for_tests(&data);
+        cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let c = Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: String::new() };
+        let e = run_cmd(&c, Cli::try_parse_from(["tb", "status"]).unwrap().cmd).unwrap_err();
+        assert_eq!(e, "The board isn't reachable.");
+        let spooled = std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(spooled, 0, "a status check is never spooled");
+        let _ = std::fs::remove_dir_all(&data);
+    }
 
     #[test]
     fn tb_pr_check_reads_the_prs_and_says_what_changed() {

@@ -369,7 +369,9 @@ bot_due_mins = 45.0
 # Swaps: a reviewer asked who hasn't reviewed after swap_after_mins work minutes is replaced through the
 # PR host by the picker's choice (only inside work hours). Someone swapped off who reviews anyway counts
 # again and their stand-in is taken off; one who asks for changes doesn't block, and one more person is
-# asked while the PR has fewer than `count`. tb pr addressed's asks to look again are timed too.
+# asked while the PR has fewer than `count`. tb pr addressed's asks to look again are timed too. A swap
+# the host refuses is noted on the task and tried again after 1, 5 and 15 minutes (no strike against the
+# reviewer); one with nobody to swap in is noted once.
 swap = false
 swap_after_mins = 90.0
 # The ask stage: after you mark a green PR reviewed, it waits until reviewers are asked. The agent is

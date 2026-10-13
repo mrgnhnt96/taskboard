@@ -608,7 +608,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
 | `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--pr`, `--no-pr`. `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. `ships_pr` "auto" (or null) goes back to the project's default. |
-| `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. |
+| `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. Only from the app (`X-Task-Board-From: app`): any other caller gets 403 "Only the owner marks a PR reviewed, from its task page." and the stage stays as it was. |
 | `POST /done/close-terminals` | `{}` | Done column menu: close every done task's still-open terminal (no force). |
 
 **The app's own requests.** `X-Task-Board-From: app` marks a request as the owner's own click in Taskboard.app
