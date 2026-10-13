@@ -47,6 +47,13 @@ fn with_no_file_planners_get_the_built_in_rules() {
 }
 
 #[test]
+fn the_built_in_rules_say_when_to_stack_and_how_to_merge_it() {
+    for bit in ["needs that task's unmerged code", "Tail merge a stack (the default)", "safe to ship alone", "Head merge a stack", "only make sense together", "--stack-merge"] {
+        assert!(planning::BUILT_IN.contains(bit), "missing {bit:?}");
+    }
+}
+
+#[test]
 fn a_project_file_wins_over_the_board_file_and_the_board_file_over_the_built_in_rules() {
     let (d, app) = board_with(|c, d| {
         std::fs::write(d.join("board.md"), "One task per screen.\n").unwrap();
