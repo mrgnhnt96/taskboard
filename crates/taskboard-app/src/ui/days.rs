@@ -247,20 +247,19 @@ impl View {
         let is_today = date == today;
         let start = fmt::parse(s(v, "day_start"));
 
-        // Key numbers, against the median of the two weeks before.
-        let have_usual = f(usual, "days") > 0.0;
-        let vs = |cur: f64, k: &str, f: fn(f64) -> String| if have_usual { format!("{} vs usual", signed(cur - self::f(usual, k), f)) } else { String::new() };
+        // Key numbers for the day.
         let (agent, human, est) = (f(day, "agent_min"), f(day, "human_min"), f(day, "est_agent_min"));
         let kpis = vec![
-            Kpi { label: "Agent time", value: dur(agent), delta: vs(agent, "agent_min", dur) },
+            Kpi { label: "Agent time", value: dur(agent), delta: String::new() },
             Kpi {
                 label: "Human estimate",
                 value: if human > 0.0 { dur(human) } else { "—".into() },
-                delta: if human > 0.0 && est > 0.0 { format!("{:.1}× agent time", human / est) } else { String::new() },
+                // The day's share of the hours-saved card: the same sum, one day of it.
+                delta: if human > est { format!("{} saved", dur(human - est)) } else { String::new() },
             },
-            Kpi { label: "Tasks done", value: count(f(day, "done")), delta: vs(f(day, "done"), "done", count) },
-            Kpi { label: "PRs opened", value: count(f(day, "prs")), delta: vs(f(day, "prs"), "prs", count) },
-            Kpi { label: "Waiting on you", value: dur(f(day, "wait_min")), delta: vs(f(day, "wait_min"), "wait_min", dur) },
+            Kpi { label: "Tasks done", value: count(f(day, "done")), delta: String::new() },
+            Kpi { label: "PRs opened", value: count(f(day, "prs")), delta: String::new() },
+            Kpi { label: "Waiting on you", value: dur(f(day, "wait_min")), delta: String::new() },
         ];
 
         // The week, from the first weekday the daemon starts it on (config.toml's first_weekday).
@@ -682,6 +681,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .child(nav);
 
     // ---- key numbers
+    let any_delta = v.kpis.iter().any(|k| !k.delta.is_empty());
     let kpis = div().flex().gap(px(10.)).children(v.kpis.iter().map(|k| {
         card(&t)
             .flex_1()
@@ -690,7 +690,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             .py(px(10.))
             .child(div().text_size(px(12.)).text_color(t.muted).child(k.label))
             .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(k.value.clone()))
-            .child(div().text_size(px(12.)).text_color(t.text_2).min_h(px(16.)).child(k.delta.clone()))
+            .when(any_delta, |d| d.child(div().text_size(px(12.)).text_color(t.text_2).min_h(px(16.)).child(k.delta.clone())))
     }));
 
     let left = div()
@@ -698,7 +698,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .flex_col()
         .gap(px(16.))
         .flex_1()
-        .min_w(px(560.))
+        .min_w(px(420.))
         .child(week_card(&v, &t, &pc, cx))
         .child(timeline_card(&v, &t, &pc, cx))
         .child(tasks_card(&v, &t, &pc, cx))
@@ -722,12 +722,11 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
                 .flex_col()
                 .gap(px(16.))
                 .w_full()
-                .max_w(px(1400.))
                 .px(px(28.))
                 .py(px(22.))
                 .child(header)
                 .child(kpis)
-                .child(div().flex().items_start().gap(px(16.)).child(left).child(rail)),
+                .child(div().flex().flex_wrap().items_start().gap(px(16.)).child(left).child(rail)),
         )
         .into_any_element()
 }
@@ -1096,14 +1095,14 @@ fn saved_card(v: &View, t: &Theme) -> Div {
     )
     .w_full()
     .h(px(110.));
-    let days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+    let days: Vec<String> = v.cols.iter().map(|c| c.dow.chars().take(2).collect()).collect();
     card(t)
         .gap(px(8.))
-        .child(h2("Hours saved"))
+        .child(h2("Hours saved this week"))
         .child(div().flex().items_baseline().gap(px(8.)).child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(s.total.clone())).child(div().text_size(px(13.)).text_color(t.text_2).child(s.vs_last.clone())))
         .children((!s.breakdown.is_empty()).then(|| div().text_size(px(12.)).text_color(t.muted).child(s.breakdown.clone())))
         .child(div().flex().gap(px(6.)).child(div().flex().flex_col().justify_between().h(px(110.)).text_size(px(10.)).text_color(t.muted).child(format!("{}h", top as i64)).child(format!("{}h", (top / 2.0) as i64)).child("0")).child(chart))
-        .child(div().flex().justify_between().pl(px(26.)).children(days.iter().enumerate().map(|(k, d)| div().text_size(px(11.)).text_color(if Some(k) == sel { t.text } else { t.muted }).when(Some(k) == sel, |x| x.font_weight(FontWeight::BOLD)).child(*d))))
+        .child(div().flex().justify_between().pl(px(26.)).children(days.into_iter().enumerate().map(|(k, d)| div().text_size(px(11.)).text_color(if Some(k) == sel { t.text } else { t.muted }).when(Some(k) == sel, |x| x.font_weight(FontWeight::BOLD)).child(d))))
         .child(div().flex().gap(px(12.)).child(legend_item(t, div().w(px(14.)).h(px(2.)).bg(t.accent), "this week")).child(legend_item(t, div().w(px(14.)).h(px(2.)).bg(t.faint), "last week")))
 }
 
@@ -1242,9 +1241,9 @@ mod tests {
         let v = View::of(&sample()).unwrap();
         assert_eq!(v.title, "Today");
         assert_eq!(v.kpis[0].value, "11h 46m");
-        assert_eq!(v.kpis[0].delta, "+4h 16m vs usual");
-        assert_eq!(v.kpis[1].delta, "3.0× agent time");
-        assert_eq!(v.kpis[2].delta, "−1 vs usual");
+        assert_eq!(v.kpis[0].delta, "");
+        assert_eq!(v.kpis[1].delta, "3h 20m saved", "the day's share of the hours-saved card");
+        assert_eq!(v.kpis[2].delta, "");
         assert_eq!(v.cols.len(), 7);
         assert!(v.cols[3].selected && v.cols[4].future);
         assert_eq!(v.cols[0].done, "7 done");

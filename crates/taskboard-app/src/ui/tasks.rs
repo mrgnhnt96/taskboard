@@ -48,15 +48,25 @@ pub fn lanes_vm(v: &Value, project: Option<&str>) -> Vec<Lane> {
                 .filter(|c| project.is_none_or(|p| s(c, "project") == p))
                 .map(|c| {
                     let mut tile = tile_vm(c);
-                    // A queued card says only what holds it back, not that it waits for Start.
-                    if *key == "queued" && !c["starting"].as_bool().unwrap_or(false) && opt_s(c, "waiting").is_none_or(|w| w.ends_with("press Start")) {
-                        tile.line.clear();
+                    let mut pill = (tile.status != *plain).then(|| (tile.status.clone(), tile.tone));
+                    // A queued card says only what holds it back: a pill when that is a terminal,
+                    // nothing when it just waits for Start.
+                    if *key == "queued" && pill.is_none() {
+                        match opt_s(c, "waiting") {
+                            Some(w) if w.ends_with("press Start") => tile.line.clear(),
+                            Some(w) => {
+                                if let Some(busy) = w.strip_prefix("Waits for a free terminal: ") {
+                                    pill = Some(("Waiting for a terminal".into(), "queued"));
+                                    tile.line = busy.to_string();
+                                }
+                            }
+                            None => {
+                                pill = Some(("Waiting for a terminal".into(), "queued"));
+                                tile.line.clear();
+                            }
+                        }
                     }
-                    Card {
-                        project: s(c, "project").to_string(),
-                        pill: (tile.status != *plain).then(|| (tile.status.clone(), tile.tone)),
-                        tile,
-                    }
+                    Card { project: s(c, "project").to_string(), pill, tile }
                 })
                 .collect();
             Lane { key, label, cards }
@@ -263,10 +273,10 @@ mod tests {
         let all = lanes_vm(&v, None);
         assert_eq!(all.iter().map(|l| l.key).collect::<Vec<_>>(), ["queued", "running", "needs", "done"]);
         assert_eq!(all[0].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T2", "T3"]);
-        // Nothing holds T1 back but Start, so it has no line.
+        // Nothing holds T1 back but a terminal.
+        assert_eq!(all[0].cards[0].pill.as_ref().map(|p| p.0.as_str()), Some("Waiting for a terminal"));
         assert!(all[0].cards[0].tile.line.is_empty());
         // The lane already says Queued and Working; a card says more only when it differs.
-        assert!(all[0].cards[0].pill.is_none());
         assert_eq!(all[0].cards[2].pill.as_ref().map(|p| p.0.as_str()), Some("Starting"));
         assert!(all[1].cards[0].pill.is_none());
         assert_eq!(all[3].cards[0].pill.as_ref().map(|p| p.0.as_str()), Some("Failed"));
@@ -274,5 +284,17 @@ mod tests {
         let web = lanes_vm(&v, Some("web"));
         assert_eq!(web[0].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T3"]);
         assert!(web[3].cards.is_empty());
+    }
+
+    #[test]
+    fn queued_cards_say_what_holds_them_back() {
+        let card = |r: &str, waiting: &str| json!({"ref": r, "title": r, "project": "web", "status": "queued", "waiting": waiting});
+        let v = json!({
+            "queued": [card("T1", "Waits for you to press Start"), card("T2", "Waits for a free terminal: 2 of 2 busy in web"), card("T3", "Waits for PR #4 to merge")],
+            "running": [], "needs": [], "done": [],
+        });
+        let q = &lanes_vm(&v, None)[0].cards;
+        let got: Vec<(Option<&str>, &str)> = q.iter().map(|c| (c.pill.as_ref().map(|p| p.0.as_str()), c.tile.line.as_str())).collect();
+        assert_eq!(got, [(None, ""), (Some("Waiting for a terminal"), "2 of 2 busy in web"), (None, "Waits for PR #4 to merge")]);
     }
 }
