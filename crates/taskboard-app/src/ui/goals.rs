@@ -1,9 +1,9 @@
 //! Goal logic the app still needs now that the goals rail is gone: a goal's counts, which goals
-//! there are, where "Goals" lands and what Esc on the filtered board resets to. The functions are
+//! there are, which view each belongs in and what Esc on the filtered board resets to. The functions are
 //! the web board's logic one to one; the parity tests run them against its output.
 use crate::app::Filters;
-use crate::fmt::{self, arr, b, i, s};
-use serde_json::{Value, json};
+use crate::fmt::{arr, b, i, s};
+use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Counts {
@@ -52,15 +52,6 @@ pub fn all_goals<'a>(state: Option<&'a Value>, goals: Option<&'a [Value]>) -> Ve
     list.iter().filter(|g| !b(g, "archived")).collect()
 }
 
-fn same_ref(g: &Value, r: &str) -> bool {
-    !r.is_empty() && r != "all" && fmt::ref_of(g, "G") == fmt::ref_of(&json!(r), "G")
-}
-
-/// `String.prototype.localeCompare` (the forms' node-verified port).
-fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    crate::ui::modals::locale_cmp(a, b)
-}
-
 /// `railClear`.
 pub fn rail_clear(f: &Filters) -> Filters {
     Filters { goal: "all".into(), project: "all".into(), done: f.done.clone() }
@@ -77,21 +68,10 @@ pub fn nav_kind(g: &Value) -> &'static str {
     }
 }
 
-/// The goal "Goals" opens (the web's `#/goals` with no id): the board's goal filter, else the
-/// first active goal by project, else the first goal.
-pub fn landing(goals: &[&Value], filter_goal: &str) -> Option<String> {
-    if let Some(g) = goals.iter().find(|g| same_ref(g, filter_goal)) {
-        return Some(fmt::ref_of(g, "G"));
-    }
-    let mut active: Vec<&&Value> = goals.iter().filter(|g| nav_kind(g) == "active").collect();
-    active.sort_by(|a, b| locale_cmp(s(a, "project"), s(b, "project")));
-    active.first().map(|g| fmt::ref_of(g, "G")).or_else(|| goals.first().map(|g| fmt::ref_of(g, "G")))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Filters, goal_counts, landing, rail_clear};
-    use crate::fmt::{b, s};
+    use super::{Filters, goal_counts, rail_clear};
+    use crate::fmt::s;
     use crate::parity::golden;
     use serde_json::{Value, json};
 
@@ -100,15 +80,11 @@ mod tests {
     }
 
     #[test]
-    fn counts_landing_and_clear_match_web() {
+    fn counts_and_clear_match_web() {
         let g = golden("chrome");
         g.only("goalCounts").check(|i| {
             let c = goal_counts(&i["goal"]);
             json!({"n": c.n, "done": c.done, "active": c.active, "queued": c.queued, "prs": c.prs, "finished": c.finished})
-        });
-        g.only("goalsLanding").check(|i| {
-            let goals: Vec<&Value> = i["goals"].as_array().unwrap().iter().filter(|g| !b(g, "archived")).collect();
-            json!(landing(&goals, i["filterGoal"].as_str().unwrap()))
         });
         g.only("railClear").check(|i| {
             let f = rail_clear(&filters(&i["filter"]));

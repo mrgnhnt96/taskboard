@@ -24,6 +24,8 @@ pub enum Page {
     Board,
     /// The tasks outside goals, in status lanes.
     Tasks,
+    /// Every goal, as cards: active, deprioritized or finished.
+    Goals,
     /// A goal ref, `G3`.
     Goal(String),
     /// The backlog: triage it by making goals from untriaged issues.
@@ -175,6 +177,7 @@ pub struct MainWindow {
     pub hours: ui::hours::State,
     pub days: ui::days::State,
     pub tasks: ui::tasks::State,
+    pub goals: ui::goals_page::State,
     /// The goal list answered at least once (before that the state's goals stand in).
     goals_loaded: bool,
     /// Bumped by every refresh so a slow, older answer never overwrites a newer one.
@@ -210,6 +213,7 @@ impl MainWindow {
             hours: Default::default(),
             days: Default::default(),
             tasks: Default::default(),
+            goals: Default::default(),
             goals_loaded: false,
             generation: 0,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
@@ -221,6 +225,7 @@ impl MainWindow {
                 "sessions" => Page::Sessions,
                 "days" => Page::Days,
                 "tasks" => Page::Tasks,
+                "goals" => Page::Goals,
                 g if g.starts_with('G') => Page::Goal(g.into()),
                 _ => Page::Board,
             };
@@ -232,6 +237,10 @@ impl MainWindow {
         // Dev: `TASKBOARD_GOALS=1` turns on the Tasks page's "Show tasks in goals" (screenshots).
         if std::env::var("TASKBOARD_GOALS").as_deref() == Ok("1") {
             m.tasks.goals = true;
+        }
+        // Dev: `TASKBOARD_GOALS_VIEW=deprio|done` opens the Goals page on that view (screenshots).
+        if let Some((k, _)) = std::env::var("TASKBOARD_GOALS_VIEW").ok().and_then(|v| ui::goals_page::VIEWS.into_iter().find(|(k, _)| *k == v)) {
+            m.goals.view = k;
         }
         if let Ok(r) = std::env::var("TASKBOARD_OPEN") {
             m.panel = Some(if r.starts_with('B') { Panel::Issue { r } } else { Panel::Task { r, tab: TaskTab::Overview } });
@@ -272,12 +281,13 @@ impl MainWindow {
         self.set_filters(f, cx);
     }
 
-    /// "Goals" (the web's `#/goals`): the goal page of the board's goal, else the first active one.
+    /// "Goals" (the web's `#/goals`): the Goals page.
     pub fn open_goals(&mut self, cx: &mut Context<Self>) {
-        let goals: Vec<&Value> = self.data.goals.iter().filter(|g| !b(g, "archived")).collect();
-        if let Some(r) = ui::goals::landing(&goals, &self.filters.goal) {
-            self.go(Page::Goal(r), cx);
-        }
+        self.go(Page::Goals, cx);
+    }
+
+    pub fn goals_loaded(&self) -> bool {
+        self.goals_loaded
     }
 
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -766,7 +776,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, Refresh]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -776,6 +786,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-3", GoSessions, Some("MainWindow")),
         KeyBinding::new("cmd-4", GoDays, Some("MainWindow")),
         KeyBinding::new("cmd-5", GoTasks, Some("MainWindow")),
+        KeyBinding::new("cmd-6", GoGoals, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
     ]);
 }
@@ -790,6 +801,7 @@ impl Render for MainWindow {
         let page = match self.page.clone() {
             Page::Board => ui::home::render(self, window, cx),
             Page::Tasks => ui::tasks::render(self, window, cx),
+            Page::Goals => ui::goals_page::render(self, window, cx),
             Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
@@ -813,6 +825,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &GoSessions, _, cx| m.go(Page::Sessions, cx)))
             .on_action(cx.listener(|m, _: &GoDays, _, cx| m.go(Page::Days, cx)))
             .on_action(cx.listener(|m, _: &GoTasks, _, cx| m.go(Page::Tasks, cx)))
+            .on_action(cx.listener(|m, _: &GoGoals, _, cx| m.go(Page::Goals, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .relative()
             .flex()
@@ -854,7 +867,7 @@ impl Render for MainWindow {
 /// `renderAll`'s title: the page's name, with "(n) " in front while tasks need you.
 pub fn page_title(page: &Page, needs: i64) -> String {
     let base = match page {
-        Page::Goal(_) => "Goals",
+        Page::Goal(_) | Page::Goals => "Goals",
         Page::Backlog => "Backlog",
         Page::Sessions => "Sessions",
         Page::Days => "Days",
@@ -1496,11 +1509,11 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn goals_link_opens_the_first_active_goal(cx: &mut gpui_kit::TestAppContext) {
+    fn goals_link_opens_the_goals_page(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
             m.open_goals(cx);
-            assert_eq!(m.page, Page::Goal("G1".into()));
+            assert_eq!(m.page, Page::Goals);
         })
         .unwrap();
     }

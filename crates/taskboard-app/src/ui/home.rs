@@ -518,6 +518,7 @@ pub fn header(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyEle
                 // A goal opens from its card on the board, so Board stays lit on its page.
                 .child(tab("tab-board", "Board", Page::Board, matches!(page, Page::Board | Page::Goal(_))))
                 .child(tab("tab-tasks", "Tasks", Page::Tasks, page == Page::Tasks))
+                .child(tab("tab-goals", "Goals", Page::Goals, page == Page::Goals))
                 .child(tab("tab-backlog", "Backlog", Page::Backlog, page == Page::Backlog))
                 .child(tab("tab-days", "Days", Page::Days, page == Page::Days))
                 .child(tab("tab-sessions", "Sessions", Page::Sessions, page == Page::Sessions)),

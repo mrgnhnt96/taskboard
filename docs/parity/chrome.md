@@ -46,7 +46,7 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `goalItem` | ring, ref + name, status, "· d of n done", current goal highlighted | `nav_list` | 🔧 | `goal_list_matches_web` |
 | `gnav-head` | "Goals" (no New goal) | `nav_list` | 🔧 | snapshot |
 | `gnav` back link | "← Task board" | Board in the sidebar's page list | ↔ the page list is always there | — |
-| `renderGoalPage` with no id (`#/goals`) | open the board's goal, else the first active goal by project, else the first | `sidebar::landing`, `MainWindow::open_goals` | 🔧 — note: in the web this branch threw (`nav` used before its `const`), so the link never worked there | `goal_list_matches_web` (landing), `goals_link_opens_the_first_active_goal` |
+| `renderGoalPage` with no id (`#/goals`) | open the board's goal, else the first active goal by project, else the first | `MainWindow::open_goals` | 🔧 opens the native Goals page (every goal as cards: Active / Deprioritized / Finished) — in the web this branch threw (`nav` used before its `const`), so the link never worked there | `goals_link_opens_the_goals_page` |
 
 ## Banner and alerts
 
