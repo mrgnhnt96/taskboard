@@ -2,7 +2,8 @@
 //! poll's light status read in board mode. Finds the task, goal epic or backlog issue with that key,
 //! records the status and logs who moved it. It never changes a task: when an open task's ticket is
 //! done, or a done task's ticket reopened, it raises an alert instead. Moves the board made itself
-//! (a recent transition job to that status) are skipped.
+//! (a recent transition job to that status) are skipped, and so is an event older than the status
+//! the board keeps (`jira_status_at`): a relay catching up mustn't move a ticket back.
 
 use serde_json::{json, Value};
 
@@ -25,6 +26,10 @@ pub fn apply(app: &App, ev: &Value) -> Result<Value> {
     if board_moved(app, &key, &status)? {
         return Ok(json!({"key": key, "skipped": "the board moved it"}));
     }
+    // A stream event says when the status was true; the QA poll's read is as of now.
+    let at = parse_iso(&body_str(ev, "at")).unwrap_or_else(now_ts);
+    let at_iso = iso(at);
+    let mut older = 0;
     let done = is_done(app, &status, &category);
     let text = if by.is_empty() { format!("{key} moved to {status}") } else { format!("{by} moved {key} to {status}") };
     let who = if by.is_empty() { "Jira" } else { by.as_str() };
@@ -33,11 +38,16 @@ pub fn apply(app: &App, ev: &Value) -> Result<Value> {
     let mut alerts = 0;
     for t in app.db.q("SELECT * FROM tasks WHERE UPPER(jira_key) = ?", p![key.clone()])? {
         let was = t.st("jira_status");
+        if stored_newer(&t, at) {
+            older += 1;
+            continue;
+        }
         if was.eq_ignore_ascii_case(&status) {
+            app.db.update("tasks", &json!(t.id()), fields!["jira_status_at" => at_iso.clone()])?;
             continue;
         }
         let was_done = (has(Some(&was)) && is_done(app, &was, "")) || (has(Some(&from)) && is_done(app, &from, ""));
-        board::update_task(app, t.id(), fields!["jira_status" => status.clone()])?;
+        board::update_task(app, t.id(), fields!["jira_status" => status.clone(), "jira_status_at" => at_iso.clone()])?;
         board::log_event(app, t.id(), who, "jira", &text)?;
         let open = t.s("status") != Some("done");
         let alert = if open && done && !was_done {
@@ -55,26 +65,44 @@ pub fn apply(app: &App, ev: &Value) -> Result<Value> {
     }
 
     let mut goals = vec![];
-    for g in app.db.q("SELECT id, epic_status FROM goals WHERE UPPER(epic_key) = ?", p![key.clone()])? {
-        if g.st("epic_status").eq_ignore_ascii_case(&status) {
+    for g in app.db.q("SELECT id, epic_status, jira_status_at FROM goals WHERE UPPER(epic_key) = ?", p![key.clone()])? {
+        if stored_newer(&g, at) {
+            older += 1;
             continue;
         }
-        app.db.update("goals", &json!(g.id()), fields!["epic_status" => status.clone(), "updated_at" => now_iso()])?;
+        if g.st("epic_status").eq_ignore_ascii_case(&status) {
+            app.db.update("goals", &json!(g.id()), fields!["jira_status_at" => at_iso.clone()])?;
+            continue;
+        }
+        app.db.update("goals", &json!(g.id()), fields!["epic_status" => status.clone(), "jira_status_at" => at_iso.clone(), "updated_at" => now_iso()])?;
         app.info(format!("jira: {text} ({})", rf("goal", g.id())));
         goals.push(json!(rf("goal", g.id())));
     }
 
     let mut issues = vec![];
-    for i in app.db.q("SELECT id, jira_status FROM issues WHERE UPPER(jira_key) = ?", p![key.clone()])? {
-        if i.st("jira_status").eq_ignore_ascii_case(&status) {
+    for i in app.db.q("SELECT id, jira_status, jira_status_at FROM issues WHERE UPPER(jira_key) = ?", p![key.clone()])? {
+        if stored_newer(&i, at) {
+            older += 1;
             continue;
         }
-        app.db.update("issues", &json!(i.id()), fields!["jira_status" => status.clone()])?;
+        if i.st("jira_status").eq_ignore_ascii_case(&status) {
+            app.db.update("issues", &json!(i.id()), fields!["jira_status_at" => at_iso.clone()])?;
+            continue;
+        }
+        app.db.update("issues", &json!(i.id()), fields!["jira_status" => status.clone(), "jira_status_at" => at_iso.clone()])?;
         board::add_issue_event(app, i.id(), who, "jira", &text, None)?;
         issues.push(json!(rf("issue", i.id())));
     }
 
+    if older > 0 && tasks.is_empty() && goals.is_empty() && issues.is_empty() {
+        return Ok(json!({"key": key, "skipped": "older than the stored status"}));
+    }
     Ok(json!({"key": key, "status": status, "tasks": tasks, "goals": goals, "issues": issues, "alerts": alerts}))
+}
+
+/// The status the board keeps for this row was true after `at`.
+fn stored_newer(row: &Row, at: f64) -> bool {
+    row.s("jira_status_at").and_then(parse_iso).is_some_and(|kept| kept > at)
 }
 
 /// Whether the board itself just moved `key` to `status`: a Jira job, not failed, in the last few minutes.

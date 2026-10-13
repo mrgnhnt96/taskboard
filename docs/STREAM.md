@@ -131,6 +131,11 @@ moved that ticket to that status. It never changes a task: when an open task's t
 task's ticket is reopened, it raises an alert instead. Done means `status_category` is `done`, or, without one,
 a status named like `[jira] done`, `merged` or `canceled`, or Jira's usual done names (Done, Closed, Resolved…).
 
+The board keeps when each stored status was true (`jira_status_at` on tasks, goals and issues): the event's
+`at`, or the time of the board's own move or the QA poll's read. An event older than the stored status changes
+nothing, so a relay catching up after a reconnect or sending a spooled batch can't move a ticket back; its
+`result` is `{"key", "skipped": "older than the stored status"}`.
+
 With the jira source in board mode (or its stream stuck or silent), the QA poll's one JQL search
 (`updated >= -Nm`) also reads the statuses of open tasks' tickets and applies them the same way, so changes
 people make in Jira are seen without a stream. It runs whenever Jira is set up, even with QA off.

@@ -487,3 +487,51 @@ fn a_ticket_done_under_an_open_task_or_reopened_under_a_done_one_raises_an_alert
     b.send(batch(vec![jira_ev("j3", "PROJ-8", "In Review", "indeterminate", "Pat")]));
     assert_eq!(b.alerts().len(), 2, "moving between open statuses isn't a reopen");
 }
+
+fn jira_at(id: &str, key: &str, status: &str, at: &str) -> Value {
+    let mut e = jira_ev(id, key, status, "indeterminate", "Sam");
+    e["at"] = json!(at);
+    e
+}
+
+#[test]
+fn an_older_jira_issue_event_doesn_t_overwrite_a_newer_status() {
+    let b = board();
+    let t = b.ticket_task("PROJ-1", "To Do");
+    let g = b.post("/goals", json!({"name": "Login", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE goals SET epic_key = 'PROJ-1', epic_status = 'To Do' WHERE id = ?", taskboardd::p![g]).unwrap();
+    let i = b.app.db.insert("issues", taskboardd::fields!["kind" => "bug", "title" => "Grey button", "project" => "webapp", "jira_key" => "PROJ-1"]).unwrap();
+
+    b.send(batch(vec![jira_at("e-new", "PROJ-1", "Ready for QA", "2026-10-12T23:00:00Z")]));
+    b.send(batch(vec![jira_at("e-old", "PROJ-1", "In Progress", "2026-10-12T20:00:00Z")]));
+    let task = board::get_task(&b.app, t).unwrap();
+    assert_eq!(task.st("jira_status"), "Ready for QA");
+    assert_eq!(task.st("jira_status_at"), "2026-10-12T23:00:00Z");
+    assert_eq!(b.log(t).matches("moved PROJ-1").count(), 1, "{}", b.log(t));
+    assert!(b.kept("e-old").unwrap().st("result").contains("older than the stored status"));
+    let goal = b.app.db.q1("SELECT epic_status FROM goals WHERE id = ?", taskboardd::p![g]).unwrap().unwrap();
+    assert_eq!(goal.st("epic_status"), "Ready for QA");
+    let issue = b.app.db.q1("SELECT jira_status FROM issues WHERE id = ?", taskboardd::p![i]).unwrap().unwrap();
+    assert_eq!(issue.st("jira_status"), "Ready for QA");
+
+    let other = b.ticket_task("PROJ-2", "To Do");
+    b.send(batch(vec![jira_at("o-old", "PROJ-2", "In Progress", "2026-10-12T20:00:00Z")]));
+    b.send(batch(vec![jira_at("o-new", "PROJ-2", "Ready for QA", "2026-10-12T23:00:00Z")]));
+    assert_eq!(board::get_task(&b.app, other).unwrap().st("jira_status"), "Ready for QA");
+    assert_eq!(b.log(other).matches("moved PROJ-2").count(), 2, "{}", b.log(other));
+}
+
+#[test]
+fn the_qa_poll_s_read_and_the_board_s_own_move_still_apply_over_a_stream_status() {
+    let b = board();
+    let t = b.ticket_task("PROJ-1", "To Do");
+    b.send(batch(vec![jira_at("e1", "PROJ-1", "In Progress", &ago(60.0))]));
+    taskboardd::jira_status::apply(&b.app, &json!({"key": "PROJ-1", "status": "Blocked"})).unwrap();
+    assert_eq!(board::get_task(&b.app, t).unwrap().st("jira_status"), "Blocked", "the poll's read is as of now");
+
+    let job = taskboardd::jira::request(&b.app, "transition", t, "PROJ-1", Some("In Review"), None).unwrap();
+    taskboardd::jira::finish(&b.app, job, true, Some("PROJ-1"), Some("In Review"), None).unwrap();
+    assert_eq!(board::get_task(&b.app, t).unwrap().st("jira_status"), "In Review");
+    b.send(batch(vec![jira_at("e2", "PROJ-1", "In Progress", &ago(30.0))]));
+    assert_eq!(board::get_task(&b.app, t).unwrap().st("jira_status"), "In Review", "an event from before the board's move doesn't undo it");
+}

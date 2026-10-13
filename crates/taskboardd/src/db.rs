@@ -220,6 +220,11 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Set once this Claude process's hooks sent a call's end (`hook.tool_end`): until then they may be
     // ones loaded before the plugin stamped each call, and the Stop keeps to the prompt's stamp.
     ("sessions", "tool_ends", "INT DEFAULT 0"),
+    // When the ticket status the board keeps was true in Jira (a `jira.issue` event's `at`, else when
+    // the board read or moved it): an older event doesn't overwrite it.
+    ("tasks", "jira_status_at", "TEXT"),
+    ("goals", "jira_status_at", "TEXT"),
+    ("issues", "jira_status_at", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

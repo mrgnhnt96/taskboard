@@ -917,6 +917,7 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             if k.is_empty() || k.eq_ignore_ascii_case("none") {
                 f.push(("jira_key", Value::Null));
                 f.push(("jira_status", Value::Null));
+                f.push(("jira_status_at", Value::Null));
                 f.push(("jira_none", json!(1)));
             } else if k.eq_ignore_ascii_case("new") {
                 f.push(("jira_none", json!(0)));
@@ -930,6 +931,8 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 if Some(key.as_str()) != t.s("jira_key") {
                     f.push(("jira_key", json!(key)));
                     f.push(("jira_status", Value::Null));
+                    f.push(("jira_status_at", Value::Null));
+                f.push(("jira_status_at", Value::Null));
                     jira::request(app, "status", id, &key, None, None)?;
                     board::log_event(app, id, OWNER, "jira", &format!("Linked {key}"))?;
                     bump = true;
@@ -1404,7 +1407,7 @@ fn task_jira(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
             "link" => {
                 let key = ops::jira_key(&body_str(body, "key"))?;
-                board::update_task(app, id, fields!["jira_key" => key, "jira_status" => null, "jira_none" => 0])?;
+                board::update_task(app, id, fields!["jira_key" => key, "jira_status" => null, "jira_status_at" => null, "jira_none" => 0])?;
                 board::bump_ctx(app, id)?;
                 board::log_event(app, id, OWNER, "jira", &format!("Linked {key}"))?;
                 extra["job"] = json!(rf("job", jira::request(app, "status", id, &key, None, None)?));
