@@ -135,6 +135,15 @@ stored one changes nothing. The board skips a status it caused itself: a Jira jo
 moved that ticket to that status. It never changes a task: when an open task's ticket moves to done, or a done
 task's ticket is reopened, it raises an alert instead. Done means `status_category` is `done`, or, without one,
 a status named like `[jira] done`, `merged` or `canceled`, or Jira's usual done names (Done, Closed, Resolved…).
+A done task's ticket counts as reopened only when it moves back to a new status (category `new`, or, without
+one, To Do, Open, Backlog…), or from a really done status (`done`, `canceled` or Jira's usual done names) to a
+status that isn't done. `merged` hands the ticket on to QA, so QA moving it on from there (In QA, QA Passed…)
+raises nothing.
+
+These alerts (keyed `jira:<task>:<status>`) stay until the task and its ticket agree again: a reopen alert
+until the task is reopened or the ticket is back in a done status, a "still open" one until the task finishes
+or the ticket leaves the done statuses. The task being done, or another Jira move, doesn't clear them; the
+owner can still dismiss them.
 
 The board keeps when each stored status was true (`jira_status_at` on tasks, goals and issues): the event's
 `at`, or the time of the board's own move or the QA poll's read. An event older than the stored status changes

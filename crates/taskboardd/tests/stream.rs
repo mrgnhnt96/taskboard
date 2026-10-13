@@ -488,6 +488,102 @@ fn a_ticket_done_under_an_open_task_or_reopened_under_a_done_one_raises_an_alert
     assert_eq!(b.alerts().len(), 2, "moving between open statuses isn't a reopen");
 }
 
+fn qa_board() -> Board {
+    board_with(|c| {
+        c.jira.merged = "Ready for QA".into();
+        c.jira.done = "Done".into();
+        c.jira.canceled = "Withdrawn".into();
+    })
+}
+
+fn moved(id: &str, key: &str, from: &str, status: &str, category: &str) -> Value {
+    let mut e = jira_ev(id, key, status, category, "Quinn");
+    e["from_status"] = json!(from);
+    e
+}
+
+impl Board {
+    fn done_ticket_task(&self, key: &str, jira_status: &str) -> i64 {
+        let id = self.ticket_task(key, jira_status);
+        self.app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", taskboardd::p![id]).unwrap();
+        id
+    }
+    fn reopen_alerts(&self) -> usize {
+        self.alerts().iter().filter(|a| a["text"].as_str().unwrap().contains("reopening it")).count()
+    }
+    fn still_open_alerts(&self) -> usize {
+        self.alerts().iter().filter(|a| a["text"].as_str().unwrap().contains("is still open")).count()
+    }
+}
+
+#[test]
+fn qa_moving_a_ticket_on_from_the_merged_status_isn_t_a_reopen() {
+    let b = qa_board();
+    b.done_ticket_task("ABC-12", "Ready for QA");
+    b.send(batch(vec![moved("j1", "ABC-12", "Ready for QA", "In QA", "")]));
+    assert_eq!(b.reopen_alerts(), 0, "{:?}", b.alerts());
+
+    b.done_ticket_task("ABC-13", "Done");
+    b.send(batch(vec![moved("j2", "ABC-13", "Done", "In Progress", "")]));
+    assert_eq!(b.reopen_alerts(), 1, "a real done status moved back reopens it: {:?}", b.alerts());
+
+    b.done_ticket_task("ABC-14", "Ready for QA");
+    b.send(batch(vec![moved("j3", "ABC-14", "Ready for QA", "To Do", "")]));
+    assert_eq!(b.reopen_alerts(), 2, "back to a new status reopens it: {:?}", b.alerts());
+    b.done_ticket_task("ABC-15", "Ready for QA");
+    b.send(batch(vec![moved("j4", "ABC-15", "Ready for QA", "Selected", "new")]));
+    assert_eq!(b.reopen_alerts(), 3, "category new reopens it: {:?}", b.alerts());
+
+    b.ticket_task("ABC-16", "In Code Review");
+    b.send(batch(vec![moved("j5", "ABC-16", "In Code Review", "Ready for QA", "")]));
+    assert_eq!(b.still_open_alerts(), 1, "{:?}", b.alerts());
+}
+
+#[test]
+fn a_reopened_ticket_alert_on_a_done_task_survives_the_prune() {
+    let b = qa_board();
+    b.done_ticket_task("ABC-12", "Done");
+    b.send(batch(vec![moved("j1", "ABC-12", "Done", "In QA", "indeterminate")]));
+    assert_eq!(b.reopen_alerts(), 1, "{:?}", b.alerts());
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(b.reopen_alerts(), 1, "a done task doesn't clear its own reopen alert");
+}
+
+#[test]
+fn a_still_open_alert_survives_a_second_jira_move() {
+    let b = qa_board();
+    b.ticket_task("ABC-11", "In Code Review");
+    b.send(batch(vec![jira_ev("j1", "ABC-11", "Ready for QA", "", "Pat")]));
+    b.send(batch(vec![jira_ev("j2", "ABC-11", "Done", "done", "Pat")]));
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(b.still_open_alerts(), 1, "{:?}", b.alerts());
+    assert_eq!(b.alerts().len(), 1, "{:?}", b.alerts());
+}
+
+#[test]
+fn a_jira_alert_clears_once_task_and_ticket_agree() {
+    let b = qa_board();
+    let finishes = b.ticket_task("ABC-11", "In Code Review");
+    b.send(batch(vec![jira_ev("j1", "ABC-11", "Done", "done", "Pat")]));
+    let moves_back = b.ticket_task("ABC-12", "In Code Review");
+    b.send(batch(vec![jira_ev("j2", "ABC-12", "Done", "done", "Pat")]));
+    let reopened = b.done_ticket_task("ABC-13", "Done");
+    b.send(batch(vec![jira_ev("j3", "ABC-13", "In Progress", "indeterminate", "Quinn")]));
+    let redone = b.done_ticket_task("ABC-14", "Done");
+    b.send(batch(vec![jira_ev("j4", "ABC-14", "In Progress", "indeterminate", "Quinn")]));
+    assert_eq!(b.alerts().len(), 4, "{:?}", b.alerts());
+
+    b.app.db.x("UPDATE tasks SET status = 'done' WHERE id = ?", taskboardd::p![finishes]).unwrap();
+    b.send(batch(vec![jira_ev("j5", "ABC-12", "In Progress", "indeterminate", "Pat")]));
+    b.app.db.x("UPDATE tasks SET status = 'queued' WHERE id = ?", taskboardd::p![reopened]).unwrap();
+    b.send(batch(vec![jira_ev("j6", "ABC-14", "Done", "done", "Quinn")]));
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    let left: Vec<i64> = b.alerts().iter().filter_map(|a| a["task_id"].as_i64()).collect();
+    for id in [finishes, moves_back, reopened, redone] {
+        assert!(!left.contains(&id), "T{id}'s alert clears once task and ticket agree: {:?}", b.alerts());
+    }
+}
+
 fn jira_at(id: &str, key: &str, status: &str, at: &str) -> Value {
     let mut e = jira_ev(id, key, status, "indeterminate", "Sam");
     e["at"] = json!(at);
