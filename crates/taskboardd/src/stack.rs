@@ -44,8 +44,40 @@ pub fn clean(app: &App, value: &Value, t: Option<&Row>) -> Result<Option<i64>> {
         if waitsfor::reaches(app, n, t.id(), &mut vec![])? {
             return err(409, format!("{} already builds on {}, so this would wait forever.", rf("task", n), rf("task", t.id())));
         }
+        if let Some(why) = wave_clash(t, &other) {
+            return err(409, why);
+        }
     }
     Ok(Some(n))
+}
+
+/// A task stacked on another in its own goal waits for that task's PR, and the goal's waves hold the
+/// parent back until the child's wave is done: the parent has to be in an earlier wave.
+fn wave_clash(child: &Row, parent: &Row) -> Option<String> {
+    let same_goal = child.i("goal_id").is_some() && child.i("goal_id") == parent.i("goal_id");
+    match (child.i("wave"), parent.i("wave")) {
+        (Some(c), Some(p)) if same_goal && p >= c => {
+            Some(format!("{} has to be in an earlier wave, so its PR is up before this one starts.", rf("task", parent.id())))
+        }
+        _ => None,
+    }
+}
+
+/// After a task's wave or goal changes: it still comes after the task it stacks on, and before the
+/// tasks that stack on it.
+pub fn check_waves(app: &App, t: &Row) -> Result<()> {
+    if let Some(parent) = board::find_task(app, parent_id(t))? {
+        if let Some(why) = wave_clash(t, &parent) {
+            return err(409, why);
+        }
+    }
+    for child in children(app, t.id())? {
+        if wave_clash(&child, t).is_some() {
+            let (c, p) = (rf("task", child.id()), rf("task", t.id()));
+            return err(409, format!("{c} stacks on {p}, so {p} has to be in an earlier wave than {c}, so its PR is up before {c} starts."));
+        }
+    }
+    Ok(())
 }
 
 /// The tasks still stacking on this one: open, or done with their PR still open.

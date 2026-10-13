@@ -18,6 +18,20 @@ const KEY: &str = "limits";
 /// The longest gap `tb limits --review-gap` sets between a step's rounds, in minutes.
 pub const MAX_REVIEW_GAP: i64 = 240;
 pub const NUMBERS: [&str; 4] = ["compact_window", "cold_idle_mins", "warm_tokens", "warm_idle_mins"];
+/// Claude Code doesn't compact below about this many tokens; a smaller window is someone thinking in thousands.
+const MIN_COMPACT_WINDOW: i64 = 50_000;
+
+/// A whole number from a body value: `150000`, `"150_000"`, `"150,000"`, and for token counts `"150k"`.
+fn whole(v: &Value, tokens: bool) -> Option<i64> {
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    let s = v.as_str()?.trim().replace(['_', ','], "").to_lowercase();
+    match s.strip_suffix('k').filter(|_| tokens) {
+        Some(k) => k.trim().parse::<i64>().ok().map(|n| n * 1000),
+        None => s.parse().ok(),
+    }
+}
 /// How long a headless `/compact` may take before the resume goes ahead without it.
 const COMPACT_TIMEOUT: f64 = 600.0;
 
@@ -160,8 +174,10 @@ pub fn set(app: &App, body: &Value) -> Result<Limits> {
                 saved.remove(k);
             }
             v => {
-                let n = v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().replace(['_', ','], "").parse().ok()));
-                match n {
+                match whole(v, k.ends_with("tokens") || k == "compact_window") {
+                    Some(n) if k == "compact_window" && n > 0 && n < MIN_COMPACT_WINDOW => {
+                        return err(400, "Claude Code won't compact below about 50k. Use 0 to leave it to Claude Code.");
+                    }
                     Some(n) if n >= 0 => {
                         saved.insert(k.into(), json!(n));
                     }

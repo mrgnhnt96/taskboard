@@ -91,7 +91,7 @@ Titles are short summaries a person reads at a glance (80 characters at most, no
 
 ## Context limits
 
-The board compacts its agents' conversations at a token window, compacts a cold conversation (idle over an hour) before resuming it, and resumes a task or PR conversation only while it's small and recent (otherwise it starts fresh from the handoff). It also keeps generated files out of agents' diffs (a `-diff` block in `.git/info/attributes`). `tb limits` shows the limits; change them only when the owner asks: `--compact-window 150000`, `--cold-idle-mins 60`, `--warm-tokens 60000`, `--warm-idle-mins 60` (0 turns one off), `--generated "*.g.dart,Cargo.lock"` (`--project <name>` for one project's own; `none` clears), `--review-gap 10` (minutes between a branch's review rounds, 0 to 240, 0 for none; `--step "<name>"` when more than one step has a gap), `--reset`.
+The board compacts its agents' conversations at a token window, compacts a cold conversation (idle over an hour) before resuming it, and resumes a task or PR conversation only while it's small and recent (otherwise it starts fresh from the handoff). It also keeps generated files out of agents' diffs (a `-diff` block in `.git/info/attributes`). `tb limits` shows the limits; change them only when the owner asks: `--compact-window 150k` (0, or at least 50k), `--cold-idle-mins 60`, `--warm-tokens 60000`, `--warm-idle-mins 60` (0 turns one off), `--generated "*.g.dart,Cargo.lock"` (`--project <name>` for one project's own; `none` clears), `--review-gap 10` (minutes between a branch's review rounds, 0 to 240, 0 for none; `--step "<name>"` when more than one step has a gap), `--reset`.
 
 ## Work hours
 

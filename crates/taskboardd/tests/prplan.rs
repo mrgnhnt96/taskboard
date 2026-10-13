@@ -129,6 +129,40 @@ fn fake_gh(dir: &Path) -> std::path::PathBuf {
 // ------------------------------------------------------------------ #13 stacked PRs
 
 #[test]
+fn a_stack_in_one_goal_needs_its_parent_in_an_earlier_wave() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Checkout", "project": "webapp"}))["id"].as_i64().unwrap();
+    let parent = b.task("Parent later", json!({"goal_id": g, "wave": 2}));
+    let child = b.task("Child earlier", json!({"goal_id": g, "wave": 1}));
+    let earlier = format!("T{parent} has to be in an earlier wave, so its PR is up before this one starts.");
+    for wave in [1, 2] {
+        b.post(&format!("/tasks/T{child}"), json!({"wave": wave}));
+        let (code, msg) = b.post_err(&format!("/tasks/T{child}"), json!({"stack_on": format!("T{parent}")}));
+        assert_eq!((code, msg.as_str()), (409, earlier.as_str()), "child in wave {wave}");
+        assert_eq!(b.row(child).i("pr_after"), None);
+    }
+    let (code, msg) = b.post_err("/tasks", json!({"title": "New child", "detail": "Do it.", "project": "webapp", "goal_id": g, "wave": 1, "stack_on": format!("T{parent}")}));
+    assert_eq!((code, msg.as_str()), (409, earlier.as_str()), "tb task new --stack-on");
+
+    // Moving the child to a later wave in the same call stacks it.
+    b.post(&format!("/tasks/T{child}"), json!({"wave": 3, "stack_on": format!("T{parent}")}));
+    assert_eq!(b.row(child).i("pr_after"), Some(parent));
+
+    // Moving either one back so the parent isn't earlier is refused, and nothing moves.
+    let (code, _) = b.post_err(&format!("/tasks/T{child}"), json!({"wave": 2}));
+    assert_eq!(code, 409);
+    let (code, msg) = b.post_err(&format!("/tasks/T{parent}"), json!({"wave": 3}));
+    assert_eq!(code, 409);
+    assert!(msg.contains(&format!("T{child} stacks on T{parent}")), "{msg}");
+    assert_eq!((b.row(child).i("wave"), b.row(parent).i("wave")), (Some(3), Some(2)));
+
+    // A task with no wave isn't held by the waves, so it can stack on any of them.
+    let free = b.task("No wave", json!({"goal_id": g}));
+    b.post(&format!("/tasks/T{free}"), json!({"stack_on": format!("T{child}")}));
+    assert_eq!(b.row(free).i("pr_after"), Some(child));
+}
+
+#[test]
 fn a_stacked_task_waits_for_its_parent_in_any_goal() {
     let b = new_board();
     let g1 = b.post("/goals", json!({"name": "API", "project": "webapp"}))["id"].as_i64().unwrap();

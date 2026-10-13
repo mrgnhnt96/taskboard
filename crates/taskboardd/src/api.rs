@@ -970,7 +970,14 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         // Stacking (`--stack-on`) and the PR plan (`--pr yes|no`) log their own change.
         let mut planned = false;
         if has_key("stack_on") {
-            planned |= crate::stack::set(app, &t, &body["stack_on"], &who)?;
+            let mut moved = t.clone();
+            if let Some(w) = wave_changed {
+                moved.insert("wave".into(), json!(w));
+            }
+            if let Some(g) = new_goal_id {
+                moved.insert("goal_id".into(), json!(g));
+            }
+            planned |= crate::stack::set(app, &moved, &body["stack_on"], &who)?;
         }
         if has_key("ships_pr") {
             planned |= projects::set_task_ships_pr(app, &board::get_task(app, id)?, &body["ships_pr"], &who)?;
@@ -986,6 +993,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         let edited = f.iter().any(|(k, _)| matches!(*k, "title" | "detail" | "meta"));
         board::update_task(app, id, f)?;
+        if wave_changed.is_some() || new_goal_id.is_some() {
+            crate::stack::check_waves(app, &board::get_task(app, id)?)?;
+        }
         if bump {
             board::bump_ctx(app, id)?;
         }

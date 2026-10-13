@@ -612,7 +612,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/close-terminal` | `{force: bool}` | `force` false from the done box; true from Manage when the terminal is busy. |
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
 | `POST /tasks/:id/meta` | `{meta: [[name, value], …]}` | Edit/remove Details fields. |
-| `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--pr`, `--no-pr`. `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. `ships_pr` "auto" (or null) goes back to the project's default. |
+| `POST /tasks` / `POST /tasks/:id` | `{stack_on: "T3"\|"none", ships_pr: true\|false\|"yes"\|"no"\|"auto"}` | `tb task new\|set --stack-on`, `--pr`, `--no-pr`. `stack_on` must be a task in the same project that doesn't (transitively) build on this one; it blocks like `waits_for`, in any goal. In the same goal, when both have a wave, the parent has to be in an earlier wave (409 otherwise, also when a `wave` change would break that). `ships_pr` "auto" (or null) goes back to the project's default. |
 | `POST /tasks/:id/pr/reviewed` | `{}` | "I reviewed it": the owner looked at a green PR that waited for them (`pr.stage.awaiting_you`); clears its alerts. Only from the app (`X-Task-Board-From: app`): any other caller gets 403 "Only the owner marks a PR reviewed, from its task page." and the stage stays as it was. |
 | `POST /done/close-terminals` | `{project?, goal?}` | Close every done task's still-open terminal (no force; a busy one is left), within a project or goal when given: `tb close --done` (on the owner's word). **Response read:** `jobs` (how many close). |
 
@@ -876,7 +876,7 @@ and takes the block out of a repo it no longer looks after (its project off Midn
 there; its work done). The Python board's block (`# task-board: generated files …` to `# task-board: end`) is replaced
 by the board's, and once after an upgrade every repo the board has known is swept for blocks from before they were tracked (and again after `taskboardd import`, for the repos it brings).
 
-- `compact_window`: board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
+- `compact_window`: 0, or at least 50,000 tokens (400 below that: Claude Code won't compact earlier); token counts also take `"150k"`. Board terminals' Claude gets `--settings '{"autoCompactWindow": n}'` (unless the job brings its own `settings`).
 - `cold_idle_mins`: a conversation idle longer is compacted before it carries on: a headless `claude -p /compact --resume <id>
   --output-format json --setting-sources ""` (no user settings or hooks; a nonzero exit or `is_error` is a failure, and the
   resume goes ahead uncompacted) before a new terminal resumes it, or `/compact` queued ahead of an agent job's prompt or a message job's text in its live terminal
