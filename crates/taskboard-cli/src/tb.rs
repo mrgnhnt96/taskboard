@@ -172,6 +172,16 @@ enum Cmd {
     },
     /// Named locks, who holds each, and tasks that run alone
     Locks,
+    /// Close the terminals of finished tasks (on the owner's word): tb close --done
+    Close {
+        /// The terminals of done tasks; terminals still working are left open
+        #[arg(long, required = true)]
+        done: bool,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        goal: Option<String>,
+    },
     /// The device pool: each device, its tags, who has it, and the tasks waiting for one
     Devices,
     /// Add, change, remove or focus a device in the pool
@@ -1078,6 +1088,8 @@ enum BacklogCmd {
         #[arg(required = true)]
         issues: Vec<String>,
     },
+    /// Add a note to a backlog issue's log; its detail stays as it is
+    Note { issue: String, text: String },
 }
 
 #[derive(Subcommand)]
@@ -2093,7 +2105,7 @@ fn bit_cmd(c: &Ctx, action: BitCmd) -> Result<i32, String> {
             if let Some(x) = note {
                 b["note"] = json!(x);
             }
-            if b.as_object().map(|o| o.len() <= 1).unwrap_or(true) {
+            if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                 return Err("say what to change, for example: tb bit set newCheckout --task T12".into());
             }
             c.call("POST", &format!("/bits/{name}"), Some(b))?
@@ -2107,6 +2119,54 @@ fn bit_cmd(c: &Ctx, action: BitCmd) -> Result<i32, String> {
     let tool = c.call("GET", "/bits", None).ok().and_then(|l| l["tool"].as_str().map(|s| s.to_string())).unwrap_or_else(|| "the flag tool".into());
     out(&bit_line(&v, &tool));
     Ok(0)
+}
+
+/// `tb checkpoint`'s report: only the lists given, so one left out never wipes what was saved.
+fn checkpoint_body(done: Vec<String>, next: Vec<String>, decisions: Vec<String>, files: Vec<String>) -> Result<Value, String> {
+    let mut f = json!({});
+    for (k, xs) in [("done", done), ("next", next), ("decisions", decisions), ("files", files)] {
+        if !xs.is_empty() {
+            f[k] = json!(xs);
+        }
+    }
+    if f.as_object().is_some_and(|o| o.is_empty()) {
+        return Err("give at least one --done, --next, --decision or --file".into());
+    }
+    Ok(f)
+}
+
+/// `tb propose` names at least one task, each with a title.
+fn propose_tasks(tasks: &[String]) -> Result<(), String> {
+    if tasks.is_empty() {
+        return Err("name at least one task: --task \"title::what to do\"".into());
+    }
+    if let Some(t) = tasks.iter().find(|t| t.split_once("::").map_or(t.as_str(), |(title, _)| title).trim().is_empty()) {
+        return Err(format!("--task {t:?} has no title: give it as \"title::what to do\""));
+    }
+    Ok(())
+}
+
+/// What `tb attach` sends: a link as it is, a file as its full path, once it's there.
+fn attach_target(url: &str, cwd: &str) -> Result<String, String> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Ok(url.to_string());
+    }
+    let path = match url.strip_prefix("~/") {
+        Some(rest) => std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(rest),
+        None => std::path::Path::new(cwd).join(url),
+    };
+    if !path.exists() {
+        return Err(format!("no such file: {}", path.display()));
+    }
+    Ok(std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().to_string())
+}
+
+fn close_done_line(n: i64) -> String {
+    match n {
+        0 => "No finished task has a terminal to close.".into(),
+        1 => "Closing 1 finished task's terminal.".into(),
+        n => format!("Closing {n} finished tasks' terminals."),
+    }
 }
 
 /// A query value, percent-encoded.
@@ -2994,10 +3054,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Checkpoint { done, next, decisions, files, t } => {
-            let mut f = json!({"done": done, "next": next, "decisions": decisions});
-            if !files.is_empty() {
-                f["files"] = json!(files);
-            }
+            let f = checkpoint_body(done, next, decisions, files)?;
             c.run_report("tb.checkpoint", f, t.task, true, |v| format!("Checkpoint saved on {}.", v["task"].as_str().unwrap_or("")))
         }
         Cmd::Found { title, kind, detail, output, t } => c.run_report(
@@ -3191,6 +3248,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Propose { goal, tasks } => {
             let g = goal_ref(&goal)?;
+            propose_tasks(&tasks)?;
             short_task_titles(&tasks)?;
             match c.report("tb.propose", json!({"goal": g, "tasks": tasks}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
@@ -3205,6 +3263,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
+        Cmd::Close { done: _, project, goal } => {
+            let goal = goal.map(|g| goal_ref(&g)).transpose()?;
+            let v = c.call("POST", "/done/close-terminals", Some(json!({"project": project, "goal": goal})))?;
+            out(&close_done_line(v["jobs"].as_i64().unwrap_or(0)));
+            Ok(0)
+        }
         Cmd::Locks => {
             let v = c.call("GET", "/locks", None)?;
             let locks = v["locks"].as_array().cloned().unwrap_or_default();
@@ -3707,6 +3771,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&format!("Added {} to the backlog.", v["ref"].as_str().unwrap_or("")));
             Ok(0)
         }
+        Cmd::Backlog { action: BacklogCmd::Note { issue, text } } => {
+            let r = issue_ref(&issue)?;
+            c.call("POST", &format!("/backlog/{r}/note"), Some(json!({"text": text})))?;
+            out(&format!("Added a note to {r}."));
+            Ok(0)
+        }
         Cmd::Backlog { action: BacklogCmd::Set { issue, title, detail } } => {
             let r = issue_ref(&issue)?;
             let mut b = json!({"who": c.who()});
@@ -3800,11 +3870,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Attach { url, kind, title, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
-            let url = if url.starts_with("http://") || url.starts_with("https://") || url.starts_with('/') || url.starts_with("~/") {
-                url
-            } else {
-                std::fs::canonicalize(&url).map(|p| p.to_string_lossy().to_string()).unwrap_or(url)
-            };
+            let url = attach_target(&url, &c.cwd)?;
             let needs = goal.is_none();
             c.run_report("tb.attach", json!({"url": url, "kind": kind, "title": title, "goal": goal}), t.task, needs, |v| {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
@@ -4745,6 +4811,63 @@ mod tests {
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 2})), "Checked the PRs: 2 tasks changed.");
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 1})), "Checked the PRs: 1 task changed.");
         assert_eq!(pr_check_line(&json!({"ok": true, "changed": 0})), "Checked the PRs: nothing changed.");
+    }
+
+    fn board_down_ctx(tag: &str) -> (Ctx, std::path::PathBuf) {
+        let data = std::env::temp_dir().join(format!("tb-{tag}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        std::fs::create_dir_all(&data).unwrap();
+        let mut cfg = Config::for_tests(&data);
+        cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        (Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: data.to_string_lossy().to_string() }, data)
+    }
+
+    #[test]
+    fn tb_bit_set_takes_one_change_and_refuses_none() {
+        let (c, data) = board_down_ctx("bitset");
+        let none = run_cmd(&c, Cli::try_parse_from(["tb", "bit", "set", "live-flag"]).unwrap().cmd).unwrap_err();
+        assert!(none.starts_with("say what to change"), "{none}");
+        for flag in [&["--note", "x one"][..], &["--local"], &["--backend"], &["--name", "other"], &["--task", "T3"], &["--not-task", "T3"]] {
+            let mut args = vec!["tb", "bit", "set", "live-flag"];
+            args.extend_from_slice(flag);
+            let e = run_cmd(&c, Cli::try_parse_from(args).unwrap().cmd).unwrap_err();
+            assert!(!e.starts_with("say what to change"), "{flag:?} alone is a change: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_checkpoint_propose_and_attach_refuse_what_does_nothing() {
+        assert_eq!(checkpoint_body(vec![], vec![], vec![], vec![]).unwrap_err(), "give at least one --done, --next, --decision or --file");
+        assert_eq!(checkpoint_body(vec!["a".into()], vec![], vec![], vec![]).unwrap(), json!({"done": ["a"]}), "lists left out aren't sent");
+        assert!(propose_tasks(&[]).unwrap_err().starts_with("name at least one task"));
+        assert!(propose_tasks(&["::detail".into()]).unwrap_err().contains("has no title"));
+        assert!(propose_tasks(&["  ".into()]).unwrap_err().contains("has no title"));
+        propose_tasks(&["Fix it::the detail".into()]).unwrap();
+
+        let dir = std::env::temp_dir().join(format!("tb-attach-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shot.png"), b"png").unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        let full = std::fs::canonicalize(dir.join("shot.png")).unwrap().to_string_lossy().to_string();
+        assert_eq!(attach_target("shot.png", &cwd).unwrap(), full, "a relative path is made full");
+        assert_eq!(attach_target(&full, "/").unwrap(), full);
+        assert_eq!(attach_target("https://x.test/a", &cwd).unwrap(), "https://x.test/a");
+        assert_eq!(attach_target("/no/such/missing.png", &cwd).unwrap_err(), "no such file: /no/such/missing.png");
+        assert_eq!(attach_target("missing.png", &cwd).unwrap_err(), format!("no such file: {cwd}/missing.png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tb_close_done_and_backlog_note_parse() {
+        let Cmd::Close { done, project, goal } = Cli::try_parse_from(["tb", "close", "--done", "--goal", "G2"]).unwrap().cmd else { panic!("not tb close") };
+        assert_eq!((done, project, goal.as_deref()), (true, None, Some("G2")));
+        assert!(Cli::try_parse_from(["tb", "close"]).is_err(), "tb close needs --done");
+        assert_eq!(close_done_line(2), "Closing 2 finished tasks' terminals.");
+        assert_eq!(close_done_line(0), "No finished task has a terminal to close.");
+        let Cmd::Backlog { action: BacklogCmd::Note { issue, text } } = Cli::try_parse_from(["tb", "backlog", "note", "B2", "seen again on the tablet build"]).unwrap().cmd else {
+            panic!("not tb backlog note")
+        };
+        assert_eq!((issue.as_str(), text.as_str()), ("B2", "seen again on the tablet build"));
     }
 
     #[test]

@@ -348,7 +348,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let text = required(body, "text", 2000, "The note")?;
             app.db.tx(|| {
                 board::get_issue(app, i)?;
-                board::add_issue_event(app, i, OWNER, "note", &format!("Added a note: “{text}”"), None)
+                board::add_issue_event(app, i, &board::caller(app, body, OWNER), "note", &format!("Added a note: “{text}”"), None)
             })?;
             issue_detail(app, i)
         }

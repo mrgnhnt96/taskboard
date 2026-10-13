@@ -94,8 +94,11 @@ fn tb_limits_shows_changes_and_resets() {
     assert_eq!(v["compact_window"], 120_000);
     assert!(v["line"].as_str().unwrap().contains("Compact before resuming after: off"));
     assert_eq!(v["generated"], json!(["*.g.dart", "Cargo.lock"]));
-    let v = b.post("/limits", json!({"generated": ["*.pb.go"], "project": "api"})).unwrap();
-    assert_eq!(v["project_generated"]["api"], json!(["*.pb.go"]));
+    let v = b.post("/limits", json!({"generated": ["*.pb.go"], "project": "webapp"})).unwrap();
+    assert_eq!(v["project_generated"]["webapp"], json!(["*.pb.go"]));
+    let (code, msg) = b.post("/limits", json!({"generated": "*.zz", "project": "nosuch"})).unwrap_err();
+    assert_eq!((code, msg.as_str()), (404, "There's no project called nosuch."));
+    assert!(b.get("/limits")["project_generated"].get("nosuch").is_none(), "nothing is stored for it");
     assert_eq!(v["defaults"]["compact_window"], 150_000);
 
     assert_eq!(b.post("/limits", json!({"warm_tokens": -1})).unwrap_err().0, 400);
