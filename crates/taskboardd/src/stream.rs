@@ -6,7 +6,8 @@
 //! A body is an envelope, `{v: 1, events: [...]}`, or one event on its own (`{v: 1, id, kind, ...}`).
 //! Each event is checked on its own and answered on its own: `accepted`, `duplicate` (its `id` came
 //! before) or `rejected` with why. An accepted event is kept in `stream_events` (its whole payload, so
-//! later work can apply it) and routed: pr and build to the PR feed ([`feed::intake_from`]), heartbeat
+//! later work can apply it) and routed: pr and build to the PR feed ([`feed::intake_from`]), review and
+//! comment as hints to read their PR again when it's on the board, heartbeat
 //! to each source it names, jira.issue to the ticket's task, epic or issue ([`crate::jira_status::apply`]),
 //! jira.comment to QA comments ([`qa::intake`]); every kind counts for its
 //! source's health. An event whose route refuses it is rejected and not kept, so the relay can send it
@@ -348,6 +349,7 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
             feed::intake_from(app, &as_feed_pr(ev), &["prs"], apply)
         }
         "build" => feed::intake_from(app, &as_feed_build(ev), &["builds"], None),
+        "review" | "comment" => pr_hint(app, kind, ev),
         "heartbeat" => {
             let named: Vec<&str> = ev["sources"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
             let sources = if named.is_empty() { SOURCES.to_vec() } else { named };
@@ -477,6 +479,18 @@ pub fn overview(app: &App) -> Value {
         })
         .collect();
     json!({"v": VERSION, "sources": sources})
+}
+
+/// A review or comment on a PR is a hint, like an incomplete pr event: a PR on the board is read again
+/// from its host, and the result names its task. Any other PR only counts for the prs source's health.
+fn pr_hint(app: &App, kind: &str, ev: &Value) -> Result<Value> {
+    let pr = &ev["pr"];
+    let t = feed::task_of_event(app, &json!({"url": pr["url"], "host": pr["provider"], "repo": pr["repo"], "num": pr["num"]}))?;
+    feed::note_event_for(app, "prs", kind, ev, t.as_ref().map(|t| t.id()))?;
+    let Some(t) = t else { return Ok(Value::Null) };
+    let mut out = json!({"ok": true, "kind": kind, "task": rf("task", t.id())});
+    feed::read_pr(app, &t, None, &mut out)?;
+    Ok(out)
 }
 
 /// A pr event as the PR feed's own event (`POST /prs/event`).

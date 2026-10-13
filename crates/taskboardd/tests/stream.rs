@@ -211,6 +211,34 @@ fn a_pr_event_refreshes_its_pr_and_says_whether_it_was_complete() {
 }
 
 #[test]
+fn a_review_or_comment_on_a_board_pr_reads_it_like_a_pr_hint() {
+    let b = board();
+    let id = b.pr_task(BB);
+    let h = FakeHost::new("bitbucket", host_rec("h7"));
+    prhost::install(&b.app, h.clone());
+    let pr = json!({"provider": "bitbucket", "repo": "acme/webapp", "num": 9});
+    let r = b.send(batch(vec![ev("r1", "review", json!({"pr": pr, "who": "pat", "state": "changes"}))]));
+    let res = &r["results"][0]["result"];
+    assert_eq!(res["task"], format!("T{id}"), "{r}");
+    assert_eq!(res["kind"], "review");
+    assert_eq!(res["refreshed"], true);
+    assert_eq!(b.rec(id)["head"], "h7", "the PR was read from its host");
+
+    h.rec.lock().head = "h8".into();
+    let r = b.send(batch(vec![ev("c1", "comment", json!({"pr": {"url": BB}, "comment_id": "c1", "author": "pat", "body": "Why?"}))]));
+    assert_eq!(r["results"][0]["result"]["task"], format!("T{id}"), "{r}");
+    assert_eq!(b.rec(id)["head"], "h8", "a comment reads it again too");
+
+    h.rec.lock().head = "h9".into();
+    let other = json!({"provider": "bitbucket", "repo": "acme/other", "num": 3});
+    let r = b.send(batch(vec![ev("r2", "review", json!({"pr": other, "who": "pat", "state": "approved"}))]));
+    assert_eq!(r["results"][0]["status"], "accepted");
+    assert!(r["results"][0].get("result").is_none(), "a PR off the board isn't read: {r}");
+    assert_eq!(b.rec(id)["head"], "h8");
+    assert_eq!(b.source("prs")["last_event"]["kind"], "review", "it still counts for health");
+}
+
+#[test]
 fn build_and_heartbeat_events_reach_their_sources() {
     let b = board();
     let r = b.send(batch(vec![
