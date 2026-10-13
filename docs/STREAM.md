@@ -111,9 +111,11 @@ any case. A display name, a username or an account id all match once they're in 
 
 ### `heartbeat`: the relay is alive
 
-`sources?` (some of `prs`, `builds`, `jira` and `qa`), `active?: bool`, `idle_until?` and `connected_at?`.
-These follow `POST /prs/heartbeat`. While the relay says it's idle (until `idle_until`, if given), the board
-doesn't count it as stuck or silent.
+`sources?` (some of `prs`, `builds`, `jira` and `qa`), `active?: bool`, `idle_until?`, `connected_at?` and
+`covers?: [{provider, repo?}]`. The first four follow `POST /prs/heartbeat`. While the relay says it's idle
+(until `idle_until`, if given), the board doesn't count it as stuck or silent. `covers` says which PRs the relay
+hears about: each entry a provider (`github`, `bitbucket`) and, optionally, one repo (`acme/webapp`, or its short
+name). Left out, the relay covers every PR. Each heartbeat replaces what the last one said it covers.
 
 ## Routing (v1)
 
@@ -174,6 +176,22 @@ While a stream-mode source is healthy its own poll rests, and it resumes as soon
 | `prs` | the PR poll (`[intervals] prs`) |
 | `builds` | the read of the owner's open PRs while PR builds are stopped (`pr_builds.owner_prs_secs`) |
 | `qa` | the Jira comment poll (`qa_poll_mins`) |
+
+#### Relays
+
+A source can hear from several relays (each event's `source`), say one for Bitbucket and one for GitHub
+webhooks. The board keeps each relay's health on its own under its source: its heartbeats, idle state, last
+event and what it covers. `GET /stream` lists them under each source's `relays`. Once a stream relay has reported
+for a source, the source's health is its relays':
+
+- the source is stuck or silent while any of its relays is, each timed on its own, so one relay's heartbeat or
+  idle state doesn't make another's silence look fine;
+- a relay that never sent a heartbeat is never stuck, but counts as silent after `silent_secs` like any other;
+- the PR poll rests only for PRs a healthy, active relay covers by its heartbeats (`covers`), and the whole poll
+  rests only while one covers every PR. Other PRs are polled as in board mode. A relay that never sent a heartbeat
+  covers nothing. `POST /prs/refresh` still reads every PR.
+
+Without stream relays (only the older endpoints below), health and the poll work as before.
 
 Every accepted event's whole payload is kept in `stream_events` for 30 days, with its kind, source, time,
 whether it was complete, and what its route answered.

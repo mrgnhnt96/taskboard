@@ -38,6 +38,18 @@
 //! ([`heartbeat_for`]). While a stream-mode source is healthy its own poll rests ([`poll_rests`]): prs
 //! is the PR poll, builds the owner-PR read (`prbuilds.rs`), qa the Jira comment poll (`qa.rs`).
 //!
+//! # Relays
+//!
+//! Each stream relay (an event's `source`) is also kept on its own, under its source's `relays`
+//! ([`note_relay`]): its own heartbeats, idle state and last event, and what its heartbeats say it
+//! covers (`covers: [{provider, repo?}]`, every PR when left out). Once a relay has reported for a
+//! source, the source's health is its relays': it's unhealthy while any of them is stuck or silent,
+//! each timed on its own, so one relay's heartbeat or idle state doesn't cover for another's silence.
+//! A relay that never sent a heartbeat is never stuck, but goes silent after `silent_secs` like any
+//! other. The PR poll then rests only for PRs a healthy, active relay covers by its heartbeats
+//! ([`pr_poll_rests`]); the others are polled as in board mode. The old listener's endpoints
+//! (`POST /prs/heartbeat`, `POST /prs/event`) aren't relays: without stream relays they work as above.
+//!
 //! # State
 //!
 //! The setting `pr_feed` keeps `{since, last_event_at, last_event, last_heartbeat_at, heartbeats,
@@ -219,23 +231,67 @@ pub fn problem_of(app: &App, src: &Source) -> Option<(&'static str, String)> {
         return None;
     }
     let st = state(app, src);
+    let relays = relays_of(&st);
+    if relays.is_empty() {
+        return timed_problem(app, src, &st, &src.label);
+    }
+    relays.iter().find_map(|(name, r)| relay_problem(app, src, name, r))
+}
+
+/// One relay's problem, timed on its own: (`stuck` or `silent`, a sentence naming it).
+fn relay_problem(app: &App, src: &Source, name: &str, r: &Row) -> Option<(&'static str, String)> {
+    timed_problem(app, src, r, &format!("{}'s relay {name}", src.label))
+}
+
+/// The stuck and silent checks on one feed's state (a source's, or one relay's).
+fn timed_problem(app: &App, src: &Source, st: &Row, who: &str) -> Option<(&'static str, String)> {
     let now = now_ts();
-    if listener_idle(&st, now) {
+    if listener_idle(st, now) {
         return None;
     }
-    let woke = ts(&st, "idle_until").filter(|_| says_hours(&st));
-    if let Some(hb) = ts(&st, "last_heartbeat_at") {
+    let woke = ts(st, "idle_until").filter(|_| says_hours(st));
+    if let Some(hb) = ts(st, "last_heartbeat_at") {
         let from = woke.map_or(hb, |w| w.max(hb));
         if src.stuck_secs > 0.0 && now - from > src.stuck_secs {
-            return Some(("stuck", format!("{} hasn't sent a heartbeat for {}", src.label, span(now - hb))));
+            return Some(("stuck", format!("{who} hasn't sent a heartbeat for {}", span(now - hb))));
         }
     }
-    let heard = [ts(&st, "last_event_at"), ts(&st, "last_heartbeat_at"), ts(&st, "since"), woke].into_iter().flatten().fold(f64::MIN, f64::max);
-    let in_hours = says_hours(&st) || hours::is_open(app);
+    let heard = [ts(st, "last_event_at"), ts(st, "last_heartbeat_at"), ts(st, "since"), woke].into_iter().flatten().fold(f64::MIN, f64::max);
+    let in_hours = says_hours(st) || hours::is_open(app);
     if src.silent_secs > 0.0 && heard > f64::MIN && now - heard > src.silent_secs && in_hours {
-        return Some(("silent", format!("nothing has come from {} for {}", src.label, span(now - heard))));
+        return Some(("silent", format!("nothing has come from {who} for {}", span(now - heard))));
     }
     None
+}
+
+/// A source's stream relays, by name.
+fn relays_of(st: &Row) -> Vec<(String, Row)> {
+    st.get("relays").and_then(|v| v.as_object()).map(|m| m.iter().filter_map(|(k, v)| v.as_object().map(|r| (k.clone(), r.clone()))).collect()).unwrap_or_default()
+}
+
+/// Whether a relay's heartbeats say it covers this PR: every PR without `covers`, else an entry with
+/// its provider and, when the entry names one, its repo (by full or short name, in any case). A relay
+/// that never sent a heartbeat covers nothing.
+fn covers(r: &Row, host: &str, repo: &str) -> bool {
+    if !r.contains_key("last_heartbeat_at") {
+        return false;
+    }
+    let Some(list) = r.get("covers").and_then(|v| v.as_array()) else { return true };
+    let short = |x: &str| x.rsplit('/').next().unwrap_or("").to_lowercase();
+    list.iter().any(|c| {
+        let want = c["repo"].as_str().unwrap_or("");
+        let same_repo = want.is_empty() || want.eq_ignore_ascii_case(repo) || (!(want.contains('/') && repo.contains('/')) && short(want) == short(repo));
+        c["provider"].as_str().is_some_and(|p| p.eq_ignore_ascii_case(host)) && same_repo
+    })
+}
+
+/// A relay that's healthy and not idle now and covers this PR (or, with none, every PR).
+fn relay_covers_now(app: &App, src: &Source, name: &str, r: &Row, pr: Option<(&str, &str)>) -> bool {
+    let covered = match pr {
+        Some((host, repo)) => covers(r, host, repo),
+        None => r.contains_key("last_heartbeat_at") && !r.contains_key("covers"),
+    };
+    covered && !listener_idle(r, now_ts()) && relay_problem(app, src, name, r).is_none()
 }
 
 fn span(secs: f64) -> String {
@@ -296,7 +352,26 @@ pub fn holding(app: &App, first_ask: bool) -> Option<String> {
 /// poll; jira has none.
 pub fn poll_rests(app: &App, name: &str) -> bool {
     let src = source(app, name);
-    src.on && !src.poll_while_healthy && problem_of(app, &src).is_none()
+    if !src.on || src.poll_while_healthy {
+        return false;
+    }
+    let relays = relays_of(&state(app, &src));
+    if name == "prs" && !relays.is_empty() {
+        // The whole PR poll rests only while a healthy, active relay covers every PR; otherwise it runs
+        // and skips the PRs one covers (`pr_poll_rests`).
+        return relays.iter().any(|(n, r)| relay_covers_now(app, &src, n, r, None));
+    }
+    problem_of(app, &src).is_none()
+}
+
+/// Whether the timed PR poll skips this PR: a healthy, active stream relay covers its provider and
+/// repo. Without stream relays the whole poll rests or runs ([`poll_due`]), so no PR is skipped.
+pub fn pr_poll_rests(app: &App, host: &str, repo: &str) -> bool {
+    let src = prs(app);
+    if !src.on || src.poll_while_healthy {
+        return false;
+    }
+    relays_of(&state(app, &src)).iter().any(|(n, r)| relay_covers_now(app, &src, n, r, Some((host, repo))))
 }
 
 /// Whether the PR poll runs this round: always without the feed, else while it's unhealthy (or with
@@ -336,6 +411,26 @@ pub fn health_of(app: &App, src: &Source) -> Value {
         "active": st.v("active"),
         "idle_until": st.v("idle_until"),
         "off_hours": off_hours_of(app, src),
+        "relays": relays_of(&st).iter().map(|(name, r)| relay_health(app, src, name, r)).collect::<Vec<_>>(),
+    })
+}
+
+/// One relay's health under its source, as `GET /stream` lists it.
+fn relay_health(app: &App, src: &Source, name: &str, r: &Row) -> Value {
+    let p = relay_problem(app, src, name, r);
+    json!({
+        "relay": name,
+        "healthy": p.is_none(),
+        "problem": p.as_ref().map(|(k, _)| *k),
+        "why": p.as_ref().map(|(_, w)| w.clone()),
+        "idle": listener_idle(r, now_ts()),
+        "last_event_at": r.v("last_event_at"),
+        "last_event": r.v("last_event"),
+        "last_heartbeat_at": r.v("last_heartbeat_at"),
+        "connected_at": r.v("connected_at"),
+        "active": r.v("active"),
+        "idle_until": r.v("idle_until"),
+        "covers": r.v("covers"),
     })
 }
 
@@ -366,29 +461,69 @@ pub fn heartbeat_for(app: &App, body: &Value, sources: &[&str]) -> Result<()> {
     let active = body.get("active").or_else(|| body.get("activeNow")).filter(|v| !v.is_null()).map(|v| as_bool(Some(v), true));
     let idle_until = when_of(body, "idle_until")?;
     let connected_at = when_of(body, "connected_at")?;
+    for name in sources {
+        let src = source(app, name);
+        let mut st = state(app, &src);
+        beat(&mut st, active, idle_until.as_deref(), connected_at.as_deref());
+        save(app, &src, &st)?;
+    }
+    Ok(())
+}
+
+/// Applies one heartbeat to a feed's state (a source's, or one relay's).
+fn beat(st: &mut Row, active: Option<bool>, idle_until: Option<&str>, connected_at: Option<&str>) {
+    let now = now_iso();
+    let mut connect = !st.contains_key("last_heartbeat_at");
+    if let Some(c) = connected_at.and_then(parse_iso) {
+        connect |= ts(st, "connected_at").is_none_or(|old| c > old);
+    }
+    if let Some(a) = active {
+        connect |= a && st.get("active").and_then(|v| v.as_bool()) == Some(false);
+        st.insert("active".into(), json!(a));
+        match idle_until {
+            Some(u) if !a => st.insert("idle_until".into(), json!(u)),
+            _ => st.remove("idle_until"),
+        };
+    } else if let Some(u) = idle_until {
+        st.insert("idle_until".into(), json!(u));
+    }
+    if connect {
+        st.insert("connected_at".into(), json!(connected_at.map(str::to_string).unwrap_or_else(|| now.clone())));
+    }
+    st.insert("last_heartbeat_at".into(), json!(now));
+    st.insert("heartbeats".into(), json!(st.i0("heartbeats") + 1));
+}
+
+/// A stream event was accepted from `relay` (its `source`): kept under each source it counts for, a
+/// heartbeat (with what it `covers`) under the sources it names, any other event as that relay's last.
+pub fn note_relay(app: &App, relay: &str, kind: &str, ev: &Value, sources: &[&str]) -> Result<()> {
+    if relay.is_empty() {
+        return Ok(());
+    }
+    let active = ev.get("active").filter(|v| !v.is_null()).map(|v| as_bool(Some(v), true));
+    let idle_until = when_of(ev, "idle_until")?;
+    let connected_at = when_of(ev, "connected_at")?;
     let now = now_iso();
     for name in sources {
         let src = source(app, name);
         let mut st = state(app, &src);
-        let mut connect = !st.contains_key("last_heartbeat_at");
-        if let Some(c) = connected_at.as_deref().and_then(parse_iso) {
-            connect |= ts(&st, "connected_at").is_none_or(|old| c > old);
+        let mut relays = st.get("relays").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        let mut r = relays.get(relay).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        if !r.contains_key("since") {
+            r.insert("since".into(), json!(now));
         }
-        if let Some(a) = active {
-            connect |= a && st.get("active").and_then(|v| v.as_bool()) == Some(false);
-            st.insert("active".into(), json!(a));
-            match &idle_until {
-                Some(u) if !a => st.insert("idle_until".into(), json!(u)),
-                _ => st.remove("idle_until"),
+        if kind == "heartbeat" {
+            beat(&mut r, active, idle_until.as_deref(), connected_at.as_deref());
+            match ev.get("covers").filter(|v| v.is_array()) {
+                Some(c) => r.insert("covers".into(), c.clone()),
+                None => r.remove("covers"),
             };
-        } else if let Some(u) = &idle_until {
-            st.insert("idle_until".into(), json!(u));
+        } else {
+            r.insert("last_event_at".into(), json!(now));
+            r.insert("last_event".into(), json!({"kind": kind, "at": now, "id": ev.get("id")}));
         }
-        if connect {
-            st.insert("connected_at".into(), json!(connected_at.clone().unwrap_or_else(|| now.clone())));
-        }
-        st.insert("last_heartbeat_at".into(), json!(now));
-        st.insert("heartbeats".into(), json!(st.i0("heartbeats") + 1));
+        relays.insert(relay.to_string(), Value::Object(r));
+        st.insert("relays".into(), Value::Object(relays));
         save(app, &src, &st)?;
     }
     Ok(())

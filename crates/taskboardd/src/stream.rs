@@ -98,6 +98,8 @@ fn one(app: &App, ev: &Value) -> Result<Value> {
     match route(app, &kind, ev, complete) {
         Ok(result) => {
             app.db.update("stream_events", &json!(row), fields!["result" => jdumps(&result)])?;
+            let counts_for = if kind == "heartbeat" { heartbeat_sources(ev) } else { source_of(&kind).into_iter().collect() };
+            feed::note_relay(app, &body_str(ev, "source"), &kind, ev, &counts_for)?;
             let mut a = answer("accepted");
             if kind == "pr" {
                 a["complete"] = json!(complete);
@@ -246,7 +248,14 @@ fn heartbeat(ev: &Value) -> Check {
     }
     bool_or_null(ev, "active")?;
     opt_time(ev, "idle_until")?;
-    opt_time(ev, "connected_at")
+    opt_time(ev, "connected_at")?;
+    list(ev, "covers", |c| {
+        need(c, "provider")?;
+        match c.get("repo") {
+            None | Some(Value::Null) | Some(Value::String(_)) => Ok(()),
+            _ => Err("repo is a string.".into()),
+        }
+    })
 }
 
 fn need(v: &Value, k: &str) -> std::result::Result<String, String> {
@@ -333,6 +342,12 @@ fn jira_key(ev: &Value) -> Check {
     ops::jira_key(&body_str(ev, "key")).map(|_| ()).map_err(|e| e.message)
 }
 
+/// The sources a heartbeat names, else every source.
+fn heartbeat_sources(ev: &Value) -> Vec<&str> {
+    let named: Vec<&str> = ev["sources"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    if named.is_empty() { SOURCES.to_vec() } else { named }
+}
+
 /// The source an event kind counts for: its health hears from it.
 fn source_of(kind: &str) -> Option<&'static str> {
     match kind {
@@ -363,8 +378,7 @@ fn route(app: &App, kind: &str, ev: &Value, complete: bool) -> Result<Value> {
             Ok(json!({"builds": crate::prbuilds::on_push_build(app, &as_push_build(ev))?}))
         }
         "heartbeat" => {
-            let named: Vec<&str> = ev["sources"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-            let sources = if named.is_empty() { SOURCES.to_vec() } else { named };
+            let sources = heartbeat_sources(ev);
             let hb = json!({"active": ev["active"], "idle_until": ev["idle_until"], "connected_at": ev["connected_at"]});
             app.db.tx(|| feed::heartbeat_for(app, &hb, &sources))?;
             Ok(json!({"sources": sources}))
