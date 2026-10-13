@@ -189,9 +189,9 @@ fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, Strin
                 cx.notify();
             }))
         });
-    let mut col = div().flex().flex_col().flex_1().min_w_0().child(button);
+    let mut col = div().relative().flex().flex_col().flex_1().min_w_0().child(button);
     if open {
-        let mut list = div().id(SharedString::from(format!("hours-{which}-list"))).flex().flex_col().max_h(px(200.)).overflow_y_scroll().mt(px(4.)).p(px(2.)).rounded(px(6.)).border_1().border_color(t.border).bg(t.card);
+        let mut list = div().id(SharedString::from(format!("hours-{which}-list"))).flex().flex_col().max_h(px(200.)).overflow_y_scroll().p(px(2.)).rounded(px(6.)).border_1().border_color(t.border).bg(t.card).shadow_lg();
         for (v, l) in options {
             let (v2, sel) = (v.clone(), v == value);
             list = list.child(kit::menu_item(t, SharedString::from(format!("hours-{which}-{v}")), l.clone(), sel).h(px(26.)).on_click(cx.listener(move |m, _, _, cx| {
@@ -205,7 +205,8 @@ fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, Strin
                 cx.notify();
             })));
         }
-        col = col.child(list);
+        // Floats over the rows below instead of pushing the menu taller.
+        col = col.child(deferred(div().absolute().top_full().mt(px(4.)).left_0().right_0().child(list)).with_priority(4));
     }
     col
 }
@@ -234,7 +235,7 @@ fn keep_awake(t: &Theme, k: KeepAwake) -> Div {
         .border_t_1()
         .border_color(t.border)
         .text_size(px(12.5))
-        .child(div().flex().items_center().gap(px(6.)).child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.)).child(k.line))
+        .child(div().flex().items_start().gap(px(6.)).child(div().flex_none().pt(px(5.)).child(kit::dot(if k.held { t.up } else { t.border_2 }, 8.))).child(div().flex_1().min_w_0().child(k.line)))
         .children(k.schedule.map(|s| div().pl(px(14.)).text_color(t.muted).child(s)))
 }
 
