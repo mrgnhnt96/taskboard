@@ -706,6 +706,31 @@ fn qa_moving_a_ticket_on_from_the_merged_status_isn_t_a_reopen() {
 }
 
 #[test]
+fn a_reopened_ticket_raises_one_alert_for_all_its_done_tasks() {
+    let b = qa_board();
+    let tasks: Vec<i64> = (0..3).map(|_| b.done_ticket_task("ABC-21", "Done")).collect();
+    for (n, t) in tasks.iter().enumerate() {
+        b.app.db.x("UPDATE tasks SET finished_at = ? WHERE id = ?", taskboardd::p![ago(3600.0 - n as f64 * 60.0), *t]).unwrap();
+    }
+    b.send(batch(vec![moved("j1", "ABC-21", "Done", "To Do", "")]));
+    let alerts: Vec<Value> = b.alerts().into_iter().filter(|a| a["text"].as_str().unwrap().contains("reopening it")).collect();
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    let want = format!("Quinn moved ABC-21 to To Do, reopening it, but T{}, T{} and T{} are done.", tasks[0], tasks[1], tasks[2]);
+    assert_eq!(alerts[0]["text"], want.as_str());
+    assert_eq!(alerts[0]["task_id"], tasks[2], "it opens the newest done task");
+
+    b.send(batch(vec![moved("j2", "ABC-21", "To Do", "Done", "")]));
+    taskboardd::dispatch::prune_alerts(&b.app).unwrap();
+    assert_eq!(b.reopen_alerts(), 0, "it clears once the ticket is back in a done status: {:?}", b.alerts());
+
+    let open: Vec<i64> = (0..2).map(|_| b.ticket_task("ABC-22", "In Progress")).collect();
+    b.send(batch(vec![moved("j3", "ABC-22", "In Progress", "Closed", "")]));
+    let still: Vec<Value> = b.alerts().into_iter().filter(|a| a["text"].as_str().unwrap().contains("still open")).collect();
+    assert_eq!(still.len(), 1, "{still:?}");
+    assert_eq!(still[0]["text"], format!("Quinn moved ABC-22 to Closed, but T{} and T{} are still open.", open[0], open[1]).as_str());
+}
+
+#[test]
 fn a_reopened_ticket_alert_on_a_done_task_survives_the_prune() {
     let b = qa_board();
     b.done_ticket_task("ABC-12", "Done");

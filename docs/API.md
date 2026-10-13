@@ -962,7 +962,10 @@ older `init`'s `background = []                      # example: ["plan"]` line i
 and never closes. Its intro names the site, project and `cloudId`. Its `--allowedTools` are a new ticket's tools plus
 `getAccessibleAtlassianResources` and `discover` (or `claude_tools` as it is, when set) plus `Bash(tb jira:*)` and
 `Bash(<tb path> jira:*)` for the path it's told to run tb by, so its reports don't wait on a prompt. It gets one job
-at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`.
+at a time as a message starting `[task-board:J<n>]` and reports with `tb jira`. A desk open Midna refuses fails the
+Jira job that asked for it ("Midna refused: <why>", with the usual ticket-failure note and alert), so the desk isn't
+opened again for that job. Tasks never go to the desk: it isn't in a task's `attachable`, and starting a task on it
+(or a new task's `pickup: attach`) is 409 "Tasks can't go to the Jira desk."; deliveries and a PR's resume skip it.
 
 | Request | Body | What |
 |---|---|---|

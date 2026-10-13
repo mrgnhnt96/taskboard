@@ -32,6 +32,9 @@ pub fn start_task(
     flags: Option<String>,
     cwd: Option<String>,
 ) -> Result<i64> {
+    if mode == "attach" && crate::jira_desk::is_desk(app, session_id)? {
+        return err(409, "Tasks can't go to the Jira desk.");
+    }
     let cwd = match cwd {
         Some(c) => Some(c),
         None if mode != "attach" => match worktrees::made(app, t)? {

@@ -17,7 +17,7 @@ fn merge(mut v: Value, extra: Value) -> Value {
     v
 }
 
-pub fn pickup(body: &Value) -> Result<(String, Option<String>)> {
+pub fn pickup(app: &App, body: &Value) -> Result<(String, Option<String>)> {
     let p = match body.get("pickup") {
         Some(Value::String(s)) => json!({"mode": s}),
         Some(Value::Object(o)) => Value::Object(o.clone()),
@@ -30,6 +30,9 @@ pub fn pickup(body: &Value) -> Result<(String, Option<String>)> {
     let sid = p["session_id"].as_str().map(|s| s.to_string());
     if mode == "attach" && sid.is_none() {
         return err(400, "Pick a Midna terminal to attach.");
+    }
+    if mode == "attach" && crate::jira_desk::is_desk(app, sid.as_deref())? {
+        return err(409, "Tasks can't go to the Jira desk.");
     }
     Ok((mode, sid))
 }
@@ -96,7 +99,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         return err(400, "Pick a project.");
     }
     let priority = if body["priority"] == "high" { "high" } else { "normal" };
-    let (mode, sid) = pickup(body)?;
+    let (mode, sid) = pickup(app, body)?;
     let status = if body["status"] == "planned" { "planned" } else { "queued" };
     let auto_close = as_bool(body.get("auto_close"), g.as_ref().map(|g| g.b("auto_close")).unwrap_or(true));
     let jopt = match body.get("jira") {
@@ -283,6 +286,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
         .q("SELECT * FROM sessions WHERE status != 'gone' ORDER BY name COLLATE NOCASE", p![])?
         .into_iter()
         .filter(|s| s.s("id") != t.s("session_id") && board::runs_claude(s) && s.s("project") == t.s("project"))
+        .filter(|s| !crate::jira_desk::is_desk(app, s.s("id")).unwrap_or(false))
         .map(|s| json!({"id": s.v("id"), "name": s.s("name").map(|n| n.to_string()).unwrap_or_else(|| s.st("id").chars().take(8).collect()), "status": board::terminal_status(Some(&s))}))
         .collect();
     let jobs_now: Vec<Value> = app
