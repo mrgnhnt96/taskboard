@@ -1137,6 +1137,15 @@ fn review_label(r: &Review, need: Option<i64>) -> String {
 
 /// Reads every open PR the board's tasks made, on every watched host, and steps each one.
 pub fn refresh(app: &App) -> Result<i64> {
+    refresh_where(app, false)
+}
+
+/// The timed PR poll: [`refresh`], skipping the PRs a healthy stream relay covers (`feed::pr_poll_rests`).
+pub fn poll(app: &App) -> Result<i64> {
+    refresh_where(app, true)
+}
+
+fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
     if !app.cfg.pr.watch {
         return Ok(0);
     }
@@ -1146,6 +1155,9 @@ pub fn refresh(app: &App) -> Result<i64> {
     )?;
     let mut changed = 0;
     for t in tasks {
+        if skip_covered && crate::feed::pr_poll_rests(app, t.s("pr_host").unwrap_or(""), t.s("pr_repo").unwrap_or("")) {
+            continue;
+        }
         match read(app, &t) {
             Ok(rec) => {
                 note_expected(app, &t, &rec)?;

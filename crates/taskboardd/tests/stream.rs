@@ -396,6 +396,78 @@ fn a_stream_mode_source_s_poll_rests_while_its_stream_is_healthy() {
     assert_eq!(b.source("qa")["polling"], true);
 }
 
+// --- relays (#205) ---
+
+fn from(relay: &str, mut e: Value) -> Value {
+    e["source"] = json!(relay);
+    e["v"] = json!(1);
+    e
+}
+
+#[test]
+fn a_relay_covering_only_bitbucket_leaves_github_prs_polled() {
+    let b = board_with(stream_mode("prs"));
+    let gh = FakeHost::new("github", Record { title: "read from GitHub".into(), ..host_rec("g1") });
+    let bb = FakeHost::new("bitbucket", Record { title: "read from Bitbucket".into(), ..host_rec("b1") });
+    prhost::install(&b.app, gh);
+    prhost::install(&b.app, bb);
+    let gh_task = b.pr_task("https://github.com/acme/webapp/pull/7");
+    let bb_task = b.pr_task(BB);
+    b.send(from("bb-relay", ev("h1", "heartbeat", json!({"sources": ["prs", "builds"], "covers": [{"provider": "bitbucket"}]}))));
+    b.send(from("gh-relay", ev("r1", "review", json!({"pr": {"provider": "github", "repo": "acme/other", "num": 3}, "who": "rev", "state": "approved"}))));
+
+    assert!(feed::poll_due(&b.app), "no healthy relay covers every PR");
+    assert!(feed::pr_poll_rests(&b.app, "bitbucket", "acme/webapp"));
+    assert!(!feed::pr_poll_rests(&b.app, "github", "acme/webapp"), "gh-relay never sent a heartbeat, so it covers nothing");
+    prflow::poll(&b.app).unwrap();
+    let title = |id: i64| board::get_task(&b.app, id).unwrap().s("pr_title").map(str::to_string);
+    assert_eq!(title(gh_task).as_deref(), Some("read from GitHub"), "the GitHub PR is polled");
+    assert_ne!(title(bb_task).as_deref(), Some("read from Bitbucket"), "bb-relay drives the Bitbucket PR");
+
+    let relays = b.source("prs")["relays"].as_array().unwrap().clone();
+    let names: Vec<&str> = relays.iter().map(|r| r["relay"].as_str().unwrap()).collect();
+    assert_eq!(names, ["bb-relay", "gh-relay"]);
+    assert_eq!(relays[0]["covers"], json!([{"provider": "bitbucket"}]));
+    assert!(relays[1]["last_heartbeat_at"].is_null() && relays[1]["last_event_at"].is_string());
+    assert!(b.source("builds")["relays"][0]["relay"] == "bb-relay");
+    assert!(b.send(from("r", ev("h2", "heartbeat", json!({"covers": [{"repo": "x"}]}))))["results"][0]["why"].as_str().unwrap().contains("provider"));
+}
+
+#[test]
+fn one_relay_s_idle_doesn_t_hide_another_s_silence() {
+    let b = board_with(stream_mode("prs"));
+    let idle_until = iso(now_ts() + 3600.0);
+    b.feed_state(
+        "prs",
+        json!({"since": ago(5000.0), "last_heartbeat_at": ago(10.0), "active": false, "idle_until": idle_until,
+               "relays": {"a": {"since": ago(5000.0), "last_heartbeat_at": ago(10.0), "active": false, "idle_until": idle_until},
+                          "b": {"since": ago(5000.0), "last_event_at": ago(4000.0)}}}),
+    );
+    let prs = b.source("prs");
+    assert_eq!(prs["problem"], "silent");
+    assert!(prs["why"].as_str().unwrap().contains("relay b"), "{}", prs["why"]);
+    assert_eq!(prs["relays"][0]["idle"], true);
+    assert_eq!(prs["relays"][0]["healthy"], true);
+    assert_eq!(prs["relays"][1]["problem"], "silent");
+    assert!(!feed::poll_rests(&b.app, "prs"));
+}
+
+#[test]
+fn one_relay_covering_every_provider_works_as_before() {
+    let b = board_with(stream_mode("prs"));
+    b.send(from("relay", ev("h1", "heartbeat", json!({"sources": ["prs"]}))));
+    let prs = b.source("prs");
+    assert_eq!(prs["healthy"], true);
+    assert_eq!(prs["polling"], false);
+    assert!(feed::poll_rests(&b.app, "prs") && !feed::poll_due(&b.app));
+    assert!(feed::pr_poll_rests(&b.app, "github", "acme/webapp"));
+    assert!(prs["last_heartbeat_at"].is_string(), "the source's own fields still show the last heartbeat");
+
+    b.feed_state("prs", json!({"since": ago(4000.0), "last_heartbeat_at": ago(200.0), "relays": {"relay": {"since": ago(4000.0), "last_heartbeat_at": ago(200.0)}}}));
+    assert_eq!(b.source("prs")["problem"], "stuck");
+    assert!(feed::poll_due(&b.app), "stuck, so the poll takes over");
+}
+
 // --- jira.issue (#78) ---
 
 fn jira_ev(id: &str, key: &str, status: &str, category: &str, by: &str) -> Value {
