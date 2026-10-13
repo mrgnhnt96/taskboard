@@ -13,7 +13,7 @@ use taskboardd::config::Config;
 use taskboardd::prhost::{self, Check, FakeHost, Record};
 use taskboardd::stream::SourceConfig;
 use taskboardd::util::{iso, now_ts, Row, RowExt};
-use taskboardd::{board, feed, midna, prflow, reports};
+use taskboardd::{board, dispatch, feed, midna, prflow, reports};
 
 struct Board {
     app: Arc<App>,
@@ -429,6 +429,7 @@ fn a_relay_covering_only_bitbucket_leaves_github_prs_polled() {
     assert_eq!(names, ["bb-relay", "gh-relay"]);
     assert_eq!(relays[0]["covers"], json!([{"provider": "bitbucket"}]));
     assert!(relays[1]["last_heartbeat_at"].is_null() && relays[1]["last_event_at"].is_string());
+    assert_eq!(relays[1]["covers"], json!([]), "gh-relay never sent a heartbeat, so it covers nothing");
     assert!(b.source("builds")["relays"][0]["relay"] == "bb-relay");
     assert!(b.send(from("r", ev("h2", "heartbeat", json!({"covers": [{"repo": "x"}]}))))["results"][0]["why"].as_str().unwrap().contains("provider"));
 }
@@ -441,15 +442,106 @@ fn one_relay_s_idle_doesn_t_hide_another_s_silence() {
         "prs",
         json!({"since": ago(5000.0), "last_heartbeat_at": ago(10.0), "active": false, "idle_until": idle_until,
                "relays": {"a": {"since": ago(5000.0), "last_heartbeat_at": ago(10.0), "active": false, "idle_until": idle_until},
-                          "b": {"since": ago(5000.0), "last_event_at": ago(4000.0)}}}),
+                          "b": {"since": ago(5000.0), "last_heartbeat_at": ago(4000.0), "active": true}}}),
     );
     let prs = b.source("prs");
-    assert_eq!(prs["problem"], "silent");
+    assert!(prs["problem"].is_string());
     assert!(prs["why"].as_str().unwrap().contains("relay b"), "{}", prs["why"]);
     assert_eq!(prs["relays"][0]["idle"], true);
     assert_eq!(prs["relays"][0]["healthy"], true);
-    assert_eq!(prs["relays"][1]["problem"], "silent");
+    assert_eq!(prs["relays"][1]["healthy"], false);
     assert!(!feed::poll_rests(&b.app, "prs"));
+}
+
+// --- event-only relays (#220) ---
+
+fn hours_off(b: &Board) {
+    b.post("/hours", json!({"on": false}));
+}
+
+#[test]
+fn a_webhook_relay_s_quiet_doesn_t_make_the_source_unhealthy() {
+    let marker = tempfile::tempdir().unwrap();
+    let ran = marker.path().join("restarted");
+    let cmd = format!("touch {}", ran.display());
+    let b = board_with(|c| {
+        c.feed.on = true;
+        c.feed.silent_secs = 20.0;
+        c.feed.restart_cmd = cmd.clone();
+        c.feed.restart_mins = vec![0.0];
+    });
+    hours_off(&b);
+    b.feed_state(
+        "prs",
+        json!({"since": ago(600.0), "last_heartbeat_at": ago(5.0),
+               "relays": {"fi": {"since": ago(600.0), "last_heartbeat_at": ago(5.0), "covers": [{"provider": "bitbucket"}]},
+                          "github": {"since": ago(600.0), "last_event_at": ago(300.0)}}}),
+    );
+    let prs = b.source("prs");
+    assert_eq!(prs["healthy"], true, "{}", prs["why"]);
+    let gh = prs["relays"].as_array().unwrap().iter().find(|r| r["relay"] == "github").cloned().unwrap();
+    assert_eq!((gh["event_only"].clone(), gh["healthy"].clone(), gh["problem"].clone()), (json!(true), json!(true), Value::Null));
+    assert!(gh["last_event_at"].is_string());
+    feed::check(&b.app).unwrap();
+    feed::check(&b.app).unwrap();
+    assert!(!ran.exists(), "nothing is restarted");
+    assert!(!dispatch::alerts(&b.app).iter().any(|a| a["key"] == "pr-feed"));
+    assert_eq!(feed::holding(&b.app, true), None, "the review loop isn't held");
+    assert!(feed::feed_healthy(&b.app));
+}
+
+#[test]
+fn a_silent_listener_relay_still_restarts_the_source() {
+    let marker = tempfile::tempdir().unwrap();
+    let ran = marker.path().join("restarted");
+    let cmd = format!("touch {}", ran.display());
+    let b = board_with(|c| {
+        c.feed.on = true;
+        c.feed.silent_secs = 20.0;
+        c.feed.restart_cmd = cmd.clone();
+        c.feed.restart_mins = vec![0.0];
+    });
+    hours_off(&b);
+    b.feed_state(
+        "prs",
+        json!({"since": ago(600.0), "last_heartbeat_at": ago(300.0),
+               "relays": {"fi": {"since": ago(600.0), "last_heartbeat_at": ago(300.0), "covers": [{"provider": "bitbucket"}]},
+                          "github": {"since": ago(600.0), "last_event_at": ago(5.0)}}}),
+    );
+    let prs = b.source("prs");
+    assert_eq!(prs["healthy"], false);
+    assert!(prs["why"].as_str().unwrap().contains("relay fi"), "{}", prs["why"]);
+    feed::check(&b.app).unwrap();
+    feed::check(&b.app).unwrap();
+    assert!(ran.exists(), "the listener's restart_cmd runs");
+}
+
+// --- tb stream (#221) ---
+
+#[test]
+fn get_stream_says_what_each_relay_covers() {
+    let b = board_with(stream_mode("prs"));
+    b.send(from("all", ev("h1", "heartbeat", json!({"sources": ["prs"]}))));
+    b.send(from("hook", ev("r1", "review", json!({"pr": {"provider": "github", "repo": "acme/other", "num": 3}, "who": "rev", "state": "approved"}))));
+    let relays = b.source("prs")["relays"].as_array().unwrap().clone();
+    let by = |n: &str| relays.iter().find(|r| r["relay"] == n).cloned().unwrap();
+    assert_eq!(by("all")["covers"], "all");
+    assert_eq!(by("hook")["covers"], json!([]));
+    assert_eq!(by("hook")["event_only"], true);
+}
+
+#[test]
+fn a_relay_covering_some_prs_polls_some() {
+    let b = board_with(stream_mode("prs"));
+    b.send(from("bb", ev("h1", "heartbeat", json!({"sources": ["prs"], "covers": [{"provider": "bitbucket", "repo": "acme/webapp"}]}))));
+    let prs = b.source("prs");
+    assert_eq!((prs["polling"].clone(), prs["polling_some"].clone()), (json!(true), json!(true)));
+    assert_eq!(prs["relays"][0]["covers"], json!([{"provider": "bitbucket", "repo": "acme/webapp"}]));
+
+    let b = board_with(stream_mode("prs"));
+    b.send(from("all", ev("h1", "heartbeat", json!({"sources": ["prs"]}))));
+    let prs = b.source("prs");
+    assert_eq!((prs["polling"].clone(), prs["polling_some"].clone()), (json!(false), json!(false)));
 }
 
 #[test]

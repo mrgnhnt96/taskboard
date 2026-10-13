@@ -45,8 +45,9 @@
 //! covers (`covers: [{provider, repo?}]`, every PR when left out). Once a relay has reported for a
 //! source, the source's health is its relays': it's unhealthy while any of them is stuck or silent,
 //! each timed on its own, so one relay's heartbeat or idle state doesn't cover for another's silence.
-//! A relay that never sent a heartbeat is never stuck, but goes silent after `silent_secs` like any
-//! other. The PR poll then rests only for PRs a healthy, active relay covers by its heartbeats
+//! A relay that never sent a heartbeat (a webhook relay) is event-only: never stuck or silent, so its
+//! quiet doesn't count against the source, and a source's `restart_cmd` only runs for a listener's
+//! problem. The PR poll then rests only for PRs a healthy, active relay covers by its heartbeats
 //! ([`pr_poll_rests`]); the others are polled as in board mode. The old listener's endpoints
 //! (`POST /prs/heartbeat`, `POST /prs/event`) aren't relays: without stream relays they work as above.
 //!
@@ -238,9 +239,28 @@ pub fn problem_of(app: &App, src: &Source) -> Option<(&'static str, String)> {
     relays.iter().find_map(|(name, r)| relay_problem(app, src, name, r))
 }
 
-/// One relay's problem, timed on its own: (`stuck` or `silent`, a sentence naming it).
+/// One relay's problem, timed on its own: (`stuck` or `silent`, a sentence naming it). A relay that
+/// never sent a heartbeat (a webhook relay) is event-only: its quiet is no problem. It covers no PR,
+/// so the poll still reads its PRs, and a source's `restart_cmd` only ever runs for a listener's.
 fn relay_problem(app: &App, src: &Source, name: &str, r: &Row) -> Option<(&'static str, String)> {
+    if event_only(r) {
+        return None;
+    }
     timed_problem(app, src, r, &format!("{}'s relay {name}", src.label))
+}
+
+/// A relay that has never sent a heartbeat: it only posts when its host fires a webhook.
+fn event_only(r: &Row) -> bool {
+    !r.contains_key("last_heartbeat_at")
+}
+
+/// What a relay covers, as `GET /stream` shows it: `"all"` when its heartbeats left `covers` out,
+/// `[]` when it never sent one, else the list.
+fn covers_shown(r: &Row) -> Value {
+    if event_only(r) {
+        return json!([]);
+    }
+    r.get("covers").filter(|c| c.is_array()).cloned().unwrap_or_else(|| json!("all"))
 }
 
 /// The stuck and silent checks on one feed's state (a source's, or one relay's).
@@ -273,7 +293,7 @@ fn relays_of(st: &Row) -> Vec<(String, Row)> {
 /// its provider and, when the entry names one, its repo (by full or short name, in any case). A relay
 /// that never sent a heartbeat covers nothing.
 fn covers(r: &Row, host: &str, repo: &str) -> bool {
-    if !r.contains_key("last_heartbeat_at") {
+    if event_only(r) {
         return false;
     }
     let Some(list) = r.get("covers").and_then(|v| v.as_array()) else { return true };
@@ -289,9 +309,23 @@ fn covers(r: &Row, host: &str, repo: &str) -> bool {
 fn relay_covers_now(app: &App, src: &Source, name: &str, r: &Row, pr: Option<(&str, &str)>) -> bool {
     let covered = match pr {
         Some((host, repo)) => covers(r, host, repo),
-        None => r.contains_key("last_heartbeat_at") && !r.contains_key("covers"),
+        None => !event_only(r) && !r.contains_key("covers"),
     };
     covered && !listener_idle(r, now_ts()) && relay_problem(app, src, name, r).is_none()
+}
+
+/// The PR poll runs but skips some PRs: a healthy, active relay covers a list of them, and none
+/// covers every PR.
+fn polling_some(app: &App, src: &Source) -> bool {
+    if src.name != "prs" || poll_rests(app, "prs") || !src.on || src.poll_while_healthy {
+        return false;
+    }
+    relays_of(&state(app, src)).iter().any(|(n, r)| {
+        r.get("covers").and_then(|c| c.as_array()).is_some_and(|c| !c.is_empty())
+            && !event_only(r)
+            && !listener_idle(r, now_ts())
+            && relay_problem(app, src, n, r).is_none()
+    })
 }
 
 fn span(secs: f64) -> String {
@@ -401,6 +435,7 @@ pub fn health_of(app: &App, src: &Source) -> Value {
         "problem": p.as_ref().map(|(k, _)| *k),
         "why": p.as_ref().map(|(_, w)| w.clone()),
         "polling": !poll_rests(app, &src.name),
+        "polling_some": polling_some(app, src),
         "last_event_at": st.v("last_event_at"),
         "last_event": st.v("last_event"),
         "last_heartbeat_at": st.v("last_heartbeat_at"),
@@ -430,7 +465,8 @@ fn relay_health(app: &App, src: &Source, name: &str, r: &Row) -> Value {
         "connected_at": r.v("connected_at"),
         "active": r.v("active"),
         "idle_until": r.v("idle_until"),
-        "covers": r.v("covers"),
+        "event_only": event_only(r),
+        "covers": covers_shown(r),
     })
 }
 
