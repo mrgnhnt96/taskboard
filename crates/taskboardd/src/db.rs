@@ -243,6 +243,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "merged_note", "TEXT"),
     ("tasks", "merged_note_wait", "TEXT"),
     ("tasks", "merged_note_posted", "TEXT"),
+    // The goals this one runs after (`tb goal set --after`, `chain.rs`): a JSON list of goal ids.
+    ("goals", "after_goals", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

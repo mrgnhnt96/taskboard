@@ -42,7 +42,9 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
         }
         if let (Some(g), false) = (goal, goal_was_finished) {
             if goal_finished(app, g)? {
-                hooks::fire_goal(app, "goal.finished", &get_goal(app, g)?, Some(&after));
+                let goal = get_goal(app, g)?;
+                hooks::fire_goal(app, "goal.finished", &goal, Some(&after));
+                crate::chain::finished(app, &goal)?;
             }
         }
     }
@@ -662,6 +664,8 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
         "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
+        "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
+        "after_blocker": crate::chain::blocker(app, g)?,
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),
         "state": goal_state_line(&c),
         "peek": goal_peek(app, g)?,

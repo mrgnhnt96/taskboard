@@ -156,13 +156,17 @@ pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// `goal_blocker` without the terminal limit: paused, or an earlier wave or task not done.
+/// `goal_blocker` without the terminal limit: paused, a goal it runs after not finished, or an earlier
+/// wave or task not done.
 pub fn goal_order_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
     if g.b("deprioritized") {
         return Ok(Some("Its goal is deprioritized".into()));
     }
     if g.b("paused") {
         return Ok(Some("Its goal is paused".into()));
+    }
+    if let Some(why) = crate::chain::blocker(app, g)? {
+        return Ok(Some(why));
     }
     let tasks = board::goal_tasks(app, g.id())?;
     // Waves take the place of running in order.
