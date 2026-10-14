@@ -245,6 +245,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "merged_note_posted", "TEXT"),
     // The goals this one runs after (`tb goal set --after`, `chain.rs`): a JSON list of goal ids.
     ("goals", "after_goals", "TEXT"),
+    // The project's area (`.taskboard.toml`, `areas.rs`) the task or goal belongs to; null when none.
+    // Backlog issues keep theirs in `issues.area`.
+    ("tasks", "area", "TEXT"),
+    ("goals", "area", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
