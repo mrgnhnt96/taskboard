@@ -133,6 +133,7 @@ window at 100 % makes goals show "Queued until agents can start".
   "api_error": str|null,       // that error, until the next prompt, turn or session start
   "idle_secs": int|null,       // idle time from last_activity (else seen_at), not counting time the Mac slept
   "compacting": iso|null,      // compacting its conversation since then: from PreCompact to its next hook (SessionStart "compact")
+  "stuck": {at, why, tail, quiet_secs, working_secs}|null,  // this turn's latest check-in (checkin.rs) says it's stuck
   "task_ref": "T12"|null,      // the task currently on this terminal (status != done)
   "task_title": str|null,
   "last_activity": iso|null,
@@ -379,6 +380,7 @@ For a live or a gone terminal:
   "id": str, "name": str, "project": str|null, "project_path": str|null,
   "status": "idle"|"working"|"needs"|"offline"|"gone", "api_error": str|null, "idle_secs": int|null,   // as session_row
   "compacting": iso|null,        // as session_row
+  "stuck": {...}|null,           // as session_row
   "status_at": iso|null,         // when it entered this status ("Working for 12 min")
   "last_activity": iso|null, "gone_at": iso|null,
   "branch": str|null,
@@ -499,7 +501,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "waits_for_state": [{"ref": "T14", "done": bool, "stack"?: true}],   // the same plus the task it stacks on (`stack: true`), each with whether it's done (for a `tb wait-for --merged` wait: done and its PR merged, or it ships no PR); the goal page's "Waits for" chip
   "locks": ["local-core"],        // named locks it holds while it runs; tasks sharing a lock never run together
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
-  "compacting": iso|null          // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
+  "compacting": iso|null,         // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
+  "stuck": {at, why, tail, quiet_secs, working_secs}|null  // working, and its turn's latest check-in says it's stuck ("Maybe stuck")
   "devices": {"needs": [{"tag": "android", "n": 2}], "needs_text": "2 android", "lent": ["pixel-7"]} | null,
                                   // what it asks for from the device pool (its own, else its goal's) and what it has now
   "bits": [{"name": str, "kind": "backend"|"local", "made": bool, "waiting": bool}],  // its bits; waiting = backend, not made

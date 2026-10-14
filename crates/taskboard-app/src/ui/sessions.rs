@@ -471,6 +471,8 @@ pub fn row_vm(x: &Value, c: &ListCtx) -> RowVm {
         "Closing…".to_string()
     } else if opt_s(x, "compacting").is_some() {
         "Compacting".to_string()
+    } else if status == "working" && x["stuck"].is_object() {
+        "Maybe stuck".to_string()
     } else {
         state_label(x, &status)
     };

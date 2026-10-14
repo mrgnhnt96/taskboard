@@ -64,6 +64,18 @@ timeout_secs = 75
 # new memory note counts at once) or a glob (`*`, `?`, `[…]`, `**` for any depth of folders).
 rules = []                           # example: ["~/.claude/CLAUDE.md", "~/.claude/projects/-Users-alex-code-web/memory", "~/.claude/projects/*/memory/*.md"]
 
+# Check-ins on long turns: once a task's terminal has been working `after_mins` (and every
+# `every_mins` after), a headless `claude -p` reads its last lines and the processes under it and says
+# whether it's still getting somewhere. A stuck verdict shows amber on the task; nobody is notified.
+[checkin]
+on = true
+after_mins = 20
+every_mins = 20
+model = "claude-haiku-5-5"
+budget_usd = "0.10"
+timeout_secs = 90
+lines = 60
+
 # Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
 # impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
 # waves. Off, or without `claude`, issues are grouped by kind and waves follow priority.

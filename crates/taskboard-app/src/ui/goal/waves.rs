@@ -140,6 +140,9 @@ pub(super) fn wtask(t: &Value) -> WTask {
     if let Some(c) = fmt::compacting(t) {
         facts.push(("compact", c));
     }
+    if let Some(why) = fmt::stuck(t) {
+        facts.push(("warn", format!("Maybe stuck · {why}")));
+    }
     // Finished without the PR it was meant to open (`tb done --no-pr`).
     if let Some(why) = fmt::opt_s(t, "no_pr").filter(|_| !has_pr(t)) {
         facts.push(("quiet", format!("PR canceled: {why}")));

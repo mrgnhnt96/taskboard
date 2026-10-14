@@ -14,6 +14,7 @@ pub mod botrun;
 pub mod breaks;
 pub mod builds;
 pub mod chain;
+pub mod checkin;
 pub mod clock;
 pub mod comments;
 pub mod config;
@@ -155,6 +156,8 @@ pub fn start_threads(app: &Arc<App>) {
         std::thread::Builder::new().name("runner".into()).spawn(move || runner::run(a)).ok();
         let a = app.clone();
         std::thread::Builder::new().name("feed-listener".into()).spawn(move || feed::listener_loop(a)).ok();
+        let a = app.clone();
+        std::thread::Builder::new().name("checkin".into()).spawn(move || checkin::run(a)).ok();
     } else {
         let a = app.clone();
         std::thread::Builder::new()

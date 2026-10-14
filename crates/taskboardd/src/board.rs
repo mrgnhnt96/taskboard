@@ -287,6 +287,11 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         } else {
             start_compacting_since(app, t)?
         },
+        "stuck": if status == "working" {
+            get_session(app, t.s("session_id"))?.map(|s| crate::checkin::stuck_view(&s)).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
         "devices": crate::devices::card(app, t)?,
         "bits": crate::bits::task_card(app, t.id())?,
     });
