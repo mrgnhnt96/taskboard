@@ -197,6 +197,8 @@ pub struct PrConfig {
     pub approvals: i64,
     /// Per-project PR rules, by the project's name (`[pr.projects.webapp]`).
     pub projects: BTreeMap<String, PrProject>,
+    /// The lens review stage on new PRs (`[pr.lens]`, `lens_pr.rs`).
+    pub lens: LensConfig,
 }
 
 impl Default for PrConfig {
@@ -213,6 +215,7 @@ impl Default for PrConfig {
             azure_token_env: "AZURE_DEVOPS_EXT_PAT".into(),
             approvals: DEFAULT_APPROVALS,
             projects: BTreeMap::new(),
+            lens: LensConfig::default(),
         }
     }
 }
@@ -270,6 +273,38 @@ pub struct PrProject {
     pub agents_merge: Option<bool>,
     /// A green PR waits for the owner's review. Off: the board marks it reviewed. Unset: `pr.owner_review`.
     pub owner_review: Option<bool>,
+    /// The lens review stage on this project's new PRs. Unset: `pr.lens.on`.
+    pub lens: Option<bool>,
+}
+
+/// `[pr.lens]`: on a new PR, run lens's PR pass headless (`claude -p "/lens:review --pr <n>"`, from the
+/// lens plugin, which must be installed) and let it post its verified findings on the PR. It shows as
+/// the `lens` stage and never holds a merge.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LensConfig {
+    /// Run it on every project's new PRs (a project's `lens` says otherwise). Off by default.
+    pub on: bool,
+    /// The model for the run. Empty: Claude Code's default.
+    pub model: String,
+    /// How long one run may take, in minutes. A run past it is stopped, and the stage moves on.
+    pub timeout_mins: f64,
+    /// `--permission-mode` for the run.
+    pub permission_mode: String,
+    /// `--allowedTools` for the run: headless, a tool not listed is denied.
+    pub allowed_tools: Vec<String>,
+}
+
+impl Default for LensConfig {
+    fn default() -> Self {
+        LensConfig {
+            on: false,
+            model: String::new(),
+            timeout_mins: 30.0,
+            permission_mode: "default".into(),
+            allowed_tools: ["Bash", "Read", "Grep", "Glob", "Write", "Agent", "Task", "Skill", "TodoWrite"].iter().map(|t| t.to_string()).collect(),
+        }
+    }
 }
 
 /// Approvals a PR needs when neither the project nor `pr.approvals` says (the old board's 2).

@@ -533,8 +533,9 @@ The card is draggable to Working when it's queued/planned, not starting, and not
   "approvals": {"have": int, "need": int|null}|null,   // approvals so far against the ones it needs (null need: the host decides);
                                  // the panel's Review step reads "1 of 2" from it when there's no `bar`
   "stage": {
-    "phase": "checks"|"fix"|"ask"|"review"|"rereview"|"comments"|"merge"|"waits"|"stack"|"merged"|"declined",
+    "phase": "checks"|"fix"|"lens"|"ask"|"review"|"rereview"|"comments"|"merge"|"waits"|"stack"|"merged"|"declined",
                                  // rereview: changes were asked and are pushed; waiting for that reviewer to look again ("Awaiting re-review")
+                                 // lens ([pr.lens]): lens's PR pass is reviewing it and will post its findings inline ("Lens review")
                                  // ask ([reviewers] ask_stage): the owner reviewed it; reviewers are being asked ("Asking for reviews")
     "label": str,                // plain words, e.g. "Watching checks", "Fixing checks", "Awaiting reviews", "Answering comments", "Merging", "Merged"
     "session": str|null,         // optional: id of the terminal the board woke for fix/comments/merge/ask (links to it)
@@ -562,6 +563,9 @@ The card is draggable to Working when it's queued/planned, not starting, and not
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
     "retarget_error": str|null,  // why the last try to point it there failed (tried again with backoff)
+    "lens": {"state": "queued"|"running"|"done"|"failed", "head": str, "at": iso, "started_at": iso?, "finished_at": iso?,
+             "error": str?, "log": str?}|null,   // the lens review of the PR ([pr.lens]); null when lens never ran on it.
+                                 // A run that outlived its timeout reads failed ("didn't finish"). The panel's Lens step sits after Checks
     "wd": step_result|null,      // the author-side review step (a step with `bar`): its latest round, or {"name", "bar", "pending": true}
                                  // before the first ("Not reviewed by WD yet"); null when the task doesn't end in a PR or the PR is merged or closed
     "reviewer_rows": [{"name": str, "user": str, "state": "approved"|"changes"|"rereview"|"waiting"|"commented", "swaps": int, "asked_at": iso?}]
@@ -1187,6 +1191,14 @@ sweep doesn't take a reviewer's state from a PR read made before their ask (`pr_
 reviewer's own (`reviewers[].changes_at` against `pr_flow.answered_changes_by`, `{host id: when}`), else the PR's
 latest (`pr_flow.answered_changes`). The old review isn't an answer to the new ask, and another reviewer's new
 request for changes doesn't make it one.
+
+**The `lens` stage** (`[pr.lens] on`, off by default; per project `[pr.projects.<name>] lens`). The first time the
+board reads a new, open PR, it queues lens's PR pass (`claude -p "/lens:review --pr <n>"` from the PR's repo, with only
+`[pr.lens] allowed_tools`), which posts its verified findings on the PR as inline comments. Runs go one at a time on
+their own thread. The run is kept in `pr_flow.lens` (`pr.bar.lens`), its output in `data/lens/T<id>-pr<n>.log`,
+and its outcome as a `lens` event. While it's queued or running, the PR's phase is `lens` in place of `ask` or
+`review` (so the owner isn't asked to look until lens has posted); every other stage still wins, so it never holds a
+fix or a merge, and a run past `timeout_mins` stops holding. Each PR is reviewed once: a later push isn't reviewed again.
 
 **The `ask` stage** (`[reviewers] ask_stage`, off by default; per project `[pr.projects.<name>] ask_stage` or
 `tb project set <name> --ask-stage on|off|default`, which `taskboardd import` turns on for a project where the old

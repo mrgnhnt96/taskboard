@@ -1,6 +1,7 @@
 //! What the app's PR bar shows for a task's PR beyond its stage: the build's link, whether checks are
 //! needed or this PR's, the owner's own look, the review count, new comments, and the PR it stacks on.
-//! The author-side review step (`bar` in `[[steps]]`) and reviewer rows go in `wd` and `reviewers`.
+//! The author-side review step (`bar` in `[[steps]]`) and reviewer rows go in `wd` and `reviewers`;
+//! the lens review of a new PR (`lens_pr.rs`) goes in `lens`.
 
 use serde_json::{json, Value};
 
@@ -108,6 +109,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
         "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
         "wd": crate::steps::bar_card(app, t)?,
+        "lens": crate::lens_pr::bar(app, &f),
         "reviewer_rows": rows,
     }))
 }

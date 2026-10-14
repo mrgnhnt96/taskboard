@@ -7,8 +7,9 @@
 //! comment the host can't resolve), `not_ours` (head → the failed checks cleared for that push, with
 //! the reason and proof), `head_base` (head → the base's commit when that push was first seen),
 //! `swapped_off` (reviewers taken off the PR, whose requests for changes no longer hold),
-//! `addressed` (the last `tb pr addressed`) and `asked` (who was last asked to review, when and by
-//! whom: `asks.rs`; the `ask` stage waits for it).
+//! `addressed` (the last `tb pr addressed`), `asked` (who was last asked to review, when and by
+//! whom: `asks.rs`; the `ask` stage waits for it) and `lens` (the lens review of a new PR: `lens_pr.rs`;
+//! the `lens` stage shows it running).
 //!
 //! The `ask` stage (`[reviewers] ask_stage`): once the owner has looked at a green PR ("I reviewed
 //! it"), the PR waits for reviewers to be asked. The agent is brought back to run `tb pr reviewers`;
@@ -24,7 +25,7 @@ use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
-pub const IN_REVIEW: &[&str] = &["ask", "review", "rereview", "comments", "merge", "waits", "stack"];
+pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
 pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
@@ -39,6 +40,7 @@ pub fn label(phase: &str) -> &str {
     match phase {
         "checks" => "Watching checks",
         "fix" => "Fixing checks",
+        "lens" => "Lens review",
         "ask" => "Asking for reviews",
         "review" => "Awaiting review",
         "rereview" => "Awaiting re-review",
@@ -438,7 +440,7 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     Ok(args)
 }
 
-fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
+pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
     Ok(match wt {
@@ -546,6 +548,7 @@ pub fn refresh_task(app: &App, id: i64) -> Result<std::result::Result<Value, Str
 
 /// Steps one task's PR with a record, as a read of it would.
 pub fn apply(app: &App, id: i64, rec: &Value) -> Result<()> {
+    crate::lens_pr::kick(app, id, rec)?;
     let t = board::get_task(app, id)?;
     note_expected(app, &t, rec)?;
     let t = board::get_task(app, id)?;
@@ -848,6 +851,11 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
             return "waits".into();
         }
         return if crate::stack::stack_hold(app, t).ok().flatten().is_some() { "stack" } else { "merge" }.into();
+    }
+    // Lens reviewing a new PR (`lens_pr.rs`) comes before asking anyone: only stages that wait on someone
+    // else make way for it, so it never holds a merge.
+    if crate::lens_pr::holds(app, &f) {
+        return "lens".into();
     }
     if crate::reviewers::ask_stage_on(app, t.s("project")) && f.contains_key("reviewed") && !f.contains_key("asked") {
         return "ask".into();
@@ -1254,6 +1262,8 @@ fn refresh_where(app: &App, skip_covered: bool) -> Result<i64> {
         }
         match read(app, &t) {
             Ok(rec) => {
+                crate::lens_pr::kick(app, t.id(), &rec)?;
+                let t = board::get_task(app, t.id())?;
                 note_expected(app, &t, &rec)?;
                 gate(app, &board::get_task(app, t.id())?, &rec)?;
                 let t = board::get_task(app, t.id())?;

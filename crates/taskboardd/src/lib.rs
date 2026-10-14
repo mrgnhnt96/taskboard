@@ -40,6 +40,7 @@ pub mod jobs;
 pub mod keep_awake;
 pub mod lanes;
 pub mod lens;
+pub mod lens_pr;
 pub mod lessons;
 pub mod limits;
 pub mod lines;
@@ -115,6 +116,17 @@ pub fn start_threads(app: &Arc<App>) {
         .spawn(move || {
             while !a.stopping() {
                 if let Some(f) = a.next_hook(Duration::from_secs(5)) {
+                    f(&a);
+                }
+            }
+        })
+        .ok();
+    let a = app.clone();
+    std::thread::Builder::new()
+        .name("lens".into())
+        .spawn(move || {
+            while !a.stopping() {
+                if let Some(f) = a.next_lens(Duration::from_secs(5)) {
                     f(&a);
                 }
             }

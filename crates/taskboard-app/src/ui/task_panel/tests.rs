@@ -476,6 +476,22 @@ fn the_review_step_counts_approvals_against_the_ones_needed() {
 }
 
 #[::core::prelude::v1::test]
+fn the_lens_step_shows_after_checks_only_when_lens_ran() {
+    let steps = |lens: Value| {
+        let bar = json!({"approvals": 0, "reviewers": 0, "new_comments": 0, "reviewer_rows": [], "lens": lens});
+        let p = with_bar(bar.clone(), json!({"phase": "lens", "label": "Lens review"}), "pending")["pr"].clone();
+        view::pr_steps_full(&p, &bar).into_iter().map(|s| (s.name, s.sub.unwrap_or_default(), s.st)).collect::<Vec<_>>()
+    };
+    let names = |v: &[(String, String, view::StepSt)]| v.iter().map(|s| s.0.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&steps(Value::Null)), ["Checks", "You", "Review", "Merge"], "no lens run, no step");
+    let running = steps(json!({"state": "running"}));
+    assert_eq!(names(&running), ["Checks", "Lens", "You", "Review", "Merge"]);
+    assert_eq!(running[1], ("Lens".into(), "Reviewing".into(), view::StepSt::Now));
+    assert_eq!(steps(json!({"state": "done"}))[1], ("Lens".into(), "Posted".into(), view::StepSt::Done));
+    assert_eq!(steps(json!({"state": "failed", "error": "boom"}))[1], ("Lens".into(), "Failed".into(), view::StepSt::Fail));
+}
+
+#[::core::prelude::v1::test]
 fn with_no_count_the_host_s_approval_finishes_the_review_step() {
     // #150: no approvals count, the host decided APPROVED with 1 of 3 reviewers approving.
     let review = |rv: &str, need: Value| {
