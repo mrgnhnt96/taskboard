@@ -85,20 +85,33 @@ pub fn pill_view(h: &Value) -> Pill {
     Pill { cls, label, title: s(h, "line").to_string() }
 }
 
+/// A time in a list: always "h:mm" ("1:00am", "1:30am") so the labels line up.
+pub fn list_clock(hhmm: &str) -> String {
+    let mut it = hhmm.split(':').map(|p| p.parse::<u32>().unwrap_or(0));
+    let (h, m) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+    format!("{}:{m:02}{}", if h % 12 == 0 { 12 } else { h % 12 }, if h < 12 { "am" } else { "pm" })
+}
+
 /// `hourOptions(cur)`: every half hour, plus `cur` when it's off the grid; (value, label).
 pub fn hour_options(cur: &str) -> Vec<(String, String)> {
-    let mut times: Vec<String> = (0..48).map(|k| format!("{:02}:{:02}", k / 2, (k % 2) * 30)).collect();
+    half_hours_from(0, cur)
+}
+
+/// The half-hour marks from minute `from` of the day to 11:30pm, plus `cur` when it isn't one of them.
+fn half_hours_from(from: u32, cur: &str) -> Vec<(String, String)> {
+    let mut times: Vec<String> = (from.div_ceil(30)..48).map(|k| format!("{:02}:{:02}", k / 2, (k % 2) * 30)).collect();
     if !cur.is_empty() && !times.iter().any(|x| x == cur) {
         times.push(cur.to_string());
         times.sort();
     }
-    times.into_iter().map(|v| (v.clone(), fmt::clock12(&v))).collect()
+    times.into_iter().map(|v| (v.clone(), list_clock(&v))).collect()
 }
 
-/// The "Today until" options: "Usual end" first.
-pub fn today_options(cur: &str) -> Vec<(String, String)> {
+/// The "Today until" options: "Usual end", then the half-hour marks still ahead of `now`.
+pub fn today_options(cur: &str, now: chrono::NaiveTime) -> Vec<(String, String)> {
+    use chrono::Timelike;
     let mut v = vec![(String::new(), "Usual end".to_string())];
-    v.extend(hour_options(cur));
+    v.extend(half_hours_from(now.hour() * 60 + now.minute() + 1, cur));
     v
 }
 
@@ -205,8 +218,11 @@ fn select(t: &Theme, which: &'static str, value: &str, options: &[(String, Strin
                 cx.notify();
             })));
         }
-        // Floats over the rows below instead of pushing the menu taller.
-        col = col.child(deferred(div().absolute().top_full().mt(px(4.)).left_0().right_0().child(list)).with_priority(4));
+        // Floats over the other rows instead of pushing the menu taller. "Today until" is the
+        // last row, near the window's bottom, so its list opens upward.
+        let float = div().absolute().left_0().right_0();
+        let float = if which == "today" { float.bottom_full().mb(px(4.)) } else { float.top_full().mt(px(4.)) };
+        col = col.child(deferred(float.child(list)).with_priority(4));
     }
     col
 }
@@ -302,7 +318,7 @@ pub fn render_menu(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<Ma
         }
         days = days.child(item);
     }
-    let (start_o, end_o, today_o) = (hour_options(&st.start), hour_options(&st.end), today_options(&st.today));
+    let (start_o, end_o, today_o) = (hour_options(&st.start), hour_options(&st.end), today_options(&st.today, fmt::local(fmt::now()).time()));
     let (start, end, today, open, err) = (st.start.clone(), st.end.clone(), st.today.clone(), st.open, st.err.clone());
     let menu = kit::menu_box(&t, 280.)
         .id("hours-menu")
@@ -344,7 +360,14 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn menu_matches_web() {
-        golden("chrome").only("hoursMenu").check(|i| {
+        // The time lists left the web's on purpose (`time_lists_*` below); the rest still matches.
+        let mut g = golden("chrome").only("hoursMenu");
+        for c in &mut g.cases {
+            for k in ["start", "end", "today"] {
+                c["expect"][k].as_object_mut().unwrap().remove("options");
+            }
+        }
+        g.check(|i| {
             let m = &i["menu"];
             let st = State {
                 on: b(m, "on"),
@@ -357,20 +380,42 @@ mod tests {
                 first_day: "sun".into(),
             };
             let sel = |opts: Vec<(String, String)>, cur: &str| {
-                json!({"disabled": !st.on, "options": opts.iter().map(|(v, l)| json!([v, l])).collect::<Vec<_>>(),
-                       "selected": opts.iter().any(|(v, _)| v == cur).then(|| cur.to_string())})
+                json!({"disabled": !st.on, "selected": opts.iter().any(|(v, _)| v == cur).then(|| cur.to_string())})
             };
             json!({
                 "on": st.on,
                 "check": "Only start agents during work hours",
                 "start": sel(hour_options(&st.start), &st.start),
                 "end": sel(hour_options(&st.end), &st.end),
-                "today": sel(today_options(&st.today), &st.today),
+                "today": sel(today_options(&st.today, chrono::NaiveTime::MIN), &st.today),
                 "days": DAYS.iter().map(|(d, l)| json!({"day": d, "on": st.days.iter().any(|x| x == d), "title": fmt::cap(d), "disabled": !st.on, "label": l})).collect::<Vec<_>>(),
                 "err": st.err,
                 "labels": ["From", "to", "Today until"],
             })
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn time_lists_always_show_minutes() {
+        let o = hour_options("08:15");
+        assert_eq!(o.len(), 49);
+        assert_eq!(o[0], ("00:00".into(), "12:00am".into()));
+        assert_eq!(o[2], ("01:00".into(), "1:00am".into()));
+        assert_eq!(o[3], ("01:30".into(), "1:30am".into()));
+        assert_eq!(o.last().unwrap(), &("23:30".into(), "11:30pm".into()));
+        assert!(o.contains(&("08:15".into(), "8:15am".into())), "an off-grid time stays listed");
+    }
+
+    #[::core::prelude::v1::test]
+    fn today_lists_only_the_half_hours_ahead() {
+        let at = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        let vals = |o: Vec<(String, String)>| o.into_iter().map(|(v, _)| v).collect::<Vec<_>>();
+        let o = vals(today_options("", at(14, 10)));
+        assert_eq!(o[..3], ["", "14:30", "15:00"]);
+        assert_eq!(o.last().unwrap(), "23:30");
+        assert_eq!(vals(today_options("", at(14, 30)))[1], "15:00", "the mark it's on has passed");
+        assert_eq!(vals(today_options("", at(23, 45))), [""]);
+        assert!(vals(today_options("13:00", at(14, 10))).contains(&"13:00".to_string()), "the chosen time stays even once passed");
     }
 
     #[::core::prelude::v1::test]
