@@ -1,23 +1,29 @@
-//! The home page (`GET /home` and today's numbers from `GET /days`): what needs you, today's
-//! numbers, and the goals with work in flight, grouped by project. Each goal shows the tasks of
-//! the wave it's on and what's still open from earlier waves; nothing else about its waves.
+//! The home page, Needs you (`GET /home` and today's numbers from `GET /days`): everything that
+//! waits on you, the questions to answer first (answered right here) and then the rest to act on,
+//! each with the one signal it needs, under today's numbers and a project switch.
 //!
 //! What each part shows is worked out by the pure `*_vm` functions; the render code only lays it
-//! out. The page is read-only: a tile opens its task, a Needs you item offers the one thing to do
-//! about it (open the terminal, the PR or the task, or restart a lost terminal) and dismisses with ×.
+//! out. The page is read-only: an answer, a signal (Restart, Start, Open PR, Continue, Focus in
+//! Midna) or a dismiss is all it sends. An item opens in place; its title links to its page.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::kit;
+use crate::ui::status::St;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
-const PAGE_X: f32 = 28.;
-const GAP: f32 = 14.;
-const CARD_MIN: f32 = 340.;
-/// Needs you shows this many; "Show all" opens the rest in the alerts dialog.
-const ASKS_MAX: usize = 6;
+const PAGE_X: f32 = 36.;
+
+thread_local! {
+    /// The answer fields by task ref: a draft outlives renders and refetches until it's sent.
+    static FIELDS: RefCell<HashMap<String, kit::Input>> = RefCell::new(HashMap::new());
+    /// Items opened or shut against their default (a question starts open, the rest shut).
+    static FLIPPED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
 
 // ================================================================== view models
 
@@ -37,6 +43,8 @@ pub enum Act {
     Start(String),
     /// Show the task's terminal: `POST /tasks/:id/focus`.
     Focus(String),
+    /// A goal held after a wave for your review: `POST /goals/:id/waves/:n/continue`.
+    Continue(String, i64),
     OpenPr(String),
     OpenTask(String),
     OpenGoal(String),
@@ -47,7 +55,8 @@ impl Act {
         match self {
             Act::Restart(_) => "Restart",
             Act::Start(_) => "Start",
-            Act::Focus(_) => "Open terminal",
+            Act::Focus(_) => "Focus in Midna",
+            Act::Continue(..) => "Continue",
             Act::OpenPr(_) => "Open PR",
             Act::OpenTask(_) => "Open task",
             Act::OpenGoal(_) => "Open goal",
@@ -65,11 +74,31 @@ pub struct Ask {
     pub task: Option<(String, String)>,
     /// (ref, name)
     pub goal: Option<(String, String)>,
+    /// What the row says beside its ref: the task's title, or the wave that stopped.
+    pub title: String,
+    /// Under the title: the PR's state, or what the alert said.
+    pub line: String,
+    pub project: String,
+    pub wave: Option<i64>,
+    /// When it was raised (ISO), for the order and "oldest".
+    pub at: String,
     /// "41m", "3h", "now".
     pub time: String,
     pub act: Option<Act>,
+    /// A task waiting on your answer: it goes under Answer with a field of its own.
+    pub answer: bool,
     /// Review and urgent alerts stay until what raised them clears.
     pub dismiss: bool,
+}
+
+impl Ask {
+    /// The item's key for its element ids and open state.
+    pub fn key(&self) -> String {
+        if !self.id.is_empty() {
+            return self.id.clone();
+        }
+        self.task.as_ref().or(self.goal.as_ref()).map(|(r, _)| r.clone()).unwrap_or_default()
+    }
 }
 
 /// "41m", "3h", "2d" (no "ago"); "now" under a minute.
@@ -125,47 +154,79 @@ pub fn ask_vm(a: &Value) -> Ask {
     };
     let act = act.or_else(|| r.clone().map(Act::OpenTask)).or_else(|| opt_s(a, "goal").map(|g| Act::OpenGoal(g.to_string())));
     let goal_ref = opt_s(a, "goal").map(str::to_string).or_else(|| obj(card, "goal").map(|g| s(g, "ref").to_string()));
+    let goal_name = opt_s(a, "goal_name").filter(|n| !n.is_empty()).or_else(|| obj(card, "goal").and_then(|g| opt_s(g, "name"))).unwrap_or("");
+    let text = ask_text(a, card);
+    let pr_open = obj(card, "pr").is_some_and(|p| !p["num"].is_null() && crate::ui::goal::pr_open(p));
+    let title = if has_card { s(card, "title").to_string() } else if !goal_name.is_empty() { goal_name.to_string() } else { text.clone() };
     Ask {
         id: s(a, "id").to_string(),
         sev,
         kind: kind.to_string(),
-        text: ask_text(a, card),
+        line: if pr_open { tile_vm(card).line } else if title == text { String::new() } else { text.clone() },
+        text,
+        title,
         task: r.map(|r| (r, s(card, "title").to_string())),
-        goal: goal_ref.map(|g| (g, s(a, "goal_name").to_string())),
+        goal: goal_ref.map(|g| (g, goal_name.to_string())),
+        project: s(card, "project").to_string(),
+        wave: card["wave"].as_i64(),
+        at: s(a, "at").to_string(),
         time: short_ago(s(a, "at")),
         act,
+        answer: matches!(kind, "Question" | "Needs you") && has_card && s(card, "status") == "needs",
         dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true,
     }
 }
 
-/// The Needs you items: the worst first, then the newest.
-pub fn asks_vm(home: &Value) -> Vec<Ask> {
-    let mut v: Vec<(Ask, String)> = arr(home, "needs").iter().map(|a| (ask_vm(a), s(a, "at").to_string())).collect();
-    v.sort_by(|(a, at), (b, bt)| (a.sev as u8).cmp(&(b.sev as u8)).then(bt.cmp(at)));
-    v.into_iter().map(|(a, _)| a).collect()
+/// A goal held after a wave for your review (its `stopped` line, "Wave 1 is done. Review it,
+/// then continue"): Continue lets the next wave start.
+fn stop_vm(e: &Value) -> Option<Ask> {
+    let g = &e["goal"];
+    let line = opt_s(g, "stopped").filter(|l| l.contains(" is done"))?;
+    let n: i64 = line.strip_prefix("Wave ")?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+    let (gr, name) = (fmt::ref_of(g, "G"), s(g, "name").to_string());
+    let queued = i(e, "queued");
+    let waiting = match queued {
+        q if q <= 0 || e["wave"].as_i64() != Some(n + 1) => String::new(),
+        1 => format!("1 task waits in wave {}", n + 1),
+        q => format!("{q} tasks wait in wave {}", n + 1),
+    };
+    let at = s(g, "updated_at").to_string();
+    Some(Ask {
+        id: format!("stop-{gr}-{n}"),
+        sev: Sev::Warn,
+        kind: "Wave stop".into(),
+        text: line.to_string(),
+        task: None,
+        title: format!("{name} · wave {n} finished"),
+        line: waiting,
+        goal: Some((gr.clone(), name)),
+        project: s(e, "project").to_string(),
+        wave: Some(n),
+        time: short_ago(&at),
+        at,
+        act: Some(Act::Continue(gr, n)),
+        answer: false,
+        dismiss: false,
+    })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Trend {
-    Good,
-    Bad,
-    Plain,
+/// The Needs you items, alerts and wave stops: the worst first, then the newest.
+pub fn asks_vm(home: &Value) -> Vec<Ask> {
+    let mut v: Vec<Ask> = arr(home, "needs").iter().map(ask_vm).chain(arr(home, "goals").iter().filter_map(stop_vm)).collect();
+    v.sort_by(|a, b| (a.sev as u8).cmp(&(b.sev as u8)).then(b.at.cmp(&a.at)));
+    v
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stat {
     pub label: &'static str,
     pub value: String,
-    pub delta: String,
-    pub trend: Trend,
+    /// Time you kept the agents waiting: in the Needs you color.
+    pub warn: bool,
 }
 
 fn num(v: &Value, k: &str) -> f64 {
     v[k].as_f64().unwrap_or(0.0)
-}
-
-fn signed(x: f64, f: impl Fn(f64) -> String) -> String {
-    if x >= 0.0 { format!("+{}", f(x)) } else { format!("−{}", f(-x)) }
 }
 
 fn count(x: f64) -> String {
@@ -173,51 +234,19 @@ fn count(x: f64) -> String {
     if r.fract() == 0.0 { format!("{}", r as i64) } else { format!("{r}") }
 }
 
-/// Today's numbers from `GET /days`, each against the usual day (the median of the two weeks
-/// before) when there is one. More done is good; more waiting on you is bad.
+/// Today's numbers from `GET /days`, and the week's saved time when there is a week.
 pub fn stats_vm(days: &Value) -> Vec<Stat> {
-    let (day, usual) = (&days["day"], &days["usual"]);
-    let have_usual = num(usual, "days") > 0.0;
+    let day = &days["day"];
     let dur = crate::ui::days::dur;
-    let delta = |k: &str, more_is: Trend, f: fn(f64) -> String| -> (String, Trend) {
-        if !have_usual {
-            return (String::new(), Trend::Plain);
-        }
-        let d = num(day, k) - num(usual, k);
-        if d.abs() < 0.5 {
-            return (String::new(), Trend::Plain);
-        }
-        let trend = match (d.abs() < 0.5, more_is) {
-            (true, _) | (_, Trend::Plain) => Trend::Plain,
-            (false, Trend::Good) => if d > 0.0 { Trend::Good } else { Trend::Bad },
-            (false, Trend::Bad) => if d > 0.0 { Trend::Bad } else { Trend::Good },
-        };
-        (signed(d, f), trend)
-    };
-    let (human, est) = (num(day, "human_min"), num(day, "est_agent_min"));
-    let mut out = vec![Stat { label: "Agent time", value: dur(num(day, "agent_min")), delta: String::new(), trend: Trend::Plain }];
-    out.push(Stat {
-        label: "Human estimate",
-        value: if human > 0.0 { dur(human) } else { "—".into() },
-        delta: if human > 0.0 && est > 0.0 { format!("{:.1}× agent time", human / est) } else { String::new() },
-        trend: Trend::Good,
-    });
-    for (label, k, more_is, f) in [
-        ("Tasks done", "done", Trend::Good, count as fn(f64) -> String),
-        ("PRs opened", "prs", Trend::Good, count),
-        ("Waiting on you", "wait_min", Trend::Bad, dur),
-    ] {
-        let (d, trend) = delta(k, more_is, f);
-        out.push(Stat { label, value: if k == "wait_min" { dur(num(day, k)) } else { count(num(day, k)) }, delta: d, trend });
-    }
+    let stat = |label, value, warn| Stat { label, value, warn };
+    let mut out = vec![
+        stat("Agent time today", dur(num(day, "agent_min")), false),
+        stat("Done today", count(num(day, "done")), false),
+        stat("PRs opened", count(num(day, "prs")), false),
+        stat("Waiting on you", dur(num(day, "wait_min")), num(day, "wait_min") > 0.0),
+    ];
     if let Some(v) = crate::ui::days::View::of(days) {
-        let up = !v.saved.vs_last.starts_with('−');
-        out.push(Stat {
-            label: "Saved this week",
-            value: v.saved.total.clone(),
-            delta: v.saved.vs_last.replace(" on last week", " vs last week"),
-            trend: if v.saved.vs_last.is_empty() { Trend::Plain } else if up { Trend::Good } else { Trend::Bad },
-        });
+        out.push(stat("Saved this week", v.saved.total.clone(), false));
     }
     out
 }
@@ -337,106 +366,7 @@ pub fn tile_vm(c: &Value) -> Tile {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct GoalCard {
-    /// None for a project's tasks outside any goal.
-    pub r: Option<String>,
-    pub project: String,
-    pub name: String,
-    pub count: String,
-    /// Done share, 0..1.
-    pub done: f32,
-    pub state: Option<(String, &'static str)>,
-    pub now_label: String,
-    pub now: Vec<Tile>,
-    pub left_label: String,
-    pub left: Vec<Tile>,
-    pub queued: Option<String>,
-}
-
-fn waves_text(ws: &[Value]) -> String {
-    let n: Vec<String> = ws.iter().filter_map(Value::as_i64).map(|w| w.to_string()).collect();
-    match n.len() {
-        0 => String::new(),
-        1 => format!("wave {}", n[0]),
-        _ => format!("waves {} and {}", n[..n.len() - 1].join(", "), n[n.len() - 1]),
-    }
-}
-
-/// The goal's chip: what it waits on, worst first.
-fn goal_chip(g: &Value, now: &[Tile], left: &[Tile]) -> (String, &'static str) {
-    let all = || now.iter().chain(left.iter());
-    if all().any(|t| t.status == "Lost" || t.status == "Couldn’t start") {
-        ("Needs a restart".into(), "down")
-    } else if all().any(|t| t.tone == "needs") {
-        ("Waiting on you".into(), "needs")
-    } else if fmt::opt_s(g, "stopped").is_some() {
-        ("Waiting on you".into(), "needs")
-    } else if b(g, "paused") {
-        ("Paused".into(), "needs")
-    } else if all().any(|t| t.tone == "working") {
-        ("In progress".into(), "working")
-    } else if !now.is_empty() && now.iter().all(|t| t.tone == "goal" || t.tone == "up" || t.tone == "down") {
-        (if now.len() > 1 { format!("{} PRs awaiting merge", now.len()) } else { "Awaiting merge".into() }, "working")
-    } else {
-        ("Queued".into(), "queued")
-    }
-}
-
-pub fn goal_card_vm(e: &Value) -> GoalCard {
-    let g = &e["goal"];
-    let now: Vec<Tile> = arr(e, "now").iter().map(tile_vm).collect();
-    let left: Vec<Tile> = arr(e, "left").iter().map(tile_vm).collect();
-    let wave = e["wave"].as_i64();
-    let in_wave = wave.map(|w| format!(" in wave {w}")).unwrap_or_default();
-    let queued = i(e, "queued");
-    let queued = (queued > 0).then(|| format!("{}{in_wave}", if now.is_empty() { format!("{queued} queued") } else { format!("{queued} more queued") }));
-    if g.is_null() {
-        return GoalCard {
-            r: None,
-            project: s(e, "project").to_string(),
-            name: "Not in a goal".into(),
-            count: String::new(),
-            done: 0.,
-            state: None,
-            now_label: "Now".into(),
-            now,
-            left_label: String::new(),
-            left,
-            queued,
-        };
-    }
-    let (total, done) = (i(g, "total"), i(g, "done"));
-    GoalCard {
-        r: Some(fmt::ref_of(g, "G")),
-        project: s(e, "project").to_string(),
-        name: s(g, "name").to_string(),
-        count: format!("{done} of {total} done"),
-        done: if total > 0 { done as f32 / total as f32 } else { 0. },
-        state: Some(goal_chip(g, &now, &left)),
-        now_label: wave.map(|w| format!("Now · wave {w}")).unwrap_or_else(|| "Now".into()),
-        left_label: format!("Still open from {}", waves_text(arr(e, "left_waves"))),
-        now,
-        left,
-        queued,
-    }
-}
-
-/// The goals grouped by project, in the board's order (projects by name).
-pub fn projects_vm(home: &Value) -> Vec<(String, Vec<GoalCard>)> {
-    let mut out: Vec<(String, Vec<GoalCard>)> = Vec::new();
-    for e in arr(home, "goals") {
-        let p = s(e, "project").to_string();
-        let card = goal_card_vm(e);
-        match out.iter_mut().find(|(name, _)| *name == p) {
-            Some((_, cards)) => cards.push(card),
-            None => out.push((p, vec![card])),
-        }
-    }
-    out
-}
-
-// ================================================================== actions
+// ================================================================== signals
 
 fn sent(m: &mut MainWindow, text: String, cx: &mut Context<MainWindow>) {
     m.toast(text, false, cx);
@@ -447,19 +377,70 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::Restart(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "fresh"}), cx, move |m, _, cx| sent(m, format!("Restarting {r}"), cx)),
         Act::Start(r) => m.post(format!("tasks/{r}/start"), json!({"mode": "new"}), cx, move |m, _, cx| sent(m, format!("Starting {r}"), cx)),
         Act::Focus(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Showing {r}’s terminal in Midna"), cx)),
+        Act::Continue(g, n) => m.post(format!("goals/{g}/waves/{n}/continue"), json!({}), cx, move |m, v, cx| {
+            let note = if v["let_start"] == true { format!("Wave {} can start", n + 1) } else { "The goal goes on".into() };
+            sent(m, note, cx)
+        }),
         Act::OpenPr(url) => cx.open_url(&url),
         Act::OpenTask(r) => m.open_task(r, cx),
         Act::OpenGoal(g) => m.go(Page::Goal(g), cx),
     }
 }
 
-/// × on a Needs you item: `POST /alerts/:id/dismiss`, gone from the list at once.
+/// Dismiss on a Needs you item: `POST /alerts/:id/dismiss`, gone from the list at once.
 pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
     if let Some(needs) = m.data.home.as_mut().and_then(|h| h.get_mut("needs")).and_then(Value::as_array_mut) {
         needs.retain(|a| s(a, "id") != id);
     }
     crate::app::dismiss_alert(m, id, cx);
     cx.notify();
+}
+
+/// When a held answer goes out ("Thu 6am"), while work hours are closed; "" otherwise.
+fn hours_open_at(state: &Value) -> String {
+    let h = &state["work_hours"];
+    if !h.is_object() || !b(h, "on") || b(h, "open") {
+        return String::new();
+    }
+    opt_s(h, "next_open").map(fmt::day_clock).unwrap_or_default()
+}
+
+fn sent_note(state: &Value) -> &'static str {
+    if state["midna"]["up"] == Value::Bool(false) { "Saved. It runs once Midna is back." } else { "Sent to Midna" }
+}
+
+/// Send what's in a question's field: `POST /tasks/:id/answer`, now or when work hours open.
+fn answer(m: &mut MainWindow, r: &str, morning: bool, cx: &mut Context<MainWindow>) {
+    let text = FIELDS.with(|f| f.borrow().get(r).map(|i| i.text(cx))).unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        m.toast("Write an answer first.", true, cx);
+        return;
+    }
+    let key = r.to_string();
+    let body = json!({"text": text, "when": if morning { "morning" } else { "now" }});
+    m.post(format!("tasks/{r}/answer"), body, cx, move |m, _, cx| {
+        FIELDS.with(|f| f.borrow_mut().remove(&key));
+        let note = if morning {
+            let at = hours_open_at(m.state());
+            format!("Saved. It sends at {}.", if at.is_empty() { "the start of work hours".to_string() } else { at })
+        } else {
+            sent_note(m.state()).to_string()
+        };
+        sent(m, note, cx);
+    });
+}
+
+fn is_open(a: &Ask) -> bool {
+    a.answer != FLIPPED.with(|f| f.borrow().contains(&a.key()))
+}
+
+fn flip(key: String) {
+    FLIPPED.with(|f| {
+        let mut f = f.borrow_mut();
+        if !f.remove(&key) {
+            f.insert(key);
+        }
+    });
 }
 
 // ================================================================== render
@@ -470,418 +451,284 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     // A break's urgent alert is already its "Master is red" line.
     let st = m.state().clone();
     let needs: Vec<Value> = arr(&home, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).cloned().collect();
-    let asks = asks_vm(&json!({ "needs": needs }));
+    let all = asks_vm(&json!({ "needs": needs, "goals": home["goals"] }));
     let stats = m.data.today.as_ref().map(stats_vm).unwrap_or_default();
-    let projects = projects_vm(&home);
 
-    let main_w = (window.viewport_size().width.as_f32() - crate::ui::sidebar::WIDTH - PAGE_X * 2.).max(320.);
-    let cols = ((main_w + GAP) / (CARD_MIN + GAP)).floor().clamp(1., 3.);
-    let card_w = (main_w - GAP * (cols - 1.)) / cols;
+    let project = m.filters.project.clone();
+    let names = crate::app::project_names(&st, arr(&home, "goals").iter().map(|e| &e["goal"]));
+    let asks: Vec<&Ask> = all.iter().filter(|a| project == "all" || a.project == project).collect();
+    let (answers, acts): (Vec<&Ask>, Vec<&Ask>) = asks.iter().partition(|a| a.answer);
 
-    let mut page = div().flex().flex_col().gap(px(24.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4));
+    let mut page = div().flex().flex_col().px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4));
 
-    // Needs you beside Today when both fit; stacked on a narrow window.
-    let wide = main_w >= 1000.;
-    let mut top = div().flex().gap(px(22.)).when(!wide, |d| d.flex_col());
-    if !asks.is_empty() {
-        let ask_w = if wide { main_w * 0.6 - 11. } else { main_w };
-        top = top.child(needs_section(&t, &asks, ask_w, cx));
-    }
+    // Needs you · how many and the oldest, then which project.
+    let oldest = asks.iter().filter(|a| !a.at.is_empty()).min_by(|a, b| a.at.cmp(&b.at)).map(|a| a.time.clone());
+    let sub = match (asks.len(), oldest) {
+        (0, _) => String::new(),
+        (n, Some(o)) => format!("{n} · oldest {o}"),
+        (n, None) => n.to_string(),
+    };
+    let mut labels = vec!["All projects".to_string()];
+    labels.extend(names.iter().map(|p| format!("{p} · {}", all.iter().filter(|a| &a.project == p).count())));
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let on = names.iter().position(|p| *p == project).map_or(0, |i| i + 1);
+    let tabs = kit::seg(&t, "home-project", &refs, on, |i, item| {
+        let p = if i == 0 { "all".to_string() } else { names[i - 1].clone() };
+        item.on_click(cx.listener(move |m, _, _, cx| {
+            let mut f = m.filters.clone();
+            f.project = p.clone();
+            m.set_filters(f, cx);
+        }))
+    });
+    page = page.child(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child("Needs you"))
+            .when(!sub.is_empty(), |d| d.child(div().text_size(px(13.)).text_color(t.muted).child(sub)))
+            .child(div().flex_1())
+            .when(names.len() > 1, |d| d.child(tabs)),
+    );
+
     if !stats.is_empty() {
-        let stat_w = if asks.is_empty() || !wide { main_w } else { main_w * 0.4 - 11. };
-        top = top.child(today_section(&t, &stats, stat_w));
+        let mut row = div().flex().gap(px(10.)).mt(px(16.));
+        for x in &stats {
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .px(px(16.))
+                    .py(px(12.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.card)
+                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).text_color(if x.warn { t.warn_fg } else { t.text }).child(x.value.clone()))
+                    .child(div().text_size(px(12.)).text_color(t.muted).truncate().child(x.label)),
+            );
+        }
+        page = page.child(row);
     }
-    page = page.child(top);
 
     if m.data.home.is_none() {
         page = page.child(kit::empty(&t, if m.down.is_some() { "Can’t load the board." } else { "Loading…" }));
-    } else if projects.is_empty() {
-        page = page.child(kit::empty(&t, "Nothing is running or queued."));
+    } else if asks.is_empty() {
+        page = page.child(kit::empty(&t, "Nothing needs you.").pt(px(32.)));
     }
-    for (name, cards) in projects {
-        let mut grid = div().flex().flex_wrap().items_start().gap(px(GAP));
-        for c in cards {
-            grid = grid.child(goal_card(&t, &c, card_w, cx));
+    if !answers.is_empty() {
+        page = page.child(group_label(&t, "Answer", answers.len()));
+        for a in &answers {
+            page = page.child(item(m, &t, a, window, cx));
         }
-        page = page.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .child(div().font_family(t.mono_font.clone()).text_size(px(12.5)).text_color(t.muted).child(name))
-                .child(grid),
-        );
     }
-    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().child(page).into_any_element()
+    if !acts.is_empty() {
+        page = page.child(group_label(&t, "Act on", acts.len()));
+        for a in &acts {
+            page = page.child(item(m, &t, a, window, cx));
+        }
+    }
+    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().bg(t.bg).child(page).into_any_element()
 }
 
-fn section_label(t: &Theme, text: String) -> Div {
-    div().text_size(px(12.5)).font_weight(FontWeight::BOLD).text_color(t.muted).child(text.to_uppercase())
-}
-
-fn sev_colors(t: &Theme, sev: Sev) -> (Hsla, Hsla, Hsla) {
-    match sev {
-        Sev::Crit => (t.down, t.down_soft, t.down_line),
-        Sev::Warn => (t.warn_fg, t.warn_soft, t.warn_line),
-        Sev::Ok => (t.up_fg, t.up_soft, t.up),
-    }
-}
-
-fn needs_section(t: &Theme, asks: &[Ask], w: f32, cx: &mut Context<MainWindow>) -> Div {
-    let per_row = if w >= 600. { 3. } else if w >= 400. { 2. } else { 1. };
-    let tile_w = (w - 10. * (per_row - 1.)) / per_row;
-    let mut grid = div().flex().flex_wrap().gap(px(10.));
-    for a in asks.iter().take(ASKS_MAX) {
-        grid = grid.child(ask_tile(t, a, tile_w, cx));
-    }
-    let mut head = div().flex().items_center().gap(px(12.)).child(section_label(t, format!("Needs you · {}", asks.len())));
-    if asks.len() > ASKS_MAX {
-        head = head.child(
-            kit::link(t, "asks-all", format!("Show all {}", asks.len()))
-                .text_size(px(12.5))
-                .on_click(cx.listener(|m, _, window, cx| m.set_modal(Some(crate::ui::modals::Modal::Alerts), window, cx))),
-        );
-    }
-    div().flex().flex_col().gap(px(10.)).w(px(w)).flex_none().child(head).child(grid)
-}
-
-fn ref_link(t: &Theme, id: String, text: String, weight: FontWeight, size: f32) -> Stateful<Div> {
-    let fg = t.text;
+fn group_label(t: &Theme, text: &str, n: usize) -> Div {
     div()
-        .id(SharedString::from(id))
-        .min_w_0()
-        .truncate()
-        .text_size(px(size))
-        .font_weight(weight)
-        .text_color(fg)
-        .underline()
-        .cursor_pointer()
-        .hover(|s| s.opacity(0.75))
-        .child(text)
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .pt(px(18.))
+        .pb(px(8.))
+        .text_size(px(12.))
+        .text_color(t.muted)
+        .child(div().font_weight(FontWeight::BOLD).child(text.to_uppercase()))
+        .child(n.to_string())
 }
 
-fn ask_tile(t: &Theme, a: &Ask, w: f32, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let (fg, bg, line) = sev_colors(t, a.sev);
-    let mut head = div().flex().items_center().justify_between().gap(px(8.)).child(
-        div().text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(fg).child(a.kind.to_uppercase()),
-    );
-    if a.dismiss {
-        let id = a.id.clone();
-        let muted = t.muted;
-        head = head.child(
-            div()
-                .id(SharedString::from(format!("ask-x-{}", a.id)))
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(22.))
-                .rounded(px(6.))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hsla(0., 0., 0., 0.06)))
-                .tooltip(kit::tip("Dismiss"))
-                .on_click(cx.listener(move |m, _, _, cx| {
+/// The kind's color: a question in the Needs you color, the rest by what they are.
+fn kind_color(t: &Theme, a: &Ask) -> Hsla {
+    let st = match (a.answer, a.kind.as_str(), a.sev) {
+        (true, ..) => St::Needs,
+        (_, "Wave stop", _) => return t.goal,
+        (_, "Review the PR", _) => St::Review,
+        (_, "Ready to merge", _) => St::Done,
+        (_, _, Sev::Crit) => St::Failed,
+        (_, _, Sev::Warn) => St::Needs,
+        (_, _, Sev::Ok) => St::Done,
+    };
+    st.colors(t).0
+}
+
+/// One item: its head row (open or shut on a click, its title a link to its page) and, open, a
+/// question's answer field or the rest of what the alert said.
+fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<MainWindow>) -> Div {
+    let key = a.key();
+    let open = is_open(a);
+    let id = |part: &str| SharedString::from(format!("home-{part}-{key}"));
+    let question = a.answer;
+
+    // The ref and title, and under them the PR's state or what the alert said.
+    let (r, link_act) = match (&a.task, &a.goal) {
+        (Some((r, _)), _) => (r.clone(), Act::OpenTask(r.clone())),
+        (None, Some((g, _))) => (g.clone(), Act::OpenGoal(g.clone())),
+        _ => (String::new(), Act::OpenTask(String::new())),
+    };
+    let link = {
+        let act = link_act.clone();
+        div()
+            .id(id("title"))
+            .min_w_0()
+            .truncate()
+            .text_size(px(if question { 15. } else { 14. }))
+            .font_weight(FontWeight::BOLD)
+            .text_color(t.text)
+            .cursor_pointer()
+            .hover(|s| s.underline())
+            .child(a.title.clone())
+            .when(!r.is_empty(), |d| {
+                d.on_click(cx.listener(move |m, _, _, cx| {
                     cx.stop_propagation();
-                    dismiss(m, &id, cx)
+                    run_act(m, &act, cx);
                 }))
-                .child(kit::glyph(kit::Glyph::X, 12., muted)),
-        );
-    }
-    let mut body = div().flex().flex_col().gap(px(5.)).min_w_0().child(head).child(div().text_size(px(13.5)).line_clamp(3).child(a.text.clone()));
-    if let Some((r, title)) = &a.task {
-        let open = r.clone();
-        body = body.child(
-            ref_link(t, format!("ask-task-{}", a.id), format!("{r} {title}"), FontWeight::SEMIBOLD, 13.)
-                .on_click(cx.listener(move |m, _, _, cx| {
-                    cx.stop_propagation();
-                    m.open_task(open.clone(), cx)
-                })),
-        );
-    }
-    if let Some((g, name)) = &a.goal {
-        let open = g.clone();
-        let text = if name.is_empty() { g.clone() } else { format!("{g} {name}") };
-        body = body.child(
-            ref_link(t, format!("ask-goal-{}", a.id), text, FontWeight::NORMAL, 12.5)
-                .text_color(t.text_2)
-                .on_click(cx.listener(move |m, _, _, cx| {
-                    cx.stop_propagation();
-                    m.go(Page::Goal(open.clone()), cx)
-                })),
-        );
-    }
-    let mut foot = div().flex().items_center().gap(px(8.)).mt(px(4.));
-    if let Some(act) = &a.act {
-        let act2 = act.clone();
-        foot = foot.child(kit::btn_primary(t, SharedString::from(format!("ask-act-{}", a.id)), act.label()).h(px(28.)).text_size(px(12.5)).on_click(cx.listener(move |m, _, _, cx| {
-            cx.stop_propagation();
-            run_act(m, &act2, cx)
-        })));
-    }
-    foot = foot.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(a.time.clone()));
-    let mut tile = div()
-        .id(SharedString::from(format!("ask-{}", a.id)))
-        .w(px(w))
-        .flex_none()
+            })
+    };
+    let title = div()
         .flex()
         .flex_col()
-        .p(px(12.))
+        .flex_1()
+        .min_w(px(160.))
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .min_w_0()
+                .when(!r.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.clone())))
+                .child(link),
+        )
+        .when(!question && !a.line.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(a.line.clone())));
+
+    let goal = match (&a.goal, &a.task) {
+        (Some((_, name)), _) if !name.is_empty() => match a.wave.filter(|_| question) {
+            Some(n) => format!("{name} · wave {n}"),
+            None => name.clone(),
+        },
+        (_, Some(_)) => "Not in a goal".to_string(),
+        _ => String::new(),
+    };
+
+    // An open question has its signals under its field.
+    let button = a.act.clone().filter(|_| !(question && open)).map(|act| {
+        kit::btn(t, id("act"), act.label()).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            run_act(m, &act, cx);
+        }))
+    });
+
+    let head = div()
+        .id(id("head"))
+        .flex()
+        .items_center()
+        .gap(px(18.))
+        .px(px(20.))
+        .py(px(13.))
+        .cursor_pointer()
+        .on_click(cx.listener({
+            let key = key.clone();
+            move |_, _, _, cx| {
+                flip(key.clone());
+                cx.notify();
+            }
+        }))
+        .child(div().flex_none().w(px(20.)).flex().justify_center().child(chevron(open, t.muted)))
+        .child(div().flex_none().w(px(130.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(kind_color(t, a)).truncate().child(a.kind.clone()))
+        .child(title)
+        .child(div().flex_shrink(1.).min_w_0().max_w(px(260.)).text_size(px(12.)).text_color(if goal == "Not in a goal" { t.muted } else { t.goal }).truncate().child(goal))
+        .child(div().flex_none().w(px(56.)).flex().justify_end().text_size(px(12.)).text_color(t.muted).child(a.time.clone()))
+        .child(div().flex_none().w(px(110.)).h(px(30.)).flex().justify_end().children(button));
+
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .mb(px(8.))
         .rounded(px(12.))
         .border_1()
-        .border_color(line)
-        .bg(bg)
-        .child(body.child(foot));
-    // The whole tile opens its task, or its goal when it has none.
-    let open = a.task.as_ref().map(|(r, _)| Act::OpenTask(r.clone())).or_else(|| a.goal.as_ref().map(|(g, _)| Act::OpenGoal(g.clone())));
-    if let Some(open) = open {
-        let hover = fg;
-        tile = tile.cursor_pointer().hover(move |s| s.border_color(hover)).on_click(cx.listener(move |m, _, _, cx| run_act(m, &open, cx)));
+        .border_color(if question { t.warn_line } else { t.border })
+        .bg(t.card)
+        .overflow_hidden()
+        .child(head);
+    if !open {
+        return card;
     }
-    tile
-}
-
-fn today_section(t: &Theme, stats: &[Stat], w: f32) -> Div {
-    let per_row = if w >= 420. { 3. } else { 2. };
-    let tile_w = (w - 10. * (per_row - 1.)) / per_row;
-    let mut grid = div().flex().flex_wrap().gap(px(10.));
-    for st in stats {
-        let color = match st.trend {
-            Trend::Good => t.up_fg,
-            Trend::Bad => t.warn_fg,
-            Trend::Plain => t.muted,
-        };
-        grid = grid.child(
-            div()
-                .w(px(tile_w))
-                .flex_none()
-                .flex()
-                .flex_col()
-                .px(px(12.))
-                .py(px(10.))
-                .rounded(px(12.))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.card)
-                .child(div().text_size(px(12.)).text_color(t.muted).child(st.label))
-                .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child(st.value.clone()))
-                .child(div().h(px(18.)).text_size(px(12.)).text_color(color).child(st.delta.clone())),
-        );
-    }
-    div().flex().flex_col().gap(px(10.)).w(px(w)).flex_none().child(section_label(t, "Today".into())).child(grid)
-}
-
-/// The goal's progress ring: done share in green on the divider color.
-fn ring(t: &Theme, share: f32) -> impl IntoElement {
-    let (track, fill) = (t.divider, t.up);
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let size = bounds.size.width.as_f32();
-            let (cx0, cy0) = (bounds.origin.x.as_f32() + size / 2., bounds.origin.y.as_f32() + size / 2.);
-            let r = size / 2. - 3.;
-            let arc = |from: f32, to: f32, color: Hsla, window: &mut Window| {
-                let steps = ((to - from) / 0.1).ceil().max(1.) as usize;
-                let mut p = PathBuilder::stroke(px(5.));
-                for k in 0..=steps {
-                    let a = from + (to - from) * k as f32 / steps as f32 - std::f32::consts::FRAC_PI_2;
-                    let pt = point(px(cx0 + r * a.cos()), px(cy0 + r * a.sin()));
-                    if k == 0 { p.move_to(pt) } else { p.line_to(pt) }
+    let body = div().flex().flex_col().gap(px(10.)).pl(px(58.)).pr(px(20.)).pb(px(16.));
+    if question {
+        let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
+        let field = FIELDS.with(|f| {
+            let mut f = f.borrow_mut();
+            let input = f.entry(r.clone()).or_insert_with(|| kit::Input::new(cx, "", true));
+            input.render(t, id("field"), window).items_start().min_h(px(62.)).px(px(12.)).py(px(10.)).text_size(px(14.))
+        });
+        let field = field.on_key_down(cx.listener({
+            let r = r.clone();
+            move |m, ev: &KeyDownEvent, _, cx| {
+                let submit = FIELDS.with(|f| f.borrow().get(&r).map(|i| i.on_key(ev, cx)));
+                if matches!(submit, Some(kit::KeyOutcome::Submit)) {
+                    cx.stop_propagation();
+                    answer(m, &r, false, cx);
                 }
-                if let Ok(p) = p.build() {
-                    window.paint_path(p, color);
-                }
-            };
-            arc(0., std::f32::consts::TAU, track, window);
-            if share > 0. {
-                arc(0., std::f32::consts::TAU * share.min(1.), fill, window);
             }
-        },
-    )
-    .size(px(38.))
-    .flex_none()
-}
-
-fn sub_label(t: &Theme, text: String) -> Div {
-    div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.faint).child(text.to_uppercase())
-}
-
-fn goal_card(t: &Theme, c: &GoalCard, w: f32, cx: &mut Context<MainWindow>) -> Div {
-    let inner = w - 30.;
-    let tile_w = (inner - 8.) / 2.;
-    let mut head = div().flex().items_start().gap(px(12.));
-    if c.r.is_some() {
-        head = head.child(ring(t, c.done));
-    }
-    let mut title = div().flex_1().min_w_0().flex().flex_col().gap(px(2.));
-    if let Some(r) = &c.r {
-        let open = r.clone();
-        title = title
-            .child(
-                div()
-                    .id(SharedString::from(format!("goal-{r}")))
-                    .text_size(px(15.5))
-                    .font_weight(FontWeight::BOLD)
-                    .line_height(relative(1.25))
-                    .cursor_pointer()
-                    .hover(|s| s.underline())
-                    .on_click(cx.listener(move |m, _, _, cx| m.go(Page::Goal(open.clone()), cx)))
-                    .child(c.name.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .text_size(px(12.))
-                    .text_color(t.muted)
-                    .child(div().font_family(t.mono_font.clone()).text_color(t.goal).child(r.clone()))
-                    .child("·")
-                    .child(c.count.clone()),
-            );
-    } else {
-        let project = c.project.clone();
-        title = title.child(
-            div()
-                .id(SharedString::from(format!("loose-{}", c.project)))
-                .text_size(px(15.5))
-                .font_weight(FontWeight::BOLD)
-                .line_height(relative(1.25))
-                .cursor_pointer()
-                .hover(|s| s.underline())
-                .on_click(cx.listener(move |m, _, _, cx| crate::ui::tasks::open_for(m, &project, cx)))
-                .child(c.name.clone()),
+        }));
+        let later = hours_open_at(m.state());
+        let send = {
+            let r = r.clone();
+            kit::btn_primary(t, id("send"), "Send answer").on_click(cx.listener(move |m, _, _, cx| answer(m, &r, false, cx)))
+        };
+        let send_later = (!later.is_empty()).then(|| {
+            let r = r.clone();
+            kit::btn(t, id("later"), format!("Send at {later}")).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, true, cx)))
+        });
+        let focus = kit::btn(t, id("focus"), Act::Focus(r.clone()).label()).ml_auto().on_click(cx.listener({
+            let r = r.clone();
+            move |m, _, _, cx| run_act(m, &Act::Focus(r.clone()), cx)
+        }));
+        card = card.child(
+            body.child(div().text_size(px(15.)).text_color(t.warn_text).child(a.text.clone()))
+                .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(12.)).text_color(t.muted).child("Your answer")).child(field))
+                .child(div().flex().items_center().gap(px(8.)).child(send).children(send_later).child(focus)),
         );
-    }
-    head = head.child(title);
-    if let Some((label, tone)) = &c.state {
-        head = head.child(kit::tone_pill(t, tone, label.clone()));
-    }
-    let mut card = div().w(px(w)).flex_none().flex().flex_col().gap(px(12.)).p(px(14.)).rounded(px(14.)).border_1().border_color(t.border).bg(t.card).child(head);
-    if !c.now.is_empty() {
-        card = card.child(tiles(t, c.now_label.clone(), &c.now, tile_w, cx));
-    }
-    if !c.left.is_empty() {
-        card = card.child(tiles(t, c.left_label.clone(), &c.left, tile_w, cx));
-    }
-    if let Some(q) = &c.queued {
-        let link = kit::link(t, SharedString::from(format!("queued-{}", c.r.clone().unwrap_or_else(|| format!("loose-{}", c.project)))), q.clone()).text_size(px(12.5));
-        let (goal, project) = (c.r.clone(), c.project.clone());
-        card = card.child(link.on_click(cx.listener(move |m, _, _, cx| match &goal {
-            Some(g) => m.go(Page::Goal(g.clone()), cx),
-            None => crate::ui::tasks::open_for(m, &project, cx),
-        })));
+    } else {
+        let dismiss_btn = a.dismiss.then(|| {
+            let aid = a.id.clone();
+            kit::btn(t, id("dismiss"), "Dismiss").on_click(cx.listener(move |m, _, _, cx| dismiss(m, &aid, cx)))
+        });
+        card = card.child(
+            body.child(div().text_size(px(13.)).text_color(t.text_2).child(a.text.clone()))
+                .when_some(dismiss_btn, |d, b| d.child(div().flex().child(b))),
+        );
     }
     card
 }
 
-fn tiles(t: &Theme, label: String, list: &[Tile], tile_w: f32, cx: &mut Context<MainWindow>) -> Div {
-    let mut grid = div().flex().flex_wrap().gap(px(8.));
-    for x in list {
-        grid = grid.child(tile(t, x, tile_w, cx));
-    }
-    div().flex().flex_col().gap(px(6.)).child(sub_label(t, label)).child(grid)
-}
-
-fn tile(t: &Theme, x: &Tile, w: f32, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let open = x.r.clone();
-    let hover = t.border_2;
-    let mut d = div()
-        .id(SharedString::from(format!("tile-{}", x.r)))
-        .w(px(w))
-        .flex_none()
-        .flex()
-        .flex_col()
-        .gap(px(5.))
-        .px(px(10.))
-        .py(px(9.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(t.border)
-        .bg(t.tint)
-        .cursor_pointer()
-        .hover(move |s| s.border_color(hover))
-        .on_click(cx.listener(move |m, _, _, cx| m.open_task(open.clone(), cx)))
-        .child(div().flex().child(kit::tone_pill(t, x.tone, x.status.clone())))
-        // The ref leads the title, dimmed.
-        .child(
-            div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).line_height(relative(1.3)).line_clamp(2).child(
-                StyledText::new(format!("{} {}", x.r, x.title))
-                    .with_highlights([(0..x.r.len(), HighlightStyle { color: Some(t.faint), font_weight: Some(FontWeight::NORMAL), ..Default::default() })]),
-            ),
-        )
-        .child(div().text_size(px(12.)).text_color(t.muted).truncate().child(x.line.clone()));
-    if !x.reviewers.is_empty() {
-        let mut row = div().flex().flex_wrap().gap(px(4.));
-        for r in &x.reviewers {
-            row = row.child(reviewer_chip(t, r));
-        }
-        d = d.child(row);
-    }
-    d
-}
-
-fn reviewer_chip(t: &Theme, r: &Reviewer) -> Div {
-    let (fg, line, mark, tip) = match r.state {
-        Review::Approved => (t.up_fg, t.up, Mark::Check, "Approved"),
-        Review::Changes => (t.warn_fg, t.warn_line, Mark::Pencil, "Changes requested"),
-        Review::Pending => (t.muted, t.border, Mark::Clock, "Pending"),
-    };
-    let _ = tip;
-    div()
-        .flex()
-        .items_center()
-        .gap(px(4.))
-        .h(px(22.))
-        .pl(px(3.))
-        .pr(px(7.))
-        .max_w_full()
-        .min_w_0()
-        .rounded_full()
-        .border_1()
-        .border_color(line)
-        .bg(t.card)
-        .text_size(px(11.5))
-        .text_color(fg)
-        .child(div().flex().flex_none().items_center().justify_center().size(px(16.)).rounded_full().bg(t.seg).text_color(t.text_2).text_size(px(8.5)).font_weight(FontWeight::BOLD).child(r.initials.clone()))
-        .child(div().min_w_0().truncate().child(r.name.clone()))
-        .child(mark_icon(mark, 12., fg))
-}
-
-#[derive(Clone, Copy)]
-enum Mark {
-    Check,
-    Pencil,
-    Clock,
-}
-
-/// The reviewer marks, on a 12-unit grid.
-fn mark_icon(mark: Mark, size: f32, color: Hsla) -> impl IntoElement {
+/// A 16px chevron: right shut, down open.
+fn chevron(open: bool, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
-        move |bounds, _, window, _| {
-            let k = bounds.size.width.as_f32() / 12.;
-            let o = bounds.origin;
-            let u = |x: f32, y: f32| point(o.x + px(x * k), o.y + px(y * k));
-            let line = |pts: &[(f32, f32)], w: f32, window: &mut Window| {
-                let mut p = PathBuilder::stroke(px(w * k));
-                p.move_to(u(pts[0].0, pts[0].1));
-                for (x, y) in &pts[1..] {
-                    p.line_to(u(*x, *y));
-                }
-                if let Ok(p) = p.build() {
-                    window.paint_path(p, color);
-                }
-            };
-            match mark {
-                Mark::Check => line(&[(2.5, 6.3), (4.8, 8.6), (9.5, 3.6)], 1.8, window),
-                Mark::Pencil => line(&[(7.8, 2.2), (9.8, 4.2), (4.5, 9.5), (2.5, 9.5), (2.5, 7.5), (7.8, 2.2)], 1.5, window),
-                Mark::Clock => {
-                    let ring: Vec<(f32, f32)> = (0..=24).map(|i| i as f32 * std::f32::consts::TAU / 24.).map(|a| (6. + 4.3 * a.cos(), 6. + 4.3 * a.sin())).collect();
-                    line(&ring, 1.4, window);
-                    line(&[(6., 3.8), (6., 6.), (7.5, 7.)], 1.4, window);
-                }
+        move |b, _, window, _| {
+            let k = b.size.width.as_f32() / 24.;
+            let u = |x: f32, y: f32| point(b.origin.x + px(x * k), b.origin.y + px(y * k));
+            let pts = if open { [(6., 9.), (12., 15.), (18., 9.)] } else { [(9., 6.), (15., 12.), (9., 18.)] };
+            let mut p = PathBuilder::stroke(px(1.8));
+            p.move_to(u(pts[0].0, pts[0].1));
+            for (x, y) in &pts[1..] {
+                p.line_to(u(*x, *y));
+            }
+            if let Ok(p) = p.build() {
+                window.paint_path(p, color);
             }
         },
     )
-    .size(px(size))
+    .size(px(16.))
     .flex_none()
 }
 
@@ -960,7 +807,7 @@ mod tests {
     fn needs_you_is_worst_first_with_one_thing_to_do() {
         let home = json!({"needs": [
             {"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep the old form?", "task": "T5", "goal": "G2", "goal_name": "Login",
-             "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "question", "question": "Keep the old form?", "title": "Form"}))},
+             "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "question", "question": "Keep the old form?", "title": "Form", "wave": 2}))},
             {"id": "a2", "at": "2026-10-09T09:00:00Z", "text": "T6 lost its terminal.", "task": "T6", "goal_name": "Login",
              "card": card(json!({"ref": "T6", "status": "needs", "lost": true, "title": "Frames", "goal": {"ref": "G2", "name": "Login"}}))},
             {"id": "a3", "at": "2026-10-09T11:00:00Z", "text": "PR #4 waits for your review", "task": "T8", "review": true,
@@ -978,32 +825,48 @@ mod tests {
     }
 
     #[test]
-    fn a_goal_card_shows_its_wave_leftovers_and_queue() {
-        let e = json!({"project": "webapp", "wave": 2, "waves": 3, "queued": 3, "left_waves": [1],
-            "goal": {"ref": "G14", "name": "Background work", "total": 10, "done": 2},
-            "now": [card(json!({"ref": "T122"})), card(json!({"ref": "T123", "status": "needs", "needs_reason": "question"}))],
-            "left": [card(json!({"ref": "T121", "status": "done", "pr": {"num": 119, "stage": {"phase": "comments"}}}))]});
-        let c = goal_card_vm(&e);
-        assert_eq!(c.now_label, "Now · wave 2");
-        assert_eq!(c.left_label, "Still open from wave 1");
-        assert_eq!(c.queued.as_deref(), Some("3 more queued in wave 2"));
-        assert_eq!(c.count, "2 of 10 done");
-        assert_eq!(c.state, Some(("Waiting on you".into(), "needs")));
-        let shipping = goal_card_vm(&json!({"project": "webapp", "wave": null, "queued": 0, "goal": {"ref": "G13", "name": "S", "total": 2, "done": 2},
-            "now": [card(json!({"status": "done", "pr": {"num": 1, "stage": {"phase": "merge"}}})), card(json!({"status": "done", "pr": {"num": 2, "stage": {"phase": "checks"}}}))]}));
-        assert_eq!(shipping.state, Some(("2 PRs awaiting merge".into(), "working")));
-        assert_eq!(shipping.now_label, "Now");
+    fn a_question_is_answered_and_the_rest_acted_on() {
+        let home = json!({"needs": [
+            {"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep the old form?", "task": "T5", "goal": "G2", "goal_name": "Login",
+             "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "question", "question": "Keep the old form?", "title": "Form", "wave": 2}))},
+            {"id": "a3", "at": "2026-10-09T11:00:00Z", "text": "PR #4 waits for your review", "task": "T8", "review": true,
+             "card": card(json!({"ref": "T8", "status": "done", "pr": {"num": 4, "url": "https://x/pr/4", "state": "OPEN"}}))}
+        ]});
+        let asks = asks_vm(&home);
+        let q = asks.iter().find(|a| a.kind == "Question").unwrap();
+        assert!(q.answer);
+        assert_eq!((q.title.as_str(), q.wave, q.project.as_str(), q.key().as_str()), ("Form", Some(2), "webapp", "a1"));
+        let pr = asks.iter().find(|a| a.kind == "Review the PR").unwrap();
+        assert!(!pr.answer);
+        assert_eq!(pr.title, "Wait in panel");
     }
 
     #[test]
-    fn today_drops_vs_usual_and_colors_the_change() {
-        let days = json!({"day": {"agent_min": 400.0, "human_min": 1260.0, "est_agent_min": 390.0, "done": 5.0, "prs": 4.0, "wait_min": 38.0},
-            "usual": {"days": 10, "agent_min": 330.0, "done": 3.0, "prs": 3.0, "wait_min": 26.0}});
+    fn a_wave_stop_waits_for_continue() {
+        let home = json!({"needs": [], "goals": [
+            {"project": "webapp", "wave": 2, "queued": 4,
+             "goal": {"ref": "G5", "name": "Faster sign-in", "stopped": "Wave 1 is done. Review it, then continue", "updated_at": "2026-10-09T10:00:00Z"}},
+            {"project": "api", "wave": 3, "queued": 1, "goal": {"ref": "G6", "name": "Quiet", "stopped": "T9 in wave 2 failed"}},
+            {"project": "api", "wave": 1, "queued": 2, "goal": {"ref": "G7", "name": "Running"}}
+        ]});
+        let asks = asks_vm(&home);
+        assert_eq!(asks.len(), 1);
+        let a = &asks[0];
+        assert_eq!((a.kind.as_str(), a.title.as_str(), a.line.as_str()), ("Wave stop", "Faster sign-in · wave 1 finished", "4 tasks wait in wave 2"));
+        assert_eq!(a.act, Some(Act::Continue("G5".into(), 1)));
+        assert_eq!(a.act.as_ref().map(Act::label), Some("Continue"));
+        assert!(!a.dismiss && !a.answer);
+        assert_eq!(a.project, "webapp");
+    }
+
+    #[test]
+    fn today_has_five_numbers_and_waiting_is_loud() {
+        let days = json!({"day": {"agent_min": 400.0, "done": 5.0, "prs": 4.0, "wait_min": 38.0}});
         let st = stats_vm(&days);
-        let find = |l: &str| st.iter().find(|x| x.label == l).cloned().unwrap();
-        assert_eq!(find("Agent time").delta, "");
-        assert_eq!((find("Tasks done").delta.as_str(), find("Tasks done").trend), ("+2", Trend::Good));
-        assert_eq!((find("Waiting on you").delta.as_str(), find("Waiting on you").trend), ("+12m", Trend::Bad));
-        assert_eq!(find("Human estimate").delta, "3.2× agent time");
+        assert_eq!(st.iter().map(|x| x.label).collect::<Vec<_>>()[..4], ["Agent time today", "Done today", "PRs opened", "Waiting on you"]);
+        assert_eq!(st[1].value, "5");
+        assert!(st[3].warn && !st[0].warn);
+        let calm = stats_vm(&json!({"day": {"wait_min": 0.0}}));
+        assert!(!calm[3].warn);
     }
 }
