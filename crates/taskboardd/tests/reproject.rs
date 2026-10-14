@@ -114,6 +114,40 @@ fn here_refuses_another_projects_work() {
 }
 
 #[test]
+fn here_refuses_a_project_the_board_doesnt_know_or_a_folder_with_no_project() {
+    let b = new_board();
+    let elsewhere = b.dir.path().join("scratch");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let elsewhere = elsewhere.to_string_lossy().to_string();
+    midna::sync(
+        &b.app,
+        &[
+            json!({"id": "s1", "name": "Lens 1", "agent": "claude", "cwd": b.repo("lens"), "status": {"state": "working"}}),
+            json!({"id": "s2", "name": "Scratch", "agent": "claude", "cwd": elsewhere, "status": {"state": "working"}}),
+        ],
+        &[],
+    )
+    .unwrap();
+    let new = |sid: &str, cwd: &str, project: Option<&str>| {
+        reports::handle(
+            &b.app,
+            json!({"event": "tb.new_task", "session": sid, "claude_session": format!("c-{sid}"), "cwd": cwd, "git": {},
+                   "title": "Fix the kernel gate", "here": true, "project": project}),
+            false,
+        )
+    };
+    let e = new("s1", &b.repo("lens"), Some("nowhere")).unwrap_err();
+    assert_eq!(e.status, 400);
+    assert!(e.message.contains("knows no project “nowhere”"), "{}", e.message);
+    let e = new("s2", &elsewhere, None).unwrap_err();
+    assert_eq!(e.status, 409);
+    assert!(e.message.contains(&format!("midna project add {elsewhere}")), "names the command that adds one: {}", e.message);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks", vec![]).unwrap(), 0, "no task under an invented project");
+    let r = new("s1", &format!("{}/src", b.repo("lens")), Some("LENS")).unwrap();
+    assert_eq!(b.row(r["created"][0].as_str().unwrap()).st("project"), "lens", "a subfolder is its project's, any case");
+}
+
+#[test]
 fn an_unknown_project_or_a_done_task_is_refused() {
     let b = new_board();
     let t = b.task(json!({"title": "Wrong home", "project": "lens", "status": "planned"}));
