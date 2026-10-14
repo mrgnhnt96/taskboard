@@ -1649,7 +1649,14 @@ fn print_pr_status(t: &str, v: &Value) {
     }
     let rec = &v["record"];
     if let (Some(b), Some(base)) = (rec["branch"].as_str(), rec["base"].as_str()) {
-        let moved = if live["base_moved"] == true { format!(" · {base} has moved since this push: rebase onto it") } else { String::new() };
+        let rebase = live["rebase"].as_array().is_some_and(|a| !a.is_empty());
+        let moved = match (live["conflicts"] == true, live["base_moved"] == true) {
+            (true, _) if rebase => format!(" · conflicts with {base}: rebase onto it"),
+            (true, _) => format!(" · conflicts with {base}"),
+            (false, true) if rebase => format!(" · {base} has moved since this push: rebase onto it"),
+            (false, true) if live["conflicts"] == false => format!(" · {base} has moved since this push, no conflicts: don't rebase"),
+            _ => String::new(),
+        };
         out(&format!("Branch {b} into {base}{moved}"));
         for cmd in live["rebase"].as_array().cloned().unwrap_or_default() {
             out(&format!("  {}", cmd.as_str().unwrap_or("")));

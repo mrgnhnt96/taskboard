@@ -578,8 +578,11 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
             (!stopped.is_empty()).then(|| format!("Builds stopped: {}", stopped.join(", ")))
         }
     };
+    let policy = prflow::rebase_policy(app, &t);
     live["base_moved"] = json!(prflow::base_moved(&f, &rec));
-    live["rebase"] = json!(if prflow::base_moved(&f, &rec) {
+    live["conflicts"] = json!(prflow::conflicts(&rec));
+    live["rebase_policy"] = json!(format!("{policy:?}").to_lowercase());
+    live["rebase"] = json!(if prflow::needs_rebase(policy, &f, &rec) {
         rebase_commands(&app.cfg.pr_body.remote, rec["base"].as_str().unwrap_or(""), rec["branch"].as_str().unwrap_or(""), &review_gate(app, &t), &review_republish(app, &t))
     } else {
         vec![]

@@ -182,6 +182,8 @@ pub struct PrConfig {
     /// A green PR waits for the owner's own look ("Waiting on your review") before it moves on. Off:
     /// the board marks it reviewed for them. Unset: on.
     pub owner_review: Option<bool>,
+    /// When `tb pr status` and a failed check's wake tell the agent to rebase onto the base.
+    pub rebase: RebasePolicy,
     pub gh: String,
     /// Minutes after the head was pushed with no checks before the checks count as passed.
     pub no_checks_after_mins: f64,
@@ -209,6 +211,7 @@ impl Default for PrConfig {
             wake: true,
             agents_merge: None,
             owner_review: None,
+            rebase: RebasePolicy::default(),
             gh: "gh".into(),
             no_checks_after_mins: 15.0,
             comment_settle_secs: 90.0,
@@ -236,6 +239,25 @@ impl PrConfig {
     pub fn owner_review_on(&self) -> bool {
         self.owner_review.unwrap_or(true)
     }
+
+    /// The rebase policy for a project: its own `rebase`, else `pr.rebase`.
+    pub fn rebase_for(&self, name: Option<&str>) -> RebasePolicy {
+        self.project(name).rebase.unwrap_or(self.rebase)
+    }
+}
+
+/// When a PR's branch should be rebased onto its base. A rebase is a push, and a push starts the
+/// builds again, so the default only asks for one when the PR can't merge as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RebasePolicy {
+    /// Whenever the base has moved since the push.
+    Moved,
+    /// Only when the PR conflicts with its base (as the host reports it).
+    #[default]
+    Conflicts,
+    /// Never.
+    Never,
 }
 
 /// One project's PR rules. Every key is optional; unset keys keep the board-wide behaviour. `tb project
@@ -276,6 +298,8 @@ pub struct PrProject {
     pub owner_review: Option<bool>,
     /// The lens review stage on this project's new PRs. Unset: `pr.lens.on`.
     pub lens: Option<bool>,
+    /// When to rebase its PRs onto their base. Unset: `pr.rebase`.
+    pub rebase: Option<RebasePolicy>,
 }
 
 /// `[pr.lens]`: on a new PR, run lens's PR pass headless (`claude -p "/lens:review --pr <n>"`, from the

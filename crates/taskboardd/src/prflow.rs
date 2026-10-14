@@ -21,6 +21,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::app::App;
+use crate::config::RebasePolicy;
 use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
@@ -346,6 +347,18 @@ fn retry_later(f: &Row) -> bool {
     f.s("retry_at").map(|r| r > now_iso().as_str()).unwrap_or(false)
 }
 
+/// The fix wake's sentence on rebasing, by policy (with its leading space).
+fn rebase_advice(policy: RebasePolicy) -> &'static str {
+    match policy {
+        RebasePolicy::Moved => " If the base branch has moved, rebase onto it before you push (git push --force-with-lease).",
+        RebasePolicy::Conflicts => {
+            " Don't rebase onto the base branch unless the PR conflicts with it (a rebase starts the builds again); when it \
+             does, rebase before you push (git push --force-with-lease)."
+        }
+        RebasePolicy::Never => " Don't rebase onto the base branch.",
+    }
+}
+
 fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
@@ -358,12 +371,13 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
              where it can read them, and marks a check the base branch fails too. Read the failing check's log when that \
              isn't enough (for GitHub: gh pr checks {num} and gh run view --log-failed). Work from that error, not a guess. \
              If the PR's change causes it, fix exactly that in this task's worktree, run the failing tests and the ones covering your fix (not the whole suite), and push; the checks \
-             run again. If the base branch has moved, rebase onto it before you push (git push --force-with-lease). If the \
+             run again.{rebase} If the \
              failure isn't this PR's (the base branch fails it too), don't change unrelated code: clear it with {tb} pr \
              not-ours {r} --check \"<check>\" --title \"<what fails>\" --reason \"<why it isn't this PR>\" --proof <link to \
              the same failure without this change>.",
             if failed.is_empty() { "see the PR".to_string() } else { failed.join(", ") },
-            num = t.i0("pr_num")
+            num = t.i0("pr_num"),
+            rebase = rebase_advice(rebase_policy(app, t))
         ),
         "comments" => format!(
             "There are open review threads{}. {tb} pr status {r} lists them with their ids. Address each in the worktree; \
@@ -716,6 +730,31 @@ pub fn base_moved(f: &Row, rec: &Value) -> bool {
     let now = rec["base_head"].as_str().unwrap_or("");
     let then = f.get("head_base").and_then(|m| m.get(rec["head"].as_str().unwrap_or(""))).and_then(|v| v.as_str()).unwrap_or("");
     !now.is_empty() && !then.is_empty() && now != then
+}
+
+/// Whether the PR conflicts with its base, as the host last said: GitHub's `mergeable`
+/// ("CONFLICTING", "MERGEABLE") or a stream's bool. None: the host can't tell (yet).
+pub fn conflicts(rec: &Value) -> Option<bool> {
+    match &rec["mergeable"] {
+        Value::Bool(m) => Some(!m),
+        Value::String(s) if s == "CONFLICTING" => Some(true),
+        Value::String(s) if s == "MERGEABLE" => Some(false),
+        _ => None,
+    }
+}
+
+/// The task's project's rebase policy says to rebase this push onto its base now.
+pub fn needs_rebase(policy: RebasePolicy, f: &Row, rec: &Value) -> bool {
+    match policy {
+        RebasePolicy::Moved => base_moved(f, rec) || conflicts(rec) == Some(true),
+        RebasePolicy::Conflicts => conflicts(rec) == Some(true),
+        RebasePolicy::Never => false,
+    }
+}
+
+/// The task's rebase policy (`pr.rebase`, or its project's own).
+pub fn rebase_policy(app: &App, t: &Row) -> RebasePolicy {
+    app.cfg.pr.rebase_for(t.s("project"))
 }
 
 /// Reviewers taken off the PR: a request for changes from one of them no longer holds.

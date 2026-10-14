@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
-use taskboardd::config::{Config, PrProject};
+use taskboardd::config::{Config, PrProject, RebasePolicy};
 use taskboardd::prhost::{self, Check, FakeHost, Record, Reviewer, Thread};
 use taskboardd::util::{now_ts, RowExt};
 use taskboardd::{board, midna, prflow, reports};
@@ -476,9 +476,11 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
     *h.base_failing.lock() = vec!["e2e".into()];
     poll(&b);
     h.rec.lock().base_head = "b2".into();
+    h.rec.lock().mergeable = json!("CONFLICTING");
     let v = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")]);
     let live = &v["live"];
     assert_eq!(live["base_moved"], true);
+    assert_eq!(live["conflicts"], true);
     let rebase: Vec<&str> = live["rebase"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
     assert_eq!(rebase[rebase.len() - 2..], ["git push --force-with-lease origin feat", "Don't push only to rebase."], "{rebase:?}");
     let f =&live["failures"][0];
@@ -688,6 +690,7 @@ fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied()
             "webapp".into(),
             PrProject { failures_cmd: Some("echo 'Run e2e'; echo test: login_works; [ -n \"$TB_HEAD\" ] && echo test: logout_works; true".into()), ..Default::default() },
         );
+        c.pr.rebase = RebasePolicy::Moved;
     });
     let id = b.pr_task(BB);
     let mut rec = green();
@@ -709,6 +712,35 @@ fn status_blames_the_base_per_test_and_says_how_to_rebase_and_what_was_replied()
     assert_eq!((f["base_fails"].clone(), f["base_compared"].clone()), (json!(false), json!("steps")), "logout_works is this PR's");
     assert_eq!(live["rebase"][0], "git fetch origin main && git rebase origin/main");
     assert_eq!(live["open_threads"][0]["replies"][1]["text"], "It clashes with the other one");
+}
+
+#[test]
+fn status_asks_for_a_rebase_only_as_the_rebase_policy_says() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    let rebase = |b: &Board| b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"]["rebase"].as_array().unwrap().len();
+    h.rec.lock().base_head = "b2".into();
+    h.rec.lock().mergeable = json!("MERGEABLE");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!((live["base_moved"].clone(), live["conflicts"].clone(), live["rebase_policy"].clone()), (json!(true), json!(false), json!("conflicts")));
+    assert_eq!(rebase(&b), 0, "the base moved, but the PR merges as it is: no rebase by default");
+    h.rec.lock().mergeable = json!(null);
+    assert_eq!(rebase(&b), 0, "the host can't tell: no rebase");
+    h.rec.lock().mergeable = json!("CONFLICTING");
+    assert!(rebase(&b) > 0, "it conflicts: rebase");
+
+    let never = board_with(|c| {
+        c.pr.projects.insert("webapp".into(), PrProject { rebase: Some(RebasePolicy::Never), ..Default::default() });
+    });
+    let id = never.pr_task(BB);
+    let h = fake(&never, green());
+    poll(&never);
+    h.rec.lock().base_head = "b2".into();
+    h.rec.lock().mergeable = json!("CONFLICTING");
+    let live = never.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!((live["rebase_policy"].clone(), live["rebase"].clone()), (json!("never"), json!([])), "the project's own policy wins");
 }
 
 #[test]
