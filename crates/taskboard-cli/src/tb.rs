@@ -227,6 +227,11 @@ enum Cmd {
         #[command(subcommand)]
         action: LessonCmd,
     },
+    /// A project's areas: backfill the area of work already done
+    Areas {
+        #[command(subcommand)]
+        action: AreasCmd,
+    },
     /// A project's reviewers: list, add, remove (never ask them), back, pin, bot schedule, automation, aliases
     Reviewers {
         #[command(subcommand)]
@@ -690,6 +695,16 @@ enum LessonCmd {
         /// Only these (retired ones are left out otherwise)
         #[arg(long, value_parser = ["suggested", "kept", "retired"])]
         state: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AreasCmd {
+    /// Infer the area of tasks with none set by hand from their PR's files and commits, and each goal's from its tasks
+    Backfill {
+        /// Only this project's (every project with areas by default)
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
@@ -2417,6 +2432,30 @@ fn lesson_search(c: &Ctx, query: &str, project: Option<String>, all: bool, state
     Ok(0)
 }
 
+fn areas_cmd(c: &Ctx, action: AreasCmd) -> Result<i32, String> {
+    let AreasCmd::Backfill { project } = action;
+    let v = c.call_progress("POST", "/areas/backfill", Some(json!({"project": project})))?;
+    let projects: Vec<&str> = v["projects"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).collect();
+    if projects.is_empty() {
+        out("No project has areas yet: list them in .taskboard.toml at a repo's root.");
+        return Ok(0);
+    }
+    let area = |a: &Value| a.as_str().unwrap_or("none").to_string();
+    let tasks = v["tasks"].as_array().cloned().unwrap_or_default();
+    let goals = v["goals"].as_array().cloned().unwrap_or_default();
+    out(&format!("{}: set {} task area(s) and {} goal area(s).", projects.join(", "), tasks.len(), goals.len()));
+    for t in &tasks {
+        out(&format!("  {} {} → {} (from {})", t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""), area(&t["area"]), t["from"].as_str().unwrap_or("")));
+    }
+    for g in &goals {
+        out(&format!("  {} {} → {}", g["ref"].as_str().unwrap_or(""), g["name"].as_str().unwrap_or(""), area(&g["area"])));
+    }
+    if let Some(n) = v["unsure"].as_u64().filter(|n| *n > 0) {
+        out(&format!("{n} task(s) left blank: their files tie between areas or sit in none."));
+    }
+    Ok(0)
+}
+
 fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
     let (v, did) = match action {
         LessonCmd::Retro { goal } => return lesson_retro(c, &goal_ref(&goal)?),
@@ -3746,6 +3785,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Planning { project } => planning_cmd(c, project),
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
         Cmd::Lesson { action } => lesson_cmd(c, action),
+        Cmd::Areas { action } => areas_cmd(c, action),
         Cmd::Close { done: _, project, goal } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let v = c.call("POST", "/done/close-terminals", Some(json!({"project": project, "goal": goal})))?;

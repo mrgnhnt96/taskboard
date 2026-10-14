@@ -139,7 +139,8 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
     let tid = app.db.insert(
         "tasks",
-        fields!["title" => title, "detail" => body_str(body, "detail"), "project" => project, "repo_path" => repo, "area" => area,
+        fields!["title" => title, "detail" => body_str(body, "detail"), "project" => project, "repo_path" => repo, "area" => area.clone(),
+                "area_source" => if area.is_null() { None } else { Some("set") },
                 "priority" => priority, "status" => status, "goal_id" => goal_id, "position" => board::next_position(app, goal_id)?,
                 "pickup" => mode, "pickup_session" => if mode == "attach" { sid } else { None },
                 "auto_close" => auto_close as i64, "jira_key" => jkey, "jira_sync" => as_bool(body.get("jira_sync"), true) as i64,
@@ -235,7 +236,8 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
     let gid = app.db.insert(
         "goals",
         fields!["name" => name, "outcome" => body_str(body, "outcome"), "tldr" => if tldr.is_empty() { None } else { Some(tldr) },
-                "project" => project, "repo_path" => projects::project_path(app, Some(&project))?, "area" => area, "epic_key" => ekey,
+                "project" => project, "repo_path" => projects::project_path(app, Some(&project))?,
+                "area" => area.clone(), "area_source" => if area.is_null() { None } else { Some("set") }, "epic_key" => ekey,
                 "run_in_order" => as_bool(body.get("run_in_order"), true) as i64, "max_terminals" => max_t,
                 "auto_close" => as_bool(body.get("auto_close"), true) as i64, "product" => product,
                 "worktree_base" => crate::worktrees::clean_base(body.get("worktree_base"))?,

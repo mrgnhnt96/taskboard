@@ -310,6 +310,11 @@ impl PrHost for BitbucketHost {
         self.http.call("PUT", &self.pr_url(pr), Some(&json!({"title": p["title"], "description": body}))).map(|_| ())
     }
 
+    fn files(&self, pr: &PrRef) -> HostResult<Vec<String>> {
+        let stats = self.get_all(&format!("{}/diffstat?pagelen=100", self.pr_url(pr)), 3)?;
+        Ok(stats.iter().filter_map(|d| d["new"]["path"].as_str().or_else(|| d["old"]["path"].as_str())).map(str::to_string).collect())
+    }
+
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled> {
         let runs = match self.get_all(&format!("{}/pipelines/?sort=-created_on&pagelen=50", self.repo_url(&pr.repo)), 1) {
             Ok(r) => r,

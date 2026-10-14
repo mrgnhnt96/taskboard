@@ -403,6 +403,10 @@ pub trait PrHost: Send + Sync {
     fn set_description(&self, _pr: &PrRef, _body: &str) -> HostResult<()> {
         Err(format!("the board can't change a {} PR's description", self.id()))
     }
+    /// The files the PR changes, repo-relative (the first few hundred).
+    fn files(&self, _pr: &PrRef) -> HostResult<Vec<String>> {
+        Err(format!("the board can't list a {} PR's files", self.id()))
+    }
     fn cancel_builds(&self, pr: &PrRef, head: &str) -> HostResult<Cancelled>;
     /// Names of the checks that failed on any of the base branch's last `commits` commits.
     fn base_failures(&self, pr: &PrRef, base: &str, commits: usize) -> HostResult<Vec<String>>;
