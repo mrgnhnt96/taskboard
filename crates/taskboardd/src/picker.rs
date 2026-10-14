@@ -162,7 +162,9 @@ pub fn sync(app: &App, project: &str, repo: Option<&str>, pr: Option<&crate::prh
     }
     let mut joined = 0;
     if let Some(repo) = repo.filter(|r| Path::new(r).is_dir()) {
-        for p in authors(app, project, shortlog(repo, &format!("{} months ago", cfg.history_months)))? {
+        let log = crate::progress::waiting("git shortlog", crate::progress::WAITING_EVERY, || shortlog(repo, &format!("{} months ago", cfg.history_months)));
+        crate::progress::stage("Read the commit authors");
+        for p in authors(app, project, log)? {
             if p.commits.unwrap_or(0) < cfg.min_commits {
                 continue;
             }
@@ -176,7 +178,7 @@ pub fn sync(app: &App, project: &str, repo: Option<&str>, pr: Option<&crate::prh
     let mut matched = 0;
     if let Some(pr) = pr {
         if let Ok(host) = crate::prhost::host_for(app, &pr.host) {
-            match host.members(&pr.repo) {
+            match crate::progress::waiting(&format!("the PR host for {}'s members", pr.repo), crate::progress::WAITING_EVERY, || host.members(&pr.repo)) {
                 Ok(members) => {
                     for m in members {
                         for r in reviewers::roster(app, project)? {

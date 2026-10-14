@@ -1000,7 +1000,8 @@ fn focus(app: &App, name: &str) -> Result<Value> {
     let timeout = app.cfg.devices.focus_timeout_secs.unwrap_or(15.0);
     let Some(cmd) = focus_command(app, &d) else {
         if crate::devfocus::builtin_for(&d.st("kind"), &d.st("target")).is_some() {
-            return match crate::devfocus::focus(&dev, &d.st("kind"), &d.st("target"), timeout) {
+            let raised = crate::progress::waiting(&format!("{dev} to come up"), crate::progress::WAITING_EVERY, || crate::devfocus::focus(&dev, &d.st("kind"), &d.st("target"), timeout));
+            return match raised {
                 Ok(()) => Ok(json!({"ok": true, "device": d.v("name")})),
                 Err(why) => err(409, why),
             };
@@ -1016,7 +1017,8 @@ fn focus(app: &App, name: &str) -> Result<Value> {
         ("TASKBOARD_DEVICE_KIND".to_string(), d.st("kind")),
     ];
     // Waited for, so the person or agent who asked sees it when nothing came up.
-    let failed = match crate::proc::run_with(std::path::Path::new("/bin/sh"), &["-c".to_string(), cmd], None, timeout, &env, None) {
+    let run = || crate::proc::run_with(std::path::Path::new("/bin/sh"), &["-c".to_string(), cmd], None, timeout, &env, None);
+    let failed = match crate::progress::waiting(&format!("{dev}'s focus command"), crate::progress::WAITING_EVERY, run) {
         Ok(o) if o.code == Some(0) => None,
         Ok(o) => {
             let said = one_line(if o.stderr.trim().is_empty() { &o.stdout } else { &o.stderr }, 300);

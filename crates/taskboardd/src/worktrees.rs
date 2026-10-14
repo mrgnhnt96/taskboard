@@ -99,20 +99,22 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     }
     let remote = git(&repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0;
     if remote {
-        let r = git(&repo, &["fetch", "origin"], FETCH_SECS);
+        let r = crate::progress::waiting("git fetch origin", crate::progress::WAITING_EVERY, || git(&repo, &["fetch", "origin"], FETCH_SECS));
         if r.code != 0 {
             return err(409, format!("git fetch failed before making its worktree: {}", last_line(&r.err)));
         }
+        crate::progress::stage("Fetched origin");
     }
     // A stacked task starts from its parent's branch while the parent's PR is unmerged.
     let start = match crate::stack::base_branch(app, t)? {
         Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),
         None => base,
     };
-    let r = git(&repo, &["worktree", "add", "--detach", &path, &start], GIT_SECS);
+    let r = crate::progress::waiting("git worktree add", crate::progress::WAITING_EVERY, || git(&repo, &["worktree", "add", "--detach", &path, &start], GIT_SECS));
     if r.code != 0 {
         return err(409, format!("Couldn't make its worktree from {start}: {}", last_line(&r.err)));
     }
+    crate::progress::stage(&format!("Made its worktree from {start}"));
     record(app, t, &path, Some(&start))?;
     Ok(Some(path))
 }

@@ -303,7 +303,11 @@ pub fn retarget(app: &App) -> Result<i64> {
         let base = jloads_obj(p.s("pr_flow")).get("rec").and_then(|r| r["base"].as_str()).filter(|b| !b.is_empty()).map(|b| b.to_string());
         let Some(base) = base.or_else(|| crate::steps::default_base(&t.st("repo_path"))) else { continue };
         let pr = rf("task", p.id());
-        let res = crate::propen::host::retarget(app, &t, &base);
+        let what = format!("the PR host to point PR #{} at {base}", t.i0("pr_num"));
+        let res = crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || crate::propen::host::retarget(app, &t, &base));
+        if res.is_ok() {
+            crate::progress::stage(&format!("Pointed PR #{} at {base}", t.i0("pr_num")));
+        }
         let key = retarget_key(t.id());
         app.db.tx(|| {
             match &res {

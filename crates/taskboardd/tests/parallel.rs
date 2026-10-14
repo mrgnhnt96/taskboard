@@ -11,7 +11,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{PrLink, RowExt};
-use taskboardd::{board, midna, p, prflow, reports, runner, worktrees};
+use taskboardd::{board, midna, p, prflow, progress, reports, runner, worktrees};
 
 struct Board {
     app: Arc<App>,
@@ -268,6 +268,20 @@ fn each_task_starts_in_its_own_worktree_off_the_base() {
     }
     let again = worktrees::ensure(&b.app, &board::get_task(&b.app, one).unwrap()).unwrap();
     assert_eq!(again, Some(format!("{}/.claude/worktrees/T{one}", b.repo())), "it reuses the worktree");
+}
+
+#[test]
+fn making_a_worktree_says_each_stage_on_the_progress_stream() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let t = b.task("Fix one", json!({"goal_id": g}));
+    let lines = Arc::new(parking_lot::Mutex::new(vec![]));
+    let l = lines.clone();
+    let sink: progress::Sink = Arc::new(move |s: &str| l.lock().push(s.to_string()));
+    progress::with(sink, || worktrees::ensure(&b.app, &board::get_task(&b.app, t).unwrap())).unwrap();
+    assert_eq!(*lines.lock(), ["Fetched origin", "Made its worktree from origin/main"]);
 }
 
 #[test]

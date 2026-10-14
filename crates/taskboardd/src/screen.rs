@@ -187,7 +187,9 @@ pub fn question(app: &App, t: Option<&Row>, text: &str) -> Option<Value> {
         "--output-format".into(),
         "json".into(),
     ];
-    let out = match proc::run(&claude, &args, Some(&app.cfg.data), q.timeout_secs as f64) {
+    let out = match crate::progress::waiting("claude to screen the question", crate::progress::WAITING_EVERY, || {
+        proc::run(&claude, &args, Some(&app.cfg.data), q.timeout_secs as f64)
+    }) {
         Ok(o) => o,
         Err(_) => {
             app.info("screen: claude didn't answer in time; the question goes to the owner as written");
