@@ -140,7 +140,7 @@ pub struct Questions {
 impl Default for Questions {
     fn default() -> Self {
         Questions {
-            screen: false,
+            screen: true,
             model: "claude-haiku-5-5".into(),
             budget_usd: "0.30".into(),
             timeout_secs: 75,

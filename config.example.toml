@@ -56,7 +56,7 @@ snooze_mins = [15, 30, 60]
 # Screen agents' questions with a headless `claude -p` first: when the rules already answer a
 # question, the agent gets the answer and the owner isn't asked.
 [questions]
-screen = false
+screen = true
 model = "claude-haiku-5-5"
 budget_usd = "0.30"
 timeout_secs = 75

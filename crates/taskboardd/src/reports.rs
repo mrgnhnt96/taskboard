@@ -469,6 +469,18 @@ fn on_stop(r: &mut Report) -> Result<Value> {
         prflow::link_pr(app, &t, &pr, &r.name())?;
     }
     r.stalled = stalled(r, &t)?;
+    let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
+    let asked = ends_on_question(&reply_end).filter(|_| !r.spooled && t.s("status") == Some("working"));
+    if let (Some(asked), Some(sid)) = (asked, r.sid.clone()) {
+        // The turn ended by asking the owner something in its reply: it's waiting, not stalled.
+        r.stalled = false;
+        let (tid, name) = (t.id(), r.name());
+        app.queue_ai(Box::new(move |a: &App| {
+            if let Err(e) = screen_reply(a, tid, &sid, &name, &asked) {
+                a.info(format!("reply question: {e}"));
+            }
+        }));
+    }
     if let Some(sid) = r.sid.clone() {
         let tid = t.id();
         app.defer(Box::new(move |a: &App| {
@@ -479,6 +491,54 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     }
     app.wake_runner();
     Ok(ok(Some(&t), None))
+}
+
+static ASKS_OWNER: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\?(\s|$|[*_`)\x22'])|\b(tell me|let me know|answer the board question|your call|should i|do you want|would you like|want me to|which (one|option|way) do you)\b",
+    )
+    .unwrap()
+});
+
+/// The question a turn's reply ends on, when its last paragraph asks the owner something: a
+/// sentence ending in "?", or asking for an answer in so many words ("tell me which…").
+fn ends_on_question(reply: &str) -> Option<String> {
+    let last = reply.trim().rsplit("\n\n").map(str::trim).find(|p| !p.is_empty())?;
+    ASKS_OWNER.is_match(last).then(|| one_line(last, 1000))
+}
+
+/// Screens the question a turn's reply ended on, off the hook's clock: when the owner's rules answer
+/// it, the answer goes to the agent; otherwise the task waits on the owner, who is alerted. It does
+/// nothing when the terminal moved on meanwhile (another prompt, another task).
+fn screen_reply(app: &App, tid: i64, sid: &str, name: &str, asked: &str) -> Result<()> {
+    let t = board::get_task(app, tid)?;
+    let screened = screen::question(app, Some(&t), asked).unwrap_or(json!({}));
+    app.db.tx(|| {
+        let t = board::get_task(app, tid)?;
+        let idle = board::get_session(app, Some(sid))?.map(|s| s.s("status") == Some("idle")).unwrap_or(false);
+        if t.s("status") != Some("working") || !idle || board::task_for_session(app, Some(sid))?.map(|s| s.id()) != Some(tid) {
+            return Ok(());
+        }
+        if screened["verdict"] == "answered" {
+            let src = screened["source"].as_str().unwrap_or("the rules");
+            let ans = screened["answer"].as_str().unwrap_or("");
+            board::log_event(app, tid, name, "question", &format!("Asked in its reply: {asked}"))?;
+            board::log_event(app, tid, board::BOARD, "answer", &format!("Answered from {src} without asking you: {ans}"))?;
+            let text = format!(
+                "{} Answered from {src} without asking {}:\n{ans}\n\nCarry on with the work. If this answer really doesn't fit, ask again with {} question and say why.",
+                handoff::marker(tid),
+                app.cfg.owner,
+                board::tb_cmd(app)
+            );
+            deliver::add(app, "answer", &text, tid, Some(sid), None)?;
+            return Ok(());
+        }
+        let question = screened["question"].as_str().filter(|q| !q.trim().is_empty()).unwrap_or(asked);
+        board::update_task(app, tid, fields!["status" => "needs", "needs_reason" => "question", "question" => question, "answered_at" => null, "lost" => 0])?;
+        board::log_event(app, tid, name, "question", &format!("Asked in its reply: {question}"))?;
+        app.db.x("UPDATE sessions SET status = 'needs' WHERE id = ? AND status != 'gone'", p![sid])?;
+        crate::dispatch::add_alert(app, &format!("{}: {question}", rf("task", tid)), Some(tid), t.i("goal_id"), None, None)
+    })
 }
 
 /// Files a turn's tools didn't make that turn up in a checkout anyway: the OS's and editors' own.
