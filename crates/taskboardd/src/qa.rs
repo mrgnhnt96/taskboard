@@ -338,7 +338,7 @@ pub fn act(app: &App, c: &Row, src: &Row, who: &str, note: Option<&str>) -> Resu
     let mut body = json!({"title": clip(&format!("QA on {key}: {title}"), 300), "project": src.v("project"), "goal_id": g.as_ref().map(|g| g.id()),
                           "priority": "high", "pickup": {"mode": "new"}, "jira": {"mode": "link", "key": key},
                           "detail": brief(app, c, src, note), "meta": meta,
-                          "origin": {"from": format!("Jira comment on {key}"), "by": author(c), "url": url}});
+                          "origin": {"from": format!("Jira comment on {key}"), "by": author(c), "url": url}, "not_backlog": true});
     // A follow-up that needs no code change ends without a PR; one that does follows the project.
     if !c.b("pr") {
         body["ships_pr"] = json!(false);

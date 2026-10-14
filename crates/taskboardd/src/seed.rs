@@ -27,7 +27,7 @@ pub fn seed(app: &App) -> Result<()> {
             let c = ops::new_task(
                 app,
                 &json!({"title": title, "detail": detail, "project": "webapp", "goal_id": goal,
-                        "status": if status == "planned" { "planned" } else { "queued" }, "pickup": {"mode": "manual"}}),
+                        "status": if status == "planned" { "planned" } else { "queued" }, "pickup": {"mode": "manual"}, "not_backlog": true}),
                 board::OWNER,
                 None,
             )?;
@@ -75,7 +75,7 @@ fn seed_waves(app: &App, shared: i64) -> Result<()> {
     let mk = |title: &str, wave: Option<i64>, status: &str| -> Result<i64> {
         let c = ops::new_task(
             app,
-            &json!({"title": title, "detail": "Sample work.", "project": "webapp", "goal_id": gid, "wave": wave, "status": "queued", "pickup": {"mode": "queue"}}),
+            &json!({"title": title, "detail": "Sample work.", "project": "webapp", "goal_id": gid, "wave": wave, "status": "queued", "pickup": {"mode": "queue"}, "not_backlog": true}),
             board::OWNER,
             None,
         )?;

@@ -2168,6 +2168,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
                     "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"),
                     "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"),
+                    "not_backlog": item.get("not_backlog").filter(|v| !v.is_null()).or(r.body.get("not_backlog")),
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
                         .unwrap_or_else(|| json!({"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}))}),
             &r.name(),
@@ -2247,7 +2248,8 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-                           "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area")}]);
+                           "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
+                           "not_backlog": r.body.get("not_backlog")}]);
         if let Some(b) = &issue {
             item[0] = with_issue(r, b, item[0].take());
         }
@@ -2271,7 +2273,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                 "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
-                "origin": {"from": "Added by an agent", "by": r.name()}});
+                "not_backlog": r.body.get("not_backlog"), "origin": {"from": "Added by an agent", "by": r.name()}});
     if let Some(b) = &issue {
         fields = with_issue(r, b, fields);
     }
@@ -2356,7 +2358,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     let mut fields = json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
             "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-            "area": r.body.get("area"),
+            "area": r.body.get("area"), "not_backlog": r.body.get("not_backlog"),
             "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}});
     let how = match issue {
         Some(b) => {
