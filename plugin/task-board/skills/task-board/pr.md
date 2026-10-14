@@ -1,19 +1,19 @@
 # PRs
 
-A project with no git remote has no PRs, and neither has a task set to `--pr no`: finish with a plain `tb done "<summary>"`.
+A project with no git remote has no PRs, and neither has a task set to `--pr no`: finish with a plain `tb submit "<summary>"`.
 
 ## Opening the PR
 
 0. The owner's steps for before the PR (in your handoff; `tb steps` lists them and how to get past each; see SKILL.md). The board refuses the PR until they pass.
 1. Commit the work on the task's branch. Rebase onto the latest base branch (never merge it in), run the tests that cover your change (not the whole suite), and push. A rebased branch that was already pushed goes up with `git push --force-with-lease`, never plain `--force`.
 2. Open the PR with the repo's normal tools (on GitHub, `gh pr create`). Write the description for developers who have never seen the task board: a short summary of what changes and why, the changes, and how it was tested. No task, goal or backlog refs (T45, G3, B1).
-3. `tb done "<summary>" --pr <url>` (or the PR's URL anywhere in the summary). The board picks up GitHub, GitLab and Bitbucket PR URLs and links the PR to the task. A plain `tb done` on a task that ends in a PR, with none linked, is refused: give `--pr`, `--pr-body`, or `--no-pr "<why>"`.
+3. `tb submit "<summary>" --pr <url>` (or the PR's URL anywhere in the summary). The board picks up GitHub, GitLab and Bitbucket PR URLs and links the PR to the task. A plain `tb submit` on a task that ends in a PR, with none linked, is refused: give `--pr`, `--pr-body`, or `--no-pr "<why>"`.
 
-Or let the board open it (GitHub): write the description to a file with `## Summary`, `## Changes` and `## Testing` (bullet lists for the last two, short paragraphs, no board refs), push the rebased branch, and run `tb done "<summary>" --pr-body <file>` (`--title "…"` to name it; the ticket key goes first by itself). The board checks the description, the steps and the branch (pushed, rebased on the remote base, no merge commits), opens the PR into the right base and finishes. It says what to fix when it can't; `tb pr body-check <file>` checks just the description. The board adds a `## Context` section itself (the ticket, a stacked base, evidence, designs, and the task's bits with how to turn them on), so don't repeat those.
+Or let the board open it (GitHub): write the description to a file with `## Summary`, `## Changes` and `## Testing` (bullet lists for the last two, short paragraphs, no board refs), push the rebased branch, and run `tb submit "<summary>" --pr-body <file>` (`--title "…"` to name it; the ticket key goes first by itself). The board checks the description, the steps and the branch (pushed, rebased on the remote base, no merge commits), opens the PR into the right base and finishes. It says what to fix when it can't; `tb pr body-check <file>` checks just the description. The board adds a `## Context` section itself (the ticket, a stacked base, evidence, designs, and the task's bits with how to turn them on), so don't repeat those.
 
-**A ticket for every PR**: while the board has Jira, `tb done` with a PR is refused for a task with no ticket. Link one with `tb task set T<n> --jira ABC-123` (or `--jira new` to have the board find or make one), put the key in the PR title, then run `tb done` again.
+**A ticket for every PR**: while the board has Jira, `tb submit` with a PR is refused for a task with no ticket. Link one with `tb task set T<n> --jira ABC-123` (or `--jira new` to have the board find or make one), put the key in the PR title, then run `tb submit` again.
 
-**No PR after all**: when the work turns out to need none (another task already did it, nothing to change), `tb done "<summary>" --no-pr "<why>"`. Name the other task (T12) or ticket (ABC-7) in the why; the owner sees it as "PR canceled: …". Keep the why to one short line (100 characters at most); a blank one is refused. `--no-evidence "<why>"` says why there's no screenshot or result to show. A task with a design attached finishes with evidence (`tb attach <screenshot or link> --kind evidence`) or `--no-evidence "<why>"`; evidence links are added to the PR's description once it's open.
+**No PR after all**: when the work turns out to need none (another task already did it, nothing to change), `tb submit "<summary>" --no-pr "<why>"`. Name the other task (T12) or ticket (ABC-7) in the why; the owner sees it as "PR canceled: …". Keep the why to one short line (100 characters at most); a blank one is refused. `--no-evidence "<why>"` says why there's no screenshot or result to show. A task with a design attached finishes with evidence (`tb attach <screenshot or link> --kind evidence`) or `--no-evidence "<why>"`; evidence links are added to the PR's description once it's open.
 
 **Stacked PRs**: a task made with `--stack-on T<n>` builds on T<n>'s unmerged PR. Cut its branch from T<n>'s (`origin/<its branch>`; a worktree the board made already starts there), rebase onto it, and open the PR into that branch, not main (`--pr-body` does this). The PR waits ("Waits on base") until T<n>'s merges; then the board points it at main and tells you to rebase. A task made with `--stack-merge head` (`tb status T<n>` ends its stack line in "head merge") is never moved to main: its PR goes through review as usual and `tb pr merge` merges it into T<n>'s branch. T<n>'s PR holds ("Waits on stack") until its head-merge children are merged into it, then takes the whole stack to main in one merge; the board counts a head-merged PR as merged once that happens.
 
@@ -39,7 +39,7 @@ The roster is the project's (`tb reviewers`, run in the project's folder or with
 
 ## After the PR opens
 
-Read this when the board brings you back about a done task's PR (`[task-board:T<n>] PR … needs you`): failed checks, review comments, ready to merge, or asking for reviews. The task is already done: don't `tb take` it or run `tb done`. Every command takes the task, `T<n>`.
+Read this when the board brings you back about a done task's PR (`[task-board:T<n>] PR … needs you`): failed checks, review comments, ready to merge, or asking for reviews. The task is already done: don't `tb take` it or run `tb submit`. Every command takes the task, `T<n>`.
 
 The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` command works on both.
 
@@ -56,7 +56,7 @@ The board watches GitHub and Bitbucket PRs the same way, and every `tb pr` comma
 
 ## The owner wants changes to a done task's PR
 
-When the owner comes to you in a terminal with changes for a done task whose PR is still open, run `tb take T<n>` first. Make the changes, push them, then `tb done "<summary>"` again. Until a peer has been asked to review, taking it back drops the owner's "reviewed" mark: the PR waits for the owner to look at the new changes before anyone else is asked. With peers already on it, it goes to re-review as it is. A merged or closed PR can't be taken back: open a new task instead.
+When the owner comes to you in a terminal with changes for a done task whose PR is still open, run `tb take T<n>` first. Make the changes, push them, then `tb submit "<summary>"` again. Until a peer has been asked to review, taking it back drops the owner's "reviewed" mark: the PR waits for the owner to look at the new changes before anyone else is asked. With peers already on it, it goes to re-review as it is. A merged or closed PR can't be taken back: open a new task instead.
 
 ## A PR feed
 

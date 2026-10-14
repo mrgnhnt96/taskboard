@@ -1,5 +1,5 @@
 //! `[jira] merged_note`: the agent's note for testers. A task that ships a PR on a ticket finishes with one
-//! (`tb done --merged-note`), and once its PR merges the board posts it on the ticket, then the "PR #n was
+//! (`tb submit --merged-note`), and once its PR merges the board posts it on the ticket, then the "PR #n was
 //! merged" line, and only then moves the ticket to `[jira] merged`. A merge with no note leaves the ticket
 //! where it is, raises an alert and brings the conversation back to write one. A post or move that fails
 //! raises an alert and is tried again every `RETRY_SECS` until the ticket has moved.
@@ -28,13 +28,13 @@ pub fn has_note(t: &Row) -> bool {
     t.s("merged_note").is_some_and(|n| !n.trim().is_empty())
 }
 
-/// What `tb done` says to a task that needs a note and has none.
+/// What `tb submit` says to a task that needs a note and has none.
 pub fn refusal(app: &App, t: &Row) -> String {
     let tb = board::tb_cmd(app);
     let me = rf("task", t.id());
     format!(
         "{me}'s ticket {} gets a note for testers before it moves to {} at merge. Read what it covers in {tb} jira, then finish with \
-         {tb} done \"<summary>\" --merged-note \"<markdown>\" (or set it first with {tb} task set {me} --merged-note …). \
+         {tb} submit \"<summary>\" --merged-note \"<markdown>\" (or set it first with {tb} task set {me} --merged-note …). \
          Work that isn't testable still gets a note that says so.",
         t.st("jira_key"),
         merged_status(app)
@@ -49,7 +49,7 @@ pub fn handoff_line(app: &App, t: &Row) -> Result<Option<String>> {
     let tb = board::tb_cmd(app);
     Ok(Some(format!(
         "Jira: once the PR merges, the board posts your note for testers on the ticket before it moves to {}. Write it to the guide in \
-         {tb} jira and finish with {tb} done \"<summary>\" --merged-note \"<markdown>\"; tb done refuses a ticketed PR task without one.",
+         {tb} jira and finish with {tb} submit \"<summary>\" --merged-note \"<markdown>\"; tb submit refuses a ticketed PR task without one.",
         merged_status(app)
     )))
 }
@@ -120,7 +120,7 @@ fn missing(app: &App, t: &Row) -> Result<()> {
     board::log_event(app, t.id(), board::BOARD, "jira", &format!("Kept {} where it is: the task has no note for testers", t.st("jira_key")))?;
     let ask = format!(
         "PR #{} merged, and its ticket {} waits for your note for testers before it moves. Read what the note covers in {tb} jira, \
-         then run {tb} task set {me} --merged-note \"<markdown>\". Don't change code, take another task or run tb done: the task is already done.",
+         then run {tb} task set {me} --merged-note \"<markdown>\". Don't change code, take another task or run tb submit: the task is already submitted.",
         t.i0("pr_num"),
         t.st("jira_key")
     );

@@ -1,7 +1,7 @@
 //! The comment guard (`[comments]` in config.toml): with it on, agents may not add code comments.
 //! A pragma the tools read (`# noqa`, `// eslint-disable-next-line`, …) is allowed. The `PreToolUse`
 //! hook refuses an Edit, Write, MultiEdit or NotebookEdit that adds one, and the board refuses the
-//! PR, a review round and `tb done` while the branch adds any.
+//! PR, a review round and `tb submit` while the branch adds any.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -304,7 +304,7 @@ pub fn rule_line(cfg: &Config) -> Option<String> {
     c.guard.then(|| {
         format!(
             "No code comments or docstrings: {} wants none added (in {}). Make the code say it with names and small functions, and put the why in the commit \
-             or PR. Pragmas the tools read ({}…) are fine. The board refuses an edit that adds a comment, and the PR, a review round and tb done \
+             or PR. Pragmas the tools read ({}…) are fine. The board refuses an edit that adds a comment, and the PR, a review round and tb submit \
              while the branch adds any.",
             cfg.owner.clone(),
             c.languages.join(", "),

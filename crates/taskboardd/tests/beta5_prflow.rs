@@ -1,5 +1,5 @@
 //! Follow-ups found retesting v0.1.0-beta.5: stacked PRs (#53), the author review and steps (#55),
-//! `tb done` (#56) and the PR bar (#57).
+//! `tb submit` (#56) and the PR bar (#57).
 
 use std::path::Path;
 use std::process::Command;
@@ -284,7 +284,7 @@ fn one_bad_step_is_left_out_and_named_in_an_alert() {
     assert!(dispatch::alerts(&b.app).iter().all(|a| !a["key"].as_str().unwrap_or("").starts_with("steps:")));
 }
 
-// ------------------------------------------------------------------ #56 tb done
+// ------------------------------------------------------------------ #56 tb submit
 
 fn git(path: &Path, args: &[&str]) -> String {
     let o = Command::new("git").arg("-C").arg(path).args(args).output().unwrap();
@@ -374,11 +374,11 @@ fn the_design_check_says_how_to_show_the_screens() {
     let text = b.get(&format!("/tasks/T{id}/handoff"))["text"].as_str().unwrap().to_string();
     let dir = b.app.cfg.data.join("evidence").join(format!("T{id}"));
     for want in [
-        "tb done needs evidence for a task with a design: a screenshot of each changed screen, or --no-evidence \"<why>\" when no screen changed.".to_string(),
+        "tb submit needs evidence for a task with a design: a screenshot of each changed screen, or --no-evidence \"<why>\" when no screen changed.".to_string(),
         "Run the app on this task's emulator or simulator (the device the board lent it) and take a screenshot of each changed screen.".into(),
         format!("Save each screenshot in {}/, outside the worktree", dir.display()),
         "tb attach <file> --kind evidence --title \"<screen>: matches <design>\"".into(),
-        "In tb done, list the screens you checked and anything that still differs.".into(),
+        "In tb submit, list the screens you checked and anything that still differs.".into(),
     ] {
         assert!(text.contains(&want), "{want} in {text}");
     }

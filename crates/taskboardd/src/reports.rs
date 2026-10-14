@@ -755,7 +755,7 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
             reopen(r, &last, &sid)?;
             return Ok(Some(format!(
                 "[task-board] This turn changed code ({shown}) after {} was marked done, so the board reopened it. \
-                 Finish it again now: {tb} done \"<one paragraph covering all the work on it, old and new>\". \
+                 Finish it again now: {tb} submit \"<one paragraph covering all the work on it, old and new>\". \
                  Then end your turn without repeating your answer.",
                 rf("task", last.id())
             )));
@@ -1522,7 +1522,7 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
     if !failed {
         let in_review = prflow::IN_CODE_REVIEW.contains(&t.s("pr_phase").unwrap_or("")) && board::pr_still_open(&t);
         if let Some(why) = t.s("no_pr").filter(|w| !w.is_empty() && t.i("pr_num").is_none()) {
-            // `tb done --no-pr`: a ticket that shipped on another task goes back to QA with the summary;
+            // `tb submit --no-pr`: a ticket that shipped on another task goes back to QA with the summary;
             // otherwise it's withdrawn, with the reason and the summary as its comment.
             let shipped = board::ticket_shipped(app, &t)?;
             if shipped || !app.cfg.jira.canceled.is_empty() {
@@ -1577,7 +1577,7 @@ fn on_done(r: &mut Report) -> Result<Value> {
             return err(400, format!("{} has a PR, so it can't finish without one.", rf("task", t.id())));
         }
         if !projects::task_ships_pr(r.app, &t)? {
-            return err(409, format!("{} doesn't end in a PR, so there's none to cancel: finish with tb done \"<summary>\".", rf("task", t.id())));
+            return err(409, format!("{} doesn't end in a PR, so there's none to cancel: finish with tb submit \"<summary>\".", rf("task", t.id())));
         }
         crate::stack::refuse_no_pr(r.app, &t)?;
         board::update_task(r.app, t.id(), fields!["no_pr" => no_pr])?;
@@ -1619,10 +1619,10 @@ fn next_in_line(r: &Report, held: Option<&str>, why: &str) -> Result<Option<Stri
     Ok(Some(text))
 }
 
-/// How long `tb done --no-pr`'s reason may be: one short line.
+/// How long `tb submit --no-pr`'s reason may be: one short line.
 pub const NO_PR_MAX: usize = 100;
 
-/// What `tb done` refuses before anything opens or finishes: a blank or long `--no-pr`; a task that ends
+/// What `tb submit` refuses before anything opens or finishes: a blank or long `--no-pr`; a task that ends
 /// in a PR and has none, finishing without `--pr-body` or `--no-pr` (unless its repo has no remote at all; a
 /// remote the board can't read still counts); and a task with a design attached finishing with no evidence
 /// and no `--no-evidence`.
@@ -1631,7 +1631,7 @@ pub fn no_ticket_refusal(t: &Row) -> String {
     let me = rf("task", t.id());
     format!(
         "Every PR needs a Jira ticket, and {me} has none. Link one with tb task set {me} --jira ABC-123 (or ask the Jira desk with --jira new), \
-         put the key in the PR title, then run tb done again."
+         put the key in the PR title, then run tb submit again."
     )
 }
 
@@ -1643,7 +1643,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     if let Some(raw) = r.body.get("no_pr").filter(|v| !v.is_null()) {
         let why = one_line(raw.as_str().unwrap_or(""), 100_000);
         if why.is_empty() {
-            return err(400, format!("Say why {me} finishes without its PR: {tb} done \"<summary>\" --no-pr \"<why>\"."));
+            return err(400, format!("Say why {me} finishes without its PR: {tb} submit \"<summary>\" --no-pr \"<why>\"."));
         }
         if why.chars().count() > NO_PR_MAX {
             return err(400, format!("Keep the --no-pr reason to one short line ({NO_PR_MAX} characters or fewer); put the rest in the summary."));
@@ -1656,7 +1656,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
         return err(
             409,
             format!(
-                "{me} ends in a PR, and it has none yet. Finish with {tb} done \"<summary>\" --pr-body <file> (the board opens the PR), \
+                "{me} ends in a PR, and it has none yet. Finish with {tb} submit \"<summary>\" --pr-body <file> (the board opens the PR), \
                  --pr <link> if you opened it, or --no-pr \"<why>\" if it won't have one."
             ),
         );
@@ -1676,7 +1676,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
                 409,
                 format!(
                     "{me} has a design attached ({}), so it finishes with evidence that matches it: {tb} attach <screenshot or link> --kind evidence, \
-                     or {tb} done \"<summary>\" --no-evidence \"<why>\".",
+                     or {tb} submit \"<summary>\" --no-evidence \"<why>\".",
                     d["title"].as_str().unwrap_or("design")
                 ),
             );
@@ -1685,7 +1685,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     Ok(())
 }
 
-/// `task.finishing`'s hooks, before `tb done` (outside the transaction: a hook may call `tb`). A stop is
+/// `task.finishing`'s hooks, before `tb submit` (outside the transaction: a hook may call `tb`). A stop is
 /// refused back to the agent with the reason, and noted on the task.
 fn finishing(r: &Report) -> Result<()> {
     let app = r.app;
@@ -1723,10 +1723,10 @@ fn finishing(r: &Report) -> Result<()> {
         }
         Ok(())
     })?;
-    err(409, format!("{line}. The task is still open: deal with that, then run tb done again."))
+    err(409, format!("{line}. The task is still open: deal with that, then run tb submit again."))
 }
 
-/// lens's local review before `tb done`, when lens is installed: notes its findings on the task and
+/// lens's local review before `tb submit`, when lens is installed: notes its findings on the task and
 /// refuses while it's missing, stale or has a blocker in the fix loop; an escalated blocker is asked
 /// of the owner.
 fn lens_review(r: &Report, t: &Row) -> Result<()> {
@@ -2448,7 +2448,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     let tr = rf("task", t.id());
     let mut text = format!(
         "Task board: you're on {tr} now, and the board tracks this terminal's work on it. Keep working with {owner}; \
-         follow the task-board skill's “When you're on a task”, and finish with tb done when the work is."
+         follow the task-board skill's “When you're on a task”, and finish with tb submit when the work is."
     );
     if let Some(mine) = &current {
         text.push_str(&format!(" {} waits here to resume once {tr} is done.", rf("task", mine.id())));

@@ -34,7 +34,7 @@ goldens still match:
 
 - the New task, New goal, Edit goal and Add an issue forms (and their ⌘N / ⌘⇧N / ⌘⇧B shortcuts,
   File menu items, sidebar buttons, and the goal page's "Add a task" / "Add an issue");
-- Mark done… / Mark failed… in the task panel (`tb done`, `tb fail`);
+- Mark done… / Mark failed… in the task panel (`tb submit`, `tb fail`);
 - the goal page's Add a note (`tb note --goal`) and its attachments' Edit / Remove (`tb attach`, `tb unattach`);
 - the issue's Add a note and goal picker, and the goal page's bulk "Move to a goal" (`tb backlog move`).
 

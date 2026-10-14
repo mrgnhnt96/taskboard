@@ -1210,7 +1210,7 @@ fn fix_task(app: &App, b: &Row) -> Value {
     detail.push(format!(
         "How to finish:\n\
          - Branch from origin/{branch}, make the smallest change that turns it green, and open the PR.\n\
-         - If it goes green on its own, check {tb} master {m} before doing more, then finish with {tb} done \"<summary>\" --no-pr \"<why>\".\n\
+         - If it goes green on its own, check {tb} master {m} before doing more, then finish with {tb} submit \"<summary>\" --no-pr \"<why>\".\n\
          - If you find it isn't {owners} change after all, run {tb} master {m} not-ours --title \"<cause>\" --why \"<how you checked>\" --proof <build or artifact link> \
          (or {tb} master {m} unsure --why \"<what you checked>\" when you can't tell), then finish with no PR.",
         branch = b.st("branch"),

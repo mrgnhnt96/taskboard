@@ -629,7 +629,7 @@ pub fn task_meta(t: &Value, idx: usize, tasks: &[Value], g: &Value) -> String {
         _ => vec![after(if in_order { prev_open() } else { 0 })],
     };
     let mut parts = parts;
-    // A PR the task finished without (`tb done --no-pr`), or a task planned without one.
+    // A PR the task finished without (`tb submit --no-pr`), or a task planned without one.
     if fmt::opt_s(t, "no_pr").is_some() {
         parts.push(fmt::opt_s(t, "no_pr").map(|why| format!("PR canceled: {why}")));
     } else if t["ships_pr"] == false && t["ships_pr_set"] == false {

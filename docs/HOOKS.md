@@ -30,7 +30,7 @@ There are two kinds of event:
 | Step             | When                                                                       | Skip means                              | Can't                |
 |------------------|----------------------------------------------------------------------------|-----------------------------------------|----------------------|
 | `task.starting`  | The board is about to open a terminal (on its own, or Start / Resume).     | The task is marked done without running |                      |
-| `task.finishing` | The task is about to be marked done (`tb done`, or Done in the app).        |                                         | skip: finishing is the last step before done; let it carry on instead |
+| `task.finishing` | The task is about to be marked done (`tb submit`, or Done in the app).        |                                         | skip: finishing is the last step before done; let it carry on instead |
 | `pr.checks`      | The PR's checks are running (asked once per push).                          | The checks count as passed              | stop: the checks run on the PR's host, not on the board |
 | `pr.fix`         | A check failed; the board is about to bring the agent back to fix it.       | The checks count as passed              |                      |
 | `pr.review`      | The PR waits for review; the board is about to tell you.                     | It counts as approved                   |                      |
@@ -109,7 +109,7 @@ tests are red"), in the task's history and as below:
 | Step             | Stop                                                                     | Skip                                  |
 |------------------|--------------------------------------------------------------------------|---------------------------------------|
 | `task.starting`  | Started by the board: the task moves to Needs you with the reason, and you get an alert. Your Start / Resume: refused with the reason. Starting it again asks again. | The task is done, with "Skipped by hook `x`: reason" as its summary. No terminal opens. |
-| `task.finishing` | The task stays open. `tb done` is refused and the agent reads the reason; Done in the app is refused the same way. | — |
+| `task.finishing` | The task stays open. `tb submit` is refused and the agent reads the reason; Done in the app is refused the same way. | — |
 | `pr.checks`      | —                                                                        | This push's checks count as passed ("Checks skipped"); the PR moves on. |
 | `pr.fix`         | The agent isn't brought back; you get an alert. The PR stays at "Fixing checks" until the next push. | As `pr.checks`. |
 | `pr.review`      | You aren't told it's ready for review.                                    | This push counts as approved; the PR moves on to `pr.merge`. |
@@ -175,7 +175,7 @@ The event as JSON on stdin:
 - `from`: the task before the change, for announced task steps (`null` otherwise).
 - `task.pr`: `null` until a PR is linked.
 - `pr.*` steps add `head`, `checks`, `failed_checks` and `comments`.
-- `task.finishing` adds `by` and `done: {"summary", "pr"}` (what the agent passed to `tb done`).
+- `task.finishing` adds `by` and `done: {"summary", "pr"}` (what the agent passed to `tb submit`).
 - Goal events have `goal` (as `GET /goals` returns it) and `task` (the task whose change finished it, else `null`).
 
 The common bits are also in the environment: `TASKBOARD_EVENT`, `TASKBOARD_TASK`, `TASKBOARD_GOAL`,
@@ -201,7 +201,7 @@ A hook runs a command on the board's side. To have work done on every task in a 
 [[steps]]                        # agent work, with a check that decides whether it passed
 name = "Author-side review"
 projects = "work-app|work-api"   # a regex on the whole project name, as a hook's matcher; empty for every project
-before = "pr"                    # "pr" (the default): before the PR opens. "done": before tb done
+before = "pr"                    # "pr" (the default): before the PR opens. "done": before tb submit
 prompt = "Run /author-review on {branch} against {base}, and fix what it finds."
 check = "test -f .review/{branch}.passed"
 
@@ -239,7 +239,7 @@ prompt = "Sign off the screens this task changes."
   no value yet (`{pr}` before the PR opens) is empty; one the board doesn't know is left as written. In a
   script (`run`, `check`, `publish`) each value is quoted as one shell word for where it sits (`''` when empty, as
   Python's `shlex.quote`; escaped instead inside "…" or '…'), so an empty `{pr}` doesn't shift the arguments after
-  it. Refusals (the PR, `tb done`) and the handoff show the steps filled in, `{head}` (the head the gate judges) and
+  it. Refusals (the PR, `tb submit`) and the handoff show the steps filled in, `{head}` (the head the gate judges) and
   `{worktree}` (the aim's checkout, else the task's) included, as `tb steps` does.
 - **The untracked-change check.** A Stop with no task is blocked when the turn changed code (`tb task new … --here`).
   Besides the turn's Edit, Write, MultiEdit and NotebookEdit calls, the plugin's `PreToolUse` hook and its
@@ -273,7 +273,7 @@ prompt = "Sign off the screens this task changes."
   MultiEdit and NotebookEdit and refuses one that adds a code comment in a watched language (`languages`); a
   comment that starts with a `pragmas` entry passes. An Edit is judged on the whole file: it's applied to the
   file's current text, a comment already in the file or in its HEAD version may move or re-indent, and the refusal
-  names the file's line. Opening a PR, `tb pr wait` and `tb done` are refused while
+  names the file's line. Opening a PR, `tb pr wait` and `tb submit` are refused while
   the branch (committed or not, against origin's default branch) adds one, and the handoff tells the agent the rule.
 - **Headless runs.** A `claude -p` (or Agent SDK) run started inside a Midna terminal inherits its
   `MIDNA_SESSION`, but Claude Code marks it `CLAUDE_CODE_ENTRYPOINT=sdk-*`: its hooks report nothing for the
@@ -293,7 +293,7 @@ prompt = "Sign off the screens this task changes."
 - **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
   create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do
-  each. `tb done` is refused while a `before = "done"` step hasn't passed, and also a `before = "pr"` step when the
+  each. `tb submit` is refused while a `before = "done"` step hasn't passed, and also a `before = "pr"` step when the
   task has a PR. Done in the app isn't held: that's your call.
 - A step passes once per task, unless it has `per_head = true` (below). Steps are read fresh, like hooks.json. A step that can't be done (no name; none of
   `prompt`, `run` or `owner`; an unknown key or `before`; a second one with the same name) is left out, and the
@@ -315,7 +315,7 @@ min_gap_mins = 10     # at least this long between two rounds (on the same commi
 bar = "Review"        # its name in the app's PR bar
 ```
 
-- **Per head.** `tb` sends the checkout's head with each round. With `per_head`, the PR and `tb done` wait for a
+- **Per head.** `tb` sends the checkout's head with each round. With `per_head`, the PR and `tb submit` wait for a
   round that passed on the current head, and once the PR is open the `PreToolUse` hook holds a `git push` until the
   commit being pushed has passed. A new round may run on the same commit.
 - **The result file.** `check` and `run` get `$TASKBOARD_RESULT`, a file to write JSON to:
@@ -347,11 +347,11 @@ bar = "Review"        # its name in the app's PR bar
   (the folder it runs in) and `{branch}` set to the aimed branch.
 - **Saving the aim.** `tb step aim [--task T<n>] --branch <b> | --worktree <dir> [--commit <ref>]` saves the aim
   on the task (report `tb.step_aim`, shown by `tb steps`): every later `tb step done|run|again` without flags
-  follows it, and the gates (`tb done`, the board opening the PR, `GET /steps`) judge per-head steps on its commit
+  follows it, and the gates (`tb submit`, the board opening the PR, `GET /steps`) judge per-head steps on its commit
   (the pinned sha, else the branch's latest commit, else the worktree's head) rather than the checkout the command runs in.
   `tb step aim --clear` drops it. A pinned `--commit` keeps the branch's tip at the time; once the branch gets a
   new commit the pin no longer counts (the aim follows the branch, and `tb steps` says "The pin at <sha> was
-  dropped: <branch> has moved on since."), and the next round drops it from the task, so `tb done` can't pass on
+  dropped: <branch> has moved on since."), and the next round drops it from the task, so `tb submit` can't pass on
   a commit that's no longer the branch's tip. `--worktree` at a detached checkout without `--branch` is refused, and so is
   `--commit` from one ("<dir> isn't on a branch. Say which one with --branch."); with `--branch`, the commit must be on that branch.
   With no aim, a round (`tb step done|run|again`, `tb steps`' placeholders, `tb step publish`) from a detached checkout,
@@ -371,22 +371,22 @@ bar = "Review"        # its name in the app's PR bar
 - **Older pins.** A pin saved without the branch's `tip` (before the board kept it) is dropped once the
   branch's tip isn't the pinned sha.
 
-## Stacked PRs, the PR plan, and `tb done --pr-body`
+## Stacked PRs, the PR plan, and `tb submit --pr-body`
 
 - `tb task new … --stack-on T3` / `tb task set T4 --stack-on T3|none`: T4's PR builds on T3's. T4 waits for T3 (in
   any goal), its worktree starts from T3's branch, its PR goes into T3's branch and waits there ("Waits on base")
   until T3's merges; then the board points it at T3's base and T4 is told to rebase.
 - `tb task new … --pr|--no-pr`, `tb task set T4 --pr yes|no|auto`: whether the task ends in a PR, whatever its
   project does.
-- `tb done "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open (the why is one short line,
+- `tb submit "<summary>" --no-pr "<why>"`: it finishes without the PR it was meant to open (the why is one short line,
   200 characters at most, and can't be blank); `--no-evidence "<why>"` likewise for evidence. With `[jira] canceled`,
   the ticket moves there with the reason as a comment, unless another task on the ticket already merged its PR:
-  then it goes back to `[jira] merged` with the summary. A plain `tb done` on a task that ends in a PR, whose project
+  then it goes back to `[jira] merged` with the summary. A plain `tb submit` on a task that ends in a PR, whose project
   has a remote, with no PR linked is refused and asks for `--pr-body` or `--no-pr "<why>"` (or `--pr <link>`). A
   task with a design attached is refused without evidence (`tb attach … --kind evidence`) or `--no-evidence`.
 - Evidence (and results) links on a task are added to its open PR's description under `## Context` (GitHub or
   Bitbucket), once each, on the board's next PR refresh.
-- `tb done "<summary>" --pr-body FILE [--title "…"]`: the board checks the description (`[pr_body]`), the steps and
+- `tb submit "<summary>" --pr-body FILE [--title "…"]`: the board checks the description (`[pr_body]`), the steps and
   the branch (pushed, rebased on the remote base, no merge commits), then opens the PR itself and finishes.
 
 ## `tb hooks`

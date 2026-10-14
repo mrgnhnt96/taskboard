@@ -218,7 +218,7 @@ pickers and goal nav use this list. (The UI also accepts a bare array.)
   "open_issues": int,  // open backlog issues in the goal
   "prs_open": [int],   // PR numbers of done, not-failed tasks whose PR is still open (the goal isn't finished until they merge)
   "prs_planned": int,  // tasks that end in a PR (`ships_pr`), not counting canceled ones
-  "prs_canceled": int, // tasks that finished without their PR (`tb done --no-pr`)
+  "prs_canceled": int, // tasks that finished without their PR (`tb submit --no-pr`)
   "finished_at": iso|null,  // latest finished_at once EVERY task is done, prs_open is empty and no backend bit waits; else null
   "peek": [{"ref": "T12", "title": str, "status": "needs"|"working"|"failed"|"starting"|"blocked"|"queued", "why": str|null}]
             // hover card on the rail: non-planned, not-done tasks plus failed ones; why = the blocker line for blocked ones
@@ -448,7 +448,7 @@ the backlog, and kept in `day_stats` (one row per project), so it outlives the c
 totals = {"agent_min", "human_min", "est_agent_min", "done", "prs", "commits", "wait_min", "questions": float,
           "peak": int, "by_project": {project: agent_min}}
 ```
-`human_min` adds up the `tb done --human` estimates of the tasks finished that day; `est_agent_min` is the
+`human_min` adds up the `tb submit --human` estimates of the tasks finished that day; `est_agent_min` is the
 agents' whole working time on those same tasks, so hours saved is `human_min - est_agent_min`.
 
 ### `GET /history`
@@ -508,8 +508,8 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "bits": [{"name": str, "kind": "backend"|"local", "made": bool, "waiting": bool}],  // its bits; waiting = backend, not made
   "ships_pr": bool,               // it ends in a PR: its own setting, else its project's (`pr_flow` / a git remote)
   "ships_pr_set": bool|null,      // its own setting (`tb task set --pr yes|no`); null = the project's default
-  "no_pr": str|null,              // why it finished without its PR (`tb done --no-pr`): "PR canceled: <why>"
-  "no_evidence": str|null,        // why it finished without evidence (`tb done --no-evidence`)
+  "no_pr": str|null,              // why it finished without its PR (`tb submit --no-pr`): "PR canceled: <why>"
+  "no_evidence": str|null,        // why it finished without evidence (`tb submit --no-evidence`)
   "stack_on": stack_on|null,      // the task whose PR this one's builds on (`--stack-on`)
   "wd": step_result|null          // before the PR opens: the `bar` review step's latest round (after, it's `pr.bar.wd`);
                                   // {"name", "bar", "pending": true} before its first round; null on a task that doesn't end in a PR
@@ -616,7 +616,7 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
 | `POST /tasks/:id/detach` | `{}` | Take it off its terminal; back to queued. |
-| `POST /tasks/:id/done` | `{summary?}` | Mark done by hand (the app has no button; `tb done` reports through `/report`). |
+| `POST /tasks/:id/done` | `{summary?}` | Mark done by hand (the app has no button; `tb submit` reports through `/report`). |
 | `POST /tasks/:id/fail` | `{reason?}` | Mark failed by hand (the app has no button; `tb fail` reports through `/report`). |
 | `POST /tasks/:id/close-terminal` | `{force: bool}` | `force` false from the done box; true from Manage when the terminal is busy. |
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |
@@ -832,7 +832,7 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 | `POST /projects/agents-merge` | `{agents_merge: bool\|"on"\|"off"\|null}` | `tb project agents-merge on\|off\|default`: the board-wide switch, over config.toml's `pr.agents_merge` and under a project's own `agents_merge`; null goes back to config.toml's. `taskboardd import` sets it on unless the board already says or config.toml sets `pr.agents_merge` (unset: off). **Response read:** as `GET /projects/agents-merge`. |
 | `GET /projects/owner-review` | | `tb project owner-review`: `{owner_review: bool, set: bool\|null, config: bool}`: whether a green PR waits for the owner's review on projects whose own rules don't say, what the board set (null: nothing), and config.toml's `pr.owner_review` (unset: on). |
 | `POST /projects/owner-review` | `{owner_review: bool\|"on"\|"off"\|null}` | `tb project owner-review on\|off\|default`: the board-wide switch, over config.toml's `pr.owner_review` and under a project's own `owner_review` (`POST /projects/:name`); null goes back to config.toml's. Off, a done task's green PR that would wait in `review` for the owner is marked reviewed by the board (logged), with no "ready for review" alert. |
-| `POST /areas/backfill` | `{project?: str}` | `tb areas backfill [--project NAME]`: infers the area of each task (every project with areas when none is named; a named one without areas is a 400) whose area wasn't set by hand (`area_source` not `set`), from its PR's files on the host, else its PR's commits, else its worktree while still on its branch, else its repo path below the project's root; then each such goal's, the area most of its tasks share. A file counts for the area whose path covers it most specifically; the area with the most files wins, and a tie or no match leaves it blank. Each change is logged on the task and streamed as a progress stage, so `tb` shows it as it lands. **Response read:** `{projects: [str], tasks: [{ref, title, area, from}], goals: [{ref, name, area}], unsure: int}` (only what changed; `unsure`: tasks left blank). A live task's area is also re-inferred the same way from its checkout on each commit and at `tb done`, until it's done. |
+| `POST /areas/backfill` | `{project?: str}` | `tb areas backfill [--project NAME]`: infers the area of each task (every project with areas when none is named; a named one without areas is a 400) whose area wasn't set by hand (`area_source` not `set`), from its PR's files on the host, else its PR's commits, else its worktree while still on its branch, else its repo path below the project's root; then each such goal's, the area most of its tasks share. A file counts for the area whose path covers it most specifically; the area with the most files wins, and a tie or no match leaves it blank. Each change is logged on the task and streamed as a progress stage, so `tb` shows it as it lands. **Response read:** `{projects: [str], tasks: [{ref, title, area, from}], goals: [{ref, name, area}], unsure: int}` (only what changed; `unsure`: tasks left blank). A live task's area is also re-inferred the same way from its checkout on each commit and at `tb submit`, until it's done. |
 
 ### Goals
 | Path | Body | Notes |
@@ -1231,7 +1231,7 @@ PR at the parent's base through its host (`PrHost::retarget`, GitHub or Bitbucke
 is kept in `pr_flow.retarget_error` and tried again on later refreshes after 1, 5, 15, then every 60 minutes
 (`retarget_at`); its alert (key `retarget:T<n>`) is raised once and clears when the move works. The stacked task is told to
 rebase as for any `waits_for`. A task others still stack on (open, or done with their PR open) can't be set to end
-without a PR (`--pr no`, `tb done --no-pr`): the 409 names them.
+without a PR (`--pr no`, `tb submit --no-pr`): the 409 names them.
 
 That's a **tail merge**, the default. A stacked task can **head-merge** instead (`tb task new|set --stack-merge head|tail`,
 stored as `tasks.stack_merge`, `'head'` or NULL for tail; refused with a 400 on a task that stacks on nothing, and
@@ -1243,7 +1243,7 @@ PR is in phase `stack` ("Waits on stack", `pr.bar.waits_on_stack`), and `tb pr m
 **The PR plan** (`tasks.ships_pr`): `tb task new --pr|--no-pr`, `tb task set --pr yes|no|auto`. The handoff and steps
 use it instead of the project's default.
 
-**`tb done --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
+**`tb submit --no-pr "<why>"`** (a task that would end in a PR, with none linked): stores `tasks.no_pr`, logs "PR
 canceled: <why>", skips the before-the-PR steps, and with `[jira] canceled` set moves the ticket there with the reason
 as a comment. A ticket that already shipped (another task on it has a merged PR) goes to `[jira] merged` with the
 summary instead. A follow-up task on a shipped ticket moves it to In Progress only when it ships a PR, and a task that
@@ -1253,7 +1253,7 @@ have been asked (stage `review`, `rereview`, `comments`, `merge` or `waits`), no
 goal row says "PR canceled: <why>" (its task and ticket refs linked) and the wave rail's "PR canceled" chip carries
 the why.
 
-**`tb done` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), unless its repo has
+**`tb submit` refusals** (409, before anything opens): a task that ends in a PR (`ships_pr`), unless its repo has
 no remote at all (one the board can't read counts), with no PR linked and no `pr`, `pr_body` or `no_pr` in the report; a PR
 (`pr`, `pr_body`, or one already linked) on a task with no Jira ticket while `[pr_body] require_ticket` is on (unset: on
 while Jira is set up): "Every PR needs a Jira ticket, and T<n> has none. Link one with tb task set T<n> --jira ABC-123 (or
@@ -1272,7 +1272,7 @@ evidence and results links (web links) that its open PR's description lacks, und
 `PrHost::description` / `set_description`; `pr_flow.evidence_added` keeps the ones added, and a host error waits 30
 minutes (`evidence_retry_at`). A failed fetch in `--pr-body`'s branch check shows the whole of the error.
 
-**`tb done "<summary>" --pr-body FILE [--title …]`**: the report carries `pr_body` (and `pr_title`). Before finishing,
+**`tb submit "<summary>" --pr-body FILE [--title …]`**: the report carries `pr_body` (and `pr_title`). Before finishing,
 the board checks the description against `[pr_body]` (sections in order, bullet lists, paragraph length, no board
 refs, `forbid` patterns), the before-the-PR and before-done steps, and the branch (pushed as it is, rebased on
 `<remote>/<base>`, no merge commits, a ticket if `require_ticket`), then opens the PR into the real base with the
@@ -1293,7 +1293,7 @@ review or didn't finish) never blocks, and neither it nor a round stopped at its
 [--commit REF]` runs another round, on what it names (the report's `head` is the resolved sha; a commit other than the
 checkout's head runs on a throwaway checkout of it). `tb step aim --branch B | --worktree DIR [--commit REF]` (report
 `tb.step_aim` with `worktree`, `branch`, `sha`, `tip`; `clear: true` drops it) saves the aim on the task: `GET /steps` returns it
-as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so do the `tb done` and PR-opening gates. A
+as `aim` (null when unaimed) and judges `done` and `head` on its commit, and so do the `tb submit` and PR-opening gates. A
 pinned `sha` keeps its branch's `tip` at the time (`tb` sends it; the board reads it when left out): once the branch's tip
 moves, the pin no longer counts (`aim` has no `sha`, and `dropped: <sha>`; the aim follows the branch), and the next
 `tb.step` report drops it from the task with a "Rounds no longer pinned at …" line. `tb` refuses a detached

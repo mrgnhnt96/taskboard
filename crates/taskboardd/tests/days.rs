@@ -150,7 +150,7 @@ fn a_day_is_worked_out_kept_and_survives_the_cleanup() {
     human_estimate_from_tb_done();
 }
 
-/// `tb done --human 3h` keeps the estimate; a length the board can't read is refused.
+/// `tb submit --human 3h` keeps the estimate; a length the board can't read is refused.
 fn human_estimate_from_tb_done() {
     let dir = tempfile::tempdir().unwrap();
     let app = App::for_tests(Config::for_tests(dir.path()));

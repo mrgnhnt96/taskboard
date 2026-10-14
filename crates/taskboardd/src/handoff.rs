@@ -107,7 +107,7 @@ pub fn report_block(app: &App, tb: &str) -> String {
             "- A question for {owner}: {tb} question \"<question>\", then wait for the answer (if it prints the board's \
              answer instead, carry on)"
         ),
-        format!("- Finished: {tb} done \"<summary>\" (put the PR link in the summary if you opened one)"),
+        format!("- Finished: {tb} submit \"<summary>\" (put the PR link in the summary if you opened one)"),
         format!("- Can't be done: {tb} fail \"<why>\""),
         "If you find a problem outside this task, report it with found instead of fixing it.".to_string(),
     ]
@@ -131,7 +131,7 @@ fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
     }
     let mut s = "If this task changes code, it ends in one pull request: finished code that builds, breaks nothing \
                  that works today, and can be merged on its own. Keep it small and easy to review; split anything \
-                 bigger off with tb found. Open the PR with the repository's usual tools, then finish with tb done and \
+                 bigger off with tb found. Open the PR with the repository's usual tools, then finish with tb submit and \
                  the PR link in the summary."
         .to_string();
     let branch = branch_name(app, t)?;
@@ -145,9 +145,9 @@ fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
         let setup = board::find_goal(app, t.i("goal_id"))?.is_some_and(|g| g.s("setup").is_some_and(|x| !x.trim().is_empty()));
         s += &format!(" Name its branch {b}{}.", if setup { " unless the goal's setup says otherwise" } else { "" });
     }
-    s += " Or let the board open it: write the description to a file and finish with tb done \"<summary>\" --pr-body <file> \
+    s += " Or let the board open it: write the description to a file and finish with tb submit \"<summary>\" --pr-body <file> \
           (it checks the description and that the branch is pushed and rebased, then opens the PR). If it turns out no \
-          PR is needed after all, finish with tb done \"<summary>\" --no-pr \"<why>\".";
+          PR is needed after all, finish with tb submit \"<summary>\" --no-pr \"<why>\".";
     if app.cfg.pr.watch && app.cfg.pr.wake {
         s += " Once it's done, the board watches the PR and brings this conversation back when a check fails or a \
               reviewer comments.";
@@ -318,14 +318,14 @@ fn design_check(app: &App, t: &Row) -> String {
     let _ = std::fs::create_dir_all(&dir);
     format!(
         "Design check: the attached designs are the reference for anything on screen. Open them before you change any UI \
-         and build to them, not from memory. {tb} done needs evidence for a task with a design: a screenshot of each \
+         and build to them, not from memory. {tb} submit needs evidence for a task with a design: a screenshot of each \
          changed screen, or --no-evidence \"<why>\" when no screen changed.\n\
          - Run the app on this task's emulator or simulator (the device the board lent it) and take a screenshot of each \
          changed screen.\n\
          - Compare each one with its design side by side until they match; say why when one can't.\n\
          - Save each screenshot in {}/, outside the worktree, so it outlives the worktree and never ends up in a commit.\n\
          - Attach each one: {tb} attach <file> --kind evidence --title \"<screen>: matches <design>\".\n\
-         - In {tb} done, list the screens you checked and anything that still differs. The evidence goes into the PR's \
+         - In {tb} submit, list the screens you checked and anything that still differs. The evidence goes into the PR's \
          description.",
         dir.display()
     )

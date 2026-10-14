@@ -410,7 +410,7 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
         format!(
             "When you're finished, run {tb} pr wait {r} (tb pr addressed and tb pr merge finish the visit too): the board \
              watches the PR and brings you back when it needs you again. Don't take another task here, and don't run tb \
-             done: the task is already done."
+             submit: the task is already submitted."
         ),
     ]
     .join("\n")
@@ -481,7 +481,7 @@ pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
     let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "queue": false,
-                      "prompt": format!("{text}\nPush with git push --force-with-lease, then run {tb} pr wait {r}. Don't take another task here, and don't run tb done: the task is already done.")});
+                      "prompt": format!("{text}\nPush with git push --force-with-lease, then run {tb} pr wait {r}. Don't take another task here, and don't run tb submit: the task is already submitted.")});
     let args = resume_or_fresh(app, t, args)?;
     Ok(Some(board::create_job(app, "agent", args, Some(t.id()), "pr", None)?))
 }

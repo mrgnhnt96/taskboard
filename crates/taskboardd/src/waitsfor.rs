@@ -469,7 +469,7 @@ pub fn resume_prompt(app: &App, t: &Row) -> Result<String> {
     Ok([
         format!("[task-board:{r}] What this task was waiting for is ready, so it carries on here."),
         text,
-        format!("Then carry on with the task from where you stopped, and finish with {tb} done as usual."),
+        format!("Then carry on with the task from where you stopped, and finish with {tb} submit as usual."),
     ]
     .into_iter()
     .filter(|x| !x.is_empty())

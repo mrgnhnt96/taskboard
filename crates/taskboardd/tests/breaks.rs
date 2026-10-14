@@ -571,7 +571,7 @@ fn the_fix_task_says_how_to_finish_and_its_agent_may_rule_the_break_out() {
     let detail = t.st("detail");
     for want in [
         "Branch from origin/main, make the smallest change that turns it green, and open the PR.",
-        "If it goes green on its own, check tb master M1 before doing more, then finish with tb done \"<summary>\" --no-pr \"<why>\".",
+        "If it goes green on its own, check tb master M1 before doing more, then finish with tb submit \"<summary>\" --no-pr \"<why>\".",
         "run tb master M1 not-ours --title \"<cause>\" --why \"<how you checked>\" --proof <build or artifact link>",
         "tb master M1 unsure --why",
     ] {

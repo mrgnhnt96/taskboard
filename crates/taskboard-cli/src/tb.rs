@@ -74,8 +74,9 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
-    /// Finish the task
-    Done {
+    /// Hand the task in: with its PR it waits in review until the PR merges; with --no-pr it's finished
+    #[command(alias = "done")]
+    Submit {
         summary: String,
         /// The PR this task opened (or put its link in the summary)
         #[arg(long, conflicts_with_all = ["pr_body", "no_pr"])]
@@ -1413,7 +1414,7 @@ enum PrCmd {
     Wait { task: Option<String> },
     /// The PR was merged
     Merged { task: Option<String> },
-    /// Check a PR description against the rules tb done --pr-body uses ([pr_body] in config.toml)
+    /// Check a PR description against the rules tb submit --pr-body uses ([pr_body] in config.toml)
     BodyCheck {
         /// The file (- for stdin)
         file: String,
@@ -1943,7 +1944,7 @@ impl Ctx {
         }
     }
 
-    /// Posts a report that runs long on the board (`tb done`, `tb question`) on the progress stream,
+    /// Posts a report that runs long on the board (`tb submit`, `tb question`) on the progress stream,
     /// printing each stage. Spooled (None) only when the board can't be reached: one that went quiet has
     /// the report and may still be working on it, so a replay could do it twice.
     fn report_progress(&self, event: &str, fields: Value, task: Option<&str>) -> Result<Option<Value>, String> {
@@ -2134,7 +2135,7 @@ fn goal_run_needs_terminal(cmd: &str, g: &str) -> String {
     format!("{cmd} only works in a Midna terminal, on a human's word there. Outside one, a human can press Run on {g} on the board.")
 }
 
-/// After `tb done` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
+/// After `tb submit` or `tb fail`: the next task in this terminal's line, which the agent carries on with.
 /// What `tb start T<n>` did, from the task the board sends back: a `task.starting` hook may have
 /// skipped it, so it's only "opening" when the board says it's starting.
 fn start_said(r: &str, queue: bool, v: &Value) -> String {
@@ -2346,7 +2347,7 @@ fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<Stri
         if v["merged_note"] == true {
             let to = v["merged_status"].as_str().filter(|s| !s.trim().is_empty()).unwrap_or("its merged status");
             out(&format!(
-                "Note for testers: a task that ships a PR on a ticket finishes with tb done \"<summary>\" --merged-note \"<markdown>\"; at merge the board posts it on the ticket, then moves it to {to}."
+                "Note for testers: a task that ships a PR on a ticket finishes with tb submit \"<summary>\" --merged-note \"<markdown>\"; at merge the board posts it on the ticket, then moves it to {to}."
             ));
             let f = &v["merged_note_guide"];
             match (f["path"].as_str(), f["error"].as_str(), f["text"].as_str()) {
@@ -3663,7 +3664,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let at = aim(c, &v, &Aim::default()).unwrap_or(Aimed { dir: None, head: None, branch: None, pinned: false });
             let vars = step_vars(c, &v, "", &at);
             for (st, done) in all {
-                let when = if st.before == steps::Before::Done { "before tb done" } else { "before the PR" };
+                let when = if st.before == steps::Before::Done { "before tb submit" } else { "before the PR" };
                 let st = st.filled(&vars);
                 let gap = st.gap_text().filter(|_| st.gap_secs().is_some()).map(|g| format!("; {g}")).unwrap_or_default();
                 out(&format!("[{}] {} ({when}{gap}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
@@ -3764,7 +3765,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             res
         }
-        Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, merged_note, human, t } => {
+        Cmd::Submit { summary, pr, pr_body, pr_title, no_pr, no_evidence, merged_note, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
             let Some(file) = pr_body else {
                 // The board runs the task.finishing hooks and checks the diff before it answers.
@@ -3772,7 +3773,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 match c.report_progress("tb.done", f, task.as_deref())? {
                     None => out(SAVED),
                     Some(v) if !v["task"].is_string() => out(NO_TASK),
-                    Some(v) => out(&format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(&v))),
+                    Some(v) => out(&format!("{} is submitted.{}", v["task"].as_str().unwrap_or(""), then_next(&v))),
                 }
                 return Ok(0);
             };
@@ -3800,7 +3801,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Ok(0);
             }
             let pr = v["pr_url"].as_str().map(|u| format!(" Its PR: {u}")).unwrap_or_default();
-            out(&format!("{} is done.{pr}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
+            out(&format!("{} is submitted.{pr}{}", v["task"].as_str().unwrap_or(""), then_next(&v)));
             Ok(0)
         }
         Cmd::Fail { reason, t } => {
@@ -5641,9 +5642,9 @@ mod tests {
     }
 
     #[test]
-    fn tb_done_and_question_with_the_board_down_are_saved_for_later() {
+    fn tb_submit_and_question_with_the_board_down_are_saved_for_later() {
         let (c, data) = board_down_ctx("done-down");
-        assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "done", "Shipped it"]).unwrap().cmd), Ok(0));
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "submit", "Shipped it"]).unwrap().cmd), Ok(0));
         assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "question", "Which base?"]).unwrap().cmd), Ok(0));
         assert_eq!(std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0), 2, "both go to the spool");
         let _ = std::fs::remove_dir_all(&data);
@@ -6135,10 +6136,11 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--stack-merge", "head"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "tail"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "sideways"]).is_err());
-        assert!(Cli::try_parse_from(["tb", "done", "x", "--no-pr", "covered by T3", "--no-evidence", "no UI"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "done", "x", "--pr-body", "body.md", "--title", "Add x"]).is_ok());
-        assert!(Cli::try_parse_from(["tb", "done", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());
-        assert!(Cli::try_parse_from(["tb", "done", "x", "--title", "Add x"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "submit", "x", "--no-pr", "covered by T3", "--no-evidence", "no UI"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--title", "Add x"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "submit", "x", "--title", "Add x"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "done", "x", "--no-pr", "covered by T3"]).is_ok(), "tb done still works for agents on an older handoff");
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "fixed", "--commit", "abc"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "triage", "Review", "F2", "--state", "gone"]).is_err());
         assert!(Cli::try_parse_from(["tb", "step", "again", "Review"]).is_ok());

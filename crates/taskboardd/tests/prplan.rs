@@ -1,5 +1,5 @@
 //! The PR plan and PR flow from the Python board: stacked PRs (`--stack-on`), a per-task ships-PR flag,
-//! canceled PRs (`tb done --no-pr`), per-head author-review steps with findings, and `tb done --pr-body`
+//! canceled PRs (`tb submit --no-pr`), per-head author-review steps with findings, and `tb submit --pr-body`
 //! opening the PR itself (issues #13, #19, #20, #21, #22).
 
 use std::path::Path;
@@ -555,7 +555,7 @@ fn the_pr_bar_links_failed_checks_and_says_when_review_needs_setup_or_is_off() {
     assert_eq!(b.card(id)["pr"]["bar"]["review"], "off");
 }
 
-// ------------------------------------------------------------------ #20 tb done --pr-body
+// ------------------------------------------------------------------ #20 tb submit --pr-body
 
 const BODY: &str = "## Summary\nAdds passkey sign-in.\n\n## Changes\n- New sign-in screen\n\n## Testing\n- Unit tests\n";
 

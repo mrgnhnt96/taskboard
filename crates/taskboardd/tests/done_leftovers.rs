@@ -1,4 +1,4 @@
-//! `tb done` and PR bar leftovers from the Python board (issue #79): the `--no-pr` length, the ends-in-a-PR
+//! `tb submit` and PR bar leftovers from the Python board (issue #79): the `--no-pr` length, the ends-in-a-PR
 //! guard when the remote can't be read, design links and local files in the PR body, and the PR bar's
 //! review step before its first round and on tasks without a PR.
 

@@ -83,7 +83,7 @@ the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/REA
   status moves as work starts, reaches review and merges.
 - **Days** (⌘6): any day's timeline (each project's tasks, commits, PRs, questions and how many terminals ran),
   its week next to the week before, how long tasks took, how long they waited on you, and hours saved against the
-  agents' own `tb done --human` estimates. Settings ▸ History sets how long it's kept: every event for 90 days, then
+  agents' own `tb submit --human` estimates. Settings ▸ History sets how long it's kept: every event for 90 days, then
   a small summary per day for a year (cleaned up nightly).
 - **Work hours** and **usage**: outside the hours (or with the 5-hour usage used up) nothing new starts, and
   idle task terminals are closed so they don't sit on a stale conversation; they restart from their handoff.
