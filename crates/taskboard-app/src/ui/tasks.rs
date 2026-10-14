@@ -1,6 +1,7 @@
 //! The Tasks page (`GET /lanes`): the tasks outside goals in four lanes, Queued (in the order the
 //! board will start them), Running, Needs you and Done, each as tall as its cards. Chips narrow it
-//! to one project; a switch adds the tasks in goals. A card opens its task.
+//! to one project, and for a project with areas a second row narrows it to one area or groups each
+//! lane by area; a switch adds the tasks in goals. A card opens its task.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{arr, i, opt_s, s};
 use crate::theme::Theme;
@@ -17,6 +18,10 @@ const LANE_W: f32 = 280.;
 pub struct State {
     /// The project chip picked; None shows every project.
     pub project: Option<String>,
+    /// The picked project's area chip picked; None shows all of it.
+    pub area: Option<String>,
+    /// Split each lane by area while a project with areas is picked.
+    pub by_area: bool,
     /// Also show the tasks in goals.
     pub goals: bool,
 }
@@ -25,6 +30,7 @@ pub struct State {
 
 pub struct Card {
     pub project: String,
+    pub area: String,
     /// The tile's pill when it says more than the lane does ("Starting", "In review", "Failed"…).
     pub pill: Option<(String, &'static str)>,
     pub tile: Tile,
@@ -39,13 +45,13 @@ pub struct Lane {
 /// (lane key, label, the tile status the lane already says).
 const LANES: [(&str, &str, &str); 4] = [("queued", "Queued", "Queued"), ("running", "Running", "Working"), ("needs", "Needs you", "Needs you"), ("done", "Done", "Done")];
 
-pub fn lanes_vm(v: &Value, project: Option<&str>) -> Vec<Lane> {
+pub fn lanes_vm(v: &Value, project: Option<&str>, area: Option<&str>) -> Vec<Lane> {
     LANES
         .iter()
         .map(|(key, label, plain)| {
             let cards = arr(v, key)
                 .iter()
-                .filter(|c| project.is_none_or(|p| s(c, "project") == p))
+                .filter(|c| project.is_none_or(|p| s(c, "project") == p) && area.is_none_or(|a| s(c, "area") == a))
                 .map(|c| {
                     let mut tile = tile_vm(c);
                     let mut pill = (tile.status != *plain).then(|| (tile.status.clone(), tile.tone));
@@ -66,7 +72,7 @@ pub fn lanes_vm(v: &Value, project: Option<&str>) -> Vec<Lane> {
                             }
                         }
                     }
-                    Card { project: s(c, "project").to_string(), pill, tile }
+                    Card { project: s(c, "project").to_string(), area: s(c, "area").to_string(), pill, tile }
                 })
                 .collect();
             Lane { key, label, cards }
@@ -74,9 +80,42 @@ pub fn lanes_vm(v: &Value, project: Option<&str>) -> Vec<Lane> {
         .collect()
 }
 
-/// The project chips: (name, how many cards), by name.
-pub fn projects_vm(v: &Value) -> Vec<(String, i64)> {
-    arr(v, "projects").iter().map(|p| (s(p, "name").to_string(), i(p, "count"))).collect()
+pub struct ProjectChip {
+    pub name: String,
+    pub count: i64,
+    /// The areas its cards are in, with how many each, in `.taskboard.toml`'s order.
+    pub areas: Vec<(String, i64)>,
+}
+
+/// The project chips, by name.
+pub fn projects_vm(v: &Value) -> Vec<ProjectChip> {
+    arr(v, "projects")
+        .iter()
+        .map(|p| ProjectChip {
+            name: s(p, "name").to_string(),
+            count: i(p, "count"),
+            areas: arr(p, "areas").iter().map(|a| (s(a, "name").to_string(), i(a, "count"))).collect(),
+        })
+        .collect()
+}
+
+/// A lane's cards split by area, in the areas' order, the ones with no area last (as None).
+/// Areas with no cards in this lane are left out.
+pub fn by_area<'a>(cards: &'a [Card], order: &[String]) -> Vec<(Option<String>, Vec<&'a Card>)> {
+    let mut out: Vec<(Option<String>, Vec<&Card>)> = vec![];
+    for a in order.iter().map(|a| Some(a.as_str())).chain([None]) {
+        let these: Vec<&Card> = cards
+            .iter()
+            .filter(|c| match a {
+                Some(a) => c.area == a,
+                None => !order.contains(&c.area),
+            })
+            .collect();
+        if !these.is_empty() {
+            out.push((a.map(String::from), these));
+        }
+    }
+    out
 }
 
 // ================================================================== render
@@ -125,7 +164,11 @@ fn switch(t: &Theme, on: bool) -> Div {
 fn card(t: &Theme, lane: &str, c: &Card, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     let open = c.tile.r.clone();
     let hover = t.border_2;
-    let mut top = div().flex().items_center().gap(px(6.)).child(div().flex_1().min_w_0().truncate().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.muted).child(c.project.clone()));
+    let mut top = div().flex().items_center().gap(px(6.)).child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.5)).text_color(t.muted).child(c.project.clone()));
+    if !c.area.is_empty() {
+        top = top.child(div().flex_none().px(px(6.)).rounded(px(6.)).bg(t.panel_2).text_size(px(11.)).text_color(t.text_2).child(c.area.clone()));
+    }
+    top = top.child(div().flex_1());
     if let Some((label, tone)) = &c.pill {
         top = top.child(kit::tone_pill(t, tone, label.clone()));
     }
@@ -152,7 +195,12 @@ fn card(t: &Theme, lane: &str, c: &Card, cx: &mut Context<MainWindow>) -> Statef
         .when(!c.tile.line.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(if lane == "needs" { t.warn_fg } else { t.muted }).line_clamp(2).child(c.tile.line.clone())))
 }
 
-fn lane(t: &Theme, l: &Lane, cx: &mut Context<MainWindow>) -> Div {
+fn group_head(t: &Theme, label: String, n: usize) -> Div {
+    div().px(px(4.)).pt(px(4.)).text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(format!("{label} · {n}"))
+}
+
+/// `groups`: the picked project's areas, to split the lane by them.
+fn lane(t: &Theme, l: &Lane, groups: Option<&[String]>, cx: &mut Context<MainWindow>) -> Div {
     let mut head = div()
         .flex()
         .items_center()
@@ -168,8 +216,20 @@ fn lane(t: &Theme, l: &Lane, cx: &mut Context<MainWindow>) -> Div {
     if l.cards.is_empty() {
         d = d.child(div().px(px(4.)).pb(px(2.)).text_size(px(12.5)).text_color(t.faint).child("None"));
     }
-    for c in &l.cards {
-        d = d.child(card(t, l.key, c, cx));
+    match groups {
+        Some(order) => {
+            for (area, cards) in by_area(&l.cards, order) {
+                d = d.child(group_head(t, area.unwrap_or_else(|| "No area".into()), cards.len()));
+                for c in cards {
+                    d = d.child(card(t, l.key, c, cx));
+                }
+            }
+        }
+        None => {
+            for c in &l.cards {
+                d = d.child(card(t, l.key, c, cx));
+            }
+        }
     }
     d
 }
@@ -207,15 +267,16 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     };
     let projects = projects_vm(&v);
     // A picked project with nothing left in it falls back to every project.
-    let picked = m.tasks.project.clone().filter(|p| projects.iter().any(|(n, _)| n == p));
-    let total: i64 = projects.iter().map(|(_, n)| n).sum();
+    let picked = m.tasks.project.clone().filter(|p| projects.iter().any(|c| c.name == *p));
+    let total: i64 = projects.iter().map(|c| c.count).sum();
     let mut chips = div().flex().flex_wrap().gap(px(6.)).child(
         chip(&t, "tasks-project-all".into(), picked.is_none()).child(format!("All projects · {total}")).on_click(cx.listener(|m, _, _, cx| {
             m.tasks.project = None;
+            m.tasks.area = None;
             cx.notify();
         })),
     );
-    for (name, n) in &projects {
+    for ProjectChip { name, count: n, .. } in &projects {
         let pick = name.clone();
         chips = chips.child(
             chip(&t, format!("tasks-project-{name}"), picked.as_deref() == Some(name.as_str()))
@@ -223,13 +284,61 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
                 .child(n.to_string())
                 .on_click(cx.listener(move |m, _, _, cx| {
                     m.tasks.project = if m.tasks.project.as_deref() == Some(pick.as_str()) { None } else { Some(pick.clone()) };
+                    m.tasks.area = None;
                     cx.notify();
                 })),
         );
     }
     page = page.child(chips);
 
-    let lanes = lanes_vm(&v, picked.as_deref());
+    // The picked project's areas beneath it: one narrows to it, or every lane splits by area.
+    let areas: Vec<(String, i64)> = picked.as_ref().and_then(|p| projects.iter().find(|c| c.name == *p)).map(|c| c.areas.clone()).unwrap_or_default();
+    let area = m.tasks.area.clone().filter(|a| areas.iter().any(|(n, _)| n == a));
+    let mut groups: Option<Vec<String>> = None;
+    if let Some(project) = picked.as_ref().filter(|_| !areas.is_empty()) {
+        let n = projects.iter().find(|c| c.name == *project).map_or(0, |c| c.count);
+        let mut row = div().flex().flex_wrap().items_center().gap(px(6.)).child(
+            chip(&t, "tasks-area-all".into(), area.is_none()).child(format!("All of {project} · {n}")).on_click(cx.listener(|m, _, _, cx| {
+                m.tasks.area = None;
+                cx.notify();
+            })),
+        );
+        for (name, n) in &areas {
+            let pick = name.clone();
+            row = row.child(
+                chip(&t, format!("tasks-area-{name}"), area.as_deref() == Some(name.as_str())).child(name.clone()).child(n.to_string()).on_click(cx.listener(move |m, _, _, cx| {
+                    m.tasks.area = if m.tasks.area.as_deref() == Some(pick.as_str()) { None } else { Some(pick.clone()) };
+                    cx.notify();
+                })),
+            );
+        }
+        if area.is_none() {
+            let on = m.tasks.by_area;
+            row = row.child(
+                div()
+                    .id("tasks-by-area")
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .ml_auto()
+                    .cursor_pointer()
+                    .text_size(px(12.5))
+                    .text_color(t.muted)
+                    .child(switch(&t, on))
+                    .child("Group by area")
+                    .on_click(cx.listener(|m, _, _, cx| {
+                        m.tasks.by_area = !m.tasks.by_area;
+                        cx.notify();
+                    })),
+            );
+            if on {
+                groups = Some(areas.iter().map(|(a, _)| a.clone()).collect());
+            }
+        }
+        page = page.child(row);
+    }
+
+    let lanes = lanes_vm(&v, picked.as_deref(), area.as_deref());
     if lanes.iter().all(|l| l.cards.is_empty()) {
         let msg = if goals { "Nothing is queued, running or done today." } else { "Nothing outside a goal is queued, running or done today." };
         return shell.child(page.child(kit::empty(&t, msg))).into_any_element();
@@ -237,7 +346,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
     // The lanes sit side by side and scroll sideways rather than wrapping into a grid.
     let mut row = div().id("tasks-lanes").flex().items_start().gap(px(14.)).overflow_x_scroll().restrict_scroll_to_axis();
     for l in &lanes {
-        row = row.child(lane(&t, l, cx));
+        row = row.child(lane(&t, l, groups.as_deref(), cx));
     }
     shell.child(page.child(row)).into_any_element()
 }
@@ -246,6 +355,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
 /// narrowed to that project.
 pub fn open_for(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>) {
     m.tasks.project = Some(project.to_string());
+    m.tasks.area = None;
     m.tasks.goals = false;
     m.go(Page::Tasks, cx);
 }
@@ -270,7 +380,7 @@ mod tests {
             "needs": [],
             "done": [failed],
         });
-        let all = lanes_vm(&v, None);
+        let all = lanes_vm(&v, None, None);
         assert_eq!(all.iter().map(|l| l.key).collect::<Vec<_>>(), ["queued", "running", "needs", "done"]);
         assert_eq!(all[0].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T2", "T3"]);
         // Nothing holds T1 back but a terminal.
@@ -281,7 +391,7 @@ mod tests {
         assert!(all[1].cards[0].pill.is_none());
         assert_eq!(all[3].cards[0].pill.as_ref().map(|p| p.0.as_str()), Some("Failed"));
 
-        let web = lanes_vm(&v, Some("web"));
+        let web = lanes_vm(&v, Some("web"), None);
         assert_eq!(web[0].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T3"]);
         assert!(web[3].cards.is_empty());
     }
@@ -293,8 +403,32 @@ mod tests {
             "queued": [card("T1", "Waits for you to press Start"), card("T2", "Waits for a free terminal: 2 of 2 busy in web"), card("T3", "Waits for PR #4 to merge")],
             "running": [], "needs": [], "done": [],
         });
-        let q = &lanes_vm(&v, None)[0].cards;
+        let q = &lanes_vm(&v, None, None)[0].cards;
         let got: Vec<(Option<&str>, &str)> = q.iter().map(|c| (c.pill.as_ref().map(|p| p.0.as_str()), c.tile.line.as_str())).collect();
         assert_eq!(got, [(None, ""), (Some("Waiting for a terminal"), "2 of 2 busy in web"), (None, "Waits for PR #4 to merge")]);
+    }
+
+    #[test]
+    fn a_project_narrows_to_an_area_or_splits_by_area() {
+        let card = |r: &str, area: Value| json!({"ref": r, "title": r, "project": "rune", "area": area, "status": "working"});
+        let v = json!({
+            "queued": [], "needs": [], "done": [],
+            "running": [card("T1", json!("Art")), card("T2", Value::Null), card("T3", json!("Quill")), card("T4", json!("Art")), card("T5", json!("Gone"))],
+            "projects": [{"name": "rune", "count": 5, "areas": [{"name": "Quill", "count": 1}, {"name": "Art", "count": 2}]}],
+        });
+        let p = &projects_vm(&v)[0];
+        assert_eq!(p.areas, [("Quill".to_string(), 1), ("Art".to_string(), 2)]);
+
+        let art = lanes_vm(&v, Some("rune"), Some("Art"));
+        assert_eq!(art[1].cards.iter().map(|c| c.tile.r.as_str()).collect::<Vec<_>>(), ["T1", "T4"]);
+
+        let all = lanes_vm(&v, Some("rune"), None);
+        let order: Vec<String> = p.areas.iter().map(|(a, _)| a.clone()).collect();
+        let split = by_area(&all[1].cards, &order);
+        let groups: Vec<(Option<&str>, Vec<&str>)> =
+            split.iter().map(|(a, cs)| (a.as_deref(), cs.iter().map(|c| c.tile.r.as_str()).collect())).collect();
+        // The file's order; no area (or one the file no longer lists) last; an empty lane has no groups.
+        assert_eq!(groups, [(Some("Quill"), vec!["T3"]), (Some("Art"), vec!["T1", "T4"]), (None, vec!["T2", "T5"])]);
+        assert!(by_area(&all[0].cards, &order).is_empty());
     }
 }

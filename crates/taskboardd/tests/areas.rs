@@ -96,6 +96,21 @@ fn the_projects_list_shows_its_areas_and_follows_the_file() {
 }
 
 #[test]
+fn the_tasks_page_counts_a_projects_cards_by_area() {
+    let b = new_board();
+    for (title, area) in [("Brush", "Art"), ("Pen", "quill"), ("Ink", "Quill"), ("Plain", "none")] {
+        let id = b.post("tasks", json!({"title": title, "project": "rune", "area": area}))["id"].as_i64().unwrap();
+        taskboardd::board::update_task(&b.app, id, vec![("status", json!("queued"))]).unwrap();
+    }
+    let lanes = b.get("lanes");
+    let rune = lanes["projects"].as_array().unwrap().iter().find(|p| p["name"] == "rune").unwrap();
+    assert_eq!(rune["count"], 4);
+    // In the file's order (Quill, then Art); the one with no area counts only toward the project.
+    assert_eq!(rune["areas"], json!([{"name": "Quill", "count": 2}, {"name": "Art", "count": 1}]));
+    assert_eq!(lanes["queued"][0]["area"], "Art", "each card carries its area");
+}
+
+#[test]
 fn an_old_boards_areas_come_over() {
     let old_dir = tempfile::tempdir().unwrap();
     let old_path = old_dir.path().join("tasks.db");
