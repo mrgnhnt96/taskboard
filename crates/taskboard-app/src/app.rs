@@ -159,6 +159,10 @@ pub struct MainWindow {
     pub data: Data,
     pub filters: Filters,
     pub page: Page,
+    /// Pages left behind, newest last; ⌘← walks back through them.
+    back: Vec<Page>,
+    /// Pages ⌘← stepped away from, newest last; ⌘→ returns to them and a fresh visit clears them.
+    forward: Vec<Page>,
     pub panel: Option<Panel>,
     pub modal: Option<ui::modals::Modal>,
     /// A popover menu, by key, and where it opens.
@@ -198,6 +202,8 @@ impl MainWindow {
             // hide work silently: start unfiltered.
             filters: Filters { project: "all".into(), goal: "all".into(), ..Filters::load() },
             page: Page::Board,
+            back: Vec::new(),
+            forward: Vec::new(),
             panel: None,
             modal: None,
             menu: None,
@@ -297,6 +303,31 @@ impl MainWindow {
             self.data.task = None;
             cx.notify();
         }
+        if self.page != page {
+            self.back.push(self.page.clone());
+            self.forward.clear();
+            self.visit(page, cx);
+        }
+    }
+
+    /// ⌘←: the page before this one.
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = self.back.pop() {
+            self.forward.push(self.page.clone());
+            self.visit(page, cx);
+        }
+    }
+
+    /// ⌘→: the page ⌘← left.
+    pub fn go_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = self.forward.pop() {
+            self.back.push(self.page.clone());
+            self.visit(page, cx);
+        }
+    }
+
+    /// Switch pages without touching the history.
+    fn visit(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
             // `resetPageState`: leaving Sessions drops its picking state; another goal's page
             // starts empty; arriving on the Backlog starts with no kept rows or selection.
@@ -781,7 +812,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef, Search]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef, Search, NavBack, NavForward]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -796,6 +827,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-k", Search, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
         KeyBinding::new("cmd-shift-c", CopyRef, Some("MainWindow")),
+        KeyBinding::new("cmd-left", NavBack, Some("MainWindow")),
+        KeyBinding::new("cmd-right", NavForward, Some("MainWindow")),
+        // In a text field ⌘← and ⌘→ move the cursor to the line's ends instead.
+        KeyBinding::new("cmd-left", NoAction, Some(ui::text_input::CTX)),
+        KeyBinding::new("cmd-right", NoAction, Some(ui::text_input::CTX)),
     ]);
 }
 
@@ -838,6 +874,8 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .on_action(cx.listener(|m, _: &CopyRef, _, cx| copy_ref(m, cx)))
             .on_action(cx.listener(|m, _: &Search, window, cx| ui::search::open(m, window, cx)))
+            .on_action(cx.listener(|m, _: &NavBack, _, cx| m.go_back(cx)))
+            .on_action(cx.listener(|m, _: &NavForward, _, cx| m.go_forward(cx)))
             .relative()
             .flex()
             .flex_col()
@@ -1458,6 +1496,56 @@ mod tests {
             assert!(m.panel.is_none() && m.page == Page::Board);
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn cmd_left_and_right_walk_the_page_history(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.go_back(cx);
+            assert!(m.page == Page::Board, "nothing to go back to");
+            m.go(Page::Backlog, cx);
+            m.go(Page::Goal("G2".into()), cx);
+            m.go_back(cx);
+            assert!(m.page == Page::Backlog);
+            m.go_back(cx);
+            assert!(m.page == Page::Board);
+            m.go_forward(cx);
+            assert!(m.page == Page::Backlog);
+            m.go(Page::Days, cx);
+            m.go_forward(cx);
+            assert!(m.page == Page::Days, "a fresh visit drops the forward pages");
+            m.go_back(cx);
+            assert!(m.page == Page::Backlog);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn cmd_left_in_a_text_field_stays_on_the_page(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        let draw = |cx: &mut gpui_kit::TestAppContext| {
+            use gpui_kit::AppContext as _;
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+            settle(cx);
+        };
+        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Sessions, cx)).unwrap();
+        draw(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| window.focus(&m.sessions.search.as_ref().unwrap().focus, cx)).unwrap();
+        cx.simulate_keystrokes(w.into(), "cmd-left");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            assert!(m.page == Page::Sessions, "the field keeps ⌘← for its cursor");
+            window.focus(&m.focus, cx);
+        })
+        .unwrap();
+        cx.simulate_keystrokes(w.into(), "cmd-left");
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert!(m.page == Page::Board)).unwrap();
     }
 
     #[gpui_kit::test]

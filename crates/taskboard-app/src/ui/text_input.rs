@@ -28,6 +28,8 @@ actions!(
 
 /// Key context of a wrapping field, where [`Newline`] is bound.
 pub const CTX_WRAP: &str = "TextFieldWrap";
+/// Key context of every field, so window shortcuts can stand aside for the field's own keys.
+pub const CTX: &str = "TextField";
 
 /// Emitted on every content change.
 pub struct FieldChanged;
@@ -537,7 +539,15 @@ impl Render for TextField {
             .min_w_0()
             .overflow_hidden()
             .track_focus(&self.focus)
-            .when(self.wrap, |d| d.key_context(CTX_WRAP).on_action(cx.listener(Self::newline)))
+            .key_context({
+                let mut k = KeyContext::default();
+                k.add(CTX);
+                if self.wrap {
+                    k.add(CTX_WRAP);
+                }
+                k
+            })
+            .when(self.wrap, |d| d.on_action(cx.listener(Self::newline)))
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::on_key))
             .on_mouse_down(

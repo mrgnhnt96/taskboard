@@ -70,7 +70,7 @@ pub struct State {
     pub selected: Option<String>,
     /// "all" | "needs" | "working" | "idle" | "stale" ("" = all; the route's `f=`).
     filter: String,
-    search: Option<kit::Input>,
+    pub(crate) search: Option<kit::Input>,
     /// Collapsed project groups, in the order they were collapsed (saved as `tb.sessCollapsed`).
     collapsed: Vec<String>,
     collapsed_loaded: bool,
