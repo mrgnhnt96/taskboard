@@ -25,6 +25,7 @@ You're on a task when your prompt or context starts with `[task-board:T<n>]`, or
 - **Tests**: run only the tests that cover what you changed (the crate, package, module or test file you touched, e.g. `cargo test -p <crate>`, `flutter test test/<area>`), never the whole suite. CI runs the rest; when a CI check fails, run the failing tests and the ones covering your fix.
 - **Something outside the task**: don't fix it. Report it and carry on:
   `tb found "<short summary, 80 chars max>" --kind bug|gap|follow|clean --detail "what you saw" --output "error text"`
+- **Work in another repository**: a task's work stays in its own project's repository. The board refuses edits, commits, pushes, new worktrees and PRs in any other repository, and tells the owner. Work there needs its own task in that repository's project: `tb found` it, or `tb task new "<title>" --project <its project>` (`midna project add <dir>` when the board has no project for it).
 - **Needs another task's unfinished work** (any goal): `tb wait-for T<n> --why "…"` (add `--merged` when you need its PR merged first), then end your turn. Never ask the owner; see `questions.md`.
 - **Blocked on the owner**: read `questions.md` first; most calls are yours. Still the owner's? `tb question "<the question>"`, then stop.
 - **Something made for the task**: `tb attach <url-or-path> --kind design|proposal|doc|evidence|results|other --title "..."` (`--goal G<n>` for the goal). Don't attach writing as a loose file (.md, .txt, .rst, .html): publish it as a brief artifact and attach that link; the board refuses those files.
@@ -54,7 +55,7 @@ Your first prompt says "You are the task board's Jira desk", and each job starts
 
 The owner's questions, screenshots and asks in this terminal are the task. Once you change code for them, put it on the board as a task on this terminal, without asking. If an open backlog item in the project already covers the work, take it: `tb task new --issue B<n> --here`. Otherwise make a standalone task:
 `tb task new "<short imperative title>" --detail "<what the owner asked for and what you're changing>" --here`.
-You're on it at once; from then on follow "When you're on a task". If a turn changes code with no task, the board stops it, lists the project's open backlog items and asks for this.
+You're on it at once; from then on follow "When you're on a task". `--here` only takes this terminal's project's work: for another repository, make the task with `--project <its project>` and no `--here`. If a turn changes code with no task, the board stops it, lists the project's open backlog items and asks for this.
 
 Otherwise don't run `tb` unless the owner asks you to take, report or add something. PR work on a done task: `pr.md`.
 

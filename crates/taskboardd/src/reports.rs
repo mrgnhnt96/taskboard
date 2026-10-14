@@ -2415,6 +2415,18 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     let name = r.name();
     let owner = app.cfg.owner.clone();
     let project = project_for(r, &r.b("project"))?;
+    let here = project_for(r, "")?;
+    if let (Some(p), Some(h)) = (&project, &here) {
+        if p != h {
+            return err(
+                409,
+                format!(
+                    "This terminal works in {h}, so --here can't take {p}'s work: the task would be tracked here while its work \
+                     happens in another repository. Make it a task in {p} instead: tb task new \"{title}\" --project {p} (without --here)."
+                ),
+            );
+        }
+    }
     let mut fields = json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
             "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),

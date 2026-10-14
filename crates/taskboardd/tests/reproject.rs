@@ -93,6 +93,27 @@ fn a_task_on_a_terminal_lets_go_of_it_and_waits_for_start() {
 }
 
 #[test]
+fn here_refuses_another_projects_work() {
+    let b = new_board();
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "Lens 1", "agent": "claude", "cwd": b.repo("lens"), "status": {"state": "working"}})], &[])
+        .unwrap();
+    let new = |project: Option<&str>| {
+        reports::handle(
+            &b.app,
+            json!({"event": "tb.new_task", "session": "s1", "claude_session": "c-s1", "cwd": b.repo("lens"), "git": {},
+                   "title": "Fix the kernel gate", "here": true, "project": project}),
+            false,
+        )
+    };
+    let e = new(Some("taskboard")).unwrap_err();
+    assert_eq!(e.status, 409);
+    assert!(e.message.contains("works in lens") && e.message.contains("--project taskboard (without --here)"), "{}", e.message);
+    assert_eq!(b.app.db.count("SELECT COUNT(*) FROM tasks", vec![]).unwrap(), 0, "nothing filed under the wrong project");
+    let r = new(Some("lens")).unwrap();
+    assert_eq!(b.row(r["created"][0].as_str().unwrap()).st("project"), "lens");
+}
+
+#[test]
 fn an_unknown_project_or_a_done_task_is_refused() {
     let b = new_board();
     let t = b.task(json!({"title": "Wrong home", "project": "lens", "status": "planned"}));
