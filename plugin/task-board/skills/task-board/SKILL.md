@@ -52,9 +52,9 @@ Your first prompt says "You are the task board's Jira desk", and each job starts
 
 ## When there's no task
 
-The owner's questions, screenshots and asks in this terminal are the task. Once you change code for them, put it on the board as a standalone task on this terminal, without asking:
+The owner's questions, screenshots and asks in this terminal are the task. Once you change code for them, put it on the board as a task on this terminal, without asking. If an open backlog item in the project already covers the work, take it: `tb task new --issue B<n> --here`. Otherwise make a standalone task:
 `tb task new "<short imperative title>" --detail "<what the owner asked for and what you're changing>" --here`.
-You're on it at once; from then on follow "When you're on a task". If a turn changes code with no task, the board stops it and asks for this.
+You're on it at once; from then on follow "When you're on a task". If a turn changes code with no task, the board stops it, lists the project's open backlog items and asks for this.
 
 Otherwise don't run `tb` unless the owner asks you to take, report or add something. PR work on a done task: `pr.md`.
 
@@ -67,7 +67,7 @@ Planning a goal? Read `planning.md` first.
 1. Reuse an open goal that fits (`tb goals`; `--project <name>` narrows it).
 2. Pick the smallest thing that fits:
    - An effort with an outcome: `tb goal new "<name>" --tldr "…" --outcome "<done when>" --task "title::what to do"` (repeat `--task`). Tasks for an existing goal: `tb propose G<n> --task "title::detail"`. Tasks that run side by side in a wave can name the files each will edit, so its wave mates leave them alone: `--task "title::detail::<wave>::::src/a.rs, src/b.rs"` (or `tb task new --goal G<n> --wave 2 --file src/a.rs`).
-   - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`.
+   - One piece of work: `tb task new "<title>" --detail "..." [--goal G<n>]`. Check the project's open backlog first (`tb goal show G<n>` lists a goal's): when an item covers it, use `tb task new --issue B<n>` (`--here` to take it on this terminal) so the item and the task don't both stay open.
    - Only a human starts a task or runs a goal. When the owner asks you to start, queue or run one ("start T4", "make a task and queue it", "run G2"), run `tb start T<n>` / `tb start G<n>` (`--queue` to wait for a free terminal) and trust the board: it reads each prompt as it is typed and tells you whether it is a start word. Never on your own. "Start the goal" means `tb start G<n>`, which runs its tasks in their waves: never start a goal's tasks one by one. When you ask, name it ("Want me to run G2?").
    - The owner's `/start [T<n>|G<n>|the goal]` command, and a prompt that ends in a lone "go" ("make a task for the footer. go", "T8 go"), always count as their word: `/start` with nothing named means this terminal's task or what you make this turn; "go" starts what the prompt makes, or else what it names. Run `tb start` for it.
    - If the board refuses, don't retry or rephrase: the owner gets a notification to start it. A task waiting on unfinished work (`tb wait-for`, a stack parent) can't start until that's done. Never read the board's `app-token` file or its `app.sock`; they're only for the app.

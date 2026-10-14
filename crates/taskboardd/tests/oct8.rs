@@ -217,6 +217,42 @@ fn a_turn_that_changed_code_with_no_task_is_asked_to_track_it() {
     assert!(again.get("block").is_none(), "it asks once per turn");
 }
 
+#[test]
+fn the_no_task_stop_lists_the_projects_open_backlog() {
+    let b = new_board();
+    b.add_session("s1");
+    let issue = |title: &str, extra: Value| {
+        let mut body = json!({"title": title, "project": "webapp", "kind": "bug"});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        b.post("/backlog", body)["id"].as_i64().unwrap()
+    };
+    let stop = || {
+        b.report("hook.prompt", "s1", json!({"prompt": "Go", "tree": tree(&b, "aaa", &[])}));
+        turn(&b, "s1", "Go", &[bash("python3 fix.py")]);
+        b.report("hook.stop", "s1", json!({"last_message": "Done.", "tree": tree(&b, "aaa", &[("src/footer.rs", "h1:10")])}))["block"]
+            .as_str()
+            .expect("the stop is blocked")
+            .to_string()
+    };
+    assert!(!stop().contains("backlog"), "no open items, no backlog line");
+
+    let footer = issue("Footer overlaps the chart", json!({}));
+    let g = b.goal("Login");
+    let in_goal = issue("Login button is grey", json!({"goal": format!("G{g}")}));
+    let elsewhere = issue("Elsewhere", json!({"project": "other"}));
+    let block = stop();
+    assert!(block.contains(&format!("B{footer} Footer overlaps the chart")), "{block}");
+    assert!(block.contains(&format!("B{in_goal} Login button is grey")), "a goal's items are its project's: {block}");
+    assert!(!block.contains(&format!("B{elsewhere} ")), "{block}");
+    assert!(block.contains("task new --issue B<n> --here"), "{block}");
+
+    for n in 0..5 {
+        issue(&format!("Extra {n}"), json!({}));
+    }
+    let block = stop();
+    assert!(block.contains("(and 2 more)") && !block.contains(&format!("B{footer} ")), "newest five shown: {block}");
+}
+
 fn tree(b: &Board, head: &str, files: &[(&str, &str)]) -> Value {
     tree_with(b, head, files, &[("aaa", "commit (initial): start")])
 }
