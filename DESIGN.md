@@ -26,7 +26,7 @@ one a "handoff" prompt, and the Claude plugin's hooks and the `tb` CLI report pr
 ## Kept (generalized)
 
 - Tasks, goals, goal notes, backlog issues with history, attachments (links), task log, task context, handoff.
-- Lessons (L<n>, `lessons.rs`): what finished work taught, per project or for the whole board. Agents suggest them; the owner keeps or retires them; kept ones reach later handoffs, and planning ones reach planners.
+- Lessons (L<n>, `lessons.rs`): what finished work taught, per project or for the whole board. Agents suggest them; the owner keeps or retires them; kept ones reach later handoffs, and planning ones reach planners: the few that fit (`relevance.rs`), by an FTS5 index of lessons, goal notes and tasks and by the files each task's PR changed (`task_paths`).
 - Sessions synced from Midna (`midna call session.list` / `project.list`), closed-session list and reopen.
 - Jobs to Midna: agent, message, close, focus, rename; deliveries to a terminal through hooks or Midna.
 - Runner: starts queued tasks (pickup queue/new/attach/manual), goal rules (run in order, max terminals),

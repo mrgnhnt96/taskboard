@@ -65,7 +65,7 @@ pub fn fastest(cfg: &crate::reviewers::ReviewersConfig) -> f64 {
     cfg.speed_by_minutes.iter().map(|(_, s)| *s).fold(cfg.no_speed_yet, f64::max)
 }
 
-fn git(repo: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn git(repo: &str, args: &[&str]) -> Option<String> {
     let git = crate::proc::which("git")?;
     let mut a: Vec<String> = vec!["-C".into(), repo.into()];
     a.extend(args.iter().map(|s| s.to_string()));
@@ -201,7 +201,7 @@ pub fn sync(app: &App, project: &str, repo: Option<&str>, pr: Option<&crate::prh
 }
 
 /// The files the PR changes (empty when git can't tell).
-fn changed_files(repo: &str, rec: &Value) -> Vec<String> {
+pub(crate) fn changed_files(repo: &str, rec: &Value) -> Vec<String> {
     let (base, head) = (rec["base_head"].as_str().unwrap_or(""), rec["head"].as_str().unwrap_or(""));
     let mut out = None;
     if !base.is_empty() && !head.is_empty() {

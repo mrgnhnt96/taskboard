@@ -1,11 +1,12 @@
 //! Lessons outlast their goal: suggested ones reach nobody, kept ones reach later handoffs in their
-//! project (and every project, when global), and planning lessons reach planners instead.
+//! project (and every project, when global), and planning lessons reach planners instead. Only the
+//! few that fit the work do: by its words and the code it's likely to touch.
 
 use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::{board, handoff};
+use taskboardd::{board, handoff, relevance};
 
 fn new_board() -> (tempfile::TempDir, std::sync::Arc<App>) {
     let dir = tempfile::tempdir().unwrap();
@@ -96,4 +97,80 @@ fn lessons_are_confirmed_edited_and_listed() {
     for bad in [json!({"text": "", "kind": "code", "project": "webapp"}), json!({"text": "x", "kind": "vibes", "project": "webapp"}), json!({"text": "x", "kind": "code"})] {
         assert!(api::dispatch(&app, "POST", "/lessons", &Query::new(), &bad).is_err(), "{bad}");
     }
+}
+
+fn task_titled(app: &App, project: &str, title: &str, detail: &str) -> i64 {
+    call(app, "POST", "/tasks", json!({"title": title, "detail": detail, "project": project}))["id"].as_i64().unwrap()
+}
+
+/// The lessons a handoff gives, one line each.
+fn handoff_lessons(app: &App, task: i64) -> Vec<String> {
+    let h = handoff::build(app, task).unwrap();
+    let Some((_, rest)) = h.split_once("Lessons from earlier work here:\n") else { return vec![] };
+    rest.lines().take_while(|l| l.starts_with("- ")).map(|l| l.to_string()).collect()
+}
+
+fn kept_lesson(app: &App, text: &str, evidence: Value, confirmations: usize) -> String {
+    let l = lesson(app, json!({"text": text, "kind": "code", "project": "webapp", "evidence": evidence, "kept": true}));
+    for _ in 0..confirmations {
+        call(app, "POST", &format!("/lessons/{l}/confirm"), json!({}));
+    }
+    l
+}
+
+#[test]
+fn handoffs_get_the_lessons_that_fit_the_task() {
+    let (_d, app) = new_board();
+    let debounce = kept_lesson(&app, "Debounce the search box before fetching results.", json!([]), 0);
+    let tests = kept_lesson(&app, "Run only the tests the change touched.", json!([]), 3);
+    kept_lesson(&app, "Put each migration in its own file.", json!([]), 1);
+    kept_lesson(&app, "Keep colour tokens in the theme file.", json!([]), 0);
+
+    let got = handoff_lessons(&app, task_titled(&app, "webapp", "Search box fetches on every key", "Debounce it."));
+    assert_eq!(got.len(), 2, "the one that fits, then the most confirmed: {got:?}");
+    assert!(got[0].ends_with(&format!("({debounce})")), "{got:?}");
+    assert!(got[1].ends_with(&format!("({tests})")), "{got:?}");
+}
+
+#[test]
+fn handoffs_get_the_lessons_learned_in_the_same_code() {
+    let (_d, app) = new_board();
+    let old = task_titled(&app, "webapp", "Tidy up", "Nothing to say.");
+    relevance::record(&app, old, "abc123", &["src/db.rs".into(), "src/api.rs".into()]).unwrap();
+    assert_eq!(relevance::paths_of(&app, old).unwrap(), ["src/api.rs", "src/db.rs"]);
+    // Nothing found on a later read keeps what was found before.
+    relevance::record(&app, old, "def456", &[]).unwrap();
+    assert_eq!(relevance::paths_of(&app, old).unwrap().len(), 2);
+
+    let schema = kept_lesson(&app, "Bump the schema version with every table change.", json!([format!("T{old}")]), 0);
+    for (i, text) in ["Run only the tests the change touched.", "Say the risk first.", "Name branches after the task."].iter().enumerate() {
+        kept_lesson(&app, text, json!([]), i + 1);
+    }
+    let got = handoff_lessons(&app, task_titled(&app, "webapp", "Add a column", "In src/db.rs."));
+    assert!(got[0].ends_with(&format!("({schema})")), "{got:?}");
+
+    let q: Query = [("q".to_string(), "column in src/db.rs".to_string()), ("project".to_string(), "webapp".to_string())].into();
+    let v = api::dispatch(&app, "GET", "/lessons/search", &q, &json!({})).unwrap();
+    let found = v["lessons"].as_array().unwrap();
+    assert_eq!(found.len(), 1, "{v}");
+    assert_eq!(found[0]["ref"], schema.as_str());
+    assert_eq!(found[0]["why"], json!(["touches src/db.rs"]));
+}
+
+#[test]
+fn lessons_are_searched_by_their_words() {
+    let (_d, app) = new_board();
+    let l = kept_lesson(&app, "Debounce the search box before fetching results.", json!([]), 0);
+    lesson(&app, json!({"text": "Debounce the api's retries.", "kind": "code", "project": "api"}));
+    let search = |q: &str| {
+        let q: Query = [("q".to_string(), q.to_string()), ("project".to_string(), "webapp".to_string())].into();
+        api::dispatch(&app, "GET", "/lessons/search", &q, &json!({}))
+    };
+    let v = search("debouncing").unwrap();
+    let found = v["lessons"].as_array().unwrap();
+    assert_eq!(found.len(), 1, "only this project's: {v}");
+    assert_eq!(found[0]["ref"], l.as_str());
+    assert_eq!(found[0]["why"], json!(["its words"]));
+    assert!(search("unrelated words").unwrap()["lessons"].as_array().unwrap().is_empty());
+    assert!(search("the a").is_err(), "nothing to search for");
 }
