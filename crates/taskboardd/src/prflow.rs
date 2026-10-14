@@ -73,9 +73,51 @@ pub fn merge_flow(app: &App, task_id: i64, changes: Vec<(&str, Value)>) -> Resul
     Ok(f)
 }
 
-/// Links a PR found in an agent's report to its task (only the first one sticks).
+/// The host and repo of the task's project's remote (`[pr_body] remote`); None when the project has
+/// no checkout, no such remote, or one on neither GitHub nor Bitbucket.
+fn project_repo(app: &App, t: &Row) -> Option<(String, String)> {
+    let path = crate::projects::project_path(app, t.s("project")).ok().flatten()?;
+    let git = crate::proc::which("git")?;
+    let args: Vec<String> = vec!["-C".into(), path, "remote".into(), "get-url".into(), app.cfg.pr_body.remote.clone()];
+    let o = crate::proc::run(&git, &args, None, 5.0).ok()?;
+    if o.code != Some(0) {
+        return None;
+    }
+    crate::prhost::repo_of_remote(o.stdout.trim())
+}
+
+/// Why `pr` can't be the task's PR: it's in another repo than the task's project. None when it's in
+/// that repo, or the project has no remote to judge by.
+pub fn other_repo(app: &App, t: &Row, pr: &PrLink) -> Option<String> {
+    let (host, repo) = project_repo(app, t)?;
+    if host == pr.host && repo.eq_ignore_ascii_case(&pr.repo) {
+        return None;
+    }
+    let project = t.s("project").unwrap_or("its project");
+    Some(format!(
+        "PR #{} is in {} ({}), but {} belongs to {project}, whose repo is {repo} ({host}). Open the PR from the task's checkout.",
+        pr.num,
+        pr.repo,
+        pr.host,
+        rf("task", t.id())
+    ))
+}
+
+/// Refuses `pr` for the task when it's in another repo (`other_repo`).
+pub fn refuse_other_repo(app: &App, t: &Row, pr: &PrLink) -> Result<()> {
+    match other_repo(app, t, pr) {
+        Some(why) => err(409, why),
+        None => Ok(()),
+    }
+}
+
+/// Links a PR found in an agent's report to its task (only the first one sticks; never one from
+/// another repo than the task's project).
 pub fn link_pr(app: &App, t: &Row, pr: &PrLink, who: &str) -> Result<bool> {
     if t.s("pr_url") == Some(pr.url.as_str()) || has(t.s("pr_repo")) {
+        return Ok(false);
+    }
+    if other_repo(app, t, pr).is_some() {
         return Ok(false);
     }
     if app.db.q1("SELECT id FROM tasks WHERE pr_repo = ? AND pr_num = ? AND id != ?", p![pr.repo, pr.num, t.id()])?.is_some() {

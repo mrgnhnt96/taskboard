@@ -1563,6 +1563,9 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if !pr_arg.is_empty() && find_pr(&pr_arg).is_none() {
         return err(400, "That isn't a pull request link (GitHub, GitLab or Bitbucket).");
     }
+    if let Some(pr) = pr.as_ref().filter(|_| !has(t.s("pr_repo")) && r.b("no_pr").trim().is_empty()) {
+        prflow::refuse_other_repo(r.app, &t, pr)?;
+    }
     let human = r.b("human");
     let human_min = match human.trim() {
         "" => None,
