@@ -2,6 +2,7 @@
 //! outside a Midna terminal they do nothing, they always exit 0, and they print only valid hook JSON.
 
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
@@ -44,27 +45,120 @@ fn opens_pr(tool: &str, input: &Value) -> bool {
 
 static PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b").unwrap());
 
+/// A git command that changes a repository: a commit, a push, a new worktree.
+static GIT_WORK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:commit|push|worktree\s+add)\b").unwrap());
+static GIT_DIR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-C\s+(\S+)").unwrap());
+static CD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|&&|;|\|\||\()\s*cd\s+(\S+)").unwrap());
+
+/// Where a tool call changes a repository: the file an edit names; for a git commit, push or new
+/// worktree, or a PR opening, the folder it runs in (`git -C <dir>`, else the last `cd <dir>` before
+/// it, else the cwd). None for any other call.
+fn work_place(tool: &str, input: &Value, cwd: &str) -> Option<PathBuf> {
+    let at = |p: &str| {
+        let p = p.trim_matches(['"', '\'']);
+        let p = match (p.strip_prefix("~/"), std::env::var("HOME")) {
+            (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+            _ => p.to_string(),
+        };
+        let p = Path::new(&p);
+        if p.is_absolute() { p.to_path_buf() } else { Path::new(cwd).join(p) }
+    };
+    if EDIT_TOOLS.contains(&tool) {
+        return input["file_path"].as_str().or(input["notebook_path"].as_str()).filter(|f| !f.is_empty()).map(at);
+    }
+    if tool != "Bash" {
+        return None;
+    }
+    let cmd = input["command"].as_str().unwrap_or("");
+    let git = GIT_WORK_RE.find(cmd);
+    if git.is_none() && !opens_pr(tool, input) {
+        return None;
+    }
+    if let Some(dir) = git.and_then(|m| GIT_DIR_RE.captures(m.as_str())) {
+        return Some(at(&dir[1]));
+    }
+    let before = &cmd[..git.or_else(|| PR_CLI_RE.find(cmd)).map_or(cmd.len(), |m| m.start())];
+    Some(CD_RE.captures_iter(before).last().map_or_else(|| PathBuf::from(cwd), |c| at(&c[1])))
+}
+
+/// A folder's repository: its shared git folder (one for all of the repository's worktrees) and its
+/// top folder. None outside a repository.
+fn repo_of(place: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut dir = place;
+    while !dir.is_dir() {
+        dir = dir.parent()?;
+    }
+    let o = std::process::Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"]).output().ok().filter(|o| o.status.success())?;
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    let mut lines = out.lines().map(|l| PathBuf::from(l.trim())).map(|p| p.canonicalize().unwrap_or(p));
+    Some((lines.next()?, lines.next()?))
+}
+
+/// Why the board refuses work at `place` for this task, whose repository is `home`: the work is in
+/// another repository, so the board would show the task as tracked while it happens beside it. A
+/// repository that holds the task's (a home-folder dotfiles one) isn't another project's.
+fn elsewhere(place: &Path, home: &Path, task: &str, project: &str) -> Option<(String, PathBuf)> {
+    let (common, top) = repo_of(place)?;
+    let (home_common, home_top) = repo_of(home)?;
+    if common == home_common || home_top.starts_with(&top) {
+        return None;
+    }
+    let shown = top.display();
+    Some((
+        format!(
+            "{task} is {project}'s work, but this changes {shown}, another repository. The board doesn't track {task}'s work there, so it \
+             refuses it: the task would show as in progress while its work happens beside the board. Keep {task}'s work in {project}. \
+             Work in {shown} needs its own task in that repository's project: tb found it, or tb task new \"<title>\" --project <its project> \
+             (no project for it yet? midna project add {shown}). If {task} can't be done without it, tb fail \"<why>\"."
+        ),
+        top,
+    ))
+}
+
+/// `PreToolUse`: refuses an edit, a git commit, push or new worktree, or a PR opening in a repository
+/// this terminal's task doesn't own, and tells the owner. No task, no board, or no repository: carry on.
+fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
+    let tool = payload["tool_name"].as_str().unwrap_or("");
+    let Some(place) = work_place(tool, &payload["tool_input"], cwd) else { return false };
+    if repo_of(&place).is_none() {
+        return false;
+    }
+    let Ok(v) = client::request(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Some(task) = v["task"].as_str() else { return false };
+    let vars = &v["vars"];
+    let Some(home) = ["repo", "worktree"].iter().filter_map(|k| vars[*k].as_str()).find(|p| !p.is_empty()) else { return false };
+    let project = vars["project"].as_str().unwrap_or("its project");
+    let Some((why, top)) = elsewhere(&place, Path::new(home), task, project) else { return false };
+    deny(&why);
+    let text = format!("{task} tried to work in {}, a repository it doesn't own ({task} is {project}'s). The board refused it.", top.display());
+    let _ = client::request(cfg, "POST", "/alerts", Some(&json!({"text": text, "key": format!("elsewhere:{task}"), "task": task})), hook_timeout());
+    true
+}
+
 /// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
 /// (config.toml's `[[steps]]`) aren't recorded, and a push to an open PR while a per-head step hasn't
-/// passed on the commit being pushed. Anything else, no task, or no board: carry on. True when it
-/// refused the call.
+/// passed on the commit being pushed, and work in a repository the task doesn't own (`elsewhere_refused`).
+/// Anything else, no task, or no board: carry on. True when it refused the call.
 fn pre_tool_use(payload: &Value, session: &str) -> bool {
     let tool = payload["tool_name"].as_str().unwrap_or("");
+    let cfg = client::config();
+    let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string()).or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
     if EDIT_TOOLS.contains(&tool) {
         // The comment guard (config.toml's [comments]): read locally, no board needed.
-        if let Some(reason) = comments::edit_refusal(&client::config(), tool, &payload["tool_input"]) {
+        if let Some(reason) = comments::edit_refusal(&cfg, tool, &payload["tool_input"]) {
             deny(&reason);
             return true;
         }
-        return false;
+        return elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or(""));
+    }
+    if elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or("")) {
+        return true;
     }
     let opening = opens_pr(tool, &payload["tool_input"]);
     let pushing = tool == "Bash" && PUSH_RE.is_match(payload["tool_input"]["command"].as_str().unwrap_or(""));
     if !opening && !pushing {
         return false;
     }
-    let cfg = client::config();
-    let cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string()).or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
     if opening {
         if let Some(reason) = cwd.as_deref().and_then(|d| comments::branch_refusal(&cfg, d, "opening the PR")) {
             deny(&reason);
@@ -524,6 +618,52 @@ mod tests {
         assert!(!bash("tb api bitbucket repositories/acme/web/pullrequests/9/comments -d '{}'"));
         assert!(opens_pr("mcp__github__create_pull_request", &json!({})));
         assert!(!opens_pr("mcp__github__get_pull_request", &json!({})));
+    }
+
+    #[test]
+    fn the_place_a_call_works_is_its_file_or_the_folder_its_git_runs_in() {
+        let bash = |c: &str| work_place("Bash", &json!({"command": c}), "/w/a");
+        assert_eq!(work_place("Edit", &json!({"file_path": "/w/b/src/x.rs"}), "/w/a"), Some(PathBuf::from("/w/b/src/x.rs")));
+        assert_eq!(work_place("Write", &json!({"file_path": "notes.md"}), "/w/a"), Some(PathBuf::from("/w/a/notes.md")));
+        assert_eq!(bash("git commit -m x"), Some(PathBuf::from("/w/a")));
+        assert_eq!(bash("git -C /w/b commit -m x"), Some(PathBuf::from("/w/b")));
+        assert_eq!(bash("cd /w/b && git worktree add ../b-fix -b fix"), Some(PathBuf::from("/w/b")));
+        assert_eq!(bash("cd ../b && git add . && git commit -m x"), Some(PathBuf::from("/w/a/../b")));
+        assert_eq!(bash("cd \"/w/b\" && gh pr create --fill"), Some(PathBuf::from("/w/b")));
+        assert_eq!(bash("git status && git log"), None, "reading changes nothing");
+        assert_eq!(bash("git worktree list"), None);
+        assert_eq!(work_place("Read", &json!({"file_path": "/w/b/x"}), "/w/a"), None);
+    }
+
+    fn git_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let ok = std::process::Command::new("git").arg("-C").arg(dir).args(["init", "-q"]).status().unwrap().success();
+        assert!(ok);
+    }
+
+    #[test]
+    fn work_in_a_repository_the_task_does_not_own_is_refused() {
+        let root = std::env::temp_dir().join(format!("tb-elsewhere-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (a, b) = (root.join("a"), root.join("b"));
+        git_repo(&a);
+        git_repo(&b);
+        let (why, top) = elsewhere(&b.join("src/x.rs"), &a, "T115", "a").expect("another repository");
+        assert_eq!(top, b.canonicalize().unwrap());
+        assert!(why.contains("T115 is a's work") && why.contains("midna project add"), "{why}");
+        assert!(elsewhere(&a.join("src/x.rs"), &a, "T115", "a").is_none(), "the task's own repository");
+        assert!(elsewhere(&root.join("loose.txt"), &a, "T115", "a").is_none(), "outside any repository");
+
+        // The task's own worktree shares its repository.
+        let commit = |d: &Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+        commit(&a, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        commit(&a, &["worktree", "add", "-q", root.join("a-fix").to_str().unwrap()]);
+        assert!(elsewhere(&root.join("a-fix/src/x.rs"), &a, "T115", "a").is_none());
+
+        // A repository that holds the task's (a dotfiles one in the home folder) isn't another project's.
+        git_repo(&root);
+        assert!(elsewhere(&root.join(".zshrc"), &a, "T115", "a").is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
