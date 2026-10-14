@@ -130,7 +130,7 @@ enum Cmd {
     /// Start a task, or run a goal (G<n>), only when the human told you to in this conversation (the board
     /// checks their prompts for a task). A goal runs its tasks in their waves; never start them one by one.
     Start {
-        /// T<n>, or G<n> for a goal
+        /// T<n>, G<n> for a goal, or B<n> for a backlog item (made into its task first)
         task: String,
         /// Queue the task to start once its project has a free terminal (tb project set --max-terminals), instead of now in a new terminal
         #[arg(long)]
@@ -1890,6 +1890,20 @@ fn backlog_bulk(c: &Ctx, action: &str, issues: &[String], extra: Value) -> Resul
         b[k] = v.clone();
     }
     c.call("POST", "/backlog/bulk", Some(b))
+}
+
+/// The task backlog item `issue` became, making it one first (planned in its goal, else waiting on the
+/// board for its start) while it's still open.
+fn item_task(c: &Ctx, issue: &str) -> Result<String, String> {
+    let b = issue_ref(issue)?;
+    let item = c.call("GET", &format!("/backlog/{b}"), None)?;
+    if let (Some("task"), Some(t)) = (item["state"].as_str(), item["task_ref"].as_str()) {
+        return Ok(t.to_string());
+    }
+    let v = backlog_bulk(c, "task", &[b.clone()], json!({"where": "goal", "pickup": {"mode": "manual"}}))?;
+    let t = v["tasks"][0]["ref"].as_str().ok_or_else(|| format!("The board didn't say which task {b} became."))?.to_string();
+    out(&format!("Made {b} into {t}."));
+    Ok(t)
 }
 
 fn issue_ref(v: &str) -> Result<String, String> {
@@ -3867,7 +3881,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
                 return Ok(0);
             }
-            let r = task_ref(&task)?;
+            let item = task.trim().starts_with(['B', 'b']);
+            if item && c.session.is_empty() {
+                return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can make {} a task and press Start on it.", issue_ref(&task)?));
+            }
+            let r = if item { item_task(c, &task)? } else { task_ref(&task)? };
             if c.session.is_empty() {
                 return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {r} on the board."));
             }
