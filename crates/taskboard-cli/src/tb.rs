@@ -2899,6 +2899,25 @@ fn reviewers_cmd(c: &Ctx, action: ReviewersCmd) -> Result<i32, String> {
     Ok(0)
 }
 
+/// What `tb pr reviewers --dry-run` would do; the board changed nothing on the PR.
+fn dry_run_line(v: &Value) -> String {
+    let mut parts: Vec<String> = vec![];
+    if let Some(name) = v["drop"]["name"].as_str() {
+        parts.push(format!("take {name} off"));
+    }
+    if let (Some(old), Some(new)) = (v["replace"]["old"].as_str(), v["replace"]["new"].as_str()) {
+        parts.push(format!("ask {new} in place of {old}"));
+    }
+    let picks: Vec<String> = v["picks"].as_array().cloned().unwrap_or_default().iter().map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["why"].as_str().unwrap_or(""))).collect();
+    if !picks.is_empty() {
+        parts.push(format!("ask {}", picks.join(", ")));
+    }
+    if parts.is_empty() {
+        return "The board would ask nobody. Nothing changed on the PR.".to_string();
+    }
+    format!("The board would {}. Nothing changed on the PR.", parts.join(", then "))
+}
+
 fn pr_reviewers_line(t: &str, v: &Value) -> String {
     let names = |k: &str| -> Vec<String> { v[k].as_array().cloned().unwrap_or_default().iter().filter_map(|x| x["name"].as_str().map(|s| s.to_string())).collect() };
     let mut parts = vec![];
@@ -4800,10 +4819,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Reviewers { task, ask, replace, with, drop, count, dry_run } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "count": count, "dry_run": dry_run})))?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/reviewers"), Some(json!({"ask": ask, "replace": replace, "with": with, "drop": drop, "count": count, "dry_run": dry_run})))?;
                 if dry_run {
-                    let picks: Vec<String> = v["picks"].as_array().cloned().unwrap_or_default().iter().map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["why"].as_str().unwrap_or(""))).collect();
-                    out(&if picks.is_empty() { "The board would ask nobody.".to_string() } else { format!("The board would ask {}.", picks.join(", ")) });
+                    out(&dry_run_line(&v));
                     return Ok(0);
                 }
                 out(&pr_reviewers_line(&t, &v));
