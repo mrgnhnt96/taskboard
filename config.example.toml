@@ -98,6 +98,7 @@ comment_settle_secs = 90.0           # read a PR once more this long after a str
 bitbucket_api = "https://api.bitbucket.org/2.0"
 azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, to read failed steps and tests, when none is stored with `tb ci-token set`
 # owner_review = true                # a green PR waits for your review before it moves on (false: the board marks it reviewed for you; tb project owner-review sets it on the board)
+# rebase = "conflicts"               # when tb pr status asks for a rebase onto the base: "conflicts" (only when the PR conflicts with it), "moved" (whenever the base moved since the push) or "never"
 approvals = 2                        # approvals a PR needs before it's ready to merge, when its project doesn't say (0: the host's decision, or any approval)
 
 # The lens review stage: the board runs lens's PR pass headless on each new PR, which posts its verified
@@ -127,6 +128,7 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # review = false                      # no Review step: its PRs go to merge without reviewers (unset: on; tb project set --review)
 # agents_merge = true                 # agents merge its approved, green PRs (unset: pr.agents_merge; tb project set --agents-merge)
 # lens = true                        # lens reviews its new PRs (unset: pr.lens.on)
+# rebase = "moved"                   # when to rebase its PRs onto their base (unset: pr.rebase)
 # owner_review = false                # its green PRs don't wait for your review (unset: pr.owner_review; tb project set --owner-review)
 
 # PR updates from a feed: a listener (a Slack app on the team's git-notification channel, a webhook
