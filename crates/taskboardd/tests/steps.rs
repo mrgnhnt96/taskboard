@@ -85,7 +85,7 @@ fn the_handoff_lists_the_projects_steps() {
     let id = b.new_task();
     let h = handoff::build(&b.app, id).unwrap();
     assert!(h.contains("Before you open the PR, do this step:\n1. Author-side review: Run /author-review and fix what it finds. Then: tb step done \"Author-side review\""), "{h}");
-    assert!(h.contains("Before you run tb done, do this step:\n1. Changelog"), "{h}");
+    assert!(h.contains("Before you run tb submit, do this step:\n1. Changelog"), "{h}");
     assert!(!h.contains("Elsewhere"), "{h}");
     assert!(h.contains("step fail \"<name>\""), "{h}");
 }

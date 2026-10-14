@@ -16,7 +16,7 @@
 //! review gate); `min_gap_mins` keeps its rounds apart; `bar` names it in the app's PR bar.
 //!
 //! The handoff tells the agent the steps, and the board holds the PR (the Claude Code `PreToolUse` hook on
-//! `gh pr create` and the like) and `tb done` until they're recorded. The owner's Done in the app isn't
+//! `gh pr create` and the like) and `tb submit` until they're recorded. The owner's Done in the app isn't
 //! held. The file is read fresh each time, like hooks.json, so edits apply without restarting the board.
 
 use std::collections::{BTreeMap, HashSet};
@@ -37,7 +37,7 @@ pub enum Before {
     /// Before the agent opens the PR.
     #[default]
     Pr,
-    /// Before the agent runs `tb done`.
+    /// Before the agent runs `tb submit`.
     Done,
 }
 
@@ -808,7 +808,7 @@ pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
     let v = vars_for(app, t);
     let all: Vec<Step> = for_task(app, t).iter().map(|s| s.filled(&v)).collect();
     let mut s = String::new();
-    for (before, when) in [(Before::Pr, "Before you open the PR"), (Before::Done, "Before you run tb done")] {
+    for (before, when) in [(Before::Pr, "Before you open the PR"), (Before::Done, "Before you run tb submit")] {
         let these: Vec<&Step> = all.iter().filter(|s| s.before == before && (ships_prs || before == Before::Done)).collect();
         if these.is_empty() {
             continue;

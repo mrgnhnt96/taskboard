@@ -92,7 +92,7 @@ fn a_pinned_aim_is_what_rounds_and_gates_judge() {
     assert_eq!(s["head"], json!(aimed));
     b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": true, "head": aimed})).unwrap();
     assert_eq!(b.steps(&here)["steps"][0]["done"], true);
-    // The gates (tb done, opening the PR) judge the aimed commit too.
+    // The gates (tb submit, opening the PR) judge the aimed commit too.
     assert!(steps::missing_at(&b.app, &b.row(id), &[steps::Before::Pr], Some(&here)).unwrap().is_empty());
     assert!(b.row(id).st("context").contains("step_aim"));
     // --clear drops it: the caller's checkout counts again.
@@ -148,7 +148,7 @@ fn a_pin_is_dropped_once_its_branch_moves_on() {
     let s = b.steps(&pinned);
     assert_eq!(s["aim"], json!({"branch": "feat/a", "dropped": pinned}));
     assert_eq!(s["head"], json!(moved));
-    assert_eq!(s["steps"][0]["done"], false, "tb done can't pass on a commit that's no longer the branch's tip");
+    assert_eq!(s["steps"][0]["done"], false, "tb submit can't pass on a commit that's no longer the branch's tip");
     assert_eq!(steps::missing(&b.app, &b.row(id), &[steps::Before::Pr]).unwrap().len(), 1);
     // The next round's report drops it from the task, with a line saying so.
     b.report("tb.step", json!({"name": "Author review", "via": "done", "ok": true, "head": moved})).unwrap();

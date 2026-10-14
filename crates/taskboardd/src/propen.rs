@@ -1,4 +1,4 @@
-//! `tb done --pr-body FILE`: the board checks the PR description (`[pr_body]` in config.toml) and the
+//! `tb submit --pr-body FILE`: the board checks the PR description (`[pr_body]` in config.toml) and the
 //! branch (pushed, rebased on the remote base, no merge commits), then opens the PR itself: the title
 //! starts with the task's ticket key, a `## Context` section is added, and the PR goes into the real
 //! base (a stacked task's parent branch). The PR is opened on GitHub or Bitbucket Cloud through `prhost`
@@ -376,21 +376,21 @@ pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::R
     let (_, head, _) = git(dir, &["rev-parse", "HEAD"], 10.0)?;
     let (pushed, there, _) = git(dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{branch}")], 10.0)?;
     if !pushed {
-        return Err(format!("{branch} isn't pushed: git push -u {remote} {branch}, then run tb done again."));
+        return Err(format!("{branch} isn't pushed: git push -u {remote} {branch}, then run tb submit again."));
     }
     if there != head {
-        return Err(format!("{remote}/{branch} isn't this commit: push it (git push --force-with-lease after a rebase), then run tb done again."));
+        return Err(format!("{remote}/{branch} isn't this commit: push it (git push --force-with-lease after a rebase), then run tb submit again."));
     }
     if cfg.rebased {
         let base_ref = format!("{remote}/{base}");
         let (on_top, _, _) = git(dir, &["merge-base", "--is-ancestor", &base_ref, "HEAD"], 10.0)?;
         if !on_top {
-            return Err(format!("{branch} isn't rebased on {base_ref}: git rebase {base_ref}, push with --force-with-lease, then run tb done again."));
+            return Err(format!("{branch} isn't rebased on {base_ref}: git rebase {base_ref}, push with --force-with-lease, then run tb submit again."));
         }
         let (_, merges, _) = git(dir, &["rev-list", "--merges", &format!("{base_ref}..HEAD")], 10.0)?;
         if !merges.is_empty() {
             return Err(format!(
-                "{branch} has {} on top of {base_ref}: rebase instead (git rebase {base_ref}), push with --force-with-lease, then run tb done again.",
+                "{branch} has {} on top of {base_ref}: rebase instead (git rebase {base_ref}), push with --force-with-lease, then run tb submit again.",
                 plural(merges.lines().count() as i64, "merge commit")
             ));
         }
@@ -411,7 +411,7 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     let cfg = &app.cfg.pr_body;
     let problems = body_problems(cfg, body);
     if !problems.is_empty() {
-        return err(400, format!("The PR description needs work before the board opens the PR:\n- {}\nFix the file and run tb done again.", problems.join("\n- ")));
+        return err(400, format!("The PR description needs work before the board opens the PR:\n- {}\nFix the file and run tb submit again.", problems.join("\n- ")));
     }
     if app.cfg.ticket_required() && !has(t.s("jira_key")) {
         return err(409, crate::reports::no_ticket_refusal(t));
@@ -437,8 +437,8 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     Ok(pr)
 }
 
-/// Runs before `tb done` (outside its transaction): with `pr_body`, opens the PR and puts its link in
-/// the report, so the rest of `tb done` links it. A task that already has its PR keeps it.
+/// Runs before `tb submit` (outside its transaction): with `pr_body`, opens the PR and puts its link in
+/// the report, so the rest of `tb submit` links it. A task that already has its PR keeps it.
 pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     let text = body_str(body, "pr_body");
     if text.trim().is_empty() {
@@ -479,7 +479,7 @@ pub mod host {
             return Err(format!("this checkout has no {r} remote"));
         }
         crate::prhost::repo_of_remote(&url).ok_or_else(|| {
-            format!("{r} ({url}) isn't on GitHub or Bitbucket; open the PR with the host's tools and pass its link to tb done --pr")
+            format!("{r} ({url}) isn't on GitHub or Bitbucket; open the PR with the host's tools and pass its link to tb submit --pr")
         })
     }
 

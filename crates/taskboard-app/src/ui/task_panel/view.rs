@@ -845,7 +845,7 @@ fn fold(f: Fold, open: bool, summary: Node, body: Vec<Node>) -> Node {
     el(K::Fold(f, open), kids)
 }
 
-/// `manageBox(t)`. No Mark done / Mark failed: Claude finishes a task (`tb done`, `tb fail`).
+/// `manageBox(t)`. No Mark done / Mark failed: Claude finishes a task (`tb submit`, `tb fail`).
 fn manage_box(c: &Ctx, t: &Value) -> Node {
     let r = rf(t, "T");
     let grp = format!("manage:{r}");

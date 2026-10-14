@@ -249,7 +249,7 @@ shared_target = true                 # CARGO_TARGET_DIR = the main checkout's ta
 jobs = 4                             # CARGO_BUILD_JOBS per terminal; 0 leaves cargo's default (every core)
 
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
-# MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb done`
+# MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb submit`
 # while the branch adds any. A comment whose text starts with a pragma is fine.
 [comments]
 guard = false
@@ -264,7 +264,7 @@ languages = ["rust", "dart", "python", "typescript", "javascript", "swift", "kot
 [app_origin]
 token = true                         # false: an unsigned daemon takes no request as the app's
 
-# `tb done "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
+# `tb submit "<summary>" --pr-body FILE`: the board checks the description and the branch, then opens the PR
 # (GitHub or Bitbucket, by the remote) into the real base: a stacked task's parent branch, else the default branch.
 # `tb pr body-check FILE` runs the description check alone.
 [pr_body]
@@ -314,10 +314,10 @@ desk = false                         # new tickets go to the Jira desk: a Claude
                                      # that searches for an open ticket covering the work before it makes one
 desk_dir = ""                        # the desk's folder; empty = the board's data folder
 default_product = ""                 # a ticket's product when its goal has none and the work's words pick none
-canceled = ""                        # status when a task finishes without its PR (tb done --no-pr), with the
+canceled = ""                        # status when a task finishes without its PR (tb submit --no-pr), with the
                                      # reason as a comment, e.g. "Withdrawn"; empty = like any task without a PR
 merged_note = false                  # a task that ships a PR on a ticket finishes with a note for testers
-                                     # (tb done --merged-note); the board posts it before the ticket moves to merged
+                                     # (tb submit --merged-note); the board posts it before the ticket moves to merged
 merged_note_guide = ""               # a markdown file of the note's parts (what changed, what to test, …); tb jira shows it
 
 # Products decide the labels, components and extra fields on a goal's tickets (`tb goal set G1 --product web`).
@@ -413,7 +413,7 @@ ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when i
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
 # Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {base_ref} {pr_url} {pr} {jira};
 # {base} is the PR's real base (a stacked task's parent branch) and {base_ref} has the remote on it
-# (origin/main). The board refuses the PR and `tb done` until they pass. A step with per_head = true passes
+# (origin/main). The board refuses the PR and `tb submit` until they pass. A step with per_head = true passes
 # once per head commit (every push is checked again, and a push to the open PR waits for it);
 # min_gap_mins keeps its rounds apart; bar = "Review" shows it in the app's PR bar. A check can write its
 # verdict, headline and findings to $TASKBOARD_RESULT. A per_head step's `publish` script republishes its

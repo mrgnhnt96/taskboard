@@ -1,4 +1,4 @@
-//! lens at `tb done`: with the lens plugin installed, a task finishes only on a fresh review of its
+//! lens at `tb submit`: with the lens plugin installed, a task finishes only on a fresh review of its
 //! checkout; findings become notes, an open blocker holds it and an escalated one asks the owner.
 
 use std::path::{Path, PathBuf};

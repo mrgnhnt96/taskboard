@@ -1,6 +1,6 @@
-//! lens at `tb done`: when the lens plugin is installed, a task finishes only on a fresh local review
+//! lens at `tb submit`: when the lens plugin is installed, a task finishes only on a fresh local review
 //! (`/lens:review`) of what's in its checkout. Verified findings become task notes; a blocker holds
-//! `tb done` while lens's fix loop runs, and only a blocker the loop escalates is asked of the owner.
+//! `tb submit` while lens's fix loop runs, and only a blocker the loop escalates is asked of the owner.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::board;
 use crate::util::*;
 
-/// What `tb done` does after looking at the review.
+/// What `tb submit` does after looking at the review.
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
     Pass,
@@ -56,7 +56,7 @@ pub fn claude_dir(app: &App) -> PathBuf {
 }
 
 /// Looks at the lens review of the checkout at `cwd` for task `t`. `None` when lens isn't installed
-/// or `cwd` isn't a git checkout: `tb done` goes on as it would without lens.
+/// or `cwd` isn't a git checkout: `tb submit` goes on as it would without lens.
 pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
     let Some(root) = Git::new(cwd).out(&["rev-parse", "--show-toplevel"]).map(PathBuf::from) else { return Ok(None) };
     if !installed(&claude_dir(app), &root) {
@@ -64,7 +64,7 @@ pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
     }
     let git = Git::new(&root.to_string_lossy());
     let intent = write_intent(app, t, &root)?;
-    let run = format!("Run /lens:review --intent {} in {}, then tb done again.", intent.display(), root.display());
+    let run = format!("Run /lens:review --intent {} in {}, then tb submit again.", intent.display(), root.display());
     let Some(now) = git.tree_now() else { return Ok(Some(Review::verdict(Verdict::Refuse(format!("lens couldn't read the checkout. {run}"))))) };
     let report_path = root.join(".review").join(format!("{}.json", git.branch()));
     let report = std::fs::read_to_string(&report_path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
@@ -81,7 +81,7 @@ pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
     Ok(Some(judge(t, &report, &report_path)))
 }
 
-/// What the fresh report means for `tb done`.
+/// What the fresh report means for `tb submit`.
 fn judge(t: &Row, report: &Value, report_path: &Path) -> Review {
     let ctx = board::task_context(t);
     let noted = str_list(ctx.get(NOTED));
@@ -99,7 +99,7 @@ fn judge(t: &Row, report: &Value, report_path: &Path) -> Review {
         let first = open[0]["id"].as_str().unwrap_or("F1");
         let why = format!(
             "lens found {} blocker{} not through its fix loop yet ({ids}). Run the loop as /lens:review step 7 says, \
-             starting with `lens fix start --report {} --finding {first}`, then tb done again.",
+             starting with `lens fix start --report {} --finding {first}`, then tb submit again.",
             open.len(),
             if open.len() == 1 { "" } else { "s" },
             report_path.display(),

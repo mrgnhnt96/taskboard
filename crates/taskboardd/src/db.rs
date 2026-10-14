@@ -202,7 +202,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "stack_merge", "TEXT"),
     // Whether the task ends in a PR: 1 or 0, or NULL for its project's default.
     ("tasks", "ships_pr", "INT"),
-    // Why a PR-flow task finished without a PR (`tb done --no-pr`), or without evidence (`--no-evidence`).
+    // Why a PR-flow task finished without a PR (`tb submit --no-pr`), or without evidence (`--no-evidence`).
     ("tasks", "no_pr", "TEXT"),
     ("tasks", "no_evidence", "TEXT"),
     // A typed prompt as the human typed it (newlines kept, not clipped to the line `text` shows), for

@@ -23,7 +23,7 @@ Find or make the ticket yourself; never ask the owner which ticket. Settle the t
 
 ## The note for testers
 
-When `tb jira` says so (`[jira] merged_note`), a task that ships a PR on a ticket finishes with a note for testers: `tb done "<summary>" --merged-note "<markdown>"`, or set it earlier with `tb task set T<n> --merged-note "…"`. Write it to the note guide `tb jira` shows (what changed, numbered test steps with what the tester must see, affected areas, regression risks, the branch, what testing needs, the platforms). Work that isn't testable still gets a note that says so. `tb done` refuses without one; `--no-pr` and tasks without a ticket don't need one.
+When `tb jira` says so (`[jira] merged_note`), a task that ships a PR on a ticket finishes with a note for testers: `tb submit "<summary>" --merged-note "<markdown>"`, or set it earlier with `tb task set T<n> --merged-note "…"`. Write it to the note guide `tb jira` shows (what changed, numbered test steps with what the tester must see, affected areas, regression risks, the branch, what testing needs, the platforms). Work that isn't testable still gets a note that says so. `tb submit` refuses without one; `--no-pr` and tasks without a ticket don't need one.
 
 At merge the board posts the note on the ticket, then the "PR #n was merged" line, and only then moves the ticket. If the PR merged without a note, the board brings your conversation back to write it: run `tb task set T<n> --merged-note "…"` and stop; the task is already done.
 

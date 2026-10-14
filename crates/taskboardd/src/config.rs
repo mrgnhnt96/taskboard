@@ -350,7 +350,7 @@ pub struct HandoffConfig {
     pub branch: String,
 }
 
-/// `tb done --pr-body FILE`: what the PR description must look like, and how the board opens the PR.
+/// `tb submit --pr-body FILE`: what the PR description must look like, and how the board opens the PR.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct PrBodyConfig {
@@ -366,7 +366,7 @@ pub struct PrBodyConfig {
     pub forbid: Vec<String>,
     /// The branch must sit on top of the remote base (rebased), with no merge commits.
     pub rebased: bool,
-    /// Refuse a PR (opened by the board or linked with `tb done --pr`) for a task with no Jira ticket. Unset:
+    /// Refuse a PR (opened by the board or linked with `tb submit --pr`) for a task with no Jira ticket. Unset:
     /// on while Jira is set up (`Config::ticket_required`).
     pub require_ticket: Option<bool>,
     /// Start the PR title with the ticket key ("ABC-12 Add login").
@@ -426,7 +426,7 @@ pub struct JiraConfig {
     pub in_review: String,
     pub done: String,
     pub merged: String,
-    /// The status a ticket moves to when its task finishes without a PR (`tb done --no-pr`), with the
+    /// The status a ticket moves to when its task finishes without a PR (`tb submit --no-pr`), with the
     /// reason as a comment. Empty: it goes to `done` like any task without a PR.
     pub canceled: String,
     pub products: BTreeMap<String, JiraProduct>,
@@ -461,7 +461,7 @@ pub struct JiraConfig {
     /// A markdown file of how this board's tickets are written. Agents read it in `tb jira` and write
     /// each new ticket's summary and text to it (`tb task new --jira new --ticket-text …`).
     pub ticket_guide: String,
-    /// A task that ships a PR on a ticket finishes with a note for testers (`tb done --merged-note`); at
+    /// A task that ships a PR on a ticket finishes with a note for testers (`tb submit --merged-note`); at
     /// merge the board posts it on the ticket before it moves the ticket to `merged`.
     pub merged_note: bool,
     /// A markdown file of the parts that note has. Agents read it in `tb jira`.

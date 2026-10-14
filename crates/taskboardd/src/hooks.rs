@@ -79,7 +79,7 @@ pub const EVENTS: &[Event] = &[
     after("task.working", "An agent is working on the task: it started, was picked up, or carried on after an answer"),
     after("task.needs", "The task needs the owner: a question, a lost terminal, an API error (see task.needs_reason)"),
     no_skip(
-        step("task.finishing", "The task is about to be marked done (by the agent's tb done or by the owner)"),
+        step("task.finishing", "The task is about to be marked done (by the agent's tb submit or by the owner)"),
         "finishing is the last step before done; let it carry on instead",
     ),
     after("task.done", "The task was marked done"),
