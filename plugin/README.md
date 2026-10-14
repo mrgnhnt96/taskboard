@@ -9,8 +9,9 @@ plugin/
   .claude-plugin/marketplace.json     marketplace "taskboard"
   task-board/
     .claude-plugin/plugin.json
-    hooks/hooks.json                  every hook runs `bin/tb hook <Event>`
+    hooks/hooks.json                  each hook runs `bin/tb hook <Event>`, except Bash's wait-hint
     bin/tb                            shim that runs the Rust tb binary
+    bin/wait-hint                     stops sleep-poll loops; steers long builds to the background
     skills/task-board/                SKILL.md, questions.md, planning.md, pr.md
 ```
 

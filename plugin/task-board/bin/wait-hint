@@ -1,0 +1,21 @@
+#!/bin/sh
+# PreToolUse hook on Bash: stops sleep loops that poll a build, and steers foreground builds and
+# tests to the background, where Claude Code reports when they exit. Reads the hook's JSON as text
+# (no jq); does nothing outside a Midna terminal.
+
+[ -n "$MIDNA_SESSION" ] || exit 0
+input=$(cat)
+has() { printf '%s' "$input" | grep -Eq "$1"; }
+
+if has '(until|while)[^"]*sleep [0-9]'; then
+  cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Don't poll in a sleep loop. Run the build or test itself with run_in_background: true and wait for its completion notice; it re-invokes you when it exits. To wait on a condition you can't run, use Monitor."}}
+JSON
+  exit 0
+fi
+
+if has '(cargo (build|test|nextest|clippy)|flutter test)' && ! has '"run_in_background": *true'; then
+  cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"A long build or test in the foreground can hit the 10-minute Bash timeout and lose its output. If it may take more than a couple of minutes, run it with run_in_background: true and wait for the completion notice instead. Run cargo check before cargo test."}}
+JSON
+fi
