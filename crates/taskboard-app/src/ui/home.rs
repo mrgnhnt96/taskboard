@@ -463,72 +463,6 @@ pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
 
 // ================================================================== render
 
-/// The header over every page: the brand and the Board, Tasks, Backlog, Days and Sessions pages
-/// as tabs. It is the window's title bar too (drag to move, double click to zoom),
-/// clear of the traffic lights.
-pub fn header(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
-    let (active, idle, shadow) = (t.text, t.muted, t.border);
-    let tab = |id: &'static str, label: &'static str, page: Page, on: bool| {
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .h(px(28.))
-            .px(px(12.))
-            .rounded(px(8.))
-            .cursor_pointer()
-            .text_size(px(14.))
-            .when(on, |d| d.bg(t.card).text_color(active).font_weight(FontWeight::SEMIBOLD).shadow(vec![BoxShadow { color: shadow, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }]))
-            .when(!on, |d| d.text_color(idle).hover(move |s| s.text_color(active)))
-            .child(label)
-            .on_click(cx.listener(move |m, _, _, cx| m.go(page.clone(), cx)))
-    };
-    let page = m.page.clone();
-    div()
-        .id("home-header")
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(22.))
-        .h(px(56.))
-        // Clear of the traffic lights.
-        .pl(px(88.))
-        .pr(px(PAGE_X))
-        // Concept D's #f0f2f5 in light; dark's panel_2 is the tab group's color, so the card.
-        .bg(if t.mode == crate::theme::ThemeMode::Dark { t.card } else { t.panel_2 })
-        .border_b_1()
-        .border_color(t.border)
-        .on_mouse_down(MouseButton::Left, crate::settings::drag_window)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .text_size(px(15.))
-                .font_weight(FontWeight::BOLD)
-                .child(kit::icon(kit::Icon::Board, 20., t.goal))
-                .child("Taskboard"),
-        )
-        .child(
-            div()
-                .flex()
-                .gap(px(4.))
-                .p(px(4.))
-                .rounded(px(10.))
-                .bg(t.seg)
-                // A press on the tabs is a click, not a window drag.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                // A goal opens from its card on the board, so Board stays lit on its page.
-                .child(tab("tab-board", "Board", Page::Board, matches!(page, Page::Board | Page::Goal(_))))
-                .child(tab("tab-tasks", "Tasks", Page::Tasks, page == Page::Tasks))
-                .child(tab("tab-goals", "Goals", Page::Goals, page == Page::Goals))
-                .child(tab("tab-backlog", "Backlog", Page::Backlog, page == Page::Backlog))
-                .child(tab("tab-days", "Days", Page::Days, page == Page::Days))
-                .child(tab("tab-sessions", "Sessions", Page::Sessions, page == Page::Sessions)),
-        )
-        .into_any_element()
-}
-
 pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let home = m.data.home.clone().unwrap_or(Value::Null);
@@ -539,7 +473,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let stats = m.data.today.as_ref().map(stats_vm).unwrap_or_default();
     let projects = projects_vm(&home);
 
-    let main_w = (window.viewport_size().width.as_f32() - PAGE_X * 2.).max(320.);
+    let main_w = (window.viewport_size().width.as_f32() - crate::ui::sidebar::WIDTH - PAGE_X * 2.).max(320.);
     let cols = ((main_w + GAP) / (CARD_MIN + GAP)).floor().clamp(1., 3.);
     let card_w = (main_w - GAP * (cols - 1.)) / cols;
 

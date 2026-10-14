@@ -118,10 +118,14 @@ fn main() {
             Menu {
                 name: "View".into(),
                 items: vec![
-                    MenuItem::action("Board", app::GoBoard),
+                    MenuItem::action("Needs you", app::GoBoard),
+                    MenuItem::action("Running", app::GoSessions),
+                    MenuItem::action("Goals", app::GoGoals),
+                    MenuItem::action("Tasks", app::GoTasks),
                     MenuItem::action("Backlog", app::GoBacklog),
-                    MenuItem::action("Sessions", app::GoSessions),
+                    MenuItem::action("Days", app::GoDays),
                     MenuItem::separator(),
+                    MenuItem::action("Search…", app::Search),
                     MenuItem::action("Refresh", app::Refresh),
                 ],
                 disabled: false,

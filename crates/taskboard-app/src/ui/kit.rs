@@ -369,6 +369,8 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 pub enum Glyph {
     /// `ICON.x` (stroke 2.2).
     X,
+    /// A magnifier (stroke 2).
+    Search,
 }
 
 /// A [`Glyph`] `size` px square in `color`.
@@ -394,6 +396,11 @@ pub fn glyph(g: Glyph, size: f32, color: Hsla) -> impl IntoElement {
                     stroke(&[(6., 6.), (18., 18.)], 2.2, window);
                     stroke(&[(18., 6.), (6., 18.)], 2.2, window);
                 }
+                Glyph::Search => {
+                    let ring: Vec<(f32, f32)> = (0..=32).map(|i| i as f32 * std::f32::consts::TAU / 32.).map(|a| (11. + 7. * a.cos(), 11. + 7. * a.sin())).collect();
+                    stroke(&ring, 2., window);
+                    stroke(&[(16.2, 16.2), (20.5, 20.5)], 2., window);
+                }
             }
         },
     )
@@ -408,8 +415,6 @@ pub fn glyph(g: Glyph, size: f32, color: Hsla) -> impl IntoElement {
 pub enum Icon {
     /// `ICON.chev`: a down chevron (stroke 2.2).
     Chev,
-    /// `ICON.board`: the logo's three columns (stroke 2).
-    Board,
     /// Midna's mark: a rounded window with its crescent moon.
     Midna,
 }
@@ -487,11 +492,6 @@ pub fn icon(kind: Icon, size: f32, color: Hsla) -> impl IntoElement {
             };
             match kind {
                 Icon::Chev => poly(&[(6., 9.), (12., 15.), (18., 9.)], 2.2, window),
-                Icon::Board => {
-                    rect(3., 4., 5., 16., 1.5, 2., window);
-                    rect(10., 4., 5., 11., 1.5, 2., window);
-                    rect(17., 4., 4., 7., 1.5, 2., window);
-                }
                 Icon::Midna => {
                     rect(3., 3., 18., 18., 4.5, 2., window);
                     let pts = crescent((11.5, 12.5), 5., (14., 10.), 4.);

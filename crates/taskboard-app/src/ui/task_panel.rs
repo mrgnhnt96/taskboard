@@ -20,9 +20,6 @@ use std::time::Duration;
 pub use view::{Act, Go, Node};
 use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, Tone};
 
-/// `.panel { width: min(480px, 100vw) }`.
-pub const WIDTH: f32 = 480.;
-
 /// How long an inline note stays (`setNote`: 5 s, errors 15 s).
 const NOTE_OK: Duration = Duration::from_secs(5);
 const NOTE_ERR: Duration = Duration::from_secs(15);
@@ -555,10 +552,80 @@ fn on_input(m: &mut MainWindow, key: &str, text: String) {
 
 // ------------------------------------------------------------------ render
 
-pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+/// The task as a page of its own in the main area (the sidebar stays): the panel's body in a
+/// column as wide as it reads well. Esc and its close button go back to the page under it.
+pub fn render_page(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
+    let Some(body) = body(m, &t, window, cx) else {
+        let msg = m.data.errs.task.clone().unwrap_or_else(|| "Loading…".into());
+        return div().flex_1().pt(px(22.)).px(px(36.)).child(kit::help(&t, msg)).into_any_element();
+    };
+    div()
+        .id("task-page")
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .flex_col()
+        .gap(px(12.))
+        .px(px(36.))
+        .pt(px(10.))
+        .child(breadcrumb(m, &t, cx))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .max_w(px(PAGE_MAX))
+                .bg(t.card)
+                .border_1()
+                .border_color(t.border)
+                .rounded_t(px(12.))
+                .overflow_hidden()
+                .child(body),
+        )
+        .into_any_element()
+}
+
+/// Tasks › G3 Sign-in with passkeys › Wave 2 › T15: where the task sits. Tasks and the goal open
+/// their pages.
+fn breadcrumb(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
+    let task = m.data.task.clone().unwrap_or(Value::Null);
+    let r = m.task_panel.r.clone();
+    let link = |id: &'static str, text: String, color: Hsla| {
+        let hover = t.text;
+        div().id(id).cursor_pointer().text_color(color).hover(move |s| s.text_color(hover)).child(text)
+    };
+    let sep = || div().text_color(t.faint).child("›");
+    let mut row = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(12.5))
+        .text_color(t.muted)
+        .child(link("crumb-tasks", "Tasks".into(), t.muted).on_click(cx.listener(|m, _, _, cx| m.go(Page::Tasks, cx))));
+    if let Some(g) = task.get("goal").filter(|g| g.is_object()) {
+        let gr = s(g, "ref").to_string();
+        let open = gr.clone();
+        row = row
+            .child(sep())
+            .child(link("crumb-goal", format!("{gr} {}", s(g, "name")), t.goal).font_weight(FontWeight::SEMIBOLD).on_click(cx.listener(move |m, _, _, cx| crate::ui::goal::open(m, &open, false, cx))));
+        if let Some(w) = task["wave"].as_i64() {
+            row = row.child(sep()).child(format!("Wave {w}"));
+        }
+    }
+    row.child(sep()).child(div().font_family(t.mono_font.clone()).child(r))
+}
+
+/// The task page's widest column.
+const PAGE_MAX: f32 = 900.;
+
+fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let Some(Panel::Task { r, tab }) = m.panel.clone() else {
-        return div().into_any_element();
+        return None;
     };
     if m.task_panel.r != r {
         m.task_panel = State { r: r.clone(), ..Default::default() };
@@ -575,39 +642,11 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     }
     let _ = tab;
     load_handoff(m, cx);
-    let Some(tree) = build(m) else { return div().into_any_element() };
+    let tree = build(m)?;
     sync_fields(m, &tree, window, cx);
     m.task_panel.focused = m.task_panel.fields.values().find(|i| i.focus.is_focused(window)).map(|i| i.focus.clone());
-    let mut d = Draw { t: &t, window, path: Vec::new(), within: Vec::new() };
-    let body = d.panel(m, &tree, cx);
-    // `.panel`: a 480px sheet on the right with a soft shadow; the board stays undimmed behind it
-    // (a click outside still closes it).
-    let shadow = if t.mode == ThemeMode::Dark { hsla(0., 0., 0., 0.45) } else { rgba(0x10182819).into() };
-    deferred(
-        kit::scrim(&t, "task-scrim")
-            .bg(transparent_black())
-            .on_mouse_down(MouseButton::Left, cx.listener(|m, _, _, cx| act(m, &Act::new("close-panel", "", "", ""), cx)))
-            .child(
-                div()
-                    .id("task-drawer")
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .bottom_0()
-                    .w(px(WIDTH))
-                    .max_w(relative(1.))
-                    .flex()
-                    .flex_col()
-                    .bg(t.card)
-                    .border_l_1()
-                    .border_color(t.border)
-                    .shadow(vec![BoxShadow { color: shadow, offset: point(px(-12.), px(0.)), blur_radius: px(32.), spread_radius: px(0.), inset: false }])
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(body),
-            ),
-    )
-    .with_priority(1)
-    .into_any_element()
+    let mut d = Draw { t, window, path: Vec::new(), within: Vec::new() };
+    Some(d.panel(m, &tree, cx))
 }
 
 /// `--accent-tint` (not in the shared theme).

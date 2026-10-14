@@ -29,6 +29,29 @@ impl Default for State {
 
 // ================================================================== view models
 
+/// Where a goal sits on the Goals page and in the sidebar, in that order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalGroup {
+    /// Work started: something done, running, waiting on you or in review.
+    Active,
+    /// Not started yet, or chained after a goal that isn't finished.
+    Next,
+    Paused,
+    Deprioritized,
+    Finished,
+}
+
+pub fn goal_group(g: &Value) -> GoalGroup {
+    match nav_kind(g) {
+        "done" => GoalGroup::Finished,
+        "deprio" => GoalGroup::Deprioritized,
+        _ if fmt::b(g, "paused") => GoalGroup::Paused,
+        _ if fmt::opt_s(g, "after_blocker").is_some() => GoalGroup::Next,
+        _ if i(g, "done") == 0 && i(g, "active") == 0 && i(g, "needs") == 0 && i(g, "queued") == 0 && fmt::opt_s(g, "stopped").is_none() && fmt::arr(g, "prs_open").is_empty() => GoalGroup::Next,
+        _ => GoalGroup::Active,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card {
     pub r: String,

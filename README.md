@@ -34,8 +34,8 @@ scripts/install-app.sh           # build, install to /Applications/Taskboard.app
                                  # (first launch registers the daemon as a login item and links ~/.local/bin/tb)
 ```
 
-Then click **Install hooks** at the bottom right of the window. It installs the `task-board` Claude Code plugin
-(hooks, skill, `tb` shim) from the copy inside the app. The status bar shows **● Hooks** when they're current, and an
+Then click **Install hooks** at the foot of the sidebar. It installs the `task-board` Claude Code plugin
+(hooks, skill, `tb` shim) from the copy inside the app. The sidebar shows **● Hooks** when they're current, and an
 amber **Reinstall hooks** when they're switched off, load from somewhere else (a repo checkout, an app that's gone), or
 are an older version than the app ships (Claude Code keeps running its cached copy until you reinstall after an app
 update); the tooltip says which.
@@ -78,7 +78,7 @@ the 5-hour usage runs out (Midna's own usage reading works too). See `plugin/REA
   `tb token <provider>` to comment, push and assign reviewers.
 - **Jira** (optional): REST API with your token. Tickets for tasks and backlog issues, epics for goals, and
   status moves as work starts, reaches review and merges.
-- **Days** (⌘4): any day's timeline (each project's tasks, commits, PRs, questions and how many terminals ran),
+- **Days** (⌘6): any day's timeline (each project's tasks, commits, PRs, questions and how many terminals ran),
   its week next to the week before, how long tasks took, how long they waited on you, and hours saved against the
   agents' own `tb done --human` estimates. Settings ▸ History sets how long it's kept: every event for 90 days, then
   a small summary per day for a year (cleaned up nightly).
