@@ -253,6 +253,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // work changes, `areas::infer_task`), which later inference may change. Null: never set.
     ("tasks", "area_source", "TEXT"),
     ("goals", "area_source", "TEXT"),
+    // The last check-in on the terminal's turn (`checkin.rs`): which turn it read (its `status_at`),
+    // when, Haiku's verdict and why, and the terminal's last lines.
+    ("sessions", "stuck_check", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

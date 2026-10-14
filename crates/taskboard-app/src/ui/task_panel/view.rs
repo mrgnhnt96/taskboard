@@ -216,6 +216,8 @@ pub enum Fold {
     Findings,
     /// The rest of a long note for testers, after its first block.
     Note,
+    /// A stuck-looking terminal's last lines, under its check-in.
+    Tail,
 }
 
 impl Fold {
@@ -228,6 +230,7 @@ impl Fold {
             Fold::Terms => "tb.fold.terms",
             Fold::Findings => "tb.fold.findings",
             Fold::Note => "tb.fold.note",
+            Fold::Tail => "tb.fold.tail",
         }
     }
 }
@@ -739,6 +742,17 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                 el(K::Row, row),
             ],
         ));
+    }
+
+    if let Some(why) = fmt::stuck(t).filter(|_| status == "working") {
+        let mut bx = vec![txt(format!("{who} may be stuck"), St::BoxLabel), txt(why, St::Plain)];
+        if let Some(tail) = opt_s(&t["stuck"], "tail").filter(|x| !x.is_empty()) {
+            bx.push(fold(Fold::Tail, c.fold_open(Fold::Tail, false), txt("Its terminal’s last lines", St::Small), vec![txt(tail, St::Code)]));
+        }
+        if session_live(t) {
+            bx.push(el(K::Row, vec![c.btn("Focus in Midna", Act::new("focus", "", &r, &act), Look::Plain, false, None)]));
+        }
+        out.push(el(K::Box(BoxTone::Ask), bx));
     }
 
     if let Some(label) = opt_s(&t["line"], "label") {
@@ -1886,7 +1900,7 @@ pub const LOG_FILTERS: [(&str, &str); 7] = [("all", "All"), ("status", "Status")
 /// `LOG_GROUP`.
 fn log_group(kind: &str) -> &'static str {
     match kind {
-        "status" | "midna" | "handoff" => "status",
+        "status" | "midna" | "handoff" | "checkin" => "status",
         "turn" | "commit" => "turn",
         "checkpoint" => "checkpoint",
         "question" | "answer" => "question",
@@ -1910,6 +1924,7 @@ fn log_label(kind: &str) -> String {
         "commit" => "Commit".into(),
         "midna" => "Midna".into(),
         "handoff" => "Handoff".into(),
+        "checkin" => "Check-in".into(),
         k => fmt::cap(k),
     }
 }
@@ -1918,7 +1933,7 @@ fn log_label(kind: &str) -> String {
 fn log_dot(kind: &str) -> Dot {
     match kind {
         "status" | "checkpoint" => Dot::Accent,
-        "question" | "answer" | "found" => Dot::Warn,
+        "question" | "answer" | "found" | "checkin" => Dot::Warn,
         "jira" => Dot::AccentFg,
         "commit" => Dot::Up,
         "handoff" => Dot::Goal,

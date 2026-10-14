@@ -62,7 +62,7 @@ fn tab_name(tab: TaskTab) -> &'static str {
 }
 
 fn folds() -> HashMap<String, String> {
-    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms, Fold::Findings, Fold::Note]
+    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms, Fold::Findings, Fold::Note, Fold::Tail]
         .iter()
         .filter_map(|f| crate::prefs::get_str(f.key()).map(|v| (f.key().to_string(), v)))
         .collect()
@@ -1051,7 +1051,7 @@ impl Draw<'_> {
                     .child(div().flex_1().min_w_0().children(summary))
             }
             // `.tl-more > summary`: 12.5px muted, the browser's disclosure triangle.
-            Fold::Terms | Fold::Findings => div()
+            Fold::Terms | Fold::Findings | Fold::Tail => div()
                 .id(self.id("fold"))
                 .flex()
                 .items_center()
@@ -1090,7 +1090,7 @@ impl Draw<'_> {
                 Fold::What => 2.,
                 Fold::Summary => 8.,
                 Fold::Terms => 10.,
-                Fold::Findings => 6.,
+                Fold::Findings | Fold::Tail => 6.,
                 Fold::Note => 10.,
             };
             for i in 1..kids.len() {

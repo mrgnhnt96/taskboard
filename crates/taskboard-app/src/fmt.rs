@@ -173,6 +173,16 @@ pub fn compacting(v: &Value) -> Option<String> {
     opt_s(v, "compacting").map(|at| format!("Compacting since {}", hhmm(at)))
 }
 
+/// "Since 3:05 PM: it keeps answering the same prompt" while a task's turn looks stuck to its check-in.
+pub fn stuck(v: &Value) -> Option<String> {
+    let st = v.get("stuck").filter(|s| s.is_object())?;
+    let why = opt_s(st, "why").filter(|w| !w.is_empty()).unwrap_or("Its terminal hasn’t moved on");
+    Some(match opt_s(st, "at") {
+        Some(at) => format!("Since {}: {why}", hhmm(at)),
+        None => why.to_string(),
+    })
+}
+
 pub fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -265,6 +275,14 @@ pub fn device_now() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stuck_says_why_and_since_when() {
+        assert_eq!(stuck(&json!({"stuck": null})), None);
+        assert_eq!(stuck(&json!({"stuck": {"why": "Waits on a y/n prompt"}})).as_deref(), Some("Waits on a y/n prompt"));
+        let at = stuck(&json!({"stuck": {"at": "2026-10-14T20:25:00Z", "why": ""}})).unwrap();
+        assert!(at.starts_with("Since ") && at.ends_with(": Its terminal hasn’t moved on"), "{at}");
+    }
 
     #[test]
     fn background_labels_name_what_is_running() {
