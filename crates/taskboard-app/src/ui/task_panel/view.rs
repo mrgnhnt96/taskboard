@@ -437,7 +437,7 @@ fn stage_tone(phase: &str) -> Tone {
     match phase {
         "checks" => Tone::Queued,
         "fix" => Tone::Failed,
-        "ask" | "review" | "rereview" => Tone::Review,
+        "lens" | "ask" | "review" | "rereview" => Tone::Review,
         "comments" => Tone::Needs,
         "merge" => Tone::Working,
         "merged" => Tone::Done,
@@ -1153,6 +1153,16 @@ fn wd_round(wd: &Value) -> PrStep {
     step(s(wd, "bar"), st, Some(&sub).filter(|x| !x.is_empty()).map(|x| x.as_str()), None)
 }
 
+/// The Lens step (`pr.bar.lens`): lens's review of a new PR, whose findings are on the PR itself.
+pub fn lens_step(l: &Value) -> PrStep {
+    match s(l, "state") {
+        "queued" => step("Lens", StepSt::Wait, Some("Queued"), None),
+        "running" => step("Lens", StepSt::Now, Some("Reviewing"), None),
+        "done" => step("Lens", StepSt::Done, Some("Posted"), None),
+        _ => step("Lens", StepSt::Fail, Some("Failed"), None),
+    }
+}
+
 /// The steps row's nodes: each step's name, and its state's words (a link when it has one).
 fn step_nodes(list: Vec<PrStep>) -> Node {
     let mut steps = Vec::new();
@@ -1185,6 +1195,9 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         "not_needed" => step("Checks", StepSt::Done, Some("Not needed"), None),
         _ => step(checks.0, checks.1, checks.2.as_deref(), if checks.1 == StepSt::Todo { None } else { build }),
     });
+    if let Some(l) = obj(bar, "lens") {
+        out.push(lens_step(l));
+    }
     out.push(match s(bar, "you") {
         "waiting" => step("You", StepSt::Ask, Some("Waiting on you"), None),
         "reviewed" => step("You", StepSt::Done, Some("Reviewed"), None),

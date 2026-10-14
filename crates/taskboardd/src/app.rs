@@ -92,6 +92,8 @@ pub struct App {
     hook_signal: Signal,
     ai_jobs: Mutex<VecDeque<Deferred>>,
     ai_signal: Signal,
+    lens_jobs: Mutex<VecDeque<Deferred>>,
+    lens_signal: Signal,
     pub inline_deferred: bool,
     /// This launch's app token (`apptoken`): what makes a request the app's own.
     pub app_token: String,
@@ -135,6 +137,8 @@ impl App {
             hook_signal: Signal::new(),
             ai_jobs: Mutex::new(VecDeque::new()),
             ai_signal: Signal::new(),
+            lens_jobs: Mutex::new(VecDeque::new()),
+            lens_signal: Signal::new(),
             inline_deferred: inline,
             app_token: crate::apptoken::fresh(),
             app_origin: once_cell::sync::OnceCell::new(),
@@ -168,6 +172,7 @@ impl App {
         self.deferred_signal.set();
         self.hook_signal.set();
         self.ai_signal.set();
+        self.lens_signal.set();
     }
 
     pub fn wake_runner(&self) {
@@ -238,6 +243,25 @@ impl App {
         }
         self.ai_signal.wait(timeout);
         self.ai_jobs.lock().pop_front()
+    }
+
+    /// Lens reviews of new PRs (`lens_pr.rs`) run one at a time on their own thread: each takes about 15
+    /// minutes, too long to wait behind or hold up the other headless calls.
+    pub fn queue_lens(&self, f: Deferred) {
+        if self.inline_deferred {
+            f(self);
+            return;
+        }
+        self.lens_jobs.lock().push_back(f);
+        self.lens_signal.set();
+    }
+
+    pub fn next_lens(&self, timeout: Duration) -> Option<Deferred> {
+        if let Some(f) = self.lens_jobs.lock().pop_front() {
+            return Some(f);
+        }
+        self.lens_signal.wait(timeout);
+        self.lens_jobs.lock().pop_front()
     }
 
     /// Owner hooks run one at a time on their own thread, in the order the board reached their steps.
