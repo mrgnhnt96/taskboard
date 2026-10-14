@@ -704,12 +704,41 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     let owner = &r.app.cfg.owner;
     let waiting = lines::summary(r.app, &sid)?;
     let switch = if waiting.is_empty() { String::new() } else { format!(" {waiting} If the work is one of those, run {tb} switch T<n> instead.") };
+    let backlog = open_backlog(r.app, s.s("project"))?;
+    let backlog = if backlog.is_empty() {
+        String::new()
+    } else {
+        format!(" Open backlog items in this project: {backlog}. If one of them is this work, take it instead: {tb} task new --issue B<n> --here.")
+    };
     Ok(Some(format!(
         "[task-board] This turn changed code ({shown}), but this terminal has no task, so the board isn't tracking the work. \
          Put it on the board now as a standalone task on this terminal: {tb} task new \"<short imperative title>\" \
-         --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR).{switch} Then end your turn without repeating your answer. \
+         --detail \"<what {owner} asked for and what you changed>\" --here (add --no-pr if it won't end in a PR).{backlog}{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn."
     )))
+}
+
+const BACKLOG_SHOWN: usize = 5;
+
+/// The project's open backlog items, newest first, as "B12 title; B9 title (and 3 more)"; a goal's items
+/// count as its project's.
+fn open_backlog(app: &App, project: Option<&str>) -> Result<String> {
+    let Some(project) = project.filter(|p| !p.is_empty()) else { return Ok(String::new()) };
+    let items = app.db.q(
+        "SELECT i.id, i.title FROM issues i LEFT JOIN goals g ON g.id = i.goal_id \
+         WHERE i.state = 'open' AND COALESCE(g.project, i.project) = ? ORDER BY i.created_at DESC, i.id DESC",
+        p![project],
+    )?;
+    let mut shown = items
+        .iter()
+        .take(BACKLOG_SHOWN)
+        .map(|b| format!("{} {}", rf("issue", b.id()), one_line(b.st("title").trim().trim_end_matches('.'), 80)))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if items.len() > BACKLOG_SHOWN {
+        shown += &format!(" (and {} more)", items.len() - BACKLOG_SHOWN);
+    }
+    Ok(shown)
 }
 
 fn carry_on_text(app: &App, task: &str) -> String {
