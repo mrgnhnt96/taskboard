@@ -854,6 +854,9 @@ enum GoalCmd {
         project: Option<String>,
         #[arg(long)]
         product: Option<String>,
+        /// A goal it runs after (on the owner's word): its tasks wait until that goal is finished, then it runs on its own. Repeat for more
+        #[arg(long = "after", value_name = "G<n>")]
+        after: Vec<String>,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
         #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
@@ -895,6 +898,9 @@ enum GoalCmd {
         /// Devices each of its tasks asks for (unless the task asks for its own): android, android:2. Repeat for more, none for none
         #[arg(long = "device", value_name = "TAG[:N]|none")]
         devices: Vec<String>,
+        /// A goal it runs after (on the owner's word): its tasks wait until that goal is finished (every task done, every PR merged or closed), then the board runs it. Repeat for more, none for none
+        #[arg(long = "after", value_name = "G<n>|none")]
+        after: Vec<String>,
     },
     #[command(about = setup_about())]
     Setup { goal: String, text: String },
@@ -2472,6 +2478,11 @@ fn goal_lines(g: &Value) -> Vec<String> {
     if g["paused"] == true {
         lines.push("Paused: nothing new starts.".into());
     }
+    let after: Vec<&str> = g["after"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
+    if !after.is_empty() {
+        let wait = if g["after_blocker"].is_string() { ": its tasks wait until that's finished" } else { "" };
+        lines.push(format!("Runs after {}{wait}.", after.join(", ")));
+    }
     if let Some(s) = g["setup"].as_str().filter(|s| !s.is_empty()) {
         lines.push(format!("Set up: {s}"));
     }
@@ -3560,9 +3571,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Goal { action } => match action {
-            GoalCmd::New { name, outcome, tldr, project, product, tasks } => {
+            GoalCmd::New { name, outcome, tldr, project, product, after, tasks } => {
                 short_task_titles(&tasks)?;
-                match c.report("tb.goal", json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "tasks": tasks}), None, TB_TIMEOUT)? {
+                let after = if after.is_empty() { Value::Null } else { json!(after) };
+                match c.report("tb.goal", json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks}), None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
                         let created = v["created"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -3588,7 +3600,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize, devices } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize, devices, after } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -3620,6 +3632,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if !devices.is_empty() {
                     b["devices"] = json!(lock_arg(&devices));
+                }
+                if !after.is_empty() {
+                    b["after"] = json!(after);
                 }
                 if deprioritize || prioritize {
                     b["deprioritized"] = json!(deprioritize);

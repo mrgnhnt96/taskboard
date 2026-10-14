@@ -2140,7 +2140,8 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     let project = project_for(r, &r.b("project"))?;
     let g = ops::new_goal(
         r.app,
-        &json!({"name": r.body.get("name"), "outcome": r.b("outcome"), "tldr": r.b("tldr"), "project": project, "product": r.body.get("product")}),
+        &json!({"name": r.body.get("name"), "outcome": r.b("outcome"), "tldr": r.b("tldr"), "project": project, "product": r.body.get("product"),
+                "after": r.body.get("after")}),
     )?;
     let gid = g["id"].as_i64().unwrap_or(0);
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));

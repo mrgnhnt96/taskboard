@@ -1725,6 +1725,9 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         if hk("worktree_base") {
             f.push(("worktree_base", json!(crate::worktrees::clean_base(body.get("worktree_base"))?)));
         }
+        if hk("after") {
+            f.push(("after_goals", json!(crate::chain::clean(app, &body["after"], Some(&g))?)));
+        }
         if hk("setup") {
             f.push(("setup", ops::clean_setup(body)));
         }
@@ -2080,17 +2083,7 @@ fn run_goal(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
         if until.is_some() || (!now && has(g.s("hours_until"))) {
             app.db.update("goals", &json!(id), fields!["hours_until" => until])?;
         }
-        let mut n = 0;
-        for t in board::goal_tasks(app, id)? {
-            if t.s("status") == Some("planned") {
-                board::update_task(app, t.id(), fields!["status" => "queued"])?;
-                board::log_event(app, t.id(), &who, "status", "Queued with the rest of the goal")?;
-                n += 1;
-            } else if t.s("status") == Some("needs") && t.s("needs_reason") == Some("start_failed") {
-                board::update_task(app, t.id(), fields!["status" => "queued", "needs_reason" => null, "start_job" => null, "start_tries" => 0, "retry_at" => null])?;
-                board::log_event(app, t.id(), &who, "status", "Queued again with the rest of the goal")?;
-            }
-        }
+        let n = crate::chain::queue_planned(app, id, &who, "Queued with the rest of the goal", "Queued again with the rest of the goal")?;
         if g.b("paused") || g.b("deprioritized") {
             board::update_goal(app, id, fields!["paused" => 0, "deprioritized" => 0, "updated_at" => now_iso()])?;
         }

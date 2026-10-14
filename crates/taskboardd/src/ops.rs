@@ -240,6 +240,9 @@ pub fn new_goal(app: &App, body: &Value) -> Result<Value> {
                 "setup" => clean_setup(body),
                 "created_at" => now, "updated_at" => now, "archived" => 0],
     )?;
+    if body_has(body, "after") {
+        app.db.update("goals", &json!(gid), fields!["after_goals" => crate::chain::clean(app, &body["after"], None)?])?;
+    }
     let g = board::get_goal(app, gid)?;
     hooks::fire_goal(app, "goal.created", &g, None);
     if emode == "create" {
