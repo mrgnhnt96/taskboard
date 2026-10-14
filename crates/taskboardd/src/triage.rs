@@ -198,6 +198,20 @@ fn group_now(app: &App) -> std::result::Result<(), String> {
          Answer for every NEW issue by its number (B12 → 12).",
         owner = app.cfg.owner
     )];
+    // Projects that list their areas in `.taskboard.toml` (`areas.rs`): their issues' area is one of those.
+    let mut areas: HashMap<String, crate::areas::Areas> = HashMap::new();
+    for b in &new {
+        let p = b.st("project");
+        if !areas.contains_key(&p) {
+            let a = crate::areas::of_project(app, &p).unwrap_or_default();
+            areas.insert(p, a);
+        }
+    }
+    for (p, a) in &areas {
+        if !a.list.is_empty() {
+            parts.push(format!("{p}'s areas are {}. For its issues, area is one of these exactly, or \"\" when none fits.", a.names().join(", ")));
+        }
+    }
     parts.push(format!("NEW issues:\n{}", new.iter().map(|b| issue_block(b, false)).collect::<Vec<_>>().join("\n")));
     if !done.is_empty() {
         parts.push(format!("Already sorted (for context; don't answer for these):\n{}", done.iter().map(|b| issue_block(b, true)).collect::<Vec<_>>().join("\n")));
@@ -220,7 +234,19 @@ fn group_now(app: &App) -> std::result::Result<(), String> {
                 }
                 let Some(a) = answers.get(&b.id()) else { continue };
                 let s = |k: &str, n: usize| one_line(a[k].as_str().unwrap_or(""), n);
-                let mut f = fields!["area" => s("area", 40), "grp" => s("group", 60), "grp_about" => s("group_about", 160), "grouped_at" => now];
+                let mut f = fields!["grp" => s("group", 60), "grp_about" => s("group_about", 160), "grouped_at" => now];
+                // An area set already (`tb backlog add --area`) stays; one of the project's areas only, when it lists them.
+                if cur.s("area").filter(|a| !a.is_empty()).is_none() {
+                    let want = s("area", 40);
+                    match areas.get(&cur.st("project")).filter(|a| !a.list.is_empty()) {
+                        Some(a) => {
+                            if let Some(x) = a.find(&want) {
+                                f.push(("area", json!(x.name)));
+                            }
+                        }
+                        None => f.push(("area", json!(want))),
+                    }
+                }
                 if let Some(i) = pick(a["impact"].as_str(), IMPACTS) {
                     f.push(("impact", json!(i)));
                 }

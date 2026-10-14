@@ -931,6 +931,9 @@ enum GoalCmd {
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
         #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
         tasks: Vec<String>,
+        /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
+        #[arg(long, value_name = "NAME")]
+        area: Option<String>,
     },
     /// The goal, its tasks and why each queued one waits
     Show { goal: String },
@@ -965,6 +968,9 @@ enum GoalCmd {
         /// Back to normal priority
         #[arg(long)]
         prioritize: bool,
+        /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
+        #[arg(long, value_name = "NAME|none")]
+        area: Option<String>,
         /// Devices each of its tasks asks for (unless the task asks for its own): android, android:2. Repeat for more, none for none
         #[arg(long = "device", value_name = "TAG[:N]|none")]
         devices: Vec<String>,
@@ -1095,6 +1101,9 @@ enum TaskCmd {
         /// It ends without a PR
         #[arg(long = "no-pr")]
         no_pr: bool,
+        /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
+        #[arg(long, value_name = "NAME")]
+        area: Option<String>,
     },
     /// Change a task
     Set {
@@ -1159,6 +1168,9 @@ enum TaskCmd {
         /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`); none clears it
         #[arg(long = "merged-note", value_name = "MARKDOWN|none")]
         merged_note: Option<String>,
+        /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
+        #[arg(long, value_name = "NAME|none")]
+        area: Option<String>,
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
@@ -1177,14 +1189,20 @@ enum BacklogCmd {
         goal: Option<String>,
         #[arg(long)]
         project: Option<String>,
+        /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
+        #[arg(long, value_name = "NAME")]
+        area: Option<String>,
     },
-    /// Change a backlog issue's title or detail
+    /// Change a backlog issue's title, detail or area
     Set {
         issue: String,
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
         detail: Option<String>,
+        /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
+        #[arg(long, value_name = "NAME|none")]
+        area: Option<String>,
     },
     /// Move backlog issues to another goal (G2), or out of their goal (none), all or none:
     /// tb backlog move B4 B5 G2
@@ -2632,12 +2650,18 @@ fn pr_reviewers_line(t: &str, v: &Value) -> String {
     format!("{s} on {t}'s PR. The board watches it and brings this conversation back when it needs you. You can stop here.")
 }
 
+/// " · area Quill" for a row with an area, or nothing.
+fn area_bit(v: &Value) -> String {
+    v["area"].as_str().filter(|a| !a.is_empty()).map(|a| format!(" · area {a}")).unwrap_or_default()
+}
+
 fn goal_lines(g: &Value) -> Vec<String> {
     let mut lines = vec![format!(
-        "{} · {} · {} · {}/{} done",
+        "{} · {} · {}{} · {}/{} done",
         g["ref"].as_str().unwrap_or(""),
         g["name"].as_str().unwrap_or(""),
         g["project"].as_str().unwrap_or(""),
+        area_bit(g),
         g["done"],
         g["total"]
     )];
@@ -2683,6 +2707,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
             let mut line = format!("  {}. {} [{status}] {}", i + 1, t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or(""));
             if let Some(w) = t["wave"].as_i64() {
                 line += &format!(" · wave {w}");
+            }
+            if t["area"] != g["area"] {
+                line += &area_bit(t);
             }
             if let Some(also) = t["also"].as_array().filter(|a| !a.is_empty()) {
                 line += &format!(" · also for {}", also.iter().filter_map(|x| x["ref"].as_str()).collect::<Vec<_>>().join(", "));
@@ -3586,7 +3613,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Status { t } => {
             if let Some(x) = t.task {
                 let v = c.call("GET", &format!("/tasks/{}", task_ref(&x)?), None)?;
-                out(&format!("{} · {} · {}", v["ref"].as_str().unwrap_or(""), v["title"].as_str().unwrap_or(""), v["status"].as_str().unwrap_or("")));
+                out(&format!("{} · {} · {}{}", v["ref"].as_str().unwrap_or(""), v["title"].as_str().unwrap_or(""), v["status"].as_str().unwrap_or(""), area_bit(&v)));
                 if let Some(l) = v["stack_on"]["line"].as_str() {
                     out(l);
                 }
@@ -3730,10 +3757,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             for g in goals {
                 out(&format!(
-                    "{} · {} · {} · {}/{} done{}",
+                    "{} · {} · {}{} · {}/{} done{}",
                     g["ref"].as_str().unwrap_or(""),
                     g["name"].as_str().unwrap_or(""),
                     g["project"].as_str().unwrap_or(""),
+                    area_bit(&g),
                     g["done"],
                     g["total"],
                     if g["paused"] == true { " · paused" } else { "" }
@@ -3742,10 +3770,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Goal { action } => match action {
-            GoalCmd::New { name, outcome, tldr, project, product, after, tasks } => {
+            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area } => {
                 short_task_titles(&tasks)?;
                 let after = if after.is_empty() { Value::Null } else { json!(after) };
-                match c.report("tb.goal", json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks}), None, TB_TIMEOUT)? {
+                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area});
+                match c.report("tb.goal", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
                         let created = v["created"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -3771,7 +3800,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize, devices, after } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize, area, devices, after } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -3800,6 +3829,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = worktrees {
                     b["worktree_base"] = json!(x);
+                }
+                if let Some(x) = area {
+                    b["area"] = json!(x);
                 }
                 if !devices.is_empty() {
                     b["devices"] = json!(lock_arg(&devices));
@@ -3994,7 +4026,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr } => {
+            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -4010,7 +4042,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
                 let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
                 let title = short_title(&title)?;
-                let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned});
+                let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned, "area": area});
                 if !also.is_empty() {
                     body["also"] = json!(also);
                 }
@@ -4077,7 +4109,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -4143,6 +4175,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = merged_note {
                     b["merged_note"] = if x.eq_ignore_ascii_case("none") { json!("") } else { json!(x) };
                 }
+                if let Some(x) = area {
+                    b["area"] = json!(x);
+                }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
                 }
@@ -4168,13 +4203,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(0)
             }
         },
-        Cmd::Backlog { action: BacklogCmd::Add { title, kind, detail, goal, project } } => {
+        Cmd::Backlog { action: BacklogCmd::Add { title, kind, detail, goal, project, area } } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let name = c.who();
             let v = c.call(
                 "POST",
                 "/backlog",
-                Some(json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "goal_id": goal, "project": project, "cwd": c.cwd, "where": "tb", "who": name})),
+                Some(json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "goal_id": goal, "project": project, "area": area, "cwd": c.cwd, "where": "tb", "who": name})),
             )?;
             out(&format!("Added {} to the backlog.", v["ref"].as_str().unwrap_or("")));
             Ok(0)
@@ -4185,7 +4220,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&format!("Added a note to {r}."));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Set { issue, title, detail } } => {
+        Cmd::Backlog { action: BacklogCmd::Set { issue, title, detail, area } } => {
             let r = issue_ref(&issue)?;
             let mut b = json!({"who": c.who()});
             if let Some(x) = title {
@@ -4193,6 +4228,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             if let Some(x) = detail {
                 b["detail"] = json!(x);
+            }
+            if let Some(x) = area {
+                b["area"] = json!(x);
             }
             if b.as_object().map_or(0, |o| o.len()) < 2 {
                 return Err("say what to change, for example: tb backlog set B3 --title \"Login button flickers\"".into());
@@ -4657,6 +4695,13 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             for p in shown {
                 out(&project_line(p));
+                for a in p["areas"].as_array().into_iter().flatten() {
+                    let paths: Vec<&str> = a["paths"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+                    out(&format!("  Area {}: {}", a["name"].as_str().unwrap_or(""), paths.join(", ")));
+                }
+                for x in p["area_problems"].as_array().into_iter().flatten().filter_map(|x| x.as_str()) {
+                    out(&format!("  .taskboard.toml: {x}"));
+                }
             }
             Ok(0)
         }
@@ -5228,6 +5273,29 @@ mod tests {
             ["1:30 PM · T8 · Term", "  > make it", "  > and start it", "Oct 11, 9:05 AM · G2 · s2", "  (no prompt typed in this conversation)"]
         );
         assert_eq!(misses_lines(&json!([]), &now), ["No start has been refused."]);
+    }
+
+    #[test]
+    fn area_flags_parse_and_show() {
+        let area = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
+            Cmd::Task { action: TaskCmd::New { area, .. } | TaskCmd::Set { area, .. } } => area,
+            Cmd::Goal { action: GoalCmd::New { area, .. } | GoalCmd::Set { area, .. } } => area,
+            Cmd::Backlog { action: BacklogCmd::Add { area, .. } | BacklogCmd::Set { area, .. } } => area,
+            _ => panic!("{args:?}"),
+        };
+        assert_eq!(area(&["tb", "task", "new", "Pen", "--area", "quill"]).as_deref(), Some("quill"));
+        assert_eq!(area(&["tb", "task", "set", "T3", "--area", "none"]).as_deref(), Some("none"));
+        assert_eq!(area(&["tb", "goal", "new", "Brushes", "--area", "Art"]).as_deref(), Some("Art"));
+        assert_eq!(area(&["tb", "goal", "set", "G2", "--area", "Art"]).as_deref(), Some("Art"));
+        assert_eq!(area(&["tb", "backlog", "add", "Lag", "--area", "Quill"]).as_deref(), Some("Quill"));
+        assert_eq!(area(&["tb", "backlog", "set", "B4", "--area", "none"]).as_deref(), Some("none"));
+        assert_eq!(area(&["tb", "task", "new", "Pen"]), None);
+        let g = json!({"ref": "G2", "name": "Brushes", "project": "rune", "area": "Art", "done": 0, "total": 2,
+                       "tasks": [{"ref": "T3", "title": "Pen", "status": "planned", "area": "Quill"}, {"ref": "T4", "title": "Ink", "status": "planned", "area": "Art"}]});
+        let lines = goal_lines(&g);
+        assert_eq!(lines[0], "G2 · Brushes · rune · area Art · 0/2 done");
+        assert!(lines.iter().any(|l| l.contains("T3 [planned] Pen · area Quill")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.ends_with("T4 [planned] Ink")), "the goal's own area isn't repeated: {lines:?}");
     }
 
     #[test]

@@ -415,6 +415,14 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("max_terminals_set".into(), json!(max_terminals_set(app, name)?));
     o.insert("waits_on".into(), json!(waits_on(app, name)));
     o.insert("setup_gaps".into(), crate::setup::gaps_json(app, name)?);
+    // Its areas from `.taskboard.toml` (`areas.rs`), and what in that file was left out.
+    let areas = match p["path"].as_str().filter(|p| !p.is_empty()) {
+        Some(path) => crate::areas::of_repo(std::path::Path::new(path)),
+        None => crate::areas::Areas::default(),
+    };
+    let aj = areas.to_json();
+    o.insert("areas".into(), aj["areas"].clone());
+    o.insert("area_problems".into(), aj["problems"].clone());
     let r = pr_rules(app, Some(name));
     let approvals = r.approvals.unwrap_or(app.cfg.pr.approvals);
     o.insert(

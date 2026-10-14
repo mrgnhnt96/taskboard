@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod adf;
+pub mod areas;
 pub mod api;
 pub mod app;
 pub mod apporigin;

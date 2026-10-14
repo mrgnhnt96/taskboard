@@ -2099,7 +2099,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
-                    "devices": item.get("devices"), "bits": item.get("bits"),
+                    "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"),
                     "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
@@ -2141,7 +2141,7 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     let g = ops::new_goal(
         r.app,
         &json!({"name": r.body.get("name"), "outcome": r.b("outcome"), "tldr": r.b("tldr"), "project": project, "product": r.body.get("product"),
-                "after": r.body.get("after")}),
+                "after": r.body.get("after"), "area": r.body.get("area")}),
     )?;
     let gid = g["id"].as_i64().unwrap_or(0);
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
@@ -2171,7 +2171,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-                           "devices": r.body.get("devices"), "bits": r.body.get("bits")}]);
+                           "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area")}]);
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
         note_made(r, &created)?;
@@ -2189,7 +2189,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-                "devices": r.body.get("devices"), "bits": r.body.get("bits"),
+                "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
                 "origin": {"from": "Added by an agent", "by": r.name()}}),
         &r.name(),
         Some(&format!("Added by {}; waits for you to press Start", r.name())),
@@ -2244,6 +2244,7 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
         &json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
+                "area": r.body.get("area"),
                 "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}}),
         &name,
         Some(&format!("Added by {name} for the code it changed with {owner}")),

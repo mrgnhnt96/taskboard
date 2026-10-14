@@ -845,6 +845,13 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
             f.push(("priority", json!(pr)));
         }
+        if has_key("area") {
+            let a = crate::areas::clean(app, &t.st("project"), &body["area"])?;
+            if a != t.v("area") {
+                f.push(("area", a));
+                bump = true;
+            }
+        }
         let mut new_goal_id: Option<Option<i64>> = None;
         if has_key("goal_id") {
             let mut g = opt_goal(body, "goal_id")?;
@@ -1732,6 +1739,16 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         if hk("setup") {
             f.push(("setup", ops::clean_setup(body)));
         }
+        if hk("area") || body_has(body, "project") {
+            // A goal moved to another project keeps its area only when that project has one by the same name.
+            let project = if body_has(body, "project") { body_str(body, "project") } else { g.st("project") };
+            let a = if hk("area") {
+                crate::areas::clean(app, &project, &body["area"])?
+            } else {
+                crate::areas::clean(app, &project, &g.v("area")).unwrap_or(Value::Null)
+            };
+            f.push(("area", a));
+        }
         let ctx_change = f.iter().any(|(k, _)| matches!(*k, "name" | "outcome" | "tldr" | "setup"));
         if !f.is_empty() {
             f.push(("updated_at", json!(now_iso())));
@@ -2243,10 +2260,11 @@ fn post_issue(app: &App, body: &Value) -> Result<Value> {
             _ => format!("Added from {page}."),
         };
         let detail = body_str(body, "detail");
+        let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
         let now = now_iso();
         let id = app.db.insert(
             "issues",
-            fields!["goal_id" => goal_id, "project" => project, "kind" => kind, "title" => title,
+            fields!["goal_id" => goal_id, "project" => project, "area" => area, "kind" => kind, "title" => title,
                     "detail" => if detail.is_empty() { None } else { Some(detail) },
                     "said" => if said.is_empty() { None } else { Some(format!("“{said}”")) }, "how" => how, "source" => source,
                     "found_by_name" => who, "state" => "open",
@@ -2286,9 +2304,11 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     need_open(&b)?;
     let planned = where_ == "goal" && b.i("goal_id").is_some();
     let detail = format!("{}\nSee how it was found before changing anything.", b.s("detail").filter(|d| !d.is_empty()).unwrap_or(&b.st("title")));
+    // The task keeps the issue's area when it's one of the project's (triage may have written a loose one).
+    let area = crate::areas::clean(app, &b.st("project"), &b.v("area")).unwrap_or(Value::Null);
     let c = new_task(
         app,
-        &json!({"title": b.v("title"), "detail": detail, "project": b.v("project"), "goal_id": b.v("goal_id"),
+        &json!({"title": b.v("title"), "detail": detail, "project": b.v("project"), "area": area, "goal_id": b.v("goal_id"),
                 "status": if planned { "planned" } else { "queued" }, "from_issue_id": id,
                 "priority": body.get("priority").cloned().unwrap_or(json!("normal")),
                 "pickup": body.get("pickup").cloned().unwrap_or(json!({"mode": "queue"})),
@@ -2364,6 +2384,16 @@ fn patch_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
             f.push(("detail", json!(if detail.is_empty() { None } else { Some(detail) })));
         }
     }
+    if body.get("area").is_some() {
+        let area = crate::areas::clean(app, &b.st("project"), &body["area"])?;
+        if area != b.v("area") {
+            said.push(match area.as_str() {
+                Some(a) => format!("Put in the area {a}"),
+                None => "Cleared the area".to_string(),
+            });
+            f.push(("area", area));
+        }
+    }
     if f.is_empty() {
         return issue_detail(app, id);
     }
@@ -2387,6 +2417,10 @@ fn move_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mut f = fields!["goal_id" => g, "updated_at" => now_iso()];
     if let Some(p) = new.as_ref().and_then(|n| n.s("project")).filter(|p| !p.is_empty()) {
         f.push(("project", json!(p)));
+        if p != b.st("project") {
+            // Its area moves along only when the new project has one by the same name.
+            f.push(("area", crate::areas::clean(app, p, &b.v("area")).unwrap_or(Value::Null)));
+        }
     }
     app.db.update("issues", &json!(id), f)?;
     let name = |x: &Option<Row>| x.as_ref().map(|g| g.st("name")).unwrap_or_else(|| "no goal".into());

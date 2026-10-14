@@ -250,7 +250,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         pr["bar"] = crate::prbar::bar(app, t)?;
     }
     let mut card = json!({
-        "id": t.id(), "ref": rf("task", t.id()), "title": t.v("title"), "project": t.v("project"),
+        "id": t.id(), "ref": rf("task", t.id()), "title": t.v("title"), "project": t.v("project"), "area": t.v("area"),
         "status": status, "priority": t.s("priority").unwrap_or("normal"),
         "failed": t.b("failed"), "lost": t.b("lost"), "needs_reason": t.v("needs_reason"),
         "question": t.v("question"), "latest": t.v("latest"), "summary": t.v("summary"),
@@ -664,7 +664,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
     let mut d = json!({
         "id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "outcome": g.v("outcome"),
         "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"),
-        "project": g.v("project"), "repo_path": g.v("repo_path"),
+        "project": g.v("project"), "area": g.v("area"), "repo_path": g.v("repo_path"),
         "epic_key": g.v("epic_key"), "epic_status": g.v("epic_status"),
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
@@ -895,7 +895,7 @@ pub fn issue_card(app: &App, b: &Row) -> Result<Value> {
     let g = find_goal(app, b.i("goal_id"))?;
     Ok(json!({
         "id": b.id(), "ref": rf("issue", b.id()), "kind": b.v("kind"), "kind_label": kind_label(&b.st("kind")),
-        "title": b.v("title"), "goal": goal_ref(g.as_ref()), "goal_id": b.v("goal_id"), "project": b.v("project"),
+        "title": b.v("title"), "goal": goal_ref(g.as_ref()), "goal_id": b.v("goal_id"), "project": b.v("project"), "area": b.v("area"),
         "found_by_task": b.v("found_by_task"),
         "found_by_name": b.v("found_by_name"), "source": b.v("source"),
         "created_at": b.v("created_at"), "updated_at": b.v("updated_at"), "state": b.v("state"),
