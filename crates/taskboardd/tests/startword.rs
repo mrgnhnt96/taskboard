@@ -618,6 +618,13 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["plan", "agent:Updated the plan. Want me to run it?", "say:yes"],
         // #158: a goal the owner names runs wherever it was made.
         vec!["say:run G"],
+        // Several tasks talked over, then a bare start: the agent puts them in a goal and runs it.
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:go ahead and start", "goal new"],
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:ok, go ahead and start", "goal new"],
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:sounds good, let's start", "goal new"],
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:start", "goal new"],
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:go ahead and get started", "goal new"],
+        vec!["say:make a goal for dark mode", "goal new", "say:go ahead and start"],
     ];
     let refused: Vec<Vec<&str>> = vec![
         // #157, as #158 left it: a goal that isn't the conversation's runs from its terminal only by name.
@@ -638,6 +645,9 @@ fn the_goal_runs_on_the_owners_word_in_the_conversation_that_made_it() {
         vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G, or tweak the plan first?", "say:yes"],
         vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G tomorrow?", "say:yes"],
         vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G?", "say:no"],
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:go ahead and start tomorrow", "goal new"],
+        vec!["agent:Three fixes: the footer, the header and the toggle.", "say:don't start yet", "goal new"],
+        vec!["say:make a goal for dark mode", "goal new", "agent:Made G. Want me to write the PR description?", "say:go ahead and start"],
         vec!["say:make a goal for dark mode", "goal new", "agent:Want me to run G?", "say:thanks", "say:yes"],
         vec!["say:make a goal for dark mode", "goal new", "agent:Should I open a PR?", "say:yes"],
         vec!["say:make a goal for dark mode", "goal new", "agent:I added T1 to G. Want me to start it?", "say:yes"],
