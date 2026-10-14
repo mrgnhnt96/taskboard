@@ -98,6 +98,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     if project.is_empty() {
         return err(400, "Pick a project.");
     }
+    refuse_backlog_match(app, body, &title, &project, goal_id)?;
     let priority = if body["priority"] == "high" { "high" } else { "normal" };
     let (mode, sid) = pickup(app, body)?;
     let status = if body["status"] == "planned" { "planned" } else { "queued" };
@@ -201,6 +202,70 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         card["warnings"] = json!([w]);
     }
     Ok(card)
+}
+
+/// Words that carry no meaning in a title, left out when comparing two.
+const TITLE_FILLER: &[&str] = &[
+    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "with", "when", "that", "this", "is", "it", "its", "be", "from", "by", "at", "as",
+    "so", "into", "are", "was", "we", "our",
+];
+
+/// A title's meaningful words, each cut to a rough stem so "matches", "matching" and "match" agree.
+fn title_words(title: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for w in norm_title(title).split_whitespace().filter(|w| !TITLE_FILLER.contains(w)) {
+        let mut w = w.to_string();
+        if let Some(suf) = ["ing", "ed", "es", "s"].iter().find(|s| w.ends_with(*s) && w.len() >= s.len() + 3) {
+            w.truncate(w.len() - suf.len());
+        }
+        if w.len() > 3 && w.ends_with('e') {
+            w.pop();
+        }
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    out
+}
+
+/// Whether two titles name the same work: the same words, or reworded with at least three meaningful
+/// words in common and few that differ. Kept strict: a wrong match refuses real work.
+pub fn titles_match(a: &str, b: &str) -> bool {
+    let (na, nb) = (norm_title(a), norm_title(b));
+    if !na.is_empty() && na == nb {
+        return true;
+    }
+    let (wa, wb) = (title_words(a), title_words(b));
+    let shared = wa.iter().filter(|w| wb.contains(w)).count();
+    shared >= 3 && (shared * 2) as f64 / (wa.len() + wb.len()) as f64 >= 0.75
+}
+
+/// A new task that isn't made from a backlog item, when an open item in its goal (or its project, outside
+/// any goal) names the same work, is refused with the items and the command that takes one. `not_backlog`
+/// says it's different work; tasks made from an item (`from_issue_id`) aren't checked.
+fn refuse_backlog_match(app: &App, body: &Value, title: &str, project: &str, goal_id: Option<i64>) -> Result<()> {
+    if body.get("from_issue_id").is_some_and(|v| !v.is_null()) || as_bool(body.get("not_backlog"), false) {
+        return Ok(());
+    }
+    let open = app.db.q(
+        "SELECT * FROM issues WHERE state = 'open' AND ((goal_id IS NULL AND project IS ?) OR (goal_id IS NOT NULL AND goal_id IS ?)) ORDER BY id",
+        p![project, goal_id],
+    )?;
+    let hits: Vec<_> = open.iter().filter(|b| titles_match(title, &b.st("title"))).collect();
+    let Some(first) = hits.first() else { return Ok(()) };
+    let tb = board::tb_cmd(app);
+    let list = hits.iter().map(|b| format!("{} “{}”", rf("issue", b.id()), b.st("title"))).collect::<Vec<_>>().join("; ");
+    let take = match goal_id {
+        Some(g) => format!("{tb} task new --issue {} --goal {}", rf("issue", first.id()), rf("goal", g)),
+        None => format!("{tb} task new --issue {} (add --here to take it on this terminal)", rf("issue", first.id())),
+    };
+    err(
+        409,
+        format!(
+            "“{title}” looks like work already in the backlog: {list}. Take the item instead, so it becomes the task: {take}. \
+             If this is different work, add --not-backlog."
+        ),
+    )
 }
 
 pub fn new_goal(app: &App, body: &Value) -> Result<Value> {

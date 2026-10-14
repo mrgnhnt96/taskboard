@@ -1226,7 +1226,7 @@ fn fix_task(app: &App, b: &Row) -> Value {
     json!({"title": short(&title, 80), "detail": detail.join("\n\n"),
            "project": b.st("project"), "priority": "high", "pickup": if app.cfg.master.start_fix { "new" } else { "queue" },
            "jira": {"mode": if app.cfg.master.fix_ticket { "create" } else { "none" }},
-           "origin": {"from": format!("{} ({} is red)", bref(b.id()), b.st("branch")), "by": board::BOARD}})
+           "origin": {"from": format!("{} ({} is red)", bref(b.id()), b.st("branch")), "by": board::BOARD}, "not_backlog": true})
 }
 
 /// An `ours` break whose fix task finished while the branch is still red. A fix in flight covers it

@@ -177,6 +177,9 @@ enum Cmd {
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
         #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
         tasks: Vec<String>,
+        /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
+        #[arg(long = "not-backlog")]
+        not_backlog: bool,
     },
     /// Named locks, who holds each, and tasks that run alone
     Locks,
@@ -982,6 +985,9 @@ enum GoalCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
+        /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
+        #[arg(long = "not-backlog")]
+        not_backlog: bool,
     },
     /// The goal, its tasks and why each queued one waits
     Show { goal: String },
@@ -1157,6 +1163,9 @@ enum TaskCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
+        /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
+        #[arg(long = "not-backlog", conflicts_with = "issue")]
+        not_backlog: bool,
     },
     /// Change a task
     Set {
@@ -3901,11 +3910,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
             })
         }
-        Cmd::Propose { goal, tasks } => {
+        Cmd::Propose { goal, tasks, not_backlog } => {
             let g = goal_ref(&goal)?;
             propose_tasks(&tasks)?;
             short_task_titles(&tasks)?;
-            match c.report("tb.propose", json!({"goal": g, "tasks": tasks}), None, TB_TIMEOUT)? {
+            match c.report("tb.propose", json!({"goal": g, "tasks": tasks, "not_backlog": not_backlog}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
                 Some(v) => {
                     out(&format!("Added {} to {g} as planned.", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()));
@@ -4026,10 +4035,10 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Goal { action } => match action {
-            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area } => {
+            GoalCmd::New { name, outcome, tldr, project, product, after, tasks, area, not_backlog } => {
                 short_task_titles(&tasks)?;
                 let after = if after.is_empty() { Value::Null } else { json!(after) };
-                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area});
+                let body = json!({"name": name, "outcome": outcome, "tldr": tldr, "project": project, "product": product, "after": after, "tasks": tasks, "area": area, "not_backlog": not_backlog});
                 match c.report("tb.goal", body, None, TB_TIMEOUT)? {
                     None => out(SAVED),
                     Some(v) => {
@@ -4282,7 +4291,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -4298,7 +4307,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
                 let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
                 let title = title.as_deref().map(short_title).transpose()?.unwrap_or_default();
-                let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned, "area": area});
+                let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned, "area": area, "not_backlog": not_backlog});
                 if let Some(i) = issue {
                     body["issue"] = json!(issue_ref(&i)?);
                 }
