@@ -1,5 +1,0 @@
-{
-  "name": "security",
-  "conformsTo": "reviewer@1",
-  "description": "Input validation, injection, authn/authz gaps, secrets handling, unsafe deserialization."
-}

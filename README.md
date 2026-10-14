@@ -25,7 +25,6 @@ It's built like Midna: a daemon that owns the work, a CLI for agents, and a GPUI
 | `docs/CUTOVER.md` | Moving over from the old Python board: stop it, `taskboardd import` its `tasks.db`, swap the plugin, start. |
 | `docs/PARITY.md` | The audit of the app against the web board it replaced, with the tests that hold each behaviour. |
 | `plugin/` | The Claude Code plugin: hooks, the `bin/tb` shim and the `task-board` skill. |
-| `review-profiles/` | Generic code-review reviewer profiles. |
 
 ## Install
 

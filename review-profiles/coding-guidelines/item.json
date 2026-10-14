@@ -1,5 +1,0 @@
-{
-  "name": "coding-guidelines",
-  "conformsTo": "reviewer@1",
-  "description": "The conventions this codebase holds itself to, section by section. Reads the repo's own guideline docs."
-}

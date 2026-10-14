@@ -1604,6 +1604,7 @@ fn finishing(r: &Report) -> Result<()> {
     if t.s("status") == Some("done") {
         return Ok(());
     }
+    lens_review(r, &t)?;
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
     let with_pr = (find_pr(&r.b("pr")).or_else(|| find_pr(&summary)).is_some() || board::pr_still_open(&t)) && r.b("no_pr").trim().is_empty();
     let before: &[steps::Before] = if with_pr { &[steps::Before::Pr, steps::Before::Done] } else { &[steps::Before::Done] };
@@ -1634,6 +1635,43 @@ fn finishing(r: &Report) -> Result<()> {
         Ok(())
     })?;
     err(409, format!("{line}. The task is still open: deal with that, then run tb done again."))
+}
+
+/// lens's local review before `tb done`, when lens is installed: notes its findings on the task and
+/// refuses while it's missing, stale or has a blocker in the fix loop; an escalated blocker is asked
+/// of the owner.
+fn lens_review(r: &Report, t: &Row) -> Result<()> {
+    let app = r.app;
+    let Some(cwd) = r.cwd.as_deref().filter(|_| !r.spooled) else { return Ok(()) };
+    if r.away(t)? {
+        return Ok(());
+    }
+    let Some(review) = crate::lens::review(app, t, cwd)? else { return Ok(()) };
+    app.db.tx(|| {
+        for (_, text) in &review.notes {
+            r.log(t.id(), "note", text, None)?;
+        }
+        crate::lens::remember(app, t.id(), false, &review.notes.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>())?;
+        if let crate::lens::Verdict::Ask { key, question } = &review.verdict {
+            board::update_task(
+                app,
+                t.id(),
+                fields!["status" => "needs", "needs_reason" => "question", "question" => question.as_str(), "answered_at" => null, "lost" => 0],
+            )?;
+            r.log(t.id(), "question", &format!("Asked: {question}"), None)?;
+            crate::lens::remember(app, t.id(), true, std::slice::from_ref(key))?;
+            r.set_session_status("needs")?;
+        }
+        Ok(())
+    })?;
+    match review.verdict {
+        crate::lens::Verdict::Pass => Ok(()),
+        crate::lens::Verdict::Refuse(why) => err(409, format!("{why} The task is still open.")),
+        crate::lens::Verdict::Ask { .. } => err(
+            409,
+            format!("lens couldn't fix a blocker, so {} has been asked. End your turn; the board brings you back with the answer.", app.cfg.owner),
+        ),
+    }
 }
 
 /// Is this report from the terminal working on the task (rather than the owner's, elsewhere)?
