@@ -244,9 +244,9 @@ impl MainWindow {
         if std::env::var("TASKBOARD_GOALS").as_deref() == Ok("1") {
             m.tasks.goals = true;
         }
-        // Dev: `TASKBOARD_GOALS_VIEW=deprio|done` opens the Goals page on that view (screenshots).
-        if let Some((k, _)) = std::env::var("TASKBOARD_GOALS_VIEW").ok().and_then(|v| ui::goals_page::VIEWS.into_iter().find(|(k, _)| *k == v)) {
-            m.goals.view = k;
+        // Dev: `TASKBOARD_GOALS_OPEN=G1,G2` opens those goals in place on the Goals page (screenshots).
+        if let Ok(v) = std::env::var("TASKBOARD_GOALS_OPEN") {
+            m.goals.open = v.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         }
         if let Ok(r) = std::env::var("TASKBOARD_OPEN") {
             m.panel = Some(if r.starts_with('B') { Panel::Issue { r } } else { Panel::Task { r, tab: TaskTab::Overview } });
@@ -603,8 +603,14 @@ impl MainWindow {
             let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
             let _ = this.update(cx, |m, cx| {
                 if m.generation == generation {
+                    let asked: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
                     got.apply(m);
                     cx.notify();
+                    // The Goals page learns which goals are in progress from this answer; fetch the
+                    // ones it didn't ask for now rather than on the next poll.
+                    if m.page == Page::Goals && ui::goals_page::in_progress(&m.data.goals, m.goals.project()).iter().any(|r| !asked.contains(r)) {
+                        m.refresh(cx);
+                    }
                 }
             });
         })
@@ -642,6 +648,8 @@ struct Wants {
     task: Option<String>,
     issue: Option<String>,
     goal: Option<String>,
+    /// The Goals page's goals in progress, each fetched in full for its row.
+    goal_rows: Vec<String>,
     sessions: bool,
     session: Option<String>,
     days_q: Option<Vec<(&'static str, String)>>,
@@ -660,6 +668,7 @@ struct Got {
     task: Option<(String, Answer)>,
     issue: Option<(String, Answer)>,
     goal: Option<(String, Answer)>,
+    goal_rows: Vec<(String, Answer)>,
     sessions: Option<Answer>,
     closed: Option<Value>,
     session: Option<(String, Answer)>,
@@ -686,6 +695,7 @@ impl Wants {
                 Page::Goal(g) => Some(g.clone()),
                 _ => None,
             },
+            goal_rows: if m.page == Page::Goals { ui::goals_page::in_progress(&m.data.goals, m.goals.project()) } else { vec![] },
             sessions: m.page == Page::Sessions,
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
@@ -704,6 +714,7 @@ impl Wants {
             task: self.task.and_then(|r| get(&format!("tasks/{r}"), &[]).map(|v| (r, v))),
             issue: self.issue.and_then(|r| get(&format!("backlog/{r}"), &[]).map(|v| (r, v))),
             goal: self.goal.and_then(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))),
+            goal_rows: self.goal_rows.into_iter().filter_map(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))).collect(),
             sessions: if self.sessions { get("sessions", &[("project", "all".into())]) } else { None },
             closed: if self.sessions { get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok) } else { None },
             session: self.session.and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
@@ -761,6 +772,13 @@ impl Got {
         if let Some((r, v)) = self.goal {
             if m.page == Page::Goal(r) {
                 land(&mut d.goal, &mut d.errs.goal, v, merge_goal);
+            }
+        }
+        if m.page == Page::Goals {
+            for (r, v) in self.goal_rows {
+                if let Ok(v) = v {
+                    m.goals.details.insert(r, merge_goal(v));
+                }
             }
         }
         if let Some(v) = self.sessions {
