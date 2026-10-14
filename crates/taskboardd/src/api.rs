@@ -121,6 +121,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["accounts", id, "check"]) => accounts::check(app, id),
         ("POST", ["accounts", id, "disconnect"]) => accounts::disconnect(app, id),
         ("POST", ["accounts", id]) => accounts::connect(app, id, body),
+        ("GET", ["info"]) => Ok(info()),
         ("GET", ["summary"]) => get_summary(app),
         ("GET", ["locks"]) => crate::locks::overview(app),
         ("GET", ["start-misses"]) => start_misses(app, q(query, "limit", "20").parse().unwrap_or(20)),
@@ -592,6 +593,11 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         };
     }
     Ok(out)
+}
+
+/// The running daemon: its version, how long it has been up and its pid (Settings › System).
+fn info() -> Value {
+    json!({"version": env!("CARGO_PKG_VERSION"), "uptime_secs": crate::server::STARTED.elapsed().as_secs(), "pid": std::process::id()})
 }
 
 fn get_summary(app: &App) -> Result<Value> {

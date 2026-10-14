@@ -23,11 +23,12 @@ mod settings;
 mod parity;
 mod theme;
 mod ui;
+mod updater;
 
 use gpui_kit::*;
 use theme::Theme;
 
-actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, ExportForDebugging]);
+actions!(taskboard, [Quit, Hide, HideOthers, ShowAll, CloseWindow, OpenSettings, OpenSystemSettings, ExportForDebugging]);
 
 /// Writes the same redacted zip as `tb export` into Downloads and shows it in Finder, off the UI thread.
 fn export_for_debugging() {
@@ -74,6 +75,12 @@ fn main() {
         let b = backend.clone();
         cx.on_action(move |_: &OpenSettings, cx| {
             let _ = settings::open(b.clone(), cx);
+        });
+        let b = backend.clone();
+        cx.on_action(move |_: &OpenSystemSettings, cx| {
+            if let Some(h) = settings::open(b.clone(), cx) {
+                let _ = h.update(cx, |s, _, cx| s.show_system(cx));
+            }
         });
         cx.on_action(|_: &ExportForDebugging, _| export_for_debugging());
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -122,6 +129,8 @@ fn main() {
         ]);
         // Installed: register the daemon's LaunchAgent and link `tb` (off the UI thread).
         install::start(backend.label());
+        // Installed release builds: check GitHub for a newer release now and then.
+        updater::start(backend.label());
         // The board keeps running in taskboardd; closing the window just quits the app.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
