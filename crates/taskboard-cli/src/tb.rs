@@ -11,10 +11,9 @@ use taskboardd::hooks;
 use taskboardd::steps::{self, Step};
 use std::collections::BTreeMap;
 
+/// How long tb waits for the board: for the whole answer to a quick call, and for each stage of a long
+/// one on the progress stream (the board says "still waiting on …" while one slow call runs).
 const TB_TIMEOUT: f64 = 5.0;
-/// `tb done --pr-body`: the board fetches, checks the branch and opens the PR before it answers.
-const PR_OPEN_TIMEOUT: f64 = 300.0;
-const QUESTION_TIMEOUT: f64 = 100.0;
 const SAVED: &str = "Saved; the board will pick it up when it's back.";
 const NO_TASK: &str = "No task on this terminal, so nothing was logged. Run tb take T<n> first, or pass --task T<n>.";
 
@@ -1765,6 +1764,21 @@ impl Ctx {
         }
     }
 
+    /// Posts a report that runs long on the board (`tb done`, `tb question`) on the progress stream,
+    /// printing each stage. Spooled (None) only when the board can't be reached: one that went quiet has
+    /// the report and may still be working on it, so a replay could do it twice.
+    fn report_progress(&self, event: &str, fields: Value, task: Option<&str>) -> Result<Option<Value>, String> {
+        let body = self.body(event, fields, task);
+        match client::request_progress(&self.cfg, "POST", "/report", Some(&body), TB_TIMEOUT, |stage| out(&format!("· {stage}"))) {
+            Ok(v) => Ok(Some(v)),
+            Err(CallError::Unreachable(_)) => {
+                client::spool_write(&self.cfg, &body).map_err(|e| format!("the board isn't answering and the report couldn't be saved: {e}"))?;
+                Ok(None)
+            }
+            Err(e) => Err(unanswered(e, &format!("went quiet for {TB_TIMEOUT}s"))),
+        }
+    }
+
     /// Posts a report that only asks: never spooled, since a replay would mark the terminal active for nothing.
     fn ask(&self, event: &str) -> Result<Value, String> {
         match client::request(&self.cfg, "POST", "/report", Some(&self.body(event, json!({}), None)), TB_TIMEOUT) {
@@ -2210,7 +2224,7 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             out(&removed_line(&name, &v));
         }
         DeviceCmd::Focus { name } => {
-            c.call("POST", &format!("/devices/{name}/focus"), Some(json!({})))?;
+            c.call_progress("POST", &format!("/devices/{name}/focus"), Some(json!({})))?;
             out(&format!("Brought up {name}."));
         }
     }
@@ -2405,7 +2419,7 @@ fn reviewers_cmd(c: &Ctx, action: ReviewersCmd) -> Result<i32, String> {
         ReviewersCmd::Auto { who, level, project } => c.call("POST", "/reviewers/auto", Some(body(&project, &who, json!({"level": level}))))?,
         ReviewersCmd::Alias { who, aliases, user, project } => c.call("POST", "/reviewers/alias", Some(body(&project, &who, json!({"aliases": aliases, "user": user}))))?,
         ReviewersCmd::Sync { project } => {
-            let v = c.call("POST", "/reviewers/sync", Some(body(&project, "", json!({}))))?;
+            let v = c.call_progress("POST", "/reviewers/sync", Some(body(&project, "", json!({}))))?;
             out(&format!("{}: {} joined from the commit history, {} matched to a host account.", v["project"].as_str().unwrap_or(""), v["joined"], v["matched"]));
             for r in v["reviewers"].as_array().cloned().unwrap_or_default() {
                 out(&format!("  {}", reviewer_line(&r)));
@@ -3236,7 +3250,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Question { text, t } => {
             let task = t.task.map(|x| task_ref(&x)).transpose()?;
             let mut alert = Some(text.clone());
-            let r = c.report("tb.question", json!({"text": text}), task.as_deref(), QUESTION_TIMEOUT);
+            // The board may have claude screen it first (`[questions] screen`), which takes a while.
+            let r = c.report_progress("tb.question", json!({"text": text}), task.as_deref());
             let owner = c.cfg.owner.clone();
             let res = match r {
                 Ok(None) => {
@@ -3272,7 +3287,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Done { summary, pr, pr_body, pr_title, no_pr, no_evidence, merged_note, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
             let Some(file) = pr_body else {
-                return c.run_report("tb.done", f, t.task, true, |v| format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(v)));
+                // The board runs the task.finishing hooks and checks the diff before it answers.
+                let task = t.task.map(|x| task_ref(&x)).transpose()?;
+                match c.report_progress("tb.done", f, task.as_deref())? {
+                    None => out(SAVED),
+                    Some(v) if !v["task"].is_string() => out(NO_TASK),
+                    Some(v) => out(&format!("{} is done.{}", v["task"].as_str().unwrap_or(""), then_next(&v))),
+                }
+                return Ok(0);
             };
             let text = read_body(&file)?;
             let problems = taskboardd::propen::body_problems(&c.cfg.pr_body, &text);
@@ -3281,15 +3303,16 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             f["pr_body"] = json!(text);
             f["pr_title"] = json!(pr_title);
-            // Not spooled: the PR opens now or not at all.
+            // Not spooled: the PR opens now or not at all. On the progress stream: the board fetches,
+            // checks the branch, opens the PR and runs the finishing hooks, a stage at a time.
             let task = t.task.map(|x| task_ref(&x)).transpose()?;
             let body = c.body("tb.done", f, task.as_deref());
-            let v = match client::request(&c.cfg, "POST", "/report", Some(&body), PR_OPEN_TIMEOUT) {
+            let v = match client::request_progress(&c.cfg, "POST", "/report", Some(&body), TB_TIMEOUT, |stage| out(&format!("· {stage}"))) {
                 Ok(v) => v,
                 Err(CallError::Refused(m)) => return Err(m),
                 Err(CallError::Unreachable(e)) => return Err(format!("the board isn't answering ({e}), so it can't open the PR. Try again once it's back.")),
                 Err(CallError::TimedOut(e)) => {
-                    return Err(format!("the board went quiet for {} minutes ({e}); it may still be opening the PR. Check with tb pr status before trying again.", PR_OPEN_TIMEOUT / 60.0))
+                    return Err(format!("the board went quiet for {TB_TIMEOUT}s ({e}); it may still be opening the PR. Check with tb pr status before trying again."))
                 }
             };
             if !v["task"].is_string() {
@@ -3349,7 +3372,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 return Err(format!("tb start only works in a Midna terminal, on a human's word there. A human can press Start on {r} on the board."));
             }
             let mode = if queue { "queue" } else { "new" };
-            let v = c.call("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
+            let v = c.call_progress("POST", &format!("/tasks/{r}/start"), Some(json!({"mode": mode, "via_session": c.session})))?;
             out(&start_said(&r, queue, &v));
             Ok(0)
         }
@@ -4286,7 +4309,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Merged { task } => {
                 let t = c.pr_task(task)?;
-                c.call("POST", &format!("/tasks/{t}/pr/merged"), Some(json!({})))?;
+                c.call_progress("POST", &format!("/tasks/{t}/pr/merged"), Some(json!({})))?;
                 out(&format!("Recorded {t}'s PR as merged."));
                 Ok(0)
             }
@@ -5045,6 +5068,15 @@ mod tests {
         let mut cfg = Config::for_tests(&data);
         cfg.port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         (Ctx { cfg, session: "s1".into(), claude: String::new(), cwd: data.to_string_lossy().to_string() }, data)
+    }
+
+    #[test]
+    fn tb_done_and_question_with_the_board_down_are_saved_for_later() {
+        let (c, data) = board_down_ctx("done-down");
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "done", "Shipped it"]).unwrap().cmd), Ok(0));
+        assert_eq!(run_cmd(&c, Cli::try_parse_from(["tb", "question", "Which base?"]).unwrap().cmd), Ok(0));
+        assert_eq!(std::fs::read_dir(c.cfg.spool_dir()).map(|d| d.count()).unwrap_or(0), 2, "both go to the spool");
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

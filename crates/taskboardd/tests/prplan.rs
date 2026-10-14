@@ -11,7 +11,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{parse_iso, PrLink, Row, RowExt};
-use taskboardd::{board, handoff, midna, p, prflow, reports, stack, steps};
+use taskboardd::{board, handoff, midna, p, prflow, progress, reports, stack, steps};
 
 struct Board {
     app: Arc<App>,
@@ -601,8 +601,13 @@ fn done_with_a_pr_body_checks_it_and_opens_the_pr() {
     git(&repo, &["rebase", "-q", "main"]);
     git(&repo, &["push", "-q", "--force", "origin", "feat/passkeys"]);
 
-    let v = done(BODY).unwrap();
+    // On the progress stream, tb hears each stage of opening the PR.
+    let lines = Arc::new(parking_lot::Mutex::new(vec![]));
+    let l = lines.clone();
+    let sink: progress::Sink = Arc::new(move |s: &str| l.lock().push(s.to_string()));
+    let v = progress::with(sink, || done(BODY)).unwrap();
     assert_eq!(v["pr_url"], "https://github.com/acme/webapp/pull/77", "{v}");
+    assert_eq!(*lines.lock(), ["Checked the PR description", "Fetched origin", "feat/passkeys is pushed and up to date with main", "Opened PR #77"]);
     let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap();
     assert!(log.contains("pr create --base main --head feat/passkeys --title ABC-12 Add passkeys --body-file -"), "{log}");
     let sent = std::fs::read_to_string(b.dir.path().join("gh.log.stdin")).unwrap();

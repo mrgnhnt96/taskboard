@@ -362,15 +362,17 @@ pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::R
     if branch == base {
         return Err(format!("This is {base} itself: the PR needs the task's own branch (git switch -c <branch>)."));
     }
-    let (ok, _, _) = git(dir, &["fetch", remote, base, &branch], 120.0)?;
+    let fetching = format!("git fetch {remote}");
+    let (ok, _, _) = crate::progress::waiting(&fetching, crate::progress::WAITING_EVERY, || git(dir, &["fetch", remote, base, &branch], 120.0))?;
     if !ok {
-        let (ok, _, e) = git(dir, &["fetch", remote, base], 120.0)?;
+        let (ok, _, e) = crate::progress::waiting(&fetching, crate::progress::WAITING_EVERY, || git(dir, &["fetch", remote, base], 120.0))?;
         if !ok {
             // All of git's message: its last line alone ("and the repository exists.") says nothing.
             let e = e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
             return Err(format!("git fetch {remote} {base} failed:\n{}", if e.is_empty() { "git said nothing" } else { &e }));
         }
     }
+    crate::progress::stage(&format!("Fetched {remote}"));
     let (_, head, _) = git(dir, &["rev-parse", "HEAD"], 10.0)?;
     let (pushed, there, _) = git(dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{branch}")], 10.0)?;
     if !pushed {
@@ -416,7 +418,9 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     }
     let Some(dir) = dir_for(t, cwd) else { return err(409, "The board can't find this task's checkout to open the PR from.") };
     let base = steps::real_base(app, t)?;
+    crate::progress::stage("Checked the PR description");
     let branch = check_branch(cfg, &dir, &base).map_err(|e| ApiError::new(409, e))?;
+    crate::progress::stage(&format!("{branch} is pushed and up to date with {base}"));
     let (main, footer) = split_footer(body);
     let mut text = main.trim_end().to_string();
     if cfg.context {
@@ -427,7 +431,10 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     }
     let text = with_footer(text, footer);
     let title = title(cfg, t, given_title);
-    host::open(app, &dir, &base, &branch, &title, &text).map_err(|e| ApiError::new(502, format!("Couldn't open the PR: {e}")))
+    let pr = crate::progress::waiting("the PR host to open the PR", crate::progress::WAITING_EVERY, || host::open(app, &dir, &base, &branch, &title, &text))
+        .map_err(|e| ApiError::new(502, format!("Couldn't open the PR: {e}")))?;
+    crate::progress::stage(&format!("Opened PR #{}", pr.num));
+    Ok(pr)
 }
 
 /// Runs before `tb done` (outside its transaction): with `pr_body`, opens the PR and puts its link in

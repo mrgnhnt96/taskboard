@@ -9,7 +9,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{Row, RowExt};
-use taskboardd::{board, fields, hooks, midna, p, prflow, reports, runner};
+use taskboardd::{board, fields, hooks, midna, p, progress, prflow, reports, runner};
 
 struct Board {
     app: Arc<App>,
@@ -290,4 +290,16 @@ fn goals_announce_created_paused_and_finished() {
     let fin = b.seen().pop().unwrap();
     assert_eq!(fin["goal"]["ref"], format!("G{gid}"));
     assert_eq!(fin["task"]["ref"], "T1");
+}
+
+#[test]
+fn a_slow_hook_keeps_the_progress_stream_alive() {
+    let b = board(json!({"hooks": {"task.starting": cmd("sleep 2.3")}}));
+    let id = b.new_task(json!({}));
+    let lines = Arc::new(parking_lot::Mutex::new(vec![]));
+    let l = lines.clone();
+    let sink: progress::Sink = Arc::new(move |s: &str| l.lock().push(s.to_string()));
+    let d = progress::with(sink, || hooks::gate(&b.app, "task.starting", &b.task(id), json!({})));
+    assert!(matches!(d, hooks::Decision::Go));
+    assert_eq!(*lines.lock(), ["still waiting on the task.starting hook `sleep 2.3`"]);
 }

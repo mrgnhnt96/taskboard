@@ -359,7 +359,9 @@ pub fn gate(app: &App, event: &str, t: &Row, extra: Value) -> Decision {
     let cwd = cwd_of(t.s("repo_path"));
     let log = log_path(&app.cfg);
     for h in hooks {
-        let r = run(&h, event, &input, cwd.as_deref(), &log);
+        // A hook can run up to its timeout; tb on the progress stream hears it's still going.
+        let what = format!("the {event} hook `{}`", short(&h.command));
+        let r = crate::progress::waiting(&what, crate::progress::WAITING_EVERY, || run(&h, event, &input, cwd.as_deref(), &log));
         report(app, event, Some(t.id()), &h, &r);
         let Some((d, reason)) = r.decision() else { continue };
         if let Some(why) = e.refuses(d) {
