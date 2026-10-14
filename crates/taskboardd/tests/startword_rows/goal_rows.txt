@@ -421,3 +421,9 @@ S ## agent:Want me to kick off G? Or should I wait? || say:kick it off
 S ## agent:Should I start G? Or should I wait? || say:start now
 S ## goal new || agent:Made G. Ready for it? || say:yes
 S ## goal new || agent:Made G. Want me to get started on it? || say:yes
+S ## agent:Three fixes: the footer, the header and the toggle. || say:go ahead and start || goal new
+S ## agent:Three fixes: the footer, the header and the toggle. || say:sounds good, let's start || goal new
+S ## agent:Three fixes: the footer, the header and the toggle. || say:go ahead and get started || goal new
+S ## say:make a goal for dark mode || goal new || say:go ahead and start
+R ## agent:Three fixes: the footer, the header and the toggle. || say:go ahead and start tomorrow || goal new
+R ## goal new || agent:Made G. Want me to write the PR description? || say:go ahead and start

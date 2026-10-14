@@ -2453,11 +2453,11 @@ pub struct GoalPrompt {
     pub asked: bool,
 }
 
-/// A prompt that's only the word to go ("do it", "go for it", "sounds good, go", "make it so"): with
-/// "it" the goal ([`GoalPrompt::it`]), the word to run it.
+/// A prompt that's only the word to go ("do it", "go for it", "sounds good, go", "make it so", "go ahead
+/// and start", "let's get started"): with "it" the goal ([`GoalPrompt::it`]), the word to run it.
 static GOAL_GO_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
-        r"(?i)^(?:(?:{YES_FILL}|ok(?:ay)?|alright|sounds\s+good|looks\s+good|lgtm|yes|yeah|yep|sure)[\s,.!]*)*(?:do\s+it|go\s+for\s+it|go(?:\s+ahead)?|let[’']?s\s+(?:do\s+it|go)|make\s+it\s+so|ship\s+it)(?:[\s,.!]+(?:now|please|pls|thanks|then))*[\s,.!]*$"
+        r"(?i)^(?:(?:{YES_FILL}|ok(?:ay)?|alright|sounds\s+good|looks\s+good|lgtm|yes|yeah|yep|sure)[\s,.!]*)*(?:do\s+it|go\s+for\s+it|go(?:\s+ahead)?|let[’']?s\s+(?:do\s+it|go)|make\s+it\s+so|ship\s+it|(?:go\s+ahead\s+and\s+|let[’']?s\s+)?(?:start|begin|get\s+started))(?:[\s,.!]+(?:now|please|pls|thanks|then))*[\s,.!]*$"
     ))
     .unwrap()
 });
