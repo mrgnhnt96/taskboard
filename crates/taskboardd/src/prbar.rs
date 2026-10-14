@@ -158,7 +158,8 @@ mod tests {
 
     #[test]
     fn checks_open_the_failed_build_else_the_latest_else_the_pr() {
-        let bb = Some("https://bitbucket.org/ws/repo/pull-requests/7");
+        let pr = "https://bitbucket.org/ws/repo/pull-requests/7";
+        let bb = Some(pr);
         let failed = rec(json!([{"name": "build", "state": "passed", "url": "https://ci/1"},
                                 {"name": "test", "state": "failed", "url": "https://ci/2"},
                                 {"name": "e2e", "state": "running", "url": "https://ci/3"}]));
@@ -171,8 +172,8 @@ mod tests {
                                 {"name": "lint", "state": "passed", "url": "https://ci/4"},
                                 {"name": "gate", "state": "passed"}]));
         assert_eq!(build_url(&passed, bb), "https://ci/4", "else the last the host lists with a link");
-        assert_eq!(build_url(&rec(json!([])), bb), bb.unwrap(), "no checks: the PR");
-        assert_eq!(build_url(&rec(json!([{"name": "gate", "state": "passed"}])), bb), bb.unwrap(), "none with a link: the PR");
+        assert_eq!(build_url(&rec(json!([])), bb), pr, "no checks: the PR");
+        assert_eq!(build_url(&rec(json!([{"name": "gate", "state": "passed"}])), bb), pr, "none with a link: the PR");
         assert_eq!(build_url(&rec(json!([])), Some("https://github.com/acme/web/pull/3/")), "https://github.com/acme/web/pull/3/checks");
         assert_eq!(build_url(&rec(json!([])), None), Value::Null);
     }

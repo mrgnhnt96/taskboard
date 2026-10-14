@@ -1595,7 +1595,8 @@ fn a_goal_run_on_the_grant_spends_it() {
 #[test]
 fn the_start_command_and_a_trailing_go_always_count() {
     let tag = |args: &str| format!("<command-message>task-board:start</command-message>\n<command-name>/task-board:start</command-name>\n<command-args>{args}</command-args>");
-    let cases: Vec<(Box<dyn Fn(i64) -> String>, bool)> = vec![
+    type Prompt = Box<dyn Fn(i64) -> String>;
+    let cases: Vec<(Prompt, bool)> = vec![
         (Box::new(|id| format!("/start T{id}")), true),
         (Box::new(|id| format!("/task-board:start T-{id}")), true),
         (Box::new(move |id| tag(&format!("T{id}"))), true),

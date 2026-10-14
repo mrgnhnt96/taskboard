@@ -121,7 +121,7 @@ pub fn twelve_hour(hhmm: &str) -> String {
     let mut it = hhmm.split(':');
     let h: u32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
     let m: u32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-    let hh = if h % 12 == 0 { 12 } else { h % 12 };
+    let hh = if h.is_multiple_of(12) { 12 } else { h % 12 };
     let mm = if m > 0 { format!(":{m:02}") } else { String::new() };
     format!("{hh}{mm}{}", if h < 12 { "am" } else { "pm" })
 }

@@ -591,7 +591,7 @@ fn newest_files(dir: &Path, max: usize) -> Vec<PathBuf> {
             m.is_file().then(|| (m.modified().unwrap_or(std::time::UNIX_EPOCH), e.path()))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().take(max).map(|(_, p)| p).collect()
 }
 

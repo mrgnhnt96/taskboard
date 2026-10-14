@@ -218,10 +218,9 @@ pub fn follow(app: &App, t: &Row, sid: &str) -> Result<()> {
         if of(app, &from)?.is_empty() {
             continue;
         }
-        let mut pos = app.db.q1("SELECT MAX(line_pos) AS hi FROM tasks WHERE line_session = ?", p![sid])?.and_then(|r| r.i("hi")).map(|h| h + 1).unwrap_or(0);
-        for x in of(app, &from)? {
+        let start = app.db.q1("SELECT MAX(line_pos) AS hi FROM tasks WHERE line_session = ?", p![sid])?.and_then(|r| r.i("hi")).map(|h| h + 1).unwrap_or(0);
+        for (pos, x) in (start..).zip(of(app, &from)?) {
             board::update_task(app, x.id(), fields!["line_session" => sid, "line_pos" => pos])?;
-            pos += 1;
         }
     }
     Ok(())

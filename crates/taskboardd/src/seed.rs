@@ -177,7 +177,7 @@ fn seed_history(app: &App) -> Result<()> {
             )?;
             app.db.x("DELETE FROM task_states WHERE task_id = ?", p![id])?;
             app.db.insert("task_states", fields!["task_id" => id, "at" => iso(from), "status" => "working", "failed" => 0, "project" => project])?;
-            if n % 3 == 0 {
+            if n.is_multiple_of(3) {
                 let ask = from + (to - from) * 0.5;
                 app.db.insert("task_states", fields!["task_id" => id, "at" => iso(ask), "status" => "needs", "needs_reason" => "question", "failed" => 0, "project" => project])?;
                 app.db.insert("task_states", fields!["task_id" => id, "at" => iso((ask + 600.0 + (n % 4) as f64 * 240.0).min(to - 300.0)), "status" => "working", "failed" => 0, "project" => project])?;
@@ -187,7 +187,7 @@ fn seed_history(app: &App) -> Result<()> {
             for c in 0..(1 + n % 3) {
                 app.db.insert("events", fields!["task_id" => id, "at" => iso(from + 900.0 + c as f64 * 1200.0), "who" => "T", "kind" => "commit", "text" => "Committed: Sample change"])?;
             }
-            if n % 2 == 0 {
+            if n.is_multiple_of(2) {
                 app.db.insert("events", fields!["task_id" => id, "at" => iso(to - 300.0), "who" => "T", "kind" => "status", "text" => format!("Linked PR #{} (acme/{project})", 100 + n)])?;
             }
         }

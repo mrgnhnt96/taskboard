@@ -53,7 +53,7 @@ fn git(path: &str, args: &[&str], timeout: f64) -> Git {
 }
 
 fn last_line(text: &str) -> String {
-    text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("no output").to_string()
+    text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("no output").to_string()
 }
 
 fn repo_of(app: &App, t: &Row) -> Result<Option<String>> {
