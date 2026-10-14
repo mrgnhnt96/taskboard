@@ -22,7 +22,7 @@ const TOAST_ERR: Duration = Duration::from_secs(6);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
     Board,
-    /// The tasks outside goals, in status lanes.
+    /// Every task, grouped and filtered.
     Tasks,
     /// Every goal, as cards: active, deprioritized or finished.
     Goals,
@@ -68,8 +68,8 @@ pub struct Data {
     /// `GET /home` and today's `GET /days` for the home page.
     pub home: Option<Value>,
     pub today: Option<Value>,
-    /// `GET /lanes` for the Tasks page.
-    pub lanes: Option<Value>,
+    /// `GET /tasks` for the Tasks page.
+    pub tasks: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -240,9 +240,11 @@ impl MainWindow {
         if let Ok(p) = std::env::var("TASKBOARD_PICK") {
             m.backlog.picked = p.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         }
-        // Dev: `TASKBOARD_GOALS=1` turns on the Tasks page's "Show tasks in goals" (screenshots).
-        if std::env::var("TASKBOARD_GOALS").as_deref() == Ok("1") {
-            m.tasks.goals = true;
+        // Dev: `TASKBOARD_TASKS_BY=status|project` groups the Tasks page that way (screenshots).
+        match std::env::var("TASKBOARD_TASKS_BY").as_deref() {
+            Ok("status") => m.tasks.group = ui::tasks::GroupBy::Status,
+            Ok("project") => m.tasks.group = ui::tasks::GroupBy::Project,
+            _ => {}
         }
         // Dev: `TASKBOARD_GOALS_OPEN=G1,G2` opens those goals in place on the Goals page (screenshots).
         if let Ok(v) = std::env::var("TASKBOARD_GOALS_OPEN") {
@@ -655,8 +657,8 @@ struct Wants {
     days_q: Option<Vec<(&'static str, String)>>,
     /// The board's project filter, for `GET /home`.
     home: Option<String>,
-    /// Whether the Tasks page shows the tasks in goals too, for `GET /lanes`.
-    lanes: Option<bool>,
+    /// The Tasks page, for `GET /tasks`.
+    tasks: bool,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -675,7 +677,7 @@ struct Got {
     days: Option<Answer>,
     home: Option<Value>,
     today: Option<Value>,
-    lanes: Option<Value>,
+    tasks: Option<Value>,
 }
 
 impl Wants {
@@ -700,7 +702,7 @@ impl Wants {
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
-            lanes: (m.page == Page::Tasks).then_some(m.tasks.goals),
+            tasks: m.page == Page::Tasks,
         }
     }
 
@@ -721,7 +723,7 @@ impl Wants {
             days: self.days_q.and_then(|q| get("days", &q)),
             today: if self.home.is_some() { get("days", &[]).and_then(Result::ok) } else { None },
             home: self.home.and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
-            lanes: self.lanes.and_then(|g| get("lanes", &[("goals", if g { "1" } else { "0" }.into())]).and_then(Result::ok)),
+            tasks: if self.tasks { get("tasks", &[]).and_then(Result::ok) } else { None },
             state,
         }
     }
@@ -798,8 +800,8 @@ impl Got {
         if self.today.is_some() {
             d.today = self.today;
         }
-        if self.lanes.is_some() && m.page == Page::Tasks {
-            d.lanes = self.lanes;
+        if self.tasks.is_some() && m.page == Page::Tasks {
+            d.tasks = self.tasks;
         }
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
