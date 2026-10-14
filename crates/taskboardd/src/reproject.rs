@@ -1,0 +1,86 @@
+//! Moving a task or backlog issue to another project (`tb task set --project`, `tb backlog set --project`).
+//! Its goal stays (a goal can hold more than one project's work); a task's repo and area follow the move,
+//! and a task that already ran lets go of its terminal in the old repo and waits for Start in the new one.
+
+use serde_json::Value;
+
+use crate::app::App;
+use crate::util::*;
+use crate::{board, deliver, fields, lines, projects};
+
+/// The board's own spelling of a project named in any case; refused when the board doesn't know it.
+pub fn name(app: &App, v: &Value) -> Result<String> {
+    let want = v.as_str().unwrap_or("").trim();
+    if want.is_empty() {
+        return err(400, "Say which project to move it to.");
+    }
+    let known: Vec<String> = projects::list_projects(app)?.iter().filter_map(|p| p["name"].as_str().map(|s| s.to_string())).collect();
+    if let Some(p) = known.iter().find(|p| p.as_str() == want).or_else(|| known.iter().find(|p| p.eq_ignore_ascii_case(want))) {
+        return Ok(p.clone());
+    }
+    err(400, format!("The board knows no project “{want}”. Its projects: {}.", known.join(", ")))
+}
+
+/// Refuses a task whose work can't follow it: a finished one, or one with a PR or a stacked parent in the old repo.
+pub fn check_task(t: &Row) -> Result<()> {
+    let r = rf("task", t.id());
+    if t.s("status") == Some("done") {
+        return err(409, format!("{r} is done; only open work moves to another project."));
+    }
+    if t.i("pr_num").is_some() {
+        return err(409, format!("{r} has a PR in {}; close it and make a new task in the other project.", t.st("project")));
+    }
+    if let Some(parent) = t.i("pr_after") {
+        return err(409, format!("{r} is stacked on {}; unstack it first with tb task set {r} --stack-on none.", rf("task", parent)));
+    }
+    Ok(())
+}
+
+/// Whether task `t` has run: moving it then lets go of its terminal and conversation.
+fn has_run(t: &Row) -> bool {
+    t.s("session_id").is_some() || t.i("start_job").is_some() || matches!(t.s("status"), Some("working") | Some("needs") | Some("idle"))
+}
+
+/// The fields that put task `t` (in goal `goal`) in `project`: its repo and area there, and back on the board
+/// waiting for Start when it already ran in the old repo.
+pub fn task_fields(app: &App, t: &Row, project: &str, goal: Option<i64>) -> Result<Vec<(&'static str, Value)>> {
+    let repo = board::find_goal(app, goal)?
+        .filter(|g| g.s("project") == Some(project))
+        .and_then(|g| g.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()))
+        .or(projects::project_path(app, Some(project))?);
+    let area = crate::areas::clean(app, project, &t.v("area")).unwrap_or(Value::Null);
+    let mut f = fields!["project" => project, "repo_path" => repo, "area" => area];
+    if has_run(t) {
+        f.extend(fields!["session_id" => null, "claude_session_id" => null, "start_job" => null, "status" => "queued",
+                         "pickup" => "manual", "pickup_session" => null, "needs_reason" => null, "question" => null, "lost" => 0,
+                         "latest" => format!("Moved to {project}. Press Start to run it there.")]);
+    }
+    Ok(f)
+}
+
+/// What moving task `t` leaves behind in the old repo: its open jobs, its place in a terminal's line and
+/// the checkout it last ran in.
+pub fn leave_old(app: &App, t: &Row) -> Result<()> {
+    deliver::drop(app, t.id(), "it moved to another project")?;
+    lines::leave(app, t)?;
+    let mut ctx = board::task_context(t);
+    if ctx.remove("where").is_some() {
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    Ok(())
+}
+
+/// The log line for task `t` moving to `to`, naming the terminal it let go of.
+pub fn moved_text(t: &Row, to: &str) -> String {
+    let from = t.s("project").filter(|p| !p.is_empty()).unwrap_or("no project");
+    match t.s("session_name").filter(|n| !n.is_empty() && t.s("session_id").is_some()) {
+        Some(n) => format!("Moved from {from} to {to} and let go of {n}; press Start to run it in {to}"),
+        None if has_run(t) => format!("Moved from {from} to {to}; press Start to run it in {to}"),
+        None => format!("Moved from {from} to {to}"),
+    }
+}
+
+/// The fields that put issue `b` in `project`, with its area there when the project has one by that name.
+pub fn issue_fields(app: &App, b: &Row, project: &str) -> Vec<(&'static str, Value)> {
+    fields!["project" => project, "area" => crate::areas::clean(app, project, &b.v("area")).unwrap_or(Value::Null)]
+}

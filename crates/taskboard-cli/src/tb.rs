@@ -1233,6 +1233,9 @@ enum TaskCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
         #[arg(long, value_name = "NAME|none")]
         area: Option<String>,
+        /// Move it to another project, any case; a task that already ran lets go of its terminal and waits for Start there
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
@@ -1255,7 +1258,7 @@ enum BacklogCmd {
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
     },
-    /// Change a backlog issue's title, detail or area
+    /// Change a backlog issue's title, detail, area or project
     Set {
         issue: String,
         #[arg(long)]
@@ -1265,6 +1268,9 @@ enum BacklogCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
         #[arg(long, value_name = "NAME|none")]
         area: Option<String>,
+        /// Move it to another project, any case
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
     },
     /// Move backlog issues to another goal (G2), or out of their goal (none), all or none:
     /// tb backlog move B4 B5 G2
@@ -4377,7 +4383,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -4446,11 +4452,18 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(x) = area {
                     b["area"] = json!(x);
                 }
+                if let Some(x) = project {
+                    b["project"] = json!(x);
+                }
                 if b.as_object().map(|o| o.is_empty()).unwrap_or(true) {
                     return Err("say what to change, for example: tb task set T12 --priority high".into());
                 }
+                let moving = b.get("project").is_some();
                 let v = c.call("POST", &format!("/tasks/{t}"), Some(b))?;
                 let mut bits = String::new();
+                if moving {
+                    bits += &format!(" · in {}", v["project"].as_str().unwrap_or(""));
+                }
                 for x in lock_bits(&v) {
                     bits += &format!(" · {x}");
                 }
@@ -4488,7 +4501,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&format!("Added a note to {r}."));
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Set { issue, title, detail, area } } => {
+        Cmd::Backlog { action: BacklogCmd::Set { issue, title, detail, area, project } } => {
             let r = issue_ref(&issue)?;
             let mut b = json!({"who": c.who()});
             if let Some(x) = title {
@@ -4500,11 +4513,17 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = area {
                 b["area"] = json!(x);
             }
+            if let Some(x) = project {
+                b["project"] = json!(x);
+            }
             if b.as_object().map_or(0, |o| o.len()) < 2 {
                 return Err("say what to change, for example: tb backlog set B3 --title \"Login button flickers\"".into());
             }
+            let moving = b.get("project").is_some();
             let v = c.call("POST", &format!("/backlog/{r}"), Some(b))?;
-            out(&format!("Changed {r} “{}”.", v["title"].as_str().unwrap_or("")));
+            let issue = v.get("issue").filter(|x| x.is_object()).unwrap_or(&v);
+            let place = if moving { format!(" · in {}", issue["project"].as_str().unwrap_or("")) } else { String::new() };
+            out(&format!("Changed {r} “{}”{place}.", issue["title"].as_str().unwrap_or("")));
             Ok(0)
         }
         Cmd::Backlog { action: BacklogCmd::Move { mut args } } => {

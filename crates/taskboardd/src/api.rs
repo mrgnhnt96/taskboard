@@ -849,8 +849,16 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
             f.push(("priority", json!(pr)));
         }
+        let mut moved_to = None;
+        if has_key("project") {
+            let p = crate::reproject::name(app, &body["project"])?;
+            if p != t.st("project") {
+                crate::reproject::check_task(&t)?;
+                moved_to = Some(p);
+            }
+        }
         if has_key("area") {
-            let a = crate::areas::clean(app, &t.st("project"), &body["area"])?;
+            let a = crate::areas::clean(app, moved_to.as_deref().unwrap_or(&t.st("project")), &body["area"])?;
             if a != t.v("area") {
                 f.push(("area", a));
                 bump = true;
@@ -879,6 +887,13 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         let not_also = shared::clean(app, body.get("not_also"), Some(&t))?;
         if let Some(g) = new_goal_id {
             shared::moved_home(app, id, g)?;
+        }
+        if let Some(p) = &moved_to {
+            let moved = crate::reproject::task_fields(app, &t, p, new_goal_id.unwrap_or(t.i("goal_id")))?;
+            let mine: Vec<&str> = f.iter().map(|(k, _)| *k).collect();
+            let moved: Vec<_> = moved.into_iter().filter(|(k, _)| !mine.contains(k)).collect();
+            f.extend(moved);
+            bump = true;
         }
         if has_key("meta") {
             f.push(("meta", json!(jdumps(&meta(body.get("meta"))?))));
@@ -1048,7 +1063,12 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             bump = true;
         }
         let edited = f.iter().any(|(k, _)| matches!(*k, "title" | "detail" | "meta"));
+        let moved_text = moved_to.as_deref().map(|p| crate::reproject::moved_text(&t, p));
         board::update_task(app, id, f)?;
+        if let Some(text) = &moved_text {
+            crate::reproject::leave_old(app, &t)?;
+            board::log_event(app, id, &who, "status", text)?;
+        }
         if wave_changed.is_some() || new_goal_id.is_some() {
             crate::stack::check_waves(app, &board::get_task(app, id)?)?;
         }
@@ -2401,8 +2421,21 @@ fn patch_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
             f.push(("detail", json!(if detail.is_empty() { None } else { Some(detail) })));
         }
     }
+    let mut project = b.st("project");
+    if body.get("project").is_some() {
+        let p = crate::reproject::name(app, &body["project"])?;
+        if p != project {
+            said.push(format!("Moved from {} to {p}", if project.is_empty() { "no project" } else { &project }));
+            if body.get("area").is_none() {
+                f.extend(crate::reproject::issue_fields(app, &b, &p));
+            } else {
+                f.push(("project", json!(p)));
+            }
+            project = p;
+        }
+    }
     if body.get("area").is_some() {
-        let area = crate::areas::clean(app, &b.st("project"), &body["area"])?;
+        let area = crate::areas::clean(app, &project, &body["area"])?;
         if area != b.v("area") {
             said.push(match area.as_str() {
                 Some(a) => format!("Put in the area {a}"),

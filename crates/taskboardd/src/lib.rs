@@ -64,6 +64,7 @@ pub mod propen;
 pub mod qa;
 pub mod quality;
 pub mod relevance;
+pub mod reproject;
 pub mod reports;
 pub mod retro;
 pub mod reviewers;
