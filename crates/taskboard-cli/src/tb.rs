@@ -1084,7 +1084,12 @@ enum LineCmd {
 enum TaskCmd {
     /// Add a task: planned in a goal, or on its own
     New {
-        title: String,
+        /// Its title; with --issue, the item's title when left out
+        #[arg(required_unless_present = "issue")]
+        title: Option<String>,
+        /// The open backlog item it's made from (B12): linked to it, with its detail, and the item becomes this task
+        #[arg(long, value_name = "B12")]
+        issue: Option<String>,
         #[arg(long)]
         detail: Option<String>,
         #[arg(long)]
@@ -1260,13 +1265,23 @@ enum BacklogCmd {
         #[arg(required = true, num_args = 2.., value_name = "ISSUE")]
         args: Vec<String>,
     },
-    /// Make backlog issues into tasks: planned in their goal, or with --board queued on the board.
+    /// Make backlog issues into tasks: planned in their goal, or with --board queued on the board,
+    /// or with --here (one issue) a task this terminal is on at once.
     /// Several issues (tb backlog task B4 B5) change together or not at all.
     Task {
         #[arg(required = true)]
         issues: Vec<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "here")]
         board: bool,
+        /// Take the one issue as a task on this terminal, like tb task new --issue B<n> --here
+        #[arg(long)]
+        here: bool,
+        /// With --here on a terminal that has a task: queue it in this terminal's line, after that task
+        #[arg(long, requires = "here", conflicts_with = "now")]
+        next: bool,
+        /// With --here on a terminal that has a task: switch to it now; that task waits here to resume
+        #[arg(long, requires = "here")]
+        now: bool,
     },
     /// Ask Jira for a ticket for each backlog issue, all or none
     Ticket {
@@ -4267,7 +4282,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -4282,8 +4297,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 let goal = goal.map(|g| goal_ref(&g)).transpose()?;
                 let also = also.iter().map(|g| goal_ref(g)).collect::<Result<Vec<_>, _>>()?;
-                let title = short_title(&title)?;
+                let title = title.as_deref().map(short_title).transpose()?.unwrap_or_default();
                 let mut body = json!({"title": title, "detail": detail, "goal": goal, "project": project, "planned": planned, "area": area});
+                if let Some(i) = issue {
+                    body["issue"] = json!(issue_ref(&i)?);
+                }
                 if !also.is_empty() {
                     body["also"] = json!(also);
                 }
@@ -4338,14 +4356,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     Some(v) if here => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Added {r} and you're on it.")).as_str());
-                        midna_pin(&r, &title);
+                        midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"));
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
-                        midna_pin(&r, &title);
+                        midna_pin(&r, v["title"].as_str().unwrap_or(&title));
                     }
                 }
                 Ok(0)
@@ -4501,7 +4519,25 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Task { issues, board } } => {
+        Cmd::Backlog { action: BacklogCmd::Task { issues, here: true, next, now, .. } } => {
+            let [issue] = issues.as_slice() else {
+                return Err("--here takes one issue: this terminal works on one task at a time".into());
+            };
+            let mut body = json!({"title": "", "issue": issue_ref(issue)?, "here": true});
+            if next || now {
+                body["line"] = json!(if next { "next" } else { "now" });
+            }
+            match c.report("tb.new_task", body, None, TB_TIMEOUT)? {
+                None => out(SAVED),
+                Some(v) => {
+                    let r = v["created"][0].as_str().unwrap_or("").to_string();
+                    out(v["context"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).unwrap_or(format!("Made {issue} into {r} and you're on it.")).as_str());
+                    midna_pin(&r, v["title"].as_str().unwrap_or(""));
+                }
+            }
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Task { issues, board, .. } } => {
             let v = backlog_bulk(c, "task", &issues, json!({"where": if board { "board" } else { "goal" }}))?;
             let refs = issue_refs(&issues)?;
             for (r, t) in refs.iter().zip(v["tasks"].as_array().cloned().unwrap_or_default()) {
@@ -6027,6 +6063,12 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "drop", "B4", "B5", "--reason", "dupe"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "reopen", "B4", "B5"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "backlog", "task"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here", "--next"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here", "--now"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--next"]).is_err(), "--next needs --here");
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here", "--board"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here", "--next", "--now"]).is_err());
         assert_eq!(issue_refs(&["b4".into(), "B5".into(), "B4".into()]).unwrap(), vec!["B4", "B5"]);
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
@@ -6039,6 +6081,16 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "jira", "J12", "fail", "no", "such", "project"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "jira", "J12", "maybe"]).is_err());
         assert!(Cli::try_parse_from(["tb", "task", "new", "Fix it", "--jira", "none"]).is_ok());
+        // --issue: the title can come from the item; it works on this terminal, in a goal and on the board.
+        let Cmd::Task { action: TaskCmd::New { title, issue, .. } } = Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here"]).unwrap().cmd else {
+            panic!("task new")
+        };
+        assert_eq!((title, issue.as_deref()), (None, Some("B7")));
+        assert!(Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here", "--next"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "--issue", "B7", "--here", "--now"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "Own title", "--issue", "B7", "--goal", "G2"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new", "--issue", "B7"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "task", "new"]).is_err(), "a title or an item");
         assert!(Cli::try_parse_from(["tb", "api", "bitbucket", "user", "-X", "get"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--stack-on", "T3", "--no-pr"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "new", "x", "--pr", "--no-pr"]).is_err());

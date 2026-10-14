@@ -2138,7 +2138,9 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
                     "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"),
-                    "origin": {"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}}),
+                    "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"),
+                    "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
+                        .unwrap_or_else(|| json!({"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}))}),
             &r.name(),
             Some(&format!("Planned by {}", r.name())),
         )?;
@@ -2195,46 +2197,91 @@ fn on_goal(r: &mut Report) -> Result<Value> {
 
 fn on_new_task(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
-    let title = one_line(&r.b("title"), 300);
+    let issue = named_issue(r)?;
+    let mut title = one_line(&r.b("title"), 300);
+    if let (true, Some(b)) = (title.is_empty(), &issue) {
+        title = one_line(&b.st("title"), 300);
+    }
     if title.is_empty() {
         return err(400, "A task needs a title.");
     }
     if as_bool(r.body.get("here"), false) {
-        return new_task_here(r, &title);
+        return new_task_here(r, &title, issue.as_ref());
     }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
-        let item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
+        if let Some(b) = issue.as_ref().filter(|b| b.s("project") != g.s("project")) {
+            return err(400, format!("{} is in {}, not {}'s project {}.", rf("issue", b.id()), b.st("project"), rf("goal", g.id()), g.st("project")));
+        }
+        let mut item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                            "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area")}]);
+        if let Some(b) = &issue {
+            item[0] = with_issue(r, b, item[0].take());
+        }
         let mut warnings = vec![];
         let created = planned(r, &g, &item, &mut warnings)?;
+        if let (Some(b), Some(t)) = (&issue, created.first()) {
+            let text = format!("Made into {t}, a planned task in {}. Its handoff starts with this report and snapshot.", rf("goal", g.id()));
+            crate::api::issue_tasked(r.app, b.id(), ref_id(t), &r.name(), &text)?;
+        }
         note_made(r, &created)?;
-        return Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
+        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
         return err(400, "Only a task in a goal can also finish other goals. Give it its home goal with --goal G<n>.");
     }
     let project = project_for(r, &r.b("project"))?;
     let planned_flag = as_bool(r.body.get("planned"), false);
-    let c = ops::new_task(
-        r.app,
-        &json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
+    let mut fields = json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
                 "status": if planned_flag { "planned" } else { "queued" },
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                 "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
-                "origin": {"from": "Added by an agent", "by": r.name()}}),
-        &r.name(),
-        Some(&format!("Added by {}; waits for you to press Start", r.name())),
-    )?;
+                "origin": {"from": "Added by an agent", "by": r.name()}});
+    if let Some(b) = &issue {
+        fields = with_issue(r, b, fields);
+    }
+    let c = ops::new_task(r.app, &fields, &r.name(), Some(&format!("Added by {}; waits for you to press Start", r.name())))?;
+    if let Some(b) = &issue {
+        let text = format!("Made into {}, a queued task. Its handoff starts with this report and snapshot.", c["ref"].as_str().unwrap_or(""));
+        crate::api::issue_tasked(r.app, b.id(), c["id"].as_i64().unwrap_or(0), &r.name(), &text)?;
+    }
     note_made(r, &[c["ref"].as_str().unwrap_or("").to_string()])?;
-    Ok(with(ok(None, None), json!({"created": [c["ref"]], "status": c["status"], "project": c["project"],
+    Ok(with(ok(None, None), json!({"created": [c["ref"]], "title": title, "status": c["status"], "project": c["project"],
                                    "warnings": c.get("warnings").cloned().unwrap_or(json!([]))})))
+}
+
+/// `--issue B<n>`: the backlog issue the new task is made from, when one is named. Only an open issue can be;
+/// one that's closed or already a task is refused before anything changes.
+fn named_issue(r: &Report) -> Result<Option<Row>> {
+    let Some(id) = parse_ref(r.body.get("issue").unwrap_or(&Value::Null), "issue")? else { return Ok(None) };
+    let b = board::get_issue(r.app, id)?;
+    crate::api::need_open(&b)?;
+    Ok(Some(b))
+}
+
+/// A new task's fields filled from the backlog issue it's made from, the way `tb backlog task` makes one:
+/// linked to the issue, in its project, with its detail and area unless the command gave its own.
+fn with_issue(r: &Report, b: &Row, mut fields: Value) -> Value {
+    let from = crate::api::issue_task_fields(r.app, b, &r.name());
+    for k in ["detail", "area"] {
+        if r.b(k).trim().is_empty() {
+            fields[k] = from[k].clone();
+        }
+    }
+    for k in ["project", "from_issue_id", "latest", "origin"] {
+        fields[k] = from[k].clone();
+    }
+    fields
+}
+
+fn ref_id(r: &str) -> i64 {
+    r.trim_start_matches('T').parse().unwrap_or(0)
 }
 
 /// Notes on this terminal that its conversation made these tasks, for `tb start` on an unnamed "queue it".
@@ -2247,7 +2294,7 @@ fn note_made(r: &Report, refs: &[String]) -> Result<()> {
 }
 
 /// `tb task new … --here`: a standalone task for the work this terminal is already doing, claimed at once.
-fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
+fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Value> {
     let app = r.app;
     let Some(sid) = r.sid.clone() else { return err(400, "--here only works inside a Midna terminal.") };
     if body_has(&r.body, "goal") || r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
@@ -2277,23 +2324,30 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
     let name = r.name();
     let owner = app.cfg.owner.clone();
     let project = project_for(r, &r.b("project"))?;
-    let c = ops::new_task(
-        app,
-        &json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
-                "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
-                "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
-                "area": r.body.get("area"),
-                "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}}),
-        &name,
-        Some(&format!("Added by {name} for the code it changed with {owner}")),
-    )?;
+    let mut fields = json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
+            "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
+            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
+            "area": r.body.get("area"),
+            "origin": {"from": format!("Code changed in {name} while {owner} worked there"), "by": board::OWNER}});
+    let how = match issue {
+        Some(b) => {
+            fields = with_issue(r, b, fields);
+            format!("Taken from the backlog ({}) by {name}", rf("issue", b.id()))
+        }
+        None => format!("Added by {name} for the code it changed with {owner}"),
+    };
+    let c = ops::new_task(app, &fields, &name, Some(&how))?;
     let t = board::get_task(app, c["id"].as_i64().unwrap_or(0))?;
+    if let Some(b) = issue {
+        let text = format!("Taken as {} on {name}. Its handoff starts with this report and snapshot.", rf("task", t.id()));
+        crate::api::issue_tasked(app, b.id(), t.id(), &name, &text)?;
+    }
     if let (Some(mine), "next") = (&current, place.as_str()) {
         lines::enqueue(app, &t, &sid, lines::Place::Back)?;
         board::log_event(app, t.id(), &name, "status", &format!("Queued in {name} after {}", rf("task", mine.id())))?;
         let (tr, mr) = (rf("task", t.id()), rf("task", mine.id()));
         let text = format!("{tr} is queued in this terminal after {mr}; it starts here once {mr} is done. Carry on with {mr}.");
-        return Ok(with(ok(Some(mine), Some(text)), json!({"created": [tr], "status": "queued", "project": c["project"]})));
+        return Ok(with(ok(Some(mine), Some(text)), json!({"created": [tr], "title": title, "status": "queued", "project": c["project"]})));
     }
     if let Err(why) = board::claim(app, &t, &sid, r.claude.as_deref(), None, "Tracked", false)? {
         return err(409, why);
@@ -2308,7 +2362,7 @@ fn new_task_here(r: &mut Report, title: &str) -> Result<Value> {
     if let Some(mine) = &current {
         text.push_str(&format!(" {} waits here to resume once {tr} is done.", rf("task", mine.id())));
     }
-    Ok(with(ok(Some(&t), Some(text)), json!({"created": [tr], "status": "working", "project": c["project"]})))
+    Ok(with(ok(Some(&t), Some(text)), json!({"created": [tr], "title": title, "status": "working", "project": c["project"]})))
 }
 
 fn on_attach(r: &mut Report) -> Result<Value> {

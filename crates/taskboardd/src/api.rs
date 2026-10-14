@@ -2291,7 +2291,7 @@ fn issue_actor(body: &Value) -> String {
 }
 
 /// Refuses an action that only makes sense on an open issue, the same check `/backlog/bulk` makes.
-fn need_open(b: &Row) -> Result<()> {
+pub(crate) fn need_open(b: &Row) -> Result<()> {
     if b.s("state") == Some("open") {
         return Ok(());
     }
@@ -2299,6 +2299,25 @@ fn need_open(b: &Row) -> Result<()> {
         return err(409, format!("It's already {}.", rf("task", t)));
     }
     err(409, format!("{} isn't open any more, so nothing changed.", rf("issue", b.id())))
+}
+
+/// The task fields a backlog issue hands to the task made from it: its title, detail, area, the link back
+/// to it (`from_issue_id`), and where it came from. `tb backlog task` and `tb task new --issue` both use them.
+pub(crate) fn issue_task_fields(app: &App, b: &Row, who: &str) -> Value {
+    let id = b.id();
+    let detail = format!("{}\nSee how it was found before changing anything.", b.s("detail").filter(|d| !d.is_empty()).unwrap_or(&b.st("title")));
+    // The task keeps the issue's area when it's one of the project's (triage may have written a loose one).
+    let area = crate::areas::clean(app, &b.st("project"), &b.v("area")).unwrap_or(Value::Null);
+    json!({"title": b.v("title"), "detail": detail, "project": b.v("project"), "area": area, "from_issue_id": id,
+           "latest": format!("From the backlog: {}.", board::issue_from_line(b)),
+           "origin": {"from": format!("Backlog {}: {}", rf("issue", id), b.st("title")), "by": who}})
+}
+
+/// Marks a backlog issue as made into task `task_id`, with `text` in its history.
+pub(crate) fn issue_tasked(app: &App, id: i64, task_id: i64, who: &str, text: &str) -> Result<()> {
+    app.db.update("issues", &json!(id), fields!["state" => "task", "task_id" => task_id, "updated_at" => now_iso()])?;
+    board::add_issue_event(app, id, who, "task", text, None)?;
+    Ok(())
 }
 
 pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
@@ -2310,22 +2329,13 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     let b = board::get_issue(app, id)?;
     need_open(&b)?;
     let planned = where_ == "goal" && b.i("goal_id").is_some();
-    let detail = format!("{}\nSee how it was found before changing anything.", b.s("detail").filter(|d| !d.is_empty()).unwrap_or(&b.st("title")));
-    // The task keeps the issue's area when it's one of the project's (triage may have written a loose one).
-    let area = crate::areas::clean(app, &b.st("project"), &b.v("area")).unwrap_or(Value::Null);
-    let c = new_task(
-        app,
-        &json!({"title": b.v("title"), "detail": detail, "project": b.v("project"), "area": area, "goal_id": b.v("goal_id"),
-                "status": if planned { "planned" } else { "queued" }, "from_issue_id": id,
-                "priority": body.get("priority").cloned().unwrap_or(json!("normal")),
-                "pickup": body.get("pickup").cloned().unwrap_or(json!({"mode": "queue"})),
-                "latest": format!("From the backlog: {}.", board::issue_from_line(&b)),
-                "origin": {"from": format!("Backlog {}: {}", rf("issue", id), b.st("title")), "by": who}}),
-        &who,
-        Some(&format!("Added from the backlog ({}){}", rf("issue", id), if planned { " as planned" } else { "" })),
-    )?;
+    let mut fields = issue_task_fields(app, &b, &who);
+    fields["goal_id"] = b.v("goal_id");
+    fields["status"] = json!(if planned { "planned" } else { "queued" });
+    fields["priority"] = body.get("priority").cloned().unwrap_or(json!("normal"));
+    fields["pickup"] = body.get("pickup").cloned().unwrap_or(json!({"mode": "queue"}));
+    let c = new_task(app, &fields, &who, Some(&format!("Added from the backlog ({}){}", rf("issue", id), if planned { " as planned" } else { "" })))?;
     let cref = c["ref"].as_str().unwrap_or("").to_string();
-    app.db.update("issues", &json!(id), fields!["state" => "task", "task_id" => c["id"], "updated_at" => now_iso()])?;
     let text = if planned {
         format!("Made into {cref}, a planned task in its goal. Its handoff starts with this report and snapshot.")
     } else {
@@ -2334,7 +2344,7 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
             if b.i("goal_id").is_some() { "" } else { " with no goal" }
         )
     };
-    board::add_issue_event(app, id, &who, "task", &text, None)?;
+    issue_tasked(app, id, c["id"].as_i64().unwrap_or(0), &who, &text)?;
     Ok(json!({"issue": issue_detail(app, id)?, "task": task_detail(app, c["id"].as_i64().unwrap_or(0))?}))
 }
 
