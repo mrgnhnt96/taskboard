@@ -214,6 +214,8 @@ pub enum Fold {
     Terms,
     /// A step's findings (`step_results`), under its headline.
     Findings,
+    /// The rest of a long note for testers, after its first block.
+    Note,
 }
 
 impl Fold {
@@ -225,6 +227,7 @@ impl Fold {
             Fold::What => "tb.fold.what",
             Fold::Terms => "tb.fold.terms",
             Fold::Findings => "tb.fold.findings",
+            Fold::Note => "tb.fold.note",
         }
     }
 }
@@ -811,7 +814,7 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(manage_box(c, t));
     }
 
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), merged_note_row(t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
+    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), merged_note_row(c, t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
     out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
     let what = match opt_s(t, "detail") {
         Some(d) => note_body(d),
@@ -1026,7 +1029,7 @@ fn terminal_row(c: &Ctx, t: &Value) -> Node {
 
 /// `jiraRow(t)`.
 /// The note for testers the board posts on the ticket at merge (`[jira] merged_note`), or that it's waiting for one.
-fn merged_note_row(t: &Value) -> Option<Node> {
+fn merged_note_row(c: &Ctx, t: &Value) -> Option<Node> {
     let n = obj(t, "merged_note")?;
     let mut body = Vec::new();
     if b(n, "waiting") {
@@ -1034,9 +1037,24 @@ fn merged_note_row(t: &Value) -> Option<Node> {
         body.push(el(K::Line, vec![pill("Waiting", Tone::Needs), txt(state, St::Small)]));
     }
     if let Some(text) = opt_s(n, "text") {
-        body.push(note_body(text));
+        body.push(folded_note(c, text));
     }
     Some(lrow("Note for testers", body))
+}
+
+/// Notes longer than this show their first block, the rest behind Show more.
+const NOTE_FOLD_CHARS: usize = 280;
+
+/// `note_body(text)`, folded after its first block when the note is long.
+fn folded_note(c: &Ctx, text: &str) -> Node {
+    let Node::El { k, tip, mut kids } = note_body(text) else { unreachable!("note_body is an El") };
+    if kids.len() < 2 || text.chars().count() <= NOTE_FOLD_CHARS {
+        return Node::El { k, tip, kids };
+    }
+    let rest = kids.split_off(1);
+    let open = c.fold_open(Fold::Note, true);
+    kids.push(fold(Fold::Note, open, txt(if open { "Show less" } else { "Show more" }, St::Small), vec![el(K::Md, rest)]));
+    Node::El { k, tip, kids }
 }
 
 fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
@@ -1955,6 +1973,16 @@ fn inline_at(ch: &[char], i: usize) -> Option<(usize, u8, String)> {
             }
         }
     }
+    // \*\*([^*\n]+)\*\*
+    if ch[i] == '*' && ch.get(i + 1) == Some(&'*') {
+        let mut j = i + 2;
+        while j < ch.len() && ch[j] != '*' && ch[j] != '\n' {
+            j += 1;
+        }
+        if j > i + 2 && ch.get(j + 1) == Some(&'*') && ch[j] == '*' {
+            return Some((j + 2, b'b', ch[i + 2..j].iter().collect()));
+        }
+    }
     // `([^`\n]+)`
     if ch[i] == '`' {
         let mut j = i + 1;
@@ -2044,7 +2072,7 @@ fn path_like(p: &str) -> bool {
     }
 }
 
-/// `inlineText(s)`: text with links and `code` (paths count as code).
+/// `inlineText(s)`: text with links, **bold** and `code` (paths count as code).
 fn inline_text(line: &str) -> Vec<Node> {
     let ch: Vec<char> = line.chars().collect();
     let mut out = Vec::new();
@@ -2062,6 +2090,7 @@ fn inline_text(line: &str) -> Vec<Node> {
             }
             out.push(match kind {
                 b'u' => Node::Link { s: text.clone(), go: Go::Url(text), tip: None, look: LinkLook::Plain },
+                b'b' => txt(text, St::Strong),
                 _ => txt(text, St::Code),
             });
             i = end;
