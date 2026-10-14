@@ -601,6 +601,7 @@ pub fn page(app: &App, date: Option<&str>, hide: Option<&str>) -> Result<Value> 
         "first_weekday": weekday_key(app.cfg.first_weekday),
         "usual": usual,
         "oldest": oldest(app)?.map(date_str),
+        "planning": crate::quality::recent(app, date)?.into_iter().filter(|v| !hide.contains(v["project"].as_str().unwrap_or(""))).collect::<Vec<_>>(),
     }))
 }
 

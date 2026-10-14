@@ -195,6 +195,16 @@ pub struct Wait {
     pub x: f32,
 }
 
+/// One project's plan quality: its goals finished in the last 30 days against the half year before.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub project: String,
+    pub color: usize,
+    pub size: String,
+    /// (measure, last 30 days, the half year before or empty, better than before).
+    pub stats: Vec<(&'static str, String, String, Option<bool>)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     pub title: String,
@@ -232,6 +242,7 @@ pub struct View {
     pub done_bars: Vec<(String, f64, f64, bool)>,
     /// (project, palette slot, minutes, share).
     pub split: Vec<(String, usize, f64, String)>,
+    pub planning: Vec<Plan>,
 }
 
 impl View {
@@ -491,6 +502,36 @@ impl View {
             .collect();
         split.sort_by_key(|x| x.1);
 
+        // How well goals were planned: lower is better on every measure.
+        let planning = arr(v, "planning")
+            .iter()
+            .map(|p| {
+                let (now, before) = (&p["recent"], &p["before"]);
+                let measures: [(&'static str, &str, fn(f64) -> String); 5] = [
+                    ("Added after planning", "late_share", |x| format!("{}%", (x * 100.0).round() as i64)),
+                    ("Failed or retried", "failed_share", |x| format!("{}%", (x * 100.0).round() as i64)),
+                    ("Review rounds a task", "rounds_per_task", |x| format!("{x:.1}")),
+                    ("Questions a task", "questions_per_task", |x| format!("{x:.1}")),
+                    ("Time against estimate", "actual_vs_estimate", |x| format!("{x:.1}×")),
+                ];
+                let stats = measures
+                    .into_iter()
+                    .filter_map(|(label, k, show)| {
+                        let a = now[k].as_f64()?;
+                        let b = before[k].as_f64();
+                        Some((label, show(a), b.map(|b| format!("was {}", show(b))).unwrap_or_default(), b.filter(|b| (a - b).abs() > 0.005).map(|b| a < b)))
+                    })
+                    .collect();
+                let (g, n) = (f(now, "goals"), f(now, "tasks"));
+                Plan {
+                    project: s(p, "project").to_string(),
+                    color: slot(s(p, "project")),
+                    size: format!("{} {} · {} {}", count(g), if g == 1.0 { "goal" } else { "goals" }, count(n), if n == 1.0 { "task" } else { "tasks" }),
+                    stats,
+                }
+            })
+            .collect();
+
         Some(View {
             title: if is_today { "Today".into() } else { date.format("%A, %B %-d").to_string() },
             live: is_today.then(|| clock(s(v, "now"))),
@@ -523,6 +564,7 @@ impl View {
             done_sub: format!("last week {} · {} PRs, last week {}", count(dl), count(pn), count(pl)),
             done_bars,
             split,
+            planning,
         })
     }
 }
@@ -713,7 +755,8 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .child(saved_card(&v, &t))
         .child(waits_card(&v, &t))
         .child(done_card(&v, &t))
-        .children((!v.split.is_empty()).then(|| split_card(&v, &t, &pc)));
+        .children((!v.split.is_empty()).then(|| split_card(&v, &t, &pc)))
+        .children((!v.planning.is_empty()).then(|| planning_card(&v, &t, &pc)));
 
     shell
         .child(
@@ -1177,6 +1220,41 @@ fn split_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
         }))
 }
 
+fn planning_card(v: &View, t: &Theme, pc: &impl Fn(usize) -> Hsla) -> Div {
+    card(t).child(h2("Planning, last 30 days")).children(v.planning.iter().map(|p| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(13.))
+                    .child(swatch(pc(p.color), 9.))
+                    .child(div().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).child(p.project.clone()))
+                    .child(div().text_size(px(12.)).text_color(t.muted).child(p.size.clone())),
+            )
+            .children(p.stats.iter().map(|(label, now, before, better)| {
+                let fg = match better {
+                    Some(true) => t.up_fg,
+                    Some(false) => t.down,
+                    None => t.text,
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .pl(px(17.))
+                    .text_size(px(12.5))
+                    .child(div().flex_1().truncate().text_color(t.text_2).child(*label))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(fg).child(now.clone()))
+                    .child(div().w(px(64.)).flex().justify_end().text_color(t.muted).child(before.clone()))
+            }))
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute.
@@ -1273,6 +1351,25 @@ mod tests {
         assert_eq!(s.vs_last, "+7h on last week", "600 against 200 by Thursday");
         assert_eq!(s.breakdown, "15h human estimate − 5h agent · 3.0×");
         assert_eq!(s.selected, Some(3));
+    }
+
+    #[::core::prelude::v1::test]
+    fn planning_compares_with_the_months_before() {
+        let mut v = sample();
+        v["planning"] = json!([
+            {"project": "webapp", "recent": {"goals": 2, "tasks": 8.0, "late_share": 0.25, "failed_share": 0.13, "rounds_per_task": 1.5, "questions_per_task": 0.38, "actual_vs_estimate": 0.42},
+             "before": {"goals": 5, "tasks": 20.0, "late_share": 0.4, "failed_share": 0.1, "rounds_per_task": 1.5, "questions_per_task": 0.5, "actual_vs_estimate": null}},
+            {"project": "api", "recent": {"goals": 1, "tasks": 1.0, "late_share": 0.0, "failed_share": 0.0, "rounds_per_task": 0.0, "questions_per_task": 0.0, "actual_vs_estimate": null}, "before": null}
+        ]);
+        let p = View::of(&v).unwrap().planning;
+        assert_eq!((p[0].project.as_str(), p[0].color, p[0].size.as_str()), ("webapp", 1, "2 goals · 8 tasks"));
+        assert_eq!(p[0].stats[0], ("Added after planning", "25%".to_string(), "was 40%".to_string(), Some(true)));
+        assert_eq!(p[0].stats[1].3, Some(false), "more failed than before");
+        assert_eq!(p[0].stats[2].3, None, "the same as before");
+        assert_eq!(p[0].stats[4], ("Time against estimate", "0.4×".to_string(), String::new(), None));
+        assert_eq!(p[1].size, "1 goal · 1 task");
+        assert_eq!(p[1].stats.len(), 4, "no estimate, no time line");
+        assert!(View::of(&sample()).unwrap().planning.is_empty());
     }
 
     #[::core::prelude::v1::test]

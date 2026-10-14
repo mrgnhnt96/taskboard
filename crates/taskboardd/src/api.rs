@@ -370,6 +370,9 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["jira", "comment"]) => qa::intake(app, body),
         ("GET", ["jira"]) => crate::jira_desk::state(app),
         ("GET", ["planning"]) => crate::planning::get(app, query),
+        ("GET", ["planning", "lessons"]) => crate::planning::suggest(app, query),
+        ("POST", ["planning", "lessons"]) => crate::planning::accept(app, body),
+        ("GET", ["quality"]) => crate::quality::get(app, query),
         ("GET", ["jira", "jobs", id]) => {
             let n = need_ref(&json!(id), "job")?;
             match app.db.q1("SELECT * FROM jobs WHERE id = ? AND kind = 'jira'", p![n])? {

@@ -32,6 +32,10 @@ const PROMPT_CHARS: usize = 1500;
 /// `PICK_FLOOR` when fewer fit (`relevance::pick`).
 const PICK_COUNT: usize = 5;
 const PICK_FLOOR: usize = 2;
+/// A suggested lesson that this many later retrospectives confirmed is kept without asking.
+pub const KEEP_AT: i64 = 2;
+/// A lesson that this many retrospectives in its scope went by without confirming is retired.
+pub const RETIRE_AFTER: usize = 5;
 
 pub(crate) fn clean_text(s: &str) -> Result<String> {
     let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -79,7 +83,16 @@ pub fn get(app: &App, r: &str) -> Result<Row> {
         .ok_or_else(|| ApiError::new(404, format!("There's no lesson {}.", rf("lesson", id))))
 }
 
-pub fn dict(l: &Row) -> Value {
+pub fn dict(app: &App, l: &Row) -> Value {
+    let mut v = row_dict(l);
+    let projects = projects_seen(app, l);
+    if l.s("scope") == Some("project") && projects.len() >= 2 {
+        v["suggest_global"] = json!(projects);
+    }
+    v
+}
+
+fn row_dict(l: &Row) -> Value {
     json!({
         "id": l.id(), "ref": rf("lesson", l.id()), "scope": l.v("scope"), "project": l.v("project"),
         "kind": l.v("kind"), "text": l.v("text"), "evidence": evidence(l), "state": l.v("state"),
@@ -129,7 +142,7 @@ fn add(app: &App, body: &Value) -> Result<Value> {
                 "source" => who.clone(), "decided_at" => if kept { Some(now.clone()) } else { None },
                 "decided_by" => if kept { Some(who) } else { None }, "created_at" => now, "updated_at" => now],
     )?;
-    Ok(dict(&get(app, &id.to_string())?))
+    Ok(dict(app, &get(app, &id.to_string())?))
 }
 
 fn set(app: &App, r: &str, body: &Value) -> Result<Value> {
@@ -169,7 +182,7 @@ fn set(app: &App, r: &str, body: &Value) -> Result<Value> {
     }
     f.push(("updated_at", json!(now_iso())));
     app.db.update("lessons", &json!(l.id()), f)?;
-    Ok(dict(&get(app, r)?))
+    Ok(dict(app, &get(app, r)?))
 }
 
 /// Keep or retire a lesson (on the owner's word), or put it back to suggested.
@@ -183,14 +196,14 @@ fn decide(app: &App, r: &str, state: &str, body: &Value) -> Result<Value> {
         let who = board::caller(app, body, board::OWNER);
         app.db.update("lessons", &json!(l.id()), fields!["state" => state, "decided_at" => now, "decided_by" => who, "updated_at" => now])?;
     }
-    Ok(dict(&get(app, r)?))
+    Ok(dict(app, &get(app, r)?))
 }
 
 /// Later work showed the same thing again: count it and add that work to the evidence.
 fn confirm(app: &App, r: &str, body: &Value) -> Result<Value> {
     let l = get(app, r)?;
     confirm_with(app, &l, &clean_evidence(body.get("evidence"))?)?;
-    Ok(dict(&get(app, r)?))
+    Ok(dict(app, &get(app, r)?))
 }
 
 pub(crate) fn confirm_with(app: &App, l: &Row, more: &[String]) -> Result<()> {
@@ -236,7 +249,7 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
             None => l.s("state") != Some("retired"),
         })
         .filter(|l| q("kind").map(|k| l.s("kind") == Some(k)).unwrap_or(true))
-        .map(dict)
+        .map(|l| dict(app, l))
         .collect();
     Ok(json!({"project": project, "lessons": rows}))
 }
@@ -270,7 +283,7 @@ fn search(app: &App, query: &crate::api::Query) -> Result<Value> {
         .filter(|s| s.score > 0.0)
         .take(20)
         .map(|s| {
-            let mut d = dict(&s.lesson);
+            let mut d = dict(app, &s.lesson);
             d["score"] = json!((s.score * 100.0).round() / 100.0);
             d["why"] = json!(s.why);
             d
@@ -279,13 +292,82 @@ fn search(app: &App, query: &crate::api::Query) -> Result<Value> {
     Ok(json!({"project": project, "lessons": found}))
 }
 
+/// The projects of the goals a lesson's evidence names: where it was learned and confirmed.
+pub fn projects_seen(app: &App, l: &Row) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for r in evidence(l).iter().filter(|r| r.starts_with('G')) {
+        let Ok(id) = need_ref(&json!(r), "goal") else { continue };
+        let Ok(Some(g)) = app.db.q1("SELECT project FROM goals WHERE id = ?", p![id]) else { continue };
+        if let Some(p) = g.s("project").filter(|p| !p.is_empty()) {
+            if !out.iter().any(|x| x == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The goals whose retrospective ran, with when it ran and the goal's project.
+fn retros(app: &App) -> Result<Vec<(String, f64, Option<String>)>> {
+    let mut out = vec![];
+    for r in app.db.q("SELECT key, value FROM settings WHERE key LIKE 'retro:G%'", p![])? {
+        let Some(v) = r.s("value").and_then(|s| serde_json::from_str::<Value>(s).ok()) else { continue };
+        let Some(at) = v["at"].as_str().and_then(parse_iso).filter(|_| v["state"] == "done") else { continue };
+        let goal = r.st("key").trim_start_matches("retro:").to_string();
+        let Ok(id) = need_ref(&json!(goal), "goal") else { continue };
+        let project = app.db.q1("SELECT project FROM goals WHERE id = ?", p![id])?.and_then(|g| g.s("project").map(|s| s.to_string()));
+        out.push((goal, at, project));
+    }
+    Ok(out)
+}
+
+/// After a retrospective: keep the suggested lessons later goals keep confirming, retire the ones
+/// that many goals went by without confirming, and name the project lessons other projects
+/// confirmed too, for the owner to make global. `current` is the goal just looked back over, whose
+/// run isn't saved yet.
+pub(crate) fn upkeep(app: &App, current: Option<(&str, Option<&str>)>) -> Result<Value> {
+    let mut runs = retros(app)?;
+    if let Some((g, project)) = current {
+        runs.retain(|(r, _, _)| r != g);
+        runs.push((g.to_string(), now_ts() + 1.0, project.map(|s| s.to_string())));
+    }
+    let now = now_iso();
+    let (mut kept, mut retired, mut global) = (vec![], vec![], vec![]);
+    for l in app.db.q("SELECT * FROM lessons WHERE state != 'retired' ORDER BY id", p![])? {
+        let r = rf("lesson", l.id());
+        if l.s("state") == Some("suggested") && l.i0("confirmations") >= KEEP_AT {
+            let why = format!("board: confirmed by {} retrospectives", l.i0("confirmations"));
+            app.db.update("lessons", &json!(l.id()), fields!["state" => "kept", "decided_at" => now, "decided_by" => why, "updated_at" => now])?;
+            kept.push(r);
+            continue;
+        }
+        let since = [l.s("last_confirmed"), l.s("decided_at"), l.s("created_at")].into_iter().flatten().filter_map(parse_iso).fold(0.0, f64::max);
+        let ev = evidence(&l);
+        let global_scope = l.s("scope") == Some("global");
+        let missed = runs
+            .iter()
+            .filter(|(g, at, project)| *at > since && !ev.contains(g) && (global_scope || project.as_deref() == l.s("project")))
+            .count();
+        if missed >= RETIRE_AFTER {
+            let why = format!("board: {missed} retrospectives went by without confirming it");
+            app.db.update("lessons", &json!(l.id()), fields!["state" => "retired", "decided_at" => now, "decided_by" => why, "updated_at" => now])?;
+            retired.push(r);
+            continue;
+        }
+        if !global_scope && projects_seen(app, &l).len() >= 2 {
+            global.push(r);
+        }
+    }
+    Ok(json!({"kept": kept, "retired": retired, "suggest_global": global}))
+}
+
 /// `/lessons…` routes.
 pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, body: &Value) -> Result<Value> {
     match (method, rest) {
         ("GET", []) => list(app, query),
         ("GET", ["search"]) => search(app, query),
         ("POST", []) => app.db.tx(|| add(app, body)),
-        ("GET", [r]) => Ok(dict(&get(app, r)?)),
+        ("GET", [r]) => Ok(dict(app, &get(app, r)?)),
         ("POST", [r]) => app.db.tx(|| set(app, r, body)),
         ("POST", [r, "keep"]) => app.db.tx(|| decide(app, r, "kept", body)),
         ("POST", [r, "retire"]) => app.db.tx(|| decide(app, r, "retired", body)),
@@ -335,10 +417,16 @@ pub fn handoff_block(app: &App, t: &Row) -> Result<Vec<String>> {
     Ok(vec![format!("Lessons from earlier work here:\n{}", ls.join("\n"))])
 }
 
-/// The planning lessons that fit what's being planned (`about`: the goal's words), for a planner's
-/// prompt, or nothing.
-pub fn planning_block(app: &App, project: Option<&str>, about: &str) -> Result<Option<String>> {
-    let all = kept(app, project, &["planning"])?;
+/// The kept planning lessons not yet written into the planning rules in force (`rules`, where an
+/// accepted lesson keeps its ref).
+pub fn unwritten_planning(app: &App, project: Option<&str>, rules: &str) -> Result<Vec<Row>> {
+    Ok(kept(app, project, &["planning"])?.into_iter().filter(|l| !rules.contains(&format!("({})", rf("lesson", l.id())))).collect())
+}
+
+/// The planning lessons that fit what's being planned (`about`: the goal's words) and aren't
+/// written into the planning rules yet (`rules`), for a planner's prompt, or nothing.
+pub fn planning_block(app: &App, project: Option<&str>, about: &str, rules: &str) -> Result<Option<String>> {
+    let all = unwritten_planning(app, project, rules)?;
     let w = crate::relevance::Work { project, text: about.to_string(), task: None };
     let ls = lines(&crate::relevance::pick(app, &w, all, PICK_COUNT, PICK_FLOOR)?);
     if ls.is_empty() {
