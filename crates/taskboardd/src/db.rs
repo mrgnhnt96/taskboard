@@ -249,6 +249,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     // Backlog issues keep theirs in `issues.area`.
     ("tasks", "area", "TEXT"),
     ("goals", "area", "TEXT"),
+    // How the area got there: `set` (by hand, `--area`, even `none`) or `inferred` (from the files the
+    // work changes, `areas::infer_task`), which later inference may change. Null: never set.
+    ("tasks", "area_source", "TEXT"),
+    ("goals", "area_source", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

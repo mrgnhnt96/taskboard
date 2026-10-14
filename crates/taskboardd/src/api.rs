@@ -331,6 +331,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
         (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),
         (_, ["lessons", rest @ ..]) => crate::lessons::route(app, method, rest, query, body),
+        ("POST", ["areas", "backfill"]) => crate::areas::backfill(app, body),
         (_, ["reviewers", rest @ ..]) => crate::reviewers::route(app, method, rest, query, body),
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
         ("POST", ["attachments", id, "remove"]) => remove_attachment(app, id),
@@ -851,6 +852,8 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 f.push(("area", a));
                 bump = true;
             }
+            // Set by hand, even to none: inference leaves it alone from now on.
+            f.push(("area_source", json!("set")));
         }
         let mut new_goal_id: Option<Option<i64>> = None;
         if has_key("goal_id") {
@@ -1743,6 +1746,7 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
             // A goal moved to another project keeps its area only when that project has one by the same name.
             let project = if body_has(body, "project") { body_str(body, "project") } else { g.st("project") };
             let a = if hk("area") {
+                f.push(("area_source", json!("set")));
                 crate::areas::clean(app, &project, &body["area"])?
             } else {
                 crate::areas::clean(app, &project, &g.v("area")).unwrap_or(Value::Null)

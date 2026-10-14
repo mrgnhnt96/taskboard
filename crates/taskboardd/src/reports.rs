@@ -2586,6 +2586,14 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
         crate::propen::before_done(app, &mut r.body, t.as_ref())?;
         finishing(&r)?;
     }
+    if (r.event == "hook.commit" || r.event == "tb.done") && !spooled {
+        // Re-infer the task's area from what its checkout changes, outside the transaction: it runs git.
+        if let Some(t) = r.task().ok().flatten() {
+            if let Err(e) = crate::areas::infer_task(app, t.id(), r.cwd.as_deref()) {
+                app.info(format!("areas: couldn't infer {}'s area: {}", rf("task", t.id()), e.message));
+            }
+        }
+    }
     app.db.tx(|| {
         if API_RETRY_EVENTS.contains(&r.event.as_str()) {
             app.db.x("UPDATE sessions SET api_error = NULL, api_error_kind = NULL WHERE id = ?", p![r.sid()])?;
