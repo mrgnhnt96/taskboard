@@ -99,7 +99,8 @@ fn prompt(app: &App, gid: i64) -> Result<String> {
          tooling (builds, tests, scripts). scope is project unless it holds for any project.\n\
          Give each lesson's evidence: the refs below it came from (T12, B7, G3).\n\
          When an existing lesson below already says it, answer action \"confirm\" with its number (L4 → 4) instead of \
-         writing it again; never confirm a retired one, and don't suggest it again either. Give at most {NEW_MAX} new \
+         writing it again (one from another project too, when this goal shows the same thing); never confirm a retired \
+         one, and don't suggest it again either. Give at most {NEW_MAX} new \
          lessons, only ones the evidence below shows. Nothing worth keeping? Answer an empty list.\n\n{}",
         dossier(app, gid)?,
         owner = app.cfg.owner
@@ -157,9 +158,13 @@ pub fn dossier(app: &App, gid: i64) -> Result<String> {
         out.push("(none yet)".into());
     }
     for l in &existing {
+        let scope = match l.s("project") {
+            Some(p) if l.s("scope") == Some("project") && Some(p) != goal.s("project") => format!("project {p}"),
+            _ => l.st("scope"),
+        };
         out.push(format!(
-            "{} [{} · {} · {}, confirmed {}]: {}",
-            rf("lesson", l.id()), l.st("state"), l.st("kind"), l.st("scope"), l.i0("confirmations"), one_line(&l.st("text"), 400)
+            "{} [{} · {} · {scope}, confirmed {}]: {}",
+            rf("lesson", l.id()), l.st("state"), l.st("kind"), l.i0("confirmations"), one_line(&l.st("text"), 400)
         ));
     }
     Ok(out.join("\n"))
@@ -259,11 +264,13 @@ fn qa_comments(app: &App, ids: &[i64]) -> Result<Vec<Row>> {
 }
 
 /// The lessons a goal in `project` could confirm: its project's and the board's, retired ones too
-/// so they aren't suggested again.
+/// so they aren't suggested again, and other projects' kept ones (one confirmed here as well may
+/// hold for every project).
 fn existing(app: &App, project: Option<&str>) -> Result<Vec<Row>> {
     app.db.q(
-        "SELECT * FROM lessons WHERE scope = 'global' OR project IS ? ORDER BY state = 'retired', confirmations DESC, id DESC LIMIT 60",
-        p![project],
+        "SELECT * FROM lessons WHERE scope = 'global' OR project IS ? OR state = 'kept'
+         ORDER BY project IS NOT ? AND scope = 'project', state = 'retired', confirmations DESC, id DESC LIMIT 60",
+        p![project, project],
     )
 }
 
@@ -324,5 +331,7 @@ pub fn apply(app: &App, gid: i64, answer: &Value) -> Result<Value> {
         new.push(rf("lesson", id));
         new_texts.push(text.to_string());
     }
-    Ok(json!({"goal": goal_ref, "new": new, "confirmed": confirmed, "skipped": skipped}))
+    let up = lessons::upkeep(app, Some((&goal_ref, project)))?;
+    Ok(json!({"goal": goal_ref, "new": new, "confirmed": confirmed, "skipped": skipped,
+              "kept": up["kept"], "retired": up["retired"], "suggest_global": up["suggest_global"]}))
 }

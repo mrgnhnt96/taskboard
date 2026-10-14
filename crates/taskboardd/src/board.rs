@@ -45,6 +45,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
                 let goal = get_goal(app, g)?;
                 hooks::fire_goal(app, "goal.finished", &goal, Some(&after));
                 crate::chain::finished(app, &goal)?;
+                crate::quality::finished(app, &goal)?;
                 crate::retro::finished(app, &goal)?;
             }
         }

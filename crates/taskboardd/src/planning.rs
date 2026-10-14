@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::api::Query;
 use crate::app::App;
 use crate::jira::config_file;
-use crate::util::Result;
+use crate::util::{Result, RowExt};
 
 /// `[planning]` in config.toml.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -83,7 +83,7 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
         None => crate::projects::project_for_path(app, arg("cwd"))?,
     };
     let p = pick(app, project.as_deref());
-    let lessons = crate::lessons::kept(app, project.as_deref(), &["planning"])?;
+    let lessons = crate::lessons::unwritten_planning(app, project.as_deref(), &p.text)?;
     Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
               "lessons": crate::lessons::lines(&lessons)}))
 }
@@ -99,8 +99,67 @@ pub fn block(app: &App, project: Option<&str>, about: &str) -> String {
         _ => "How to slice the work:",
     };
     let mut out = format!("{heading}\n{}", p.text);
-    if let Ok(Some(l)) = crate::lessons::planning_block(app, project, about) {
+    if let Ok(Some(l)) = crate::lessons::planning_block(app, project, about, &p.text) {
         out += &format!("\n\n{l}");
     }
     out
+}
+
+/// The heading accepted planning lessons go under in a planning file.
+const LESSONS_HEADING: &str = "## Learned from finished goals";
+
+/// The project's planning file with its kept planning lessons written in: the file as it is (or,
+/// when the project has none yet, the rules in force now, so the new file keeps them), with each
+/// lesson not in it yet added under one heading, its ref kept so it isn't added twice.
+fn proposal(app: &App, project: &str) -> Result<Value> {
+    let Some((path, _)) = file_for(app, Some(project)) else {
+        return crate::util::err(400, format!("“{project}” can't name a planning file."));
+    };
+    let current = match config_file(&path) {
+        Some(Ok(t)) if !t.trim().is_empty() => Some(t),
+        _ => None,
+    };
+    let base = current.clone().unwrap_or_else(|| pick(app, Some(project)).text);
+    let add = crate::lessons::unwritten_planning(app, Some(project), &base)?;
+    let lines: Vec<String> = add.iter().map(|l| format!("- {} ({})", l.st("text").trim(), crate::util::rf("lesson", l.id()))).collect();
+    let mut text = base.trim_end().to_string();
+    if !lines.is_empty() {
+        if !text.contains(LESSONS_HEADING) {
+            text += &format!("\n\n{LESSONS_HEADING}");
+        }
+        text += &format!("\n{}", lines.join("\n"));
+    }
+    text.push('\n');
+    Ok(json!({"project": project, "path": path, "exists": current.is_some(), "add": lines,
+              "lessons": add.iter().map(|l| crate::util::rf("lesson", l.id())).collect::<Vec<_>>(), "text": text}))
+}
+
+fn project_arg(app: &App, project: &str, cwd: Option<&str>) -> Result<String> {
+    let p = if project.is_empty() { crate::projects::project_for_path(app, cwd)? } else { Some(project.to_string()) };
+    p.ok_or_else(|| crate::util::ApiError::new(400, "Say which project's planning file (--project)."))
+}
+
+/// `GET /planning/lessons?project=<name>` (or `?cwd=`): the edit to the project's planning file that
+/// writes its kept planning lessons in, for the owner to look over.
+pub fn suggest(app: &App, query: &Query) -> Result<Value> {
+    let arg = |k: &str| query.get(k).map(|s| s.as_str()).unwrap_or("");
+    proposal(app, &project_arg(app, arg("project"), Some(arg("cwd")).filter(|s| !s.is_empty()))?)
+}
+
+/// `POST /planning/lessons {project | cwd}`: the owner accepted the edit; write the file.
+pub fn accept(app: &App, body: &Value) -> Result<Value> {
+    let project = project_arg(app, body["project"].as_str().unwrap_or(""), body["cwd"].as_str())?;
+    let mut v = proposal(app, &project)?;
+    if v["add"].as_array().is_none_or(|a| a.is_empty()) {
+        v["written"] = json!(false);
+        return Ok(v);
+    }
+    let path = crate::util::expand_home(v["path"].as_str().unwrap_or(""));
+    let path = std::path::Path::new(&path);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| crate::util::ApiError::new(500, format!("can't make {}: {e}", dir.display())))?;
+    }
+    std::fs::write(path, v["text"].as_str().unwrap_or("")).map_err(|e| crate::util::ApiError::new(500, format!("can't write {}: {e}", path.display())))?;
+    v["written"] = json!(true);
+    Ok(v)
 }

@@ -285,6 +285,24 @@ enum Cmd {
         /// The project (this terminal's when left out)
         #[arg(long)]
         project: Option<String>,
+        /// Show the edit that writes the project's kept planning lessons into its planning file
+        #[arg(long, conflicts_with = "accept")]
+        suggest: bool,
+        /// Write that edit (the owner accepted it)
+        #[arg(long)]
+        accept: bool,
+    },
+    /// How well goals were planned: tasks added late, failed or retried, review rounds, questions and time against the estimate, by month
+    Quality {
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        /// Every project's
+        #[arg(long)]
+        all: bool,
+        /// Each finished goal's numbers too
+        #[arg(long)]
+        goals: bool,
     },
     /// Add, change or delete a task
     Task {
@@ -2160,6 +2178,104 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     Ok(0)
 }
 
+fn planning_lessons_cmd(c: &Ctx, project: Option<String>, accept: bool) -> Result<i32, String> {
+    let v = if accept {
+        let body = match &project {
+            Some(p) => json!({"project": p}),
+            None => json!({"cwd": c.cwd}),
+        };
+        c.call("POST", "/planning/lessons", Some(body))?
+    } else {
+        let q = match &project {
+            Some(p) => format!("project={}", qv(p)),
+            None => format!("cwd={}", qv(&c.cwd)),
+        };
+        c.call("GET", &format!("/planning/lessons?{q}"), None)?
+    };
+    let (who, path) = (v["project"].as_str().unwrap_or(""), v["path"].as_str().unwrap_or(""));
+    let add: Vec<&str> = v["add"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+    if add.is_empty() {
+        out(&format!("{who}'s planning file ({path}) already has every kept planning lesson."));
+        return Ok(0);
+    }
+    if v["written"] == true {
+        out(&format!("Wrote {} lesson{} into {path}:\n{}", add.len(), if add.len() == 1 { "" } else { "s" }, add.join("\n")));
+        return Ok(0);
+    }
+    let verb = if v["exists"] == true { "Add to" } else { "Make" };
+    out(&format!("{verb} {path}, {who}'s planning file, with these lines:\n{}", add.join("\n")));
+    if v["exists"] != true {
+        out("It starts from the planning rules in force now.");
+    }
+    out(&format!("Write it with: tb planning --project {who} --accept"));
+    Ok(0)
+}
+
+fn share(v: &Value) -> String {
+    v.as_f64().map(|x| format!("{:.0}%", x * 100.0)).unwrap_or_else(|| "–".into())
+}
+
+fn per_task(v: &Value) -> String {
+    v.as_f64().map(|x| format!("{x:.1}")).unwrap_or_else(|| "–".into())
+}
+
+fn times(v: &Value) -> String {
+    v.as_f64().map(|x| format!("{x:.1}×")).unwrap_or_else(|| "–".into())
+}
+
+/// One line of plan-quality numbers (a month's, a project's or a goal's).
+fn quality_line(head: &str, v: &Value) -> String {
+    let n = |k: &str| v[k].as_f64().unwrap_or(0.0);
+    let tasks = n("tasks");
+    let rate = |k: &str| if tasks > 0.0 { json!(n(k) / tasks) } else { Value::Null };
+    let est = n("est_min");
+    let goals = v["goals"].as_i64().map(|g| format!("{g} goal{}, ", if g == 1 { "" } else { "s" })).unwrap_or_default();
+    format!(
+        "{head}  {goals}{tasks} task{}  added late {}  failed/retried {}  review rounds {}/task  questions {}/task  time vs estimate {}",
+        if tasks == 1.0 { "" } else { "s" },
+        share(&rate("added_late")),
+        share(&rate("failed")),
+        per_task(&rate("review_rounds")),
+        per_task(&rate("questions")),
+        times(&if est > 0.0 { json!(n("work_min") / est) } else { Value::Null }),
+    )
+}
+
+fn quality_cmd(c: &Ctx, project: Option<String>, all: bool, goals: bool) -> Result<i32, String> {
+    let q = match (all, &project) {
+        (true, _) => "project=all".to_string(),
+        (_, Some(p)) => format!("project={}", qv(p)),
+        _ => format!("cwd={}", qv(&c.cwd)),
+    };
+    let v = c.call("GET", &format!("/quality?{q}"), None)?;
+    let ps = v["projects"].as_array().cloned().unwrap_or_default();
+    if ps.is_empty() {
+        out("No finished goals yet.");
+        return Ok(0);
+    }
+    for (i, p) in ps.iter().enumerate() {
+        if i > 0 {
+            out("");
+        }
+        out(&quality_line(p["project"].as_str().unwrap_or(""), &p["total"]));
+        for m in p["months"].as_array().into_iter().flatten() {
+            out(&quality_line(&format!("  {}", month_name(m["month"].as_str().unwrap_or(""))), m));
+        }
+        if goals {
+            for g in p["goals"].as_array().into_iter().flatten() {
+                let head = format!("  {} {}", g["goal"].as_str().unwrap_or(""), g["name"].as_str().unwrap_or(""));
+                out(&quality_line(&head, g));
+            }
+        }
+    }
+    Ok(0)
+}
+
+/// "2026-10" as "Oct 2026".
+fn month_name(m: &str) -> String {
+    chrono::NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").map(|d| d.format("%b %Y").to_string()).unwrap_or_else(|_| m.to_string())
+}
+
 fn jira_cmd(c: &Ctx, job: Option<String>, result: Option<String>, rest: Vec<String>) -> Result<i32, String> {
     let Some(job) = job else {
         let v = c.call("GET", "/jira", None)?;
@@ -2383,6 +2499,10 @@ fn lesson_line(l: &Value) -> String {
     if !ev.is_empty() {
         head.push(ev.join(", "));
     }
+    let seen: Vec<&str> = l["suggest_global"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+    if !seen.is_empty() {
+        head.push(format!("make global? (confirmed in {})", seen.join(", ")));
+    }
     format!("{}\n  {}", head.join(" · "), l["text"].as_str().unwrap_or(""))
 }
 
@@ -2526,12 +2646,13 @@ fn lesson_retro(c: &Ctx, g: &str) -> Result<i32, String> {
         _ => {}
     }
     let refs = |k: &str| v[k].as_array().cloned().unwrap_or_default();
-    let (new, confirmed) = (refs("new"), refs("confirmed"));
-    if new.is_empty() && confirmed.is_empty() {
+    let (new, confirmed, kept, retired) = (refs("new"), refs("confirmed"), refs("kept"), refs("retired"));
+    if [&new, &confirmed, &kept, &retired].iter().all(|l| l.is_empty()) {
         out(&format!("Nothing worth keeping from {g}."));
         return Ok(0);
     }
-    for (label, list) in [("Suggested", &new), ("Confirmed", &confirmed)] {
+    let lists = [("Suggested", &new), ("Confirmed", &confirmed), ("Kept, confirmed again", &kept), ("Retired, not confirmed lately", &retired)];
+    for (label, list) in lists {
         for r in list.iter().filter_map(|r| r.as_str()) {
             out(&format!("{label}: {}", lesson_line(&c.call("GET", &format!("/lessons/{r}"), None)?)));
         }
@@ -3782,7 +3903,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
-        Cmd::Planning { project } => planning_cmd(c, project),
+        Cmd::Planning { project, suggest, accept } => match (suggest, accept) {
+            (false, false) => planning_cmd(c, project),
+            _ => planning_lessons_cmd(c, project, accept),
+        },
+        Cmd::Quality { project, all, goals } => quality_cmd(c, project, all, goals),
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
         Cmd::Lesson { action } => lesson_cmd(c, action),
         Cmd::Areas { action } => areas_cmd(c, action),
