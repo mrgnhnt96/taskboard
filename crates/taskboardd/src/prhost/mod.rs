@@ -495,11 +495,13 @@ pub struct FakeHost {
     pub stops: Mutex<Vec<String>>,
     /// What `request_reviews` answers instead of asking, while set.
     pub review_error: Mutex<Option<String>>,
+    /// Reviewers `remove_reviewers` answers for without taking them off.
+    pub keeps: Mutex<Vec<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), keeps: Mutex::new(vec![]) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -559,7 +561,8 @@ impl PrHost for FakeHost {
     }
     fn remove_reviewers(&self, _pr: &PrRef, users: &[String]) -> HostResult<()> {
         self.log(format!("remove {}", users.join(",")));
-        self.rec.lock().reviewers.retain(|r| !users.contains(&r.user));
+        let keeps = self.keeps.lock().clone();
+        self.rec.lock().reviewers.retain(|r| !users.contains(&r.user) || keeps.contains(&r.user));
         Ok(())
     }
     fn merge(&self, _pr: &PrRef, opts: &MergeOpts) -> HostResult<()> {

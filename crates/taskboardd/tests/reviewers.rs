@@ -207,6 +207,64 @@ fn tb_pr_reviewers_sets_reviewers_through_the_host_and_records_each_ask() {
     assert_eq!(names, vec!["{cy}".to_string()]);
 }
 
+#[test]
+fn a_dry_run_of_any_kind_leaves_the_pr_alone() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    for n in ["Ana", "Bo", "Cy", "Di"] {
+        b.add(n, json!({"user": format!("{{{}}}", n.to_lowercase())}));
+    }
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
+    let before = h.calls().len();
+
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"replace": "Ana", "with": "Cy", "dry_run": true}));
+    assert_eq!(v["replace"], json!({"old": "Ana", "new": "Cy"}));
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Bo", "dry_run": true}));
+    assert_eq!(v["drop"]["name"], "Bo");
+    let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Di"], "dry_run": true}));
+    assert_eq!(v["picks"][0]["name"], "Di");
+
+    assert_eq!(h.calls().len(), before, "a dry run sends nothing to the host: {:?}", h.calls());
+    let users: Vec<String> = h.rec.lock().reviewers.iter().map(|r| r.user.clone()).collect();
+    assert_eq!(users, vec!["{ana}".to_string(), "{bo}".to_string()]);
+    assert_eq!(states(&b, id), vec![pair("Ana", "open"), pair("Bo", "open")]);
+}
+
+#[test]
+fn a_drop_the_host_does_not_make_is_not_reported_as_done() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    b.add("Ana", json!({"user": "{ana}"}));
+    b.add("Bo", json!({"user": "{bo}"}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
+    h.keeps.lock().push("{ana}".into());
+
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Ana"})).unwrap_err();
+    assert!(e.contains("still lists Ana") && e.contains("didn't take them off"), "{e}");
+    assert_eq!(states(&b, id), vec![pair("Ana", "open"), pair("Bo", "open")], "her ask stays open while she's on the PR");
+
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Cy"})).unwrap_err();
+    assert!(e.contains("isn't on PR"), "{e}");
+}
+
+#[test]
+fn github_keeps_a_reviewer_who_has_reviewed_so_the_board_says_so() {
+    let b = board_with(|_| {});
+    let h = FakeHost::new("github", green());
+    prhost::install(&b.app, h.clone());
+    let id = b.pr_task("https://github.com/acme/webapp/pull/9");
+    b.add("Ana", json!({"user": "ana"}));
+    b.add("Bo", json!({"user": "bo"}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
+    set_state(&h, "ana", "approved");
+
+    let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Ana"})).unwrap_err();
+    assert!(e.contains("already reviewed") && e.contains("Dismiss their review"), "{e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("remove")), "{:?}", h.calls());
+}
+
 pub fn sh_git(repo: &std::path::Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git").arg("-C").arg(repo).args(args).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

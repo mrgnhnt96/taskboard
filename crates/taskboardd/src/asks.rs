@@ -209,10 +209,12 @@ fn may_ask_now(app: &App, t: &Row, adding: bool) -> Result<()> {
 pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
-    let rec = match prflow::refresh_task(app, id)? {
+    let on_host = host_name(&pr);
+    let rec = match crate::progress::waiting(&format!("PR #{} on {on_host}", pr.num), crate::progress::WAITING_EVERY, || prflow::refresh_task(app, id))? {
         Ok(r) => r,
         Err(e) => return err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
     };
+    crate::progress::stage(&format!("Read PR #{} from {on_host}", pr.num));
     let t = board::get_task(app, id)?;
     let by = who_of(app, body);
     let fail = |what: &str, e: String| ApiError::new(502, format!("Couldn't {what} on PR #{}: {e}.", pr.num));
@@ -223,23 +225,18 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let dry = as_bool(body.get("dry_run"), false);
     let why = Some(body_str(body, "why")).filter(|w| !w.is_empty());
     let picking = drop.is_empty() && replace.is_empty() && ask.is_empty();
-    if picking && dry {
-        let picks = pick(app, &t, &rec, wanted(app, &t, &rec, count), &[])?;
-        return Ok(json!({"task": rf("task", id), "dry_run": true,
-                         "picks": picks.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>()}));
-    }
-    may_ask_now(app, &t, picking || !ask.is_empty())?;
-    let h = host(app, &pr)?;
-    let mut asked: Vec<(Who, String)> = vec![];
-    let mut dropped: Vec<Who> = vec![];
-    let mut replaced: Option<(Who, Who)> = None;
-    if !drop.is_empty() {
+    let to_drop = if drop.is_empty() {
+        None
+    } else {
         let w = resolve(app, &t, &rec, &drop)?;
-        h.remove_reviewers(&pr, std::slice::from_ref(&w.user)).map_err(|e| fail("take a reviewer off", e))?;
-        dropped.push(w);
-    }
-    if !replace.is_empty() {
+        removable(&rec, &pr, &w)?;
+        Some(w)
+    };
+    let swap = if replace.is_empty() {
+        None
+    } else {
         let old = resolve(app, &t, &rec, &replace)?;
+        removable(&rec, &pr, &old)?;
         let with = body_str(body, "with");
         let new = if with.is_empty() {
             match pick(app, &t, &rec, 1, std::slice::from_ref(&old.user))?.into_iter().next() {
@@ -250,9 +247,8 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
             resolve(app, &t, &rec, &with)?
         };
         may_ask(app, &t, &rec, &new)?;
-        h.replace_reviewer(&pr, &old.user, &new.user).map_err(|e| fail("swap the reviewer", e))?;
-        replaced = Some((old, new));
-    }
+        Some((old, new))
+    };
     let mut want: Vec<(Who, String)> = vec![];
     for a in &ask {
         let w = resolve(app, &t, &rec, a)?;
@@ -264,7 +260,11 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mut short = None;
     if picking {
         let n = wanted(app, &t, &rec, count);
-        want = pick(app, &t, &rec, n, &[])?.into_iter().map(|(w, _)| (w, why.clone().unwrap_or_else(|| "pick".into()))).collect();
+        want = pick(app, &t, &rec, n, &[])?;
+        if dry {
+            return Ok(dry_run(id, &want, None, None));
+        }
+        want = want.into_iter().map(|(w, _)| (w, why.clone().unwrap_or_else(|| "pick".into()))).collect();
         if want.is_empty() && n > 0 && on_pr(&flow(&t), &rec).is_empty() {
             return err(409, format!("Nobody on {}'s roster can review this PR: add reviewers with tb reviewers add, or name one with --ask.", t.st("project")));
         }
@@ -272,11 +272,38 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
             short = Some(short_roster(&t, pr.num, want.len(), n));
         }
     }
+    if dry {
+        return Ok(dry_run(id, &want, to_drop.as_ref(), swap.as_ref()));
+    }
+    may_ask_now(app, &t, picking || !ask.is_empty())?;
+    let h = host(app, &pr)?;
+    let on_host_call = |what: &str, f: &dyn Fn() -> prhost::HostResult<()>| crate::progress::waiting(&format!("{on_host} to {what}"), crate::progress::WAITING_EVERY, f);
+    if let Some(w) = &to_drop {
+        on_host_call("take a reviewer off", &|| h.remove_reviewers(&pr, std::slice::from_ref(&w.user))).map_err(|e| fail("take a reviewer off", e))?;
+        crate::progress::stage(&format!("Took {} off on {on_host}", w.name));
+    }
+    if let Some((old, new)) = &swap {
+        on_host_call("swap the reviewer", &|| h.replace_reviewer(&pr, &old.user, &new.user)).map_err(|e| fail("swap the reviewer", e))?;
+        crate::progress::stage(&format!("Asked {} in place of {} on {on_host}", new.name, old.name));
+    }
+    let mut asked: Vec<(Who, String)> = vec![];
     if !want.is_empty() {
         let users: Vec<String> = want.iter().map(|(w, _)| w.user.clone()).collect();
-        h.request_reviews(&pr, &users).map_err(|e| fail("ask for reviews", e))?;
+        on_host_call("ask for reviews", &|| h.request_reviews(&pr, &users)).map_err(|e| fail("ask for reviews", e))?;
+        crate::progress::stage(&format!("Asked {} on {on_host}", want.iter().map(|(w, _)| w.name.clone()).collect::<Vec<_>>().join(", ")));
         asked.extend(want);
     }
+    // The host may answer a removal without making it: only what a fresh read shows counts.
+    let mut stuck: Vec<Who> = vec![];
+    if to_drop.is_some() || swap.is_some() {
+        if let Ok(after) = crate::progress::waiting(&format!("PR #{} on {on_host}", pr.num), crate::progress::WAITING_EVERY, || prflow::refresh_task(app, id))? {
+            let off: Vec<&Who> = to_drop.iter().chain(swap.iter().map(|(old, _)| old)).collect();
+            stuck = off.into_iter().filter(|w| still_on(&after, &w.user)).cloned().collect();
+        }
+    }
+    let is_stuck = |w: &Who| stuck.iter().any(|s| s.user == w.user);
+    let dropped: Vec<Who> = to_drop.into_iter().filter(|w| !is_stuck(w)).collect();
+    let replaced = swap;
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let num = pr.num;
@@ -288,12 +315,14 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
             reviewers::note(app, &t, &by, &format!("Took {} off PR #{num}'s reviewers", w.name))?;
         }
         if let Some((old, new)) = &replaced {
-            let prior = reviewers::open_ask(app, id, &old.user)?;
+            let prior = if is_stuck(old) { None } else { reviewers::open_ask(app, id, &old.user)? };
             // A replace by hand isn't a swap for not reviewing: it says nothing about their speed.
             if let Some(a) = &prior {
                 reviewers::close_ask(app, a.id(), "dropped")?;
             }
-            swap_off(app, id, &old.user)?;
+            if !is_stuck(old) {
+                swap_off(app, id, &old.user)?;
+            }
             reviewers::record_ask(app, &t, &new.user, &new.name, "replace", &by, prior.map(|a| a.id()))?;
             reviewers::note(app, &t, &by, &format!("Asked {} to review PR #{num} in place of {}", new.name, old.name))?;
         }
@@ -318,6 +347,11 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    if !stuck.is_empty() {
+        let names = stuck.iter().map(|w| w.name.clone()).collect::<Vec<_>>().join(" and ");
+        let swapped = replaced.as_ref().filter(|(old, _)| is_stuck(old)).map(|(_, new)| format!(" {} was asked, but", new.name)).unwrap_or_default();
+        return err(502, format!("{on_host} still lists {names} on PR #{}'s reviewers:{swapped} the host didn't take them off. Check the PR on {on_host}.", pr.num));
+    }
     let _ = prflow::refresh_task(app, id)?;
     let t = board::get_task(app, id)?;
     Ok(json!({
@@ -329,6 +363,38 @@ pub fn pr_reviewers(app: &App, id: i64, body: &Value) -> Result<Value> {
         "asks": reviewers::asks_of(app, id)?.iter().map(reviewers::ask_dict).collect::<Vec<_>>(),
         "pr": board::pr_card(app, &t),
     }))
+}
+
+fn host_name(pr: &PrRef) -> &'static str {
+    match pr.host.as_str() {
+        "bitbucket" => "Bitbucket",
+        "gitlab" => "GitLab",
+        _ => "GitHub",
+    }
+}
+
+/// Refuses taking someone off a PR who isn't on it, or whose review GitHub keeps: it only takes back
+/// a request, so someone who has reviewed stays listed.
+fn removable(rec: &Value, pr: &PrRef, w: &Who) -> Result<()> {
+    if !still_on(rec, &w.user) {
+        return err(409, format!("{} isn't on PR #{}'s reviewers.", w.name, pr.num));
+    }
+    let reviewed = reviewer_of(rec, &w.user).is_some_and(|r| r["state"].as_str().is_some_and(|s| s != "pending"));
+    if pr.host == "github" && reviewed {
+        return err(409, format!("{} has already reviewed PR #{}, and GitHub keeps a review on the PR: the board can't take them off. Dismiss their review on GitHub instead.", w.name, pr.num));
+    }
+    Ok(())
+}
+
+/// What `--dry-run` answers: who the board would ask, take off or swap, with nothing sent to the host.
+fn dry_run(id: i64, asks: &[(Who, String)], drop: Option<&Who>, swap: Option<&(Who, Who)>) -> Value {
+    json!({
+        "task": rf("task", id),
+        "dry_run": true,
+        "picks": asks.iter().map(|(w, why)| json!({"user": w.user, "name": w.name, "why": why})).collect::<Vec<_>>(),
+        "drop": drop.map(|w| json!({"user": w.user, "name": w.name})),
+        "replace": swap.map(|(o, n)| json!({"old": o.name, "new": n.name})),
+    })
 }
 
 /// Whether the agent asks at this PR's `ask` stage: it's being (or will be) brought back in hours.
