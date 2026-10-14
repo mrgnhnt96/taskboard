@@ -291,6 +291,7 @@ fn task_pill(t: &Value) -> (&'static str, &'static str) {
     match s(t, "status") {
         "done" if b(t, "failed") => ("Failed", "down"),
         "done" if open_pr && t["pr"]["stage"]["stopped"].is_object() => ("Needs you", "warn"),
+        "done" if open_pr && b(&t["pr"]["stage"], "setup") => ("Needs setup", "warn"),
         "done" if open_pr => ("Awaiting merge", "accent"),
         "queued" if b(t, "blocked") => ("Blocked", "muted"),
         "planned" => ("Planned", "goal"),
@@ -2833,6 +2834,7 @@ mod tests {
     fn a_task_waiting_on_its_merge_is_not_done() {
         assert_eq!(task_pill(&json!({"status": "done", "pr": {"num": 3, "state": "OPEN"}})), ("Awaiting merge", "accent"));
         assert_eq!(task_pill(&json!({"status": "done", "pr": {"num": 3, "stage": {"stopped": {}}}})), ("Needs you", "warn"));
+        assert_eq!(task_pill(&json!({"status": "done", "pr": {"num": 3, "stage": {"phase": "review", "setup": true}}})), ("Needs setup", "warn"));
         assert_eq!(task_pill(&json!({"status": "done", "pr": {"num": 3, "state": "MERGED"}})), ("Done", "up"));
         assert_eq!(task_pill(&json!({"status": "done"})), ("Done", "up"));
     }

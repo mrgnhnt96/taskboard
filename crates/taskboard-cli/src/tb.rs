@@ -4426,8 +4426,12 @@ fn project_line(p: &Value) -> String {
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
+    let gaps: String = p["setup_gaps"]
+        .as_array()
+        .map(|a| a.iter().map(|g| format!("\n  Needs setup: {}. To fix it: {}", g["text"].as_str().unwrap_or(""), g["fix"].as_str().unwrap_or(""))).collect())
+        .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{waits_on}{approvals}{expected}{switches}",
+        "{} · PR flow {} · {} · {remote}{terminals}{waits_on}{approvals}{expected}{switches}{gaps}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }

@@ -203,10 +203,16 @@ pub fn pr_card(app: &App, t: &Row) -> Value {
     };
     let repo = t.st("pr_repo");
     let short_repo = repo.rsplit('/').next().unwrap_or(&repo).to_string();
+    let mut stage = prflow::card(t);
+    // Held at review with nobody who could review it: it isn't waiting on anyone (`setup.rs`).
+    if stage.is_object() && crate::setup::pr_stuck(app, t).unwrap_or(false) {
+        stage["label"] = json!("Stuck: no reviewers");
+        stage["setup"] = json!(true);
+    }
     json!({
         "host": t.st("pr_host"), "repo": short_repo, "full_repo": repo, "num": t.i0("pr_num"), "url": t.st("pr_url"),
         "state": state, "title": t.v("pr_title"), "checks": checks, "review": review,
-        "approvals": approvals, "stage": prflow::card(t),
+        "approvals": approvals, "stage": stage,
     })
 }
 

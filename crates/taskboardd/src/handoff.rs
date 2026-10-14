@@ -117,7 +117,10 @@ pub fn report_block(app: &App, tb: &str) -> String {
 fn pr_block(app: &App, t: &Row, tb: &str) -> Result<String> {
     let ships = projects::task_ships_pr(app, t)?;
     let own = steps::handoff_block(app, t, tb, ships);
-    let s = pr_lines(app, t, ships)?;
+    let mut s = pr_lines(app, t, ships)?;
+    if let Some(gaps) = crate::setup::handoff_line(app, &t.st("project"))? {
+        s = format!("{s}\n{gaps}");
+    }
     Ok(if own.is_empty() { s } else { format!("{s}\n{own}") })
 }
 

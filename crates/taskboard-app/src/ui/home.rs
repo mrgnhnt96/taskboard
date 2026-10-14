@@ -303,6 +303,9 @@ pub fn tile_vm(c: &Value) -> Tile {
             let with = |l: Option<&str>| l.map(|l| format!("{num} · {l}")).unwrap_or(num.clone());
             if stage.and_then(|st| obj(st, "stopped")).is_some() {
                 ("Needs you", "needs", with(label))
+            } else if stage.is_some_and(|st| b(st, "setup")) {
+                // Held at review with nobody who could review it: the project's setup is what's missing.
+                ("Needs setup", "needs", with(label))
             } else {
                 match stage.map(|st| s(st, "phase")).unwrap_or("") {
                     "checks" => ("Checks running", "goal", with(label)),
@@ -1001,6 +1004,13 @@ mod tests {
         assert_eq!((t.status.as_str(), t.line.as_str()), ("In review", "PR #119 · 1 of 2 approved"));
         assert_eq!(tile_vm(&pr(0, json!(2))).line, "PR #119", "none yet");
         assert_eq!(tile_vm(&pr(1, Value::Null)).line, "PR #119", "no count: the host decides");
+    }
+
+    #[test]
+    fn a_pr_nobody_can_review_tile_needs_setup() {
+        let t = tile_vm(&card(json!({"status": "done", "pr": {"num": 2, "url": "https://x/pr/2", "state": "OPEN",
+            "stage": {"phase": "review", "label": "Stuck: no reviewers", "setup": true}}})));
+        assert_eq!((t.status.as_str(), t.tone, t.line.as_str()), ("Needs setup", "needs", "PR #2 · Stuck: no reviewers"));
     }
 
     #[test]
