@@ -1432,36 +1432,68 @@ pub fn start_command(text: &str) -> Option<String> {
 /// "…", so a stored prompt of just that length ending in "…" is one of those, and so is a line that
 /// filled the history's 600.
 fn typed(row: &Row) -> (String, bool) {
+    typed_naming(row, None)
+}
+
+/// [`typed`], with backlog item `item` named in the prompt read as the task made from it ([`item_as_task`]).
+fn typed_naming(row: &Row, item: Option<ItemTask>) -> (String, bool) {
     let cut = |t: &str, at: std::ops::RangeInclusive<usize>| t.ends_with('…') && at.contains(&t.chars().count());
+    let named = |t: &str| item.map_or_else(|| t.to_string(), |i| item_as_task(t, i));
     // A hook that says how it cut ([`hook_prompt`]) sent the prompt whole or with both ends.
     let kept = row.s("data") == Some(KEPT_ENDS);
     // The start command reads as its ask; any other command ("/review T8 go") says nothing.
     let word = |t: &str| start_command(t).unwrap_or_else(|| if t.trim_start().starts_with('/') { String::new() } else { t.to_string() });
     match row.s("full") {
-        Some(full) => (word(full), !kept && cut(full, OLD_HOOK_KEEP - 10..=OLD_HOOK_KEEP)),
+        Some(full) => (word(&named(full)), !kept && cut(full, OLD_HOOK_KEEP - 10..=OLD_HOOK_KEEP)),
         None => {
             let text = row.st("text");
             let clipped = cut(&text, 590..=600);
-            (word(&text), clipped)
+            (word(&named(&text)), clipped)
         }
     }
 }
 
+/// A backlog item (`item`) and the task made from it (`task`): the owner may start the task by the item's ref.
+#[derive(Clone, Copy, Debug)]
+pub struct ItemTask {
+    pub item: i64,
+    pub task: i64,
+}
+
+/// A backlog item named by its ref: "B12".
+static ITEM_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[Bb](\d+)\b").unwrap());
+
+/// `text` with backlog item `i.item` named as the task made from it, so "start B12" and "/start B12"
+/// read as "start T30" for that task. Other items stay as they are.
+pub fn item_as_task(text: &str, i: ItemTask) -> String {
+    ITEM_REF_RE
+        .replace_all(text, |c: &regex::Captures| {
+            if c[1].parse::<i64>().ok() == Some(i.item) { format!("T{}", i.task) } else { c[0].to_string() }
+        })
+        .into_owned()
+}
+
+/// The backlog item task `id` was made from, if any.
+fn item_of(app: &App, id: i64) -> Result<Option<ItemTask>> {
+    let item = crate::board::find_task(app, Some(id))?.and_then(|t| t.i("from_issue_id"));
+    Ok(item.map(|item| ItemTask { item, task: id }))
+}
+
 /// The prompt a human typed in terminal `sid`, since its Claude conversation began, that asks for task
 /// `id` to start, if there's one and no later prompt takes it back. When `id` is the terminal's own task,
-/// "start it" can mean it ([`word_in_own`]).
+/// "start it" can mean it ([`word_in_own`]). A task made from a backlog item may be named by the item's ref.
 pub fn owners_word(app: &App, sid: &str, id: i64) -> Result<Option<String>> {
     if sid.is_empty() {
         return Ok(None);
     }
-    let prompts = prompts_of(app, sid)?;
+    let prompts = prompts_of(app, sid, item_of(app, id)?)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
     Ok(word_in_own(&prompts, id, own).map(|i| prompts[i].text.clone()))
 }
 
 /// The prompts of terminal `sid` since its Claude conversation began, newest first, each with the end of
-/// the agent's message before it and the tasks made in reply to it.
-fn prompts_of(app: &App, sid: &str) -> Result<Vec<Prompt>> {
+/// the agent's message before it and the tasks made in reply to it; with `item`, that item's ref read as its task's.
+fn prompts_of(app: &App, sid: &str, item: Option<ItemTask>) -> Result<Vec<Prompt>> {
     // Every prompt (the board's too, so a task made in reply to one isn't put on the prompt before it)
     // and every task the conversation made, oldest first.
     let rows = app.db.q(
@@ -1485,7 +1517,7 @@ fn prompts_of(app: &App, sid: &str) -> Result<Vec<Prompt>> {
                 }
             }
             _ => {
-                let (text, clipped) = typed(r);
+                let (text, clipped) = typed_naming(r, item);
                 prompts.push(Prompt { text, clipped, board: r.s("data") == Some(BOARD_PROMPT), reply: reply.take(), ..Prompt::default() });
             }
         }
@@ -1578,7 +1610,7 @@ pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     if sid.is_empty() {
         return Ok(None);
     }
-    let prompts = prompts_of(app, sid)?;
+    let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
     Ok(merge_word_in(&prompts, id, num, own).map(|i| MergeWord { text: prompts[i].text.clone(), approved: approves(&prompts[i].text) }))
 }
