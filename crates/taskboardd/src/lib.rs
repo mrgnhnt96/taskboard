@@ -64,6 +64,7 @@ pub mod runner;
 pub mod screen;
 pub mod seed;
 pub mod server;
+pub mod setup;
 pub mod shared;
 pub mod stack;
 pub mod startword;
