@@ -1,9 +1,6 @@
-//! The goal page's Devices and Bits asides. Read-only like the rest of the app: devices can be
-//! focused (their window raised); bits' names, descriptions and create links can be copied, their
-//! tool's "new flag" page opened, and a backend bit marked created with one click once the owner has
-//! made it there, or marked not created again (the owner's own signal, like "I reviewed it"). Adding
-//! and changing devices and bits go through
-//! `tb device` and `tb bit`.
+//! The goal page's Devices and Bits sections. Read-only like the rest of the app: a device can be
+//! focused (its window raised) and a bit's create link opened; adding and changing devices and bits
+//! go through `tb device` and `tb bit`.
 use super::*;
 
 /// One device in the aside.
@@ -58,84 +55,6 @@ pub fn device_rows(g: &Value) -> Vec<DeviceRow> {
         .collect()
 }
 
-/// A device in this goal, for its dialog: what it is, what the goal set for it, and the goal's tasks
-/// that have it, can get it when they start, or had it before.
-#[derive(Debug, PartialEq)]
-pub struct DeviceDetail {
-    pub label: String,
-    /// "Free", "Off" or "Lent to T4".
-    pub state: String,
-    /// "Android emulator · android, phone".
-    pub what: String,
-    /// "For measure in this goal".
-    pub purpose: Option<String>,
-    pub reserved: bool,
-    pub note: Option<String>,
-    /// ("Has it now", [(T4, "1. Sim test")]), only the groups with tasks in them.
-    pub groups: Vec<(&'static str, Vec<(String, String)>)>,
-}
-
-pub fn device_detail(g: &Value, name: &str) -> Option<DeviceDetail> {
-    let d = arr(&g["devices"], "devices").iter().find(|d| s(d, "name") == name)?.clone();
-    let state = match fmt::opt_s(&d["held_by"], "ref") {
-        Some(r) => format!("Lent to {r}"),
-        None if b(&d, "off") => "Off".into(),
-        None => "Free".into(),
-    };
-    let tags = arr(&d, "tags").iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ");
-    let what = [fmt::opt_s(&d, "kind_label").unwrap_or(""), &tags].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" · ");
-    let groups = [("has", "Has it now"), ("can", "Can get it when it starts"), ("had", "Had it before")]
-        .into_iter()
-        .map(|(key, title)| (title, arr(&d["uses"], key).iter().map(|u| (s(u, "ref").to_string(), format!("{}. {}", i(u, "n"), s(u, "title")))).collect::<Vec<_>>()))
-        .filter(|(_, tasks)| !tasks.is_empty())
-        .collect();
-    Some(DeviceDetail {
-        label: fmt::opt_s(&d, "label").unwrap_or(s(&d, "name")).to_string(),
-        state,
-        what,
-        purpose: b(&d, "in_pool").then(|| fmt::opt_s(&d, "purpose").map(|p| format!("For {} in this goal", p.replace(',', ", ")))).flatten(),
-        reserved: b(&d, "in_pool") && b(&d, "reserved"),
-        note: fmt::opt_s(&d, "note").map(str::to_string),
-        groups,
-    })
-}
-
-/// The device dialog's body: what it is, then the goal's tasks by how they use it, each opening its task.
-pub fn device_dialog_body(t: &Theme, d: &DeviceDetail, cx: &mut Context<MainWindow>) -> Div {
-    let mut body = div().flex().flex_col().gap(px(14.)).text_size(px(13.5));
-    let mut facts = div().flex().flex_col().gap(px(4.)).child(div().flex().items_center().gap(px(8.)).child(chip(t.text_2, t.col, d.state.clone())).when(!d.what.is_empty(), |x| x.child(div().text_color(t.muted).child(d.what.clone()))));
-    if let Some(p) = &d.purpose {
-        facts = facts.child(div().text_color(t.accent_fg).child(p.clone()));
-    }
-    if d.reserved {
-        facts = facts.child(div().text_color(t.accent_fg).child("Reserved for this goal"));
-    }
-    if let Some(n) = &d.note {
-        facts = facts.child(div().text_color(t.muted).child(n.clone()));
-    }
-    body = body.child(facts);
-    let mut tasks = div().flex().flex_col().gap(px(10.)).child(h3(t, 12.5, "Tasks in this goal"));
-    if d.groups.is_empty() {
-        tasks = tasks.child(div().text_color(t.muted).child("No task in this goal needs it yet."));
-    }
-    for (gx, (title, list)) in d.groups.iter().enumerate() {
-        let mut col = div().flex().flex_col().gap(px(2.)).child(div().text_size(px(12.)).text_color(t.muted).child(*title));
-        for (tx, (r, line)) in list.iter().enumerate() {
-            let target = r.clone();
-            col = col.child(
-                kit::link(t, SharedString::from(format!("dev-use-{gx}-{tx}")), line.clone())
-                    .text_color(t.accent_fg)
-                    .on_click(cx.listener(move |m, _, _, cx| {
-                        close_dialog(m, cx);
-                        m.open_task(target.clone(), cx);
-                    })),
-            );
-        }
-        tasks = tasks.child(col);
-    }
-    body.child(tasks)
-}
-
 /// One bit in the aside: its name, and what it needs (made, a create link, or local).
 #[derive(Debug, PartialEq)]
 pub struct BitRow {
@@ -146,11 +65,7 @@ pub struct BitRow {
     pub tone: &'static str,
     /// "Create in Flagsmith" and its link, for a backend bit not made yet.
     pub create: Option<(String, String)>,
-    /// A backend bit not made yet: the owner can mark it created.
-    pub can_mark: bool,
-    /// A backend bit marked made: the owner can take the mark back.
-    pub can_unmark: bool,
-    /// Its note (what the flag is for), copyable while a backend bit isn't made yet.
+    /// Its note (what the flag is for).
     pub note: Option<String>,
     pub uses: String,
 }
@@ -175,8 +90,6 @@ pub fn bit_rows(g: &Value) -> Vec<BitRow> {
                 state,
                 tone,
                 create: (!local && !made).then(|| fmt::opt_s(x, "create_url").map(|u| (format!("Create in {tool}"), u.to_string()))).flatten(),
-                can_mark: !local && !made,
-                can_unmark: !local && made,
                 note: fmt::opt_s(x, "note").map(str::to_string),
                 uses: uses.join(", "),
             }
@@ -200,34 +113,21 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
         return None;
     }
     let rows = device_rows(g);
-    let mut head = div().flex().items_center().gap(px(8.)).child(h3(t, 12.5, "Devices"));
+    let mut list = div().flex().flex_col().gap(px(8.)).text_size(px(13.));
     if let Some(n) = fmt::opt_s(&g["devices"], "needs_text") {
-        head = head.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}")));
+        list = list.child(div().text_size(px(12.)).text_color(t.muted).child(format!("Each task: {n}")));
     }
-    let mut list = div().flex().flex_col();
     if let Some(why) = fmt::opt_s(&g["devices"], "empty_why") {
-        list = list.child(div().pb(px(6.)).text_size(px(12.)).text_color(t.muted).child(why.to_string()));
+        list = list.child(div().text_size(px(12.)).text_color(t.muted).child(why.to_string()));
     }
+    let n = rows.len();
     for (ix, d) in rows.into_iter().enumerate() {
-        let busy = m.goal_page.busy.contains(&format!("device-focus:{}", d.name));
         let holder: AnyElement = match d.held_by.clone() {
             Some(r) => {
-                let (fg, bg) = if d.ours { (t.accent_fg, t.accent_soft) } else { (t.text_2, t.col) };
                 let target = r.clone();
-                div()
-                    .id(SharedString::from(format!("dev-holder-{ix}")))
-                    .flex_none()
-                    .cursor_pointer()
-                    .px(px(5.))
-                    .rounded(px(5.))
-                    .bg(bg)
-                    .text_color(fg)
+                kit::link(t, SharedString::from(format!("dev-holder-{ix}")), r)
                     .font_family(t.mono_font.clone())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(11.5))
-                    .line_height(relative(1.5))
-                    .hover(|s| s.underline())
-                    .child(r)
+                    .text_size(px(11.))
                     .tooltip(kit::tip(d.state.clone()))
                     .on_click(cx.listener(move |m, _, _, cx| m.open_task(target.clone(), cx)))
                     .into_any_element()
@@ -235,30 +135,21 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
             None => div().flex_none().text_size(px(12.)).text_color(if d.state == "Off" { t.faint } else { t.up_fg }).child(d.state.clone()).into_any_element(),
         };
         let name = d.name.clone();
-        let open = d.name.clone();
+        let busy = m.goal_page.busy.contains(&format!("device-focus:{name}"));
+        let sub = [d.tags.clone(), d.pool.clone()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
         list = list.child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .py(px(6.))
-                .when(ix > 0, |x| x.border_t_1().border_color(t.divider))
-                .text_size(px(13.))
                 .child(
                     div()
-                        .id(SharedString::from(format!("dev-open-{ix}")))
                         .flex()
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |m, _, window, cx| {
-                            m.goal_page.device_dialog = Some(open.clone());
-                            open_dialog(m, window, cx);
-                        }))
-                        .child(div().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().hover(|s| s.underline()).child(d.label.clone()))
-                        .when(!d.tags.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(d.tags.clone())))
-                        .when(!d.pool.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.accent_fg).truncate().child(d.pool.clone()))),
+                        .child(div().truncate().child(d.label.clone()))
+                        .when(!sub.is_empty(), |x| x.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(sub))),
                 )
                 .child(holder)
                 .when(d.can_focus, |x| {
@@ -267,91 +158,39 @@ pub fn devices_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<Main
                 }),
         );
     }
-    Some(aside_card(t).child(head).child(list))
+    Some(side(t, "Devices", (n > 0).then(|| n.to_string()), list))
 }
 
-/// "Mark created": `POST bits/:name/made`, the owner's word that it's made in the flag tool; "Mark
-/// not created" takes it back (`undo`).
-fn mark_made(m: &mut MainWindow, name: &str, undo: bool, cx: &mut Context<MainWindow>) {
-    let n = name.to_string();
-    run(m, format!("bit-made:{name}"), None, true, format!("bits/{name}/made"), json!({"undo": undo}), cx, move |_, _, _| {
-        if undo { format!("Marked {n} not created") } else { format!("Marked {n} created") }
-    });
-}
-
-pub fn bits_aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
+pub fn bits_aside(t: &Theme, g: &Value) -> Option<Div> {
     let rows = bit_rows(g);
     if rows.is_empty() {
         return None;
     }
-    let mut head = div().flex().items_center().gap(px(8.)).child(h3(t, 12.5, "Bits"));
-    if let Some(sum) = bits_summary(g) {
-        head = head.child(div().flex_1()).child(div().text_size(px(12.)).text_color(t.muted).child(sum));
-    }
-    let mut list = div().flex().flex_col();
+    let mut list = div().flex().flex_col().gap(px(10.)).text_size(px(13.));
     for (ix, x) in rows.into_iter().enumerate() {
-        let (fg, bg) = match x.tone {
-            "up" => (t.up_fg, t.up_soft),
-            "warn" => (t.warn_fg, t.warn_soft),
-            _ => (t.muted, t.panel_2),
+        let fg = match x.tone {
+            "up" => t.up_fg,
+            "warn" => t.warn_fg,
+            _ => t.muted,
         };
-        let copy = x.name.clone();
-        let mut line = div()
+        let mut row = div()
             .flex()
-            .items_center()
-            .gap(px(8.))
-            .min_w_0()
-            .child(div().flex_none().text_color(t.warn_fg).child("⚑"))
-            .child(div().flex_1().min_w_0().font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).truncate().child(x.name.clone()))
+            .flex_col()
             .child(
-                kit::btn_small(t, SharedString::from(format!("bit-copy-{ix}")), "Copy")
-                    .tooltip(kit::tip(format!("Copy {}", x.name)))
-                    .on_click(cx.listener(move |m, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
-                        m.toast(format!("Copied {copy}"), false, cx);
-                    })),
-            );
-        if let Some((label, url)) = x.create.clone() {
-            let link = url.clone();
-            line = line
-                .child(
-                    kit::btn_small(t, SharedString::from(format!("bit-link-{ix}")), "Copy link").tooltip(kit::tip(url.clone())).on_click(cx.listener(move |m, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                        m.toast("Copied the link", false, cx);
-                    })),
-                )
-                .child(kit::btn_small(t, SharedString::from(format!("bit-create-{ix}")), label).on_click(move |_, _, cx| cx.open_url(&url)));
-        }
-        if let Some(note) = x.note.clone().filter(|_| x.can_mark) {
-            line = line.child(
-                kit::btn_small(t, SharedString::from(format!("bit-note-{ix}")), "Copy description").tooltip(kit::tip(note.clone())).on_click(cx.listener(move |m, _, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(note.clone()));
-                    m.toast("Copied the description", false, cx);
-                })),
-            );
-        }
-        if x.can_mark || x.can_unmark {
-            let busy = m.goal_page.busy.contains(&format!("bit-made:{}", x.name));
-            let (name, undo) = (x.name.clone(), x.can_unmark);
-            let label = match (busy, undo) {
-                (true, _) => "Marking…",
-                (false, false) => "Mark created",
-                (false, true) => "Mark not created",
-            };
-            let b = kit::btn_small(t, SharedString::from(format!("bit-made-{ix}")), label);
-            line = line.child(if busy { kit::disabled(b) } else { b.on_click(cx.listener(move |m, _, _, cx| mark_made(m, &name, undo, cx))) });
-        }
-        let mut meta = div().flex().items_center().gap(px(8.)).pl(px(18.)).text_size(px(12.)).child(chip(fg, bg, x.state.clone()));
-        if !x.uses.is_empty() {
-            meta = meta.child(div().text_color(t.muted).truncate().child(x.uses.clone()));
-        }
-        let mut row = div().flex().flex_col().gap(px(4.)).py(px(6.)).when(ix > 0, |d| d.border_t_1().border_color(t.divider)).child(line).child(meta);
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w_0().truncate().font_family(t.mono_font.clone()).text_size(px(12.)).child(format!("⚑ {}", x.name)))
+                    .when_some(x.create.clone(), |d, (label, url)| d.child(kit::link(t, SharedString::from(format!("bit-create-{ix}")), label).text_size(px(12.)).on_click(move |_, _, cx| cx.open_url(&url)))),
+            )
+            .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(fg).child(if x.uses.is_empty() { x.state.clone() } else { format!("{} · {}", x.state, x.uses) }));
         if let Some(note) = x.note.clone() {
-            row = row.child(div().pl(px(18.)).text_size(px(12.)).text_color(t.muted).child(note));
+            row = row.child(div().text_size(px(12.)).text_color(t.muted).child(note));
         }
         list = list.child(row);
     }
-    Some(aside_card(t).child(head).child(list))
+    Some(side(t, "Bits", bits_summary(g), list))
 }
 
 #[cfg(test)]
@@ -379,40 +218,13 @@ mod tests {
         assert!(!d[3].ours);
         assert_eq!(d[3].label, "pixel-8", "no kind or target: just the name");
         let b = bit_rows(&g);
-        assert_eq!((b[0].state.as_str(), b[0].create.clone(), b[0].can_mark), ("Local, not in Flagsmith", None, false));
-        assert!(b[1].can_mark && !b[2].can_mark, "only a backend bit not made yet can be marked created");
-        assert!(b[2].can_unmark && !b[1].can_unmark && !b[0].can_unmark, "only a made backend bit can be marked not created");
+        assert_eq!((b[0].state.as_str(), b[0].create.clone()), ("Local, not in Flagsmith", None));
         assert_eq!(b[1].note.as_deref(), Some("Gate the new checkout"));
         assert_eq!(b[0].note, None);
         assert_eq!(b[1].create, Some(("Create in Flagsmith".into(), "https://f.example/new?key=newCheckout".into())));
         assert_eq!((b[1].state.as_str(), b[1].uses.as_str()), ("Not created", "T4, G1"));
         assert_eq!((b[2].state.as_str(), b[2].tone), ("Created", "up"));
         assert_eq!(bits_summary(&g).as_deref(), Some("1 of 2 created"));
-    }
-
-    #[::core::prelude::v1::test]
-    fn a_device_s_dialog_groups_the_goal_s_tasks_by_how_they_use_it() {
-        let g = json!({"devices": {"devices": [
-            {"name": "pixel-7", "label": "pixel-7 (Android emulator)", "kind_label": "Android emulator", "tags": ["android", "phone"], "note": "Kept charged",
-             "held_by": {"ref": "T4", "title": "Measure"}, "in_pool": true, "purpose": "measure,demo", "reserved": true,
-             "uses": {"has": [{"ref": "T4", "n": 2, "title": "Measure"}], "can": [{"ref": "T5", "n": 3, "title": "Demo"}], "had": []}},
-            {"name": "sim-a", "tags": [], "held_by": null, "off": true, "reserved": true, "uses": {"has": [], "can": [], "had": []}}]}});
-        let d = device_detail(&g, "pixel-7").unwrap();
-        assert_eq!(
-            d,
-            DeviceDetail {
-                label: "pixel-7 (Android emulator)".into(),
-                state: "Lent to T4".into(),
-                what: "Android emulator · android, phone".into(),
-                purpose: Some("For measure, demo in this goal".into()),
-                reserved: true,
-                note: Some("Kept charged".into()),
-                groups: vec![("Has it now", vec![("T4".into(), "2. Measure".into())]), ("Can get it when it starts", vec![("T5".into(), "3. Demo".into())])],
-            }
-        );
-        let s = device_detail(&g, "sim-a").unwrap();
-        assert_eq!((s.state.as_str(), s.what.as_str(), s.purpose, s.reserved, s.groups.len()), ("Off", "", None, false, 0), "reserved elsewhere isn't reserved here");
-        assert!(device_detail(&g, "nope").is_none());
     }
 
     #[::core::prelude::v1::test]
