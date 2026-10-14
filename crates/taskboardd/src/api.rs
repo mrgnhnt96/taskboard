@@ -147,10 +147,16 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let sid = query.get("session").map(|s| s.as_str()).unwrap_or("");
             let t = board::task_for_session(app, Some(sid))?;
             let v = if t.is_none() { prflow::visited_by(app, sid)? } else { None };
+            // The card plus its detail ("What to do"): a reviewer reading `tb peek` needs the ask, not just the title.
+            let card = |t: &Row| -> Result<Value> {
+                let mut c = board::task_card(app, t)?;
+                c["detail"] = t.v("detail");
+                Ok(c)
+            };
             Ok(json!({"session": sid,
-                      "task": match t { Some(t) => board::task_card(app, &t)?, None => Value::Null },
+                      "task": match t { Some(t) => card(&t)?, None => Value::Null },
                       "line": crate::lines::entries(app, sid)?,
-                      "visiting": match v { Some(v) => board::task_card(app, &v)?, None => Value::Null },
+                      "visiting": match v { Some(v) => card(&v)?, None => Value::Null },
                       "status_bar": crate::statusbar::get(app).to_json()}))
         }
         ("GET", ["steps"]) => {
