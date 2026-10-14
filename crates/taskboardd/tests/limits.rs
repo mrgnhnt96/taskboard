@@ -306,6 +306,21 @@ fn the_comment_guard_holds_tb_done_while_the_branch_adds_comments() {
     assert!(!handoff::build(&off.app, id).unwrap().contains("No code comments"));
 }
 
+#[test]
+fn the_comment_guard_skips_the_project_folder_for_a_task_with_no_pr_and_no_worktree() {
+    let b = board_with(|c| c.comments.guard = true);
+    git_repo(&b.repo());
+    let id = b.new_task();
+    b.post(&format!("/tasks/T{id}"), json!({"ships_pr": "no"})).unwrap();
+    std::fs::write(b.repo().join("a.rs"), "// someone else's edit\nfn a() {}\n").unwrap();
+
+    let elsewhere = b.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    b.report("tb.done", json!({"summary": "Done", "cwd": elsewhere.to_string_lossy()}))
+        .expect("the main checkout's edits aren't this task's");
+    assert_eq!(b.task(id).s("status"), Some("done"));
+}
+
 /// A `midna` that logs each call's method and params and answers `{}`.
 fn fake_midna(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;

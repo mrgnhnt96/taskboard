@@ -425,8 +425,8 @@ pub fn edit_refusal(cfg: &Config, tool: &str, input: &Value) -> Option<String> {
     ))
 }
 
-/// Why a task's `what` can't go ahead: its branch (in `cwd`, else its worktree or project folder)
-/// adds comments. None with the guard off.
+/// Why a task's `what` can't go ahead: its branch (in `cwd`, else its worktree, else the project folder
+/// when the task ships a PR) adds comments. None with the guard off.
 pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&str>, what: &str) -> crate::util::Result<Option<String>> {
     if !app.cfg.comments.guard {
         return Ok(None);
@@ -435,7 +435,8 @@ pub fn task_refusal(app: &crate::app::App, t: &crate::util::Row, cwd: Option<&st
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
     let dir = match cwd.filter(|c| !c.is_empty()).map(|c| c.to_string()).or(wt) {
         Some(d) => Some(d),
-        None => crate::runner::task_cwd(app, t)?,
+        None if crate::projects::task_ships_pr(app, t)? => crate::runner::task_cwd(app, t)?,
+        None => None,
     };
     Ok(dir.and_then(|d| branch_refusal(&app.cfg, &d, what)))
 }
