@@ -34,6 +34,50 @@ fn error(status: u16, message: &str) -> Response {
 
 
 
+/// A request with this header gets the progress stream (`progress.rs`): newline-delimited JSON, a
+/// `{"progress": "<line>"}` per stage as the handler finishes it, then `{"result": …}` or
+/// `{"error": "<sentence>", "status": <code>}`. The 200 goes out with the first line, so the error's
+/// status is on the last one. `tb` asks for it on its long commands, and its time limit then restarts
+/// with each line.
+pub const PROGRESS_HEADER: &str = "x-task-board-progress";
+
+fn streamed(
+    app: Arc<App>,
+    method: Method,
+    path: String,
+    run: impl FnOnce(crate::progress::Sink) -> crate::util::Result<Value> + Send + 'static,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let lines = tx.clone();
+    let sink: crate::progress::Sink = Arc::new(move |line: &str| {
+        let _ = lines.send(format!("{}\n", json!({"progress": line})));
+    });
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let out = tokio::task::spawn_blocking(move || run(sink)).await;
+        let ms = started.elapsed().as_millis();
+        if ms > 1000 {
+            app.info(format!("slow request: {method} {path} took {ms} ms (streamed)"));
+        }
+        let last = match out {
+            Ok(Ok(v)) => json!({"result": v}),
+            Ok(Err(e)) => {
+                if e.status >= 500 {
+                    app.info(format!("{method} {path} failed: {}", e.message));
+                }
+                json!({"error": e.message, "status": e.status})
+            }
+            Err(e) => {
+                app.info(format!("{method} {path} crashed: {e}"));
+                json!({"error": "The board hit an error. It's in the board's log.", "status": 500})
+            }
+        };
+        let _ = tx.send(format!("{last}\n"));
+    });
+    let body = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|l| (Ok::<_, std::convert::Infallible>(l), rx)) });
+    (StatusCode::OK, [(header::CONTENT_TYPE, "application/x-ndjson"), (header::CACHE_CONTROL, "no-store")], Body::from_stream(body)).into_response()
+}
+
 fn serve_file(app: &App, id: &str) -> Response {
     match api::attachment_file(app, id) {
         Ok(p) => match std::fs::read(&p) {
@@ -125,6 +169,9 @@ async fn handle(
         let m = method.as_str().to_string();
         let p = api_path.to_string();
         let a = app.clone();
+        if headers.get(PROGRESS_HEADER).and_then(|v| v.to_str().ok()) == Some("1") {
+            return streamed(app, method, path, move |sink| crate::progress::with(sink, || api::dispatch(&a, &m, &p, &query, &body)));
+        }
         let started = std::time::Instant::now();
         let out = tokio::task::spawn_blocking(move || api::dispatch(&a, &m, &p, &query, &body)).await;
         let ms = started.elapsed().as_millis();
@@ -342,6 +389,66 @@ mod tests {
         let token = app.app_token.clone();
         let (s, v) = post_socket(&sock, &format!("tasks/T{id}/start"), &[("X-Task-Board-From", "app".into()), ("X-Task-Board-Token", token)]).await;
         assert_eq!(s, 200, "{v}");
+    }
+
+    /// A streamed reply's content type and its lines.
+    async fn lines(resp: Response) -> (String, Vec<Value>) {
+        let ct = resp.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (ct, String::from_utf8(bytes.to_vec()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect())
+    }
+
+    #[tokio::test]
+    async fn a_streamed_request_says_each_stage_then_its_result() {
+        let (_r, app, _id, _d) = board_with_task();
+        let resp = streamed(app, Method::POST, "/x".into(), |sink| {
+            crate::progress::with(sink, || {
+                crate::progress::stage("Read PR #3 from GitHub");
+                crate::progress::stage("Merged PR #3 on GitHub");
+                Ok(json!({"ok": true}))
+            })
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (ct, l) = lines(resp).await;
+        assert_eq!(ct, "application/x-ndjson");
+        assert_eq!(l, [json!({"progress": "Read PR #3 from GitHub"}), json!({"progress": "Merged PR #3 on GitHub"}), json!({"result": {"ok": true}})]);
+    }
+
+    #[tokio::test]
+    async fn a_streamed_error_and_its_status_come_last() {
+        let (_r, app, _id, _d) = board_with_task();
+        let resp = streamed(app, Method::POST, "/x".into(), |sink| {
+            crate::progress::with(sink, || {
+                crate::progress::stage("Read PR #3 from GitHub");
+                crate::util::err(409, "PR #3 has a failing check")
+            })
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (_, l) = lines(resp).await;
+        assert_eq!(l, [json!({"progress": "Read PR #3 from GitHub"}), json!({"error": "PR #3 has a failing check", "status": 409})]);
+    }
+
+    #[tokio::test]
+    async fn only_the_progress_header_streams() {
+        let (r, _app, id, _d) = board_with_task();
+        // A request the board refuses: plain, it's the error status; streamed, the status is on the last line.
+        let path = format!("/tasks/api/tasks/T{}/start", id + 100);
+        let plain = r.clone().oneshot(post(&path, &[], json!({"mode": "queue"}))).await.unwrap();
+        let status = plain.status();
+        assert!(status.is_client_error(), "{status}");
+        assert_eq!(plain.headers()[header::CONTENT_TYPE], "application/json");
+        let resp = r.clone().oneshot(post(&path, &[(PROGRESS_HEADER, "1")], json!({"mode": "queue"}))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (ct, l) = lines(resp).await;
+        assert_eq!(ct, "application/x-ndjson");
+        assert_eq!(l.last().unwrap()["status"], json!(status.as_u16()), "{l:?}");
+        assert!(l.last().unwrap()["error"].is_string());
+        // And a request that works answers the same JSON either way.
+        let (s, v) = call(r.clone(), Request::get("/tasks/api/state").body(Body::empty()).unwrap()).await;
+        assert_eq!(s, StatusCode::OK);
+        let resp = r.oneshot(Request::get("/tasks/api/state").header(PROGRESS_HEADER, "1").body(Body::empty()).unwrap()).await.unwrap();
+        let (_, l) = lines(resp).await;
+        assert_eq!(l.last().unwrap()["result"]["columns"], v["columns"]);
     }
 
     #[test]

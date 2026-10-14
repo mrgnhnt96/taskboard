@@ -35,34 +35,98 @@ pub enum CallError {
     Refused(String),
     /// The board couldn't be reached (or answered with something that isn't JSON).
     Unreachable(String),
+    /// The board took the request but went quiet past the time limit: it may still be working on it.
+    TimedOut(String),
 }
 
-pub fn request(cfg: &Config, method: &str, path: &str, body: Option<&Value>, timeout: f64) -> Result<Value, CallError> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs_f64(timeout.max(0.05))).try_proxy_from_env(false).build();
-    let req = agent.request(method, &api_url(cfg, path)).set("X-Task-Board", "1").set("Accept", "application/json");
-    let resp = match body {
-        Some(b) => req.send_json(b.clone()),
-        None => req.call(),
-    };
-    match resp {
-        Ok(r) => {
-            let text = r.into_string().map_err(|e| CallError::Unreachable(e.to_string()))?;
-            if text.trim().is_empty() {
-                return Ok(json!({}));
-            }
-            serde_json::from_str(&text).map_err(|_| CallError::Unreachable("the reply wasn't JSON".into()))
-        }
-        Err(ureq::Error::Status(code, r)) => {
+/// How long `request_progress` waits to connect to the board.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn timed_out(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+}
+
+/// A failed read of the reply: a time limit passing is the board going quiet, not the board being gone.
+fn read_failed(e: std::io::Error) -> CallError {
+    if timed_out(&e) { CallError::TimedOut(e.to_string()) } else { CallError::Unreachable(e.to_string()) }
+}
+
+fn failed(e: ureq::Error) -> CallError {
+    match e {
+        ureq::Error::Status(code, r) => {
             let msg = r
                 .into_string()
                 .ok()
                 .and_then(|t| serde_json::from_str::<Value>(&t).ok())
                 .and_then(|v| v["error"].as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| format!("HTTP {code}"));
-            Err(CallError::Refused(msg))
+            CallError::Refused(msg)
         }
-        Err(e) => Err(CallError::Unreachable(e.to_string())),
+        ureq::Error::Transport(t) => {
+            let quiet = t.kind() == ureq::ErrorKind::Io
+                && std::error::Error::source(&t).and_then(|s| s.downcast_ref::<std::io::Error>()).is_some_and(timed_out);
+            if quiet { CallError::TimedOut(t.to_string()) } else { CallError::Unreachable(t.to_string()) }
+        }
     }
+}
+
+fn send(agent: &ureq::Agent, cfg: &Config, method: &str, path: &str, body: Option<&Value>, progress: bool) -> Result<ureq::Response, CallError> {
+    let mut req = agent.request(method, &api_url(cfg, path)).set("X-Task-Board", "1").set("Accept", "application/json");
+    if progress {
+        req = req.set("X-Task-Board-Progress", "1");
+    }
+    match body {
+        Some(b) => req.send_json(b.clone()),
+        None => req.call(),
+    }
+    .map_err(failed)
+}
+
+pub fn request(cfg: &Config, method: &str, path: &str, body: Option<&Value>, timeout: f64) -> Result<Value, CallError> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs_f64(timeout.max(0.05))).try_proxy_from_env(false).build();
+    let text = send(&agent, cfg, method, path, body, false)?.into_string().map_err(read_failed)?;
+    if text.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&text).map_err(|_| CallError::Unreachable("the reply wasn't JSON".into()))
+}
+
+/// A long request on the board's progress stream (`taskboardd::server::PROGRESS_HEADER`): `on_stage`
+/// gets each stage as the board finishes it, and the time limit is `stage_limit` seconds of quiet
+/// rather than for the whole request, so a slow host only fails it when a stage hangs.
+pub fn request_progress(
+    cfg: &Config,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    stage_limit: f64,
+    mut on_stage: impl FnMut(&str),
+) -> Result<Value, CallError> {
+    use std::io::BufRead;
+    let limit = Duration::from_secs_f64(stage_limit.max(0.05));
+    let agent = ureq::AgentBuilder::new().timeout_connect(CONNECT_TIMEOUT).timeout_read(limit).timeout_write(limit).try_proxy_from_env(false).build();
+    let resp = send(&agent, cfg, method, path, body, true)?;
+    if resp.content_type() != "application/x-ndjson" {
+        // A board from before the stream answers in one go.
+        let text = resp.into_string().map_err(read_failed)?;
+        return serde_json::from_str(&text).map_err(|_| CallError::Unreachable("the reply wasn't JSON".into()));
+    }
+    let reader = std::io::BufReader::new(resp.into_reader());
+    for line in reader.lines() {
+        let line = line.map_err(read_failed)?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(&line).map_err(|_| CallError::Unreachable("the reply wasn't JSON".into()))?;
+        if let Some(stage) = v["progress"].as_str() {
+            on_stage(stage);
+        } else if let Some(e) = v["error"].as_str() {
+            return Err(CallError::Refused(e.to_string()));
+        } else if let Some(r) = v.get("result") {
+            return Ok(r.clone());
+        }
+    }
+    Err(CallError::TimedOut("the board stopped before it answered".into()))
 }
 
 pub fn spool_write(cfg: &Config, body: &Value) -> std::io::Result<PathBuf> {
@@ -262,6 +326,87 @@ pub fn midna_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A board on a local port that answers one request with `head` (headers) and then each of
+    /// `lines`, waiting `gap` before each line.
+    fn board(content_type: &str, lines: &[&str], gap: Duration) -> Config {
+        use std::io::{BufRead, Read};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let content_type = content_type.to_string();
+        let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+            let mut len = 0;
+            loop {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap();
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                if h.trim().is_empty() {
+                    break;
+                }
+            }
+            let _ = r.read_exact(&mut vec![0; len]);
+            let _ = write!(c, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n");
+            for line in lines {
+                std::thread::sleep(gap);
+                let _ = writeln!(c, "{line}");
+                let _ = c.flush();
+            }
+        });
+        Config::from_file(taskboardd::config::FileConfig { port: Some(port), ..Default::default() }, std::env::temp_dir().join("tb-client-test.toml"))
+    }
+
+    #[test]
+    fn each_stage_restarts_the_time_limit() {
+        // Four lines 150ms apart: 600ms in all, past the 400ms limit, but no gap reaches it.
+        let cfg = board(
+            "application/x-ndjson",
+            &[r#"{"progress":"Read PR #3"}"#, r#"{"progress":"still waiting on GitHub"}"#, r#"{"progress":"Merged PR #3"}"#, r#"{"result":{"ok":true}}"#],
+            Duration::from_millis(150),
+        );
+        let mut stages = vec![];
+        let v = request_progress(&cfg, "POST", "/x", Some(&json!({})), 0.4, |s| stages.push(s.to_string())).unwrap();
+        assert_eq!(v, json!({"ok": true}));
+        assert_eq!(stages, ["Read PR #3", "still waiting on GitHub", "Merged PR #3"]);
+    }
+
+    #[test]
+    fn a_stage_that_hangs_times_out_as_quiet_not_gone() {
+        let cfg = board("application/x-ndjson", &[r#"{"progress":"Read PR #3"}"#], Duration::from_millis(600));
+        let e = request_progress(&cfg, "POST", "/x", None, 0.2, |_| {}).unwrap_err();
+        assert!(matches!(e, CallError::TimedOut(_)), "{e:?}");
+    }
+
+    #[test]
+    fn the_error_and_its_status_come_on_the_last_line() {
+        let cfg = board(
+            "application/x-ndjson",
+            &[r#"{"progress":"Read PR #3"}"#, r#"{"error":"PR #3 has a failing check","status":409}"#],
+            Duration::from_millis(10),
+        );
+        let mut stages = vec![];
+        let e = request_progress(&cfg, "POST", "/x", None, 2.0, |s| stages.push(s.to_string())).unwrap_err();
+        assert!(matches!(&e, CallError::Refused(m) if m == "PR #3 has a failing check"), "{e:?}");
+        assert_eq!(stages, ["Read PR #3"]);
+    }
+
+    #[test]
+    fn a_board_without_the_stream_answers_in_one_go() {
+        let cfg = board("application/json", &[r#"{"ok":true}"#], Duration::from_millis(10));
+        assert_eq!(request_progress(&cfg, "POST", "/x", None, 2.0, |_| panic!("no stages")).unwrap(), json!({"ok": true}));
+    }
+
+    #[test]
+    fn a_refused_connection_is_unreachable() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let cfg = Config::from_file(taskboardd::config::FileConfig { port: Some(port), ..Default::default() }, std::env::temp_dir().join("tb-client-test.toml"));
+        let e = request_progress(&cfg, "POST", "/x", None, 1.0, |_| {}).unwrap_err();
+        assert!(matches!(e, CallError::Unreachable(_)), "{e:?}");
+    }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
         assert!(Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "git {args:?}");

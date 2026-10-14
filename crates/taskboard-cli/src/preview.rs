@@ -59,7 +59,7 @@ pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
         Target::Goal(n) => format!("/goals/G{n}"),
     };
     let v = client::request(&cfg, "GET", &path, None, BOARD_TIMEOUT).map_err(|e| match e {
-        CallError::Refused(m) | CallError::Unreachable(m) => m,
+        CallError::Refused(m) | CallError::Unreachable(m) | CallError::TimedOut(m) => m,
     })?;
     let card = match target {
         Target::Task(_) => task_preview(&v, &chrono::Local::now()),

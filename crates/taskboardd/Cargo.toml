@@ -15,7 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+futures-util = { version = "0.3", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled", "serde_json"] }
 serde.workspace = true
 serde_json.workspace = true

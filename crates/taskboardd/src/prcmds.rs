@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::prhost::{self, MergeOpts, PrRef, Thread};
 use crate::util::*;
-use crate::{board, fields, p, prflow};
+use crate::{board, fields, p, prflow, progress};
 
 /// How many of the base branch's latest commits `tb pr status` compares a failure against.
 pub const BASE_COMMITS: usize = 5;
@@ -29,11 +29,17 @@ fn host(app: &App, pr: &PrRef) -> Result<std::sync::Arc<dyn prhost::PrHost>> {
     prhost::host_for(app, &pr.host).map_err(|e| ApiError::new(409, format!("Can't work with PR #{}: {e}.", pr.num)))
 }
 
+/// Runs `f`, one call to `pr`'s host, saying `still waiting on <host> (<doing> PR #n)` on the
+/// progress stream while it runs.
+fn on_host<T>(pr: &PrRef, doing: &str, f: impl FnOnce() -> T) -> T {
+    progress::waiting(&format!("{} ({doing} PR #{})", prhost::limit::label(&pr.host), pr.num), progress::WAITING_EVERY, f)
+}
+
 /// Reads the PR now and steps it; the task and the record.
 fn fresh(app: &App, id: i64) -> Result<(Row, Value)> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
-    match prflow::refresh_task(app, id)? {
+    match on_host(&pr, "reading", || prflow::refresh_task(app, id))? {
         Ok(rec) => Ok((board::get_task(app, id)?, rec)),
         Err(e) => err(502, format!("Couldn't read PR #{}: {e}.", pr.num)),
     }
@@ -81,9 +87,9 @@ pub fn reply(app: &App, id: i64, body: &Value) -> Result<Value> {
     let pr = pr_of(&t)?;
     let th = find_thread(&rec, pr.num, &body_str(body, "thread"))?;
     let h = host(app, &pr)?;
-    h.reply(&pr, &th, &text).map_err(|e| ApiError::new(502, format!("Couldn't reply on PR #{}: {e}.", pr.num)))?;
+    on_host(&pr, "replying on", || h.reply(&pr, &th, &text)).map_err(|e| ApiError::new(502, format!("Couldn't reply on PR #{}: {e}.", pr.num)))?;
     let resolve = as_bool(body.get("resolve"), false);
-    let resolved = if resolve { h.resolve(&pr, &th).map_err(|e| ApiError::new(502, format!("Replied, but couldn't resolve the thread: {e}.")))? } else { false };
+    let resolved = if resolve { on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)).map_err(|e| ApiError::new(502, format!("Replied, but couldn't resolve the thread: {e}.")))? } else { false };
     app.db.tx(|| {
         // A plain comment has no thread on the host to carry the reply: the board remembers it was answered.
         if !th.resolvable || resolve {
@@ -101,7 +107,8 @@ pub fn ack(app: &App, id: i64, body: &Value) -> Result<Value> {
     let pr = pr_of(&t)?;
     let th = find_thread(&rec, pr.num, &body_str(body, "thread"))?;
     let resolved = if th.resolvable && !th.resolved {
-        host(app, &pr)?.resolve(&pr, &th).map_err(|e| ApiError::new(502, format!("Couldn't resolve the thread: {e}.")))?
+        let h = host(app, &pr)?;
+        on_host(&pr, "resolving a thread on", || h.resolve(&pr, &th)).map_err(|e| ApiError::new(502, format!("Couldn't resolve the thread: {e}.")))?
     } else {
         false
     };
@@ -124,7 +131,10 @@ fn thread_name(th: &Thread) -> String {
 
 /// Steps the PR again after a change and answers with its card.
 fn after(app: &App, id: i64, mut out: Value) -> Result<Value> {
-    let _ = prflow::refresh_task(app, id)?;
+    let _ = match PrRef::of(&board::get_task(app, id)?) {
+        Some(pr) => on_host(&pr, "reading", || prflow::refresh_task(app, id))?,
+        None => prflow::refresh_task(app, id)?,
+    };
     let t = board::get_task(app, id)?;
     out["task"] = json!(rf("task", id));
     out["pr"] = board::pr_card(app, &t);
@@ -301,11 +311,13 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     let via = body_str(body, "via_session");
     // The owner telling the agent in its terminal to merge this PR: a one-off merge where agents don't
     // merge on their own, and an "approved" in it stands in for the approvals.
-    let word = match PrRef::of(&board::get_task(app, id)?) {
+    let before = board::get_task(app, id)?;
+    let linked = PrRef::of(&before);
+    let word = match &linked {
         Some(pr) if agent => crate::startword::owners_merge_word(app, &via, id, pr.num)?,
         _ => None,
     };
-    if agent && word.is_none() && !prflow::agents_merge_on(app, board::get_task(app, id)?.s("project")) {
+    if agent && word.is_none() && !prflow::agents_merge_on(app, before.s("project")) {
         return err(
             403,
             format!("{} merges this project's PRs (agents_merge is off), and hasn't told you to merge this one in this terminal. Run tb pr wait and leave it to them.", app.cfg.owner),
@@ -313,6 +325,8 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let (t, rec) = fresh(app, id)?;
     let pr = pr_of(&t)?;
+    let site = prhost::limit::label(&pr.host);
+    progress::stage(&format!("Read PR #{} from {site}", pr.num));
     let blockers = merge_blockers(app, &t, &rec, word.as_ref().is_some_and(|w| w.approved))?;
     if !blockers.is_empty() {
         let running = running_checks(&t, &rec);
@@ -321,12 +335,16 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         return err(409, format!("PR #{} can't merge yet: {}.", pr.num, blockers.join("; ")));
     }
+    progress::stage("Nothing blocks the merge");
     // The merge deletes this PR's branch, and a host may close a PR that goes into a deleted branch: move
     // the PRs stacked on it onto its base first.
     move_stacked_off(app, &t, &rec, pr.num)?;
     let rules = crate::projects::pr_rules(app, t.s("project"));
     let opts = MergeOpts { strategy: rules.merge_strategy.clone().filter(|s| !s.trim().is_empty()), close_source_branch: true };
-    host(app, &pr)?.merge(&pr, &opts).map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
+    let h = host(app, &pr)?;
+    on_host(&pr, "merging", || h.merge(&pr, &opts))
+        .map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
+    progress::stage(&format!("Merged PR #{} on {site}", pr.num));
     let who = match &word {
         Some(_) => format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)),
         None => who_of(app, body),
@@ -355,7 +373,8 @@ fn move_stacked_off(app: &App, t: &Row, rec: &Value, num: i64) -> Result<()> {
         return Ok(());
     };
     for child in stacked_children(app, t, branch)? {
-        let res = crate::propen::host::retarget(app, &child, base);
+        let what = format!("{} (moving PR #{} onto {base})", prhost::limit::label(&t.st("pr_host")), child.i0("pr_num"));
+        let res = progress::waiting(&what, progress::WAITING_EVERY, || crate::propen::host::retarget(app, &child, base));
         app.db.tx(|| match &res {
             Ok(()) => {
                 prflow::merge_flow(app, child.id(), fields!["retargeted" => base])?;
@@ -374,6 +393,7 @@ fn move_stacked_off(app: &App, t: &Row, rec: &Value, num: i64) -> Result<()> {
                 ),
             );
         }
+        progress::stage(&format!("Moved stacked PR #{} onto {base}", child.i0("pr_num")));
     }
     Ok(())
 }
@@ -481,7 +501,7 @@ fn names_of(v: &Value) -> Vec<String> {
 pub fn status(app: &App, id: i64) -> Result<Value> {
     let t = board::get_task(app, id)?;
     let pr = pr_of(&t)?;
-    let read = if prhost::watched(t.s("pr_host")) { prflow::refresh_task(app, id)? } else { Err("the board doesn't watch this PR's host".into()) };
+    let read = if prhost::watched(t.s("pr_host")) { on_host(&pr, "reading", || prflow::refresh_task(app, id))? } else { Err("the board doesn't watch this PR's host".into()) };
     let t = board::get_task(app, id)?;
     let f = flow(&t);
     let rec = match &read {
@@ -495,7 +515,7 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
     let cleared = names_of(&prflow::not_ours(&f, &rec)["checks"]);
     let failed = names_of(&rec["failed"]);
     let base_failing: std::result::Result<Vec<prhost::Check>, String> = match (read.is_ok(), failed.is_empty(), rec["base"].as_str()) {
-        (true, false, Some(base)) if !base.is_empty() => host(app, &pr).map_err(|e| e.message).and_then(|h| h.base_failed_checks(&pr, base, BASE_COMMITS)),
+        (true, false, Some(base)) if !base.is_empty() => host(app, &pr).map_err(|e| e.message).and_then(|h| on_host(&pr, &format!("reading {base}'s checks for"), || h.base_failed_checks(&pr, base, BASE_COMMITS))),
         _ => Ok(vec![]),
     };
     let rules = crate::projects::pr_rules(app, t.s("project"));
@@ -509,7 +529,8 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
             match prhost::ci::provider_for(app, &rules, &check) {
                 Ok(Some(ci)) => {
                     row["source"] = json!(ci.name());
-                    match ci.failures(&pr, rec["head"].as_str().unwrap_or(""), &check) {
+                    let what = format!("{} (reading {}'s failures on PR #{})", ci.name(), check.name, pr.num);
+                    match progress::waiting(&what, progress::WAITING_EVERY, || ci.failures(&pr, rec["head"].as_str().unwrap_or(""), &check)) {
                         Ok(fl) => {
                             row["steps"] = json!(fl.steps);
                             row["tests"] = json!(fl.tests);
@@ -525,7 +546,9 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
         // The same check failing on the base says little by itself: compare its failed steps and tests one
         // by one with the base's runs of it, when both can be read.
         let theirs = match &mine {
-            Some(m) if !on_base.is_empty() && !(m.steps.is_empty() && m.tests.is_empty()) => base_runs_failures(app, &rules, &pr, &on_base),
+            Some(m) if !on_base.is_empty() && !(m.steps.is_empty() && m.tests.is_empty()) => {
+                on_host(&pr, &format!("reading {}'s runs on the base for", check.name), || base_runs_failures(app, &rules, &pr, &on_base))
+            }
             _ => None,
         };
         let b = blame(mine.as_ref(), theirs.as_ref(), !on_base.is_empty());

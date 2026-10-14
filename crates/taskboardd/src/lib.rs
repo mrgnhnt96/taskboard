@@ -53,6 +53,7 @@ pub mod prbuilds;
 pub mod prflow;
 pub mod prhost;
 pub mod proc;
+pub mod progress;
 pub mod projects;
 pub mod propen;
 pub mod qa;
