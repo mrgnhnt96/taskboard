@@ -339,3 +339,12 @@ fn the_status_bar_shows_the_goal_and_titles_until_turned_off() {
     assert_eq!(b.get("status-bar")["goal"], false, "a change leaves the other option alone");
     assert_eq!(b.post("status-bar", json!({"reset": true}))["line"], "Goal: on\nTitles: on");
 }
+
+#[test]
+fn whoami_carries_the_tasks_detail() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    let w = b.get("whoami?session=s1");
+    assert_eq!(w["task"]["ref"], t1);
+    assert_eq!(w["task"]["detail"], "Asked for.", "tb peek hands a reviewer the ask, not just the title");
+}
