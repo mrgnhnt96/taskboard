@@ -291,6 +291,12 @@ impl MainWindow {
     }
 
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
+        // A task is a page of its own: going anywhere leaves it.
+        if self.task_page_open() {
+            self.panel = None;
+            self.data.task = None;
+            cx.notify();
+        }
         if self.page != page {
             // `resetPageState`: leaving Sessions drops its picking state; another goal's page
             // starts empty; arriving on the Backlog starts with no kept rows or selection.
@@ -314,6 +320,11 @@ impl MainWindow {
             self.menu = None;
             self.refresh(cx);
         }
+    }
+
+    /// Whether a task fills the main area (its page) over the current page.
+    pub fn task_page_open(&self) -> bool {
+        matches!(self.panel, Some(Panel::Task { .. }))
     }
 
     pub fn open_task(&mut self, r: impl Into<String>, cx: &mut Context<Self>) {
@@ -376,12 +387,6 @@ impl MainWindow {
         self.data.task = None;
         self.data.issue = None;
         cx.notify();
-    }
-
-    /// The logo (`#/`): the board, with no task or issue open.
-    pub fn go_home(&mut self, cx: &mut Context<Self>) {
-        self.go(Page::Board, cx);
-        self.close_panel(cx);
     }
 
     pub fn set_modal(&mut self, modal: Option<ui::modals::Modal>, window: &mut Window, cx: &mut Context<Self>) {
@@ -776,17 +781,19 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef, Search]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", CloseOverlay, Some("MainWindow")),
+        // In the sidebar's order.
         KeyBinding::new("cmd-1", GoBoard, Some("MainWindow")),
-        KeyBinding::new("cmd-2", GoBacklog, Some("MainWindow")),
-        KeyBinding::new("cmd-3", GoSessions, Some("MainWindow")),
-        KeyBinding::new("cmd-4", GoDays, Some("MainWindow")),
-        KeyBinding::new("cmd-5", GoTasks, Some("MainWindow")),
-        KeyBinding::new("cmd-6", GoGoals, Some("MainWindow")),
+        KeyBinding::new("cmd-2", GoSessions, Some("MainWindow")),
+        KeyBinding::new("cmd-3", GoGoals, Some("MainWindow")),
+        KeyBinding::new("cmd-4", GoTasks, Some("MainWindow")),
+        KeyBinding::new("cmd-5", GoBacklog, Some("MainWindow")),
+        KeyBinding::new("cmd-6", GoDays, Some("MainWindow")),
+        KeyBinding::new("cmd-k", Search, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
         KeyBinding::new("cmd-shift-c", CopyRef, Some("MainWindow")),
     ]);
@@ -800,6 +807,7 @@ impl Render for MainWindow {
         window.set_window_title(&self.title());
 
         let page = match self.page.clone() {
+            _ if self.task_page_open() => ui::task_panel::render_page(self, window, cx),
             Page::Board => ui::home::render(self, window, cx),
             Page::Tasks => ui::tasks::render(self, window, cx),
             Page::Goals => ui::goals_page::render(self, window, cx),
@@ -809,7 +817,7 @@ impl Render for MainWindow {
             Page::Days => ui::days::render(self, window, cx),
         };
         let panel = match self.panel.clone() {
-            Some(Panel::Task { .. }) => Some(ui::task_panel::render(self, window, cx)),
+            Some(Panel::Task { .. }) => None,
             Some(Panel::Issue { .. }) => Some(ui::issue_panel::render(self, window, cx)),
             None => None,
         };
@@ -829,6 +837,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &GoGoals, _, cx| m.go(Page::Goals, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .on_action(cx.listener(|m, _: &CopyRef, _, cx| copy_ref(m, cx)))
+            .on_action(cx.listener(|m, _: &Search, window, cx| ui::search::open(m, window, cx)))
             .relative()
             .flex()
             .flex_col()
@@ -837,16 +846,25 @@ impl Render for MainWindow {
             .text_color(t.text)
             .font_family(t.ui_font.clone())
             .text_size(px(14.))
-            // No sidebar: a header holds the pages as tabs and goals open from their cards on the board.
-            .child(ui::home::header(self, &t, cx))
+            // The sidebar holds the pages, search, the goals in flight and the board's health.
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex().flex_col().flex_1().min_w_0().children(banner(self, &t, cx)).child(div().flex().flex_1().min_h_0().child(page))),
+                    .child(ui::sidebar::render(self, &t, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            // The window's title bar over the page: it moves the window.
+                            .child(div().flex_none().h(px(12.)).on_mouse_down(MouseButton::Left, crate::settings::drag_window))
+                            .children(banner(self, &t, cx))
+                            .child(div().flex().flex_1().min_h_0().child(page)),
+                    ),
             )
-            .child(status_bar(self, &t, cx))
             .children(panel)
             .children(modal)
             .children(hours_menu)
@@ -1197,52 +1215,9 @@ pub fn pill_shell(t: &Theme, id: &'static str, fg: Hsla, bg: Hsla) -> Stateful<D
     div().id(id).flex().flex_none().items_center().gap(px(6.)).py(px(3.)).px(px(10.)).rounded_full().text_size(px(12.5)).line_height(px(18.75)).whitespace_nowrap().text_color(fg).bg(bg)
 }
 
-/// Bottom bar (`statusBarHtml`): Midna connection, work hours and usage pills.
-fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
-    let st = m.state().clone();
-    // `#statusbar`: min-height 34, 4px 12px, 8px gaps.
-    let mut bar = div().flex().flex_none().items_center().gap(px(8.)).min_h(px(34.)).py(px(4.)).px(px(12.)).border_t_1().border_color(t.border).bg(t.card);
-    if let Some(mid) = st.get("midna").filter(|v| v.is_object()) {
-        let p = conn_pill(mid);
-        let (fg, bg, dot) = if p.cls == "up" { (t.up_fg, t.up_soft, t.up) } else { (t.warn_fg, t.warn_soft, t.warn) };
-        bar = bar.child(pill_shell(t, "conn-pill", fg, bg).child(kit::dot(dot, 8.)).child(p.label).tooltip(kit::tip(p.title)));
-    }
-    bar = bar.child(ui::hours::pill(m, t, cx));
-    if let Some(u) = st.get("usage").and_then(usage_view) {
-        bar = bar.child(usage_pill(t, &u));
-    }
-    bar = bar.children(ui::prwatch::pills(&st, t));
-    bar = bar.child(div().flex_1());
-    if let Some(h) = hooks_item(m, t, cx) {
-        bar = bar.child(h);
-    }
-    if m.backend.label() == "fake" {
-        bar = bar.child(kit::tone_pill(t, "goal", "Sample board"));
-    }
-    if let Some(p) = accounts_pill(&st, t) {
-        bar = bar.child(p);
-    }
-    if let Some(p) = update_pill(t) {
-        bar = bar.child(p);
-    }
-    let text = t.text;
-    bar = bar.child(
-        div()
-            .id("open-settings")
-            .text_size(px(12.5))
-            .text_color(t.muted)
-            .cursor_pointer()
-            .hover(move |s| s.text_color(text))
-            .tooltip(kit::tip("Settings: GitHub, Bitbucket and Slack accounts (⌘,)"))
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
-            .child("Settings"),
-    );
-    bar
-}
-
 /// Amber "GitHub: sign in again" when an account lacks scopes Taskboard needs (or stopped working);
 /// opens Settings. `state.accounts` is the daemon's `accounts::attention`.
-fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
+pub(crate) fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
     let list = st.get("accounts")?.as_array().filter(|l| !l.is_empty())?;
     let label = match list.as_slice() {
         [one] => format!("{}: {}", one["label"].as_str().unwrap_or("Account"), if one["reauth"] == true { "sign in again" } else { "check sign-in" }),
@@ -1262,7 +1237,7 @@ fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
 
 /// "Taskboard 1.2.0 is ready" once a newer release is downloaded and checked; opens Settings › System,
 /// where Restart to update installs it.
-fn update_pill(t: &Theme) -> Option<AnyElement> {
+pub(crate) fn update_pill(t: &Theme) -> Option<AnyElement> {
     let crate::updater::State::Ready { version, .. } = crate::updater::state() else { return None };
     Some(
         pill_shell(t, "update-pill", t.accent, t.accent_soft)
@@ -1276,7 +1251,7 @@ fn update_pill(t: &Theme) -> Option<AnyElement> {
 }
 
 /// "Install hooks", "● Hooks" or an amber "Reinstall hooks", as in Midna's status bar.
-fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+pub(crate) fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     use crate::hooks::Hooks;
     let can_install = crate::hooks::target().is_some_and(|(_, can)| can);
     let text = t.text;
@@ -1309,7 +1284,7 @@ fn hooks_item(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option
 }
 
 /// `.conn.usage`: per window `.u-k` label, a 34×5 bar and the value; warm/hot recolour both.
-fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
+pub(crate) fn usage_pill(t: &Theme, u: &UsageView) -> AnyElement {
     let mut row = pill_shell(t, "usage-pill", t.muted, t.seg)
         .gap(px(0.))
         .px(px(4.))
@@ -1469,14 +1444,18 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_logo_goes_to_the_board_home(cx: &mut gpui_kit::TestAppContext) {
+    fn a_task_is_a_page_that_any_page_leaves(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
-            m.go(Page::Backlog, cx);
-            m.panel = Some(Panel::Task { r: "T1".into(), tab: TaskTab::Overview });
-            m.go_home(cx);
-            assert!(m.page == Page::Board);
-            assert!(m.panel.is_none(), "nothing stays open");
+            m.go(Page::Goals, cx);
+            m.open_task("T1", cx);
+            assert!(m.task_page_open());
+            m.go(Page::Goals, cx);
+            assert!(!m.task_page_open(), "the same page in the sidebar leaves the task too");
+            assert_eq!(m.page, Page::Goals);
+            m.open_task("T1", cx);
+            m.go(Page::Board, cx);
+            assert!(m.panel.is_none() && m.page == Page::Board);
         })
         .unwrap();
     }
