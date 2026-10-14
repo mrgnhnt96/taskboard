@@ -94,12 +94,17 @@ pub fn segments(v: &Value, o: Options) -> Value {
             (true, _) => ("Failed", "err", "cross"),
             (_, "working") => ("Working", "work", "bolt"),
             (_, "needs") => ("Needs you", "need", "bell"),
+            (_, "done") if pr_open(&t["pr"]) => pr_stage(&t["pr"]["stage"]),
             (_, "done") => ("Done", "ok", "check"),
             (_, "queued") => ("Queued", "dim", "dot"),
             (_, "planned") => ("Planned", "dim", "dot"),
             (_, other) => (other, "dim", "dot"),
         };
         let mut tip = format!("{r} “{title}” · {label}");
+        if let (true, Some(n)) = (label != "Done", t["pr"]["num"].as_i64()) {
+            let stage = t["pr"]["stage"]["label"].as_str().filter(|l| !l.is_empty());
+            tip.push_str(&stage.map(|l| format!("\nPR #{n} · {l}")).unwrap_or(format!("\nPR #{n}")));
+        }
         if let Some(g) = t["goal"]["ref"].as_str() {
             let name = t["goal"]["name"].as_str().unwrap_or("");
             tip.push_str(&format!("\n{g} “{name}”"));
@@ -136,6 +141,28 @@ pub fn segments(v: &Value, o: Options) -> Value {
         segs.push(json!({"text": format!("+{}", rest.len()), "tone": "dim", "join": true, "tooltip": format!("Also in line: {}", rest.join(", "))}));
     }
     Value::Array(segs)
+}
+
+/// A submitted task waits on its PR until it merges or closes; only then is it Done.
+fn pr_open(pr: &Value) -> bool {
+    !pr["num"].is_null() && pr["state"].as_str().unwrap_or("OPEN").eq_ignore_ascii_case("open")
+}
+
+/// An open PR's stage as the app's task rows show it.
+fn pr_stage(stage: &Value) -> (&'static str, &'static str, &'static str) {
+    if stage["stopped"].is_object() {
+        return ("Needs you", "need", "bell");
+    }
+    if stage["setup"].as_bool().unwrap_or(false) {
+        return ("Needs setup", "need", "bell");
+    }
+    match stage["phase"].as_str().unwrap_or("") {
+        "checks" => ("Checks running", "accent", "pr"),
+        "fix" => ("Checks failed", "err", "pr"),
+        "comments" => ("Comments", "accent", "pr"),
+        "merge" => ("Ready to merge", "ok", "pr"),
+        _ => ("In review", "accent", "pr"),
+    }
 }
 
 /// The script in the app this daemon runs from (`…/Taskboard.app/Contents/MacOS/taskboardd`), if
@@ -231,6 +258,22 @@ mod tests {
         assert!(s[0]["tooltip"].as_str().unwrap().contains("“Show the tasks”"), "the title is still on hover");
         let s = segments(&whoami(), Options { goal: true, title: false });
         assert_eq!((s[0]["text"].as_str(), s[1]["text"].as_str()), (Some("G2"), Some("T36")));
+    }
+
+    #[test]
+    fn a_submitted_task_is_in_review_until_its_pr_merges() {
+        let task = |pr: Value| json!({"task": {"ref": "T7", "title": "Add x", "status": "done", "failed": false, "pr": pr}, "line": []});
+        let pill = |pr: Value| {
+            let s = segments(&task(pr), Options::default());
+            (s[0]["tooltip"].as_str().unwrap().to_string(), s[0]["tone"].as_str().unwrap().to_string(), s[0]["icon"].as_str().unwrap().to_string())
+        };
+        let review = pill(json!({"num": 12, "state": "OPEN", "stage": {"phase": "review", "label": "Awaiting review"}}));
+        assert_eq!(review, ("T7 “Add x” · In review\nPR #12 · Awaiting review".into(), "accent".into(), "pr".into()));
+        assert!(pill(json!({"num": 12, "state": "OPEN", "stage": {"phase": "fix", "label": "Fixing checks"}})).0.contains("· Checks failed"));
+        assert!(pill(json!({"num": 12, "state": "OPEN", "stage": {"phase": "merge", "label": "Ready to merge"}})).0.contains("· Ready to merge"));
+        assert!(pill(json!({"num": 12, "state": "OPEN", "stage": {"phase": "review", "label": "Stuck: no reviewers", "setup": true}})).0.contains("· Needs setup"));
+        assert_eq!(pill(json!({"num": 12, "state": "MERGED", "stage": {"phase": "merged"}})), ("T7 “Add x” · Done".into(), "ok".into(), "check".into()));
+        assert_eq!(pill(Value::Null).0, "T7 “Add x” · Done", "a task with no PR is done when it's submitted");
     }
 
     #[test]
