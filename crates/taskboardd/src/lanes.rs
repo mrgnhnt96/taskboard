@@ -1,5 +1,6 @@
 //! The Tasks page (`GET /lanes`): every task outside a goal (or every task, with `goals=1`) that is
-//! queued, running, needs you or done today, one lane each, plus the projects they're in.
+//! queued, running, needs you or done today, one lane each, plus the projects they're in and,
+//! for a project with areas (`areas.rs`), how many of its cards sit in each one.
 //!
 //! Queued runs in the runner's order (high priority first, then oldest), with the ones already
 //! starting first. Done is what finished today plus anything done whose PR is still open. Planned
@@ -49,7 +50,8 @@ pub fn page(app: &App, with_goals: bool) -> Result<Value> {
             }
         }
     }
-    let mut projects: Vec<(String, i64)> = vec![];
+    // (project, cards, the areas its cards carry with a count each)
+    let mut projects: Vec<(String, i64, Vec<(String, i64)>)> = vec![];
     let mut out = serde_json::Map::new();
     for (k, mut v) in lanes {
         if k == "queued" {
@@ -60,15 +62,34 @@ pub fn page(app: &App, with_goals: bool) -> Result<Value> {
         let mut cards = vec![];
         for t in &v {
             let name = t.st("project");
-            match projects.iter_mut().find(|(p, _)| *p == name) {
-                Some((_, n)) => *n += 1,
-                None => projects.push((name, 1)),
+            let at = match projects.iter().position(|(p, _, _)| *p == name) {
+                Some(at) => at,
+                None => {
+                    projects.push((name, 0, vec![]));
+                    projects.len() - 1
+                }
+            };
+            let (_, n, areas) = &mut projects[at];
+            *n += 1;
+            if let Some(a) = t.s("area").filter(|a| !a.is_empty()) {
+                match areas.iter_mut().find(|(x, _)| x == a) {
+                    Some((_, c)) => *c += 1,
+                    None => areas.push((a.to_string(), 1)),
+                }
             }
             cards.push(board::task_card(app, t)?);
         }
         out.insert(k.to_string(), Value::Array(cards));
     }
     projects.sort();
-    out.insert("projects".into(), json!(projects.iter().map(|(name, count)| json!({"name": name, "count": count})).collect::<Vec<_>>()));
+    let mut list = vec![];
+    for (name, count, mut areas) in projects {
+        // In the order `.taskboard.toml` lists them; an area since dropped from the file goes last.
+        let order = crate::areas::of_project(app, &name)?.names().iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        areas.sort_by_key(|(a, _)| (order.iter().position(|o| o == a).unwrap_or(usize::MAX), a.clone()));
+        let areas: Vec<Value> = areas.iter().map(|(a, n)| json!({"name": a, "count": n})).collect();
+        list.push(json!({"name": name, "count": count, "areas": areas}));
+    }
+    out.insert("projects".into(), Value::Array(list));
     Ok(Value::Object(out))
 }

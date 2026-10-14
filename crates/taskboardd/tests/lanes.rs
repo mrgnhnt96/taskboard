@@ -58,7 +58,7 @@ fn each_status_gets_its_lane_and_planned_stays_off() {
     assert_eq!(refs(&l["done"]), vec![r(done)]);
     let all: Vec<String> = ["queued", "running", "needs", "done"].iter().flat_map(|k| refs(&l[*k])).collect();
     assert!(!all.contains(&r(planned)));
-    assert_eq!(l["projects"], json!([{"name": "api", "count": 2}, {"name": "webapp", "count": 2}]));
+    assert_eq!(l["projects"], json!([{"name": "api", "count": 2, "areas": []}, {"name": "webapp", "count": 2, "areas": []}]));
 }
 
 #[test]
