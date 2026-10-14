@@ -678,6 +678,19 @@ enum LessonCmd {
     },
     /// Look back over a finished goal and suggest lessons from it (confirming ones already on the board)
     Retro { goal: String },
+    /// The lessons that fit some words about the work, best first, with what made each fit
+    Search {
+        query: String,
+        /// The project (this terminal's when left out)
+        #[arg(long, conflicts_with = "all")]
+        project: Option<String>,
+        /// Every project's
+        #[arg(long)]
+        all: bool,
+        /// Only these (retired ones are left out otherwise)
+        #[arg(long, value_parser = ["suggested", "kept", "retired"])]
+        state: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2380,6 +2393,30 @@ fn lessons_cmd(c: &Ctx, project: Option<String>, all: bool, state: Option<String
     Ok(0)
 }
 
+fn lesson_search(c: &Ctx, query: &str, project: Option<String>, all: bool, state: Option<String>) -> Result<i32, String> {
+    let mut q = vec![
+        format!("q={}", qv(query)),
+        match (all, &project) {
+            (true, _) => "project=all".to_string(),
+            (_, Some(p)) => format!("project={}", qv(p)),
+            _ => format!("cwd={}", qv(&c.cwd)),
+        },
+    ];
+    if let Some(s) = state {
+        q.push(format!("state={}", qv(&s)));
+    }
+    let v = c.call("GET", &format!("/lessons/search?{}", q.join("&")), None)?;
+    let ls = v["lessons"].as_array().cloned().unwrap_or_default();
+    if ls.is_empty() {
+        out("No lesson fits those words.");
+    }
+    for l in ls {
+        let why: Vec<&str> = l["why"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+        out(&format!("{}\n  fits by {} ({})", lesson_line(&l), why.join("; "), l["score"]));
+    }
+    Ok(0)
+}
+
 fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
     let (v, did) = match action {
         LessonCmd::Retro { goal } => return lesson_retro(c, &goal_ref(&goal)?),
@@ -2419,6 +2456,7 @@ fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
         LessonCmd::Confirm { lesson, evidence } => {
             (c.call("POST", &format!("/lessons/{}/confirm", lesson_ref(&lesson)?), Some(json!({"evidence": evidence})))?, "Confirmed")
         }
+        LessonCmd::Search { query, project, all, state } => return lesson_search(c, &query, project, all, state),
     };
     if !did.is_empty() {
         out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));

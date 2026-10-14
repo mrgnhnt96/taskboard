@@ -28,6 +28,10 @@ const TEXT_MAX: usize = 400;
 /// At most this many lessons, and this many characters of them, go into one prompt.
 const PROMPT_COUNT: usize = 8;
 const PROMPT_CHARS: usize = 1500;
+/// A handoff or planner gets the best fits up to `PICK_COUNT`, or the most confirmed up to
+/// `PICK_FLOOR` when fewer fit (`relevance::pick`).
+const PICK_COUNT: usize = 5;
+const PICK_FLOOR: usize = 2;
 
 pub(crate) fn clean_text(s: &str) -> Result<String> {
     let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -237,10 +241,49 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     Ok(json!({"project": project, "lessons": rows}))
 }
 
+/// `GET /lessons/search?q=…`: the project's lessons (and the board's global ones) that fit the words,
+/// best first, with what made each fit. Retired ones only with `state=retired`.
+fn search(app: &App, query: &crate::api::Query) -> Result<Value> {
+    let q = |k: &str| query.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty());
+    let text = q("q").unwrap_or("").to_string();
+    if crate::relevance::fts_query(&text).is_none() {
+        return err(400, "Say what to search for: a few words about the work.");
+    }
+    let every = q("project") == Some("all");
+    let project = match q("project").filter(|p| *p != "all") {
+        Some(p) => Some(p.to_string()),
+        None if every => None,
+        None => crate::projects::project_for_path(app, q("cwd"))?,
+    };
+    let rows = app.db.q("SELECT * FROM lessons ORDER BY confirmations DESC, id DESC", p![])?;
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .filter(|l| every || l.s("scope") == Some("global") || l.s("project") == project.as_deref())
+        .filter(|l| match q("state") {
+            Some(s) => l.s("state") == Some(s),
+            None => l.s("state") != Some("retired"),
+        })
+        .collect();
+    let w = crate::relevance::Work { project: project.as_deref(), text, task: None };
+    let found: Vec<Value> = crate::relevance::rank(app, &w, rows)?
+        .into_iter()
+        .filter(|s| s.score > 0.0)
+        .take(20)
+        .map(|s| {
+            let mut d = dict(&s.lesson);
+            d["score"] = json!((s.score * 100.0).round() / 100.0);
+            d["why"] = json!(s.why);
+            d
+        })
+        .collect();
+    Ok(json!({"project": project, "lessons": found}))
+}
+
 /// `/lessons…` routes.
 pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, body: &Value) -> Result<Value> {
     match (method, rest) {
         ("GET", []) => list(app, query),
+        ("GET", ["search"]) => search(app, query),
         ("POST", []) => app.db.tx(|| add(app, body)),
         ("GET", [r]) => Ok(dict(&get(app, r)?)),
         ("POST", [r]) => app.db.tx(|| set(app, r, body)),
@@ -280,18 +323,24 @@ pub fn lines(rows: &[Row]) -> Vec<String> {
 }
 
 /// The handoff's lessons: what earlier work in this project (and on the board) taught about the
-/// code, the process and the tools. Planning lessons go to planners instead.
+/// code, the process and the tools, the few that fit this task best. Planning lessons go to
+/// planners instead.
 pub fn handoff_block(app: &App, t: &Row) -> Result<Vec<String>> {
-    let ls = lines(&kept(app, t.s("project"), &["code", "process", "tooling"])?);
+    let all = kept(app, t.s("project"), &["code", "process", "tooling"])?;
+    let w = crate::relevance::Work { project: t.s("project"), text: format!("{}\n{}", t.st("title"), t.st("detail")), task: Some(t) };
+    let ls = lines(&crate::relevance::pick(app, &w, all, PICK_COUNT, PICK_FLOOR)?);
     if ls.is_empty() {
         return Ok(vec![]);
     }
     Ok(vec![format!("Lessons from earlier work here:\n{}", ls.join("\n"))])
 }
 
-/// The planning lessons for a planner's prompt, or nothing.
-pub fn planning_block(app: &App, project: Option<&str>) -> Result<Option<String>> {
-    let ls = lines(&kept(app, project, &["planning"])?);
+/// The planning lessons that fit what's being planned (`about`: the goal's words), for a planner's
+/// prompt, or nothing.
+pub fn planning_block(app: &App, project: Option<&str>, about: &str) -> Result<Option<String>> {
+    let all = kept(app, project, &["planning"])?;
+    let w = crate::relevance::Work { project, text: about.to_string(), task: None };
+    let ls = lines(&crate::relevance::pick(app, &w, all, PICK_COUNT, PICK_FLOOR)?);
     if ls.is_empty() {
         return Ok(None);
     }

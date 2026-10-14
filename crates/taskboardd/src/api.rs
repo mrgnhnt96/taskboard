@@ -2012,7 +2012,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
         lines.extend(["".into(), "Open backlog issues:".into()]);
         lines.extend(issues.iter().map(|b| format!("- {} {}", rf("issue", b.id()), b.st("title"))));
     }
-    lines.extend(["".into(), crate::planning::block(app, g.s("project")), "".into()]);
+    lines.extend(["".into(), crate::planning::block(app, g.s("project"), &format!("{}\n{}\n{}", g.st("name"), g.st("outcome"), g.st("tldr"))), "".into()]);
     if for_planner {
         lines.extend([
             "Suggest the tasks still needed to reach the outcome, sliced by those rules. Read the code as much as you need, but don't change anything.".to_string(),

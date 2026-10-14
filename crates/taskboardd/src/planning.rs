@@ -89,8 +89,9 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
 }
 
 /// The rules in force for a project's goals (its own file, else the board's, else the built-in ones)
-/// under a heading naming whose they are, then the kept planning lessons, for a planner's prompt.
-pub fn block(app: &App, project: Option<&str>) -> String {
+/// under a heading naming whose they are, then the kept planning lessons that fit what's being
+/// planned (`about`), for a planner's prompt.
+pub fn block(app: &App, project: Option<&str>, about: &str) -> String {
     let p = pick(app, project);
     let heading = match p.from {
         "project" => "How this project slices its work (the owner's rules, in place of the board's):",
@@ -98,7 +99,7 @@ pub fn block(app: &App, project: Option<&str>) -> String {
         _ => "How to slice the work:",
     };
     let mut out = format!("{heading}\n{}", p.text);
-    if let Ok(Some(l)) = crate::lessons::planning_block(app, project) {
+    if let Ok(Some(l)) = crate::lessons::planning_block(app, project, about) {
         out += &format!("\n\n{l}");
     }
     out

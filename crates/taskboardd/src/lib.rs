@@ -60,6 +60,7 @@ pub mod progress;
 pub mod projects;
 pub mod propen;
 pub mod qa;
+pub mod relevance;
 pub mod reports;
 pub mod retro;
 pub mod reviewers;
