@@ -2124,6 +2124,18 @@ fn project_for(r: &Report, given: &str) -> Result<Option<String>> {
     Ok(s.and_then(|s| s.s("project").map(|x| x.to_string())).or_else(|| r.cwd.as_deref().and_then(base_name)))
 }
 
+/// The Midna project this terminal works in, from its folder: None when Midna has no project there.
+fn here_project(r: &Report, sid: &str) -> Result<Option<String>> {
+    let s = board::get_session(r.app, Some(sid))?;
+    let dirs = [r.cwd.as_deref(), s.as_ref().and_then(|s| s.s("project_path"))];
+    for d in dirs.into_iter().flatten() {
+        if let Some(p) = projects::midna_project_at(r.app, Some(d))? {
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
+}
+
 static PLANNED_WITH_FILES: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)::([^:]*)$").unwrap());
 static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
@@ -2417,18 +2429,27 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     }
     let name = r.name();
     let owner = app.cfg.owner.clone();
-    let project = project_for(r, &r.b("project"))?;
-    let here = project_for(r, "")?;
-    if let (Some(p), Some(h)) = (&project, &here) {
-        if p != h {
-            return err(
-                409,
-                format!(
-                    "This terminal works in {h}, so --here can't take {p}'s work: the task would be tracked here while its work \
-                     happens in another repository. Make it a task in {p} instead: tb task new \"{title}\" --project {p} (without --here)."
-                ),
-            );
-        }
+    let Some(h) = here_project(r, &sid)? else {
+        let dir = r.cwd.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| ".".into());
+        return err(
+            409,
+            format!(
+                "Midna has no project for this terminal's folder ({dir}), so the board can't track work here. \
+                 Add it first: midna project add {dir}, then run this again."
+            ),
+        );
+    };
+    let given = r.b("project");
+    let project = if given.trim().is_empty() { h.clone() } else { crate::reproject::name(app, &json!(given))? };
+    if project != h {
+        let p = &project;
+        return err(
+            409,
+            format!(
+                "This terminal works in {h}, so --here can't take {p}'s work: the task would be tracked here while its work \
+                 happens in another repository. Make it a task in {p} instead: tb task new \"{title}\" --project {p} (without --here)."
+            ),
+        );
     }
     let mut fields = json!({"title": title, "detail": r.b("detail").trim(), "project": project, "pickup": {"mode": "manual"},
             "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),

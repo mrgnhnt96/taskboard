@@ -56,7 +56,7 @@ Your first prompt says "You are the task board's Jira desk", and each job starts
 
 The owner's questions, screenshots and asks in this terminal are the task. Once you change code for them, put it on the board as a task on this terminal, without asking. If an open backlog item in the project already covers the work, take it: `tb task new --issue B<n> --here`. Otherwise make a standalone task:
 `tb task new "<short imperative title>" --detail "<what the owner asked for and what you're changing>" --here`.
-You're on it at once; from then on follow "When you're on a task". `--here` only takes this terminal's project's work: for another repository, make the task with `--project <its project>` and no `--here`. If a turn changes code with no task, the board stops it, lists the project's open backlog items and asks for this.
+You're on it at once; from then on follow "When you're on a task". `--here` only takes this terminal's project's work: for another repository, make the task with `--project <its project>` and no `--here`. When Midna has no project for this terminal's folder, `--here` is refused; add one with `midna project add <dir>` (the refusal names it), then run it again. If a turn changes code with no task, the board stops it, lists the project's open backlog items and asks for this.
 
 Otherwise don't run `tb` unless the owner asks you to take, report or add something. PR work on a done task: `pr.md`.
 

@@ -441,13 +441,25 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
 
 pub fn project_for_path(app: &App, path: Option<&str>) -> Result<Option<String>> {
     let Some(path) = path.filter(|p| !p.is_empty()) else { return Ok(None) };
+    Ok(deepest(&list_projects(app)?, path).or_else(|| base_name(path.trim_end_matches('/'))))
+}
+
+/// The Midna project whose folder holds `path` (the deepest one), without falling back to a folder name:
+/// None when Midna has no project there.
+pub fn midna_project_at(app: &App, path: Option<&str>) -> Result<Option<String>> {
+    let Some(path) = path.filter(|p| !p.is_empty()) else { return Ok(None) };
+    Ok(deepest(&jloads_arr(app.db.get_setting("midna_projects")?.as_deref()), path))
+}
+
+/// The project in `list` whose path holds `path`, the deepest one.
+fn deepest(list: &[Value], path: &str) -> Option<String> {
     let path = path.trim_end_matches('/');
     let mut best: Option<(String, usize)> = None;
-    for p in list_projects(app)? {
+    for p in list {
         let pp = p["path"].as_str().unwrap_or("").trim_end_matches('/');
         if !pp.is_empty() && (path == pp || path.starts_with(&format!("{pp}/"))) && best.as_ref().map(|(_, l)| pp.len() > *l).unwrap_or(true) {
             best = Some((p["name"].as_str().unwrap_or("").to_string(), pp.len()));
         }
     }
-    Ok(best.map(|(n, _)| n).or_else(|| base_name(path)))
+    best.map(|(n, _)| n).filter(|n| !n.is_empty())
 }
