@@ -24,7 +24,7 @@ Status: ✅ same · 🔧 fixed in this pass · ↔ intentional native difference
 | `blStateText` | Planned task in its goal / Queued task, no goal / Won't do / state text | backlog.rs `bl_state_text` | ✅ | `state_text_matches_web` |
 | `renderBacklogPage` header | "‹ Task board" back link, Backlog, "N open" pill, Goals link, Add an issue | backlog.rs `render`, `PageView::header_text` | 🔧 back link and Goals link were missing | `page_matches_web` |
 | `P.openAll` | "N open" = default-filter total; with other filters a second `GET /backlog` with the defaults; falls back to `counts.open_issues`; hidden when neither | `State::open_all`, `sync`, `page_view` | 🔧 used the board's `counts.open_issues` (wrong filters) | `page_matches_web`, `row_actions_and_filters_send_what_the_web_sent` |
-| Goals link (`#/goals`) | goal page: the board's goal filter, else first active goal by project, else first goal | `goals_landing` | 🔧 | — (navigation) |
+| Goals link (`#/goals`) | goal page: the board's goal filter, else first active goal by project, else first goal | `MainWindow::open_goals` | 🔧 opens the native Goals page | — (navigation) |
 | Add an issue (`openNewIssue`) | removed: issues are added through Claude (`tb backlog add`) | — | ↔ | — |
 | Filters | Project picker (All projects), Goal picker (All goals / Not in a goal, goals of the chosen project), Type seg, State select (Jira ticket only with Jira or when chosen), Sort select (Newest / Oldest / Type) | `render`, `page_view` | 🔧 project/goal were plain menus, now the searchable picker | `page_matches_web` (labels, state options) |
 | `loadBacklog` query | goal sent as id number (or all/none) | `State::query` (goal kept as a ref like the web) | ✅ | `query_sends_goal_ids` |
