@@ -88,7 +88,7 @@ pub fn list(app: &App, project: &str) -> Result<Value> {
 
 // ------------------------------------------------------------------ asking Claude
 
-fn ask(app: &App, prompt: String, schema: Value) -> std::result::Result<Value, String> {
+pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let c = &app.cfg.backlog;
     let args: Vec<String> = vec![
