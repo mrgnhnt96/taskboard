@@ -445,10 +445,8 @@ pub fn project_for_path(app: &App, path: Option<&str>) -> Result<Option<String>>
     let mut best: Option<(String, usize)> = None;
     for p in list_projects(app)? {
         let pp = p["path"].as_str().unwrap_or("").trim_end_matches('/');
-        if !pp.is_empty() && (path == pp || path.starts_with(&format!("{pp}/"))) {
-            if best.as_ref().map(|(_, l)| pp.len() > *l).unwrap_or(true) {
-                best = Some((p["name"].as_str().unwrap_or("").to_string(), pp.len()));
-            }
+        if !pp.is_empty() && (path == pp || path.starts_with(&format!("{pp}/"))) && best.as_ref().map(|(_, l)| pp.len() > *l).unwrap_or(true) {
+            best = Some((p["name"].as_str().unwrap_or("").to_string(), pp.len()));
         }
     }
     Ok(best.map(|(n, _)| n).or_else(|| base_name(path)))

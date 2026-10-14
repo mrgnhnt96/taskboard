@@ -105,8 +105,11 @@ pub fn parse(text: &str) -> Areas {
     out
 }
 
+/// A file's modified time and length, or `None` when it's missing.
+type Stamp = Option<(SystemTime, u64)>;
+
 /// What each repo's file said, by when it last changed.
-static CACHE: Lazy<Mutex<HashMap<PathBuf, (Option<(SystemTime, u64)>, Areas)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static CACHE: Lazy<Mutex<HashMap<PathBuf, (Stamp, Areas)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// The areas in the repo at `repo`: none when it has no `.taskboard.toml`. Read again when the file changes.
 pub fn of_repo(repo: &Path) -> Areas {

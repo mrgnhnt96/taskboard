@@ -6,7 +6,7 @@
 //! side by side, and a wave starts once the one before it is done. Without Claude (`[backlog] ai =
 //! false`, or no `claude`), issues are grouped by kind and waves follow priority.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 use serde_json::{json, Value};
 
@@ -202,9 +202,9 @@ fn group_now(app: &App) -> std::result::Result<(), String> {
     let mut areas: HashMap<String, crate::areas::Areas> = HashMap::new();
     for b in &new {
         let p = b.st("project");
-        if !areas.contains_key(&p) {
-            let a = crate::areas::of_project(app, &p).unwrap_or_default();
-            areas.insert(p, a);
+        if let Entry::Vacant(e) = areas.entry(p) {
+            let a = crate::areas::of_project(app, e.key()).unwrap_or_default();
+            e.insert(a);
         }
     }
     for (p, a) in &areas {
@@ -283,7 +283,7 @@ fn suggest_name(rows: &[Row]) -> String {
             None => n.push((g, 1)),
         }
     }
-    n.sort_by(|a, b| b.1.cmp(&a.1));
+    n.sort_by_key(|x| std::cmp::Reverse(x.1));
     n.first().map(|x| x.0.clone()).unwrap_or_default()
 }
 
@@ -458,6 +458,9 @@ pub fn plan_get(app: &App) -> Value {
     app.shared.lock().plan.clone().unwrap_or_else(|| json!({"state": "none"}))
 }
 
+/// A wave of the plan: why it goes together, and each issue with the issues it waits for.
+type Wave = (String, Vec<(i64, Vec<i64>)>);
+
 /// `POST /backlog/goal {name, waves: [{why, items: [{ref, after}]}]}`: a new goal from the plan.
 /// Each issue becomes a planned task in it, in its wave; `after` becomes the task's wait-for.
 pub fn create_goal(app: &App, body: &Value) -> Result<Value> {
@@ -466,7 +469,7 @@ pub fn create_goal(app: &App, body: &Value) -> Result<Value> {
         return err(400, "Give the goal a name.");
     }
     let waves = body["waves"].as_array().cloned().unwrap_or_default();
-    let mut plan: Vec<(String, Vec<(i64, Vec<i64>)>)> = vec![];
+    let mut plan: Vec<Wave> = vec![];
     let mut all: Vec<i64> = vec![];
     for w in &waves {
         let mut items = vec![];

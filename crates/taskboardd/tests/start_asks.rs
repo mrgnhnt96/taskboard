@@ -94,7 +94,7 @@ fn a_refused_start_asks_the_owner_and_tells_the_agent_not_to_retry() {
     assert_eq!(asks[0]["prompt"].as_str().unwrap_or("").to_string(), "what do you think of the login page?");
     assert_eq!(asks[0]["run"]["mode"], "new");
 
-    let p = start_params(&b.app, &asks[0]["group"].as_str().unwrap_or("").to_string(), &asks);
+    let p = start_params(&b.app, asks[0]["group"].as_str().unwrap_or(""), &asks);
     assert_eq!(p["title"], format!("Start T{id}?"));
     assert_eq!(p["id"], start_notification_id(&format!("T{id}")));
     assert_eq!(p["id"], format!("taskboard-start-T{id}"));

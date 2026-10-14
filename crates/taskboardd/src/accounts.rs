@@ -581,7 +581,7 @@ fn gh_path(app: &App) -> Option<PathBuf> {
 }
 
 fn last_line(s: &str) -> String {
-    s.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("").to_string()
+    s.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("").to_string()
 }
 
 /// The environment for a `gh` that must not see or change the Mac's own sign-in: its config in
