@@ -1640,6 +1640,18 @@ static STDOUT_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// Prints a line. A write that fails (the reader has gone) is ignored, and later lines aren't tried: tb
 /// carries on with the work and its report, cleans up after itself, and exits as it would have, rather
 /// than panicking or stopping before the work is done.
+/// A failed call as a sentence: the board's refusal, a board that isn't there, or one that `went_quiet`
+/// (it took the request and may still be working on it, so a retry could do it twice).
+fn unanswered(e: CallError, went_quiet: &str) -> String {
+    match e {
+        CallError::Refused(m) => m,
+        CallError::Unreachable(e) => format!("the board isn't answering ({e}). Is `taskboard serve` running?"),
+        CallError::TimedOut(e) => format!(
+            "the board {went_quiet} ({e}). It may still be working on it: check before running it again (tb pr status shows where a PR is)."
+        ),
+    }
+}
+
 fn out(line: &str) {
     out_to(&mut std::io::stdout(), &STDOUT_GONE, line);
 }
@@ -1746,7 +1758,7 @@ impl Ctx {
         match client::request(&self.cfg, "POST", "/report", Some(&body), timeout) {
             Ok(v) => Ok(Some(v)),
             Err(CallError::Refused(m)) => Err(m),
-            Err(CallError::Unreachable(_)) => {
+            Err(CallError::Unreachable(_) | CallError::TimedOut(_)) => {
                 client::spool_write(&self.cfg, &body).map_err(|e| format!("the board isn't answering and the report couldn't be saved: {e}"))?;
                 Ok(None)
             }
@@ -1759,6 +1771,7 @@ impl Ctx {
             Ok(v) => Ok(v),
             Err(CallError::Refused(m)) => Err(m),
             Err(CallError::Unreachable(_)) => Err("The board isn't reachable.".into()),
+            Err(CallError::TimedOut(_)) => Err("The board didn't answer in time; it may still be busy.".into()),
         }
     }
 
@@ -1772,8 +1785,16 @@ impl Ctx {
         match client::request(&self.cfg, method, path, body.as_ref(), TB_TIMEOUT) {
             Ok(v) => Ok(v),
             Err(CallError::Refused(m)) => Err(m),
-            Err(CallError::Unreachable(e)) => Err(format!("the board isn't answering ({e}). Is `taskboard serve` running?")),
+            Err(e) => Err(unanswered(e, &format!("didn't answer within {TB_TIMEOUT}s"))),
         }
+    }
+
+    /// A long command on the board's progress stream: prints each stage as the board finishes it, and
+    /// only gives up when the board goes quiet for `TB_TIMEOUT` (a stage that hangs).
+    fn call_progress(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let body = self.credited_here(method, body);
+        client::request_progress(&self.cfg, method, path, body.as_ref(), TB_TIMEOUT, |stage| out(&format!("· {stage}")))
+            .map_err(|e| unanswered(e, &format!("went quiet for {TB_TIMEOUT}s")))
     }
 
     /// A change names this terminal (`by_session`), so the board credits it here rather than to the owner.
@@ -3267,6 +3288,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 Ok(v) => v,
                 Err(CallError::Refused(m)) => return Err(m),
                 Err(CallError::Unreachable(e)) => return Err(format!("the board isn't answering ({e}), so it can't open the PR. Try again once it's back.")),
+                Err(CallError::TimedOut(e)) => {
+                    return Err(format!("the board went quiet for {} minutes ({e}); it may still be opening the PR. Check with tb pr status before trying again.", PR_OPEN_TIMEOUT / 60.0))
+                }
             };
             if !v["task"].is_string() {
                 out(NO_TASK);
@@ -4185,27 +4209,27 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Status { task } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("GET", &format!("/tasks/{t}/pr?full=1"), None)?;
+                let v = c.call_progress("GET", &format!("/tasks/{t}/pr?full=1"), None)?;
                 print_pr_status(&t, &v);
                 Ok(0)
             }
             PrCmd::Reply { args, resolve } => {
                 let (task, rest) = task_and(args, 2);
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/reply"), Some(json!({"thread": rest[0], "text": rest[1], "resolve": resolve})))?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/reply"), Some(json!({"thread": rest[0], "text": rest[1], "resolve": resolve})))?;
                 out(&format!("Replied on thread {}{}. {} open.", rest[0], if v["resolved"] == true { " and resolved it" } else { "" }, plural_threads(&v)));
                 Ok(0)
             }
             PrCmd::Ack { args } => {
                 let (task, rest) = task_and(args, 1);
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0]})))?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/ack"), Some(json!({"thread": rest[0]})))?;
                 out(&format!("Thread {} is answered without a reply{}. {} open.", rest[0], if v["resolved"] == true { " and resolved" } else { "" }, plural_threads(&v)));
                 Ok(0)
             }
             PrCmd::Addressed { task } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({})))?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/addressed"), Some(json!({})))?;
                 let asked: Vec<&str> = v["asked"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
                 if asked.is_empty() {
                     out(&format!("Recorded {t}'s review as addressed. The board watches the PR and brings this conversation back when it needs you. You can stop here."));
@@ -4227,13 +4251,13 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             PrCmd::Merge { task } => {
                 let t = c.pr_task(task)?;
-                c.call("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
+                c.call_progress("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
                 Ok(0)
             }
             PrCmd::NotOurs { task, reason, title, proof, check } => {
                 let t = c.pr_task(task)?;
-                let v = c.call("POST", &format!("/tasks/{t}/pr/not-ours"), Some(json!({"reason": reason, "title": title, "proof": proof, "checks": check})))?;
+                let v = c.call_progress("POST", &format!("/tasks/{t}/pr/not-ours"), Some(json!({"reason": reason, "title": title, "proof": proof, "checks": check})))?;
                 let cleared: Vec<&str> = v["cleared"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
                 out(&format!("Cleared {} for this push of {t}'s PR: they failed, but not because of it.", cleared.join(", ")));
                 Ok(0)

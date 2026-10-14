@@ -403,7 +403,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         match client::request(&cfg, "POST", "/report", Some(&body), post_timeout) {
             Ok(v) => Some(v),
             Err(CallError::Refused(..)) => Some(json!({})),
-            Err(CallError::Unreachable(_)) => None,
+            Err(CallError::Unreachable(_) | CallError::TimedOut(_)) => None,
         }
     } else {
         None
@@ -450,7 +450,7 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         ack["event"] = json!("hook.delivered");
         ack["ids"] = Value::Array(ids);
         let l = left();
-        let sent = l > 0.05 && !matches!(client::request(&cfg, "POST", "/report", Some(&ack), l), Err(CallError::Unreachable(_)));
+        let sent = l > 0.05 && !matches!(client::request(&cfg, "POST", "/report", Some(&ack), l), Err(CallError::Unreachable(_) | CallError::TimedOut(_)));
         if !sent {
             let _ = client::spool_write(&cfg, &ack);
         }

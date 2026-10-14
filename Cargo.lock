@@ -6940,6 +6940,7 @@ dependencies = [
  "crc32fast",
  "dirs",
  "flate2",
+ "futures-util",
  "libc",
  "mime_guess",
  "once_cell",
