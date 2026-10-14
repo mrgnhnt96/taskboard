@@ -676,6 +676,8 @@ enum LessonCmd {
         #[arg(long)]
         evidence: Vec<String>,
     },
+    /// Look back over a finished goal and suggest lessons from it (confirming ones already on the board)
+    Retro { goal: String },
 }
 
 #[derive(Subcommand)]
@@ -2362,6 +2364,7 @@ fn lessons_cmd(c: &Ctx, project: Option<String>, all: bool, state: Option<String
 
 fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
     let (v, did) = match action {
+        LessonCmd::Retro { goal } => return lesson_retro(c, &goal_ref(&goal)?),
         LessonCmd::Add { text, kind, global, project, evidence, kept } => {
             let b = json!({"text": text, "kind": kind, "scope": if global { "global" } else { "project" }, "project": project,
                            "evidence": evidence, "kept": kept, "cwd": c.cwd});
@@ -2403,6 +2406,41 @@ fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
         out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));
     }
     out(&lesson_line(&v));
+    Ok(0)
+}
+
+/// Runs a goal's retrospective and waits for it (a minute or two), then lists what it suggested.
+fn lesson_retro(c: &Ctx, g: &str) -> Result<i32, String> {
+    let path = format!("/lessons/retro/{g}");
+    c.call("POST", &path, Some(json!({})))?;
+    out(&format!("Looking back over {g}…"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    let v = loop {
+        let v = c.call("GET", &path, None)?;
+        if v["state"] != "running" || std::time::Instant::now() > deadline {
+            break v;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    };
+    match v["state"].as_str().unwrap_or("") {
+        "running" => {
+            out("Still running; see it later with tb lessons --state suggested.");
+            return Ok(1);
+        }
+        "failed" => return Err(format!("the retrospective failed: {}", v["error"].as_str().unwrap_or("no reason given"))),
+        _ => {}
+    }
+    let refs = |k: &str| v[k].as_array().cloned().unwrap_or_default();
+    let (new, confirmed) = (refs("new"), refs("confirmed"));
+    if new.is_empty() && confirmed.is_empty() {
+        out(&format!("Nothing worth keeping from {g}."));
+        return Ok(0);
+    }
+    for (label, list) in [("Suggested", &new), ("Confirmed", &confirmed)] {
+        for r in list.iter().filter_map(|r| r.as_str()) {
+            out(&format!("{label}: {}", lesson_line(&c.call("GET", &format!("/lessons/{r}"), None)?)));
+        }
+    }
     Ok(0)
 }
 

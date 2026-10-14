@@ -29,7 +29,7 @@ const TEXT_MAX: usize = 400;
 const PROMPT_COUNT: usize = 8;
 const PROMPT_CHARS: usize = 1500;
 
-fn clean_text(s: &str) -> Result<String> {
+pub(crate) fn clean_text(s: &str) -> Result<String> {
     let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.is_empty() {
         return err(400, "Say what the lesson is.");
@@ -40,7 +40,7 @@ fn clean_text(s: &str) -> Result<String> {
     Ok(t)
 }
 
-fn clean_kind(s: &str) -> Result<String> {
+pub(crate) fn clean_kind(s: &str) -> Result<String> {
     let k = s.trim().to_lowercase();
     if !KINDS.contains(&k.as_str()) {
         return err(400, format!("A lesson's kind is one of {}.", KINDS.join(", ")));
@@ -65,7 +65,7 @@ fn clean_evidence(v: Option<&Value>) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn evidence(l: &Row) -> Vec<String> {
+pub(crate) fn evidence(l: &Row) -> Vec<String> {
     jloads_arr(l.s("evidence")).iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
 }
 
@@ -185,10 +185,15 @@ fn decide(app: &App, r: &str, state: &str, body: &Value) -> Result<Value> {
 /// Later work showed the same thing again: count it and add that work to the evidence.
 fn confirm(app: &App, r: &str, body: &Value) -> Result<Value> {
     let l = get(app, r)?;
-    let mut ev = evidence(&l);
-    for r in clean_evidence(body.get("evidence"))? {
-        if !ev.contains(&r) {
-            ev.push(r);
+    confirm_with(app, &l, &clean_evidence(body.get("evidence"))?)?;
+    Ok(dict(&get(app, r)?))
+}
+
+pub(crate) fn confirm_with(app: &App, l: &Row, more: &[String]) -> Result<()> {
+    let mut ev = evidence(l);
+    for r in more {
+        if !ev.contains(r) {
+            ev.push(r.clone());
         }
     }
     let now = now_iso();
@@ -197,7 +202,18 @@ fn confirm(app: &App, r: &str, body: &Value) -> Result<Value> {
         &json!(l.id()),
         fields!["confirmations" => l.i0("confirmations") + 1, "last_confirmed" => now, "evidence" => jdumps(&json!(ev)), "updated_at" => now],
     )?;
-    Ok(dict(&get(app, r)?))
+    Ok(())
+}
+
+/// A lesson the board itself suggests (from a goal's retrospective), for the owner to keep or retire.
+pub(crate) fn suggest(app: &App, project: Option<&str>, kind: &str, text: &str, ev: &[String], source: &str) -> Result<i64> {
+    let now = now_iso();
+    app.db.insert(
+        "lessons",
+        fields!["scope" => if project.is_some() { "project" } else { "global" }, "project" => project, "kind" => clean_kind(kind)?,
+                "text" => clean_text(text)?, "evidence" => jdumps(&json!(ev)), "state" => "suggested", "source" => source,
+                "created_at" => now, "updated_at" => now],
+    )
 }
 
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
@@ -232,6 +248,8 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("POST", [r, "retire"]) => app.db.tx(|| decide(app, r, "retired", body)),
         ("POST", [r, "suggest"]) => app.db.tx(|| decide(app, r, "suggested", body)),
         ("POST", [r, "confirm"]) => app.db.tx(|| confirm(app, r, body)),
+        ("POST", ["retro", g]) => crate::retro::start(app, g),
+        ("GET", ["retro", g]) => crate::retro::status(app, g),
         _ => err(404, "There's nothing at that address."),
     }
 }
