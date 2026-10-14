@@ -209,6 +209,15 @@ pub fn register(bundle: &Path) -> LoginItem {
     from_status(unsafe { svc.status() })
 }
 
+/// Restart the bundle's daemon (`launchctl kickstart -k`), so it runs the binary now in the bundle.
+pub fn restart_daemon(bundle: &Path) -> Result<(), String> {
+    let plist = bundled_agent_plist(bundle).ok_or("The launch agent isn't in the app bundle.")?;
+    let label = agent_label(&plist).ok_or("The launch agent has no label.")?;
+    let uid = unsafe { libc::getuid() };
+    let out = std::process::Command::new("/bin/launchctl").args(["kickstart", "-k"]).arg(format!("gui/{uid}/{label}")).output().map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
+
 pub fn unregister(bundle: &Path) -> Result<(), String> {
     let plist = bundled_agent_plist(bundle).ok_or("The launch agent isn't in the app bundle.")?;
     unsafe { agent_service(&plist).unregisterAndReturnError() }.map_err(|e| e.localizedDescription().to_string())

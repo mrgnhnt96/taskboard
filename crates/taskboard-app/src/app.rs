@@ -1222,6 +1222,9 @@ fn status_bar(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Di
     if let Some(p) = accounts_pill(&st, t) {
         bar = bar.child(p);
     }
+    if let Some(p) = update_pill(t) {
+        bar = bar.child(p);
+    }
     let text = t.text;
     bar = bar.child(
         div()
@@ -1253,6 +1256,21 @@ fn accounts_pill(st: &Value, t: &Theme) -> Option<AnyElement> {
             .child(label)
             .tooltip(kit::tip(tip))
             .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
+            .into_any_element(),
+    )
+}
+
+/// "Taskboard 1.2.0 is ready" once a newer release is downloaded and checked; opens Settings › System,
+/// where Restart to update installs it.
+fn update_pill(t: &Theme) -> Option<AnyElement> {
+    let crate::updater::State::Ready { version, .. } = crate::updater::state() else { return None };
+    Some(
+        pill_shell(t, "update-pill", t.accent, t.accent_soft)
+            .cursor_pointer()
+            .child(kit::dot(t.accent, 7.))
+            .child(format!("Taskboard {version} is ready"))
+            .tooltip(kit::tip(format!("A new release, downloaded and checked. Restart to update from {} to {version}.", crate::updater::VERSION)))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSystemSettings), cx))
             .into_any_element(),
     )
 }
@@ -1406,6 +1424,17 @@ mod tests {
             Some(u) => json!({"stale": u.stale, "title": u.title, "windows": u.windows.iter().map(|w| json!({"level": w.level, "label": w.label,
                 "width": if w.width.fract() == 0. { json!(w.width as i64) } else { json!(w.width) }, "value": w.value})).collect::<Vec<_>>()}),
         });
+    }
+
+    #[::core::prelude::v1::test]
+    fn update_pill_shows_only_once_a_release_is_ready() {
+        use crate::updater::{State, set_for_test};
+        let t = crate::theme::Theme::new(crate::theme::ThemeMode::Light, "Helvetica Neue".into(), "Menlo".into());
+        set_for_test(State::Downloading { version: "9.0.0".into() });
+        assert!(super::update_pill(&t).is_none(), "not while it downloads");
+        set_for_test(State::Ready { version: "9.0.0".into(), page: String::new() });
+        assert!(super::update_pill(&t).is_some());
+        set_for_test(State::Idle);
     }
 
     #[::core::prelude::v1::test]

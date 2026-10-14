@@ -50,9 +50,10 @@ enum Sec {
     History,
     Qa,
     Reviewers,
+    System,
 }
 
-const SECS: [Sec; 4] = [Sec::Accounts, Sec::History, Sec::Qa, Sec::Reviewers];
+const SECS: [Sec; 5] = [Sec::Accounts, Sec::History, Sec::Qa, Sec::Reviewers, Sec::System];
 
 impl Sec {
     fn label(self) -> &'static str {
@@ -61,6 +62,7 @@ impl Sec {
             Sec::History => "History",
             Sec::Qa => "QA",
             Sec::Reviewers => "Reviewers",
+            Sec::System => "System",
         }
     }
 
@@ -70,6 +72,7 @@ impl Sec {
             Sec::History => "How far back the Days page goes, and when the board cleans up old work.",
             Sec::Qa => "Testers' Jira comments on the board's tickets, turned into follow-up tasks or questions for you. Off until you switch it on.",
             Sec::Reviewers => "Who reviews each project's PRs. Agents and tb reviewers change the roster.",
+            Sec::System => "Updates, and the versions of the app and the daemon.",
         }
     }
 
@@ -79,6 +82,7 @@ impl Sec {
             Sec::History => "◷",
             Sec::Qa => "✓",
             Sec::Reviewers => "☺",
+            Sec::System => "⚙",
         }
     }
 }
@@ -141,6 +145,11 @@ pub struct SettingsWindow {
     qa_note: Option<(String, bool)>,
     /// `GET /reviewers?project=all`.
     reviewers: Option<Value>,
+    /// `GET /info`: the daemon's version, uptime and pid.
+    info: Option<Value>,
+    /// The daemon is restarting, and the line under the System card.
+    sys_busy: bool,
+    sys_note: Option<(String, bool)>,
 }
 
 impl SettingsWindow {
@@ -174,11 +183,15 @@ impl SettingsWindow {
             qa_busy: false,
             qa_note: None,
             reviewers: None,
+            info: None,
+            sys_busy: false,
+            sys_note: None,
         };
         s.load(false, cx);
         s.load_history(cx);
         s.load_qa(cx);
         s.load_reviewers(cx);
+        s.load_info(cx);
         cx.spawn(async move |this, cx| {
             let mut tick = 0u32;
             loop {
@@ -190,6 +203,15 @@ impl SettingsWindow {
                         break;
                     }
                 }
+                // the updater runs on its own thread: redraw System as its state moves
+                let _ = this.update(cx, |s, cx| {
+                    if s.view == Sec::System {
+                        if tick % IDLE_TICKS == 0 {
+                            s.load_info(cx);
+                        }
+                        cx.notify();
+                    }
+                });
             }
         })
         .detach();
@@ -204,6 +226,18 @@ impl SettingsWindow {
                 if let Ok(v) = r {
                     s.history = Some(v);
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_info(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { backend.get("info", &[]) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.info = r.ok();
                 cx.notify();
             });
         })
@@ -462,6 +496,7 @@ impl Render for SettingsWindow {
             Sec::History => self.history_page(&t, cx).into_any_element(),
             Sec::Qa => self.qa_page(&t, cx).into_any_element(),
             Sec::Reviewers => self.reviewers_page(&t).into_any_element(),
+            Sec::System => self.system_page(&t, cx).into_any_element(),
         };
         div()
             .id("settings-root")
@@ -497,7 +532,12 @@ impl SettingsWindow {
         for sec in SECS {
             let on = self.view == sec;
             // amber count: accounts whose sign-in stopped working or lacks scopes
-            let n = if sec == Sec::Accounts { self.accounts.iter().filter(|a| needs_owner(a)).count() } else { 0 };
+            let n = match sec {
+                Sec::Accounts => self.accounts.iter().filter(|a| needs_owner(a)).count(),
+                // an update waiting for a restart
+                Sec::System => matches!(crate::updater::state(), crate::updater::State::Ready { .. }) as usize,
+                _ => 0,
+            };
             let hover = t.panel_2;
             list = list.child(
                 div()
@@ -521,6 +561,9 @@ impl SettingsWindow {
                     })
                     .on_click(cx.listener(move |s, _, _, cx| {
                         s.view = sec;
+                        if sec == Sec::System {
+                            s.load_info(cx);
+                        }
                         cx.notify();
                     })),
             );
@@ -1035,6 +1078,126 @@ impl SettingsWindow {
     }
 }
 
+// ------------------------------------------------------------------ system
+
+impl SettingsWindow {
+    fn system_page(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::updater::{self, State};
+        let list = div().id("system-rows").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(20.)).px(px(28.)).pt(px(4.)).pb(px(28.));
+        let small = |b: Stateful<Div>| b.h(px(26.)).text_size(px(12.));
+        let check = |label: &'static str, cx: &mut Context<Self>| {
+            small(kit::btn_small(t, "sys-check", label)).on_click(cx.listener(|_, _, _, cx| {
+                updater::check_now();
+                cx.notify();
+            }))
+        };
+        let channel = if updater::VERSION.contains("-beta.") { "Gets every release, betas included." } else { "Gets public releases." };
+        let (dot, status, note, button): (Hsla, String, String, Option<Stateful<Div>>) = match updater::state() {
+            State::Off(why) => (t.faint, "Off".into(), why, None),
+            State::Idle => (t.faint, "Not checked yet".into(), channel.into(), Some(check("Check now", cx))),
+            State::Checking => (t.faint, "Checking…".into(), channel.into(), Some(kit::disabled(small(kit::btn_small(t, "sys-check", "Checking…"))))),
+            State::UpToDate { at } => (t.up, format!("Up to date · checked at {at}"), channel.into(), Some(check("Check now", cx))),
+            State::Downloading { version } => (t.accent, format!("Downloading {version}…"), "Checked before it's offered.".into(), None),
+            State::Ready { version, .. } => (
+                t.accent,
+                format!("{version} ready"),
+                "Downloaded and checked. The board and its agents keep running through the restart.".into(),
+                Some(small(kit::btn_primary(t, "sys-apply", "Restart to update")).on_click(cx.listener(|s, _, _, cx| s.apply_update(cx)))),
+            ),
+            State::Applying { version } => (t.accent, format!("Installing {version}…"), "Taskboard reopens in a moment.".into(), None),
+            State::Failed { error, at } => (t.down, format!("Check failed at {at}"), error, Some(check("Retry", cx))),
+        };
+        let update = line(t, "sys-update", true, false, "Update", &note, None).child(
+            controls()
+                .child(kit::dot(dot, 7.))
+                .child(div().text_size(px(12.)).text_color(if dot == t.faint { t.muted } else { t.text }).child(status))
+                .when_some(button, |d, b| d.child(b)),
+        );
+        let page = match updater::state() {
+            State::Ready { page, .. } => page,
+            _ => updater::RELEASES_PAGE.to_string(),
+        };
+        let releases = row(t, "sys-releases", false)
+            .min_h(px(34.))
+            .text_size(px(12.))
+            .child(kit::link(t, "sys-releases-link", "Release notes ↗").on_click(cx.listener(move |_, _, _, cx| cx.open_url(&page))))
+            .child(div().flex_1());
+        let updates = kit::card(t).overflow_hidden().child(update).child(releases);
+
+        let app = line(t, "sys-app", true, false, "App version", "", None).child(controls().child(kit::dot(t.up, 7.)).child(div().text_size(px(12.)).child(updater::VERSION)));
+        let daemon_v = self.info.as_ref().and_then(|i| i["version"].as_str()).map(str::to_string);
+        let behind = daemon_v.as_deref().is_some_and(|v| v != updater::VERSION);
+        let daemon_note = match (&self.info, behind) {
+            (None, _) => "Not connected.".to_string(),
+            (Some(_), true) => format!("Doesn't match the app. Restart it to run {}.", updater::VERSION),
+            (Some(i), false) => format!("Up {} · pid {}", crate::fmt::span(i["uptime_secs"].as_i64().unwrap_or(0) / 60), i["pid"].as_u64().unwrap_or(0)),
+        };
+        let restart = (behind && crate::install::installed_bundle().is_some()).then(|| {
+            if self.sys_busy {
+                kit::disabled(small(kit::btn_small(t, "sys-restart", "Restarting…")))
+            } else {
+                small(kit::btn_primary(t, "sys-restart", "Restart daemon")).on_click(cx.listener(|s, _, _, cx| s.restart_daemon(cx)))
+            }
+        });
+        let daemon = line(t, "sys-daemon", false, behind, "Daemon version", &daemon_note, None).child(
+            controls()
+                .child(kit::dot(if self.info.is_none() { t.faint } else if behind { t.warn } else { t.up }, 7.))
+                .child(div().text_size(px(12.)).text_color(if daemon_v.is_some() { t.text } else { t.muted }).child(daemon_v.unwrap_or_else(|| "not running".into())))
+                .when_some(restart, |d, b| d.child(b)),
+        );
+        let mut versions = kit::card(t).overflow_hidden().child(app).child(daemon);
+        if let Some((text, bad)) = &self.sys_note {
+            versions = versions.child(row(t, "sys-note", false).bg(if *bad { t.down_soft } else { t.up_soft }).text_color(if *bad { t.down } else { t.up_fg }).text_size(px(12.)).child(text.clone()));
+        }
+        list.child(updates).child(versions)
+    }
+
+    /// Open on System (the status bar's "update ready" pill).
+    pub fn show_system(&mut self, cx: &mut Context<Self>) {
+        self.view = Sec::System;
+        self.load_info(cx);
+        cx.notify();
+    }
+
+    /// Restart to update: swap the new app in, restart the daemon, quit; the new app opens itself.
+    fn apply_update(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { crate::updater::apply() }).await;
+            let _ = this.update(cx, |s, cx| match r {
+                Ok(()) => cx.quit(),
+                Err(e) => {
+                    s.sys_note = Some((e, true));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Restart the daemon so it runs the binary in the app now (after an update it hadn't picked up).
+    fn restart_daemon(&mut self, cx: &mut Context<Self>) {
+        let Some(bundle) = crate::install::installed_bundle() else { return };
+        self.sys_busy = true;
+        self.sys_note = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { crate::install::restart_daemon(&bundle) }).await;
+            // give launchd a moment to bring it back before asking its version
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+            let _ = this.update(cx, |s, cx| {
+                s.sys_busy = false;
+                if let Err(e) = r {
+                    s.sys_note = Some((format!("Couldn't restart the daemon: {e}"), true));
+                }
+                s.load_info(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
 // ------------------------------------------------------------------ reviewers
 
 /// What a reviewer's row says about them: their accounts, pin, bot, pace and asks.
@@ -1188,6 +1351,19 @@ mod tests {
         let w = cx.add_window(|window, cx| SettingsWindow::new(be, window, cx));
         settle(cx);
         (w, rec)
+    }
+
+    #[gpui_kit::test]
+    fn system_shows_the_daemon_s_version_beside_the_app_s(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |s, window, cx| {
+            assert_eq!(s.info.as_ref().unwrap()["version"], env!("CARGO_PKG_VERSION"));
+            s.view = super::Sec::System;
+            cx.notify();
+            window.refresh();
+        })
+        .unwrap();
+        settle(cx);
     }
 
     #[gpui_kit::test]
