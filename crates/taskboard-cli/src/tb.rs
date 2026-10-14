@@ -209,6 +209,24 @@ enum Cmd {
         #[command(subcommand)]
         action: BitCmd,
     },
+    /// Lessons learned from finished work: this project's and the board's (kept and suggested)
+    Lessons {
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        /// Every project's
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_parser = ["suggested", "kept", "retired"])]
+        state: Option<String>,
+        #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
+        kind: Option<String>,
+    },
+    /// Suggest, change, keep or retire a lesson that outlasts its goal
+    Lesson {
+        #[command(subcommand)]
+        action: LessonCmd,
+    },
     /// A project's reviewers: list, add, remove (never ask them), back, pin, bot schedule, automation, aliases
     Reviewers {
         #[command(subcommand)]
@@ -606,6 +624,58 @@ enum BitCmd {
     },
     /// Remove a bit
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum LessonCmd {
+    /// Suggest a lesson for later work: planning (how to slice goals), code, process or tooling. It reaches
+    /// handoffs (or planners, for planning) once the owner keeps it
+    Add {
+        text: String,
+        #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
+        kind: String,
+        /// For every project on the board, not just this one
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        /// The work it was learned from (T12, G3, B7); this terminal's task is added. Repeat for more
+        #[arg(long)]
+        evidence: Vec<String>,
+        /// Kept at once. Only on the owner's word
+        #[arg(long)]
+        kept: bool,
+    },
+    /// Change a lesson's text, kind, scope or evidence
+    Edit {
+        lesson: String,
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
+        kind: Option<String>,
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        #[arg(long)]
+        project: Option<String>,
+        /// More work it was learned from; repeat for more
+        #[arg(long)]
+        evidence: Vec<String>,
+    },
+    /// Show one lesson
+    Show { lesson: String },
+    /// Keep a lesson, so handoffs (or planners) get it. Only on the owner's word
+    Keep { lesson: String },
+    /// Retire a lesson that no longer holds. Only on the owner's word
+    Retire { lesson: String },
+    /// Put a kept or retired lesson back to suggested
+    Suggest { lesson: String },
+    /// Later work showed the lesson again: count it and add that work as evidence
+    Confirm {
+        lesson: String,
+        #[arg(long)]
+        evidence: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2035,6 +2105,10 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     };
     let path = v["path"].as_str().map(|p| format!(" ({p})")).unwrap_or_default();
     out(&format!("Slice goals into tasks by {whose}{path}:\n{}", v["text"].as_str().unwrap_or("").trim()));
+    let lessons: Vec<&str> = v["lessons"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+    if !lessons.is_empty() {
+        out(&format!("\nWhat earlier goals taught about planning here:\n{}", lessons.join("\n")));
+    }
     Ok(0)
 }
 
@@ -2234,6 +2308,101 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
             out(&format!("Brought up {name}."));
         }
     }
+    Ok(0)
+}
+
+fn lesson_ref(v: &str) -> Result<String, String> {
+    let s = v.trim();
+    let digits = s.trim_start_matches(['L', 'l']);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("expected L<number>, got {v:?}"));
+    }
+    Ok(format!("L{digits}"))
+}
+
+/// "L4 · kept · code · taskboard · confirmed 2× · T12, G3", then the text, for `tb lessons`.
+fn lesson_line(l: &Value) -> String {
+    let mut head = vec![
+        l["ref"].as_str().unwrap_or("").to_string(),
+        l["state"].as_str().unwrap_or("").to_string(),
+        l["kind"].as_str().unwrap_or("").to_string(),
+        l["project"].as_str().map(|p| p.to_string()).unwrap_or_else(|| "global".into()),
+    ];
+    if let Some(n) = l["confirmations"].as_i64().filter(|n| *n > 0) {
+        head.push(format!("confirmed {n}×"));
+    }
+    let ev: Vec<&str> = l["evidence"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+    if !ev.is_empty() {
+        head.push(ev.join(", "));
+    }
+    format!("{}\n  {}", head.join(" · "), l["text"].as_str().unwrap_or(""))
+}
+
+fn lessons_cmd(c: &Ctx, project: Option<String>, all: bool, state: Option<String>, kind: Option<String>) -> Result<i32, String> {
+    let mut q = vec![match (all, &project) {
+        (true, _) => "project=all".to_string(),
+        (_, Some(p)) => format!("project={}", qv(p)),
+        _ => format!("cwd={}", qv(&c.cwd)),
+    }];
+    for (k, v) in [("state", state), ("kind", kind)] {
+        if let Some(v) = v {
+            q.push(format!("{k}={}", qv(&v)));
+        }
+    }
+    let v = c.call("GET", &format!("/lessons?{}", q.join("&")), None)?;
+    let ls = v["lessons"].as_array().cloned().unwrap_or_default();
+    if ls.is_empty() {
+        out("No lessons yet. Suggest one with tb lesson add \"<what to do differently>\" --kind planning|code|process|tooling.");
+    }
+    for l in ls {
+        out(&lesson_line(&l));
+    }
+    Ok(0)
+}
+
+fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
+    let (v, did) = match action {
+        LessonCmd::Add { text, kind, global, project, evidence, kept } => {
+            let b = json!({"text": text, "kind": kind, "scope": if global { "global" } else { "project" }, "project": project,
+                           "evidence": evidence, "kept": kept, "cwd": c.cwd});
+            (c.call("POST", "/lessons", Some(b))?, if kept { "Kept" } else { "Suggested" })
+        }
+        LessonCmd::Edit { lesson, text, kind, global, project, evidence } => {
+            let mut b = json!({"cwd": c.cwd});
+            if let Some(x) = text {
+                b["text"] = json!(x);
+            }
+            if let Some(x) = kind {
+                b["kind"] = json!(x);
+            }
+            if global {
+                b["scope"] = json!("global");
+            } else if let Some(p) = project {
+                b["scope"] = json!("project");
+                b["project"] = json!(p);
+            }
+            if !evidence.is_empty() {
+                b["evidence"] = json!(evidence);
+            }
+            if b.as_object().is_some_and(|o| o.len() == 1) {
+                return Err("say what to change, for example: tb lesson edit L4 --text \"…\" or --evidence T12".into());
+            }
+            (c.call("POST", &format!("/lessons/{}", lesson_ref(&lesson)?), Some(b))?, "Changed")
+        }
+        LessonCmd::Show { lesson } => (c.call("GET", &format!("/lessons/{}", lesson_ref(&lesson)?), None)?, ""),
+        LessonCmd::Keep { lesson } => (c.call("POST", &format!("/lessons/{}/keep", lesson_ref(&lesson)?), Some(json!({})))?, "Kept"),
+        LessonCmd::Retire { lesson } => (c.call("POST", &format!("/lessons/{}/retire", lesson_ref(&lesson)?), Some(json!({})))?, "Retired"),
+        LessonCmd::Suggest { lesson } => {
+            (c.call("POST", &format!("/lessons/{}/suggest", lesson_ref(&lesson)?), Some(json!({})))?, "Back to suggested:")
+        }
+        LessonCmd::Confirm { lesson, evidence } => {
+            (c.call("POST", &format!("/lessons/{}/confirm", lesson_ref(&lesson)?), Some(json!({"evidence": evidence})))?, "Confirmed")
+        }
+    };
+    if !did.is_empty() {
+        out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));
+    }
+    out(&lesson_line(&v));
     Ok(0)
 }
 
@@ -3472,6 +3641,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         }
         Cmd::Jira { job, result, rest } => jira_cmd(c, job, result, rest),
         Cmd::Planning { project } => planning_cmd(c, project),
+        Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
+        Cmd::Lesson { action } => lesson_cmd(c, action),
         Cmd::Close { done: _, project, goal } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let v = c.call("POST", "/done/close-terminals", Some(json!({"project": project, "goal": goal})))?;

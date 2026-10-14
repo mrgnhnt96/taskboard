@@ -38,6 +38,7 @@ pub mod jira_status;
 pub mod jobs;
 pub mod keep_awake;
 pub mod lanes;
+pub mod lessons;
 pub mod limits;
 pub mod lines;
 pub mod locks;

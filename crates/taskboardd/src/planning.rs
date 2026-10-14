@@ -83,11 +83,13 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
         None => crate::projects::project_for_path(app, arg("cwd"))?,
     };
     let p = pick(app, project.as_deref());
-    Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped}))
+    let lessons = crate::lessons::kept(app, project.as_deref(), &["planning"])?;
+    Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
+              "lessons": crate::lessons::lines(&lessons)}))
 }
 
 /// The rules in force for a project's goals (its own file, else the board's, else the built-in ones)
-/// under a heading naming whose they are, for a planner's prompt.
+/// under a heading naming whose they are, then the kept planning lessons, for a planner's prompt.
 pub fn block(app: &App, project: Option<&str>) -> String {
     let p = pick(app, project);
     let heading = match p.from {
@@ -95,5 +97,9 @@ pub fn block(app: &App, project: Option<&str>) -> String {
         "board" => "How this board slices its work (the owner's rules, in place of the built-in ones):",
         _ => "How to slice the work:",
     };
-    format!("{heading}\n{}", p.text)
+    let mut out = format!("{heading}\n{}", p.text);
+    if let Ok(Some(l)) = crate::lessons::planning_block(app, project) {
+        out += &format!("\n\n{l}");
+    }
+    out
 }

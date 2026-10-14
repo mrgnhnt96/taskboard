@@ -330,6 +330,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
         (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),
+        (_, ["lessons", rest @ ..]) => crate::lessons::route(app, method, rest, query, body),
         (_, ["reviewers", rest @ ..]) => crate::reviewers::route(app, method, rest, query, body),
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
         ("POST", ["attachments", id, "remove"]) => remove_attachment(app, id),

@@ -594,6 +594,7 @@ fn build_with(app: &App, task_id: i64, starting: bool) -> Result<String> {
     let w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     let mut parts = vec![first_line(&t)];
     parts.extend(goal_and_notes(app, g.as_ref())?);
+    parts.extend(crate::lessons::handoff_block(app, &t)?);
     parts.extend(also_goals(app, &t)?);
     parts.extend(wave_section(app, &t, g.as_ref())?);
     parts.extend(setup_block(app, &t, g.as_ref())?);

@@ -16,7 +16,7 @@ If the owner's board has products configured, give the goal one: `--product <nam
 
 ## Slice the work
 
-Run `tb planning` first (`--project <name>` for another project's goal) and slice the work by the rules it prints: the owner's planning file for the project or the board when there is one, else the board's built-in rules. They win over anything below.
+Run `tb planning` first (`--project <name>` for another project's goal) and slice the work by the rules it prints: the owner's planning file for the project or the board when there is one, else the board's built-in rules. They win over anything below. It also prints what earlier goals taught about planning there (the owner's kept planning lessons): follow those too.
 
 - A goal runs its tasks in order, so list them in the order they should run.
 - A goal's run picks up its planned tasks only. Moving a queued task that hasn't started into a goal (`tb task set T<n> --goal G<n>`) makes it planned; switch one either way with `tb task set T<n> --status planned|queued`.
