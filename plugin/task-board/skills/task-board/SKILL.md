@@ -76,6 +76,7 @@ Planning a goal? Read `planning.md` first.
    - Something to remember, not do now: `tb backlog add "<title>" --kind bug|gap|follow|clean --detail "..." [--goal G<n>]`.
    - Retitle or rewrite an issue (the owner asks you to): `tb backlog set B<n> --title "..." [--detail "..."]`.
    - Move issues to another goal, or out of their goal: `tb backlog move B<n> [B<n> …] G<n>|none` (several move together or not at all).
+   - Filed under the wrong project (found in one repo, but the fix belongs in another): `tb task set T<n> --project <name>` or `tb backlog set B<n> --project <name>`. It keeps its goal. A task you're on lets go of this terminal and waits on the board for the owner's Start in the new repo, so end your turn after moving it. A done task, or one with a PR, can't move.
    - Add a note to an issue's log, keeping its detail: `tb backlog note B<n> "<text>"`.
    - Close the terminals of finished tasks when the owner says so: `tb close --done` (`--project <name>` or `--goal G<n>` to narrow it; a terminal still busy is left open).
    - On the owner's word, act on an issue: `tb backlog task B<n>` (a planned task in its goal; `--board` queues it on the board), `tb backlog ticket B<n>` (a Jira ticket), `tb backlog drop B<n> --reason "..."` (won't do), `tb backlog reopen B<n>`. Each takes several issues at once (`tb backlog task B4 B5`): all change or none do.
