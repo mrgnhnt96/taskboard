@@ -320,6 +320,7 @@ impl Db {
         conn.execute_batch(crate::devices::SCHEMA)?;
         add_columns(&conn, crate::devices::ADDED)?;
         conn.execute_batch(crate::bits::SCHEMA)?;
+        conn.execute_batch(crate::lessons::SCHEMA)?;
         conn.execute_batch(crate::reviewers::SCHEMA)?;
         add_columns(&conn, crate::reviewers::ADDED)?;
         conn.execute_batch(crate::breaks::SCHEMA)?;
