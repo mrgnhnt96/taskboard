@@ -637,7 +637,7 @@ fn finished_on(app: &App, rows: &BTreeMap<String, Value>, hide: &HashSet<String>
         }
     }
     let mut out: Vec<Value> = last.into_values().collect();
-    out.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
+    out.sort_by(|a, b| b["at"].as_str().cmp(&a["at"].as_str()));
     Ok(out)
 }
 
