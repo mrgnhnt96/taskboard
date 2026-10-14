@@ -62,7 +62,7 @@ fn tab_name(tab: TaskTab) -> &'static str {
 }
 
 fn folds() -> HashMap<String, String> {
-    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms, Fold::Findings]
+    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms, Fold::Findings, Fold::Note]
         .iter()
         .filter_map(|f| crate::prefs::get_str(f.key()).map(|v| (f.key().to_string(), v)))
         .collect()
@@ -1063,8 +1063,26 @@ impl Draw<'_> {
                 .hover(move |d| d.text_color(hover))
                 .child(div().text_size(px(9.)).child(if open { "▼" } else { "▶" }))
                 .child(label),
+            // A long note's Show more / Show less, under what it shows.
+            Fold::Note => div()
+                .id(self.id("fold"))
+                .self_start()
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .text_color(t.accent)
+                .hover(move |d| d.text_color(hover))
+                .child(label),
         };
         let head = head.on_click(toggle);
+        if f == Fold::Note {
+            let mut col = div().flex().flex_col().gap(px(10.)).min_w_0();
+            if open {
+                for i in 1..kids.len() {
+                    col = col.children(self.kid(m, n, i, boxed, cx));
+                }
+            }
+            return col.child(head).into_any_element();
+        }
         let mut col = div().flex().flex_col().min_w_0().child(head);
         if open {
             let gap = match f {
@@ -1073,6 +1091,7 @@ impl Draw<'_> {
                 Fold::Summary => 8.,
                 Fold::Terms => 10.,
                 Fold::Findings => 6.,
+                Fold::Note => 10.,
             };
             for i in 1..kids.len() {
                 if let Some(e) = self.kid(m, n, i, boxed, cx) {

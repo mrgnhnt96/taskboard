@@ -653,3 +653,15 @@ fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
     assert!(text.contains("Note for testers Waiting Merged without one; the ticket waits"), "{text}");
     assert!(!panel_text(t(Value::Null), json!({})).contains("Note for testers"));
 }
+
+#[::core::prelude::v1::test]
+fn a_long_note_for_testers_shows_bold_and_folds_after_its_first_block() {
+    let checks = (1..=4).map(|k| format!("- Reconnect to the Core {k} times; the library, queue and zones stay right.")).collect::<Vec<_>>().join("\n");
+    let note = format!("**What changed:** the app no longer grows in memory on reconnect.\n\n**Please check:**\n\n{checks}");
+    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "merged_note": {"text": note, "waiting": false}});
+    let text = panel_text(task.clone(), json!({}));
+    assert!(text.contains("What changed: the app no longer") && !text.contains("**"), "{text}");
+    assert!(text.contains("Show more") && !text.contains("Please check"), "{text}");
+    let open = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.note": "open"}}})));
+    assert!(open.contains("Please check: Reconnect to the Core 1 times") && open.contains("Show less") && !open.contains("Show more"), "{open}");
+}
