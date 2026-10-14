@@ -415,6 +415,8 @@ pub fn glyph(g: Glyph, size: f32, color: Hsla) -> impl IntoElement {
 pub enum Icon {
     /// `ICON.chev`: a down chevron (stroke 2.2).
     Chev,
+    /// The same chevron pointing right, for a closed group.
+    ChevRight,
     /// Midna's mark: a rounded window with its crescent moon.
     Midna,
 }
@@ -492,6 +494,7 @@ pub fn icon(kind: Icon, size: f32, color: Hsla) -> impl IntoElement {
             };
             match kind {
                 Icon::Chev => poly(&[(6., 9.), (12., 15.), (18., 9.)], 2.2, window),
+                Icon::ChevRight => poly(&[(9., 6.), (15., 12.), (9., 18.)], 2.2, window),
                 Icon::Midna => {
                     rect(3., 3., 18., 18., 4.5, 2., window);
                     let pts = crescent((11.5, 12.5), 5., (14., 10.), 4.);
