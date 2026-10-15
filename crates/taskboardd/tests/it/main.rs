@@ -4,6 +4,7 @@
 
 mod alerts;
 mod areas;
+mod away_waits;
 mod background;
 mod backlog_actions;
 mod backlog_match;

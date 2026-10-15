@@ -328,6 +328,7 @@ impl View {
                             "lost" => "terminal lost",
                             "stopped" => "stopped",
                             "needs" => "waiting on you",
+                            "away" => "waiting while you were away",
                             _ => "working",
                         };
                         Some(Bar {
@@ -640,7 +641,7 @@ fn bar_colors(t: &Theme, kind: &str) -> (Hsla, Hsla) {
         "done" => (t.up_soft, t.up_fg),
         "needs" => (t.warn_soft, t.warn_fg),
         "lost" | "failed" => (t.down_soft, t.down),
-        "stopped" => (t.seg, t.muted),
+        "stopped" | "away" => (t.seg, t.muted),
         _ => (t.accent_soft, t.accent_fg),
     }
 }

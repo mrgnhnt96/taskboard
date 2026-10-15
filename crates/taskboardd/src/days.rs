@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use crate::app::App;
 use crate::util::*;
 use crate::hours::{self, weekday_key};
-use crate::p;
+use crate::{clock, p};
 
 /// Ten-minute slots in a day, for "how many terminals were working".
 pub const SLOTS: usize = 144;
@@ -78,9 +78,68 @@ struct Seg {
     /// For `working`: how it ended (`done`, `failed`, `lost`, `stopped`, or `working` while it
     /// goes on or the task stopped to ask). For `needs`: why it waits.
     end: String,
-    /// The whole wait, not clipped to the day, for `needs`.
+    /// The whole wait, not clipped to the day, for `needs`: only the time it counts (see `away`).
     whole: f64,
     open: bool,
+    /// For `needs`: the stretch cut where the owner was away, each piece with whether it was away.
+    pieces: Vec<(f64, f64, bool)>,
+}
+
+/// The furthest back a wait's away time is worked out from.
+const AWAY_BACK_SECS: f64 = 14.0 * 86400.0;
+
+/// The stretches in `[from, to)` that don't count as waiting on the owner, merged and in order: the
+/// Mac asleep, the owner away from it (no input), and outside the work hours when they're on.
+fn away(app: &App, from: f64, to: f64) -> Vec<(f64, f64)> {
+    let from = from.max(to - AWAY_BACK_SECS);
+    let mut v = clock::away_spans(from, to);
+    let h = hours::get(app);
+    if h.on {
+        let mut start: Option<f64> = None;
+        let mut m = (from / 60.0).floor() * 60.0;
+        while m < to {
+            let off = !hours::within(&h, &local_dt(m).naive_local());
+            match (off, start) {
+                (true, None) => start = Some(m.max(from)),
+                (false, Some(a)) => {
+                    v.push((a, m));
+                    start = None;
+                }
+                _ => {}
+            }
+            m += 60.0;
+        }
+        if let Some(a) = start {
+            v.push((a, to));
+        }
+    }
+    clock::merge(v)
+}
+
+/// `[a, b)` cut by `gaps` (merged, in order) into pieces, each with whether it lies in a gap.
+fn cut(a: f64, b: f64, gaps: &[(f64, f64)]) -> Vec<(f64, f64, bool)> {
+    let mut out = Vec::new();
+    let mut at = a;
+    for &(g0, g1) in gaps {
+        let (g0, g1) = (g0.max(a), g1.min(b));
+        if g1 <= g0 {
+            continue;
+        }
+        if g0 > at {
+            out.push((at, g0, false));
+        }
+        out.push((g0, g1, true));
+        at = g1;
+    }
+    if b > at {
+        out.push((at, b, false));
+    }
+    out
+}
+
+/// Seconds of `[a, b)` outside `gaps`.
+fn counted(a: f64, b: f64, gaps: &[(f64, f64)]) -> f64 {
+    cut(a, b, gaps).iter().filter(|p| !p.2).map(|p| p.1 - p.0).sum()
 }
 
 struct Task {
@@ -142,7 +201,13 @@ fn segments(app: &App, from: f64, to: f64, now: f64) -> Result<Vec<Seg>> {
             let end = if status == "working" && stop > to { "working".into() } else { end };
             let (a, b) = (start.max(from), stop.min(to).min(now));
             if b > a {
-                out.push(Seg { task, from: a, to: b, status, end, whole: stop.min(now) - start, open });
+                let (whole, pieces) = if status == "needs" {
+                    let gaps = away(app, start, stop.min(now));
+                    (counted(start, stop.min(now), &gaps), cut(a, b, &gaps))
+                } else {
+                    (stop.min(now) - start, Vec::new())
+                };
+                out.push(Seg { task, from: a, to: b, status, end, whole, open, pieces });
             }
         }
     }
@@ -267,15 +332,25 @@ fn work_out(app: &App, date: NaiveDate, now: f64) -> Result<(BTreeMap<String, Va
             }
             entry.2 = s.end.clone();
         } else {
-            entry.1 += s.to - s.from;
+            entry.1 += s.pieces.iter().filter(|x| !x.2).map(|x| x.1 - x.0).sum::<f64>();
             entry.2 = "needs".into();
             if s.from >= from {
                 p.waits.push(json!({"task": s.task, "ref": rf("task", s.task), "at": iso(s.from), "min": mins(s.whole), "open": s.open, "reason": s.end}));
             }
         }
-        let kind = if s.status == "needs" { "needs" } else { s.end.as_str() };
         let title = tasks.get(&s.task).map(|t| t.title.clone()).unwrap_or_default();
-        p.bars.push(json!({"task": s.task, "ref": rf("task", s.task), "title": title, "from": iso(s.from), "to": iso(s.to), "kind": kind, "open": s.open}));
+        let bar = |a: f64, b: f64, kind: &str, open: bool| {
+            json!({"task": s.task, "ref": rf("task", s.task), "title": title, "from": iso(a), "to": iso(b), "kind": kind, "open": open})
+        };
+        if s.status == "needs" {
+            // Waits while the owner was away draw as `away`, and don't count.
+            let last = s.pieces.len().saturating_sub(1);
+            for (i, &(a, b, gone)) in s.pieces.iter().enumerate() {
+                p.bars.push(bar(a, b, if gone { "away" } else { "needs" }, s.open && i == last));
+            }
+        } else {
+            p.bars.push(bar(s.from, s.to, s.end.as_str(), s.open));
+        }
     }
     for &(t, at) in &finished {
         let title = tasks.get(&t).map(|x| x.title.clone()).unwrap_or_default();
