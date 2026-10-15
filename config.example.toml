@@ -79,6 +79,14 @@ budget_usd = "0.10"
 timeout_secs = 90
 lines = 60
 
+# The weekly time review: where agent time went, what got rerun or timed out, how long tasks waited on
+# you, and the fixes that suggests. When one is ready you get a notification and a Needs you item that
+# stays until you open it. cadence is "weekly" or "off"; `tb review` works either way.
+[review]
+cadence = "weekly"
+day = "friday"
+at = "5:00 PM"
+
 # Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
 # impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
 # waves. Off, or without `claude`, issues are grouped by kind and waves follow priority.

@@ -118,7 +118,13 @@ fn new_alert_id() -> String {
 /// pushed out by the 20-alert cap: a PR waiting on the owner's review (it clears once the PR is reviewed,
 /// `resolved`) or an urgent alert (it clears when what raised it clears it, or its task moves on).
 pub fn stays(a: &Value) -> bool {
-    a["review"] == true || a["urgent"] == true
+    a["review"] == true || a["urgent"] == true || quiet(a)
+}
+
+/// An alert that only shows in Needs you: it never notifies or joins the digest, since what raised it
+/// sent its own notification (a weekly review).
+pub fn quiet(a: &Value) -> bool {
+    a["quiet"] == true
 }
 
 pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, session_id: Option<&str>, extra: Option<&str>) -> Result<()> {
@@ -199,6 +205,22 @@ pub fn add_alert_keyed(app: &App, text: &str, task_id: Option<i64>, goal_id: Opt
     let mut rows = alerts(app);
     if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
         a["key"] = json!(key);
+    }
+    keep(app, &rows)
+}
+
+/// A quiet alert (`quiet`) keyed `key`, carrying `fields` (the review it opens): one per key.
+pub fn add_quiet_alert(app: &App, text: &str, key: &str, fields: Value) -> Result<()> {
+    if alerts(app).iter().any(|a| a["key"] == key) {
+        return Ok(());
+    }
+    let Some(new) = push_alert(app, text, None, None, None, Some("quiet"))? else { return Ok(()) };
+    let mut rows = alerts(app);
+    if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
+        a["key"] = json!(key);
+        for (k, v) in fields.as_object().into_iter().flatten() {
+            a[k] = v.clone();
+        }
     }
     keep(app, &rows)
 }
@@ -401,6 +423,11 @@ pub fn alert_url(app: &App, task_id: Option<i64>, goal_id: Option<i64>, session_
     } else {
         String::new()
     };
+    page_link(app, &page)
+}
+
+/// The app's link to `page` (`task/T12`, `review/3`) under `page_url`.
+pub fn page_link(app: &App, page: &str) -> String {
     let base = &app.cfg.page_url;
     // `taskboard://` keeps its two slashes; `http://host/tasks/` loses only the trailing one.
     let base = if base.ends_with("://") { base.as_str() } else { base.trim_end_matches('/') };
@@ -431,7 +458,7 @@ pub fn alert_params(app: &App, a: &Value) -> Value {
 /// An alert's desktop notification. With snooze buttons, the alert's one waiter (`Waiter::listen`) hears the
 /// owner's pick and leaves it for the next tick to act on.
 fn notify_alert(app: &App, a: &Value) {
-    if !app.cfg.notify || !app.cfg.runner {
+    if !app.cfg.notify || !app.cfg.runner || quiet(a) {
         return;
     }
     let params = alert_params(app, a);
@@ -513,7 +540,7 @@ fn tend_waiters(app: &App) {
     let (midna, inbox) = (app.cfg.midna.clone(), app.shared.lock().notify_inbox.clone());
     let mut up: Vec<(String, String, String)> = vec![];
     if !snooze_actions(app).is_empty() {
-        for a in rows.iter().filter(|a| !digest::holds(app, a)) {
+        for a in rows.iter().filter(|a| !digest::holds(app, a) && !quiet(a)) {
             let (Some(id), Some(at)) = (a["id"].as_str(), a["notified_at"].as_str().or(a["at"].as_str())) else { continue };
             up.push((id.to_string(), at.to_string(), notification_id(id)));
         }

@@ -308,6 +308,23 @@ enum Cmd {
         #[arg(long)]
         goals: bool,
     },
+    /// Where agent time went (the last 7 days, a week or since a date), a kept review by number, or one task's commands (T12)
+    Review {
+        /// A task (T12) for its commands, or a kept review's number
+        target: Option<String>,
+        /// From a date (2026-10-09), or 3d or 2w back
+        #[arg(long, conflicts_with = "week")]
+        since: Option<String>,
+        /// This week, last week, or the week of a date
+        #[arg(long)]
+        week: Option<String>,
+        /// Keep it and tell the owner, as the weekly review does
+        #[arg(long)]
+        save: bool,
+        /// The kept reviews
+        #[arg(long, conflicts_with_all = ["target", "since", "week", "save"])]
+        list: bool,
+    },
     /// Add, change or delete a task
     Task {
         #[command(subcommand)]
@@ -2323,6 +2340,152 @@ fn quality_cmd(c: &Ctx, project: Option<String>, all: bool, goals: bool) -> Resu
     Ok(0)
 }
 
+fn review_cmd(c: &Ctx, target: Option<String>, since: Option<String>, week: Option<String>, save: bool, list: bool) -> Result<i32, String> {
+    if list {
+        let v = c.call("GET", "/reviews", None)?;
+        let rows = v["reviews"].as_array().cloned().unwrap_or_default();
+        if rows.is_empty() {
+            out("No reviews kept yet.");
+        }
+        for r in rows {
+            let seen = if r["seen_at"].is_string() { "" } else { "  (not opened)" };
+            out(&format!("{:>4}  {}  {}{seen}", r["id"], review_period(&r), r["headline"].as_str().unwrap_or("")));
+        }
+        return Ok(0);
+    }
+    if let Some(t) = target.as_deref() {
+        if (since.is_some() || week.is_some() || save) && !t.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err("--since, --week and --save make a new review; leave out the task.".into());
+        }
+        if t.chars().all(|ch| ch.is_ascii_digit()) {
+            let v = c.call("GET", &format!("/reviews/{t}"), None)?;
+            print_review(&v["data"]);
+            return Ok(0);
+        }
+        let v = c.call("GET", &format!("/tasks/{}/spans", task_ref(t)?), None)?;
+        print_task_spans(&v);
+        return Ok(0);
+    }
+    let v = if save {
+        let r = c.call("POST", "/reviews", Some(json!({"since": since, "week": week})))?;
+        out(&format!("Kept as review {}; the owner was told.", r["id"]));
+        r
+    } else {
+        let mut q = vec![];
+        if let Some(s) = &since {
+            q.push(format!("since={}", qv(s)));
+        }
+        if let Some(w) = &week {
+            q.push(format!("week={}", qv(w)));
+        }
+        c.call("GET", &format!("/reviews/now?{}", q.join("&")), None)?
+    };
+    print_review(&v["data"]);
+    Ok(0)
+}
+
+/// Seconds as "2.5 h", "14 min" or "40 s".
+fn took(secs: f64) -> String {
+    let secs = secs.abs();
+    if secs >= 3600.0 {
+        format!("{:.1} h", secs / 3600.0)
+    } else if secs >= 60.0 {
+        format!("{} min", (secs / 60.0).round() as i64)
+    } else {
+        format!("{} s", secs.round() as i64)
+    }
+}
+
+fn signed(secs: f64) -> String {
+    format!("{}{}", if secs < 0.0 { "-" } else { "+" }, took(secs))
+}
+
+fn local_when(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .map(|d| d.with_timezone(&chrono::Local).format("%b %-d, %-I:%M %p").to_string())
+        .unwrap_or_else(|_| at.to_string())
+}
+
+fn review_period(r: &Value) -> String {
+    format!("{} to {}", local_when(r["period_start"].as_str().unwrap_or("")), local_when(r["period_end"].as_str().unwrap_or("")))
+}
+
+fn secs(v: &Value) -> f64 {
+    v.as_f64().unwrap_or(0.0)
+}
+
+fn print_review(r: &Value) {
+    let total = secs(&r["seconds"]);
+    out(&format!("{}: {} of agent time", review_period(r), took(total)));
+    if total <= 0.0 {
+        return;
+    }
+    let change = &r["change"];
+    if change.is_object() {
+        out(&format!("Since review {}: {} agent time, {} waiting on you, {:+} timeouts, {:+} reruns", change["review"], signed(secs(&change["seconds"])),
+            signed(secs(&change["owner_wait"])), change["timeouts"].as_i64().unwrap_or(0), change["reruns"].as_i64().unwrap_or(0)));
+    }
+    out("");
+    out("By category");
+    for x in r["categories"].as_array().into_iter().flatten() {
+        out(&format!("  {:<16} {:>9}  {:>3.0}%", x["name"].as_str().unwrap_or(""), took(secs(&x["seconds"])), secs(&x["seconds"]) / total * 100.0));
+    }
+    out("By project");
+    for x in r["projects"].as_array().into_iter().flatten() {
+        let top = x["categories"][0]["name"].as_str().unwrap_or("");
+        out(&format!("  {:<16} {:>9}  mostly {top}", x["name"].as_str().unwrap_or(""), took(secs(&x["seconds"]))));
+    }
+    let rows = |title: &str, list: &Value, line: &dyn Fn(&Value) -> String| {
+        let items = list.as_array().cloned().unwrap_or_default();
+        if !items.is_empty() {
+            out(title);
+            for x in &items {
+                out(&format!("  {}", line(x)));
+            }
+        }
+    };
+    rows("Slowest tasks", &r["slowest_tasks"], &|x| {
+        format!("{:<6} {:>9}  mostly {:<12} {}", x["task"].as_str().unwrap_or(""), took(secs(&x["seconds"])), x["top_category"].as_str().unwrap_or(""), x["title"].as_str().unwrap_or(""))
+    });
+    rows("Slowest repeated commands", &r["repeated"], &|x| {
+        format!("median {:>7}  p90 {:>7}  x{:<3} {}", took(secs(&x["median"])), took(secs(&x["p90"])), x["runs"], x["command"].as_str().unwrap_or(""))
+    });
+    rows("Timeouts", &r["timeouts"]["commands"], &|x| format!("x{:<3} {:>9}  {}", x["count"], took(secs(&x["seconds"])), x["command"].as_str().unwrap_or("")));
+    rows("Failed, then rerun", &r["reruns"], &|x| {
+        let end = if x["passed"] == true { "then passed" } else { "never passed" };
+        format!("{:<6} {} runs {:>9}  {end}  {}", x["task"].as_str().unwrap_or(""), x["runs"], took(secs(&x["seconds"])), x["command"].as_str().unwrap_or(""))
+    });
+    let wait = &r["owner_wait"];
+    if secs(&wait["seconds"]) > 0.0 {
+        let why: Vec<String> = wait["reasons"].as_array().into_iter().flatten().map(|x| format!("{} {}", x["name"].as_str().unwrap_or(""), took(secs(&x["seconds"])))).collect();
+        out(&format!("Waiting on you: {} ({})", took(secs(&wait["seconds"])), why.join(", ")));
+    }
+    rows("Suggested fixes", &r["suggestions"], &|x| format!("{}: {}", x["title"].as_str().unwrap_or(""), x["detail"].as_str().unwrap_or("")));
+}
+
+fn print_task_spans(v: &Value) {
+    out(&format!("{} {}: {} in commands", v["task"].as_str().unwrap_or(""), v["title"].as_str().unwrap_or(""), took(secs(&v["seconds"]))));
+    let cats: Vec<String> = v["categories"].as_array().into_iter().flatten().map(|x| format!("{} {}", x["name"].as_str().unwrap_or(""), took(secs(&x["seconds"])))).collect();
+    if !cats.is_empty() {
+        out(&cats.join(", "));
+    }
+    for s in v["spans"].as_array().into_iter().flatten() {
+        let mut marks = vec![];
+        if s["timed_out"] == true {
+            marks.push("timed out".to_string());
+        } else if let Some(code) = s["exit_code"].as_i64().filter(|c| *c != 0) {
+            marks.push(format!("exit {code}"));
+        }
+        for (k, word) in [("background", "background"), ("refused", "refused"), ("subagent", "subagent")] {
+            if s[k] == true {
+                marks.push(word.to_string());
+            }
+        }
+        let marks = if marks.is_empty() { String::new() } else { format!("  ({})", marks.join(", ")) };
+        out(&format!("  {}  {:>9}  {:<15} {}{marks}", local_when(s["started_at"].as_str().unwrap_or("")), took(secs(&s["seconds"])), s["category"].as_str().unwrap_or(""), s["command"].as_str().unwrap_or("")));
+    }
+}
+
 /// "2026-10" as "Oct 2026".
 fn month_name(m: &str) -> String {
     chrono::NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").map(|d| d.format("%b %Y").to_string()).unwrap_or_else(|_| m.to_string())
@@ -4012,6 +4175,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             _ => planning_lessons_cmd(c, project, accept),
         },
         Cmd::Quality { project, all, goals } => quality_cmd(c, project, all, goals),
+        Cmd::Review { target, since, week, save, list } => review_cmd(c, target, since, week, save, list),
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
         Cmd::Lesson { action } => lesson_cmd(c, action),
         Cmd::Areas { action } => areas_cmd(c, action),
@@ -6189,6 +6353,10 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here", "--next", "--now"]).is_err());
         assert_eq!(issue_refs(&["b4".into(), "B5".into(), "B4".into()]).unwrap(), vec!["B4", "B5"]);
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "review", "--week", "last"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "review", "T12"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "review", "--list", "--week", "last"]).is_err());
+        assert!(Cli::try_parse_from(["tb", "review", "--since", "3d", "--week", "this"]).is_err());
         assert!(Cli::try_parse_from(["tb", "alert", "raise", "main is red", "--urgent", "--key", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "alert", "clear", "main:web"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "pr", "status"]).is_ok());

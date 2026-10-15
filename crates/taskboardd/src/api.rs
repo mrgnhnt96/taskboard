@@ -63,6 +63,10 @@ fn iid(s: &str) -> Result<i64> {
     parse_ref_str(s, "issue")?.ok_or_else(|| ApiError::new(404, "There's nothing at that address."))
 }
 
+fn review_id(s: &str) -> Result<i64> {
+    s.parse().map_err(|_| ApiError::new(404, "There's no review with that id."))
+}
+
 fn required(body: &Value, key: &str, limit: usize, label: &str) -> Result<String> {
     let v = clip(&body_str(body, key), limit);
     if v.is_empty() {
@@ -366,6 +370,21 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["report"]) => reports::handle(app, body.clone(), false),
         ("GET", ["home"]) => crate::home::page(app, q(query, "project", "all")),
+        ("GET", ["reviews"]) => crate::review::list(app),
+        ("GET", ["reviews", "now"]) => {
+            let (start, end) = crate::review::period(app, query.get("since").map(String::as_str), query.get("week").map(String::as_str))?;
+            Ok(json!({"data": crate::review::report(app, start, end)?}))
+        }
+        ("POST", ["reviews"]) => {
+            let (since, week) = (body_str(body, "since"), body_str(body, "week"));
+            let (start, end) = crate::review::period(app, Some(&since), Some(&week))?;
+            let id = app.db.tx(|| crate::review::save(app, start, end, false))?;
+            crate::review::announce(app, id)?;
+            crate::review::get(app, id)
+        }
+        ("GET", ["reviews", id]) => crate::review::get(app, review_id(id)?),
+        ("POST", ["reviews", id, "seen"]) => app.db.tx(|| crate::review::seen(app, review_id(id)?)),
+        ("GET", ["tasks", id, "spans"]) => crate::review::task_spans(app, tid(id)?),
         ("GET", ["lanes"]) => crate::lanes::page(app, q(query, "goals", "0") == "1"),
         ("GET", ["days"]) => days::page(app, query.get("date").map(|s| s.as_str()), query.get("hide").map(|s| s.as_str())),
         ("GET", ["history"]) => days::history(app),
@@ -471,7 +490,14 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["alerts", id, "dismiss"]) => {
             if let Some(a) = alerts::alerts(app).into_iter().find(|a| a["id"] == *id && alerts::stays(a)) {
-                return err(409, if a["urgent"] == true { "An urgent alert stays until it clears." } else { "A PR waiting for your review stays until you review it." });
+                let why = if a["urgent"] == true {
+                    "An urgent alert stays until it clears."
+                } else if alerts::quiet(&a) {
+                    "A weekly review stays until you open it."
+                } else {
+                    "A PR waiting for your review stays until you review it."
+                };
+                return err(409, why);
             }
             app.db.tx(|| alerts::clear_alerts(app, None, Some(id)))?;
             Ok(json!({"alerts": alerts::listing(app)}))
@@ -486,7 +512,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"alert": a}))
         }
         _ => {
-            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "limits", "status-bar", "usage", "prs", "alerts"];
+            let known = ["state", "summary", "projects", "sessions", "whoami", "steps", "jobs", "tasks", "done", "goals", "attachments", "backlog", "report", "hours", "keep-awake", "limits", "status-bar", "usage", "prs", "alerts", "reviews"];
             if segs.first().map(|s| known.contains(s)).unwrap_or(false) && (method == "GET" || method == "POST") {
                 return err(404, "There's nothing at that address.");
             }
