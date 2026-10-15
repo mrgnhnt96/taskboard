@@ -60,11 +60,14 @@ pub struct FileConfig {
 pub struct AlertsConfig {
     /// The snooze buttons on each alert's notification, in minutes (at most four; empty for none).
     pub snooze_mins: Vec<i64>,
+    /// Minutes new alerts gather before they go out together as one notification (`digest.rs`); urgent
+    /// alerts still notify on their own. 0 notifies each alert on its own.
+    pub digest_mins: i64,
 }
 
 impl Default for AlertsConfig {
     fn default() -> Self {
-        AlertsConfig { snooze_mins: vec![15, 30, 60] }
+        AlertsConfig { snooze_mins: vec![15, 30, 60], digest_mins: 5 }
     }
 }
 

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, hours, midna, p, prflow};
+use crate::{board, digest, hours, midna, p, prflow};
 
 fn real(p: &str) -> String {
     if p.is_empty() {
@@ -159,7 +159,7 @@ fn push_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>,
     let rows: Vec<Value> = staying.into_iter().chain(rest).collect();
     keep(app, &rows)?;
     let kept = rows.into_iter().find(|a| a["id"] == new_id);
-    if let Some(a) = &kept {
+    if let Some(a) = kept.as_ref().filter(|a| !digest::holds(app, a)) {
         notify_alert(app, a);
     }
     Ok(kept)
@@ -282,7 +282,11 @@ fn take_responses(app: &App) -> Result<()> {
         got
     };
     for (id, r) in got {
-        handle_response(app, &id, &r)?;
+        if id == digest::KEY {
+            digest::handle_response(app, &r)?;
+        } else {
+            handle_response(app, &id, &r)?;
+        }
     }
     Ok(())
 }
@@ -308,8 +312,8 @@ fn repeat_alerts(app: &App) -> Result<()> {
     let now = now_ts();
     let mut sent = false;
     for a in rows.iter_mut() {
-        // Outside the work hours only urgent alerts keep repeating.
-        if !open && a["urgent"] != true {
+        // Outside the work hours only urgent alerts keep repeating; the digest repeats the rest.
+        if (!open && a["urgent"] != true) || digest::holds(app, a) {
             continue;
         }
         // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
@@ -466,7 +470,7 @@ impl Waiter {
 
     /// Waits on `notify.response` 600 s at a time, reports each notification's pick once (tagged with its
     /// `sent_at`, for `handle_response`), and stops once the alert is gone.
-    fn listen(self, midna: &Path, inbox: &Mutex<Vec<(String, Value)>>) {
+    pub fn listen(self, midna: &Path, inbox: &Mutex<Vec<(String, Value)>>) {
         let nid = self.nid.clone();
         let mut answered: Option<String> = None;
         loop {
@@ -497,8 +501,10 @@ fn tend_waiters(app: &App) {
     let waiters = app.shared.lock().alert_waiters.clone();
     let rows = alerts(app);
     let asks = start_asks(app);
+    let digest_at = digest::showing_since(app).filter(|_| digest::on(app));
     waiters.lock().retain(|id, _| match id.strip_prefix("start:") {
         Some(g) => asks.iter().any(|a| a["group"] == g),
+        None if id == digest::KEY => digest_at.is_some(),
         None => rows.iter().any(|a| a["id"].as_str() == Some(id.as_str())),
     });
     if !app.cfg.notify || !app.cfg.runner {
@@ -507,9 +513,12 @@ fn tend_waiters(app: &App) {
     let (midna, inbox) = (app.cfg.midna.clone(), app.shared.lock().notify_inbox.clone());
     let mut up: Vec<(String, String, String)> = vec![];
     if !snooze_actions(app).is_empty() {
-        for a in &rows {
+        for a in rows.iter().filter(|a| !digest::holds(app, a)) {
             let (Some(id), Some(at)) = (a["id"].as_str(), a["notified_at"].as_str().or(a["at"].as_str())) else { continue };
             up.push((id.to_string(), at.to_string(), notification_id(id)));
+        }
+        if let Some(at) = &digest_at {
+            up.push((digest::KEY.to_string(), at.clone(), digest::NOTIFICATION_ID.to_string()));
         }
     }
     for a in &asks {
@@ -530,7 +539,7 @@ fn withdraw(app: &App, alert_id: &str) {
 }
 
 /// Takes Midna's notification `nid` away.
-fn withdraw_id(app: &App, nid: &str) {
+pub fn withdraw_id(app: &App, nid: &str) {
     if !app.cfg.notify || !app.cfg.runner {
         return;
     }
@@ -784,6 +793,7 @@ pub fn tick(app: &App) -> Result<()> {
     prune_asks(app)?;
     prune_alerts(app)?;
     repeat_alerts(app)?;
+    digest::tick(app)?;
     tend_waiters(app);
     Ok(())
 }

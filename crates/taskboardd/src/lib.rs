@@ -23,6 +23,7 @@ pub mod db;
 pub mod deliver;
 pub mod devfocus;
 pub mod devices;
+pub mod digest;
 pub mod dispatch;
 pub mod export;
 pub mod feed;
