@@ -578,13 +578,16 @@ pub struct TerminalsConfig {
     /// A queued task opens its terminal only while fewer than this many of its project's terminals are busy
     /// (`tb project set <name> --max-terminals` changes it for one project).
     pub project_max: i64,
+    /// A queued task opens its terminal only while fewer than this many terminals are busy across every project.
+    pub global_max: i64,
 }
 
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
+pub const GLOBAL_MAX_TERMINALS: i64 = 15;
 
 impl Default for TerminalsConfig {
     fn default() -> Self {
-        TerminalsConfig { background: vec![crate::jira_desk::PURPOSE.into()], project_max: PROJECT_MAX_TERMINALS }
+        TerminalsConfig { background: vec![crate::jira_desk::PURPOSE.into()], project_max: PROJECT_MAX_TERMINALS, global_max: GLOBAL_MAX_TERMINALS }
     }
 }
 

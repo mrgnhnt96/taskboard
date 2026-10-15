@@ -105,3 +105,41 @@ fn a_cap_is_a_count_from_one() {
     let e = api::dispatch(&b.app, "POST", "projects/webapp", &Query::new(), &json!({"max_terminals": 0})).unwrap_err();
     assert_eq!(e.status, 400);
 }
+
+#[test]
+fn a_sixteenth_busy_terminal_waits_across_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    assert_eq!(app.cfg.terminals.global_max, 15);
+    let names = ["alpha", "bravo", "charlie", "delta"];
+    let roots: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let r = dir.path().join(n);
+            std::fs::create_dir_all(&r).unwrap();
+            r.to_string_lossy().to_string()
+        })
+        .collect();
+    let projects: Vec<Value> = names.iter().zip(&roots).map(|(n, r)| json!({"name": n, "path": r})).collect();
+    app.db.set_setting("midna_projects", Some(&Value::Array(projects).to_string())).unwrap();
+    let b = Board { app, repo: roots[3].clone(), _dir: dir };
+    let busy = |per: [usize; 4]| {
+        let sessions: Vec<Value> = roots
+            .iter()
+            .zip(per)
+            .flat_map(|(r, n)| (0..4).map(move |i| (r, i, if i < n { "working" } else { "idle" })))
+            .map(|(r, i, state)| json!({"id": format!("{r}-{i}"), "name": "Term", "agent": "claude", "cwd": r, "status": {"state": state}}))
+            .collect();
+        midna::sync(&b.app, &sessions, &[]).unwrap();
+    };
+    busy([4, 4, 4, 3]);
+    let goal = b.post("/goals", json!({"name": "Work", "project": "delta", "max_terminals": 4}))["id"].as_i64().unwrap();
+    let t = b.post("/tasks", json!({"title": "Fix it", "detail": "Do it.", "project": "delta", "ships_pr": false, "goal_id": goal}))["id"].as_i64().unwrap();
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.get(&format!("tasks/T{t}"))["waiting"], "Waits for a free terminal: 15 of 15 busy across the board");
+    assert!(!b.takes_start(), "delta has room, the board doesn't");
+
+    busy([4, 4, 3, 3]);
+    assert!(b.get(&format!("tasks/T{t}"))["waiting"].is_null());
+    assert!(b.takes_start(), "a terminal freed up elsewhere");
+}
