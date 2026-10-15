@@ -511,6 +511,29 @@ fn a_turn_that_loses_the_network_waits_for_midna_to_carry_it_on() {
     b.report("hook.api_error", "s1", json!({"error": "rate_limit", "error_details": "429 rate_limit_error"}));
     assert_eq!(b.get("/sessions")["sessions"][0]["status"], "needs", "an API refusal isn't the network");
     assert_eq!(b.task(id).s("needs_reason"), Some("api_error"));
+    assert!(b.task(id).st("question").contains("type anything"), "a plain 429 isn't a limit Claude Code waits out");
+}
+
+#[test]
+fn a_terminal_waiting_out_a_usage_limit_stays_open_after_hours() {
+    let b = new_board();
+    let h = b.post("/hours", json!({"on": true, "start": "00:00", "end": "00:01", "days": "mon"}));
+    if h["open"].as_bool().unwrap() {
+        return;
+    }
+    let id = new_task(&b, "Add login", json!({}));
+    b.app.db.x("UPDATE tasks SET status = 'working', session_id = 's1' WHERE id = ?", p![id]).unwrap();
+    b.add_session("s1", "working");
+    b.report("hook.api_error", "s1", json!({"error": "rate_limit", "error_details": "429", "last_message": "You've hit your session limit · resets 12:50pm"}));
+    let idle_since = |b: &Board| b.app.db.x("UPDATE sessions SET status = 'idle', status_at = '2026-01-01T00:00:00Z' WHERE id = 's1'", p![]).unwrap();
+    idle_since(&b);
+    runner::close_idle_after_hours(&b.app).unwrap();
+    assert!(b.jobs("close").is_empty(), "Claude Code carries on at the reset, so its terminal stays open");
+
+    b.report("hook.stop", "s1", json!({"last_message": "Carried on."}));
+    idle_since(&b);
+    runner::close_idle_after_hours(&b.app).unwrap();
+    assert_eq!(b.jobs("close").len(), 1, "once it has carried on, an idle terminal closes after hours as before");
 }
 
 #[test]

@@ -1213,16 +1213,18 @@ const API_RETRY_EVENTS: &[&str] = &["hook.session_start", "hook.prompt", "hook.s
 const API_BACK_EVENTS: &[&str] = &["hook.session_start", "hook.stop"];
 
 /// A turn that ended on an API error: `("network", ..)` when the connection went, `("limit", ..)` on a
-/// usage limit, else `("api", ..)`, with the sentence the board shows for it.
+/// usage limit Claude Code waits out (not a plain 429), else `("api", ..)`, with the sentence the board
+/// shows for it.
 fn api_error_of(r: &Report) -> (&'static str, String) {
     let error = r.b("error");
     let detail = one_line(&{ let d = r.b("error_details"); if d.is_empty() { r.b("last_message") } else { d } }, 300);
     let (kind, what) = if NETWORK_RE.is_match(&format!("{error} {detail}")) {
         ("network", "Lost its network connection")
-    } else if error == "rate_limit" || LIMIT_RE.is_match(&detail) {
+    } else if LIMIT_RE.is_match(&format!("{detail} {}", r.b("last_message"))) {
         ("limit", "Hit a usage limit")
     } else {
         ("api", match error.as_str() {
+            "rate_limit" => "Hit a rate limit",
             "overloaded" => "The Claude API is overloaded",
             "authentication_failed" | "oauth_org_not_allowed" | "cloud_credential_error" => "Claude Code isn't logged in",
             "billing_error" | "account_on_hold" | "verification_required" => "The Claude account needs attention",
