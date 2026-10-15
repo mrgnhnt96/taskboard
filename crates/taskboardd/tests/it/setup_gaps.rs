@@ -191,3 +191,25 @@ fn a_pr_flow_on_without_a_git_remote_is_a_gap_and_the_handoff_says_so() {
     let line = setup::handoff_line(&b.app, "webapp").unwrap().unwrap();
     assert!(line.contains("no git remote"), "{line}");
 }
+
+#[test]
+fn a_project_with_no_reviewers_syncs_its_roster_once_on_its_own() {
+    let b = board_with(|c| c.reviewers.min_commits = 1);
+    let repo = b.dir.path().join("webapp");
+    let git = |args: &[&str]| crate::reviewers::sh_git(&repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", "https://github.com/acme/webapp.git"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=Me", "-c", "user.email=me@acme.dev", "commit", "-q", "-m", "a", "--author", "Sam Lee <7+sam-gh@users.noreply.github.com>"]);
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"]);
+
+    setup::auto_sync(&b.app).unwrap();
+    assert!(b.gap_keys().is_empty(), "Sam joined from the history with their host id");
+
+    // Once per project: after the owner takes Sam off, the board doesn't sync again on its own.
+    b.call("POST", "/reviewers/remove", json!({"project": "webapp", "reviewer": "Sam Lee"}));
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"]);
+    setup::auto_sync(&b.app).unwrap();
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"], "synced already");
+}

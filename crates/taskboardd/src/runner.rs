@@ -505,6 +505,7 @@ pub fn prs(app: &App) -> Result<()> {
     prflow::late_reads(app)?;
     app.db.tx(|| crate::prbuilds::sweep(app))?;
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
+    crate::setup::auto_sync(app)?;
     app.db.tx(|| crate::setup::sweep(app))?;
     worktrees::clean_up(app).map(|_| ())
 }
