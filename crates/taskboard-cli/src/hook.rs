@@ -45,14 +45,17 @@ fn opens_pr(tool: &str, input: &Value) -> bool {
 
 static PUSH_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b").unwrap());
 
-/// A git command that changes a repository: a commit, a push, a new worktree.
-static GIT_WORK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:commit|push|worktree\s+add)\b").unwrap());
+/// A git command that changes a repository: a commit, a push, a new worktree, or moving its checkout
+/// to another branch or commit.
+static GIT_WORK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:commit|push|worktree\s+add|checkout|switch|merge|rebase|reset|cherry-pick|revert)\b").unwrap()
+});
 static GIT_DIR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-C\s+(\S+)").unwrap());
-static CD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|&&|;|\|\||\()\s*cd\s+(\S+)").unwrap());
+static CD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|&&|;|\|\||\()\s*(?:cd|pushd)\s+([^\s;&|)]+)").unwrap());
 
-/// Where a tool call changes a repository: the file an edit names; for a git commit, push or new
-/// worktree, or a PR opening, the folder it runs in (`git -C <dir>`, else the last `cd <dir>` before
-/// it, else the cwd). None for any other call.
+/// Where a tool call changes a repository: the file an edit names; for a git command that changes
+/// one (`GIT_WORK_RE`) or a PR opening, the folder it runs in (`git -C <dir>`, else the last `cd <dir>`
+/// or `pushd <dir>` before it, else the cwd). None for any other call.
 fn work_place(tool: &str, input: &Value, cwd: &str) -> Option<PathBuf> {
     let at = |p: &str| {
         let p = p.trim_matches(['"', '\'']);
@@ -653,6 +656,10 @@ mod tests {
         assert_eq!(bash("cd \"/w/b\" && gh pr create --fill"), Some(PathBuf::from("/w/b")));
         assert_eq!(bash("git status && git log"), None, "reading changes nothing");
         assert_eq!(bash("git worktree list"), None);
+        assert_eq!(bash("git -C /w/b checkout -b fix"), Some(PathBuf::from("/w/b")));
+        assert_eq!(bash("pushd /w/b && git switch main"), Some(PathBuf::from("/w/b")));
+        assert_eq!(bash("cd /w/b; git rebase origin/main"), Some(PathBuf::from("/w/b")));
+        assert_eq!(bash("git branch --show-current && git diff"), None);
         assert_eq!(work_place("Read", &json!({"file_path": "/w/b/x"}), "/w/a"), None);
     }
 
