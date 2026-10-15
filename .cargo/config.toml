@@ -1,0 +1,4 @@
+[build]
+# Cache compiled dependencies across worktrees with sccache when it's
+# installed (brew install sccache); falls back to plain rustc otherwise.
+rustc-wrapper = "scripts/rustc-wrapper.sh"

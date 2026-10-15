@@ -11,3 +11,5 @@ config.toml
 *.sqlite
 *.sqlite3
 *.db
+# Cargo build settings (sccache wrapper) are shared, not local.
+!/.cargo/config.toml
