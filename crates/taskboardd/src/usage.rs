@@ -52,8 +52,25 @@ fn midna_limits(app: &App) -> Option<(Row, f64)> {
     Some((limits, seen))
 }
 
-/// Folds each source's windows into `known` (window key -> its limits and `seen`), the freshest report of
-/// each window winning, so a report that leaves a window out doesn't drop it.
+/// Two reports' `resets_at` this close are the same window; a window's next one resets at least 5h later.
+const SAME_WINDOW_SECS: f64 = 3600.0;
+
+/// Whether report `w` (written at `seen`) beats `k`, the window's best report so far. A status-line file is
+/// rewritten whenever its session redraws, idle or not, so its time says nothing about how fresh its limits
+/// are. Usage only grows within a window, so the later window wins, then the higher percentage in it.
+fn beats(w: &Row, seen: f64, k: &Value) -> bool {
+    let pct = |v: &Value| v["used_percentage"].as_f64().unwrap_or(0.0);
+    let resets = |v: &Value| v["resets_at"].as_f64();
+    let w = Value::Object(w.clone());
+    match (resets(&w), resets(k)) {
+        (Some(a), Some(b)) if (a - b).abs() < SAME_WINDOW_SECS => pct(&w) > pct(k),
+        (Some(a), Some(b)) => a > b,
+        _ => k["seen"].as_f64().map(|s| s < seen).unwrap_or(true),
+    }
+}
+
+/// Folds each source's windows into `known` (window key -> its limits and `seen`), keeping each window's
+/// best report (`beats`), so a report that leaves a window out doesn't drop it.
 fn fold(known: &mut Row, sources: Vec<(Row, f64)>) {
     for (l, seen) in sources {
         for (key, _) in WINDOWS {
@@ -61,11 +78,17 @@ fn fold(known: &mut Row, sources: Vec<(Row, f64)>) {
             if w.get("used_percentage").and_then(|v| v.as_f64()).is_none() {
                 continue;
             }
-            let older = known.get(*key).and_then(|k| k["seen"].as_f64()).map(|s| s < seen).unwrap_or(true);
-            if older {
-                let mut w = w.clone();
-                w.insert("seen".into(), json!(seen));
-                known.insert(key.to_string(), Value::Object(w));
+            match known.get_mut(*key) {
+                Some(k) if !beats(w, seen, k) => {
+                    if k["seen"].as_f64().map(|s| s < seen).unwrap_or(true) {
+                        k["seen"] = json!(seen);
+                    }
+                }
+                _ => {
+                    let mut w = w.clone();
+                    w.insert("seen".into(), json!(seen));
+                    known.insert(key.to_string(), Value::Object(w));
+                }
             }
         }
     }
@@ -167,5 +190,24 @@ mod tests {
         );
         assert_eq!(known["seven_day"]["used_percentage"], 70.0);
         assert_eq!(known["five_hour"]["used_percentage"], 5.0);
+    }
+
+    #[test]
+    fn an_idle_sessions_stale_limits_lose_to_higher_usage_in_the_same_window() {
+        let mut known = Row::new();
+        let live = json!({"five_hour": {"used_percentage": 100.0, "resets_at": 5000.0}, "seven_day": {"used_percentage": 82.0, "resets_at": 90000.0}});
+        let idle = json!({"five_hour": {"used_percentage": 46.0, "resets_at": 5001.0}, "seven_day": {"used_percentage": 51.0, "resets_at": 90000.0}});
+        fold(&mut known, vec![(report(live), 10.0), (report(idle), 20.0)]);
+        assert_eq!(known["five_hour"]["used_percentage"], 100.0);
+        assert_eq!(known["seven_day"]["used_percentage"], 82.0);
+        assert_eq!(newest(&known), 20.0, "the redraw still counts as seen");
+    }
+
+    #[test]
+    fn a_new_window_replaces_the_old_one_even_with_lower_usage() {
+        let mut known = Row::new();
+        fold(&mut known, vec![(report(json!({"five_hour": {"used_percentage": 100.0, "resets_at": 5000.0}})), 10.0)]);
+        fold(&mut known, vec![(report(json!({"five_hour": {"used_percentage": 1.0, "resets_at": 23000.0}})), 9.0)]);
+        assert_eq!(known["five_hour"]["used_percentage"], 1.0);
     }
 }
