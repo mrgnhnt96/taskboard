@@ -662,7 +662,7 @@ fn screen_reply(app: &App, tid: i64, sid: &str, name: &str, asked: &str) -> Resu
         board::update_task(app, tid, fields!["status" => "needs", "needs_reason" => "question", "question" => question, "answered_at" => null, "lost" => 0])?;
         board::log_event(app, tid, name, "question", &format!("Asked in its reply: {question}"))?;
         app.db.x("UPDATE sessions SET status = 'needs' WHERE id = ? AND status != 'gone'", p![sid])?;
-        crate::dispatch::add_alert(app, &format!("{}: {question}", rf("task", tid)), Some(tid), t.i("goal_id"), None, None)
+        crate::dispatch::add_free_alert(app, &format!("{}: {question}", rf("task", tid)), Some(tid), t.i("goal_id"))
     })
 }
 

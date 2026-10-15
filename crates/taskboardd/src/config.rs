@@ -65,11 +65,14 @@ pub struct AlertsConfig {
     /// Minutes new alerts gather before they go out together as one notification (`digest.rs`); urgent
     /// alerts still notify on their own. 0 notifies each alert on its own.
     pub digest_mins: i64,
+    /// Asks Haiku (the check-in's model and budget) for a short title and fixes for alerts raised as
+    /// free text (`suggest.rs`). Off, those alerts show their text with Dismiss.
+    pub suggest: bool,
 }
 
 impl Default for AlertsConfig {
     fn default() -> Self {
-        AlertsConfig { snooze_mins: vec![15, 30, 60], digest_mins: 5 }
+        AlertsConfig { snooze_mins: vec![15, 30, 60], digest_mins: 5, suggest: true }
     }
 }
 
