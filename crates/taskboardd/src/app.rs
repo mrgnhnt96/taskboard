@@ -29,6 +29,8 @@ pub struct Shared {
     pub keep_awake_pushed: Option<(Instant, Value)>,
     /// Midna's `agents.resume_after_network`, and when the board last read it.
     pub midna_resumes_network: Option<(Instant, bool)>,
+    /// When the board last checked its link patterns in Midna, and the Midna (pid and start) that has them.
+    pub midna_links: Option<(Instant, Option<String>)>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,
