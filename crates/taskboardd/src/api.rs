@@ -379,10 +379,11 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let (since, week) = (body_str(body, "since"), body_str(body, "week"));
             let (start, end) = crate::review::period(app, Some(&since), Some(&week))?;
             let id = app.db.tx(|| crate::review::save(app, start, end, false))?;
-            crate::review::announce(app, id)?;
+            crate::review_fixes::after_save(app, id)?;
             crate::review::get(app, id)
         }
         ("GET", ["reviews", id]) => crate::review::get(app, review_id(id)?),
+        ("POST", ["reviews", id, "fixes"]) => crate::review_fixes::start(app, review_id(id)?),
         ("POST", ["reviews", id, "seen"]) => app.db.tx(|| crate::review::seen(app, review_id(id)?)),
         ("GET", ["tasks", id, "spans"]) => crate::review::task_spans(app, tid(id)?),
         ("GET", ["lanes"]) => crate::lanes::page(app, q(query, "goals", "0") == "1"),

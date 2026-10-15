@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS reviews(
   data TEXT, seen_at TEXT);
 "#;
 
+/// Columns added since the first `reviews` schema: `fixes` is the suggested fixes pass's status and what it filed.
+pub const ADDED: &[(&str, &str, &str)] = &[("reviews", "fixes", "TEXT")];
+
 /// `[review]` in config.toml: `cadence` is `weekly` or `off`; `day` and `at` are the Mac's local time.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -25,11 +28,13 @@ pub struct ReviewConfig {
     pub cadence: String,
     pub day: String,
     pub at: String,
+    /// After each kept review, Claude files its suggested fixes to the backlog.
+    pub suggest: bool,
 }
 
 impl Default for ReviewConfig {
     fn default() -> Self {
-        ReviewConfig { cadence: "weekly".into(), day: "friday".into(), at: "5:00 PM".into() }
+        ReviewConfig { cadence: "weekly".into(), day: "friday".into(), at: "5:00 PM".into(), suggest: true }
     }
 }
 
@@ -86,7 +91,7 @@ pub fn tick(app: &App, now: NaiveDateTime) -> Result<Option<i64>> {
         return Ok(None);
     }
     let id = save(app, start, end, true)?;
-    announce(app, id)?;
+    crate::review_fixes::after_save(app, id)?;
     Ok(Some(id))
 }
 
@@ -357,7 +362,7 @@ fn change(app: &App, r: &Value, start: f64) -> Result<Value> {
     }))
 }
 
-fn hours_text(secs: f64) -> String {
+pub fn hours_text(secs: f64) -> String {
     let h = secs / 3600.0;
     if h >= 1.0 {
         format!("{} h", round1(h))
@@ -431,10 +436,18 @@ pub fn save(app: &App, start: f64, end: f64, scheduled: bool) -> Result<i64> {
     )
 }
 
+/// How many fixes a review suggests: the ones Claude filed and linked once it has, else the rules' own.
+fn fix_count(data: &Value, fixes: &Value) -> usize {
+    if fixes["state"] == "done" {
+        return fixes["filed"].as_array().map_or(0, Vec::len) + fixes["linked"].as_array().map_or(0, Vec::len);
+    }
+    data["suggestions"].as_array().map_or(0, Vec::len)
+}
+
 /// "Weekly review: 12.5 h on builds, 3 fixes suggested".
-pub fn headline(r: &Value) -> String {
+pub fn headline(r: &Value, fixes: &Value) -> String {
     let builds = round1(category_secs(r, "build") / 3600.0);
-    let n = r["suggestions"].as_array().map_or(0, Vec::len);
+    let n = fix_count(r, fixes);
     format!("Weekly review: {builds} h on builds, {n} {} suggested", if n == 1 { "fix" } else { "fixes" })
 }
 
@@ -449,7 +462,7 @@ fn notification_id(id: i64) -> String {
 /// Tells the owner review `id` is ready: a notification that opens it, and a Needs you item that stays until it's opened.
 pub fn announce(app: &App, id: i64) -> Result<()> {
     let r = get(app, id)?;
-    let text = headline(&r["data"]);
+    let text = headline(&r["data"], &r["fixes"]);
     let url = dispatch::page_link(app, &format!("review/{id}"));
     dispatch::add_quiet_alert(app, &text, &key(id), json!({"review_id": id, "url": url}))?;
     if app.cfg.notify && app.cfg.runner {
@@ -464,9 +477,10 @@ pub fn announce(app: &App, id: i64) -> Result<()> {
 
 fn card(r: &crate::util::Row) -> Value {
     let data: Value = serde_json::from_str(&r.st("data")).unwrap_or(Value::Null);
+    let fixes: Value = r.s("fixes").and_then(|s| serde_json::from_str(s).ok()).unwrap_or_else(|| json!({"state": "none"}));
     json!({"id": r.id(), "period_start": r.s("period_start"), "period_end": r.s("period_end"), "created_at": r.s("created_at"),
-           "scheduled": r.b("scheduled"), "seen_at": r.s("seen_at"), "headline": headline(&data),
-           "seconds": data["seconds"], "suggestions": data["suggestions"].as_array().map_or(0, Vec::len)})
+           "scheduled": r.b("scheduled"), "seen_at": r.s("seen_at"), "headline": headline(&data, &fixes),
+           "seconds": data["seconds"], "suggestions": fix_count(&data, &fixes), "fixes": fixes})
 }
 
 /// Every kept review, newest first.
@@ -479,6 +493,7 @@ pub fn get(app: &App, id: i64) -> Result<Value> {
     let Some(r) = app.db.q1("SELECT * FROM reviews WHERE id = ?", p![id])? else { return err(404, "There's no review with that id.") };
     let mut v = card(&r);
     v["data"] = serde_json::from_str(&r.st("data")).unwrap_or(Value::Null);
+    v["fix_issues"] = json!(crate::review_fixes::issues(app, id)?);
     Ok(v)
 }
 
@@ -542,7 +557,10 @@ mod tests {
     #[test]
     fn headline_counts_build_hours_and_fixes() {
         let r = json!({"categories": [{"name": "build", "seconds": 45000.0}], "suggestions": [{}, {}, {}]});
-        assert_eq!(headline(&r), "Weekly review: 12.5 h on builds, 3 fixes suggested");
-        assert_eq!(headline(&json!({})), "Weekly review: 0 h on builds, 0 fixes suggested");
+        let none = json!({"state": "none"});
+        assert_eq!(headline(&r, &none), "Weekly review: 12.5 h on builds, 3 fixes suggested");
+        assert_eq!(headline(&json!({}), &none), "Weekly review: 0 h on builds, 0 fixes suggested");
+        let done = json!({"state": "done", "filed": ["B1"], "linked": []});
+        assert_eq!(headline(&r, &done), "Weekly review: 12.5 h on builds, 1 fix suggested");
     }
 }
