@@ -370,7 +370,7 @@ pub fn close_for_usage(app: &App) -> Result<()> {
     let Some(out) = usage::out_until(app) else { return Ok(()) };
     let mut made = 0;
     for (s, t) in task_terminals(app)? {
-        if s.s("status") != Some("idle") {
+        if s.s("status") != Some("idle") || board::limited(&s) {
             continue;
         }
         app.db.tx(|| close_for(app, &s, &t, board::USAGE_CLOSE, "The usage ran out"))?;
@@ -415,7 +415,7 @@ pub fn close_idle_after_hours(app: &App) -> Result<()> {
         return Ok(());
     }
     for (s, t) in task_terminals(app)? {
-        if s.s("status") != Some("idle") || board::offline(&s) || board::waiting_on_background(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
+        if s.s("status") != Some("idle") || board::offline(&s) || board::limited(&s) || board::waiting_on_background(&s) || age_secs(s.s("status_at")).unwrap_or(0.0) < IDLE_CLOSE_SECS {
             continue;
         }
         if hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref()) {
