@@ -232,6 +232,21 @@ enum Cmd {
         #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
         kind: Option<String>,
     },
+    /// Tasks, backlog items, goals and goal notes that match some words, best first
+    Search {
+        query: String,
+        /// The project (this terminal's when left out)
+        #[arg(long, conflicts_with = "all")]
+        project: Option<String>,
+        /// Every project's
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_parser = ["task", "backlog", "goal", "note"])]
+        kind: Option<String>,
+        /// Only what's still open
+        #[arg(long)]
+        open: bool,
+    },
     /// Suggest, change, keep or retire a lesson that outlasts its goal
     Lesson {
         #[command(subcommand)]
@@ -3003,6 +3018,40 @@ fn lesson_search(c: &Ctx, query: &str, project: Option<String>, all: bool, state
     Ok(0)
 }
 
+fn search_cmd(c: &Ctx, query: &str, project: Option<String>, all: bool, kind: Option<String>, open: bool) -> Result<i32, String> {
+    let mut q = vec![
+        format!("q={}", qv(query)),
+        match (all, &project) {
+            (true, _) => "project=all".to_string(),
+            (_, Some(p)) => format!("project={}", qv(p)),
+            _ => format!("cwd={}", qv(&c.cwd)),
+        },
+    ];
+    if let Some(k) = kind {
+        q.push(format!("kind={}", qv(&k)));
+    }
+    if open {
+        q.push("open=1".into());
+    }
+    let v = c.call("GET", &format!("/search?{}", q.join("&")), None)?;
+    let hits = v["hits"].as_array().cloned().unwrap_or_default();
+    if hits.is_empty() {
+        out("Nothing matches those words.");
+    }
+    for h in &hits {
+        out(&search_line(h));
+    }
+    Ok(0)
+}
+
+/// One search hit: its ref, state, goal and title (a goal note shows as its goal's ref, then "note").
+fn search_line(h: &Value) -> String {
+    let s = |k: &str| h[k].as_str().unwrap_or("");
+    let r = if s("kind") == "note" { format!("{} note", s("ref")) } else { s("ref").to_string() };
+    let goal = h["goal"]["ref"].as_str().filter(|_| s("kind") != "note").unwrap_or("-");
+    format!("{r:<8} {:<9} {goal:<5} {}", s("state"), s("title"))
+}
+
 fn areas_cmd(c: &Ctx, action: AreasCmd) -> Result<i32, String> {
     let AreasCmd::Backfill { project } = action;
     let v = c.call_progress("POST", "/areas/backfill", Some(json!({"project": project})))?;
@@ -4415,6 +4464,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Quality { project, all, goals } => quality_cmd(c, project, all, goals),
         Cmd::Review { target, since, week, save, list } => review_cmd(c, target, since, week, save, list),
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
+        Cmd::Search { query, project, all, kind, open } => search_cmd(c, &query, project, all, kind, open),
         Cmd::Lesson { action } => lesson_cmd(c, action),
         Cmd::Areas { action } => areas_cmd(c, action),
         Cmd::Close { done: _, project, goal } => {
