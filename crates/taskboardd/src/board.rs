@@ -1033,7 +1033,7 @@ pub const HOURS_CLOSE: &str = "hours_close";
 
 fn requeue_reason(purpose: &str) -> (&'static str, &'static str) {
     if purpose == USAGE_CLOSE {
-        ("when the 5-hour usage ran out", "when the usage resets")
+        ("when the usage ran out", "when the usage resets")
     } else {
         ("idle after work hours", "when the work hours open")
     }

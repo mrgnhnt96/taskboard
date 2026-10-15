@@ -56,6 +56,7 @@ const LEFT_SETTINGS: &[&str] = &[
     "midna_projects",
     "saggar_projects",
     "usage_closed_for",
+    "usage_out_until",
     "work_hours_today",
     "history_last_cleanup",
     "qa_checked_at",

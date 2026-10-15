@@ -246,13 +246,18 @@ fn with_the_usage_used_up_the_next_task_waits_until_it_resets_and_start_still_ru
     assert!(out["context"].is_null(), "no new work starts with the usage used up");
     b.app.db.tx(|| lines::tick(&b.app)).unwrap();
     assert_eq!(b.on("s1"), None);
-    assert!(b.task(&t2)["waiting"].as_str().unwrap().starts_with("Waits for the 5-hour usage to reset"));
+    assert!(b.task(&t2)["waiting"].as_str().unwrap().starts_with("Waits for the usage to reset"));
 
     // The owner's Start bypasses the hold.
     let card = api::dispatch(&b.app, "POST", &format!("tasks/{t3}/start"), &from_app(), &json!({"mode": "new"})).unwrap();
     assert_eq!(card["starting"], true);
 
     b.app.shared.lock().midna_usage = None;
+    b.app.db.tx(|| lines::tick(&b.app)).unwrap();
+    assert_eq!(b.on("s1"), None, "a report that leaves the window out doesn't end the wait");
+
+    let next = taskboardd::util::iso(taskboardd::util::now_ts() + 5.0 * 3600.0);
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 1, "resets_at": next}}));
     b.app.db.tx(|| lines::tick(&b.app)).unwrap();
     assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()), "once the usage resets it's delivered");
 }

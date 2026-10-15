@@ -183,7 +183,8 @@ fn open(app: &App, jira_job: i64) -> Result<i64> {
 /// has answered the intro. One job at a time, oldest first, so a goal's epic is there before its
 /// tickets. Extra desks (opened before a sync saw the first) are closed.
 pub fn tick(app: &App) -> Result<()> {
-    if !on(app) {
+    // Out of usage, the desk's jobs wait for the reset: an agent can't take them.
+    if !on(app) || crate::usage::out_until(app).is_some() {
         return Ok(());
     }
     let (live, unsynced) = desks(app)?;
