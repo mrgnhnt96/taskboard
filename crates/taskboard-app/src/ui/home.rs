@@ -137,6 +137,12 @@ fn phase(card: &Value) -> &str {
     obj(card, "pr").and_then(|p| obj(p, "stage")).map(|st| s(st, "phase")).unwrap_or("")
 }
 
+/// A lost task's newest sign that its work finished anyway: "Tag v0.2.0 · 4:21 PM".
+pub fn looks_finished(card: &Value) -> Option<String> {
+    let found = card["looks_finished"].as_array()?;
+    found.last().map(|f| format!("{} · {}", s(f, "what"), fmt::hhmm(s(f, "at"))))
+}
+
 pub fn ask_vm(a: &Value) -> Ask {
     let card = &a["card"];
     let r = opt_s(a, "task").map(str::to_string);
@@ -146,6 +152,8 @@ pub fn ask_vm(a: &Value) -> Ask {
         (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
     } else if a["urgent"] == true {
         (Sev::Crit, "Urgent", r.clone().map(Act::OpenTask))
+    } else if has_card && b(card, "lost") && looks_finished(card).is_some() {
+        (Sev::Warn, "Looks finished", r.clone().map(Act::OpenTask))
     } else if has_card && b(card, "lost") {
         (Sev::Crit, "Terminal lost", r.clone().map(Act::Restart))
     } else if has_card && reason == "start_failed" {
@@ -176,6 +184,7 @@ pub fn ask_vm(a: &Value) -> Ask {
     let own_title = opt_s(a, "title").filter(|x| !x.is_empty() && (!answer || asks_this));
     let detail = opt_s(a, "detail").filter(|d| !d.is_empty() && own_title.is_some());
     let text = match own_title {
+        _ if kind == "Looks finished" => looks_finished(card).unwrap_or_default(),
         Some(_) if !answer => detail.unwrap_or(s(a, "text")).to_string(),
         _ => ask_text(a, card),
     };
@@ -356,6 +365,7 @@ pub fn tile_vm(c: &Value) -> Tile {
         }
     };
     let (status, tone, line): (&str, &str, String) = match s(c, "status") {
+        "needs" if b(c, "lost") && looks_finished(c).is_some() => ("Looks finished", "needs", looks_finished(c).unwrap_or_default()),
         "needs" if b(c, "lost") => ("Lost", "down", format!("Terminal closed {}", fmt::hhmm(s(c, "when")))),
         "needs" if s(c, "needs_reason") == "start_failed" => ("Couldn’t start", "down", "Midna didn’t start it".into()),
         "needs" if s(c, "needs_reason") == "compact_failed" => ("Couldn’t compact", "down", "Its conversation didn’t compact".into()),
@@ -890,6 +900,20 @@ mod tests {
         assert_eq!(asks[2].act, Some(Act::OpenPr("https://x/pr/4".into())));
         assert!(!asks[2].dismiss, "a PR waiting on your review stays until you review it");
         assert!(asks[0].dismiss);
+    }
+
+    #[test]
+    fn a_lost_task_whose_work_shipped_looks_finished() {
+        let found = json!([{"what": "Commit abc123: chore: release v0.2.0", "at": "2026-10-09T21:21:00Z"},
+                           {"what": "Release v0.2.0 published", "at": "2026-10-09T21:26:00Z", "url": "https://x/r"}]);
+        let c = card(json!({"ref": "T6", "status": "needs", "lost": true, "looks_finished": found}));
+        let ask = ask_vm(&json!({"id": "a1", "task": "T6", "text": "T6 lost its terminal.", "card": c}));
+        assert_eq!((ask.kind.as_str(), ask.sev), ("Looks finished", Sev::Warn));
+        assert_eq!(ask.act, Some(Act::OpenTask("T6".into())));
+        let line = format!("Release v0.2.0 published · {}", fmt::hhmm("2026-10-09T21:26:00Z"));
+        assert_eq!(ask.text, line);
+        let tile = tile_vm(&c);
+        assert_eq!((tile.status.as_str(), tile.tone, tile.line.as_str()), ("Looks finished", "needs", line.as_str()));
     }
 
     #[test]
