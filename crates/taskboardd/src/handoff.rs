@@ -652,7 +652,8 @@ pub fn pr_context(app: &App, t: &Row) -> String {
 
 pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
     let tb = board::tb_cmd(app);
-    let q = match project.filter(|p| !p.is_empty()) {
+    let project = project.filter(|p| !p.is_empty());
+    let q = match project {
         Some(p) => app.db.q1(
             "SELECT id FROM tasks WHERE status = 'queued' AND project = ? AND session_id IS NULL AND line_session IS NULL \
              ORDER BY priority = 'high' DESC, created_at, id LIMIT 1",
@@ -662,10 +663,29 @@ pub fn no_task_line(app: &App, project: Option<&str>) -> Result<String> {
     };
     let n = q.map(|q| rf("task", q.id())).unwrap_or_else(|| "T<n>".into());
     let owner = &app.cfg.owner;
-    Ok(format!(
+    let line = format!(
         "Task board: no task on this terminal. To take one, run {tb} take {n}, or ask {owner}. \
          If you change code for {owner} here, put it on the board as you start: {tb} task new \"<title>\" --detail \"…\" --here."
-    ))
+    );
+    // A task whose terminal closed mid-work comes first, so follow-up work here attaches to it.
+    let lost = match project {
+        Some(p) => app.db.q(
+            "SELECT id, title FROM tasks WHERE status = 'needs' AND lost = 1 AND project = ? ORDER BY updated_at DESC, id DESC",
+            p![p],
+        )?,
+        None => vec![],
+    };
+    let lost: Vec<String> = lost
+        .iter()
+        .map(|t| {
+            let r = rf("task", t.id());
+            format!("{r} “{}” lost its terminal — {tb} take {r} if you are carrying it on.", t.st("title"))
+        })
+        .collect();
+    if lost.is_empty() {
+        return Ok(line);
+    }
+    Ok(format!("Task board: {}\n{line}", lost.join("\n")))
 }
 
 pub fn is_full_handoff(prompt: &str, task_id: i64) -> bool {
