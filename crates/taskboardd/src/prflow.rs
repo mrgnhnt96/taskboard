@@ -270,6 +270,26 @@ pub fn live_job(app: &App, t: &Row) -> Result<Option<Row>> {
     )
 }
 
+/// A PR visit is under way for the task: its reopen hasn't run yet, or the terminal it went to is still
+/// at work and hasn't taken another task since. No other visit starts until it ends.
+pub fn visit_live(app: &App, t: &Row) -> Result<bool> {
+    if live_job(app, t)?.is_some() {
+        return Ok(true);
+    }
+    let opened = app.db.val(
+        "SELECT json_extract(target, '$.session') FROM jobs WHERE task_id = ? AND kind = 'agent' AND purpose = 'pr' \
+         AND state = 'done' ORDER BY id DESC LIMIT 1",
+        p![t.id()],
+    )?;
+    for sid in [flow(t).s("session"), opened.as_str()].into_iter().flatten().filter(|s| !s.is_empty()) {
+        let working = board::get_session(app, Some(sid))?.is_some_and(|s| s.s("status") == Some("working"));
+        if working && board::task_for_session(app, Some(sid))?.is_none() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn waking(app: &App, t: &Row) -> Result<bool> {
     Ok(live_job(app, t)?.is_some() || (WAKE.contains(&t.s("pr_phase").unwrap_or("")) && flow(t).contains_key("woke")))
 }
@@ -528,6 +548,9 @@ pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
 }
 
 pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -> Result<Option<i64>> {
+    if visit_live(app, t)? {
+        return Ok(None);
+    }
     let Some(cwd) = pr_cwd(app, t)? else { return Ok(None) };
     let mut text = prompt(app, t, phase, rec);
     if let Some(e) = extra {
@@ -541,6 +564,9 @@ pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -
 }
 
 pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
+    if visit_live(app, t)? {
+        return Ok(None);
+    }
     let Some(cwd) = pr_cwd(app, t)? else { return Ok(None) };
     let tb = board::tb_cmd(app);
     let r = rf("task", t.id());
@@ -552,7 +578,7 @@ pub fn follow_wake(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
 
 /// Brings a merged task's conversation back to write its note for testers (`[jira] merged_note`).
 pub fn ask_for_note(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
-    if live_job(app, t)?.is_some() {
+    if visit_live(app, t)? {
         return Ok(None);
     }
     let Some(cwd) = pr_cwd(app, t)? else { return Ok(None) };
@@ -563,7 +589,7 @@ pub fn ask_for_note(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
 
 pub fn answer_in_new_tab(app: &App, t: &Row, text: &str) -> Result<Option<i64>> {
     let phase = t.st("pr_phase");
-    if t.s("status") != Some("done") || !WAKE.contains(&phase.as_str()) || live_job(app, t)?.is_some() {
+    if t.s("status") != Some("done") || !WAKE.contains(&phase.as_str()) || visit_live(app, t)? {
         return Ok(None);
     }
     let rec = flow(t).get("rec").cloned().unwrap_or(json!({}));
@@ -1183,8 +1209,9 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             changes.push(("head_base", Value::Object(bases)));
         }
     }
-    let phase = phase_of(app, &probe(t, &f), rec);
     let old = t.st("pr_phase");
+    // A merged PR stays merged: a stream event laid over the record from before the merge still reads open.
+    let phase = if old == "merged" { old.clone() } else { phase_of(app, &probe(t, &f), rec) };
     let phase_changed = phase != old;
     let build = if crate::prbuilds::stopped(app) {
         "Builds stopped"
@@ -1255,7 +1282,7 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
         && (fresh || stalled)
         && f.s("held") != Some(key.as_str())
         && !retry_later(&f)
-        && live_job(app, t)?.is_none()
+        && !visit_live(app, t)?
         && hours::goal_open(app, board::find_goal(app, t.i("goal_id"))?.as_ref())
         // The agent isn't brought back to ask for reviews while the PR feed holds asks.
         && (phase != "ask" || crate::asks::held(app, t)?.is_none())

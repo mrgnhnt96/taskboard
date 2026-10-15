@@ -19,6 +19,7 @@ mod cross_project_waits;
 mod days;
 mod device_fields;
 mod done_leftovers;
+mod duplicate_visits;
 mod feed;
 mod flow;
 mod home;
