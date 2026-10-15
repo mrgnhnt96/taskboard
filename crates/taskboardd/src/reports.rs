@@ -18,7 +18,7 @@ static NETWORK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)connection error|unable to connect|network|offline|timed? ?out|fetch failed|socket hang up|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH").unwrap()
 });
 /// A usage limit, in a StopFailure's details ("You've hit your session limit · resets 12:50pm").
-static LIMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)hit your (?:session |weekly |usage )?limit|usage limit").unwrap());
+static LIMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\byou(?:'|’)ve hit your (?:\w+ )?limit\b").unwrap());
 /// A git commit or push, as `hook.commit` reports it; and the folder it names with `-C`, or the `cd`s before it.
 static GIT_WORK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:commit|push)\b").unwrap());
 static GIT_DIR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-C\s+([^\s;&|)]+)").unwrap());
@@ -1220,7 +1220,7 @@ fn api_error_of(r: &Report) -> (&'static str, String) {
     let detail = one_line(&{ let d = r.b("error_details"); if d.is_empty() { r.b("last_message") } else { d } }, 300);
     let (kind, what) = if NETWORK_RE.is_match(&format!("{error} {detail}")) {
         ("network", "Lost its network connection")
-    } else if LIMIT_RE.is_match(&format!("{detail} {}", r.b("last_message"))) {
+    } else if LIMIT_RE.is_match(&detail) || (error == "rate_limit" && LIMIT_RE.is_match(&r.b("last_message"))) {
         ("limit", "Hit a usage limit")
     } else {
         ("api", match error.as_str() {
@@ -3071,5 +3071,14 @@ mod tests {
     fn resolve_unquotes_and_normalizes() {
         assert_eq!(resolve("/w/proj", "'../x/./y'"), "/w/x/y");
         assert_eq!(resolve("/w/proj", "/abs"), "/abs");
+    }
+
+    #[test]
+    fn a_usage_limit_is_claude_codes_own_message() {
+        assert!(LIMIT_RE.is_match("You've hit your session limit · resets 12:50pm (America/Phoenix)"));
+        assert!(LIMIT_RE.is_match("You’ve hit your weekly limit"));
+        assert!(LIMIT_RE.is_match("You've hit your limit · resets 3pm"));
+        assert!(!LIMIT_RE.is_match("429 rate_limit_error"));
+        assert!(!LIMIT_RE.is_match("The usage limit meter now holds its last value."));
     }
 }
