@@ -2357,11 +2357,20 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     };
     let path = v["path"].as_str().map(|p| format!(" ({p})")).unwrap_or_default();
     out(&format!("Slice goals into tasks by {whose}{path}:\n{}", v["text"].as_str().unwrap_or("").trim()));
+    if let Some(m) = models_line(&v["models"]) {
+        out(&format!("\n{m}"));
+    }
     let lessons: Vec<&str> = v["lessons"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
     if !lessons.is_empty() {
         out(&format!("\nWhat earlier goals taught about planning here:\n{}", lessons.join("\n")));
     }
     Ok(0)
+}
+
+/// "Models: small runs sonnet, large runs opus; a task without one runs opus." Nothing while `[models]` is off.
+fn models_line(m: &Value) -> Option<String> {
+    let (small, large, default) = (m["small"].as_str()?, m["large"].as_str()?, m["default"].as_str()?);
+    Some(format!("Models (tb task new --model small|large): small runs {small}, large runs {large}; a task without one runs {default}."))
 }
 
 fn planning_lessons_cmd(c: &Ctx, project: Option<String>, accept: bool) -> Result<i32, String> {
@@ -6235,6 +6244,13 @@ mod tests {
         assert_eq!(model_line(&json!({"model": "haiku", "model_runs": "haiku"})).as_deref(), Some("Model: haiku"));
         assert_eq!(model_line(&json!({"model": null, "model_runs": "opus"})).as_deref(), Some("Model: default (opus)"));
         assert_eq!(model_line(&json!({"model": null, "model_runs": null})), None);
+    }
+
+    #[test]
+    fn planning_names_the_models_while_they_are_on() {
+        let v = json!({"small": "sonnet", "large": "opus", "default": "opus"});
+        assert_eq!(models_line(&v).as_deref(), Some("Models (tb task new --model small|large): small runs sonnet, large runs opus; a task without one runs opus."));
+        assert_eq!(models_line(&Value::Null), None);
     }
 
     #[test]
