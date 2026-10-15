@@ -53,8 +53,16 @@ pub fn sweep(app: &App) -> Result<()> {
             Some(s) => s.to_string(),
             None => lost_at(app, &t)?,
         };
-        let found = look(app, &t, &lost_at);
-        let had = lf.get("found").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        let kept = lf.get("found").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let had = kept.len();
+        // Work that shipped stays shipped: a later look that finds less (gh offline) doesn't take it back.
+        let mut found = kept;
+        for f in look(app, &t, &lost_at) {
+            if !found.iter().any(|k| k["what"] == f["what"]) {
+                found.push(f);
+            }
+        }
+        found.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
         lf.insert("lost_at".into(), json!(lost_at));
         lf.insert("checked_at".into(), json!(now_iso()));
         lf.insert("found".into(), Value::Array(found.clone()));
@@ -141,7 +149,7 @@ fn commits(repo: &str, task: i64, branch: Option<&str>, version: Option<&str>, s
     let log = git(repo, &["log", "--all", &since_arg, "-n", &SCAN.to_string(), "--format=%h%x1f%cI%x1f%s"]).unwrap_or_default();
     let names_task = Regex::new(&format!(r"(?i)\bT{task}\b")).unwrap();
     // Branches the board's tasks make start with the task's number: `feat/361-…`, `fix/t361-…`.
-    let task_branch = Regex::new(&format!(r"(?i)\bfrom \S*/t?{task}-\S+")).unwrap();
+    let task_branch = Regex::new(&format!(r"(?i)(?:^|/)t?{task}-\S+$")).unwrap();
     let mut out = vec![];
     for line in log.lines() {
         let mut it = line.splitn(3, '\x1f');
@@ -149,8 +157,8 @@ fn commits(repo: &str, task: i64, branch: Option<&str>, version: Option<&str>, s
         if !after(at, since) {
             continue;
         }
-        let merges = subject.starts_with("Merge ")
-            && (task_branch.is_match(subject) || branch.is_some_and(|b| subject.split_whitespace().any(|w| w == b || w.ends_with(&format!("/{b}")))));
+        let merges = merged_branch(subject)
+            .is_some_and(|m| task_branch.is_match(m) || branch.is_some_and(|b| m == b || m.ends_with(&format!("/{b}"))));
         let releases = version.is_some_and(|v| subject.split(|c: char| c.is_whitespace() || c == ',').any(|w| w.trim_start_matches('v') == v));
         if names_task.is_match(subject) || merges || releases {
             out.push(json!({"what": format!("Commit {sha}: {}", one_line(subject, 120)), "at": iso_of(at)}));
@@ -160,6 +168,17 @@ fn commits(repo: &str, task: i64, branch: Option<&str>, version: Option<&str>, s
         }
     }
     out
+}
+
+/// The branch a merge commit brings in, never the one it lands on: "Merge pull request #10 from me/feat/361-x",
+/// "Merge branch 'feat/361-x'", "Merge remote-tracking branch 'origin/feat/361-x'". "Merge branch 'main' into feat/361-x"
+/// brings in `main`.
+fn merged_branch(subject: &str) -> Option<&str> {
+    if let Some(rest) = subject.strip_prefix("Merge pull request #") {
+        return rest.split_once(" from ").and_then(|(_, r)| r.split_whitespace().next());
+    }
+    let rest = subject.strip_prefix("Merge branch '").or_else(|| subject.strip_prefix("Merge remote-tracking branch '"))?;
+    rest.split_once('\'').map(|(b, _)| b)
 }
 
 fn gh(app: &App, repo: &str, args: &[&str]) -> Option<Value> {
@@ -295,6 +314,42 @@ mod tests {
         let what: Vec<&str> = found.as_array().unwrap().iter().map(|f| f["what"].as_str().unwrap()).collect();
         assert_eq!(what.len(), 1, "{found}");
         assert!(what[0].ends_with(&format!("from me/feat/{id}-lost-cards")), "{found}");
+    }
+
+    #[test]
+    fn merging_main_into_the_branch_is_not_the_branch_merging() {
+        assert_eq!(merged_branch("Merge branch 'main' into feat/361-lost-cards"), Some("main"));
+        assert_eq!(merged_branch("Merge branch 'feat/361-lost-cards'"), Some("feat/361-lost-cards"));
+        assert_eq!(merged_branch("Merge pull request #10 from me/feat/361-lost-cards"), Some("me/feat/361-lost-cards"));
+        assert_eq!(merged_branch("Merge remote-tracking branch 'origin/feat/361-x' into main"), Some("origin/feat/361-x"));
+        assert_eq!(merged_branch("Merges are hard"), None);
+
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let app = app(data.path());
+        let id = lost_task(&app, "Lost cards", r.path(), "2026-10-15T21:00:00Z", json!({"where": {"branch": "feat/lost-cards"}}));
+        sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'main' into feat/lost-cards"], "2026-10-15T21:10:00Z");
+        sweep(&app).unwrap();
+        assert!(card(&board::get_task(&app, id).unwrap()).is_null());
+        sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'feat/lost-cards'"], "2026-10-15T21:20:00Z");
+        app.db.x("UPDATE tasks SET looks_finished = json_remove(looks_finished, '$.checked_at') WHERE id = ?", p![id]).unwrap();
+        sweep(&app).unwrap();
+        assert_eq!(card(&board::get_task(&app, id).unwrap()).as_array().map(|a| a.len()), Some(1));
+    }
+
+    #[test]
+    fn evidence_already_found_stays_when_a_later_look_finds_less() {
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let app = app(data.path());
+        let id = lost_task(&app, "Lost cards", r.path(), "2026-10-15T21:00:00Z", json!({}));
+        let seen = json!({"lost_at": "2026-10-15T21:00:00Z", "found": [{"what": "PR #12 merged: Lost cards", "at": "2026-10-15T21:30:00Z"}]});
+        app.db.x("UPDATE tasks SET looks_finished = ? WHERE id = ?", p![jdumps(&seen), id]).unwrap();
+        sweep(&app).unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        assert_eq!(card(&t)[0]["what"], "PR #12 merged: Lost cards");
+        let log = app.db.q("SELECT text FROM events WHERE task_id = ?", p![id]).unwrap();
+        assert!(!log.iter().any(|e| e.st("text").starts_with("Looks finished")));
     }
 
     #[test]
