@@ -435,6 +435,12 @@ pub fn offline(s: &Row) -> bool {
     has(s.s("api_error")) && s.s("api_error_kind") == Some("network")
 }
 
+/// The terminal's last turn hit a usage limit and nothing has reached the API since: Claude Code is
+/// waiting out the limit and carries on by itself at the reset, so the board mustn't close it.
+pub fn limited(s: &Row) -> bool {
+    has(s.s("api_error")) && s.s("api_error_kind") == Some("limit")
+}
+
 /// How many background commands and agents an idle terminal has running: what Midna lists, for as
 /// long as it lists them. When Midna doesn't say, what its last turn left running: 0 once a turn
 /// starts, or once Claude would have stopped them.

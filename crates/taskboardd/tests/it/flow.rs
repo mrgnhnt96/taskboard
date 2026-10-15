@@ -514,6 +514,32 @@ fn a_turn_that_loses_the_network_waits_for_midna_to_carry_it_on() {
 }
 
 #[test]
+fn a_terminal_waiting_out_a_usage_limit_stays_open() {
+    let b = new_board();
+    let id = new_task(&b, "Add login", json!({}));
+    runner::start_queued(&b.app).unwrap();
+    let prompt = board::job_args(&b.jobs("agent")[0]).st("prompt");
+    b.add_session("s1", "working");
+    b.report("hook.prompt", "s1", json!({"prompt": prompt}));
+    let resets = taskboardd::util::iso(taskboardd::util::now_ts() + 3600.0);
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 100, "resets_at": resets}}));
+
+    b.report("hook.api_error", "s1", json!({"error": "unknown", "error_details": "You've hit your session limit · resets 12:50pm (America/Phoenix)"}));
+    b.add_session("s1", "idle");
+    let t = b.task(id);
+    assert_eq!(t.s("needs_reason"), Some("api_error"));
+    assert!(t.st("question").contains("carries on by itself"));
+    runner::close_for_usage(&b.app).unwrap();
+    assert!(b.jobs("close").is_empty(), "Claude Code carries on at the reset, so its terminal stays open");
+
+    // Once it has carried on, an idle terminal with the usage still out is closed as before.
+    b.report("hook.stop", "s1", json!({"last_message": "Carried on."}));
+    b.add_session("s1", "idle");
+    runner::close_for_usage(&b.app).unwrap();
+    assert_eq!(b.jobs("close").len(), 1);
+}
+
+#[test]
 fn with_midnas_network_resume_off_a_lost_network_needs_you() {
     let b = new_board();
     b.app.shared.lock().midna_resumes_network = Some((std::time::Instant::now(), false));
