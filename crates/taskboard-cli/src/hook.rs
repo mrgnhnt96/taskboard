@@ -135,6 +135,17 @@ fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) ->
     true
 }
 
+/// The head of the task's own checkout (`{worktree}` and `{branch}` in a `GET /steps` answer): its
+/// branch's tip there, else the checkout's head.
+fn own_head(vars: &Value) -> Option<String> {
+    let dir = vars["worktree"].as_str().filter(|d| !d.is_empty() && Path::new(d).is_dir())?;
+    let rev = |r: &str| {
+        let o = std::process::Command::new("git").args(["-C", dir, "rev-parse", "--verify", "-q", &format!("{r}^{{commit}}")]).output().ok().filter(|o| o.status.success())?;
+        Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty())
+    };
+    vars["branch"].as_str().filter(|b| !b.is_empty()).and_then(|b| rev(&format!("refs/heads/{b}"))).or_else(|| rev("HEAD"))
+}
+
 /// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
 /// (config.toml's `[[steps]]`) aren't recorded, and a push to an open PR while a per-head step hasn't
 /// passed on the commit being pushed, and work in a repository the task doesn't own (`elsewhere_refused`).
@@ -165,8 +176,19 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
             return true;
         }
     }
-    let head = crate::tb::local_head(cwd.as_deref().unwrap_or("")).map(|h| format!("&head={h}")).unwrap_or_default();
-    let Ok(v) = client::request(&cfg, "GET", &format!("/steps?session={session}{head}"), None, hook_timeout()) else { return false };
+    let what = if opening { "opening the PR" } else { "pushing to the open PR" };
+    let Ok(mut v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    if let Some(why) = v["aim_outside"].as_str() {
+        deny(&format!("Not yet: {what} waits for the task's steps, and they can't be judged. {why}"));
+        return true;
+    }
+    // Per-head steps are judged on the task's own checkout, not on whichever folder this call runs in.
+    if let Some(head) = own_head(&v["vars"]).filter(|h| v["head"].as_str() != Some(h.as_str())) {
+        match client::request(&cfg, "GET", &format!("/steps?session={session}&head={head}"), None, hook_timeout()) {
+            Ok(at) => v = at,
+            Err(_) => return false,
+        }
+    }
     let vars = serde_json::from_value(v["vars"].clone()).unwrap_or_default();
     let left: Vec<Step> = from_listing(&v)
         .into_iter()
@@ -176,7 +198,6 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
     if left.is_empty() {
         return false;
     }
-    let what = if opening { "opening the PR" } else { "pushing to the open PR" };
     deny(&taskboardd::steps::refusal(&tb_path(), what, &left));
     true
 }
@@ -639,6 +660,28 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         let ok = std::process::Command::new("git").arg("-C").arg(dir).args(["init", "-q"]).status().unwrap().success();
         assert!(ok);
+    }
+
+    #[test]
+    fn the_gate_judges_the_tip_of_the_tasks_branch_in_its_worktree() {
+        let root = std::env::temp_dir().join(format!("tb-own-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        git_repo(&root);
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(&root).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+        let one = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "fix"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+        let two = git(&["rev-parse", "HEAD"]);
+        let dir = root.to_string_lossy();
+        assert_eq!(own_head(&json!({"worktree": dir, "branch": "fix"})), Some(one), "the task's branch, not the checkout's HEAD");
+        assert_eq!(own_head(&json!({"worktree": dir, "branch": ""})), Some(two.clone()));
+        assert_eq!(own_head(&json!({"worktree": dir, "branch": "gone"})), Some(two));
+        assert_eq!(own_head(&json!({"worktree": root.join("missing").to_string_lossy(), "branch": "fix"})), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -3187,6 +3187,24 @@ fn home_checkout(c: &Ctx, v: &Value) -> String {
     }
 }
 
+/// Why a round can't look at `dir`: it's a checkout of another repository than the task's, so its
+/// steps would pass on work the board doesn't track. None for one of the task's checkouts, or when
+/// the task's repository isn't known.
+fn outside_repo(dir: &str, v: &Value) -> Option<String> {
+    let repo = v["vars"]["repo"].as_str().filter(|r| !r.is_empty())?;
+    let common = |d: &str| git_out(d, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).and_then(|p| std::fs::canonicalize(p).ok());
+    let mine = common(repo)?;
+    if common(dir).as_ref() == Some(&mine) {
+        return None;
+    }
+    let task = v["task"].as_str().unwrap_or("The task");
+    let project = v["vars"]["project"].as_str().filter(|p| !p.is_empty()).unwrap_or("its project");
+    Some(format!(
+        "{dir} isn't a checkout of {repo}, {project}'s repository, so {task}'s steps can't be judged there. Aim at one of its checkouts \
+         (tb step aim --worktree <dir>), or tb step aim --clear."
+    ))
+}
+
 /// What a round looks at: `--worktree` (that checkout; a detached one with `--branch`, that branch's tip), `--branch` (the worktree that has it checked
 /// out), `--commit` (that commit, which must be on the checkout's branch); with none of them, the aim
 /// `tb step aim` saved, else this checkout's head.
@@ -3235,6 +3253,9 @@ fn aim(c: &Ctx, v: &Value, a: &Aim) -> Result<Aimed, String> {
         };
         (here, Some(b))
     };
+    if let Some(why) = outside_repo(&dir, v) {
+        return Err(why);
+    }
     let checkout = resolve_commit(&dir, "HEAD").ok();
     let head = match given(&a.commit) {
         None => detached_tip.or_else(|| checkout.clone()),
@@ -5608,6 +5629,23 @@ pub fn main_with(args: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_round_aimed_at_another_repository_is_refused() {
+        let root = std::env::temp_dir().join(format!("tb-aim-outside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (mine, other) = (root.join("mine"), root.join("other"));
+        for d in [&mine, &other] {
+            std::fs::create_dir_all(d).unwrap();
+            assert!(std::process::Command::new("git").arg("-C").arg(d).args(["init", "-q"]).status().unwrap().success());
+        }
+        let v = json!({"task": "T9", "vars": {"repo": mine.to_string_lossy(), "project": "web"}});
+        assert_eq!(outside_repo(&mine.join(".").to_string_lossy(), &v), None, "a checkout of the task's repository");
+        let why = outside_repo(&other.to_string_lossy(), &v).expect("another repository");
+        assert!(why.contains("web's repository") && why.contains("T9's steps") && why.contains("tb step aim --clear"), "{why}");
+        assert_eq!(outside_repo(&other.to_string_lossy(), &json!({"vars": {}})), None, "no repository to compare");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn tb_words_misses_lists_each_refused_start_with_its_prompt() {
