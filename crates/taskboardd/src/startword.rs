@@ -136,6 +136,12 @@ static SPEAKER_RE: Lazy<Regex> = Lazy::new(|| {
     ))
     .unwrap()
 });
+/// The owner giving leave, with "we" leading it: "we can" opening its sentence ("So we can start T8",
+/// "ok, I think we can start T8 now"). Not "we can" after anything else in the sentence ("fix T7 so we
+/// can start T8", "check CI, then we can start T8", "maybe we can start T8"), nor "we could start T8".
+static LEAVE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^[\s,]*(?:(?:so|ok(?:ay)?|alright|all\s+right|yes|yeah|yep|yup|sure|great|cool|got\s+it|i\s+think)[\s,.!]+)*we\s+can\s+(?:(?:now|just|also)\s+)*$").unwrap()
+});
 /// What just before a start word makes it someone else's words ("the log says start T8", "it printed
 /// run T8").
 static REPORTED_RE: Lazy<Regex> = Lazy::new(|| {
@@ -994,7 +1000,7 @@ fn sentence(k: &Kind, own: &str, base: usize, s: &str, asked: bool, steps: &mut 
             let after = &s[m.end..];
             // Told of, not asked for: "start T8 failed", "how do I start T8", "I'll start T8", "the log
             // says start T8".
-            let told = STORY_RE.is_match(after) || QUESTION_RE.is_match(lead) || SPEAKER_RE.is_match(lead) || REPORTED_RE.is_match(lead);
+            let told = STORY_RE.is_match(after) || QUESTION_RE.is_match(lead) || (SPEAKER_RE.is_match(lead) && !LEAVE_RE.is_match(&s[..m.verb])) || REPORTED_RE.is_match(lead);
             if m.soft && (told || !SOFT_TAIL_RE.is_match(after)) && !asked && !timed && !pending {
                 continue;
             }
@@ -1460,8 +1466,9 @@ pub struct ItemTask {
     pub task: i64,
 }
 
-/// A backlog item named by its ref: "B12".
-static ITEM_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[Bb](\d+)\b").unwrap());
+/// A backlog item named by its ref: "B12", or as dictation writes it ("B-12", "B 12", "B #12").
+static ITEM_REF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b[Bb](?:[ \t]?[-‐‑–—−][ \t]?|[ \t]*#[ \t]*|[ \t]+)?(\d+)\b").unwrap());
 
 /// `text` with backlog item `i.item` named as the task made from it, so "start B12" and "/start B12"
 /// read as "start T30" for that task. Other items stay as they are.
@@ -2923,6 +2930,27 @@ mod tests {
 
     fn prompts(texts: &[&str], made: Option<i64>) -> Vec<Prompt> {
         texts.iter().enumerate().map(|(i, t)| Prompt { made: if i == 0 { made.into_iter().collect() } else { vec![] }, ..Prompt::new(t) }).collect()
+    }
+
+    #[test]
+    fn we_can_start_is_the_owners_leave() {
+        for (yes, id) in [("Got it. So we can start T360", 360), ("we can start T8", 8), ("ok, I think we can start T8", 8), ("yeah we can just start T8", 8)] {
+            assert_eq!(word_in(&prompts(&[yes], None), id), Some(0), "{yes}");
+        }
+        for no in [
+            "we could start T8",
+            "we'll start T8",
+            "fix the migration in T7 so we can start T8",
+            "fix the flaky test so that we can start T8",
+            "let me check CI then we can start T8",
+            "make sure we can start T8",
+            "maybe we can start T8",
+            "I doubt we can start T8",
+            "we can probably start T8",
+            "you said we can start T8, but CI is still red",
+        ] {
+            assert_eq!(word_in(&prompts(&[no], None), 8), None, "{no}");
+        }
     }
 
     #[test]

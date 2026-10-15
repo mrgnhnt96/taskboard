@@ -52,6 +52,10 @@ fn an_item_ref_reads_as_its_task_and_others_stay() {
     assert_eq!(item_as_task("/start b3", i), "/start T40");
     assert_eq!(item_as_task("start B31 and B4", i), "start B31 and B4");
     assert_eq!(item_as_task("JIRAB3 is B3x", i), "JIRAB3 is B3x");
+    for dictated in ["start B-3", "start B 3", "start B #3", "start b–3"] {
+        assert_eq!(item_as_task(dictated, i), "start T40", "{dictated}");
+    }
+    assert_eq!(item_as_task("start B-31", i), "start B-31");
 }
 
 #[test]
@@ -60,6 +64,16 @@ fn naming_the_item_starts_its_task() {
     let (item, task) = b.item_task("Header clips on narrow windows");
     b.said(&format!("start B{item}"));
     assert!(b.tb_start(task).is_ok(), "the owner named the item the task was made from");
+}
+
+#[test]
+fn the_owners_leave_or_a_dictated_item_ref_starts_its_task() {
+    for said in ["Got it. So we can start B{item}", "Let's start B-{item}"] {
+        let b = board();
+        let (item, task) = b.item_task("Header clips on narrow windows");
+        b.said(&said.replace("{item}", &item.to_string()));
+        assert!(b.tb_start(task).is_ok(), "{said}");
+    }
 }
 
 #[test]
