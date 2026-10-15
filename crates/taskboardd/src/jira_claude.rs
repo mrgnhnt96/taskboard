@@ -187,12 +187,14 @@ pub const BUILT_INS: [&str; 14] =
 /// the server by name (it doesn't match `SERVER`) keeps the call on the v2 one.
 const OLD_SERVER: &str = "mcp__claude_ai_Atlassian";
 
-/// The flags that keep a Jira call to the connector's tools: built-ins and the older connector
-/// denied, no prompt that approves itself (`-p` denies whatever `--allowedTools` leaves out,
-/// whatever the owner's `defaultMode`), and every write the op doesn't need denied outright.
-pub fn tool_flags(allowed: &[String]) -> Vec<String> {
+/// The flags that keep a Jira call to the connector's tools: built-ins, the older connector and the
+/// owner's other MCP servers (`servers`) denied, no prompt that approves itself (`-p` denies whatever
+/// `--allowedTools` leaves out, whatever the owner's `defaultMode`), and every write the op doesn't
+/// need denied outright.
+pub fn tool_flags(allowed: &[String], servers: &[String]) -> Vec<String> {
     let mut denied: Vec<String> = WRITES.iter().map(|n| tool(n)).filter(|t| !allowed.contains(t)).collect();
     denied.push(OLD_SERVER.into());
+    denied.extend(unused_servers(servers, allowed).into_iter().filter(|s| s != OLD_SERVER));
     denied.extend(BUILT_INS.iter().map(|b| b.to_string()));
     vec![
         "--permission-mode".into(),
@@ -204,9 +206,55 @@ pub fn tool_flags(allowed: &[String]) -> Vec<String> {
     ]
 }
 
+/// How long the owner's MCP server list stands before `claude mcp list` runs again: it checks each
+/// server's health, a few seconds a run.
+const SERVERS_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The last list per `claude` and folder (the folder's project servers count too).
+#[allow(clippy::type_complexity)]
+static SERVERS: std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf, std::time::Instant, Vec<String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The MCP servers the owner's Claude loads in `cwd`, by the names their tools go by, from `claude mcp
+/// list`. A list it can't get (a timeout, output it can't read) is no servers, so nothing more is denied.
+pub fn mcp_servers(claude: &std::path::Path, cwd: &std::path::Path) -> Vec<String> {
+    let Ok(mut cache) = SERVERS.lock() else { return vec![] };
+    if let Some((.., at, names)) = cache.iter().find(|(c, d, ..)| c == claude && d == cwd) {
+        if at.elapsed() < SERVERS_TTL {
+            return names.clone();
+        }
+    }
+    let names = match proc::run(claude, &["mcp".into(), "list".into()], Some(cwd), 60.0) {
+        Ok(o) if o.code == Some(0) => o.stdout.lines().filter_map(server_of).collect(),
+        _ => vec![],
+    };
+    cache.retain(|(c, d, ..)| !(c == claude && d == cwd));
+    cache.push((claude.to_path_buf(), cwd.to_path_buf(), std::time::Instant::now(), names.clone()));
+    names
+}
+
+/// One `claude mcp list` line's server (`claude.ai Claude Docs: https://… - ✔ Connected`) as its
+/// tools name it: Claude Code turns anything but letters, digits, `_` and `-` into `_`.
+fn server_of(line: &str) -> Option<String> {
+    let (name, rest) = line.split_once(": ")?;
+    if name.trim().is_empty() || !rest.contains(" - ") {
+        return None;
+    }
+    Some(name.trim().chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect())
+}
+
+/// The deny rules for the servers a call doesn't use: every one none of `allowed` comes from.
+pub fn unused_servers(servers: &[String], allowed: &[String]) -> Vec<String> {
+    servers
+        .iter()
+        .map(|s| format!("mcp__{s}"))
+        .filter(|s| !allowed.iter().any(|a| a == s || a.starts_with(&format!("{s}__"))))
+        .collect()
+}
+
 /// The arguments for one headless call. The user's settings come in because the claude.ai
 /// connectors are theirs: with `--setting-sources ""` the connector's tools aren't there at all.
-fn args(app: &App, prompt: String, allowed: &[String]) -> Vec<String> {
+fn args(app: &App, prompt: String, allowed: &[String], servers: &[String]) -> Vec<String> {
     let j = &app.cfg.jira;
     let mut args: Vec<String> = vec![
         "-p".into(),
@@ -216,8 +264,9 @@ fn args(app: &App, prompt: String, allowed: &[String]) -> Vec<String> {
         "--setting-sources".into(),
         "user".into(),
         "--no-session-persistence".into(),
+        "--disable-slash-commands".into(),
     ];
-    args.extend(tool_flags(allowed));
+    args.extend(tool_flags(allowed, servers));
     args.extend([
         "--max-budget-usd".into(),
         j.claude_budget_usd.clone(),
@@ -231,7 +280,8 @@ fn args(app: &App, prompt: String, allowed: &[String]) -> Vec<String> {
 
 fn call(app: &App, prompt: String, allowed: &[String]) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
-    let out = proc::run(&claude, &args(app, prompt, allowed), Some(&app.cfg.data), app.cfg.jira.claude_timeout_secs as f64)
+    let servers = mcp_servers(&claude, &app.cfg.data);
+    let out = proc::run(&claude, &args(app, prompt, allowed, &servers), Some(&app.cfg.data), app.cfg.jira.claude_timeout_secs as f64)
         .map_err(|_| "claude didn't answer in time".to_string())?;
     parse(&out.stdout)
 }
@@ -324,7 +374,8 @@ mod tests {
     fn ops_load_the_users_connectors_and_deny_the_writes_they_dont_need() {
         let dir = tempfile::tempdir().unwrap();
         let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
-        let a = args(&app, "p".into(), &default_tools("comment", &json!({})));
+        let servers = ["claude_ai_Atlassian_MCP".to_string(), "Amplitude".into()];
+        let a = args(&app, "p".into(), &default_tools("comment", &json!({})), &servers);
         let at = |flag: &str| a[a.iter().position(|x| x == flag).unwrap_or_else(|| panic!("no {flag}: {a:?}")) + 1].clone();
         assert_eq!(at("--setting-sources"), "user", "the claude.ai connectors are the user's");
         assert!(!a.contains(&"--tools".to_string()), "--tools also hides the connector's tools: {a:?}");
@@ -335,7 +386,9 @@ mod tests {
         let denied: Vec<&str> = denied.split(',').collect();
         assert!(denied.contains(&"Bash") && denied.contains(&"Read") && denied.contains(&"mcp__claude_ai_Atlassian"), "{denied:?}");
         assert!(!denied.contains(&SERVER), "the v2 connector stays: {denied:?}");
-        let status = tool_flags(&default_tools("status", &json!({})));
+        assert!(denied.contains(&"mcp__Amplitude"), "the owner's other servers go: {denied:?}");
+        assert!(a.contains(&"--disable-slash-commands".to_string()), "no skills: {a:?}");
+        let status = tool_flags(&default_tools("status", &json!({})), &[]);
         assert_eq!(status[5].split(',').count(), WRITES.len() + 1 + BUILT_INS.len(), "a read denies every write: {status:?}");
     }
 
@@ -378,5 +431,24 @@ mod tests {
             assert!(p.contains("cloudId 1a2b-3c"), "{op}: {p}");
             assert!(!p.contains("host name works"), "{op}: {p}");
         }
+    }
+
+    #[test]
+    fn reads_mcp_list_lines_as_tool_names() {
+        let out = "Checking MCP server health…\n\nclaude.ai Claude Docs: https://api.anthropic.com/v1/pages/mcp - ✔ Connected\n\
+            plugin:dart-flutter:dart-mcp-server: dart mcp-server - ✘ Failed to connect\n\
+            atlassian: https://mcp.atlassian.com/v1/sse (SSE) - ! Needs authentication\nNo MCP servers configured.\n";
+        let names: Vec<String> = out.lines().filter_map(server_of).collect();
+        assert_eq!(names, ["claude_ai_Claude_Docs", "plugin_dart-flutter_dart-mcp-server", "atlassian"]);
+    }
+
+    #[test]
+    fn denies_only_the_servers_no_allowed_tool_comes_from() {
+        let servers: Vec<String> = ["claude_ai_Atlassian_MCP", "claude_ai_Atlassian", "Amplitude"].iter().map(|s| s.to_string()).collect();
+        let unused = unused_servers(&servers, &[tool("getJiraIssue"), "Bash(tb jira:*)".into()]);
+        assert_eq!(unused, ["mcp__claude_ai_Atlassian", "mcp__Amplitude"], "a server's prefix isn't another's");
+        assert_eq!(unused_servers(&servers, &["mcp__Amplitude".into()]), ["mcp__claude_ai_Atlassian_MCP", "mcp__claude_ai_Atlassian"]);
+        let flags = tool_flags(&[tool("getJiraIssue")], &servers);
+        assert_eq!(flags[5].matches("mcp__claude_ai_Atlassian,").count(), 1, "the older connector once: {flags:?}");
     }
 }

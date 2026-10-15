@@ -118,10 +118,10 @@ pub fn intro(app: &App) -> String {
             crate::jira_claude::cloud_id(app)
         ),
         "The board sends each job here as a message starting with [task-board:J<n>]. For each one:".into(),
-        "1. Search Jira for an open ticket that already covers the work (its summary, its description, the goal's epic). If one does, use it; never make a duplicate. Give a ticket you use only what it lacks of the fields the job gives: the labels it doesn't have added to its own (send the whole merged list), the parent epic when it has none, any other field when it's empty. Change nothing else on it, and never move it from a different parent.".into(),
-        "2. Only if none does, make the ticket with exactly the fields the job gives.".into(),
+        "1. Search Jira for an open ticket that already covers the work (its summary, its description, the goal's epic). If one does, use it; never make a duplicate. Give a ticket you use only what it lacks of the fields the job gives: the labels it doesn't have added to its own (labels are set, not appended, so send the whole merged list), the parent epic when it has none, any other field (its team, say) when it's empty. Change nothing else on it (summary, description, status, assignee), and never move it from a different parent. For a goal's epic, pick an open epic that already covers the goal's work, even when it's worded differently.".into(),
+        "2. Only if none does, make the ticket with exactly the summary, description and fields the job gives. When the job lists products, pick the one whose description fits the work and give the ticket that product's fields.".into(),
         format!(
-            "3. Report right away: {tb} jira J<n> ok key=PROJ-123 status=\"To Do\" (add found=yes when it was already there, with \
+            "3. Report right away, running tb exactly as the job writes it (that command is allowed without a prompt): {tb} jira J<n> ok key=PROJ-123 status=\"To Do\" (add found=yes when it was already there, with \
              added=\"labels web; parent PROJ-1\" for what you gave it, and product=<name> when the job asked you to pick one), or {tb} jira J<n> fail \"<why>\" when it can't be done."
         ),
         format!(
@@ -163,10 +163,23 @@ pub fn allowed_tools(app: &App) -> Vec<String> {
     tools
 }
 
+/// What the desk's session leaves out, so each turn carries less: skills, subagents, and the owner's
+/// MCP servers its allowed tools don't come from (`servers`, from `claude mcp list`).
+pub fn denied_tools(app: &App, servers: &[String]) -> Vec<String> {
+    let mut denied: Vec<String> = ["Agent", "Task", "Skill"].iter().map(|t| t.to_string()).collect();
+    denied.extend(crate::jira_claude::unused_servers(servers, &allowed_tools(app)));
+    denied
+}
+
 /// Opens the desk for a Jira job; a refused open fails that job (`jobs::after_result`).
 fn open(app: &App, jira_job: i64) -> Result<i64> {
     let dir = if app.cfg.jira.desk_dir.trim().is_empty() { app.cfg.data.clone() } else { expand_home(app.cfg.jira.desk_dir.trim()) };
-    let flags = format!("--allowedTools '{}'", allowed_tools(app).join(","));
+    let servers = crate::proc::which(&app.cfg.claude).map(|c| crate::jira_claude::mcp_servers(&c, &dir)).unwrap_or_default();
+    let flags = format!(
+        "--allowedTools '{}' --disallowedTools '{}' --disable-slash-commands",
+        allowed_tools(app).join(","),
+        denied_tools(app, &servers).join(",")
+    );
     let id = board::create_job(
         app,
         "agent",

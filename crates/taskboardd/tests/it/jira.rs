@@ -390,10 +390,17 @@ fn no_ticket_for_projects_without_prs_or_with_the_switch_off() {
 
 #[test]
 fn the_desk_finds_or_makes_tickets_and_stays_open() {
-    let b = board_with(|c, _| {
+    let b = board_with(|c, d| {
         c.jira.auto_ticket = true;
         c.jira.desk = true;
+        fake_claude(c, d);
     });
+    // What `claude mcp list` answers: the connector the desk uses, and a server it doesn't.
+    std::fs::write(
+        b.dir.path().join("answer.json"),
+        "claude.ai Atlassian MCP: https://mcp.atlassian.com - ✔ Connected\nAmplitude: https://mcp.amplitude.com/mcp (HTTP) - ✔ Connected\n",
+    )
+    .unwrap();
     let t = b.new_task(json!({}));
     assert_eq!(b.card(t)["jira"]["status"], "No ticket yet. The Jira desk finds or makes one…");
     b.tick();
@@ -409,6 +416,7 @@ fn the_desk_finds_or_makes_tickets_and_stays_open() {
     fg.terminals.background.clear();
     assert!(!midna::opens_in_background(&App::for_tests(fg), &opened[0]), "config can move it out");
     assert!(a.st("flags").contains("Bash(tb jira:*)"), "{}", a.st("flags"));
+    assert!(a.st("flags").contains("--disallowedTools 'Agent,Task,Skill,mcp__Amplitude' --disable-slash-commands"), "{}", a.st("flags"));
     b.tick();
     assert_eq!(b.jobs("kind = 'agent' AND purpose = 'jira_desk'").len(), 1, "opened once");
 
