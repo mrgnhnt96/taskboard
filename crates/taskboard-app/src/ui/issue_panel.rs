@@ -534,6 +534,8 @@ pub struct Picker {
     pub active: usize,
     /// A filter's own list (a page's project filter) instead of the board's goals / projects.
     pub fixed: Option<Vec<PickItem>>,
+    /// What had focus when it opened, given back when it closes.
+    restore: Option<FocusHandle>,
     on_pick: std::rc::Rc<dyn Fn(&mut MainWindow, String, &mut Context<MainWindow>)>,
 }
 
@@ -653,7 +655,7 @@ pub fn open_picker(
     window.focus(&q.focus, cx);
     let items = picker_items(goal, &value, &specials, &proj, "", m.state(), &m.data.goals);
     let active = items.iter().position(|it| it.v == value).unwrap_or(0);
-    m.issue_panel.picker = Some(Picker { key: key.to_string(), goal, value, specials, proj, q, active, fixed: None, on_pick: std::rc::Rc::new(on_pick) });
+    m.issue_panel.picker = Some(Picker { key: key.to_string(), goal, value, specials, proj, q, active, fixed: None, restore: None, on_pick: std::rc::Rc::new(on_pick) });
     m.menu = Some((key.to_string(), at));
     cx.notify();
 }
@@ -669,10 +671,10 @@ pub fn project_filter(
     on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + Clone + 'static,
 ) -> Stateful<Div> {
     let label = if value == "all" { "All projects".to_string() } else { value.to_string() };
-    let mut items = vec![PickItem { v: "all".into(), name: "All projects".into(), sub: String::new(), special: true }];
-    items.extend(projects.iter().map(|(p, n)| PickItem { v: p.clone(), name: p.clone(), sub: n.to_string(), special: false }));
+    let items = filter_items(projects);
     let value = value.to_string();
     kit::btn_small(t, SharedString::from(format!("{key}-btn")), format!("{label}  ▾")).max_w(px(260.)).overflow_hidden().on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
+        let restore = window.focused(cx);
         let q = kit::Input::new(cx, "Search projects", false);
         window.focus(&q.focus, cx);
         let active = items.iter().position(|it| it.v == value).unwrap_or(0);
@@ -686,11 +688,19 @@ pub fn project_filter(
             q,
             active,
             fixed: Some(items.clone()),
+            restore,
             on_pick: std::rc::Rc::new(on_pick.clone()),
         });
         m.menu = Some((key.to_string(), point(p.x - px(10.), p.y + px(14.))));
         cx.notify();
     }))
+}
+
+/// A project filter's items: "All projects", then each project with its count.
+fn filter_items(projects: &[(String, usize)]) -> Vec<PickItem> {
+    let mut items = vec![PickItem { v: "all".into(), name: "All projects".into(), sub: String::new(), special: true }];
+    items.extend(projects.iter().map(|(p, n)| PickItem { v: p.clone(), name: p.clone(), sub: n.to_string(), special: false }));
+    items
 }
 
 /// A page's open project filter (see [`project_filter`]).
@@ -699,15 +709,21 @@ pub fn render_project_filter(m: &mut MainWindow, t: &Theme, key: &str, window: &
     render_picker(m, t, window, cx)
 }
 
-fn close_picker(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
-    m.issue_panel.picker = None;
+/// Closes the picker and gives focus back to what had it.
+pub fn close_picker(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    if let Some(f) = m.issue_panel.picker.take().and_then(|p| p.restore) {
+        window.focus(&f, cx);
+    }
     m.menu = None;
     cx.notify();
 }
 
-fn pick(m: &mut MainWindow, v: String, cx: &mut Context<MainWindow>) {
+fn pick(m: &mut MainWindow, v: String, window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(p) = m.issue_panel.picker.take() else { return };
     m.menu = None;
+    if let Some(f) = &p.restore {
+        window.focus(f, cx);
+    }
     if v != p.value {
         (p.on_pick)(m, v, cx);
     }
@@ -748,10 +764,10 @@ pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mu
                 .child(div().flex_1().min_w_0().truncate().child(it.name.clone()))
                 .when(!it.sub.is_empty(), |d| d.child(div().flex_none().max_w(px(180.)).truncate().text_size(px(12.)).text_color(t.faint).child(it.sub.clone())))
                 .when(it.v == p.value, |d| d.child(div().flex_none().text_size(px(11.5)).text_color(t.accent_fg).child("Current")))
-                .on_click(cx.listener(move |m, _, _, cx| pick(m, v.clone(), cx))),
+                .on_click(cx.listener(move |m, _, window, cx| pick(m, v.clone(), window, cx))),
         );
     }
-    let field = p.q.render(t, "picker-q", window).on_key_down(cx.listener(|m, ev: &KeyDownEvent, _, cx| {
+    let field = p.q.render(t, "picker-q", window).on_key_down(cx.listener(|m, ev: &KeyDownEvent, window, cx| {
         let Some(p) = m.issue_panel.picker.as_ref() else { return };
         let q = p.q.text(cx);
         let items = p.items(&q, m.state(), &m.data.goals);
@@ -759,7 +775,7 @@ pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mu
         match ev.keystroke.key.as_str() {
             "escape" => {
                 cx.stop_propagation();
-                close_picker(m, cx);
+                close_picker(m, window, cx);
             }
             "down" | "up" if n > 0 => {
                 cx.stop_propagation();
@@ -774,7 +790,7 @@ pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mu
                 let a = p.active.min(n.saturating_sub(1));
                 if let Some(it) = items.get(a) {
                     let v = it.v.clone();
-                    pick(m, v, cx);
+                    pick(m, v, window, cx);
                 }
             }
             "tab" => cx.stop_propagation(),
@@ -1189,7 +1205,7 @@ pub fn render_aside(t: &Theme, issue: Option<(&Value, &AsideView)>, err: Option<
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Ctx, drop_issue, issue_from, issue_how, issue_state, kind_label, panel_view, picker_items, picker_label, promote, snap_rows, ticket};
+    use super::{Ctx, drop_issue, filter_items, issue_from, issue_how, issue_state, kind_label, panel_view, picker_items, picker_label, promote, search, snap_rows, ticket};
     use crate::app::Panel;
     use crate::backend::Backend;
     use crate::fmt::{self, arr, s};
@@ -1244,6 +1260,18 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn project_filter_searches_names_not_counts() {
+        let items = filter_items(&[("roon".into(), 3), ("mtest".into(), 0), ("roon-deck".into(), 13), ("coe-probe".into(), 2)]);
+        let names = |q: &str| search(items.clone(), q, false).into_iter().map(|it| it.name).collect::<Vec<_>>();
+        assert_eq!(names(""), ["All projects", "roon", "mtest", "roon-deck", "coe-probe"]);
+        assert_eq!(names("deck"), ["roon-deck"]);
+        assert_eq!(names("r"), ["roon", "roon-deck", "coe-probe"]);
+        assert_eq!(names("probe"), ["coe-probe"]);
+        assert!(names("3").is_empty());
+        assert!(names("all").is_empty());
+    }
+
+    #[test]
     fn picker_items_rank_and_filter_like_web() {
         parity::freeze("2026-10-07T15:00:00Z");
         let goals = vec![

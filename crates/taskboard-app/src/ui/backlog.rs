@@ -468,7 +468,8 @@ fn create(m: &mut MainWindow, d: &DraftView, cx: &mut Context<MainWindow>) {
 /// Keys while issues are checked: M move, P priority (1 2 3 set it), D defer, X drop.
 fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<MainWindow>) {
     let _ = window;
-    if m.modal.is_some() || m.panel.is_some() {
+    // The project filter's search field sits inside this page: its letters are a query.
+    if m.modal.is_some() || m.panel.is_some() || m.menu_open(MENU_PROJECT).is_some() {
         return;
     }
     let ks = &ev.keystroke;

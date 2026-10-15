@@ -973,10 +973,7 @@ impl Render for MainWindow {
                 // A click anywhere outside an open menu closes it.
                 d.child(deferred(div().id("menu-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|m, _, _, cx| {
-                        m.menu = None;
-                        cx.notify();
-                    }),
+                    cx.listener(|m, _, window, cx| ui::issue_panel::close_picker(m, window, cx)),
                 )).with_priority(2))
             })
     }
