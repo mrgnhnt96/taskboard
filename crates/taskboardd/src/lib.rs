@@ -67,6 +67,7 @@ pub mod projects;
 pub mod propen;
 pub mod qa;
 pub mod quality;
+pub mod release_tags;
 pub mod releases;
 pub mod relevance;
 pub mod reproject;

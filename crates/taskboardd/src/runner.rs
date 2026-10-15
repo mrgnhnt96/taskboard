@@ -539,6 +539,7 @@ pub fn prs(app: &App) -> Result<()> {
     crate::setup::auto_sync(app)?;
     app.db.tx(|| crate::setup::sweep(app))?;
     crate::lost_done::sweep(app)?;
+    crate::release_tags::sweep(app)?;
     worktrees::clean_up(app).map(|_| ())
 }
 

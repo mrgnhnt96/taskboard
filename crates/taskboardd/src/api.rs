@@ -705,10 +705,10 @@ fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
     let Some(p) = list.iter().find(|p| p["name"] == name) else { return err(404, format!("There's no project called {name}.")) };
     let rules = projects::PR_RULE_KEYS.iter().any(|k| body.get(*k).is_some());
     let flow = body.get("pr_flow").filter(|v| !v.is_null()).map(|_| body_str(body, "pr_flow"));
-    if flow.is_none() && !rules && body.get("max_terminals").is_none() && body.get("waits_on").is_none() && body.get("releases").is_none() {
+    if flow.is_none() && !rules && body.get("max_terminals").is_none() && body.get("waits_on").is_none() && body.get("releases").is_none() && body.get("release_tags").is_none() {
         return err(
             400,
-            format!("Say what to change: pr_flow, max_terminals, waits_on, releases, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")),
+            format!("Say what to change: pr_flow, max_terminals, waits_on, releases, release_tags, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")),
         );
     }
     if flow.as_ref().is_some_and(|f| !projects::PR_FLOWS.contains(&f.as_str())) {
@@ -721,6 +721,7 @@ fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
         projects::set_max_terminals(app, name, body)?;
         projects::set_waits_on(app, name, body)?;
         crate::releases::set_setting(app, name, body)?;
+        crate::release_tags::set_setting(app, name, body)?;
         projects::set_pr_rules(app, name, body).map(|_| ())
     })?;
     projects::describe(app, p)
