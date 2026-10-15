@@ -245,11 +245,12 @@ fn lost_task_resumes(cx: &mut gpui_kit::TestAppContext) {
     w.update(cx, |m, _, cx| {
         act(m, &Act::new("resume", "fresh", "T3", "lost:T3"), cx);
         act(m, &Act::new("resume", "reopen", "T3", "lost:T3"), cx);
+        act(m, &Act::new("resume", "finish", "T3", "lost:T3"), cx);
     })
     .unwrap();
     settle(cx);
     let resumes: Vec<Value> = rec.posts().into_iter().filter(|(p, _)| p == "tasks/T3/resume").map(|(_, b)| b).collect();
-    assert_eq!(resumes, vec![json!({"mode": "fresh"}), json!({"mode": "reopen"})]);
+    assert_eq!(resumes, vec![json!({"mode": "fresh"}), json!({"mode": "reopen"}), json!({"mode": "finish"})]);
 }
 
 #[gpui_kit::test]
