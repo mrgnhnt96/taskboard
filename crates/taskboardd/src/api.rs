@@ -480,7 +480,11 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                 None => None,
             };
             let key = one_line(&body_str(body, "key"), 120);
-            let a = app.db.tx(|| alerts::raise(app, &text, task, goal, (!key.is_empty()).then_some(key.as_str()), as_bool(body.get("urgent"), false)))?;
+            let a = app.db.tx(|| {
+                let a = alerts::raise(app, &text, task, goal, (!key.is_empty()).then_some(key.as_str()), as_bool(body.get("urgent"), false))?;
+                alerts::want_suggestions(app, a["id"].as_str().unwrap_or(""))?;
+                Ok(a)
+            })?;
             Ok(json!({"alert": a}))
         }
         ("POST", ["alerts", id, "clear"]) => {

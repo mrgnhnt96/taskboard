@@ -143,6 +143,14 @@ fn prompt(app: &App, s: &Row, working: f64, quiet: Option<f64>, tail: &str, proc
 }
 
 fn ask(app: &App, prompt: String) -> Option<Value> {
+    let v = ask_haiku(app, prompt, &verdict_schema())?;
+    matches!(v["verdict"].as_str(), Some("working" | "stuck" | "unsure")).then_some(v)
+}
+
+/// A headless `claude -p` on the check-in's model, budget and timeout, with no tools, settings or MCP,
+/// giving back its answer in `schema`'s shape. None when claude is missing, fails, times out or doesn't
+/// answer in JSON.
+pub fn ask_haiku(app: &App, prompt: String, schema: &Value) -> Option<Value> {
     let claude = proc::which(&app.cfg.claude)?;
     let c = &app.cfg.checkin;
     let args: Vec<String> = vec![
@@ -159,14 +167,13 @@ fn ask(app: &App, prompt: String) -> Option<Value> {
         "--max-budget-usd".into(),
         c.budget_usd.clone(),
         "--json-schema".into(),
-        verdict_schema().to_string(),
+        schema.to_string(),
         "--output-format".into(),
         "json".into(),
     ];
     let out = proc::run(&claude, &args, Some(&app.cfg.data), c.timeout_secs as f64).ok()?;
     let d: Value = serde_json::from_str(out.stdout.trim()).ok()?;
-    let v = d.get("structured_output").cloned().or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))?;
-    matches!(v["verdict"].as_str(), Some("working" | "stuck" | "unsure")).then_some(v)
+    d.get("structured_output").cloned().or_else(|| d.get("result").and_then(|r| r.as_str()).and_then(|r| serde_json::from_str(r).ok()))
 }
 
 fn check(app: &App, s: &Row, working: f64) {

@@ -131,6 +131,45 @@ pub fn add_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i6
     push_alert(app, text, task_id, goal_id, session_id, extra).map(|_| ())
 }
 
+/// `add_alert` for free text the board has no fixes for (an agent's question): the alert asks for
+/// suggested fixes (`want_suggestions`).
+pub fn add_free_alert(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>) -> Result<()> {
+    match push_alert(app, text, task_id, goal_id, None, None)? {
+        Some(a) => want_suggestions(app, a["id"].as_str().unwrap_or("")),
+        None => Ok(()),
+    }
+}
+
+/// Marks a free-text alert for `suggest.rs` to ask Haiku for its title and fixes, off the hot path.
+/// An alert that already has fixes, or was asked about before, is left as it is.
+pub fn want_suggestions(app: &App, id: &str) -> Result<()> {
+    if !app.cfg.alerts.suggest {
+        return Ok(());
+    }
+    let mut rows = alerts(app);
+    let Some(a) = rows.iter_mut().find(|a| a["id"] == id && a["actions"].is_null() && a["suggest"].is_null()) else { return Ok(()) };
+    a["suggest"] = json!("pending");
+    keep(app, &rows)
+}
+
+/// Puts what `suggest.rs` made of alert `id` on it (`fields`: title, detail, actions, project), or marks
+/// it `failed` when `fields` is None; the card then shows its text with Dismiss. An alert that has gone
+/// meanwhile is left gone.
+pub fn set_suggestions(app: &App, id: &str, fields: Option<Value>) -> Result<()> {
+    let mut rows = alerts(app);
+    let Some(a) = rows.iter_mut().find(|a| a["id"] == id && a["suggest"] == "pending") else { return Ok(()) };
+    match fields {
+        Some(f) => {
+            for (k, v) in f.as_object().into_iter().flatten() {
+                a[k] = v.clone();
+            }
+            a["suggest"] = json!("done");
+        }
+        None => a["suggest"] = json!("failed"),
+    }
+    keep(app, &rows)
+}
+
 /// The urgent alert up for a task, if any.
 fn urgent_for(app: &App, task_id: Option<i64>) -> Option<Value> {
     task_id.and_then(|t| alerts(app).into_iter().find(|a| a["urgent"] == true && a["task_id"].as_i64() == Some(t)))
@@ -242,7 +281,9 @@ pub fn act(app: &App, id: &str, n: usize) -> Result<Value> {
         return err(409, "Midna isn't running, so the board can't open a terminal.");
     }
     let project = a["project"].as_str().unwrap_or("");
-    let Some(cwd) = crate::projects::project_path(app, Some(project))? else {
+    // A suggested fix on an alert with no project opens in the owner's home folder.
+    let home = (project.is_empty() && a["suggest"] == "done").then(|| dirs::home_dir().map(|h| h.to_string_lossy().to_string())).flatten();
+    let Some(cwd) = home.or(crate::projects::project_path(app, Some(project))?) else {
         return err(409, format!("The board doesn't know the folder for the project “{project}”."));
     };
     let label = action["label"].as_str().unwrap_or("Fix");

@@ -55,6 +55,10 @@ snooze_mins = [15, 30, 60]
 # Alerts that aren't urgent gather for digest_mins, then go out as one notification listing them all, which
 # opens Home's Needs you list and repeats every alert_every_mins. 0 notifies each alert on its own.
 digest_mins = 5
+# Alerts raised as free text (`tb alert raise`, an agent's question) get a short title and up to three
+# suggested fixes from a headless `claude -p` ([checkin]'s model, budget and timeout). Each fix is a
+# request typed into a Claude terminal for the owner to send; nothing it suggests runs by itself.
+suggest = true
 
 # Screen agents' questions with a headless `claude -p` first: when the rules already answer a
 # question, the agent gets the answer and the owner isn't asked.

@@ -2,6 +2,7 @@
 //! Each file is a module: `cargo test -p taskboardd --test it -- oct8::` runs one file, and
 //! several filters (`-- oct8:: waves::`) run several.
 
+mod alert_suggestions;
 mod alerts;
 mod areas;
 mod away_waits;
