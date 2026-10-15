@@ -110,7 +110,7 @@ impl Tally {
             review,
             queued: i(g, "queued"),
             planned: i(g, "planned"),
-            done: (i(g, "done") - review).max(0),
+            done: i(g, "done"),
             failed: 0,
         }
     }
@@ -136,7 +136,9 @@ pub struct GoalRow {
     pub name: String,
     pub project: String,
     pub parts: Vec<(St, i64)>,
+    /// Tasks finished; a task whose PR is still open counts in `review` until it merges.
     pub done: i64,
+    pub review: i64,
     pub total: i64,
     /// "Wave 2 of 3"; empty with no waves or until the goal's tasks are in.
     pub wave: String,
@@ -253,6 +255,7 @@ pub fn goal_row(g: &Value, d: Option<&Value>) -> GoalRow {
         project: s(g, "project").into(),
         parts: tally.parts(),
         done: i(g, "done"),
+        review: tally.review,
         total: i(g, "total"),
         wave,
         now,
@@ -492,7 +495,7 @@ fn goal_head(t: &Theme, row: &GoalRow, open: bool, cx: &mut Context<MainWindow>)
                 .gap(px(8.))
                 .text_size(px(12.))
                 .text_color(t.muted)
-                .child(div().flex().gap(px(4.)).child(div().font_weight(FontWeight::BOLD).text_color(t.text).child(format!("{} of {}", row.done, row.total))).child("done"))
+                .child(div().flex().gap(px(4.)).child(div().font_weight(FontWeight::BOLD).text_color(t.text).child(format!("{} of {}", row.done, row.total))).child(if row.review > 0 { format!("done · {} in review", row.review) } else { "done".into() }))
                 .child(div().truncate().child(row.wave.clone())),
         );
     let now = div()
@@ -806,6 +809,16 @@ mod tests {
             ]
         );
         assert_eq!(projects(&gs), [("api".to_string(), 1), ("web".to_string(), 3)]);
+    }
+
+    #[test]
+    fn a_task_in_review_isnt_counted_done_and_keeps_its_goal_in_progress() {
+        let g = goal(1, "web", 14, 15, json!({"prs_open": [9], "review": 1}));
+        assert_eq!(goal_group(&g), GoalGroup::Active);
+        let row = goal_row(&g, None);
+        assert_eq!((row.done, row.review, row.total), (14, 1, 15));
+        assert_eq!(row.parts.iter().filter(|(_, n)| *n > 0).copied().collect::<Vec<_>>(), [(St::Done, 14), (St::Review, 1)]);
+        assert_eq!(row.now, "1 in review");
     }
 
     #[test]

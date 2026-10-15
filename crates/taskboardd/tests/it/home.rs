@@ -91,6 +91,28 @@ fn a_goal_shows_its_wave_and_what_earlier_waves_left_open() {
 }
 
 #[test]
+fn a_task_whose_pr_is_open_isnt_done_and_keeps_its_goal_in_progress() {
+    let b = new_board();
+    let (g, t) = goal(&b);
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
+    for id in &t {
+        b.set(*id, vec![("status", json!("done"))]);
+    }
+    b.set(t[4], vec![("pr_num", json!(12)), ("pr_state", json!("OPEN"))]);
+    let c = b.get(&format!("goals/G{g}"));
+    assert_eq!((&c["done"], &c["review"], &c["total"]), (&json!(4), &json!(1), &json!(5)));
+    assert_eq!(c["state"], "Waits for PR #12 to merge");
+    assert!(c["finished_at"].is_null());
+    assert_eq!(refs(&b.home()["goals"].as_array().unwrap().iter().map(|e| e["goal"].clone()).collect()), vec![format!("G{g}")]);
+    assert_eq!(b.get("summary")["goals"][0]["done"], 4, "it's still listed with the goals in progress");
+
+    b.set(t[4], vec![("pr_state", json!("MERGED"))]);
+    let c = b.get(&format!("goals/G{g}"));
+    assert_eq!((&c["done"], &c["review"], &c["state"]), (&json!(5), &json!(0), &json!("Done")));
+    assert_eq!(b.get("summary")["goals"], json!([]));
+}
+
+#[test]
 fn a_finished_goal_leaves_home() {
     let b = new_board();
     let (g, t) = goal(&b);
