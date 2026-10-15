@@ -159,6 +159,62 @@ fn a_pr_wake_resumes_only_a_warm_small_conversation() {
 }
 
 #[test]
+fn merge_and_ask_visits_start_fresh_on_the_pr_visit_model() {
+    let b = board_with(|c| {
+        c.pr.watch = true;
+        c.pr.wake = true;
+        c.models.enabled = true;
+        c.models.fresh_pr_visits = true;
+    });
+    let id = b.new_task();
+    b.report("tb.done", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/9"})).unwrap();
+    b.app.db.x("UPDATE sessions SET status = 'gone'", p![]).unwrap();
+    b.transcript(20_000, 5);
+    let rec = json!({"state": "OPEN", "head": "h1", "checks": [], "failed": [], "running": 0, "comments": 0, "approvals": 1, "review_decision": "APPROVED"});
+    let wake = |b: &Board, phase: &str| {
+        b.app.db.x("DELETE FROM jobs WHERE purpose = 'pr'", p![]).unwrap();
+        let t = b.task(id);
+        b.app.db.tx(|| prflow::wake(&b.app, &t, phase, &rec, None)).unwrap();
+        board::job_args(&b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'pr' ORDER BY id DESC", p![]).unwrap().unwrap())
+    };
+    let resume_cid = |b: &Board| b.task(id).s("pr_flow").map(|f| serde_json::from_str::<Value>(f).unwrap()["resume_cid"].clone());
+
+    for phase in ["merge", "ask"] {
+        let a = wake(&b, phase);
+        assert_eq!(a.st("flags"), "--model sonnet", "{phase}: fresh, on [models] pr_visit");
+        assert!(a.st("prompt").contains("This is a fresh conversation for this step only."), "{}", a.st("prompt"));
+        assert!(!a.st("prompt").contains("here is where it stood"), "a short prompt, not the handoff");
+        assert_eq!(resume_cid(&b), Some(json!("c-s1")), "the task's conversation is kept aside");
+    }
+    let log = b.app.db.q1("SELECT text FROM events WHERE task_id = ? AND kind = 'handoff' AND text LIKE 'Starting a fresh%' ORDER BY id DESC", p![id]).unwrap().unwrap();
+    assert!(log.st("text").contains("Starting a fresh conversation on sonnet for PR #9"), "{}", log.st("text"));
+
+    assert_eq!(wake(&b, "fix").st("flags"), "--resume c-s1 --model opus", "a code fix resumes on the task's model");
+    assert_eq!(resume_cid(&b), Some(Value::Null), "and takes the conversation back");
+
+    b.app.db.x("UPDATE tasks SET model = 'small' WHERE id = ?", p![id]).unwrap();
+    assert_eq!(wake(&b, "comments").st("flags"), "--resume c-s1 --model sonnet");
+}
+
+#[test]
+fn with_fresh_pr_visits_off_a_merge_resumes() {
+    let b = board_with(|c| {
+        c.pr.watch = true;
+        c.pr.wake = true;
+        c.models.pr_visit = String::new();
+    });
+    let id = b.new_task();
+    b.report("tb.done", json!({"summary": "Done", "pr": "https://github.com/acme/webapp/pull/9"})).unwrap();
+    b.app.db.x("UPDATE sessions SET status = 'gone'", p![]).unwrap();
+    b.transcript(20_000, 5);
+    let rec = json!({"state": "OPEN", "head": "h1", "checks": [], "failed": [], "running": 0, "comments": 0, "approvals": 1, "review_decision": "APPROVED"});
+    let t = b.task(id);
+    b.app.db.tx(|| prflow::wake(&b.app, &t, "merge", &rec, None)).unwrap();
+    let a = board::job_args(&b.app.db.q1("SELECT * FROM jobs WHERE purpose = 'pr'", p![]).unwrap().unwrap());
+    assert_eq!(a.st("flags"), "--resume c-s1");
+}
+
+#[test]
 fn cold_conversations_and_background_purposes() {
     let b = board_with(|c| c.terminals.background = vec!["plan".into()]);
     b.transcript(20_000, 90);
