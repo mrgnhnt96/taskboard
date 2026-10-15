@@ -12,6 +12,7 @@ pub mod kit;
 pub mod md;
 pub mod modals;
 pub mod prwatch;
+pub mod releases;
 pub mod review;
 pub mod search;
 pub mod select;

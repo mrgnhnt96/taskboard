@@ -627,6 +627,8 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
             planned.push(board::task_card(app, &t)?);
         }
     }
+    let projects = projects::list_projects(app)?;
+    let releases: Vec<&str> = projects.iter().filter_map(|p| p["name"].as_str()).filter(|n| crate::releases::on(app, n)).collect();
     let mut out = json!({
         "now": now_iso(), "midna": midna::status(app), "jira": {"enabled": app.cfg.jira_on(), "site": app.cfg.jira.site},
         "owner": app.cfg.owner,
@@ -639,7 +641,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         "rate_limits": crate::prhost::limit::status(),
         "pr_builds": crate::prbuilds::status(app),
         "master": crate::breaks::banner(app)?,
-        "projects": projects::list_projects(app)?, "sessions": sessions, "session_projects": sp, "goals": goals,
+        "projects": projects, "releases": releases, "sessions": sessions, "session_projects": sp, "goals": goals,
         "columns": Value::Object(out_cols), "counts": Value::Object(counts), "planned": planned,
     });
     if let Some(sid) = query.get("session") {
