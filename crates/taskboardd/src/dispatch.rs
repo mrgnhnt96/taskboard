@@ -49,13 +49,19 @@ fn root_for(app: &App, cwd: &str) -> String {
     project_roots(app).into_iter().filter(|r| under(&cwd, r)).max_by_key(|r| r.len()).unwrap_or(cwd)
 }
 
-fn busy_terminals(app: &App, root: &str) -> Result<i64> {
+/// Busy terminals under `root`, or across every project when `root` is None.
+fn busy_terminals(app: &App, root: Option<&str>) -> Result<i64> {
     let rows = app.db.q("SELECT project_path, status, background, background_at, live_background FROM sessions WHERE status IN ('working','needs','idle')", p![])?;
-    Ok(rows.iter().filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r)).filter(|r| under(&real(&r.st("project_path")), root)).count() as i64)
+    Ok(rows
+        .iter()
+        .filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r))
+        .filter(|r| root.is_none_or(|root| under(&real(&r.st("project_path")), root)))
+        .count() as i64)
 }
 
 /// Why a queued agent job (pickup "queue") can't open its terminal yet: its project already has
-/// as many busy terminals as it may (`[terminals] project_max`, or the project's own `max_terminals`).
+/// as many busy terminals as it may (`[terminals] project_max`, or the project's own `max_terminals`),
+/// or the whole board does (`[terminals] global_max`).
 pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
     if !new_terminal(app, j) {
         return Ok(None);
@@ -70,12 +76,17 @@ pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
         None => crate::projects::project_for_path(app, Some(&root))?,
     };
     let cap = crate::projects::max_terminals(app, name.as_deref());
-    let busy = busy_terminals(app, &root)?;
-    if busy < cap {
-        return Ok(None);
+    let busy = busy_terminals(app, Some(&root))?;
+    if busy >= cap {
+        let name = name.unwrap_or_else(|| "its project".into());
+        return Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy in {name}")));
     }
-    let name = name.unwrap_or_else(|| "its project".into());
-    Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy in {name}")))
+    let cap = app.cfg.terminals.global_max.max(1);
+    let busy = busy_terminals(app, None)?;
+    if busy >= cap {
+        return Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy across the board")));
+    }
+    Ok(None)
 }
 
 pub fn launch_ready(app: &App, j: &Row) -> Result<bool> {
