@@ -263,6 +263,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // A backlog issue that misses its goal's own done-when (`tb found --misses-goal`): it alerts the
     // owner, and the goal isn't finished while it's open (`board::open_misses`).
     ("issues", "misses_goal", "INT DEFAULT 0"),
+    // The model the task's terminal starts with (`tb task new --model`, `[models]`): `small`, `large`
+    // or a model name; null for `[models] default`.
+    ("tasks", "model", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

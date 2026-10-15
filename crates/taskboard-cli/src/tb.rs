@@ -181,8 +181,9 @@ enum Cmd {
     Propose {
         goal: String,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
-        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
+        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
+        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M]")]
         tasks: Vec<String>,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog")]
@@ -1032,8 +1033,9 @@ enum GoalCmd {
         #[arg(long = "after", value_name = "G<n>")]
         after: Vec<String>,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
-        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told)
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES]")]
+        /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
+        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M]")]
         tasks: Vec<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
@@ -1216,6 +1218,9 @@ enum TaskCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
         area: Option<String>,
+        /// The model its terminal runs: small or large (`[models]` in config.toml) or a model name; `[models] default` when left out
+        #[arg(long, value_name = "small|large|NAME")]
+        model: Option<String>,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog", conflicts_with = "issue")]
         not_backlog: bool,
@@ -1286,6 +1291,9 @@ enum TaskCmd {
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case, or none
         #[arg(long, value_name = "NAME|none")]
         area: Option<String>,
+        /// The model its terminal runs: small or large (`[models]` in config.toml) or a model name; default for `[models] default`
+        #[arg(long, value_name = "small|large|NAME|default")]
+        model: Option<String>,
         /// Move it to another project, any case; a task that already ran lets go of its terminal and waits for Start there
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
@@ -2896,6 +2904,9 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
     if let Some(w) = v["who"].as_str().filter(|w| !w.is_empty()) {
         lines.push(format!("Terminal: {w}"));
     }
+    if let Some(m) = model_line(v) {
+        lines.push(m);
+    }
     for (label, key) in [("Detail", "detail"), ("Summary", "summary")] {
         let block = indented(label, v[key].as_str().unwrap_or(""));
         if !block.is_empty() {
@@ -2909,6 +2920,18 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
         lines.extend(log);
     }
     lines
+}
+
+/// "Model: small (sonnet)": the task's model and what its terminal runs; nothing when neither is known.
+fn model_line(v: &Value) -> Option<String> {
+    let set = v["model"].as_str().filter(|m| !m.is_empty());
+    let runs = v["model_runs"].as_str().filter(|m| !m.is_empty());
+    match (set, runs) {
+        (Some(s), Some(r)) if s != r => Some(format!("Model: {s} ({r})")),
+        (Some(s), _) => Some(format!("Model: {s}")),
+        (None, Some(r)) => Some(format!("Model: default ({r})")),
+        (None, None) => None,
+    }
 }
 
 /// `tb backlog show`: GET /backlog/<id> with its history (the board sends it oldest first).
@@ -4822,7 +4845,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -4866,6 +4889,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if let Some(a) = alone {
                     body["alone"] = json!(a);
                 }
+                if let Some(m) = model {
+                    body["model"] = json!(m);
+                }
                 if let Some(j) = jira {
                     body["jira"] = jira_arg(&j);
                 }
@@ -4908,7 +4934,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area, model, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -4940,6 +4966,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = alone {
                     b["alone"] = json!(x);
+                }
+                if let Some(x) = model {
+                    b["model"] = json!(x);
                 }
                 if let Some(x) = jira {
                     b["jira_key"] = json!(x);
@@ -6191,6 +6220,21 @@ mod tests {
             ["1:30 PM · T8 · Term", "  > make it", "  > and start it", "Oct 11, 9:05 AM · G2 · s2", "  (no prompt typed in this conversation)"]
         );
         assert_eq!(misses_lines(&json!([]), &now), ["No start has been refused."]);
+    }
+
+    #[test]
+    fn model_flags_parse_and_show() {
+        let model = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
+            Cmd::Task { action: TaskCmd::New { model, .. } | TaskCmd::Set { model, .. } } => model,
+            _ => panic!("{args:?}"),
+        };
+        assert_eq!(model(&["tb", "task", "new", "Pen", "--model", "small"]).as_deref(), Some("small"));
+        assert_eq!(model(&["tb", "task", "set", "T3", "--model", "default"]).as_deref(), Some("default"));
+        assert_eq!(model(&["tb", "task", "new", "Pen"]), None);
+        assert_eq!(model_line(&json!({"model": "small", "model_runs": "sonnet"})).as_deref(), Some("Model: small (sonnet)"));
+        assert_eq!(model_line(&json!({"model": "haiku", "model_runs": "haiku"})).as_deref(), Some("Model: haiku"));
+        assert_eq!(model_line(&json!({"model": null, "model_runs": "opus"})).as_deref(), Some("Model: default (opus)"));
+        assert_eq!(model_line(&json!({"model": null, "model_runs": null})), None);
     }
 
     #[test]

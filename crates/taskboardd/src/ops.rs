@@ -137,6 +137,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let lock_names = crate::locks::clean(body.get("locks"))?;
     let lock_warning = crate::locks::unseen_warning(app, lock_names.as_deref(), None)?;
     let alone = crate::locks::clean_alone(body.get("alone"))?;
+    let model = crate::runner::clean_model(body.get("model"))?;
     let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
     let tid = app.db.insert(
         "tasks",
@@ -149,7 +150,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "from_issue_id" => body.get("from_issue_id"), "context" => "{}",
                 "meta" => jdumps(&body.get("meta").cloned().filter(|m| m.is_array()).unwrap_or(json!([]))),
                 "ctx_version" => 1, "created_at" => now, "updated_at" => now,
-                "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone,
+                "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone, "model" => model,
                 "latest" => if latest.is_empty() { None } else { Some(latest) },
                 "ticket_summary" => if ticket_summary.is_empty() { None } else { Some(ticket_summary) },
                 "ticket_text" => if ticket_text.is_empty() { None } else { Some(ticket_text) }],
