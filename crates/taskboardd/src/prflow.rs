@@ -163,6 +163,28 @@ pub fn late_reads(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// PRs held at `checks` only by a wait that has run out since (the `no_checks_after` grace, or the
+/// expected checks' wait), stepped again with their last record. The wait ends with time, not with a
+/// read: a PR a healthy feed covers isn't polled, and one with no checks sends no event, so nothing
+/// else moves it on to review. The read time (`checked_at`) stays the last read's.
+pub fn waits_over(app: &App) -> Result<()> {
+    for t in app.db.q("SELECT * FROM tasks WHERE pr_phase = 'checks' AND pr_num IS NOT NULL", p![])? {
+        let f = flow(&t);
+        let Some(rec) = f.get("rec").filter(|r| r.is_object()).cloned() else { continue };
+        if phase_of(app, &t, &rec) == "checks" {
+            continue;
+        }
+        gate(app, &t, &rec)?;
+        let t = board::get_task(app, t.id())?;
+        let read_at = f.get("checked_at").cloned().unwrap_or(Value::Null);
+        app.db.tx(|| {
+            step(app, &t, &rec)?;
+            merge_flow(app, t.id(), fields!["checked_at" => read_at.clone()]).map(|_| ())
+        })?;
+    }
+    Ok(())
+}
+
 /// A pr event for a PR no task has: the owner's open or merged PR whose source branch exactly one
 /// not-done task works on, a task that ships a PR and has none yet, opened after that task was made
 /// (when the event says when, `created_at`). Links it; None when no task fits, or more than one does.
