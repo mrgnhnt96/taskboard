@@ -305,3 +305,53 @@ fn an_owner_question_and_the_handoff_are_filled_from_what_tb_step_ask_resolved()
     let h = steps::handoff_block(&b.app, &b.row(id), "tb", true);
     assert!(h.contains(&format!("check.sh '{main}' main")), "{h}");
 }
+
+fn set_context(b: &Board, id: i64, set: Value) {
+    let mut ctx = taskboardd::board::task_context(&b.row(id));
+    for (k, v) in set.as_object().unwrap() {
+        ctx.insert(k.clone(), v.clone());
+    }
+    taskboardd::board::save_context(&b.app, id, &ctx, false).unwrap();
+}
+
+fn other_repo(b: &Board) -> std::path::PathBuf {
+    let other = b.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "side"]);
+    other
+}
+
+#[test]
+fn placeholders_name_the_tasks_own_worktree_not_the_terminals() {
+    let b = new_board();
+    let id = b.new_task();
+    let repo = b.repo();
+    let wt = b.dir.path().join("t-wt");
+    git(&repo, &["worktree", "add", "-q", "-b", "fix/login", &wt.to_string_lossy()]);
+    let wt = wt.to_string_lossy().to_string();
+    // The terminal last reported from the main checkout, but the board made the task its own worktree.
+    set_context(&b, id, json!({"worktree_made": wt, "where": {"worktree": repo.to_string_lossy(), "branch": "main"}}));
+    let v = steps::vars_at(&b.app, &b.row(id), None);
+    assert_eq!((v["worktree"].as_str(), v["branch"].as_str()), (wt.as_str(), "fix/login"));
+    // A checkout of another repository is never the task's, whatever the terminal reported.
+    let other = other_repo(&b);
+    set_context(&b, id, json!({"worktree_made": "", "where": {"worktree": other.to_string_lossy(), "branch": "side"}}));
+    let v = steps::vars_at(&b.app, &b.row(id), None);
+    assert_eq!(v["worktree"], repo.to_string_lossy());
+    assert_ne!(v["branch"], "side");
+}
+
+#[test]
+fn an_aim_at_another_repository_is_refused_with_the_reason() {
+    let b = new_board();
+    let id = b.new_task();
+    let other = other_repo(&b);
+    assert!(steps::outside(&b.row(id), &b.repo().to_string_lossy()).is_none());
+    assert!(steps::outside(&b.row(id), &other.to_string_lossy()).is_some());
+    b.report("tb.step_aim", json!({"worktree": other.to_string_lossy()})).unwrap();
+    let why = b.steps(&"c".repeat(40))["aim_outside"].as_str().unwrap_or_default().to_string();
+    assert!(why.contains("another repository") && why.contains("tb step aim --clear"), "{why}");
+    // An aim inside the project keeps working as before.
+    b.report("tb.step_aim", json!({"worktree": b.repo().to_string_lossy()})).unwrap();
+    assert!(b.steps(&"c".repeat(40))["aim_outside"].is_null());
+}

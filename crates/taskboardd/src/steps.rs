@@ -466,7 +466,7 @@ pub fn vars(t: &Row) -> BTreeMap<String, String> {
     v.insert("task".into(), rf("task", t.id()));
     v.insert("title".into(), t.st("title"));
     v.insert("project".into(), t.st("project"));
-    v.insert("branch".into(), aim_branch(t).or_else(|| waitsfor::branch_of(t)).or_else(|| asked_at(t, "branch")).unwrap_or_default());
+    v.insert("branch".into(), aim_branch(t).or_else(|| own_checkout(t).1).or_else(|| asked_at(t, "branch")).unwrap_or_default());
     v.insert("base".into(), base_branch(&repo));
     v.insert("repo".into(), repo);
     v.insert("pr_url".into(), t.st("pr_url"));
@@ -498,14 +498,54 @@ fn asked_at(t: &Row, k: &str) -> Option<String> {
     board::task_context(t).get("step_asked").and_then(|a| a.get(k)).and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string())
 }
 
-/// The checkout a task's rounds look at: the aim's worktree, else where the task works, else its repo.
+/// The checkout a task's rounds look at: the aim's worktree, else the task's own checkout, else its repo.
 fn worktree_of(t: &Row) -> String {
     let some = |x: Option<&str>| x.map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string());
+    some(saved_aim(t)["worktree"].as_str()).or_else(|| own_checkout(t).0).or_else(|| asked_at(t, "worktree")).unwrap_or_else(|| t.st("repo_path"))
+}
+
+/// The task's own checkout and its branch: the worktree the board made for it, else where it last
+/// worked. A folder outside the task's repository (the terminal wandered off) is never its checkout.
+fn own_checkout(t: &Row) -> (Option<String>, Option<String>) {
     let ctx = board::task_context(t);
-    some(saved_aim(t)["worktree"].as_str())
-        .or_else(|| some(ctx.get("where").and_then(|w| w.get("worktree")).and_then(|w| w.as_str())))
-        .or_else(|| asked_at(t, "worktree"))
-        .unwrap_or_else(|| t.st("repo_path"))
+    let w = ctx.get("where").cloned().unwrap_or(Value::Null);
+    let some = |x: Option<&str>| x.map(str::trim).filter(|x| !x.is_empty()).map(|x| x.to_string());
+    let theirs = |d: &String| std::path::Path::new(d).is_dir() && outside(t, d).is_none();
+    let was = some(w["worktree"].as_str());
+    if let Some(made) = some(ctx.get("worktree_made").and_then(|m| m.as_str())).filter(theirs) {
+        // Detached, it's on the branch the task last reported from it.
+        let branch = git_in(&made, &["symbolic-ref", "--short", "-q", "HEAD"]).or_else(|| (was.as_deref() == Some(made.as_str())).then(|| waitsfor::branch_of(t)).flatten());
+        return (Some(made), branch);
+    }
+    match was {
+        Some(d) if outside(t, &d).is_some() => (None, None),
+        was => (was, waitsfor::branch_of(t)),
+    }
+}
+
+/// A folder's repository: its shared git folder, one for all of the repository's worktrees.
+fn repo_id(dir: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::PathBuf::from(git_in(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?);
+    Some(p.canonicalize().unwrap_or(p))
+}
+
+/// Why `dir` isn't the task's to judge, when it's a checkout of another repository than the task's
+/// project. None when it is one of the task's, or either side can't be told (no folder, no repo).
+pub fn outside(t: &Row, dir: &str) -> Option<String> {
+    let repo = t.st("repo_path");
+    let (theirs, mine) = (repo_id(dir.trim())?, repo_id(&repo)?);
+    if theirs == mine {
+        return None;
+    }
+    let top = git_in(dir.trim(), &["rev-parse", "--show-toplevel"]).unwrap_or_else(|| dir.trim().to_string());
+    Some(format!("{top} is another repository than {}'s ({repo}), so the board won't judge {}'s steps there", t.st("project"), rf("task", t.id())))
+}
+
+/// Why the task's rounds can't run where its saved aim (`tb step aim`) points: its worktree is in
+/// another repository than the task's. The gates refuse with this rather than judge another checkout.
+pub fn aim_outside(t: &Row) -> Option<String> {
+    let w = saved_aim(t)["worktree"].as_str().map(str::trim).filter(|w| !w.is_empty())?.to_string();
+    outside(t, &w).map(|why| format!("Its rounds are aimed at {w}: {why}. Aim at a checkout of {} with tb step aim --worktree <dir>, or tb step aim --clear.", t.st("repo_path")))
 }
 
 /// One recorded round of a step (`tb step done` / `tb step run`), oldest first.
@@ -740,7 +780,7 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
         .collect();
     let ignored: Vec<Value> = ignored_for(app, t).iter().map(|b| json!({"name": b.step, "why": b.why})).collect();
     Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "ignored": ignored, "vars": vars_at(app, t, head),
-              "head": known, "aim": aim_now(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t),
+              "head": known, "aim": aim_now(t), "aim_outside": aim_outside(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t),
               "passed_rounds": passed_rounds(app, t, &rounds, known.as_deref())?}))
 }
 
