@@ -22,9 +22,10 @@ pub fn name(app: &App, v: &Value) -> Result<String> {
 }
 
 /// Refuses a task whose work can't follow it: a finished one, or one with a PR or a stacked parent in the old repo.
+/// A failed one is still open to a retry, so it moves.
 pub fn check_task(t: &Row) -> Result<()> {
     let r = rf("task", t.id());
-    if t.s("status") == Some("done") {
+    if t.s("status") == Some("done") && !t.b("failed") {
         return err(409, format!("{r} is done; only open work moves to another project."));
     }
     if t.i("pr_num").is_some() {
@@ -38,7 +39,7 @@ pub fn check_task(t: &Row) -> Result<()> {
 
 /// Whether task `t` has run: moving it then lets go of its terminal and conversation.
 fn has_run(t: &Row) -> bool {
-    t.s("session_id").is_some() || t.i("start_job").is_some() || matches!(t.s("status"), Some("working") | Some("needs") | Some("idle"))
+    t.s("session_id").is_some() || t.i("start_job").is_some() || matches!(t.s("status"), Some("working") | Some("needs") | Some("idle") | Some("done"))
 }
 
 /// The fields that put task `t` (in goal `goal`) in `project`: its repo and area there, and back on the board
@@ -53,7 +54,8 @@ pub fn task_fields(app: &App, t: &Row, project: &str, goal: Option<i64>) -> Resu
     if has_run(t) {
         f.extend(fields!["session_id" => null, "claude_session_id" => null, "start_job" => null, "status" => "queued",
                          "pickup" => "manual", "pickup_session" => null, "needs_reason" => null, "question" => null, "lost" => 0,
-                         "latest" => format!("Moved to {project}. Press Start to run it there.")]);
+                         "failed" => 0, "finished_at" => null, "summary" => null, "start_tries" => 0, "retry_at" => null,
+                         "no_pr" => null, "latest" => format!("Moved to {project}. Press Start to run it there.")]);
     }
     Ok(f)
 }

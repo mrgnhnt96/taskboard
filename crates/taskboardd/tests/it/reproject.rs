@@ -1,6 +1,6 @@
 //! `tb task set --project` and `tb backlog set --project`: work filed under the wrong project moves to the right
 //! one by name in any case, keeping its goal; a task that already ran lets go of its terminal and waits for Start
-//! in the new repo, and finished work or a PR stays put.
+//! in the new repo (a failed one too, for a retry), and finished work or a PR stays put.
 
 use std::sync::Arc;
 
@@ -158,6 +158,22 @@ fn an_unknown_project_or_a_done_task_is_refused() {
     let (code, msg) = b.post_err(&format!("tasks/{t}"), json!({"project": "taskboard"}));
     assert_eq!(code, 409, "{msg}");
     assert_eq!(b.row(&t).st("project"), "lens");
+}
+
+#[test]
+fn a_failed_task_moves_and_waits_for_start_to_try_again() {
+    let b = new_board();
+    let t = b.task(json!({"title": "Filed in the wrong repo", "project": "lens", "status": "planned"}));
+    b.app
+        .db
+        .update("tasks", &json!(b.row(&t).id()), vec![("status", json!("done")), ("failed", json!(1)), ("summary", json!("Wrong project"))])
+        .unwrap();
+    b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
+    let row = b.row(&t);
+    assert_eq!(row.st("project"), "taskboard");
+    assert_eq!((row.st("status").as_str(), row.st("pickup").as_str()), ("queued", "manual"), "waits for Start");
+    assert!(!row.b("failed"), "its failed mark is cleared for the retry");
+    assert_eq!(row.s("summary"), None);
 }
 
 #[test]
