@@ -5,7 +5,7 @@ use crate::app::MainWindow;
 use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::goals::nav_kind;
-use crate::ui::kit::shadow_seg;
+use crate::ui::issue_panel as ip;
 use crate::ui::modals::locale_cmp;
 use crate::ui::status::{self, St};
 use crate::ui::{goal, kit};
@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 const PAGE_X: f32 = 28.;
+const PROJECT_FILTER: &str = "goals-project";
 /// The left edge of wave headers and task rows inside an open goal (under its name).
 const INSET: f32 = 60.;
 
@@ -389,34 +390,6 @@ fn fr(d: Div, grow: f32) -> Div {
     d
 }
 
-fn project_tabs(t: &Theme, on: &str, list: &[(String, usize)], cx: &mut Context<MainWindow>) -> Div {
-    let mut bar = div().flex().flex_none().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg);
-    let all = std::iter::once(("all".to_string(), "All projects".to_string())).chain(list.iter().map(|(p, n)| (p.clone(), format!("{p} · {n}"))));
-    for (k, label) in all {
-        let sel = k == on;
-        let hover = t.text;
-        bar = bar.child(
-            div()
-                .id(SharedString::from(format!("goals-project-{k}")))
-                .flex()
-                .items_center()
-                .h(px(28.))
-                .px(px(12.))
-                .rounded(px(7.))
-                .text_size(px(13.))
-                .cursor_pointer()
-                .when(sel, |d| d.bg(t.card).text_color(t.text).font_weight(FontWeight::SEMIBOLD).shadow(shadow_seg(t)))
-                .when(!sel, |d| d.text_color(t.muted).hover(move |s| s.text_color(hover)))
-                .child(label)
-                .on_click(cx.listener(move |m, _, _, cx| {
-                    m.goals.project = k.clone();
-                    m.refresh(cx);
-                })),
-        );
-    }
-    bar
-}
-
 fn group_label(t: &Theme, title: &str, n: usize) -> Div {
     div()
         .flex()
@@ -686,7 +659,7 @@ fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, cx: &mut Context<MainWi
     strip
 }
 
-pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
     let now = fmt::now();
     let all: Vec<Value> = m.data.goals.iter().filter(|g| !fmt::b(g, "archived")).cloned().collect();
@@ -716,11 +689,17 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .items_center()
         .gap(px(16.))
         .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Goals"))
-        .when(tabs.len() > 1, |d| d.child(project_tabs(&t, &project, &tabs, cx)))
+        .when(tabs.len() > 1, |d| {
+            d.child(ip::project_filter(&t, PROJECT_FILTER, &project, &tabs, cx, |m, p, cx| {
+                m.goals.project = p;
+                m.refresh(cx);
+            }))
+        })
         .child(div().flex_1())
         .child(right);
     let mut page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head);
-    let shell = div().id("goals-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis();
+    let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
+    let shell = div().id("goals-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter);
 
     if !m.goals_loaded() && all.is_empty() {
         let msg = if m.down.is_some() { "Can’t load the board." } else { "Loading…" };

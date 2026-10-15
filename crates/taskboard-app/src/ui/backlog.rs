@@ -604,11 +604,12 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         );
     let projects: Vec<Value> = arr(&data, "projects").to_vec();
     let project_btn = (projects.len() > 1 || m.backlog.project != "all").then(|| {
-        let label = if m.backlog.project == "all" { "All projects".to_string() } else { m.backlog.project.clone() };
-        kit::btn_small(&t, "plan-project-btn", format!("{label}  ▾")).on_click(cx.listener(|m, e: &ClickEvent, _, cx| {
-            let p = e.position();
-            m.toggle_menu(MENU_PROJECT, point(p.x - px(10.), p.y + px(14.)), cx);
-        }))
+        let counts: Vec<(String, usize)> = projects.iter().map(|p| (s(p, "name").to_string(), fmt::i(p, "untriaged") as usize)).collect();
+        ip::project_filter(&t, MENU_PROJECT, &m.backlog.project.clone(), &counts, cx, |m, v, cx| {
+            m.backlog.project = v;
+            m.backlog.data = None;
+            resync(m, cx);
+        })
     });
     let lens_on = Lens::ALL.iter().position(|l| *l == m.backlog.lens).unwrap_or(0);
     let labels: Vec<&str> = Lens::ALL.iter().map(|l| l.label()).collect();
@@ -724,22 +725,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     // ---- the new goal
     let aside = draft_el(m, &t, &d, window, cx);
 
-    let mut menus: Vec<AnyElement> = vec![];
-    if let Some(at) = m.menu_open(MENU_PROJECT) {
-        let mut list = kit::menu_box(&t, 220.).id("plan-project-menu");
-        let mut opts = vec![("all".to_string(), "All projects".to_string())];
-        opts.extend(projects.iter().map(|p| (s(p, "name").to_string(), format!("{} · {}", s(p, "name"), fmt::i(p, "untriaged")))));
-        for (n, (v, l)) in opts.into_iter().enumerate() {
-            let cur = m.backlog.project == v;
-            list = list.child(kit::menu_item(&t, SharedString::from(format!("plan-project-{n}")), l, cur).on_click(cx.listener(move |m, _, _, cx| {
-                m.menu = None;
-                m.backlog.project = v.clone();
-                m.backlog.data = None;
-                resync(m, cx);
-            })));
-        }
-        menus.push(kit::popover(at, list.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())));
-    }
+    let menus = ip::render_project_filter(m, &t, MENU_PROJECT, window, cx);
 
     let focus = m.backlog.focus.clone().unwrap();
     div()
