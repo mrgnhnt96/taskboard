@@ -53,6 +53,7 @@ mod project_terminals;
 mod prplan;
 mod qa;
 mod quality;
+mod releases;
 mod reply_questions;
 mod reproject;
 mod retro;

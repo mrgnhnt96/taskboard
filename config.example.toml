@@ -381,6 +381,12 @@ tool = ""                            # its name, as the app says it ("Create in 
 create_url = ""                      # example: "https://flags.example.com/new?key={name}&project={project}"
 local_hint = ""                      # how to turn a local bit on while testing, for the handoff; example: "a BitOverride in DebugSettings"
 
+# Releases (`tb release cut`): each one holds the tasks done since the one before. Off unless a
+# project turns them on (`tb project set <name> --releases on`); `on` here turns them on for every
+# project that doesn't say.
+[releases]
+on = false
+
 # Who reviews a PR (`tb pr reviewers` with no names, and the `ask` stage): `count` people from the
 # project's roster (`tb reviewers`), one a main contributor of the changed files, the rest in turn.
 # A reviewer is due at their last ask + open asks x turn_gap_hours / weight; weight = automation level
