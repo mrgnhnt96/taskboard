@@ -326,6 +326,21 @@ Asking for it starts Claude on any issues it hasn't sorted yet. Until then (or w
 fields are guesses from its kind: bugs p2 / medium, the rest p3 / low, grouped by kind, area = project.
 `GET /state`'s `counts.untriaged` is the same count for every project.
 
+### `GET /backlog/tidy`, `POST /backlog/tidy`
+
+The backlog tidy: every `every_hours`, Claude reads each project's open issues that aren't planned yet
+(in its checkout, with read-only tools) and closes the ones that repeat another issue or aren't real
+(already fixed, or wrong about the code), with the reason in each one's log. A project with no issue
+added since its last tidy is skipped.
+```
+{"on": bool, "every_hours": float, "running": bool, "checked_at": iso|null,
+ "last": {"at": iso, "closed": [{"ref": "B4", "why": "duplicate"|"fixed"|"false", "of": "B2"|null,
+                                  "reason": str, "title": str}], "error": str|null}|null,
+ "line": str}   // what `tb backlog tidy` prints
+```
+POST takes `{on?: bool, every_hours?: 1–720, now?: bool, reset?: bool}`: `now` tidies every project at
+once, new issues or not; `reset` goes back to config.toml's `[backlog] tidy` and `tidy_every_hours`.
+
 ### `GET /backlog/plan`
 
 The latest plan asked for: `{"state": "none"}`, or `{id, state: "planning"|"ready", ids: ["B1", …],

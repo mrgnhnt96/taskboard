@@ -80,6 +80,7 @@ pub mod shared;
 pub mod review;
 pub mod review_fixes;
 pub mod spans;
+pub mod tidy;
 pub mod stack;
 pub mod suggest;
 pub mod startword;

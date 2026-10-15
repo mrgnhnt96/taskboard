@@ -169,11 +169,16 @@ pub struct BacklogAi {
     pub timeout_secs: u64,
     /// How many terminals a goal made from the backlog runs at once.
     pub max_terminals: i64,
+    /// Tidy the backlog on a timer: Claude closes open issues that repeat another or aren't real
+    /// (`tidy.rs`). `tb backlog tidy` changes both on the board.
+    pub tidy: bool,
+    /// Hours between tidies (1 for hourly, 24 for daily).
+    pub tidy_every_hours: f64,
 }
 
 impl Default for BacklogAi {
     fn default() -> Self {
-        BacklogAi { ai: true, model: "sonnet".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2 }
+        BacklogAi { ai: true, model: "sonnet".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0 }
     }
 }
 

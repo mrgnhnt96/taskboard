@@ -352,6 +352,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["backlog", "plan"]) => Ok(triage::plan_get(app)),
         ("POST", ["backlog", "plan"]) => triage::plan_start(app, body),
         ("POST", ["backlog", "goal"]) => triage::create_goal(app, body),
+        ("GET", ["backlog", "tidy"]) => Ok(crate::tidy::state(app)),
+        ("POST", ["backlog", "tidy"]) => crate::tidy::set(app, body),
         ("GET", ["backlog", id]) => issue_detail(app, iid(id)?),
         ("POST", ["backlog", id]) => app.db.tx(|| patch_issue(app, iid(id)?, body)),
         ("POST", ["backlog", id, "promote"]) => app.db.tx(|| promote(app, iid(id)?, body)),
