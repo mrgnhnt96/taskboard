@@ -112,6 +112,7 @@ email = "alex@acme.com"   # token: TASKBOARD_JIRA_TOKEN or the Keychain item "ta
 
 ```sh
 cargo test --workspace                                       # unit, end-to-end and web-parity tests
+cargo test -p taskboardd --test it -- oct8:: waves::         # some daemon test files (tests/it/<file>.rs, one binary)
 crates/taskboard-app/parity/regen.sh                         # regenerate the parity goldens from the frozen web UI (node)
 TASKBOARD_BACKEND=fake cargo run -p taskboard-app            # the app on an in-process sample board (no daemon, no Midna)
 taskboardd seed --data /tmp/tb-dev && taskboardd serve --data /tmp/tb-dev --port 18792
