@@ -164,11 +164,13 @@ pub fn ask_vm(a: &Value) -> Ask {
     let act = act.or_else(|| r.clone().map(Act::OpenTask)).or_else(|| opt_s(a, "goal").map(|g| Act::OpenGoal(g.to_string())));
     let goal_ref = opt_s(a, "goal").map(str::to_string).or_else(|| obj(card, "goal").map(|g| s(g, "ref").to_string()));
     let goal_name = opt_s(a, "goal_name").filter(|n| !n.is_empty()).or_else(|| obj(card, "goal").and_then(|g| opt_s(g, "name"))).unwrap_or("");
-    // An alert with a title of its own says it, with its detail line under it.
-    let own_title = opt_s(a, "title").filter(|x| !has_card && !x.is_empty());
+    // An alert with a title of its own (a setup alert's, or Haiku's) says it, with its detail line
+    // under it. A question keeps its whole text for the body, where it's answered.
+    let own_title = opt_s(a, "title").filter(|x| !x.is_empty());
+    let detail = opt_s(a, "detail").filter(|d| !d.is_empty() && own_title.is_some());
     let text = match own_title {
-        Some(_) => opt_s(a, "detail").filter(|d| !d.is_empty()).unwrap_or(s(a, "text")).to_string(),
-        None => ask_text(a, card),
+        Some(_) if kind != "Question" => detail.unwrap_or(s(a, "text")).to_string(),
+        _ => ask_text(a, card),
     };
     let pr_open = obj(card, "pr").is_some_and(|p| !p["num"].is_null() && crate::ui::goal::pr_open(p));
     let title = if let Some(t) = own_title {
@@ -185,7 +187,15 @@ pub fn ask_vm(a: &Value) -> Ask {
         sev,
         kind: kind.to_string(),
         actions: crate::app::alert_actions(a),
-        line: if pr_open { tile_vm(card).line } else if title == text { String::new() } else { text.clone() },
+        line: if pr_open {
+            tile_vm(card).line
+        } else if let Some(d) = detail {
+            d.to_string()
+        } else if title == text {
+            String::new()
+        } else {
+            text.clone()
+        },
         text,
         title,
         task: r.map(|r| (r, s(card, "title").to_string())),
@@ -630,7 +640,7 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
                 .when(!r.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.clone())))
                 .child(link),
         )
-        .when(!question && !a.line.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(a.line.clone())));
+        .when(!a.line.is_empty() && !(question && a.line == a.text), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(a.line.clone())));
 
     let goal = match (&a.goal, &a.task) {
         (Some((_, name)), _) if !name.is_empty() => match a.wave.filter(|_| question) {
@@ -715,8 +725,28 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
             let r = r.clone();
             move |m, _, _, cx| run_act(m, &Act::Focus(r.clone()), cx)
         }));
+        // The suggested answers: a click puts one in the field to edit and send.
+        let quick: Vec<_> = a
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(n, (label, _))| {
+                let (r, label) = (r.clone(), label.clone());
+                kit::btn(t, id(&format!("quick-{n}")), label.clone()).on_click(cx.listener(move |_, _, window, cx| {
+                    FIELDS.with(|f| {
+                        if let Some(input) = f.borrow().get(&r) {
+                            input.set_text(&label, cx);
+                            window.focus(&input.focus, cx);
+                        }
+                    });
+                    cx.notify();
+                }))
+            })
+            .collect();
+        let quick = (!quick.is_empty()).then(|| div().flex().flex_wrap().gap(px(8.)).children(quick));
         card = card.child(
             body.child(div().text_size(px(15.)).text_color(t.warn_text).child(a.text.clone()))
+                .children(quick)
                 .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(12.)).text_color(t.muted).child("Your answer")).child(field))
                 .child(div().flex().items_center().gap(px(8.)).child(send).children(send_later).child(focus)),
         );
@@ -886,6 +916,29 @@ mod tests {
         // An old plain alert reads as before.
         assert_eq!((asks[1].title.as_str(), asks[1].line.as_str(), asks[1].text.as_str()), ("Something plain happened", "", "Something plain happened"));
         assert!(asks[1].actions.is_empty());
+    }
+
+    #[test]
+    fn a_suggested_title_and_its_answers_show_on_a_task_card() {
+        let actions = json!([{"label": "Keep the old form", "prompt": "p", "command": ""}, {"label": "Drop it", "prompt": "p", "command": ""}]);
+        let home = json!({"needs": [
+            {"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep the old form? It still has users.", "task": "T5", "suggest": "done",
+             "title": "T5 asks about the old form", "detail": "The new login form is done; the old one still has users.", "actions": actions,
+             "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "question", "question": "Keep the old form? It still has users.", "title": "Form"}))},
+            {"id": "a2", "at": "2026-10-09T09:00:00Z", "text": "T6: the staging key expired", "task": "T6", "suggest": "done",
+             "title": "Staging key expired", "detail": "T6 can't deploy until the key is renewed.", "actions": [{"label": "Renew the key", "prompt": "p", "command": ""}],
+             "card": card(json!({"ref": "T6", "status": "working", "title": "Deploy"}))}
+        ]});
+        let asks = asks_vm(&home);
+        let q = asks.iter().find(|a| a.kind == "Question").unwrap();
+        assert!(q.answer);
+        assert_eq!(q.title, "T5 asks about the old form");
+        assert_eq!(q.line, "The new login form is done; the old one still has users.");
+        assert_eq!(q.text, "Keep the old form? It still has users.", "the body keeps the whole question");
+        assert_eq!(q.actions.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), vec!["Keep the old form", "Drop it"]);
+        let raised = asks.iter().find(|a| a.id == "a2").unwrap();
+        assert_eq!((raised.title.as_str(), raised.line.as_str()), ("Staging key expired", "T6 can't deploy until the key is renewed."));
+        assert_eq!(raised.task, Some(("T6".into(), "Deploy".into())));
     }
 
     #[test]
