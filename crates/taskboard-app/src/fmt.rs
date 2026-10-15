@@ -183,6 +183,20 @@ pub fn stuck(v: &Value) -> Option<String> {
     })
 }
 
+/// "~/Development/rust/midna since 3:05 PM" while a task's hooks show its work in a repository outside its project.
+pub fn outside(v: &Value) -> Option<String> {
+    let o = v.get("outside").filter(|o| o.is_object())?;
+    let path = opt_s(o, "path")?;
+    let path = match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => format!("~{}", &path[home.len()..]),
+        _ => path.to_string(),
+    };
+    Some(match opt_s(o, "at") {
+        Some(at) => format!("{path} since {}", hhmm(at)),
+        None => path,
+    })
+}
+
 pub fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -282,6 +296,14 @@ mod tests {
         assert_eq!(stuck(&json!({"stuck": {"why": "Waits on a y/n prompt"}})).as_deref(), Some("Waits on a y/n prompt"));
         let at = stuck(&json!({"stuck": {"at": "2026-10-14T20:25:00Z", "why": ""}})).unwrap();
         assert!(at.starts_with("Since ") && at.ends_with(": Its terminal hasn’t moved on"), "{at}");
+    }
+
+    #[test]
+    fn outside_names_the_folder_and_since_when() {
+        assert_eq!(outside(&json!({"outside": null})), None);
+        assert_eq!(outside(&json!({"outside": {"path": "/srv/other"}})).as_deref(), Some("/srv/other"));
+        let at = outside(&json!({"outside": {"path": "/srv/other", "at": "2026-10-14T20:25:00Z"}})).unwrap();
+        assert!(at.starts_with("/srv/other since ") && at.len() > "/srv/other since ".len(), "{at}");
     }
 
     #[test]

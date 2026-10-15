@@ -292,6 +292,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         } else {
             Value::Null
         },
+        "outside": if status == "done" { Value::Null } else { task_context(t).get("outside").cloned().unwrap_or(Value::Null) },
         "devices": crate::devices::card(app, t)?,
         "bits": crate::bits::task_card(app, t.id())?,
     });

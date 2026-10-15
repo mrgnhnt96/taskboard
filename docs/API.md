@@ -503,6 +503,7 @@ How long the board keeps its history: `{"detail_days": 90, "summary_days": 365, 
   "alone": "goal"|"board"|null,   // nothing else in its goal (or on the board) runs while it does
   "compacting": iso|null,         // working/needs and its terminal is compacting since then ("Compacting since 3:05 PM" chip)
   "stuck": {at, why, tail, quiet_secs, working_secs}|null  // working, and its turn's latest check-in says it's stuck ("Maybe stuck")
+  "outside": {at, path, project}|null,  // not done, and a hook showed its work in another repository (path: its top folder) since `at`; cleared when work is back in the project. Logged as `outside` events, with a keyed `outside:T<n>` alert
   "devices": {"needs": [{"tag": "android", "n": 2}], "needs_text": "2 android", "lent": ["pixel-7"]} | null,
                                   // what it asks for from the device pool (its own, else its goal's) and what it has now
   "bits": [{"name": str, "kind": "backend"|"local", "made": bool, "waiting": bool}],  // its bits; waiting = backend, not made
