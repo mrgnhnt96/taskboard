@@ -46,6 +46,7 @@ pub mod lens_pr;
 pub mod lessons;
 pub mod limits;
 pub mod lines;
+pub mod lost_done;
 pub mod locks;
 pub mod mdcopy;
 pub mod merged_note;

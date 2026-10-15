@@ -507,6 +507,7 @@ pub fn prs(app: &App) -> Result<()> {
     app.db.tx(|| waitsfor::follow_ups(app).map(|_| ()))?;
     crate::setup::auto_sync(app)?;
     app.db.tx(|| crate::setup::sweep(app))?;
+    crate::lost_done::sweep(app)?;
     worktrees::clean_up(app).map(|_| ())
 }
 

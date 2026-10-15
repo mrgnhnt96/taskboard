@@ -338,6 +338,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("ships_pr_set".into(), t.i("ships_pr").map(|v| json!(v != 0)).unwrap_or(Value::Null));
         o.insert("no_pr".into(), t.v("no_pr"));
         o.insert("no_evidence".into(), t.v("no_evidence"));
+        o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
         // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
         o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
@@ -1221,7 +1222,7 @@ pub fn mark_lost(app: &App, t: &Row, reason: &str) -> Result<()> {
         app,
         t.id(),
         fields!["status" => "needs", "lost" => 1, "needs_reason" => "lost", "start_job" => null,
-                "latest" => format!("{closed}{saved_line}")],
+                "latest" => format!("{closed}{saved_line}"), "looks_finished" => crate::lost_done::lost_now()],
     )?;
     log_event(app, t.id(), MIDNA, "status", &format!("Terminal ended ({reason}) before the task was done"))?;
     app.info(format!("task {} lost: {reason}", rf("task", t.id())));

@@ -98,6 +98,19 @@ fn helpers_match_web() {
     g.only("sentNote").check(|i| json!(view::sent_note(&i["state"])));
 }
 
+#[::core::prelude::v1::test]
+fn lost_task_shows_what_shipped_since() {
+    let found = json!([{"what": "Tag v0.2.0", "at": "2026-10-09T21:21:00Z"},
+                       {"what": "Release v0.2.0 published", "at": "2026-10-09T21:26:00Z", "url": "https://github.com/o/r/releases/tag/v0.2.0"}]);
+    let task = json!({"ref": "T3", "id": 3, "title": "Release v0.2.0", "status": "needs", "lost": true, "needs_reason": "lost", "looks_finished": found});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    assert!(text.contains("Looks finished") && !text.contains("Terminal lost"), "{text}");
+    assert!(text.contains(&format!("Release v0.2.0 published · {}", crate::fmt::hhmm("2026-10-09T21:26:00Z"))), "{text}");
+    assert!(text.contains("Resume in a new terminal"), "{text}");
+    let plain = json!(view::text(&tree(&json!({"state": {}, "task": {"ref": "T3", "id": 3, "status": "needs", "lost": true}, "tab": "overview"})))).to_string();
+    assert!(plain.contains("Terminal lost") && !plain.contains("Looks finished"), "{plain}");
+}
+
 // ------------------------------------------------------------------ actions
 
 /// Open task `r` in the panel and let its detail load.

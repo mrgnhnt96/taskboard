@@ -675,7 +675,17 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         let saved = saved_line(t);
         let claude = opt_s(t, "claude_session_id").is_some();
         let grp = format!("lost:{r}");
-        let mut bx = vec![txt("Terminal lost", St::BoxLabel), txt(opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."), St::Plain)];
+        // Signs its work shipped from another terminal after this one closed (`lost_done.rs`).
+        let found = arr(t, "looks_finished");
+        let label = if found.is_empty() { "Terminal lost" } else { "Looks finished" };
+        let mut bx = vec![txt(label, St::BoxLabel), txt(opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."), St::Plain)];
+        for f in found {
+            let line = format!("{} · {}", s(f, "what"), fmt::hhmm(s(f, "at")));
+            bx.push(match opt_s(f, "url").filter(|u| is_web(u)) {
+                Some(u) => Node::Link { s: line, go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small },
+                None => txt(line, St::Small),
+            });
+        }
         if !saved.is_empty() {
             bx.push(txt(saved, St::Small));
         }
