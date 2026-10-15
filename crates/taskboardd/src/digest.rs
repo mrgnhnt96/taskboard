@@ -27,7 +27,7 @@ pub fn on(app: &App) -> bool {
 
 /// Whether alert `a` goes out in the digest rather than on its own.
 pub fn holds(app: &App, a: &Value) -> bool {
-    on(app) && a["urgent"] != true
+    on(app) && a["urgent"] != true && !dispatch::quiet(a)
 }
 
 /// The digest's last notification: `sent` (the alerts it listed), `notified_at`, `snoozed_until` and
