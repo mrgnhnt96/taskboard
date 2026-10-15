@@ -48,6 +48,8 @@ pub enum Act {
     OpenPr(String),
     OpenTask(String),
     OpenGoal(String),
+    /// A weekly review is ready: its Review page, which marks it seen.
+    OpenReview(i64),
 }
 
 impl Act {
@@ -60,6 +62,7 @@ impl Act {
             Act::OpenPr(_) => "Open PR",
             Act::OpenTask(_) => "Open task",
             Act::OpenGoal(_) => "Open goal",
+            Act::OpenReview(_) => "Open review",
         }
     }
 }
@@ -131,7 +134,9 @@ pub fn ask_vm(a: &Value) -> Ask {
     let r = opt_s(a, "task").map(str::to_string);
     let has_card = card.is_object();
     let reason = s(card, "needs_reason");
-    let (sev, kind, act): (Sev, &str, Option<Act>) = if a["urgent"] == true {
+    let (sev, kind, act): (Sev, &str, Option<Act>) = if let Some(id) = a["review_id"].as_i64() {
+        (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
+    } else if a["urgent"] == true {
         (Sev::Crit, "Urgent", r.clone().map(Act::OpenTask))
     } else if has_card && b(card, "lost") {
         (Sev::Crit, "Terminal lost", r.clone().map(Act::Restart))
@@ -173,7 +178,8 @@ pub fn ask_vm(a: &Value) -> Ask {
         time: short_ago(s(a, "at")),
         act,
         answer: matches!(kind, "Question" | "Needs you") && has_card && s(card, "status") == "needs",
-        dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true,
+        // The board keeps these until they're handled (`dispatch::stays`).
+        dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true,
     }
 }
 
@@ -384,6 +390,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::OpenPr(url) => cx.open_url(&url),
         Act::OpenTask(r) => m.open_task(r, cx),
         Act::OpenGoal(g) => m.go(Page::Goal(g), cx),
+        Act::OpenReview(id) => crate::ui::review::open(m, Some(id), cx),
     }
 }
 
@@ -822,6 +829,19 @@ mod tests {
         assert_eq!(asks[2].act, Some(Act::OpenPr("https://x/pr/4".into())));
         assert!(!asks[2].dismiss, "a PR waiting on your review stays until you review it");
         assert!(asks[0].dismiss);
+    }
+
+    #[test]
+    fn a_ready_review_opens_its_page_and_stays_until_opened() {
+        let home = json!({"needs": [
+            {"id": "a9", "at": "2026-10-12T09:00:00Z", "text": "Weekly review: 10.0 h of agent time", "quiet": true, "review_id": 4,
+             "url": "taskboard://review/4", "key": "review:4"}
+        ]});
+        let asks = asks_vm(&home);
+        assert_eq!(asks[0].kind, "Weekly review");
+        assert_eq!(asks[0].act, Some(Act::OpenReview(4)));
+        assert_eq!(asks[0].act.as_ref().map(Act::label), Some("Open review"));
+        assert!(!asks[0].dismiss, "the board keeps it until the review is opened");
     }
 
     #[test]
