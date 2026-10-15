@@ -76,6 +76,9 @@ pub fn describe_owner_review(app: &App) -> Value {
 }
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {
+    if app.db.in_tx() {
+        return read_projects(app);
+    }
     let mark = app.db.mark()?;
     if let Some((at, list)) = &app.shared.lock().projects {
         if *at == mark {

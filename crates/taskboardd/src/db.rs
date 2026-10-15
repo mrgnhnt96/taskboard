@@ -458,7 +458,13 @@ impl Db {
         Ok(())
     }
 
-    /// Changes when anything is written: this connection's writes, or another's commit.
+    /// Whether this thread is inside `tx`: what it reads there may yet roll back.
+    pub fn in_tx(&self) -> bool {
+        self.inner.lock().depth.get() > 0
+    }
+
+    /// Changes when anything is written: this connection's writes, or another's commit. A rollback
+    /// doesn't move it back, so don't key on it inside `tx`.
     pub fn mark(&self) -> Result<(i64, i64)> {
         let changes = self.count("SELECT total_changes()", p![])?;
         Ok((changes, self.count("PRAGMA data_version", p![])?))

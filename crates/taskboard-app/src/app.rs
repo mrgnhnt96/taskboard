@@ -565,14 +565,7 @@ impl MainWindow {
             loop {
                 cx.background_executor().timer(POLL).await;
                 if this
-                    .update(cx, |m, cx| {
-                        // A poll waits for a refresh that's still out (a page just opened) instead
-                        // of starting over and throwing its answer away.
-                        if m.answered == m.generation {
-                            m.refresh(cx);
-                        }
-                        m.check_hooks(cx);
-                    })
+                    .update(cx, |m, cx| m.poll(cx))
                     .is_err()
                 {
                     break;
@@ -580,6 +573,15 @@ impl MainWindow {
             }
         })
         .detach();
+    }
+
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        // A poll waits for a refresh that's still out (a page just opened) instead of starting over
+        // and throwing its answer away.
+        if self.answered == self.generation {
+            self.refresh(cx);
+        }
+        self.check_hooks(cx);
     }
 
     /// Re-read Claude Code's config for the hooks' state (it can change outside the app).
@@ -1702,6 +1704,46 @@ mod tests {
         .unwrap();
         let seen = format!("reviews/{id}/seen");
         assert_eq!(rec.posts().iter().filter(|(p, _)| *p == seen).count(), 1, "opening it marks it seen once");
+    }
+
+    /// Review opened without a pick (the sidebar) shows the newest review.
+    #[gpui_kit::test]
+    fn the_review_page_opens_on_the_newest_review(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend as _;
+        let (w, rec) = window(cx);
+        rec.board().post("reviews", json!({})).unwrap();
+        rec.board().post("reviews", json!({})).unwrap();
+        let newest = arr(&rec.board().get("reviews", &[]).unwrap(), "reviews")[0]["id"].as_i64();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Review, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert_eq!(m.review.id, None);
+            assert!(newest.is_some());
+            assert_eq!(m.data.review.as_ref().and_then(|r| r["id"].as_i64()), newest);
+        })
+        .unwrap();
+    }
+
+    /// A poll while a refresh is still out leaves it be; once it has answered, the next poll refreshes.
+    #[gpui_kit::test]
+    fn a_poll_waits_for_the_refresh_thats_out(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.refresh(cx);
+            let out = m.generation;
+            m.poll(cx);
+            assert_eq!(m.generation, out, "the refresh that's out isn't restarted");
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.answered, m.generation);
+            let before = m.generation;
+            m.poll(cx);
+            assert_eq!(m.generation, before + 1);
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
