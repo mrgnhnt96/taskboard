@@ -69,6 +69,7 @@ fn an_exact_match_is_refused_with_the_item_and_the_command() {
     assert!(msg.contains(&format!("B{i} “Header clips on narrow windows”")), "{msg}");
     assert!(msg.contains(&format!("tb task new --issue B{i}")), "{msg}");
     assert!(msg.contains("--not-backlog"), "{msg}");
+    assert!(msg.contains("tb search \"<words>\""), "{msg}");
     assert_eq!(b.task_count(), before, "nothing was made");
     let (status, _) = b.new_task(json!({"title": "Header clips on narrow windows", "here": true})).unwrap_err();
     assert_eq!(status, 409, "--here is checked too");

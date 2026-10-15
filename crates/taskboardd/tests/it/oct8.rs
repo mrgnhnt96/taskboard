@@ -234,7 +234,9 @@ fn the_no_task_stop_lists_the_projects_open_backlog() {
             .expect("the stop is blocked")
             .to_string()
     };
-    assert!(!stop().contains("backlog"), "no open items, no backlog line");
+    let block = stop();
+    assert!(!block.contains("backlog"), "no open items, no backlog line");
+    assert!(block.contains("tb search \"<words>\""), "{block}");
 
     let footer = issue("Footer overlaps the chart", json!({}));
     let g = b.goal("Login");

@@ -4234,7 +4234,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if v["misses_goal"] == true {
                     format!("Sent {} to the owner as a miss on the goal's done-when; the goal stays open until it's settled.", v["issue"].as_str().unwrap_or(""))
                 } else if v["seen"] == true {
-                    format!("Already in the backlog as {}; added this sighting.", v["issue"].as_str().unwrap_or(""))
+                    format!("Already in the backlog as {}; added this sighting. To look for related work: tb search \"<words>\".", v["issue"].as_str().unwrap_or(""))
                 } else {
                     format!("Added {} to the backlog.", v["issue"].as_str().unwrap_or(""))
                 }
