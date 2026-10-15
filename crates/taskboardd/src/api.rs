@@ -644,7 +644,8 @@ fn get_summary(app: &App) -> Result<Value> {
     for g in app.db.q("SELECT * FROM goals WHERE archived = 0 ORDER BY id", p![])? {
         let c = board::goal_counts(app, g.id())?;
         let (done, total) = (c["done"].as_i64().unwrap_or(0), c["total"].as_i64().unwrap_or(0));
-        if total > 0 && done < total {
+        // In progress until finished: an open miss on the done-when keeps it here with every task done.
+        if total > 0 && (done < total || c["misses"].as_i64().unwrap_or(0) > 0) {
             goals.push(json!({"id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "done": done, "total": total}));
         }
     }
@@ -2369,7 +2370,7 @@ pub(crate) fn issue_task_fields(app: &App, b: &Row, who: &str) -> Value {
 pub(crate) fn issue_tasked(app: &App, id: i64, task_id: i64, who: &str, text: &str) -> Result<()> {
     app.db.update("issues", &json!(id), fields!["state" => "task", "task_id" => task_id, "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, who, "task", text, None)?;
-    Ok(())
+    board::miss_settled(app, &board::get_issue(app, id)?)
 }
 
 pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
@@ -2412,14 +2413,17 @@ fn ticket(app: &App, id: i64, body: &Value) -> Result<Value> {
     jira::request_create_for_issue(app, &b)?;
     app.db.update("issues", &json!(id), fields!["state" => "ticket", "updated_at" => now_iso()])?;
     board::add_issue_event(app, id, &issue_actor(body), "ticket", "Asked Jira for a ticket", None)?;
+    board::miss_settled(app, &b)?;
     issue_detail(app, id)
 }
 
 fn drop_issue(app: &App, id: i64, body: &Value) -> Result<Value> {
-    need_open(&board::get_issue(app, id)?)?;
+    let b = board::get_issue(app, id)?;
+    need_open(&b)?;
     app.db.update("issues", &json!(id), fields!["state" => "drop", "updated_at" => now_iso()])?;
     let reason = one_line(&body_str(body, "reason"), 300);
     board::add_issue_event(app, id, &issue_actor(body), "drop", &format!("Closed as won’t do{}", if reason.is_empty() { String::new() } else { format!(": {reason}") }), None)?;
+    board::miss_settled(app, &b)?;
     issue_detail(app, id)
 }
 

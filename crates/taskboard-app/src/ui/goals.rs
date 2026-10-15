@@ -34,8 +34,14 @@ pub fn goal_counts(g: &Value) -> Counts {
         },
         None => Counts { n: i(g, "total"), done: i(g, "done"), active: i(g, "active"), queued: 0, prs: arr(g, "prs_open").len() as i64, finished: false },
     };
-    // A backend bit not made yet holds back a finished goal ("Waiting on N bits").
-    Counts { finished: c.n > 0 && c.done == c.n && c.prs == 0 && i(g, "bits_waiting") == 0, ..c }
+    // A backend bit not made yet holds back a finished goal ("Waiting on N bits"), and so does a missed
+    // outcome: a failed task or an open miss on the goal's done-when ("Outcome not met").
+    let failed = match g.get("tasks").and_then(Value::as_array) {
+        Some(tasks) => tasks.iter().filter(|t| s(t, "status") == "done" && b(t, "failed")).count() as i64,
+        None => i(g, "failed"),
+    };
+    let met = failed == 0 && i(g, "misses") == 0;
+    Counts { finished: c.n > 0 && c.done == c.n && c.prs == 0 && i(g, "bits_waiting") == 0 && met, ..c }
 }
 
 /// `goalDone`.
@@ -96,5 +102,16 @@ mod tests {
     fn a_backend_bit_not_made_yet_holds_back_a_finished_goal() {
         let bits = json!({"tasks": [{"status": "done"}], "bits_waiting": 2});
         assert!(!goal_counts(&bits).finished);
+    }
+
+    #[test]
+    fn a_missed_outcome_holds_back_a_finished_goal() {
+        let failed = json!({"tasks": [{"status": "done"}, {"status": "done", "failed": true}]});
+        assert!(!goal_counts(&failed).finished);
+        let miss = json!({"tasks": [{"status": "done"}], "misses": 1});
+        assert!(!goal_counts(&miss).finished);
+        let summary = json!({"total": 2, "done": 1, "failed": 1});
+        assert!(!goal_counts(&summary).finished);
+        assert!(goal_counts(&json!({"tasks": [{"status": "done"}]})).finished);
     }
 }

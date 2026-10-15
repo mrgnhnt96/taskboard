@@ -1428,6 +1428,10 @@ fn on_found(r: &mut Report) -> Result<Value> {
         goal_id = None;
         project = Some(r.b("project"));
     }
+    let misses = as_bool(r.body.get("misses_goal"), false);
+    if misses && goal_id.is_none() {
+        return err(400, "--misses-goal is for a miss on a goal's done-when, and this isn't in a goal.");
+    }
     let key = norm_title(&title);
     let cands = match goal_id {
         Some(g) => app.db.q("SELECT * FROM issues WHERE state = 'open' AND goal_id = ?", p![g])?,
@@ -1441,6 +1445,10 @@ fn on_found(r: &mut Report) -> Result<Value> {
             text += &format!(" They said: “{}”", one_line(&detail, 400));
         }
         board::add_issue_event(app, dup.id(), &name, "seen", &text, Some(&snap))?;
+        if let (true, Some(g)) = (misses, goal_id) {
+            app.db.update("issues", &json!(dup.id()), fields!["misses_goal" => 1, "updated_at" => now_iso()])?;
+            miss_alert(app, dup.id(), g, &dup.st("title"))?;
+        }
         if let Some(t) = &t {
             r.log(
                 t.id(),
@@ -1449,7 +1457,7 @@ fn on_found(r: &mut Report) -> Result<Value> {
                 Some(json!({"issue": dup.id()})),
             )?;
         }
-        return Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", dup.id()), "seen": true})));
+        return Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", dup.id()), "seen": true, "misses_goal": misses})));
     }
     let now = now_iso();
     let how = match &t {
@@ -1462,9 +1470,13 @@ fn on_found(r: &mut Report) -> Result<Value> {
         fields!["goal_id" => goal_id, "project" => project, "kind" => kind, "title" => title,
                 "detail" => if detail.is_empty() { None } else { Some(detail.clone()) }, "said" => said, "how" => how,
                 "source" => "terminal", "found_by_task" => t.as_ref().map(|t| t.id()), "found_by_session" => r.sid(),
-                "found_by_name" => name, "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now],
+                "found_by_name" => name, "state" => "open", "snapshot" => jdumps(&snap), "created_at" => now, "updated_at" => now,
+                "misses_goal" => misses as i64],
     )?;
     board::add_issue_event(app, iid, &name, "report", &format!("Reported{while_on}"), Some(&snap))?;
+    if let (true, Some(g)) = (misses, goal_id) {
+        miss_alert(app, iid, g, &title)?;
+    }
     if let Some(g) = goal_id {
         app.db.x(
             "UPDATE tasks SET ctx_version = COALESCE(ctx_version, 1) + 1 WHERE goal_id = ? AND status != 'done' AND id IS NOT ?",
@@ -1472,15 +1484,23 @@ fn on_found(r: &mut Report) -> Result<Value> {
         )?;
     }
     if let Some(t) = &t {
-        let place = if goal_id.is_some() { "the goal’s backlog" } else { "the backlog" };
-        r.log(
-            t.id(),
-            "found",
-            &format!("Found an issue: {title}. Added to {place} with a snapshot of what the task was doing."),
-            Some(json!({"issue": iid})),
-        )?;
+        let text = if misses {
+            format!("Found a miss on the goal’s done-when: {title}. Sent to you as {} with a snapshot; the goal stays open until it’s settled.", rf("issue", iid))
+        } else {
+            let place = if goal_id.is_some() { "the goal’s backlog" } else { "the backlog" };
+            format!("Found an issue: {title}. Added to {place} with a snapshot of what the task was doing.")
+        };
+        r.log(t.id(), "found", &text, Some(json!({"issue": iid})))?;
     }
-    Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", iid), "seen": false})))
+    Ok(with(ok(t.as_ref(), None), json!({"issue": rf("issue", iid), "seen": false, "misses_goal": misses})))
+}
+
+/// A miss on the goal's own done-when goes to the owner as an alert rather than waiting quietly in the
+/// backlog. It stays up until the issue is settled (made a task, ticketed or closed).
+fn miss_alert(app: &App, issue: i64, goal_id: i64, title: &str) -> Result<()> {
+    let g = board::get_goal(app, goal_id)?;
+    let text = format!("{} misses its done-when: {title} ({})", g.st("name"), rf("issue", issue));
+    crate::dispatch::add_alert_keyed(app, &text, None, Some(goal_id), &board::miss_key(issue))
 }
 
 fn rewrite(screened: &Value) -> Value {
