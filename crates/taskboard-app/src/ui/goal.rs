@@ -665,17 +665,34 @@ pub(super) fn side(t: &Theme, title: &str, count: Option<String>, body: impl Int
         .child(body)
 }
 
-fn crumbs(t: &Theme, gr: &str, cx: &mut Context<MainWindow>) -> Div {
+/// Goals › haymay › G31: the project crumb opens the Goals page on that project, Goals on all.
+fn crumbs(t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
     let hover = t.text;
+    let link = |id: &'static str, text: String| div().id(id).cursor_pointer().hover(move |s| s.text_color(hover)).child(text);
+    let sep = || div().text_color(t.faint).child("›");
     div()
         .flex()
         .items_center()
         .gap(px(6.))
         .text_size(px(12.))
         .text_color(t.muted)
-        .child(div().id("goal-crumb").cursor_pointer().hover(move |s| s.text_color(hover)).child("Goals").on_click(cx.listener(|m, _, _, cx| m.go(Page::Goals, cx))))
-        .child(div().text_color(t.faint).child("›"))
-        .child(div().font_family(t.mono_font.clone()).child(gr.to_string()))
+        .child(link("goal-crumb", "Goals".into()).on_click(cx.listener(|m, _, _, cx| open_project(m, "all", cx))))
+        .when_some(project_of(g), |d, p| {
+            let open = p.clone();
+            d.child(sep()).child(link("goal-crumb-project", p).on_click(cx.listener(move |m, _, _, cx| open_project(m, &open, cx))))
+        })
+        .child(sep())
+        .child(div().font_family(t.mono_font.clone()).child(fmt::ref_of(g, "G")))
+}
+
+fn project_of(g: &Value) -> Option<String> {
+    fmt::opt_s(g, "project").filter(|p| !p.is_empty()).map(str::to_string)
+}
+
+/// The Goals page on one project's goals ("all" for every project's).
+fn open_project(m: &mut MainWindow, project: &str, cx: &mut Context<MainWindow>) {
+    m.goals.project = project.to_string();
+    m.go(Page::Goals, cx);
 }
 
 fn buttons(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Div {
@@ -767,16 +784,21 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
             None => div().text_size(px(12.)).text_color(t.muted).child(label).into_any_element(),
         }
     });
-    let project = fmt::opt_s(g, "project").filter(|p| !p.is_empty()).map(|p| {
+    let project = project_of(g).map(|p| {
+        let hover = t.text;
+        let open = p.clone();
         div()
             .id("goal-project")
+            .cursor_pointer()
+            .hover(move |s| s.text_color(hover))
+            .on_click(cx.listener(move |m, _, _, cx| open_project(m, &open, cx)))
             .px(px(7.))
             .py(px(1.))
             .rounded(px(9.))
             .bg(t.panel_2)
             .text_size(px(11.))
             .text_color(t.muted)
-            .child(p.to_string())
+            .child(p)
             .when_some(fmt::opt_s(g, "repo_path").map(str::to_string), |d, r| d.tooltip(kit::tip(r)))
     });
     let (parts, lead, tail) = progress(g);
@@ -999,7 +1021,6 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
             })
             .into_any_element();
     };
-    let gr = fmt::ref_of(&g, "G");
     div()
         .id("goal-page")
         .flex_1()
@@ -1014,7 +1035,7 @@ pub fn render(m: &mut MainWindow, cx: &mut Context<MainWindow>) -> AnyElement {
                 .pt(px(20.))
                 .px(px(36.))
                 .pb(px(48.))
-                .child(crumbs(&t, &gr, cx))
+                .child(crumbs(&t, &g, cx))
                 .child(header(m, &t, &g, cx))
                 .children(gate(m, &t, &g, cx))
                 .child(div().flex().items_start().gap(px(16.)).child(waves::list(m, &t, &g, cx).flex_1().min_w_0()).child(aside(m, &t, &g, cx))),
