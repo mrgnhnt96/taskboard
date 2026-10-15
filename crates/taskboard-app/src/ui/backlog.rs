@@ -981,11 +981,12 @@ fn item_el(t: &Theme, it: &Item, prefix: &str, cx: &mut Context<MainWindow>) -> 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that brings GPUI's `test` attribute, which `#[gpui_kit::test]` then recurses on.
-    use super::{Check, Item, Lens, create, draft, goal_waves, groups, issues, plan_waves, sync, toggle, bulk};
+    use super::{Check, Item, Lens, MENU_PROJECT, create, draft, goal_waves, groups, issues, on_key, plan_waves, sync, toggle, bulk};
     use crate::app::Page;
     use crate::backend::Backend;
     use crate::fmt;
     use crate::parity;
+    use crate::ui::issue_panel as ip;
     use serde_json::{Value, json};
 
     fn b(r: &str, kind: &str, group: &str, area: &str, impact: &str, prio: &str) -> Value {
@@ -1101,5 +1102,29 @@ mod tests {
         .unwrap();
         parity::settle(cx);
         assert_eq!(rec.last("backlog/bulk"), Some(json!({"ids": [later], "action": "defer"})));
+    }
+
+    #[gpui_kit::test]
+    fn typing_in_the_project_filter_is_not_a_shortcut(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = parity::window(cx);
+        let a = fmt::ref_of(&rec.board().post("backlog", json!({"title": "Restarts ignore the cap", "kind": "bug", "project": "webapp"})).unwrap(), "B");
+        w.update(cx, |m, _, cx| {
+            m.go(Page::Backlog, cx);
+            sync(m, cx);
+        })
+        .unwrap();
+        parity::settle(cx);
+        let d = gpui_kit::KeyDownEvent { keystroke: gpui_kit::Keystroke::parse("d").unwrap(), is_held: false, prefer_character_input: false };
+        w.update(cx, |m, window, cx| {
+            toggle(m, std::slice::from_ref(&a), true, cx);
+            ip::open_project_filter(m, MENU_PROJECT, "all", &[("webapp".into(), 1)], gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)), window, cx, |_, _, _| {});
+            on_key(m, &d, window, cx);
+            m.escape(window, cx);
+            assert!(m.menu.is_none(), "esc closes the filter");
+            assert_eq!(m.backlog.picked, [a.clone()], "and keeps the checks");
+        })
+        .unwrap();
+        parity::settle(cx);
+        assert_eq!(rec.last("backlog/bulk"), None, "the d went to the search, not to defer");
     }
 }

@@ -671,29 +671,45 @@ pub fn project_filter(
     on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + Clone + 'static,
 ) -> Stateful<Div> {
     let label = if value == "all" { "All projects".to_string() } else { value.to_string() };
-    let items = filter_items(projects);
+    let projects = projects.to_vec();
     let value = value.to_string();
     kit::btn_small(t, SharedString::from(format!("{key}-btn")), format!("{label}  ▾")).max_w(px(260.)).overflow_hidden().on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
-        let restore = window.focused(cx);
-        let q = kit::Input::new(cx, "Search projects", false);
-        window.focus(&q.focus, cx);
-        let active = items.iter().position(|it| it.v == value).unwrap_or(0);
         let p = e.position();
-        m.issue_panel.picker = Some(Picker {
-            key: key.to_string(),
-            goal: false,
-            value: value.clone(),
-            specials: vec![],
-            proj: String::new(),
-            q,
-            active,
-            fixed: Some(items.clone()),
-            restore,
-            on_pick: std::rc::Rc::new(on_pick.clone()),
-        });
-        m.menu = Some((key.to_string(), point(p.x - px(10.), p.y + px(14.))));
-        cx.notify();
+        open_project_filter(m, key, &value, &projects, point(p.x - px(10.), p.y + px(14.)), window, cx, on_pick.clone());
     }))
+}
+
+/// Opens a page's project filter at `at` (see [`project_filter`]), focusing its search field.
+#[allow(clippy::too_many_arguments)]
+pub fn open_project_filter(
+    m: &mut MainWindow,
+    key: &str,
+    value: &str,
+    projects: &[(String, usize)],
+    at: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+    on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + 'static,
+) {
+    let restore = window.focused(cx);
+    let q = kit::Input::new(cx, "Search projects", false);
+    window.focus(&q.focus, cx);
+    let items = filter_items(projects);
+    let active = items.iter().position(|it| it.v == value).unwrap_or(0);
+    m.issue_panel.picker = Some(Picker {
+        key: key.to_string(),
+        goal: false,
+        value: value.to_string(),
+        specials: vec![],
+        proj: String::new(),
+        q,
+        active,
+        fixed: Some(items),
+        restore,
+        on_pick: std::rc::Rc::new(on_pick),
+    });
+    m.menu = Some((key.to_string(), at));
+    cx.notify();
 }
 
 /// A project filter's items: "All projects", then each project with its count.
