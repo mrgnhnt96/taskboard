@@ -7,6 +7,7 @@
 //! same markup (`<code>`, `<b>`, `<i>`, `<a href>`); [`to_html`] returns exactly what `mdLite`
 //! returned (the parity tests compare it), and [`render`] draws the same markup with GPUI.
 use crate::theme::Theme;
+use crate::ui::select::{sel, sel_styled};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -383,14 +384,10 @@ fn spans(markup: &str) -> Vec<Span> {
 }
 
 fn inline_el(t: &Theme, markup: &str, id: &str) -> AnyElement {
-    let parts = spans(markup);
-    if parts.iter().all(|p| *p == Span { text: p.text.clone(), ..Default::default() }) {
-        return div().child(parts.into_iter().map(|p| p.text).collect::<String>()).into_any_element();
-    }
     let mut text = String::new();
     let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
     let mut links: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    for p in parts {
+    for p in spans(markup) {
         let start = text.len();
         text.push_str(&p.text);
         let r = start..text.len();
@@ -413,19 +410,7 @@ fn inline_el(t: &Theme, markup: &str, id: &str) -> AnyElement {
             highlights.push((r, h));
         }
     }
-    let styled = StyledText::new(text).with_highlights(highlights);
-    if links.is_empty() {
-        return styled.into_any_element();
-    }
-    let ranges: Vec<_> = links.iter().map(|(r, _)| r.clone()).collect();
-    let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
-    InteractiveText::new(SharedString::from(id.to_string()), styled)
-        .on_click(ranges, move |ix, _, cx| {
-            if let Some(u) = urls.get(ix) {
-                cx.open_url(u);
-            }
-        })
-        .into_any_element()
+    sel_styled(t, SharedString::from(id.to_string()), text, highlights).links(links).into_any_element()
 }
 
 /// Render `text` as a column of blocks. `id` must be unique in the window (links need it).
@@ -463,7 +448,7 @@ pub fn render(t: &Theme, text: &str, max: usize, id: &str) -> Div {
                 .font_family(t.mono_font.clone())
                 .text_size(px(12.))
                 .overflow_hidden()
-                .child(c)
+                .child(sel(t, SharedString::from(bid), c))
                 .into_any_element(),
         });
     }

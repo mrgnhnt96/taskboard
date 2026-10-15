@@ -923,7 +923,7 @@ fn merge_goal(v: Value) -> Value {
 
 // ------------------------------------------------------------------ actions
 
-actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef, Search, NavBack, NavForward]);
+actions!(taskboard, [CloseOverlay, GoBoard, GoBacklog, GoSessions, GoDays, GoTasks, GoGoals, Refresh, CopyRef, CopySelection, Search, NavBack, NavForward]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -938,11 +938,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-k", Search, Some("MainWindow")),
         KeyBinding::new("cmd-r", Refresh, Some("MainWindow")),
         KeyBinding::new("cmd-shift-c", CopyRef, Some("MainWindow")),
+        KeyBinding::new("cmd-c", CopySelection, Some("MainWindow")),
         KeyBinding::new("cmd-left", NavBack, Some("MainWindow")),
         KeyBinding::new("cmd-right", NavForward, Some("MainWindow")),
         // In a text field ⌘← and ⌘→ move the cursor to the line's ends instead.
         KeyBinding::new("cmd-left", NoAction, Some(ui::text_input::CTX)),
         KeyBinding::new("cmd-right", NoAction, Some(ui::text_input::CTX)),
+        // A text field copies its own selection.
+        KeyBinding::new("cmd-c", NoAction, Some(ui::text_input::CTX)),
     ]);
 }
 
@@ -985,6 +988,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|m, _: &GoGoals, _, cx| m.go(Page::Goals, cx)))
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh(cx)))
             .on_action(cx.listener(|m, _: &CopyRef, _, cx| copy_ref(m, cx)))
+            .on_action(|_: &CopySelection, window, cx| ui::select::copy(window, cx))
             .on_action(cx.listener(|m, _: &Search, window, cx| ui::search::open(m, window, cx)))
             .on_action(cx.listener(|m, _: &NavBack, _, cx| m.go_back(cx)))
             .on_action(cx.listener(|m, _: &NavForward, _, cx| m.go_forward(cx)))
@@ -996,6 +1000,8 @@ impl Render for MainWindow {
             .text_color(t.text)
             .font_family(t.ui_font.clone())
             .text_size(px(14.))
+            // Drawn first so a press that a control stops (a button, a menu) doesn't start a selection.
+            .child(gpui_kit::base::TextSelectionLayer)
             // The sidebar holds the pages, search, the goals in flight and the board's health.
             .child(
                 div()
