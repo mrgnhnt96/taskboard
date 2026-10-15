@@ -755,6 +755,14 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(el(K::Box(BoxTone::Ask), bx));
     }
 
+    if let Some(at) = fmt::outside(t) {
+        let project = opt_s(&t["outside"], "project").unwrap_or("its project");
+        out.push(el(
+            K::Box(BoxTone::Ask),
+            vec![txt(format!("{who} is working outside {project}"), St::BoxLabel), txt(format!("In {at}. The board doesn’t track that work."), St::Plain)],
+        ));
+    }
+
     if let Some(label) = opt_s(&t["line"], "label") {
         let when = match opt_s(&t["line"], "after") {
             Some(a) => format!("It starts there by itself once {a} is done."),
@@ -1900,7 +1908,7 @@ pub const LOG_FILTERS: [(&str, &str); 7] = [("all", "All"), ("status", "Status")
 /// `LOG_GROUP`.
 fn log_group(kind: &str) -> &'static str {
     match kind {
-        "status" | "midna" | "handoff" | "checkin" => "status",
+        "status" | "midna" | "handoff" | "checkin" | "outside" => "status",
         "turn" | "commit" => "turn",
         "checkpoint" => "checkpoint",
         "question" | "answer" => "question",
@@ -1925,6 +1933,7 @@ fn log_label(kind: &str) -> String {
         "midna" => "Midna".into(),
         "handoff" => "Handoff".into(),
         "checkin" => "Check-in".into(),
+        "outside" => "Outside".into(),
         k => fmt::cap(k),
     }
 }
@@ -1933,7 +1942,7 @@ fn log_label(kind: &str) -> String {
 fn log_dot(kind: &str) -> Dot {
     match kind {
         "status" | "checkpoint" => Dot::Accent,
-        "question" | "answer" | "found" | "checkin" => Dot::Warn,
+        "question" | "answer" | "found" | "checkin" | "outside" => Dot::Warn,
         "jira" => Dot::AccentFg,
         "commit" => Dot::Up,
         "handoff" => Dot::Goal,

@@ -17,6 +17,10 @@ static COMMIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\[[^\]]+\]\s+(.+)
 static NETWORK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)connection error|unable to connect|network|offline|timed? ?out|fetch failed|socket hang up|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH").unwrap()
 });
+/// A git commit or push, as `hook.commit` reports it; and the folder it names with `-C`, or the `cd`s before it.
+static GIT_WORK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(?:commit|push)\b").unwrap());
+static GIT_DIR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-C\s+([^\s;&|)]+)").unwrap());
+static CD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|&&|;|\|\||\()\s*cd\s+([^\s;&|)]+)").unwrap());
 static LEADING_MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*\[task-board:[TJ]\d+\]\s*").unwrap());
 
 pub struct Report<'a> {
@@ -172,9 +176,57 @@ impl<'a> Report<'a> {
         Ok(())
     }
 
+    /// Where this hook's work happens: for a git commit or push, the folder it runs in; else the cwd.
+    fn place(&self) -> Option<String> {
+        let cwd = self.cwd.as_deref()?;
+        let git = (self.event == "hook.commit").then(|| git_place(&self.b("command"), cwd)).flatten();
+        Some(git.unwrap_or_else(|| cwd.to_string()))
+    }
+
+    /// Whether this hook's work is in the task's project (under its folder, or in its repository: a
+    /// worktree beside it), out of it in a folder no repository holds, or in another repository.
+    fn spot(&self, t: &Row) -> Result<Spot> {
+        let (Some(place), Some(project)) = (self.place(), t.s("project").filter(|p| !p.is_empty())) else { return Ok(Spot::Home) };
+        if projects::project_for_path(self.app, Some(&place))?.as_deref() == Some(project) {
+            return Ok(Spot::Home);
+        }
+        let Some((common, top)) = repo_of(&place) else { return Ok(Spot::Loose) };
+        let home = projects::project_path(self.app, Some(project))?.and_then(|h| repo_of(&h));
+        // A repository that holds the project's (a home-folder dotfiles one) isn't another project's.
+        if home.is_some_and(|(hc, ht)| hc == common || ht.starts_with(&top)) {
+            return Ok(Spot::Home);
+        }
+        Ok(Spot::Repo(top))
+    }
+
     fn elsewhere(&self, t: &Row) -> Result<bool> {
-        let (Some(cwd), Some(project)) = (&self.cwd, t.s("project").filter(|p| !p.is_empty())) else { return Ok(false) };
-        Ok(projects::project_for_path(self.app, Some(cwd))?.as_deref() != Some(project))
+        Ok(!matches!(self.spot(t)?, Spot::Home))
+    }
+
+    /// Marks the task the first time a hook shows its work in another repository: an event, the mark
+    /// its card shows, and an alert for the owner. Work back in the project clears them.
+    fn track_outside(&self, t: &Row, ctx: &mut Row) -> Result<()> {
+        let project = t.st("project");
+        match self.spot(t)? {
+            Spot::Repo(top) => {
+                if ctx.get("outside").and_then(|o| o["path"].as_str()) == Some(top.as_str()) {
+                    return Ok(());
+                }
+                let first = !ctx.contains_key("outside");
+                ctx.insert("outside".into(), json!({"at": self.at, "path": top, "project": project}));
+                self.log(t.id(), "outside", &format!("Working in {top}, outside {project}"), Some(json!({"path": top})))?;
+                if first {
+                    let text = format!("{}: working in {top}, outside {project}. The board doesn't track that work.", rf("task", t.id()));
+                    crate::dispatch::add_alert_keyed(self.app, &text, Some(t.id()), t.i("goal_id"), &outside_key(t.id()))?;
+                }
+            }
+            Spot::Home if ctx.remove("outside").is_some() => {
+                self.log(t.id(), "outside", &format!("Back in {project}"), None)?;
+                crate::dispatch::clear_alert_key(self.app, &outside_key(t.id()))?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// A hook from inside another open task's worktree: not this task's place.
@@ -193,6 +245,7 @@ impl<'a> Report<'a> {
         let mut ctx = board::task_context(t);
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         let away = self.away(t)?;
+        self.track_outside(t, &mut ctx)?;
         if !away {
             if let Some(b) = self.git.s("branch").filter(|s| !s.is_empty()) {
                 w.insert("branch".into(), json!(b));
@@ -240,6 +293,78 @@ impl<'a> Report<'a> {
         self.sent(&t)?;
         handoff::build(self.app, t.id())
     }
+}
+
+enum Spot {
+    Home,
+    Loose,
+    Repo(String),
+}
+
+/// The alert key for a task's work outside its project.
+fn outside_key(task: i64) -> String {
+    format!("outside:{}", rf("task", task))
+}
+
+/// The folder a git commit or push in `cmd` runs in: from `cwd`, through each `cd <dir>` before it,
+/// then its `git -C <dir>`. None when it names no folder, or `cmd` has no commit or push.
+fn git_place(cmd: &str, cwd: &str) -> Option<String> {
+    let git = GIT_WORK_RE.find(cmd)?;
+    let cds: Vec<_> = CD_RE.captures_iter(&cmd[..git.start()]).collect();
+    let at = cds.iter().fold(cwd.to_string(), |at, c| resolve(&at, &c[1]));
+    match GIT_DIR_RE.captures(git.as_str()) {
+        Some(dir) => Some(resolve(&at, &dir[1])),
+        None => (!cds.is_empty()).then_some(at),
+    }
+}
+
+/// `p` (quoted, `~/…` or relative) as a plain absolute path from `cwd`.
+fn resolve(cwd: &str, p: &str) -> String {
+    use std::path::{Component, Path, PathBuf};
+    let p = p.trim_matches(['"', '\'']);
+    let p = match (p.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => p.to_string(),
+    };
+    let mut out = PathBuf::new();
+    for c in Path::new(cwd).join(p).components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
+
+/// A folder's repository: its shared git folder (one for all its worktrees) and its top folder. None
+/// outside one. A repository stays one, so what's found is kept.
+fn repo_of(dir: &str) -> Option<(String, String)> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static KNOWN: Lazy<Mutex<HashMap<String, (String, String)>>> = Lazy::new(Default::default);
+    if let Some(r) = KNOWN.lock().ok()?.get(dir) {
+        return Some(r.clone());
+    }
+    let mut at = std::path::Path::new(dir);
+    while !at.is_dir() {
+        at = at.parent()?;
+    }
+    let git = crate::proc::which("git")?;
+    let args: Vec<String> = ["-C", &at.to_string_lossy(), "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let out = crate::proc::run(&git, &args, None, 10.0).ok().filter(|o| o.code == Some(0))?;
+    let mut lines = out.stdout.lines().map(|l| {
+        let p = std::path::PathBuf::from(l.trim());
+        p.canonicalize().unwrap_or(p).to_string_lossy().into_owned()
+    });
+    let found = (lines.next()?, lines.next()?);
+    KNOWN.lock().ok()?.insert(dir.to_string(), found.clone());
+    Some(found)
 }
 
 pub fn ok(task: Option<&Row>, context: Option<String>) -> Value {
@@ -1509,6 +1634,11 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
                 "latest" => if failed { format!("Stopped: {text}") } else { text.clone() }],
     )?;
     board::log_event_full(app, t.id(), who, "status", &if failed { format!("Failed: {text}") } else { format!("Marked done: {text}") }, None, at)?;
+    let mut ctx = board::task_context(&board::get_task(app, t.id())?);
+    if ctx.remove("outside").is_some() {
+        board::save_context(app, t.id(), &ctx, false)?;
+    }
+    crate::dispatch::clear_alert_key(app, &outside_key(t.id()))?;
     let t = board::get_task(app, t.id())?;
     deliver::drop(app, t.id(), "the task is done")?;
     if let (Some(gid), false) = (t.i("goal_id"), failed) {
@@ -2894,4 +3024,24 @@ pub fn ingest_spool(app: &App) -> Result<usize> {
         app.info(format!("spool: handled {}", plural(done as i64, "report")));
     }
     Ok(done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_place_reads_dash_c_then_cd() {
+        assert_eq!(git_place("git -C ../other commit -m x", "/w/proj").as_deref(), Some("/w/other"));
+        assert_eq!(git_place("cd /srv/repo && git add . && git commit -m x", "/w/proj").as_deref(), Some("/srv/repo"));
+        assert_eq!(git_place("cd a; cd ./b && git push", "/w").as_deref(), Some("/w/a/b"));
+        assert_eq!(git_place("git commit -m x", "/w/proj"), None);
+        assert_eq!(git_place("git -C ../other status", "/w/proj"), None);
+    }
+
+    #[test]
+    fn resolve_unquotes_and_normalizes() {
+        assert_eq!(resolve("/w/proj", "'../x/./y'"), "/w/x/y");
+        assert_eq!(resolve("/w/proj", "/abs"), "/abs");
+    }
 }
