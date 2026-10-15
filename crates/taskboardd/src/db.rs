@@ -184,6 +184,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("issues", "impact", "TEXT"),
     ("issues", "priority", "TEXT"),
     ("issues", "grp", "TEXT"),
+    ("issues", "review_id", "INT"),
     ("issues", "grp_about", "TEXT"),
     ("issues", "grouped_at", "TEXT"),
     ("issues", "jira_status", "TEXT"),
@@ -345,6 +346,7 @@ impl Db {
         conn.execute_batch(crate::lines::SCHEMA)?;
         conn.execute_batch(crate::spans::SCHEMA)?;
         conn.execute_batch(crate::review::SCHEMA)?;
+        add_columns(&conn, crate::review::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }

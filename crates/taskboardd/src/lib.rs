@@ -77,6 +77,7 @@ pub mod server;
 pub mod setup;
 pub mod shared;
 pub mod review;
+pub mod review_fixes;
 pub mod spans;
 pub mod stack;
 pub mod startword;

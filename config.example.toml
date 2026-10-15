@@ -81,11 +81,13 @@ lines = 60
 
 # The weekly time review: where agent time went, what got rerun or timed out, how long tasks waited on
 # you, and the fixes that suggests. When one is ready you get a notification and a Needs you item that
-# stays until you open it. cadence is "weekly" or "off"; `tb review` works either way.
+# stays until you open it. cadence is "weekly" or "off"; `tb review` works either way. With suggest on
+# (and backlog AI), Claude files up to five suggested fixes from each review to the backlog, untriaged.
 [review]
 cadence = "weekly"
 day = "friday"
 at = "5:00 PM"
+suggest = true
 
 # Planning from the backlog (the app's Backlog page). A headless `claude -p` sorts new issues (area,
 # impact, priority, and which are the same kind of work) and splits the issues picked for a goal into
