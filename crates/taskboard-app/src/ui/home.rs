@@ -53,6 +53,8 @@ pub enum Act {
     OpenPr(String),
     OpenTask(String),
     OpenGoal(String),
+    /// A backlog item: its page, where it's made a task, ticketed or closed.
+    OpenIssue(String),
     /// A weekly review is ready: its Review page, which marks it seen.
     OpenReview(i64),
 }
@@ -68,6 +70,7 @@ impl Act {
             Act::OpenPr(_) => "Open PR",
             Act::OpenTask(_) => "Open task",
             Act::OpenGoal(_) => "Open goal",
+            Act::OpenIssue(_) => "Open issue",
             Act::OpenReview(_) => "Open review",
         }
     }
@@ -102,6 +105,8 @@ pub struct Ask {
     pub dismiss: bool,
     /// The alert's fixes as (label, command), a button each beside Dismiss.
     pub actions: Vec<(String, String)>,
+    /// Open, under what the alert said: what it wants from you and what Dismiss leaves.
+    pub help: Vec<String>,
 }
 
 impl Ask {
@@ -154,8 +159,12 @@ pub fn ask_vm(a: &Value) -> Ask {
     let r = opt_s(a, "task").map(str::to_string);
     let has_card = card.is_object();
     let reason = s(card, "needs_reason");
+    // A task found the goal's done-when unmet: the backlog item it filed holds the goal open.
+    let miss = s(a, "key").strip_prefix("miss:").filter(|n| !n.is_empty()).map(|n| format!("B{n}"));
     let (sev, kind, act): (Sev, &str, Option<Act>) = if let Some(id) = a["review_id"].as_i64() {
         (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
+    } else if let Some(b) = &miss {
+        (Sev::Warn, "Done-when missed", Some(Act::OpenIssue(b.clone())))
     } else if a["urgent"] == true {
         (Sev::Crit, "Urgent", r.clone().map(Act::OpenTask))
     } else if has_card && b(card, "lost") && looks_finished(card).is_some() {
@@ -205,6 +214,16 @@ pub fn ask_vm(a: &Value) -> Ask {
     } else {
         text.clone()
     };
+    let help = match &miss {
+        Some(b) => {
+            let goal = if goal_name.is_empty() { "The goal" } else { goal_name };
+            vec![
+                format!("{goal} can’t finish until {b} is settled: open it and choose Make it a task, Create ticket or Won’t do."),
+                format!("Dismiss only hides this; {goal} still waits on {b}."),
+            ]
+        }
+        None => vec![],
+    };
     Ask {
         id: s(a, "id").to_string(),
         sev,
@@ -233,6 +252,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         answer,
         // The board keeps these until they're handled (`dispatch::stays`).
         dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true,
+        help,
     }
 }
 
@@ -268,6 +288,7 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         answer: false,
         dismiss: false,
         actions: Vec::new(),
+        help: vec![],
     })
 }
 
@@ -447,6 +468,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::OpenPr(url) => cx.open_url(&url),
         Act::OpenTask(r) => m.open_task(r, cx),
         Act::OpenGoal(g) => m.go(Page::Goal(g), cx),
+        Act::OpenIssue(r) => m.open_issue(r, cx),
         Act::OpenReview(id) => crate::ui::review::open(m, Some(id), cx),
     }
 }
@@ -668,9 +690,12 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
                 .when(!r.is_empty(), |d| d.child(div().flex_none().font_family(t.mono_font.clone()).text_size(px(11.)).text_color(t.muted).child(r.clone())))
                 .child(link),
         )
-        .when(!a.line.is_empty() && !(question && a.line == a.text), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(a.line.clone())));
+        // Open, the body says it in full.
+        .when(!a.line.is_empty() && !(question && a.line == a.text) && (question || !open), |d| d.child(div().text_size(px(12.)).text_color(t.muted).truncate().child(a.line.clone())));
 
+    // A goal's own alert already has the goal for its title.
     let goal = match (&a.goal, &a.task) {
+        (Some(_), None) => String::new(),
         (Some((_, name)), _) if !name.is_empty() => match a.wave.filter(|_| question) {
             Some(n) => format!("{name} · wave {n}"),
             None => name.clone(),
@@ -679,17 +704,9 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
         _ => String::new(),
     };
 
-    // An open question has its signals under its field.
-    let button = |part: &str, act: Act| {
-        kit::btn(t, id(part), act.label()).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
-            cx.stop_propagation();
-            run_act(m, &act, cx);
-        }))
-    };
-    let buttons: Vec<_> = [("act", a.act.clone().filter(|_| !(question && open))), ("also", a.also.clone())]
-        .into_iter()
-        .filter_map(|(part, act)| act.map(|act| button(part, act)))
-        .collect();
+    // Open, the buttons sit at the bottom right (a question's signals under its field).
+    let acts = |open: bool| [("act", a.act.clone()), ("also", a.also.clone())].into_iter().filter(move |_| !open).filter_map(|(part, act)| act.map(|act| (part, act)));
+    let buttons: Vec<_> = acts(open).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
 
     let head = div()
         .id(id("head"))
@@ -796,10 +813,72 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
                 kit::btn(t, id(&format!("fix-{n}")), label.clone()).on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
             })
             .collect();
-        let buttons = (!fixes.is_empty() || dismiss_btn.is_some()).then(|| div().flex().flex_wrap().gap(px(8.)).children(fixes).children(dismiss_btn));
-        card = card.child(body.child(div().text_size(px(13.)).text_color(t.text_2).child(a.text.clone())).children(buttons));
+        let acts: Vec<_> = acts(false).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
+        let buttons = (!fixes.is_empty() || dismiss_btn.is_some() || !acts.is_empty())
+            .then(|| div().flex().flex_wrap().items_center().gap(px(8.)).children(fixes).children(dismiss_btn).child(div().flex().gap(px(6.)).ml_auto().children(acts)));
+        let mut body = body.child(div().text_size(px(13.)).text_color(t.text_2).child(ref_text(t, id("text"), &a.text, cx)));
+        for (n, line) in a.help.iter().enumerate() {
+            body = body.child(div().text_size(px(12.)).text_color(t.muted).child(ref_text(t, id(&format!("help-{n}")), line, cx)));
+        }
+        card = card.child(body.children(buttons));
     }
     card
+}
+
+fn act_btn(t: &Theme, id: SharedString, act: Act, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    kit::btn(t, id, act.label()).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
+        cx.stop_propagation();
+        run_act(m, &act, cx);
+    }))
+}
+
+/// The byte ranges of the task, goal and backlog refs (`T12`, `G3`, `B219`) in `text`, each with
+/// what opening it does.
+pub fn ref_spans(text: &str) -> Vec<(std::ops::Range<usize>, Act)> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+            i += 1;
+        }
+        if i == start {
+            i += 1;
+            continue;
+        }
+        let w = &text[start..i];
+        let digits = w.len() > 1 && w[1..].bytes().all(|c| c.is_ascii_digit());
+        let act = match &w[..1] {
+            "T" if digits => Some(Act::OpenTask(w.into())),
+            "G" if digits => Some(Act::OpenGoal(w.into())),
+            "B" if digits => Some(Act::OpenIssue(w.into())),
+            _ => None,
+        };
+        out.extend(act.map(|act| (start..i, act)));
+    }
+    out
+}
+
+/// `text` with its refs as links that open them.
+fn ref_text(t: &Theme, id: SharedString, text: &str, cx: &mut Context<MainWindow>) -> AnyElement {
+    let spans = ref_spans(text);
+    if spans.is_empty() {
+        return text.to_string().into_any_element();
+    }
+    let under = UnderlineStyle { thickness: px(1.), color: Some(t.accent), wavy: false };
+    let style = HighlightStyle { color: Some(t.accent), underline: Some(under), ..Default::default() };
+    let styled = StyledText::new(text.to_string()).with_highlights(spans.iter().map(|(r, _)| (r.clone(), style)));
+    let ranges: Vec<_> = spans.iter().map(|(r, _)| r.clone()).collect();
+    let acts: Vec<Act> = spans.into_iter().map(|(_, a)| a).collect();
+    let this = cx.entity().downgrade();
+    InteractiveText::new(id, styled)
+        .on_click(ranges, move |ix, _, cx| {
+            if let Some(act) = acts.get(ix) {
+                let _ = this.update(cx, |m, cx| run_act(m, act, cx));
+            }
+        })
+        .into_any_element()
 }
 
 /// A 16px chevron: right shut, down open.
@@ -1028,6 +1107,34 @@ mod tests {
         let pr = asks.iter().find(|a| a.kind == "Review the PR").unwrap();
         assert!(!pr.answer);
         assert_eq!(pr.title, "Wait in panel");
+    }
+
+    #[test]
+    fn a_done_when_miss_opens_its_backlog_item_and_says_what_dismiss_leaves() {
+        let home = json!({"needs": [
+            {"id": "a4", "at": "2026-10-15T09:00:00Z", "key": "miss:219", "goal": "G3", "goal_name": "Core Teardown", "card": null,
+             "text": "Core Teardown misses its done-when: Android teardown can throw (B169) (B219)"}
+        ]});
+        let a = &asks_vm(&home)[0];
+        assert_eq!(a.kind, "Done-when missed");
+        assert_eq!(a.act, Some(Act::OpenIssue("B219".into())));
+        assert_eq!(a.title, "Core Teardown");
+        assert!(a.dismiss);
+        assert_eq!(a.help.len(), 2);
+        assert!(a.help[0].contains("Core Teardown can’t finish until B219 is settled"), "{:?}", a.help);
+        assert!(a.help[1].starts_with("Dismiss only hides this"), "{:?}", a.help);
+    }
+
+    #[test]
+    fn refs_in_text_open_their_task_goal_or_backlog_item() {
+        let text = "Core Teardown (G3) misses: B169, T12 and B219. Not BT4, B, T1a or 12.";
+        let got: Vec<(&str, Act)> = ref_spans(text).into_iter().map(|(r, a)| (&text[r], a)).collect();
+        assert_eq!(got, vec![
+            ("G3", Act::OpenGoal("G3".into())),
+            ("B169", Act::OpenIssue("B169".into())),
+            ("T12", Act::OpenTask("T12".into())),
+            ("B219", Act::OpenIssue("B219".into())),
+        ]);
     }
 
     #[test]
