@@ -32,6 +32,8 @@ const MAX_OUTPUT: usize = 1000;
 static PR_CLI_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b").unwrap());
 static PR_API_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"/(?:pulls|pullrequests)/?["']?(?:\s|$)"#).unwrap());
 static POST_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|\s)(?:-d|--data\S*|-f|-F|--field|--raw-field|--input|-X\s*POST|--method\s+POST)(?:\s|=|$)").unwrap());
+/// GitLab's: the board can't open a merge request there, so the agent still does.
+static GITLAB_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bglab\s+mr\s+create\b").unwrap());
 /// An MCP tool that opens a pull request (GitHub's, Bitbucket's, …).
 static PR_TOOL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^mcp__.*(?:create_?pull_?request|create_pr$|pull_?request_?create)").unwrap());
 
@@ -149,7 +151,23 @@ fn own_head(vars: &Value) -> Option<String> {
     vars["branch"].as_str().filter(|b| !b.is_empty()).and_then(|b| rev(&format!("refs/heads/{b}"))).or_else(|| rev("HEAD"))
 }
 
-/// `PreToolUse`: holds a command that opens a PR while the task's steps for before the PR
+/// The refusal for opening a PR from the terminal of a task (its `GET /steps` listing) that ends in one:
+/// the board opens that PR itself. None when the task ends without a PR.
+fn board_opens_pr(steps: &Value, tb: &str) -> Option<String> {
+    if steps["ships_pr"] != true {
+        return None;
+    }
+    let task = steps["task"].as_str().unwrap_or("This task");
+    Some(format!(
+        "{task} ends in a PR, and the board opens it: write the description to a file and finish with \
+         {tb} submit \"<summary>\" --pr-body <file>. It checks the description and that the branch is pushed and \
+         rebased, then opens the PR. ({tb} submit --pr <link> is only for a PR that was already open before the task.)"
+    ))
+}
+
+/// `PreToolUse`: refuses a command that opens a PR on a task that ends in one (the board opens it, at
+/// `tb submit --pr-body`; a GitLab merge request is still the agent's to open), holds one on any other
+/// task while its steps for before the PR
 /// (config.toml's `[[steps]]`) aren't recorded, and a push to an open PR while a per-head step hasn't
 /// passed on the commit being pushed, and work in a repository the task doesn't own (`elsewhere_refused`).
 /// Anything else, no task, or no board: carry on. True when it refused the call.
@@ -181,6 +199,12 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
     }
     let what = if opening { "opening the PR" } else { "pushing to the open PR" };
     let Ok(mut v) = client::request(&cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    if opening && !GITLAB_RE.is_match(payload["tool_input"]["command"].as_str().unwrap_or("")) {
+        if let Some(reason) = board_opens_pr(&v, &tb_path()) {
+            deny(&reason);
+            return true;
+        }
+    }
     if let Some(why) = v["aim_outside"].as_str() {
         deny(&format!("Not yet: {what} waits for the task's steps, and they can't be judged. {why}"));
         return true;
@@ -714,6 +738,16 @@ mod tests {
         git_repo(&root);
         assert!(elsewhere(&root.join(".zshrc"), &a, "T115", "a").is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn opening_a_pr_on_a_task_that_ends_in_one_points_to_pr_body() {
+        let why = board_opens_pr(&json!({"task": "T7", "ships_pr": true}), "tb").unwrap();
+        assert!(why.starts_with("T7 ends in a PR"), "{why}");
+        assert!(why.contains("tb submit \"<summary>\" --pr-body <file>"), "{why}");
+        assert!(board_opens_pr(&json!({"task": "T7", "ships_pr": false}), "tb").is_none());
+        assert!(board_opens_pr(&json!({"task": "T7"}), "tb").is_none(), "an older board's listing has no flag");
+        assert!(GITLAB_RE.is_match("glab mr create --fill") && !GITLAB_RE.is_match("gh pr create"), "the board can't open a GitLab MR");
     }
 
     #[test]

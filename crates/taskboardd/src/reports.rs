@@ -1790,7 +1790,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
             409,
             format!(
                 "{me} ends in a PR, and it has none yet. Finish with {tb} submit \"<summary>\" --pr-body <file> (the board opens the PR), \
-                 --pr <link> if you opened it, or --no-pr \"<why>\" if it won't have one."
+                 --pr <link> for one that was open before the task, or --no-pr \"<why>\" if it won't have one."
             ),
         );
     }
