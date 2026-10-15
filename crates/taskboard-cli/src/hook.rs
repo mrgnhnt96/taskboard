@@ -318,6 +318,9 @@ fn board_event(hook: &str) -> Option<&'static str> {
         "PostToolUse" => "hook.commit",
         "SessionEnd" => "hook.session_end",
         "Notification" => "hook.attention",
+        // Claude's question picker (`AskUserQuestion`) opens, and closes.
+        "AskUser" => "hook.ask",
+        "AskUserDone" => "hook.ask_done",
         _ => return None,
     })
 }
@@ -482,6 +485,9 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             if !s("title").is_empty() {
                 extra.insert("title".into(), json!(s("title")));
             }
+        }
+        "AskUser" => {
+            extra.insert("tool_input".into(), payload["tool_input"].clone());
         }
         "SessionEnd" => {
             let reason = if s("reason").is_empty() { "other".to_string() } else { s("reason") };

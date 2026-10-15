@@ -658,6 +658,29 @@ fn answer_btns(c: &Ctx, r: &str) -> Vec<Node> {
     out
 }
 
+/// `askOptions(ask, r)`: what the task asks, option by option. A `tb question`'s options answer it with
+/// one click; a picker's are answered in its terminal.
+fn ask_options(c: &Ctx, ask: &Value, r: &str, grp: &str) -> Vec<Node> {
+    let picker = b(ask, "picker");
+    let qs = arr(ask, "questions");
+    let mut out = Vec::new();
+    for q in qs {
+        if qs.len() > 1 {
+            out.push(txt(or_empty(&q["question"]), St::Strong));
+        }
+        for o in arr(q, "options") {
+            let label = or_empty(&o["label"]);
+            let mut kids =
+                vec![if picker { txt(label, St::Strong) } else { c.btn(&label, Act::new("answer-opt", label.as_str(), r, grp), Look::Soft, false, None) }];
+            if let Some(d) = opt_s(o, "description").filter(|d| !d.is_empty()) {
+                kids.push(txt(d, St::Small));
+            }
+            out.push(el(K::Row, kids));
+        }
+    }
+    out
+}
+
 fn answer_field(c: &Ctx, r: &str) -> Node {
     let k = format!("answer:{r}");
     Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false }
@@ -738,22 +761,20 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(el(K::Box(BoxTone::Lost), bx));
     } else if status == "needs" {
         let q = opt_s(t, "question");
+        let asking = q.is_some() && (s(t, "needs_reason") == "question" || b(&t["ask"], "picker"));
         let grp = format!("ask:{r}");
+        let mut bx = vec![
+            txt(format!("{who} {}", if asking { "is asking" } else { "needs you" }), St::BoxLabel),
+            txt(q.or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::Plain),
+        ];
+        bx.extend(ask_options(c, &t["ask"], &r, &grp));
         let mut row = step_btns(c, t, &r, &grp);
-        row.extend(answer_btns(c, &r));
-        if q.is_none() && session_live(t) {
-            row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
+        if session_live(t) {
+            row.push(c.btn("Open terminal", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
         }
         row.extend(c.note(&grp));
-        out.push(el(
-            K::Box(BoxTone::Ask),
-            vec![
-                txt(format!("{who} {}", if q.is_some() { "is asking" } else { "needs you" }), St::BoxLabel),
-                txt(q.or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::Plain),
-                answer_field(c, &r),
-                el(K::Row, row),
-            ],
-        ));
+        bx.push(el(K::Row, row));
+        out.push(el(K::Box(BoxTone::Ask), bx));
     }
 
     if let Some(why) = fmt::stuck(t).filter(|_| status == "working") {

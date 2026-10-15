@@ -943,6 +943,13 @@ function answerBtns(r) {
   return btn('Send answer', 'answer', { id: r, cls: 'primary', grp: 'ask:' + r })
     + (at ? btn(`Send at ${at}`, 'answer', { id: r, arg: 'morning', grp: 'ask:' + r, title: 'Hold the answer until work hours start; the task doesn’t start before then' }) : '');
 }
+// What the task asks, option by option: a `tb question`'s options answer it with one click; a
+// picker's are answered in its terminal.
+function askOptions(ask, r) {
+  const qs = (ask && ask.questions) || [];
+  return qs.map(q => (qs.length > 1 ? `<p><strong>${esc(q.question)}</strong></p>` : '')
+    + (q.options || []).map(o => `<div class="row">${ask.picker ? `<strong>${esc(o.label)}</strong>` : btn(o.label, 'answer-opt', { id: r, arg: o.label, cls: 'soft', grp: 'ask:' + r })}${o.description ? `<span class="sub2">${esc(o.description)}</span>` : ''}</div>`).join('')).join('');
+}
 function statusPill(t, k) {
   if (awaitingMerge(t)) { const [label, cls, tip] = prStatus(t); return `<span class="pill ${cls}" title="${esc(tip)}">${esc(label)}</span>`; }
   if (k === 'queued' && t.starting) return '<span class="pill st-queued">Starting</span>';
@@ -973,11 +980,11 @@ function overviewTab(t) {
       <p>${esc(t.latest || 'Midna didn’t start a terminal for this task.')}</p>
       <div class="row">${btn('New Midna terminal', 'start', { id: r, arg: 'new', cls: 'primary', grp: act })}${btn('Queue in Midna', 'start', { id: r, arg: 'queue', grp: act })}</div>${note(act)}</div>`);
   } else if (t.status === 'needs') {
-    const k = 'answer:' + r;
-    out.push(`<div class="box ask"><span class="box-label">${esc(who)} ${t.question ? 'is asking' : 'needs you'}</span>
+    const asking = t.question && (t.needs_reason === 'question' || (t.ask && t.ask.picker));
+    out.push(`<div class="box ask"><span class="box-label">${esc(who)} ${asking ? 'is asking' : 'needs you'}</span>
       <p>${esc(t.question || t.latest || 'It’s waiting for you in Midna.')}</p>
-      <textarea class="input" id="ans-${esc(r)}" data-k="${esc(k)}" rows="2" aria-label="Your answer">${esc(S.drafts[k] || '')}</textarea>
-      <div class="row">${answerBtns(r)}${!t.question && sessionLive(t) ? btn('Focus in Midna', 'focus', { id: r, grp: 'ask:' + r }) : ''}${note('ask:' + r)}</div></div>`);
+      ${askOptions(t.ask, r)}
+      <div class="row">${sessionLive(t) ? btn('Open terminal', 'focus', { id: r, grp: 'ask:' + r }) : ''}${note('ask:' + r)}</div></div>`);
   }
 
   if (startsByHand(t)) {
@@ -1756,6 +1763,7 @@ const ACTIONS = {
   },
   'close-term': el => run(el, () => post(tp(el, '/close-terminal'), { force: el.dataset.arg === 'force' })),
   'focus': el => run(el, () => post(tp(el, '/focus'), {})),
+  'answer-opt': el => run(el, () => post(tp(el, '/answer'), { text: el.dataset.arg, when: 'now' })),
   'term-focus': el => run(el, () => post(`/sessions/${encodeURIComponent(el.dataset.id)}/focus`)),
   'resume': el => run(el, () => post(tp(el, '/resume'), { mode: el.dataset.arg })),
   'meta-del': el => {

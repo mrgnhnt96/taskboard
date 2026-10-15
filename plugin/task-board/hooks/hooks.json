@@ -101,6 +101,21 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/tb",
+            "args": [
+              "hook",
+              "AskUser"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -133,6 +148,21 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/tb",
+            "args": [
+              "hook",
+              "AskUserDone"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -147,6 +177,21 @@
               "ToolEnd"
             ],
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/tb",
+            "args": [
+              "hook",
+              "AskUserDone"
+            ],
+            "timeout": 5,
+            "async": true
           }
         ]
       }

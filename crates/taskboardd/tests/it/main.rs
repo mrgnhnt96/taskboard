@@ -4,6 +4,7 @@
 
 mod alert_suggestions;
 mod alerts;
+mod ask_options;
 mod areas;
 mod away_waits;
 mod background;

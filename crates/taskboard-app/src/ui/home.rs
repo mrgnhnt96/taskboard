@@ -3,8 +3,8 @@
 //! each with the one signal it needs, under today's numbers and a project switch.
 //!
 //! What each part shows is worked out by the pure `*_vm` functions; the render code only lays it
-//! out. The page is read-only: an answer, a signal (Restart, Start, Open PR, Continue, Focus in
-//! Midna) or a dismiss is all it sends. An item opens in place; its title links to its page.
+//! out. The page is read-only: an answer, a signal (Restart, Start, Open PR, Continue, Open
+//! terminal) or a dismiss is all it sends. An item opens in place; its title links to its page.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
 use crate::theme::Theme;
@@ -15,14 +15,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 const PAGE_X: f32 = 36.;
 const PROJECT_FILTER: &str = "home-project";
 
 thread_local! {
-    /// The answer fields by task ref: a draft outlives renders and refetches until it's sent.
-    static FIELDS: RefCell<HashMap<String, kit::Input>> = RefCell::new(HashMap::new());
     /// Items opened or shut against their default (a question starts open, the rest shut).
     static FLIPPED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
@@ -65,7 +63,7 @@ impl Act {
             Act::Restart(_) => "Restart",
             Act::MarkDone(_) => "Mark done",
             Act::Start(_) => "Start",
-            Act::Focus(_) => "Focus in Midna",
+            Act::Focus(_) => "Open terminal",
             Act::Continue(..) => "Continue",
             Act::OpenPr(_) => "Open PR",
             Act::OpenTask(_) => "Open task",
@@ -107,6 +105,32 @@ pub struct Ask {
     pub actions: Vec<(String, String)>,
     /// Open, under what the alert said: what it wants from you and what Dismiss leaves.
     pub help: Vec<String>,
+    /// What a task waiting on your answer asks (its card's `ask`), question by question.
+    pub asks: Vec<AskQuestion>,
+    /// The asks are Claude's picker, answered in its terminal; otherwise each option answers in a click.
+    pub picker: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AskQuestion {
+    /// Empty when the item's text already says it (a single question).
+    pub question: String,
+    /// (label, what it means)
+    pub options: Vec<(String, String)>,
+}
+
+/// A card's `ask` (`tb question --option`, or Claude's picker): its questions and options.
+fn asks_of(card: &Value) -> (Vec<AskQuestion>, bool) {
+    let ask = &card["ask"];
+    let qs = arr(ask, "questions");
+    let asks = qs
+        .iter()
+        .map(|q| AskQuestion {
+            question: if qs.len() > 1 { s(q, "question").to_string() } else { String::new() },
+            options: arr(q, "options").iter().map(|o| (s(o, "label").to_string(), s(o, "description").to_string())).filter(|(l, _)| !l.is_empty()).collect(),
+        })
+        .collect();
+    (asks, b(ask, "picker"))
 }
 
 impl Ask {
@@ -205,6 +229,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         _ => ask_text(a, card),
     };
     let pr_open = obj(card, "pr").is_some_and(|p| !p["num"].is_null() && crate::ui::goal::pr_open(p));
+    let (asks, picker) = if answer { asks_of(card) } else { (Vec::new(), false) };
     let title = if let Some(t) = own_title {
         t.to_string()
     } else if has_card {
@@ -253,6 +278,8 @@ pub fn ask_vm(a: &Value) -> Ask {
         // The board keeps these until they're handled (`dispatch::stays`).
         dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true,
         help,
+        asks,
+        picker,
     }
 }
 
@@ -289,6 +316,8 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         dismiss: false,
         actions: Vec::new(),
         help: vec![],
+        asks: Vec::new(),
+        picker: false,
     })
 }
 
@@ -482,36 +511,14 @@ pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
     cx.notify();
 }
 
-/// When a held answer goes out ("Thu 6am"), while work hours are closed; "" otherwise.
-fn hours_open_at(state: &Value) -> String {
-    let h = &state["work_hours"];
-    if !h.is_object() || !b(h, "on") || b(h, "open") {
-        return String::new();
-    }
-    opt_s(h, "next_open").map(fmt::day_clock).unwrap_or_default()
-}
-
 fn sent_note(state: &Value) -> &'static str {
     if state["midna"]["up"] == Value::Bool(false) { "Saved. It runs once Midna is back." } else { "Sent to Midna" }
 }
 
-/// Send what's in a question's field: `POST /tasks/:id/answer`, now or when work hours open.
-fn answer(m: &mut MainWindow, r: &str, morning: bool, cx: &mut Context<MainWindow>) {
-    let text = FIELDS.with(|f| f.borrow().get(r).map(|i| i.text(cx))).unwrap_or_default().trim().to_string();
-    if text.is_empty() {
-        m.toast("Write an answer first.", true, cx);
-        return;
-    }
-    let key = r.to_string();
-    let body = json!({"text": text, "when": if morning { "morning" } else { "now" }});
-    m.post(format!("tasks/{r}/answer"), body, cx, move |m, _, cx| {
-        FIELDS.with(|f| f.borrow_mut().remove(&key));
-        let note = if morning {
-            let at = hours_open_at(m.state());
-            format!("Saved. It sends at {}.", if at.is_empty() { "the start of work hours".to_string() } else { at })
-        } else {
-            sent_note(m.state()).to_string()
-        };
+/// Answer a question with one of its options: `POST /tasks/:id/answer`.
+fn answer(m: &mut MainWindow, r: &str, text: &str, cx: &mut Context<MainWindow>) {
+    m.post(format!("tasks/{r}/answer"), json!({"text": text, "when": "now"}), cx, move |m, _, cx| {
+        let note = sent_note(m.state()).to_string();
         sent(m, note, cx);
     });
 }
@@ -601,13 +608,13 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     if !answers.is_empty() {
         page = page.child(group_label(&t, "Answer", answers.len()));
         for a in &answers {
-            page = page.child(item(m, &t, a, window, cx));
+            page = page.child(item(&t, a, cx));
         }
     }
     if !acts.is_empty() {
         page = page.child(group_label(&t, "Act on", acts.len()));
         for a in &acts {
-            page = page.child(item(m, &t, a, window, cx));
+            page = page.child(item(&t, a, cx));
         }
     }
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
@@ -643,7 +650,7 @@ fn kind_color(t: &Theme, a: &Ask) -> Hsla {
 
 /// One item: its head row (open or shut on a click, its title a link to its page) and, open, a
 /// question's answer field or the rest of what the alert said.
-fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<MainWindow>) -> Div {
+fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
     let key = a.key();
     let open = is_open(a);
     let id = |part: &str| SharedString::from(format!("home-{part}-{key}"));
@@ -746,58 +753,42 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
     let body = div().flex().flex_col().gap(px(10.)).pl(px(58.)).pr(px(20.)).pb(px(16.));
     if question {
         let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        let field = FIELDS.with(|f| {
-            let mut f = f.borrow_mut();
-            let input = f.entry(r.clone()).or_insert_with(|| kit::Input::new(cx, "", true));
-            input.render(t, id("field"), window).items_start().min_h(px(62.)).px(px(12.)).py(px(10.)).text_size(px(14.))
-        });
-        let field = field.on_key_down(cx.listener({
-            let r = r.clone();
-            move |m, ev: &KeyDownEvent, _, cx| {
-                let submit = FIELDS.with(|f| f.borrow().get(&r).map(|i| i.on_key(ev, cx)));
-                if matches!(submit, Some(kit::KeyOutcome::Submit)) {
-                    cx.stop_propagation();
-                    answer(m, &r, false, cx);
-                }
-            }
-        }));
-        let later = hours_open_at(m.state());
-        let send = {
-            let r = r.clone();
-            kit::btn_primary(t, id("send"), "Send answer").on_click(cx.listener(move |m, _, _, cx| answer(m, &r, false, cx)))
-        };
-        let send_later = (!later.is_empty()).then(|| {
-            let r = r.clone();
-            kit::btn(t, id("later"), format!("Send at {later}")).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, true, cx)))
-        });
-        let focus = kit::btn(t, id("focus"), Act::Focus(r.clone()).label()).ml_auto().on_click(cx.listener({
+        let focus = kit::btn(t, id("focus"), Act::Focus(r.clone()).label()).on_click(cx.listener({
             let r = r.clone();
             move |m, _, _, cx| run_act(m, &Act::Focus(r.clone()), cx)
         }));
-        // The suggested answers: a click puts one in the field to edit and send.
-        let quick: Vec<_> = a
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(n, (label, _))| {
-                let (r, label) = (r.clone(), label.clone());
-                kit::btn(t, id(&format!("quick-{n}")), label.clone()).on_click(cx.listener(move |_, _, window, cx| {
-                    FIELDS.with(|f| {
-                        if let Some(input) = f.borrow().get(&r) {
-                            input.set_text(&label, cx);
-                            window.focus(&input.focus, cx);
-                        }
-                    });
-                    cx.notify();
-                }))
-            })
-            .collect();
-        let quick = (!quick.is_empty()).then(|| div().flex().flex_wrap().gap(px(8.)).children(quick));
+        // An option answers in one click; a picker's options only say what it asks, and are
+        // answered in the terminal. The alert's suggested answers answer like options.
+        let mut n = 0;
+        let mut option = |label: &str, desc: &str| {
+            n += 1;
+            let head = if a.picker {
+                div().flex_none().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(label.to_string())
+            } else {
+                let (r, text) = (r.clone(), label.to_string());
+                div().flex_none().child(kit::btn(t, id(&format!("opt-{n}")), label.to_string()).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &text, cx))))
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(head)
+                .when(!desc.is_empty(), |d| d.child(div().min_w_0().text_size(px(13.)).text_color(t.text_2).child(desc.to_string())))
+        };
+        let mut rows = Vec::new();
+        for q in &a.asks {
+            if !q.question.is_empty() {
+                rows.push(div().pt(px(4.)).text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(q.question.clone()));
+            }
+            rows.extend(q.options.iter().map(|(l, d)| option(l, d)));
+        }
+        if a.asks.is_empty() {
+            rows.extend(a.actions.iter().map(|(l, _)| option(l, "")));
+        }
         card = card.child(
             body.child(div().text_size(px(15.)).text_color(t.warn_text).child(a.text.clone()))
-                .children(quick)
-                .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(12.)).text_color(t.muted).child("Your answer")).child(field))
-                .child(div().flex().items_center().gap(px(8.)).child(send).children(send_later).child(focus)),
+                .when(!rows.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).children(rows)))
+                .child(div().flex().items_center().gap(px(8.)).child(focus)),
         );
     } else {
         let dismiss_btn = a.dismiss.then(|| {

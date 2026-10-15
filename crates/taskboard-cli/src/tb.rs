@@ -74,6 +74,9 @@ enum Cmd {
     /// Ask the owner a question (the board may answer it from the owner's rules)
     Question {
         text: String,
+        /// An answer the owner can pick with one click, as "Label: what it means" (repeat it, up to 8)
+        #[arg(long = "option")]
+        options: Vec<String>,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -3995,11 +3998,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
             },
         ),
-        Cmd::Question { text, t } => {
+        Cmd::Question { text, options, t } => {
             let task = t.task.map(|x| task_ref(&x)).transpose()?;
             let mut alert = Some(text.clone());
             // The board may have claude screen it first (`[questions] screen`), which takes a while.
-            let r = c.report_progress("tb.question", json!({"text": text}), task.as_deref());
+            let r = c.report_progress("tb.question", json!({"text": text, "options": options}), task.as_deref());
             let owner = c.cfg.owner.clone();
             let res = match r {
                 Ok(None) => {

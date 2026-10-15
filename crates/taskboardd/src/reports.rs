@@ -1298,14 +1298,59 @@ fn on_attention(r: &mut Report) -> Result<Value> {
     if !(t.s("status") == Some("working") || (t.s("status") == Some("needs") && t.s("needs_reason") == Some("attention"))) {
         return Ok(ok(Some(&t), None));
     }
+    // Its picker is up: the picker says more than the notification about it.
+    if crate::ask::is_picker(&t) {
+        return Ok(ok(Some(&t), None));
+    }
     let default = if kind == "idle_prompt" { "Waiting for your input in the terminal" } else { "Waiting for you in the terminal" };
     let raw = { let m = r.b("message"); if m.is_empty() { r.b("title") } else { m } };
-    let message = one_line(if raw.is_empty() { default } else { &raw }, 500);
+    // Claude's idle notification only says it's waiting; the end of its last reply says on what.
+    let said = if kind == "idle_prompt" { transcript::last_reply_at(&app.cfg.claude_projects, Some(&r.b("transcript_path"))) } else { None };
+    let message = match said.as_deref().and_then(last_paragraph) {
+        Some(p) => one_line(&p, 500),
+        None => one_line(if raw.is_empty() { default } else { &raw }, 500),
+    };
     if t.s("status") == Some("needs") && t.s("question") == Some(message.as_str()) {
         return Ok(ok(Some(&t), None));
     }
     board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "attention", "question" => message, "answered_at" => null])?;
     r.log(t.id(), "question", &format!("Waiting for you: {message}"), None)?;
+    Ok(ok(Some(&t), None))
+}
+
+/// The last paragraph of a reply, where it says what it waits for.
+fn last_paragraph(reply: &str) -> Option<String> {
+    reply.trim().rsplit("\n\n").map(str::trim).find(|p| !p.is_empty()).map(|p| p.to_string())
+}
+
+/// Claude showed its question picker (`AskUserQuestion`): the task waits on the owner, who answers it
+/// in the terminal, and the app shows its questions and options.
+fn on_ask(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some((line, ask)) = crate::ask::from_picker(r.body.get("tool_input").unwrap_or(&Value::Null)) else {
+        return Ok(ok(r.task()?.as_ref(), None));
+    };
+    r.set_session_status("needs")?;
+    let Some(t) = r.task()? else { return pr_visit_paused(r, &line) };
+    if t.s("status") != Some("working") && !(t.s("status") == Some("needs") && t.s("needs_reason") == Some("attention")) {
+        return Ok(ok(Some(&t), None));
+    }
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "attention", "question" => line, "ask" => ask, "answered_at" => null])?;
+    r.log(t.id(), "question", &format!("Asked you in its terminal: {line}"), None)?;
+    Ok(ok(Some(&t), None))
+}
+
+/// The picker closed (answered, or turned down): the task is back at work.
+fn on_ask_done(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let Some(t) = r.task()? else { return Ok(ok(None, None)) };
+    if !crate::ask::is_picker(&t) {
+        return Ok(ok(Some(&t), None));
+    }
+    r.set_session_status("working")?;
+    board::update_task(app, t.id(), fields!["status" => "working", "needs_reason" => null, "question" => null, "answered_at" => now_iso()])?;
     Ok(ok(Some(&t), None))
 }
 
@@ -1572,7 +1617,8 @@ fn on_question(r: &mut Report) -> Result<Value> {
     if ctx.remove("step_waiting").is_some() {
         board::save_context(app, t.id(), &ctx, false)?;
     }
-    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => asked, "answered_at" => null, "lost" => 0])?;
+    let ask = crate::ask::from_options(&asked, r.body.get("options"));
+    board::update_task(app, t.id(), fields!["status" => "needs", "needs_reason" => "question", "question" => asked, "ask" => ask, "answered_at" => null, "lost" => 0])?;
     let mut line = format!("Asked: {asked}");
     if asked != text {
         line += &format!(" (The agent wrote: “{text}”)");
@@ -2833,6 +2879,8 @@ fn handler(event: &str) -> Option<Handler> {
         "hook.tool_end" => on_tool_end,
         "hook.session_end" => on_session_end,
         "hook.attention" => on_attention,
+        "hook.ask" => on_ask,
+        "hook.ask_done" => on_ask_done,
         "hook.api_error" => on_api_error,
         "hook.delivered" => on_delivered,
         "tb.note" => on_note,

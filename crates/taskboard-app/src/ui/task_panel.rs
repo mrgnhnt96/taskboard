@@ -284,6 +284,8 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
                 cx,
             );
         }
+        // One of a `tb question`'s options, sent as the answer.
+        "answer-opt" => run(m, a, tp("/answer"), json!({"text": a.arg, "when": "now"}), |m, _| sent(m), cx),
         "requeue" => run(m, a, tp("/requeue"), json!({}), |_, _| "Back in the queue".into(), cx),
         "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
         // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
