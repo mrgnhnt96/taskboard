@@ -618,7 +618,9 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
         .flex()
         .flex_col()
         .flex_1()
-        .min_w(px(160.))
+        .flex_basis(px(200.))
+        .min_w(px(80.))
+        .overflow_hidden()
         .child(
             div()
                 .flex()
@@ -663,7 +665,7 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
             }
         }))
         .child(div().flex_none().w(px(20.)).flex().justify_center().child(chevron(open, t.muted)))
-        .child(div().flex_none().w(px(130.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(kind_color(t, a)).truncate().child(a.kind.clone()))
+        .child(div().flex_shrink(1.).w(px(130.)).min_w(px(64.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(kind_color(t, a)).truncate().child(a.kind.clone()))
         .child(title)
         .child(div().flex_shrink(1.).min_w_0().max_w(px(260.)).text_size(px(12.)).text_color(if goal == "Not in a goal" { t.muted } else { t.goal }).truncate().child(goal))
         .child(div().flex_none().w(px(56.)).flex().justify_end().text_size(px(12.)).text_color(t.muted).child(a.time.clone()))
