@@ -92,6 +92,14 @@ alert is up, so a late Snooze still counts; each notification's pick counts once
 `notified_at` it answered), and a repeat moves the same waiter on to the new notification. A snooze button snoozes
 the alert; a click opens the app on it. When an alert clears (dismissed, resolved, pushed out) its notification is withdrawn (`notify.withdraw`).
 
+That holds for urgent alerts, and for every alert when `[alerts] digest_mins` is 0. Otherwise (5 minutes by default)
+the other alerts don't notify on their own: new ones gather for `digest_mins`, then go out together as one
+notification, `taskboard-digest` ("3 things need you", up to five alerts by name and a count of the rest), which
+opens the app on Home's Needs you list. It goes out again when a new alert has gathered, repeats every
+`alert_every_mins` inside the work hours while any alert is left, and is withdrawn once none is. Its snooze buttons
+snooze the digest as a whole; an alert snoozed on its own sits out of it until its snooze runs out. Its state is the
+setting `alert_digest`.
+
 #### `work_hours` (from `hours.state`)
 ```
 {
