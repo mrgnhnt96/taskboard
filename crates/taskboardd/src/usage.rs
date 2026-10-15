@@ -9,8 +9,9 @@ const WINDOWS: &[(&str, &str)] = &[("five_hour", "5h"), ("seven_day", "7d")];
 const OUT_PCT: f64 = 100.0;
 const SCAN_LIMIT: usize = 12;
 
-fn newest_status_line(app: &App) -> Option<(Row, f64)> {
-    let dir = std::fs::read_dir(&app.cfg.statusline_dir).ok()?;
+/// The rate limits in the newest status-line files, each with when it was written.
+fn status_lines(app: &App) -> Vec<(Row, f64)> {
+    let Ok(dir) = std::fs::read_dir(&app.cfg.statusline_dir) else { return vec![] };
     let mut files: Vec<(std::path::PathBuf, f64)> = dir
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -22,16 +23,17 @@ fn newest_status_line(app: &App) -> Option<(Row, f64)> {
         })
         .collect();
     files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out = vec![];
     for (p, seen) in files.into_iter().take(SCAN_LIMIT) {
         let Ok(text) = std::fs::read_to_string(&p) else { continue };
         let Ok(Value::Object(d)) = serde_json::from_str::<Value>(&text) else { continue };
         if let Some(Value::Object(l)) = d.get("rate_limits") {
             if !l.is_empty() {
-                return Some((l.clone(), seen));
+                out.push((l.clone(), seen));
             }
         }
     }
-    None
+    out
 }
 
 fn midna_limits(app: &App) -> Option<(Row, f64)> {
@@ -50,13 +52,51 @@ fn midna_limits(app: &App) -> Option<(Row, f64)> {
     Some((limits, seen))
 }
 
-fn limits(app: &App) -> Option<(Row, f64)> {
-    let a = midna_limits(app);
-    let b = newest_status_line(app);
-    match (a, b) {
-        (Some(a), Some(b)) => Some(if b.1 > a.1 { b } else { a }),
-        (a, b) => a.or(b),
+/// Folds each source's windows into `known` (window key -> its limits and `seen`), the freshest report of
+/// each window winning, so a report that leaves a window out doesn't drop it.
+fn fold(known: &mut Row, sources: Vec<(Row, f64)>) {
+    for (l, seen) in sources {
+        for (key, _) in WINDOWS {
+            let Some(Value::Object(w)) = l.get(*key) else { continue };
+            if w.get("used_percentage").and_then(|v| v.as_f64()).is_none() {
+                continue;
+            }
+            let older = known.get(*key).and_then(|k| k["seen"].as_f64()).map(|s| s < seen).unwrap_or(true);
+            if older {
+                let mut w = w.clone();
+                w.insert("seen".into(), json!(seen));
+                known.insert(key.to_string(), Value::Object(w));
+            }
+        }
     }
+}
+
+fn sources(app: &App) -> Vec<(Row, f64)> {
+    let mut all = status_lines(app);
+    all.extend(midna_limits(app));
+    all
+}
+
+fn newest(known: &Row) -> f64 {
+    known.values().filter_map(|w| w["seen"].as_f64()).fold(0.0, f64::max)
+}
+
+/// The windows the current reports hold.
+fn limits(app: &App) -> Option<(Row, f64)> {
+    let mut known = Row::new();
+    fold(&mut known, sources(app));
+    (!known.is_empty()).then(|| {
+        let seen = newest(&known);
+        (known, seen)
+    })
+}
+
+/// Every window's last known limits, kept between reports so the meters hold their last value.
+fn remembered(app: &App) -> Option<(Row, f64)> {
+    let fresh = sources(app);
+    let mut sh = app.shared.lock();
+    fold(&mut sh.usage_known, fresh);
+    (!sh.usage_known.is_empty()).then(|| (sh.usage_known.clone(), newest(&sh.usage_known)))
 }
 
 fn window(raw: Option<&Value>, now: f64) -> Option<Value> {
@@ -71,7 +111,7 @@ fn window(raw: Option<&Value>, now: f64) -> Option<Value> {
 }
 
 pub fn state(app: &App) -> Value {
-    let Some((l, seen)) = limits(app) else { return Value::Null };
+    let Some((l, seen)) = remembered(app) else { return Value::Null };
     let now = now_ts();
     let windows: Vec<Value> = WINDOWS
         .iter()
@@ -94,5 +134,38 @@ pub fn out_until(app: &App) -> Option<String> {
         w["resets_at"].as_str().map(|s| s.to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(v: Value) -> Row {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn a_report_without_a_window_keeps_its_last_known_value() {
+        let mut known = Row::new();
+        fold(&mut known, vec![(report(json!({"five_hour": {"used_percentage": 40.0}, "seven_day": {"used_percentage": 66.0}})), 10.0)]);
+        fold(&mut known, vec![(report(json!({"five_hour": {"used_percentage": 43.0}})), 20.0)]);
+        assert_eq!(known["five_hour"]["used_percentage"], 43.0);
+        assert_eq!(known["seven_day"]["used_percentage"], 66.0, "7d holds while reports leave it out");
+        assert_eq!(newest(&known), 20.0);
+    }
+
+    #[test]
+    fn the_freshest_report_of_each_window_wins() {
+        let mut known = Row::new();
+        fold(
+            &mut known,
+            vec![
+                (report(json!({"seven_day": {"used_percentage": 70.0}})), 30.0),
+                (report(json!({"seven_day": {"used_percentage": 60.0}, "five_hour": {"used_percentage": 5.0}})), 25.0),
+            ],
+        );
+        assert_eq!(known["seven_day"]["used_percentage"], 70.0);
+        assert_eq!(known["five_hour"]["used_percentage"], 5.0);
     }
 }

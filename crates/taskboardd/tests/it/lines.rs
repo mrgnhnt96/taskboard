@@ -257,6 +257,30 @@ fn with_the_usage_used_up_the_next_task_waits_until_it_resets_and_start_still_ru
     assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()), "once the usage resets it's delivered");
 }
 
+#[test]
+fn the_usage_meter_keeps_a_window_a_later_report_leaves_out() {
+    let b = new_board();
+    let now = taskboardd::util::now_ts();
+    let at = |ago: f64| taskboardd::util::iso(now - ago);
+    let resets = taskboardd::util::iso(now + 86400.0);
+    b.app.shared.lock().midna_usage = Some(json!({
+        "five_hour": {"used_percentage": 40, "resets_at": resets},
+        "seven_day": {"used_percentage": 66, "resets_at": resets},
+        "observed_at": at(60.0),
+    }));
+    assert_eq!(taskboardd::usage::state(&b.app)["windows"].as_array().unwrap().len(), 2);
+
+    b.app.shared.lock().midna_usage = Some(json!({"five_hour": {"used_percentage": 43, "resets_at": resets}, "observed_at": at(0.0)}));
+    let state = taskboardd::usage::state(&b.app);
+    let pct = |key: &str| state["windows"].as_array().unwrap().iter().find(|w| w["key"] == key).map(|w| w["pct"].clone());
+    assert_eq!(pct("five_hour"), Some(json!(43)));
+    assert_eq!(pct("seven_day"), Some(json!(66)), "7d holds its last known value");
+
+    b.app.shared.lock().midna_usage = None;
+    let state = taskboardd::usage::state(&b.app);
+    assert_eq!(state["windows"].as_array().unwrap().len(), 2, "both meters stay up with no report at all");
+}
+
 fn from_app() -> Query {
     let mut q = Query::new();
     q.insert(api::FROM.into(), "app".into());

@@ -21,6 +21,8 @@ pub struct Shared {
     pub midna_down: bool,
     pub midna_opened: Option<Instant>,
     pub midna_usage: Option<Value>,
+    /// Each usage window's last known limits (`usage.rs`), so a report without one doesn't blank its meter.
+    pub usage_known: serde_json::Map<String, Value>,
     /// Midna's `keep_awake.status` from the last sync (absent on a Midna without keep-awake).
     pub midna_keep_awake: Option<Value>,
     /// The schedule the board last gave Midna's keep-awake, and when.
