@@ -54,6 +54,29 @@ fn the_built_in_rules_say_when_to_stack_and_how_to_merge_it() {
 }
 
 #[test]
+fn with_models_on_the_built_in_rules_say_which_model_and_tb_planning_names_them() {
+    let (_d, app) = board_with(|_, _| {});
+    assert!(planning_for(&app, "project", "webapp")["models"].is_null(), "off: no models");
+    for bit in ["--model small", "mechanical, single-file or copy work", "--model large", "design, cross-crate or risky work", "Unsure: large"] {
+        assert!(planning::MODEL_RULE.contains(bit), "missing {bit:?}");
+    }
+
+    let (_d, app) = board_with(|c, _| c.models.enabled = true);
+    let v = planning_for(&app, "project", "webapp");
+    assert_eq!(v["text"], format!("{}\n{}", planning::BUILT_IN, planning::MODEL_RULE));
+    assert_eq!(v["models"], json!({"small": "sonnet", "large": "opus", "default": "opus"}));
+    assert!(planner_prompt(&app, "webapp").contains(planning::MODEL_RULE));
+
+    let (_d, app) = board_with(|c, d| {
+        std::fs::write(d.join("board.md"), "Opus for everything.").unwrap();
+        c.planning.guide = d.join("board.md").to_string_lossy().into();
+        c.models.enabled = true;
+    });
+    assert_eq!(planning_for(&app, "project", "webapp")["text"], "Opus for everything.", "the owner's file wins");
+    assert!(!planner_prompt(&app, "webapp").contains(planning::MODEL_RULE));
+}
+
+#[test]
 fn a_project_file_wins_over_the_board_file_and_the_board_file_over_the_built_in_rules() {
     let (d, app) = board_with(|c, d| {
         std::fs::write(d.join("board.md"), "One task per screen.\n").unwrap();

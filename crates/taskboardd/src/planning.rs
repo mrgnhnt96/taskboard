@@ -1,7 +1,8 @@
 //! How a goal's work is sliced into tasks: the board's built-in rules, unless the owner wrote their own in
 //! the board's folder (`planning.md` for the board, `planning/<project>.md` for one project) or named a
 //! file elsewhere under `[planning]`. Planners get it in their prompt and
-//! from `tb planning`; the skill's `planning.md` keeps the mechanics (waves, locks, `tb propose`).
+//! from `tb planning`, which also names the models small and large run while `[models]` is on; the
+//! skill's `planning.md` keeps the mechanics (waves, locks, `tb propose`).
 
 use std::collections::BTreeMap;
 
@@ -35,6 +36,15 @@ pub const BUILT_IN: &str = "\
 - Tail merge a stack (the default) when each PR builds, breaks nothing and is safe to ship alone: main gets reviewed pieces one at a time.
 - Head merge a stack when the pieces only make sense together (a migration and the code that needs it, a feature that's half there until the last PR) or main would be in a state you wouldn't ship between them: each PR merges into the one below it, review stays small, and main gets it all in one merge.
 - Set the mode with --stack-merge and say it in the tasks' detail.";
+
+/// The built-in rule for each task's model, added to [`BUILT_IN`] while `[models]` is on.
+pub const MODEL_RULE: &str = "\
+- Give each task a model: --model small (or \"::model=small\" on a --task) for mechanical, single-file or copy work; --model large for design, cross-crate or risky work. Unsure: large.";
+
+/// The built-in rules, with the model rule while the board picks models (`[models] enabled`).
+fn built_in(app: &App) -> String {
+    if app.cfg.models.enabled { format!("{BUILT_IN}\n{MODEL_RULE}") } else { BUILT_IN.to_string() }
+}
 
 /// Where a guide came from, and why a file set for it wasn't used.
 struct Pick {
@@ -71,7 +81,7 @@ fn pick(app: &App, project: Option<&str>) -> Pick {
             Some(_) => {}
         }
     }
-    Pick { text: BUILT_IN.to_string(), from: "built-in", path: None, skipped }
+    Pick { text: built_in(app), from: "built-in", path: None, skipped }
 }
 
 /// `GET /planning?project=<name>` (or `?cwd=<folder>` for the project it's in): the rules in force,
@@ -84,8 +94,10 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
     };
     let p = pick(app, project.as_deref());
     let lessons = crate::lessons::unwritten_planning(app, project.as_deref(), &p.text)?;
+    let m = &app.cfg.models;
+    let models = m.enabled.then(|| json!({"small": m.resolve(Some("small")), "large": m.resolve(Some("large")), "default": m.resolve(None)}));
     Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
-              "lessons": crate::lessons::lines(&lessons)}))
+              "lessons": crate::lessons::lines(&lessons), "models": models}))
 }
 
 /// The rules in force for a project's goals (its own file, else the board's, else the built-in ones)
