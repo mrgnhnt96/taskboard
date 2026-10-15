@@ -140,19 +140,24 @@ fn idle_secs() -> Option<f64> {
     None
 }
 
+/// The next away state from the current one and `idle` seconds without input at `now`, and the
+/// stretch away that just ended, if one did. Away starts and ends at the owner's last input.
+fn away_step(away: Option<f64>, idle: f64, now: f64) -> (Option<f64>, Option<(f64, f64)>) {
+    match away {
+        None if idle >= AWAY_SECS => (Some(now - idle), None),
+        Some(from) if idle < AWAY_SECS => (None, Some((from, now - idle))),
+        _ => (away, None),
+    }
+}
+
 /// Notes the start and end of each stretch away from the idle time now.
 fn check_away(app: &App) {
     let Some(idle) = idle_secs() else { return };
-    let now = now_ts();
-    let away = *AWAY_NOW.lock();
-    match away {
-        None if idle >= AWAY_SECS => set_away_now(Some(now - idle)),
-        Some(from) if idle < AWAY_SECS => {
-            set_away_now(None);
-            note_away(from, now - idle);
-            save_aways(app);
-        }
-        _ => {}
+    let (next, ended) = away_step(*AWAY_NOW.lock(), idle, now_ts());
+    set_away_now(next);
+    if let Some((from, to)) = ended {
+        note_away(from, to);
+        save_aways(app);
     }
 }
 
@@ -180,15 +185,34 @@ pub fn watch(app: Arc<App>) {
 mod tests {
     use super::*;
 
+    // One test for the process-wide logs, so nothing else reads them halfway.
     #[test]
-    fn overlap() {
+    fn overlap_and_away_spans() {
         forget_sleeps();
+        forget_aways();
         note_sleep(100.0, 200.0);
         note_sleep(300.0, 350.0);
         assert_eq!(slept_between(0.0, 1000.0), 150.0);
         assert_eq!(slept_between(150.0, 320.0), 70.0);
         assert_eq!(slept_between(200.0, 300.0), 0.0);
+
+        note_away(180.0, 250.0);
+        assert_eq!(away_spans(0.0, 1000.0), vec![(100.0, 250.0), (300.0, 350.0)], "sleeps and aways merge");
+        assert_eq!(away_spans(120.0, 320.0), vec![(120.0, 250.0), (300.0, 320.0)], "clipped to the range");
+        set_away_now(Some(900.0));
+        assert_eq!(away_spans(800.0, 1000.0), vec![(900.0, 1000.0)], "a stretch still going on runs to the end of the range");
+        assert_eq!(away_spans(0.0, 850.0), vec![(100.0, 250.0), (300.0, 350.0)]);
         forget_sleeps();
+        forget_aways();
+    }
+
+    #[test]
+    fn away_starts_and_ends_at_the_last_input() {
+        let (now, idle) = (10_000.0, AWAY_SECS + 60.0);
+        assert_eq!(away_step(None, 60.0, now), (None, None), "a minute idle isn't away");
+        assert_eq!(away_step(None, idle, now), (Some(now - idle), None));
+        assert_eq!(away_step(Some(5_000.0), idle, now), (Some(5_000.0), None), "still away");
+        assert_eq!(away_step(Some(5_000.0), 3.0, now), (None, Some((5_000.0, now - 3.0))), "back: it ends at the input");
     }
 
     #[test]
