@@ -1540,8 +1540,8 @@ fn checkpoint_request(app: &App, id: i64) -> Result<Value> {
 
 fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mode = { let m = body_str(body, "mode"); if m.is_empty() { "fresh".to_string() } else { m } };
-    if mode != "fresh" && mode != "reopen" {
-        return err(400, "Resume mode must be fresh or reopen.");
+    if !matches!(mode.as_str(), "fresh" | "reopen" | "finish") {
+        return err(400, "Resume mode must be fresh, reopen or finish.");
     }
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
@@ -1554,6 +1554,11 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
         if board::live_start_job(app, &t)?.map(|j| matches!(j.s("state"), Some("pending") | Some("running"))).unwrap_or(false) {
             return err(409, "It's already starting in Midna.");
         }
+        if mode == "finish" && !t.b("lost") {
+            return err(409, "Only a task that lost its terminal is marked done from here.");
+        }
+        // Read before `lost` is cleared: what the board found goes in the new terminal's prompt.
+        let finish = (mode == "finish").then(|| crate::lost_done::finish_prompt(&t, &board::tb_cmd(app)));
         let mut ctx = board::task_context(&t);
         let cwd = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
         // Reopening after its compact failed means resuming the conversation as it is.
@@ -1571,12 +1576,19 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
         } else {
             let edited = body_str(body, "handoff");
             let mut text = if edited.is_empty() { handoff::build(app, id)? } else { edited.clone() };
+            if let Some(f) = &finish {
+                text = format!("{marker} {f}\n\n{text}");
+            }
             if !text.contains(&marker) {
                 text = format!("{marker}\n{text}");
             }
             runner::start_task(app, &t, "new", None, Some(text), None, cwd)?;
-            let note = if mode == "fresh" { "" } else { " (the old conversation isn't known, so it starts fresh)" };
-            board::log_event(app, id, OWNER, "handoff", &format!("Resumed in a new terminal with the handoff{}{note}", if edited.is_empty() { "" } else { " (edited)" }))?;
+            if finish.is_some() {
+                board::log_event(app, id, OWNER, "handoff", "Asked a new terminal to check the work shipped and mark it done")?;
+            } else {
+                let note = if mode == "fresh" { "" } else { " (the old conversation isn't known, so it starts fresh)" };
+                board::log_event(app, id, OWNER, "handoff", &format!("Resumed in a new terminal with the handoff{}{note}", if edited.is_empty() { "" } else { " (edited)" }))?;
+            }
         }
         Ok(())
     })?;

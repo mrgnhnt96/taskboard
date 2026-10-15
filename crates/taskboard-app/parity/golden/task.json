@@ -1753,7 +1753,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1761,6 +1761,7 @@
           "tab:log",
           "resume:fresh",
           "resume:reopen",
+          "resume:finish",
           "tab:context",
           "detach"
         ],
@@ -1887,7 +1888,7 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -1895,6 +1896,7 @@
           "tab:log",
           "resume:fresh",
           "resume:reopen!",
+          "resume:finish",
           "tab:context",
           "detach"
         ],
@@ -2033,7 +2035,7 @@
         }
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Sent to Midna See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Lost 4m ago Running 2h 5m Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done Sent to Midna See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
@@ -2041,6 +2043,7 @@
           "tab:log",
           "resume:fresh",
           "resume:reopen",
+          "resume:finish",
           "tab:context",
           "detach"
         ],

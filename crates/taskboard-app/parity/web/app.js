@@ -965,7 +965,7 @@ function overviewTab(t) {
     out.push(`<div class="box lost"><span class="box-label">Terminal lost</span>
       <p>${esc(t.latest || 'The terminal closed before the task was done.')}</p>
       ${savedLine(t) ? `<p class="sub2">${esc(savedLine(t))}</p>` : ''}
-      <div class="row">${btn('Resume in a new terminal', 'resume', { id: r, arg: 'fresh', cls: 'primary', grp: 'lost:' + r })}${btn('Reopen the old conversation', 'resume', { id: r, arg: 'reopen', grp: 'lost:' + r, disabled: !t.claude_session_id, title: t.claude_session_id ? '' : 'No conversation was saved for this task' })}</div>
+      <div class="row">${btn('Resume in a new terminal', 'resume', { id: r, arg: 'fresh', cls: 'primary', grp: 'lost:' + r })}${btn('Reopen the old conversation', 'resume', { id: r, arg: 'reopen', grp: 'lost:' + r, disabled: !t.claude_session_id, title: t.claude_session_id ? '' : 'No conversation was saved for this task' })}${btn('Mark done', 'resume', { id: r, arg: 'finish', grp: 'lost:' + r })}</div>
       ${note('lost:' + r)}
       <button type="button" class="btn link" data-act="tab" data-arg="context">See what the new terminal gets</button></div>`);
   } else if (t.status === 'needs' && t.needs_reason === 'start_failed') {

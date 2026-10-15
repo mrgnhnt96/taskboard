@@ -42,6 +42,30 @@ pub fn card(t: &Row) -> Value {
     }
 }
 
+/// What a lost task's new terminal is told when you mark it done from its card: check that the work
+/// shipped and hand it in with `tb submit`, using what `sweep` found when it found something. The app
+/// only asks; the terminal makes the change.
+pub fn finish_prompt(t: &Row, tb: &str) -> String {
+    let found = card(t);
+    let found = found.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let mut lines = vec!["Morgan marked this task done from its card: its terminal closed before it was handed in, and its work looks finished.".to_string()];
+    if found.is_empty() {
+        lines.push("The board found no sign of it yet, so look in the repository and its pull requests for the work.".into());
+    } else {
+        lines.push("Since the terminal closed, the board found:".into());
+        for f in found {
+            let url = f["url"].as_str().map(|u| format!(" ({u})")).unwrap_or_default();
+            lines.push(format!("- {}{url}", f["what"].as_str().unwrap_or("")));
+        }
+    }
+    lines.push(format!(
+        "Check that the work shipped, then finish with {tb} submit \"<summary>\": add --pr <link> for its pull request, or \
+         --no-pr \"<why>\" when it shipped without one. Don't redo the work. If it didn't ship after all, say what's missing \
+         with {tb} note and carry on with the task below."
+    ));
+    lines.join("\n")
+}
+
 /// Looks again at each lost task that's due. Outside a transaction: git and gh may take a while.
 pub fn sweep(app: &App) -> Result<()> {
     for t in app.db.q("SELECT * FROM tasks WHERE lost = 1 AND status = 'needs'", p![])? {
@@ -428,5 +452,37 @@ esac
     fn a_task_back_from_lost_shows_nothing() {
         let t: Row = jloads_obj(Some(&jdumps(&json!({"lost": 0, "looks_finished": jdumps(&json!({"found": [{"what": "x"}]}))}))));
         assert!(card(&t).is_null());
+    }
+
+    #[test]
+    fn marking_a_lost_task_done_asks_a_new_terminal_to_submit_it_with_what_was_found() {
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let app = app(data.path());
+        let id = lost_task(&app, "Release midna v0.1.0-beta.21", r.path(), "2026-10-15T21:25:00Z", json!({}));
+        let seen = json!({"lost_at": "2026-10-15T21:25:00Z", "found": [{"what": "PR #12 merged: Lost cards", "at": "2026-10-15T22:00:00Z", "url": "https://x/pull/12"}]});
+        app.db.x("UPDATE tasks SET looks_finished = ? WHERE id = ?", p![jdumps(&seen), id]).unwrap();
+
+        let path = format!("tasks/T{id}/resume");
+        crate::api::dispatch(&app, "POST", &path, &crate::api::Query::new(), &json!({"mode": "finish"})).unwrap();
+        let jobs = app.db.q("SELECT args FROM jobs WHERE task_id = ?", p![id]).unwrap();
+        let args: Value = serde_json::from_str(jobs.last().unwrap().s("args").unwrap()).unwrap();
+        let prompt = args["prompt"].as_str().unwrap();
+        assert!(prompt.starts_with(&format!("[task-board:T{id}] Morgan marked this task done")), "{prompt}");
+        assert!(prompt.contains("- PR #12 merged: Lost cards (https://x/pull/12)"), "{prompt}");
+        assert!(prompt.contains("tb submit"), "{prompt}");
+        assert!(!board::get_task(&app, id).unwrap().b("lost"));
+
+        // Only a lost task: one with a live terminal is handed in from there.
+        let e = crate::api::dispatch(&app, "POST", &path, &crate::api::Query::new(), &json!({"mode": "finish"})).unwrap_err();
+        assert_eq!(e.status, 409);
+    }
+
+    #[test]
+    fn with_nothing_found_the_terminal_is_told_to_look() {
+        let t: Row = jloads_obj(Some(&jdumps(&json!({"lost": 1, "looks_finished": jdumps(&json!({"lost_at": "x"}))}))));
+        let p = finish_prompt(&t, "tb");
+        assert!(p.contains("found no sign of it yet"), "{p}");
+        assert!(p.contains("tb submit \"<summary>\""), "{p}");
     }
 }

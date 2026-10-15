@@ -700,6 +700,8 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                     !claude,
                     (!claude).then_some("No conversation was saved for this task"),
                 ),
+                // A new terminal checks the work shipped and hands it in with `tb submit`.
+                c.btn("Mark done", Act::new("resume", "finish", &r, &grp), Look::Plain, false, None),
             ],
         ));
         bx.extend(c.note(&grp));

@@ -41,6 +41,9 @@ pub enum Sev {
 pub enum Act {
     /// A lost terminal: `POST /tasks/:id/resume {mode: fresh}`.
     Restart(String),
+    /// A lost task whose work shipped: `POST /tasks/:id/resume {mode: finish}`, a new terminal that
+    /// checks it and hands it in with `tb submit`.
+    MarkDone(String),
     /// Midna couldn't start it: `POST /tasks/:id/start {mode: new}`.
     Start(String),
     /// Show the task's terminal: `POST /tasks/:id/focus`.
@@ -58,6 +61,7 @@ impl Act {
     pub fn label(&self) -> &'static str {
         match self {
             Act::Restart(_) => "Restart",
+            Act::MarkDone(_) => "Mark done",
             Act::Start(_) => "Start",
             Act::Focus(_) => "Focus in Midna",
             Act::Continue(..) => "Continue",
@@ -90,6 +94,8 @@ pub struct Ask {
     /// "41m", "3h", "now".
     pub time: String,
     pub act: Option<Act>,
+    /// A second button beside `act`: Mark done on a lost task.
+    pub also: Option<Act>,
     /// A task waiting on your answer: it goes under Answer with a field of its own.
     pub answer: bool,
     /// Review and urgent alerts stay until what raised them clears.
@@ -173,6 +179,7 @@ pub fn ask_vm(a: &Value) -> Ask {
     } else {
         (Sev::Warn, "Needs you", r.clone().map(Act::OpenTask))
     };
+    let also = r.clone().map(Act::MarkDone).filter(|_| has_card && b(card, "lost"));
     let act = act.or_else(|| r.clone().map(Act::OpenTask)).or_else(|| opt_s(a, "goal").map(|g| Act::OpenGoal(g.to_string())));
     let goal_ref = opt_s(a, "goal").map(str::to_string).or_else(|| obj(card, "goal").map(|g| s(g, "ref").to_string()));
     let goal_name = opt_s(a, "goal_name").filter(|n| !n.is_empty()).or_else(|| obj(card, "goal").and_then(|g| opt_s(g, "name"))).unwrap_or("");
@@ -221,6 +228,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         wave: card["wave"].as_i64(),
         at: s(a, "at").to_string(),
         time: short_ago(s(a, "at")),
+        also,
         act,
         answer,
         // The board keeps these until they're handled (`dispatch::stays`).
@@ -256,6 +264,7 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         time: short_ago(&at),
         at,
         act: Some(Act::Continue(gr, n)),
+        also: None,
         answer: false,
         dismiss: false,
         actions: Vec::new(),
@@ -428,6 +437,7 @@ fn sent(m: &mut MainWindow, text: String, cx: &mut Context<MainWindow>) {
 pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
     match act.clone() {
         Act::Restart(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "fresh"}), cx, move |m, _, cx| sent(m, format!("Restarting {r}"), cx)),
+        Act::MarkDone(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "finish"}), cx, move |m, _, cx| sent(m, format!("A new terminal checks {r} and marks it done"), cx)),
         Act::Start(r) => m.post(format!("tasks/{r}/start"), json!({"mode": "new"}), cx, move |m, _, cx| sent(m, format!("Starting {r}"), cx)),
         Act::Focus(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Showing {r}’s terminal in Midna"), cx)),
         Act::Continue(g, n) => m.post(format!("goals/{g}/waves/{n}/continue"), json!({}), cx, move |m, v, cx| {
@@ -670,12 +680,16 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
     };
 
     // An open question has its signals under its field.
-    let button = a.act.clone().filter(|_| !(question && open)).map(|act| {
-        kit::btn(t, id("act"), act.label()).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
+    let button = |part: &str, act: Act| {
+        kit::btn(t, id(part), act.label()).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
             cx.stop_propagation();
             run_act(m, &act, cx);
         }))
-    });
+    };
+    let buttons: Vec<_> = [("act", a.act.clone().filter(|_| !(question && open))), ("also", a.also.clone())]
+        .into_iter()
+        .filter_map(|(part, act)| act.map(|act| button(part, act)))
+        .collect();
 
     let head = div()
         .id(id("head"))
@@ -697,7 +711,7 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
         .child(title)
         .child(div().flex_shrink(1.).min_w_0().max_w(px(260.)).text_size(px(12.)).text_color(if goal == "Not in a goal" { t.muted } else { t.goal }).truncate().child(goal))
         .child(div().flex_none().w(px(56.)).flex().justify_end().text_size(px(12.)).text_color(t.muted).child(a.time.clone()))
-        .child(div().flex_none().w(px(110.)).h(px(30.)).flex().justify_end().children(button));
+        .child(div().flex_none().min_w(px(110.)).h(px(30.)).flex().justify_end().gap(px(6.)).children(buttons));
 
     let mut card = div()
         .flex()
@@ -894,6 +908,9 @@ mod tests {
         let asks = asks_vm(&home);
         assert_eq!(asks.iter().map(|a| a.kind.as_str()).collect::<Vec<_>>(), vec!["Terminal lost", "Question", "Review the PR"]);
         assert_eq!(asks[0].act, Some(Act::Restart("T6".into())));
+        assert_eq!(asks[0].also, Some(Act::MarkDone("T6".into())));
+        assert_eq!(asks[0].also.as_ref().map(Act::label), Some("Mark done"));
+        assert_eq!(asks[1].also, None);
         assert_eq!(asks[0].goal, Some(("G2".into(), "Login".into())));
         assert_eq!(asks[1].text, "Keep the old form?");
         assert_eq!(asks[1].act, Some(Act::Focus("T5".into())));
@@ -910,6 +927,7 @@ mod tests {
         let ask = ask_vm(&json!({"id": "a1", "task": "T6", "text": "T6 lost its terminal.", "card": c}));
         assert_eq!((ask.kind.as_str(), ask.sev), ("Looks finished", Sev::Warn));
         assert_eq!(ask.act, Some(Act::OpenTask("T6".into())));
+        assert_eq!(ask.also, Some(Act::MarkDone("T6".into())));
         let line = format!("Release v0.2.0 published · {}", fmt::hhmm("2026-10-09T21:26:00Z"));
         assert_eq!(ask.text, line);
         let tile = tile_vm(&c);
