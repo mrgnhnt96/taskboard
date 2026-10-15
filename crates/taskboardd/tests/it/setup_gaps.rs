@@ -216,6 +216,23 @@ fn a_project_with_no_reviewers_syncs_its_roster_once_on_its_own() {
     assert_eq!(b.app.db.get_setting("reviewers_synced:webapp").unwrap(), None);
 }
 
+#[test]
+fn a_solo_project_synced_with_only_the_owner_keeps_its_gap() {
+    let b = board_with(|c| c.reviewers.min_commits = 1);
+    let repo = b.dir.path().join("webapp");
+    let git = |args: &[&str]| crate::reviewers::sh_git(&repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", "https://github.com/acme/webapp.git"]);
+    git(&["config", "user.name", "Me"]);
+    git(&["config", "user.email", "9+me-gh@users.noreply.github.com"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "a"]);
+
+    setup::auto_sync(&b.app).unwrap();
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"], "the owner is never asked to review their own PRs");
+}
+
 fn auto_synced(b: &Board) -> Option<String> {
     b.app.db.get_setting("reviewers_auto_synced").unwrap()
 }

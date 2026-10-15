@@ -239,9 +239,15 @@ pub fn review_on(app: &App, project: Option<&str>) -> bool {
 }
 
 /// Whether the board has anyone it could ask on a project's PRs: a roster reviewer, not removed,
-/// whose host id is known.
+/// whose host id is known, and not the owner (never asked to review their own PRs).
 pub fn any_askable(app: &App, project: &str) -> Result<bool> {
-    Ok(roster(app, project)?.iter().any(|r| r.s("removed_at").is_none() && has(r.s("host_user"))))
+    let known: Vec<Row> = roster(app, project)?.into_iter().filter(|r| r.s("removed_at").is_none() && has(r.s("host_user"))).collect();
+    if known.is_empty() {
+        return Ok(false);
+    }
+    let repo = crate::projects::project_path(app, Some(project))?;
+    let me = crate::picker::selves(app, repo.as_deref(), &Value::Null);
+    Ok(known.iter().any(|r| !idents(r).iter().any(|i| me.contains(i))))
 }
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
