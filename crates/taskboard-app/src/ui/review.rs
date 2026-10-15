@@ -6,6 +6,7 @@ use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
 use crate::ui::kit;
+use crate::ui::select::sel;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -239,7 +240,8 @@ fn section(t: &Theme, title: &str) -> Div {
 }
 
 fn line_el(t: &Theme, id: String, l: &Line, mono: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    let name = if mono { kit::mono(t, l.name.clone()) } else { div().text_size(px(13.)).child(l.name.clone()) };
+    let name = sel(t, "name", l.name.clone());
+    let name = if mono { div().font_family(t.mono_font.clone()).text_size(px(12.)).child(name) } else { div().text_size(px(13.)).child(name) };
     let row = div()
         .id(SharedString::from(id))
         .flex()
@@ -247,7 +249,7 @@ fn line_el(t: &Theme, id: String, l: &Line, mono: bool, cx: &mut Context<MainWin
         .gap(px(12.))
         .py(px(3.))
         .child(div().w(px(64.)).flex_none().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(l.took.clone()))
-        .child(div().flex().flex_col().flex_1().min_w_0().gap(px(1.)).child(name.overflow_hidden().text_ellipsis()).child(div().text_size(px(12.)).text_color(t.muted).child(l.sub.clone())));
+        .child(div().flex().flex_col().flex_1().min_w_0().gap(px(1.)).child(name.overflow_hidden().text_ellipsis()).child(div().text_size(px(12.)).text_color(t.muted).child(sel(t, "sub", l.sub.clone()))));
     match l.task.clone() {
         Some(r) => row.cursor_pointer().hover(|d| d.bg(t.panel_2)).rounded(px(6.)).on_click(cx.listener(move |m, _, _, cx| m.open_task(r.clone(), cx))),
         None => row,
@@ -302,8 +304,8 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         .flex_wrap()
         .items_center()
         .gap(px(14.))
-        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(v.period.clone()))
-        .child(div().text_size(px(14.)).text_color(t.text_2).child(format!("{} of agent time", v.total)))
+        .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(sel(&t, "review-period", v.period.clone())))
+        .child(div().text_size(px(14.)).text_color(t.text_2).child(sel(&t, "review-total", format!("{} of agent time", v.total))))
         .child(div().flex_1())
         .child(nav);
 
@@ -321,7 +323,7 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
         }))
     });
     let wait = v.wait.clone().map(|(time, why)| {
-        section(&t, "Waiting on you").child(div().text_size(px(13.)).child(div().font_weight(FontWeight::SEMIBOLD).child(time)).child(div().text_size(px(12.)).text_color(t.muted).child(why)))
+        section(&t, "Waiting on you").child(div().text_size(px(13.)).child(div().font_weight(FontWeight::SEMIBOLD).child(sel(&t, "review-wait-time", time))).child(div().text_size(px(12.)).text_color(t.muted).child(sel(&t, "review-wait-why", why))))
     });
 
     // ---- suggested fixes
@@ -353,9 +355,16 @@ pub fn render(m: &mut MainWindow, _window: &mut Window, cx: &mut Context<MainWin
             .when(!f.went.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(t.muted).child(f.went.clone())))
             .on_click(cx.listener(move |m, _, _, cx| m.open_issue(r.clone(), cx)))
     }));
-    fixes = fixes.children(v.fixes_note.clone().map(|n| div().text_size(px(13.)).text_color(t.muted).child(n)));
+    fixes = fixes.children(v.fixes_note.clone().map(|n| div().text_size(px(13.)).text_color(t.muted).child(sel(&t, "review-fixes-note", n))));
     fixes = fixes.children(
-        v.suggestions.iter().map(|(title, detail)| div().flex().flex_col().gap(px(1.)).child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(title.clone())).child(div().text_size(px(12.)).text_color(t.muted).child(detail.clone()))),
+        v.suggestions.iter().enumerate().map(|(n, (title, detail))| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(sel(&t, SharedString::from(format!("review-sugg-title-{n}")), title.clone())))
+                .child(div().text_size(px(12.)).text_color(t.muted).child(sel(&t, SharedString::from(format!("review-sugg-detail-{n}")), detail.clone())))
+        }),
     );
     let has_fixes = !v.fixes.is_empty() || v.fixes_note.is_some() || !v.suggestions.is_empty();
 

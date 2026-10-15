@@ -11,6 +11,7 @@ use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, s};
 use crate::theme::Theme;
 use crate::ui::kit;
+use crate::ui::select::sel;
 use crate::ui::status::{self, St};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -834,13 +835,13 @@ fn header(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) ->
                                 .flex()
                                 .items_center()
                                 .gap(px(10.))
-                                .child(div().text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(gr))
+                                .child(div().text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(sel(t, "goal-ref", gr)))
                                 .children(project)
                                 .children(epic),
                         )
-                        .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).line_height(relative(1.2)).child(s(g, "name").to_string()))
+                        .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).line_height(relative(1.2)).child(sel(t, "goal-name", s(g, "name").to_string())))
                         .when_some(fmt::opt_s(g, "tldr").map(str::to_string), |d, tl| {
-                            d.child(div().max_w(px(820.)).text_size(px(14.)).line_height(relative(1.5)).text_color(t.text_2).child(tl))
+                            d.child(div().max_w(px(820.)).text_size(px(14.)).line_height(relative(1.5)).text_color(t.text_2).child(sel(t, "goal-tldr", tl)))
                         }),
                 )
                 .child(buttons(m, t, g, cx)),

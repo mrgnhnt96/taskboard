@@ -1357,7 +1357,6 @@ function issuePanel() {
     <div class="stack" style="gap:4px"><h2 class="title">${esc(b.title)}</h2><div class="subline"><span class="mono">${esc(b.project)}</span><span>${esc(state)}${b.state === 'task' && b.task_id != null ? ` · <a href="#/?task=T${esc(b.task_id)}">Open it</a>` : ''}</span></div></div>
     ${(b.state || 'open') === 'open' ? `<div class="box info"><span style="font-size:13px">Not part of any task yet. Make it a task to queue it${jiraOn() ? ', or send it to Jira' : ''}.</span><div class="row">${issueActions(b, 'board')}</div>${note('issue:' + ref(b, 'B'))}</div>` : note('issue:' + ref(b, 'B'))}
     ${issueDetail(b)}
-    <a href="#/backlog?issue=${esc(ref(b, 'B'))}" style="font-size:13px;align-self:flex-start">See every backlog issue</a>
   </aside>`;
 }
 

@@ -14,6 +14,7 @@ pub mod modals;
 pub mod prwatch;
 pub mod review;
 pub mod search;
+pub mod select;
 pub mod sessions;
 pub mod sidebar;
 pub mod status;

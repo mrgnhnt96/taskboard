@@ -11,6 +11,7 @@ use crate::app::{MainWindow, Page, Panel, TaskTab};
 use crate::fmt::{self, s};
 use crate::theme::{Theme, ThemeMode};
 use crate::ui::kit;
+use crate::ui::select::sel;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -875,7 +876,7 @@ impl Draw<'_> {
     #[inline(never)]
     fn text(&self, s: &str, st: St, boxed: Option<BoxTone>) -> Div {
         let t = self.t;
-        let d = div().child(s.to_string());
+        let d = div().child(sel(t, self.id("sel"), s.to_string()));
         match st {
             // Inherits the container's size and colour.
             St::Plain => d.min_w_0(),
@@ -904,7 +905,7 @@ impl Draw<'_> {
             St::Kind => d.flex_none().px(px(5.)).rounded(px(4.)).bg(t.panel_2).text_size(px(11.5)).text_color(t.muted),
             // `.handoff`: 13px pre-wrap, at most 360px tall (it scrolls past that).
             St::Handoff => div().child(
-                div().id(self.id("handoff")).max_h(px(360.)).overflow_y_scroll().text_size(px(13.)).line_height(relative(1.5)).text_color(t.text).child(s.to_string()),
+                div().id(self.id("handoff")).max_h(px(360.)).overflow_y_scroll().text_size(px(13.)).line_height(relative(1.5)).text_color(t.text).child(sel(t, self.id("sel"), s.to_string())),
             ),
             St::Code => d.px(px(5.)).py(px(1.)).rounded(px(5.)).bg(t.bg).border_1().border_color(t.border).font_family(t.mono_font.clone()).text_size(px(12.3)),
             St::Pre => d.px(px(12.)).py(px(10.)).rounded(px(8.)).bg(t.bg).border_1().border_color(t.border).font_family(t.mono_font.clone()).text_size(px(12.5)),
@@ -913,7 +914,7 @@ impl Draw<'_> {
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             St::Count => d.flex_none().px(px(7.)).rounded_full().bg(t.col).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             St::Jkey => d.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg),
-            St::Glyph(dot) => d.flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot).unwrap_or(t.muted)),
+            St::Glyph(dot) => div().child(s.to_string()).flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot).unwrap_or(t.muted)),
         }
     }
 
