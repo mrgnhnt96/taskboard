@@ -330,6 +330,10 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // The board outgrows SQLite's 2 MB page cache; reading pages back from disk was most of a
+        // `GET /state`. 64 MB in memory, and the file mapped.
+        conn.pragma_update(None, "cache_size", -65536).ok();
+        conn.pragma_update(None, "mmap_size", 268_435_456).ok();
         conn.execute_batch(SCHEMA)?;
         add_columns(&conn, ADDED)?;
         conn.execute_batch(crate::devices::SCHEMA)?;
@@ -452,6 +456,18 @@ impl Db {
         params.push(id.clone());
         self.x(&sql, params)?;
         Ok(())
+    }
+
+    /// Whether this thread is inside `tx`: what it reads there may yet roll back.
+    pub fn in_tx(&self) -> bool {
+        self.inner.lock().depth.get() > 0
+    }
+
+    /// Changes when anything is written: this connection's writes, or another's commit. A rollback
+    /// doesn't move it back, so don't key on it inside `tx`.
+    pub fn mark(&self) -> Result<(i64, i64)> {
+        let changes = self.count("SELECT total_changes()", p![])?;
+        Ok((changes, self.count("PRAGMA data_version", p![])?))
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {

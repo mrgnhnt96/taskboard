@@ -194,6 +194,8 @@ pub struct MainWindow {
     goals_loaded: bool,
     /// Bumped by every refresh so a slow, older answer never overwrites a newer one.
     generation: u64,
+    /// The newest refresh that has answered: behind `generation` while one is still out.
+    answered: u64,
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
@@ -232,6 +234,7 @@ impl MainWindow {
             search: Default::default(),
             goals_loaded: false,
             generation: 0,
+            answered: 0,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
         };
@@ -562,10 +565,7 @@ impl MainWindow {
             loop {
                 cx.background_executor().timer(POLL).await;
                 if this
-                    .update(cx, |m, cx| {
-                        m.refresh(cx);
-                        m.check_hooks(cx);
-                    })
+                    .update(cx, |m, cx| m.poll(cx))
                     .is_err()
                 {
                     break;
@@ -573,6 +573,15 @@ impl MainWindow {
             }
         })
         .detach();
+    }
+
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        // A poll waits for a refresh that's still out (a page just opened) instead of starting over
+        // and throwing its answer away.
+        if self.answered == self.generation {
+            self.refresh(cx);
+        }
+        self.check_hooks(cx);
     }
 
     /// Re-read Claude Code's config for the hooks' state (it can change outside the app).
@@ -627,6 +636,7 @@ impl MainWindow {
         cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { want.fetch(&*backend) }).await;
             let _ = this.update(cx, |m, cx| {
+                m.answered = m.answered.max(generation);
                 if m.generation == generation {
                     let asked: Vec<String> = got.goal_rows.iter().map(|(r, _)| r.clone()).collect();
                     got.apply(m);
@@ -689,6 +699,7 @@ struct Wants {
 /// One fetch's answer: the value, or the board's sentence for why it failed.
 type Answer = Result<Value, String>;
 
+#[derive(Default)]
 struct Got {
     state: Option<Result<Value, CallError>>,
     goals: Option<Value>,
@@ -735,31 +746,55 @@ impl Wants {
         }
     }
 
+    /// Every call at once, so the page's own answer doesn't wait behind `GET /state`.
     fn fetch(self, be: &dyn Backend) -> Got {
-        let state = Some(be.get("state", &self.state_q));
-        // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
-        let up = state.as_ref().is_some_and(|r| r.is_ok());
-        let get = |p: &str, q: &[(&str, String)]| -> Option<Answer> { up.then(|| be.get(p, q).map_err(|e| e.message)) };
-        let reviews = self.review.and_then(|_| get("reviews", &[]));
-        let newest = || reviews.as_ref()?.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
-        let review = self.review.and_then(|id| id.or_else(newest)).and_then(|id| get(&format!("reviews/{id}"), &[]).map(|v| (id, v)));
-        Got {
-            goals: get("goals", &[]).and_then(Result::ok),
-            task: self.task.and_then(|r| get(&format!("tasks/{r}"), &[]).map(|v| (r, v))),
-            issue: self.issue.and_then(|r| get(&format!("backlog/{r}"), &[]).map(|v| (r, v))),
-            goal: self.goal.and_then(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))),
-            goal_rows: self.goal_rows.into_iter().filter_map(|r| get(&format!("goals/{r}"), &[]).map(|v| (r, v))).collect(),
-            sessions: if self.sessions { get("sessions", &[("project", "all".into())]) } else { None },
-            closed: if self.sessions { get("sessions/closed", &[("project", "all".into())]).and_then(Result::ok) } else { None },
-            session: self.session.and_then(|id| get(&format!("sessions/{id}"), &[]).map(|v| (id, v))),
-            days: self.days_q.and_then(|q| get("days", &q)),
-            today: if self.home.is_some() { get("days", &[]).and_then(Result::ok) } else { None },
-            home: self.home.and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
-            tasks: if self.tasks { get("tasks", &[]).and_then(Result::ok) } else { None },
-            reviews,
-            review,
-            state,
+        fn join<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
+            h.join().expect("fetch thread")
         }
+        let get = |p: &str, q: &[(&str, String)]| -> Answer { be.get(p, q).map_err(|e| e.message) };
+        let got = std::thread::scope(|s| {
+            let state = s.spawn(|| be.get("state", &self.state_q));
+            let goals = s.spawn(|| get("goals", &[]));
+            let task = self.task.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("tasks/{r}"), &[]))));
+            let issue = self.issue.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("backlog/{r}"), &[]))));
+            let goal = self.goal.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("goals/{r}"), &[]))));
+            let goal_rows: Vec<_> = self.goal_rows.iter().map(|r| s.spawn(move || (r.clone(), get(&format!("goals/{r}"), &[])))).collect();
+            let sessions = self.sessions.then(|| s.spawn(move || get("sessions", &[("project", "all".into())])));
+            let closed = self.sessions.then(|| s.spawn(move || get("sessions/closed", &[("project", "all".into())])));
+            let session = self.session.as_ref().map(|id| s.spawn(move || (id.clone(), get(&format!("sessions/{id}"), &[]))));
+            let days = self.days_q.as_ref().map(|q| s.spawn(move || get("days", q)));
+            let today = self.home.is_some().then(|| s.spawn(move || get("days", &[])));
+            let home = self.home.as_ref().map(|p| s.spawn(move || get("home", &[("project", p.clone())])));
+            let tasks = self.tasks.then(|| s.spawn(move || get("tasks", &[])));
+            let reviews = self.review.map(|id| {
+                s.spawn(move || {
+                    let list = get("reviews", &[]);
+                    let newest = list.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
+                    let one = id.or(newest).map(|id| (id, get(&format!("reviews/{id}"), &[])));
+                    (list, one)
+                })
+            });
+            let (reviews, review) = reviews.map(join).map_or((None, None), |(l, one)| (Some(l), one));
+            Got {
+                state: Some(join(state)),
+                goals: join(goals).ok(),
+                task: task.map(join),
+                issue: issue.map(join),
+                goal: goal.map(join),
+                goal_rows: goal_rows.into_iter().map(join).collect(),
+                sessions: sessions.map(join),
+                closed: closed.map(join).and_then(Result::ok),
+                session: session.map(join),
+                days: days.map(join),
+                today: today.map(join).and_then(Result::ok),
+                home: home.map(join).and_then(Result::ok),
+                tasks: tasks.map(join).and_then(Result::ok),
+                reviews,
+                review,
+            }
+        });
+        // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
+        if got.state.as_ref().is_some_and(|r| r.is_ok()) { got } else { Got { state: got.state, ..Got::default() } }
     }
 }
 
@@ -1669,6 +1704,46 @@ mod tests {
         .unwrap();
         let seen = format!("reviews/{id}/seen");
         assert_eq!(rec.posts().iter().filter(|(p, _)| *p == seen).count(), 1, "opening it marks it seen once");
+    }
+
+    /// Review opened without a pick (the sidebar) shows the newest review.
+    #[gpui_kit::test]
+    fn the_review_page_opens_on_the_newest_review(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend as _;
+        let (w, rec) = window(cx);
+        rec.board().post("reviews", json!({})).unwrap();
+        rec.board().post("reviews", json!({})).unwrap();
+        let newest = arr(&rec.board().get("reviews", &[]).unwrap(), "reviews")[0]["id"].as_i64();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Review, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert_eq!(m.review.id, None);
+            assert!(newest.is_some());
+            assert_eq!(m.data.review.as_ref().and_then(|r| r["id"].as_i64()), newest);
+        })
+        .unwrap();
+    }
+
+    /// A poll while a refresh is still out leaves it be; once it has answered, the next poll refreshes.
+    #[gpui_kit::test]
+    fn a_poll_waits_for_the_refresh_thats_out(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            m.refresh(cx);
+            let out = m.generation;
+            m.poll(cx);
+            assert_eq!(m.generation, out, "the refresh that's out isn't restarted");
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.answered, m.generation);
+            let before = m.generation;
+            m.poll(cx);
+            assert_eq!(m.generation, before + 1);
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

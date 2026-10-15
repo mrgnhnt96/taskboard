@@ -76,6 +76,21 @@ pub fn describe_owner_review(app: &App) -> Value {
 }
 
 pub fn list_projects(app: &App) -> Result<Vec<Value>> {
+    if app.db.in_tx() {
+        return read_projects(app);
+    }
+    let mark = app.db.mark()?;
+    if let Some((at, list)) = &app.shared.lock().projects {
+        if *at == mark {
+            return Ok(list.clone());
+        }
+    }
+    let list = read_projects(app)?;
+    app.shared.lock().projects = Some((mark, list.clone()));
+    Ok(list)
+}
+
+fn read_projects(app: &App) -> Result<Vec<Value>> {
     let mut seen: Vec<(String, Option<String>)> = vec![];
     let mut add = |name: Option<&str>, path: Option<&str>| {
         let Some(name) = name.filter(|n| !n.is_empty()) else { return };

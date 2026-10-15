@@ -61,6 +61,7 @@ mod spans;
 mod start_asks;
 mod start_item;
 mod startword;
+mod state_board;
 mod step_aim;
 mod steps;
 mod stream;
