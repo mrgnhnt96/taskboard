@@ -618,7 +618,9 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
         .flex()
         .flex_col()
         .flex_1()
-        .min_w_0()
+        .flex_basis(px(200.))
+        .min_w(px(80.))
+        .overflow_hidden()
         .child(
             div()
                 .flex()
