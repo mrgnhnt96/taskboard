@@ -19,6 +19,14 @@ pub fn pinned_goals(goals: &[Value]) -> Vec<&Value> {
     v
 }
 
+/// The goals in the sidebar: only those with a task running now, newest first. The rest are on
+/// the Goals page.
+pub fn running_goals(goals: &[Value]) -> Vec<&Value> {
+    let mut v: Vec<&Value> = goals.iter().filter(|g| goal_group(g) == GoalGroup::Active && i(g, "active") - i(g, "needs") > 0).collect();
+    v.sort_by_key(|g| std::cmp::Reverse(i(g, "id")));
+    v
+}
+
 /// The goal's line under its name: "2 of 7 · 1 needs you", "Paused", "After G22".
 pub fn goal_sub(g: &Value) -> String {
     let count = format!("{} of {}", i(g, "done"), i(g, "total"));
@@ -107,7 +115,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
     let running = arr(&st, "sessions").iter().filter(|x| s(x, "status") == "working").count();
     let counts = &st["counts"];
     let open_tasks = i(counts, "queued") + i(counts, "working") + i(counts, "needs");
-    let goals = pinned_goals(&m.data.goals).into_iter().cloned().collect::<Vec<_>>();
+    let goals = running_goals(&m.data.goals).into_iter().cloned().collect::<Vec<_>>();
     let active_goals = m.data.goals.iter().filter(|g| goal_group(g) == GoalGroup::Active).count();
     let untriaged = i(counts, "untriaged");
 
@@ -152,8 +160,6 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
             let r = fmt::ref_of(g, "G");
             let (total, done) = (i(g, "total"), i(g, "done"));
             let share = if total > 0 { done as f32 / total as f32 } else { 0. };
-            let quiet = goal_group(g) != GoalGroup::Active;
-            let fill = if quiet { t.border_2 } else { t.goal };
             let sel = open_goal.as_deref() == Some(r.as_str());
             let text = t.text;
             let open = r.clone();
@@ -170,7 +176,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
                     .when(sel, |d| d.bg(t.card))
                     .hover(move |s| s.bg(hsla(0., 0., 0.5, 0.08)))
                     .on_click(cx.listener(move |m, _, _, cx| crate::ui::goal::open(m, &open, false, cx)))
-                    .child(ring(share, 22., t.border, fill))
+                    .child(ring(share, 22., t.border, t.goal))
                     .child(
                         div()
                             .flex()
@@ -258,4 +264,24 @@ fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
             .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::OpenSettings), cx))
             .child("Settings"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::running_goals;
+    use crate::fmt::i;
+    use serde_json::json;
+
+    #[test]
+    fn only_goals_with_a_task_running_are_listed() {
+        let goals = vec![
+            json!({"id": 1, "done": 2, "total": 6, "active": 1, "needs": 0}),
+            json!({"id": 2, "done": 0, "total": 2, "active": 0, "needs": 0}),
+            json!({"id": 3, "done": 0, "total": 4, "active": 1, "needs": 1}),
+            json!({"id": 4, "done": 4, "total": 9, "active": 2, "needs": 0}),
+            json!({"id": 5, "done": 1, "total": 3, "active": 1, "needs": 0, "paused": true}),
+        ];
+        let ids: Vec<i64> = running_goals(&goals).iter().map(|g| i(g, "id")).collect();
+        assert_eq!(ids, vec![4, 1]);
+    }
 }
