@@ -341,6 +341,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
         (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),
         (_, ["lessons", rest @ ..]) => crate::lessons::route(app, method, rest, query, body),
+        (_, ["releases", rest @ ..]) => crate::releases::route(app, method, rest, query, body),
         ("POST", ["areas", "backfill"]) => crate::areas::backfill(app, body),
         (_, ["reviewers", rest @ ..]) => crate::reviewers::route(app, method, rest, query, body),
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
@@ -704,10 +705,10 @@ fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
     let Some(p) = list.iter().find(|p| p["name"] == name) else { return err(404, format!("There's no project called {name}.")) };
     let rules = projects::PR_RULE_KEYS.iter().any(|k| body.get(*k).is_some());
     let flow = body.get("pr_flow").filter(|v| !v.is_null()).map(|_| body_str(body, "pr_flow"));
-    if flow.is_none() && !rules && body.get("max_terminals").is_none() && body.get("waits_on").is_none() {
+    if flow.is_none() && !rules && body.get("max_terminals").is_none() && body.get("waits_on").is_none() && body.get("releases").is_none() {
         return err(
             400,
-            format!("Say what to change: pr_flow, max_terminals, waits_on, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")),
+            format!("Say what to change: pr_flow, max_terminals, waits_on, releases, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")),
         );
     }
     if flow.as_ref().is_some_and(|f| !projects::PR_FLOWS.contains(&f.as_str())) {
@@ -719,6 +720,7 @@ fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
         }
         projects::set_max_terminals(app, name, body)?;
         projects::set_waits_on(app, name, body)?;
+        crate::releases::set_setting(app, name, body)?;
         projects::set_pr_rules(app, name, body).map(|_| ())
     })?;
     projects::describe(app, p)

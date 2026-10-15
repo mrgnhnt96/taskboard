@@ -563,7 +563,7 @@ fn links_owner(app: &App) -> &'static str {
 
 /// The refs that become links in agent terminals, each opening this build's own page for it.
 pub fn link_patterns(app: &App) -> Vec<String> {
-    [("T", "task"), ("G", "goal"), ("B", "issue")]
+    [("T", "task"), ("G", "goal"), ("B", "issue"), ("R", "release")]
         .iter()
         .map(|(letter, page)| format!(r"\b({letter}\d+)\b = {} agents", dispatch::page_link(app, &format!("{page}/$1"))))
         .collect()
@@ -587,7 +587,7 @@ fn register_links(app: &App) {
         match call_timeout(app, "links.patterns.register", json!({"owner": links_owner(app), "patterns": link_patterns(app)}), 5.0) {
             Ok(_) => true,
             Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
-                app.info("midna: it doesn't take link patterns yet (links.patterns.register); T, G and B refs stay plain text there");
+                app.info("midna: it doesn't take link patterns yet (links.patterns.register); T, G, B and R refs stay plain text there");
                 true
             }
             Err(e) => {
@@ -694,6 +694,7 @@ mod tests {
                 r"\b(T\d+)\b = taskboard://task/$1 agents",
                 r"\b(G\d+)\b = taskboard://goal/$1 agents",
                 r"\b(B\d+)\b = taskboard://issue/$1 agents",
+                r"\b(R\d+)\b = taskboard://release/$1 agents",
             ]
         );
         let mut cfg = crate::config::Config::for_tests(dir.path());

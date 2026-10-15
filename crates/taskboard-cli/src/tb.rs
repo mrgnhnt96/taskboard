@@ -253,6 +253,17 @@ enum Cmd {
         #[command(subcommand)]
         action: LessonCmd,
     },
+    /// A project's releases, newest first, with their task counts and how many done tasks wait in Unreleased
+    Releases {
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Cut, show, rename or annotate a release, or move a done task between releases
+    Release {
+        #[command(subcommand)]
+        action: ReleaseCmd,
+    },
     /// A project's areas: backfill the area of work already done
     Areas {
         #[command(subcommand)]
@@ -704,6 +715,39 @@ enum BitCmd {
     },
     /// Remove a bit
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum ReleaseCmd {
+    /// Cut a release holding every done task in Unreleased (its PR merged, or done with no PR)
+    Cut {
+        name: String,
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// A release's tasks (R<n>, or unreleased), grouped by goal
+    Show {
+        release: String,
+        /// The project, for unreleased (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        /// A changelog ready to paste
+        #[arg(long)]
+        markdown: bool,
+    },
+    /// Rename a release or change its notes (--notes "" clears them)
+    Set {
+        release: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Put a done task in another release, or back in Unreleased
+    Move { task: String, release: String },
 }
 
 #[derive(Subcommand)]
@@ -1525,6 +1569,9 @@ enum ProjectCmd {
         /// Other projects whose tasks this project's tasks may wait for (tb wait-for), comma-separated; one way only (none: only its own)
         #[arg(long = "waits-on")]
         waits_on: Option<String>,
+        /// Releases (tb release cut) for this project (default: config.toml's [releases] on)
+        #[arg(long, value_parser = ["on", "off", "default"])]
+        releases: Option<String>,
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
@@ -3108,6 +3155,120 @@ fn areas_cmd(c: &Ctx, action: AreasCmd) -> Result<i32, String> {
     Ok(0)
 }
 
+fn release_ref(v: &str) -> Result<String, String> {
+    let s = v.trim();
+    if s.eq_ignore_ascii_case("unreleased") {
+        return Ok("unreleased".into());
+    }
+    let digits = s.trim_start_matches(['R', 'r']);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("expected R<number> or unreleased, got {v:?}"));
+    }
+    Ok(format!("R{digits}"))
+}
+
+/// Which project a release read is for: the one named, else this terminal's task's, else the folder's.
+fn release_project_query(c: &Ctx, project: Option<String>) -> String {
+    let mut q = vec![match project {
+        Some(p) => format!("project={}", qv(&p)),
+        None => format!("cwd={}", qv(&c.cwd)),
+    }];
+    if !c.session.is_empty() {
+        q.push(format!("by_session={}", qv(&c.session)));
+    }
+    q.join("&")
+}
+
+/// "R3 · v1.4 · 2026-10-15 · 5 tasks", for `tb releases` and `tb release show`.
+fn release_line(r: &Value) -> String {
+    let mut head = vec![r["ref"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()];
+    if let Some(d) = r["cut_at"].as_str().and_then(|s| s.get(..10)) {
+        head.push(d.to_string());
+    }
+    let n = r["tasks"].as_i64().unwrap_or(0);
+    head.push(format!("{n} task{}", if n == 1 { "" } else { "s" }));
+    head.join(" · ")
+}
+
+fn releases_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
+    let v = c.call("GET", &format!("/releases?{}", release_project_query(c, project)), None)?;
+    let name = v["project"].as_str().unwrap_or("");
+    if v["on"] != true {
+        return Err(format!("releases are off for {name}. Turn them on with: tb project set {name} --releases on"));
+    }
+    let n = v["unreleased"].as_i64().unwrap_or(0);
+    out(&format!("{name}: {n} done task{} in Unreleased", if n == 1 { "" } else { "s" }));
+    for r in v["releases"].as_array().into_iter().flatten() {
+        out(&release_line(r));
+    }
+    Ok(0)
+}
+
+/// A release's (or Unreleased's) tasks under their goals, for `tb release show` and `tb release cut`.
+fn release_groups(v: &Value) {
+    for g in v["groups"].as_array().into_iter().flatten() {
+        out(&match g["goal"].as_str() {
+            Some(r) => format!("{r} {}", g["name"].as_str().unwrap_or("")),
+            None => "No goal".to_string(),
+        });
+        for t in g["tasks"].as_array().into_iter().flatten() {
+            let pr = t["pr_num"].as_i64().map(|n| format!(" · #{n}")).unwrap_or_default();
+            out(&format!("  {} {}{pr}", t["ref"].as_str().unwrap_or(""), t["title"].as_str().unwrap_or("")));
+        }
+    }
+}
+
+fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
+    match action {
+        ReleaseCmd::Cut { name, project, notes } => {
+            let v = c.call("POST", "/releases", Some(json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd})))?;
+            out(&format!("Cut {}.", release_line(&v)));
+            release_groups(&v);
+        }
+        ReleaseCmd::Show { release, project, markdown } => {
+            let r = release_ref(&release)?;
+            let v = c.call("GET", &format!("/releases/{r}?{}", release_project_query(c, project)), None)?;
+            if markdown {
+                print!("{}", v["markdown"].as_str().unwrap_or(""));
+                return Ok(0);
+            }
+            let n = v["tasks"].as_i64().unwrap_or(0);
+            out(&if r == "unreleased" {
+                format!("Unreleased in {} · {n} task{}", v["project"].as_str().unwrap_or(""), if n == 1 { "" } else { "s" })
+            } else {
+                release_line(&v)
+            });
+            if let Some(n) = v["notes"].as_str().filter(|n| !n.is_empty()) {
+                out(&format!("  {n}"));
+            }
+            release_groups(&v);
+        }
+        ReleaseCmd::Set { release, name, notes } => {
+            let r = release_ref(&release)?;
+            if r == "unreleased" {
+                return Err("Unreleased isn't a release; cut one with tb release cut <name>".into());
+            }
+            let mut b = json!({});
+            if let Some(n) = name {
+                b["name"] = json!(n);
+            }
+            if let Some(n) = notes {
+                b["notes"] = json!(n);
+            }
+            if b.as_object().is_some_and(|o| o.is_empty()) {
+                return Err(format!("say what to change, for example: tb release set {r} --name v1.5 or --notes \"…\""));
+            }
+            let v = c.call("POST", &format!("/releases/{r}"), Some(b))?;
+            out(&format!("Changed {}.", release_line(&v)));
+        }
+        ReleaseCmd::Move { task, release } => {
+            let v = c.call("POST", "/releases/move", Some(json!({"task": task_ref(&task)?, "release": release_ref(&release)?})))?;
+            out(&format!("{}: {}.", v["task"].as_str().unwrap_or(""), v["text"].as_str().unwrap_or("")));
+        }
+    }
+    Ok(0)
+}
+
 fn lesson_cmd(c: &Ctx, action: LessonCmd) -> Result<i32, String> {
     let (v, did) = match action {
         LessonCmd::Retro { goal } => return lesson_retro(c, &goal_ref(&goal)?),
@@ -4498,6 +4659,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
         Cmd::Search { query, project, all, kind, open } => search_cmd(c, &query, project, all, kind, open),
         Cmd::Lesson { action } => lesson_cmd(c, action),
+        Cmd::Releases { project } => releases_cmd(c, project),
+        Cmd::Release { action } => release_cmd(c, action),
         Cmd::Areas { action } => areas_cmd(c, action),
         Cmd::Close { done: _, project, goal } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
@@ -5572,6 +5735,10 @@ fn project_line(p: &Value) -> String {
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
+    let releases = match p["releases"].as_bool() {
+        Some(on) => format!(" · releases {}", if on { "on" } else { "off" }),
+        None => String::new(),
+    };
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
     let gaps: String = p["setup_gaps"]
@@ -5579,7 +5746,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().map(|g| format!("\n  Needs setup: {}. To fix it: {}", g["text"].as_str().unwrap_or(""), g["fix"].as_str().unwrap_or(""))).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{waits_on}{approvals}{expected}{switches}{gaps}",
+        "{} · PR flow {} · {} · {remote}{terminals}{releases}{waits_on}{approvals}{expected}{switches}{gaps}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -5644,7 +5811,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
@@ -5662,6 +5829,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             project_switch(&mut body, "review", review);
             project_switch(&mut body, "agents_merge", agents_merge);
             project_switch(&mut body, "owner_review", owner_review);
+            project_switch(&mut body, "releases", releases);
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }
