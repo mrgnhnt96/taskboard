@@ -594,7 +594,9 @@ pub fn is_held(app: &App, t: &Row) -> Result<bool> {
 pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
-    let done = n(&|r| r.s("status") == Some("done"));
+    // A submitted task whose PR is still open is in review, not done, until the PR merges.
+    let in_review = |r: &Row| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r);
+    let done = n(&|r| r.s("status") == Some("done") && !in_review(r));
     let mut blocked = 0;
     let mut held = 0;
     for r in &rows {
@@ -605,11 +607,7 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         }
     }
     let bits_waiting = crate::bits::goal_waiting(app, goal_id)?;
-    let prs_open: Vec<i64> = rows
-        .iter()
-        .filter(|r| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r))
-        .filter_map(|r| r.i("pr_num"))
-        .collect();
+    let prs_open: Vec<i64> = rows.iter().filter(|r| in_review(r)).filter_map(|r| r.i("pr_num")).collect();
     // The PR plan: tasks that end in a PR, how many have one, and how many finished without (`--no-pr`).
     let mut prs_planned = 0;
     for r in &rows {
@@ -619,13 +617,14 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     }
     let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
-    let finished_at = if total > 0 && done == total && prs_open.is_empty() && bits_waiting == 0 {
+    let finished_at = if total > 0 && done == total && bits_waiting == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
         Value::Null
     };
     Ok(json!({
         "done": done, "total": total,
+        "review": prs_open.len(),
         "active": n(&|r| matches!(r.s("status"), Some("working") | Some("needs"))),
         "needs": n(&|r| r.s("status") == Some("needs")),
         "queued": n(&|r| r.s("status") == Some("queued")),
@@ -648,8 +647,8 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
 pub fn goal_state_line(c: &Value) -> String {
     let total = c["total"].as_i64().unwrap_or(0);
     let done = c["done"].as_i64().unwrap_or(0);
-    if total > 0 && done == total {
-        let open = c["prs_open"].as_array().cloned().unwrap_or_default();
+    let open = c["prs_open"].as_array().cloned().unwrap_or_default();
+    if total > 0 && done + open.len() as i64 == total {
         let bits = c["bits_waiting"].as_i64().unwrap_or(0);
         return match open.len() {
             0 if bits > 0 => format!("Waiting on {}", plural(bits, "bit")),
@@ -658,7 +657,7 @@ pub fn goal_state_line(c: &Value) -> String {
             n => format!("Waits for {n} PRs to merge"),
         };
     }
-    if c["active"] == 0 && c["queued"] == 0 && done == 0 {
+    if c["active"] == 0 && c["queued"] == 0 && done == 0 && open.is_empty() {
         return "Not started".into();
     }
     "In progress".into()

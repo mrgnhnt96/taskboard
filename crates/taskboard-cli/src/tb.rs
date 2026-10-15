@@ -2962,15 +2962,23 @@ fn area_bit(v: &Value) -> String {
     v["area"].as_str().filter(|a| !a.is_empty()).map(|a| format!(" · area {a}")).unwrap_or_default()
 }
 
+/// "14/15 done · 1 in review": a task whose PR is still open isn't done until it merges.
+fn done_bit(g: &Value) -> String {
+    let line = format!("{}/{} done", g["done"], g["total"]);
+    match g["review"].as_i64().unwrap_or(0) {
+        0 => line,
+        n => format!("{line} · {n} in review"),
+    }
+}
+
 fn goal_lines(g: &Value) -> Vec<String> {
     let mut lines = vec![format!(
-        "{} · {} · {}{} · {}/{} done",
+        "{} · {} · {}{} · {}",
         g["ref"].as_str().unwrap_or(""),
         g["name"].as_str().unwrap_or(""),
         g["project"].as_str().unwrap_or(""),
         area_bit(g),
-        g["done"],
-        g["total"]
+        done_bit(g)
     )];
     if let Some(o) = g["outcome"].as_str().filter(|o| !o.is_empty()) {
         lines.push(format!("Done when: {o}"));
@@ -4094,13 +4102,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             for g in goals {
                 out(&format!(
-                    "{} · {} · {}{} · {}/{} done{}",
+                    "{} · {} · {}{} · {}{}",
                     g["ref"].as_str().unwrap_or(""),
                     g["name"].as_str().unwrap_or(""),
                     g["project"].as_str().unwrap_or(""),
                     area_bit(&g),
-                    g["done"],
-                    g["total"],
+                    done_bit(&g),
                     if g["paused"] == true { " · paused" } else { "" }
                 ));
             }
@@ -5681,6 +5688,7 @@ mod tests {
                        "tasks": [{"ref": "T3", "title": "Pen", "status": "planned", "area": "Quill"}, {"ref": "T4", "title": "Ink", "status": "planned", "area": "Art"}]});
         let lines = goal_lines(&g);
         assert_eq!(lines[0], "G2 · Brushes · rune · area Art · 0/2 done");
+        assert_eq!(done_bit(&json!({"done": 14, "total": 15, "review": 1})), "14/15 done · 1 in review");
         assert!(lines.iter().any(|l| l.contains("T3 [planned] Pen · area Quill")), "{lines:?}");
         assert!(lines.iter().any(|l| l.ends_with("T4 [planned] Ink")), "the goal's own area isn't repeated: {lines:?}");
     }
