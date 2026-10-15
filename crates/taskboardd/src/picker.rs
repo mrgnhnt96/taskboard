@@ -289,8 +289,8 @@ pub fn selves(app: &App, repo: Option<&str>, rec: &Value) -> Vec<String> {
     out
 }
 
-/// How long a repo's `git config user.email` is trusted before it's read again.
-const EMAIL_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// How long a repo's `git config user.email` is trusted before it's read again: it hardly ever changes.
+const EMAIL_TTL: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
 
 /// The repo's `git config user.email`, lowercased; cached, since task cards ask for it on every render.
 fn repo_email(app: &App, repo: &str) -> Option<String> {
