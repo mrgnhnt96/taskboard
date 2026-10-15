@@ -139,7 +139,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         .child(nav("nav-goals", "Goals", square(t.goal, false), (active_goals > 0).then(|| (active_goals.to_string(), false)), Page::Goals, on(Page::Goals) || (!task_open && matches!(page, Page::Goal(_))), cx))
         .child(nav("nav-tasks", "Tasks", square(t.muted, true), (open_tasks > 0).then(|| (open_tasks.to_string(), false)), Page::Tasks, on(Page::Tasks) || task_open, cx))
         .child(nav("nav-backlog", "Backlog", kit::dot(t.backlog_dot, 8.), (untriaged > 0).then(|| (untriaged.to_string(), false)), Page::Backlog, on(Page::Backlog), cx))
-        .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days), cx));
+        .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days) || (!task_open && page == Page::Review), cx));
 
     if !goals.is_empty() {
         col = col.child(div().pt(px(18.)).pb(px(4.)).px(px(10.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.muted).child("ACTIVE GOALS"));

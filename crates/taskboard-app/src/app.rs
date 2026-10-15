@@ -32,6 +32,8 @@ pub enum Page {
     Backlog,
     Sessions,
     Days,
+    /// The weekly time review (`ui::review`): which week is in `MainWindow::review`.
+    Review,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -70,6 +72,9 @@ pub struct Data {
     pub today: Option<Value>,
     /// `GET /tasks` for the Tasks page.
     pub tasks: Option<Value>,
+    /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
+    pub reviews: Option<Value>,
+    pub review: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -84,6 +89,7 @@ pub struct Errs {
     pub sessions: Option<String>,
     pub session: Option<String>,
     pub days: Option<String>,
+    pub review: Option<String>,
 }
 
 /// The board's filters (sent with `GET /state`).
@@ -180,6 +186,7 @@ pub struct MainWindow {
     pub issue_panel: ui::issue_panel::State,
     pub hours: ui::hours::State,
     pub days: ui::days::State,
+    pub review: ui::review::State,
     pub tasks: ui::tasks::State,
     pub goals: ui::goals_page::State,
     pub search: ui::search::State,
@@ -219,6 +226,7 @@ impl MainWindow {
             issue_panel: Default::default(),
             hours: Default::default(),
             days: Default::default(),
+            review: Default::default(),
             tasks: Default::default(),
             goals: Default::default(),
             search: Default::default(),
@@ -232,6 +240,7 @@ impl MainWindow {
                 "backlog" | "plan" => Page::Backlog,
                 "sessions" => Page::Sessions,
                 "days" => Page::Days,
+                "review" => Page::Review,
                 "tasks" => Page::Tasks,
                 "goals" => Page::Goals,
                 g if g.starts_with('G') => Page::Goal(g.into()),
@@ -419,6 +428,7 @@ impl MainWindow {
             ("backlog" | "plan", _) => self.go(Page::Backlog, cx),
             ("sessions", _) => self.go(Page::Sessions, cx),
             ("days", _) => self.go(Page::Days, cx),
+            ("review" | "reviews", id) => ui::review::open(self, id.parse().ok(), cx),
             ("tasks", _) => self.go(Page::Tasks, cx),
             _ => self.go(Page::Board, cx),
         }
@@ -668,6 +678,8 @@ struct Wants {
     home: Option<String>,
     /// The Tasks page, for `GET /tasks`.
     tasks: bool,
+    /// The Review page: the list, and the picked review (`None`: the newest).
+    review: Option<Option<i64>>,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -687,6 +699,8 @@ struct Got {
     home: Option<Value>,
     today: Option<Value>,
     tasks: Option<Value>,
+    reviews: Option<Answer>,
+    review: Option<(i64, Answer)>,
 }
 
 impl Wants {
@@ -713,6 +727,7 @@ impl Wants {
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
             tasks: m.page == Page::Tasks || ui::search::is_open(m),
+            review: (m.page == Page::Review).then_some(m.review.id),
         }
     }
 
@@ -721,6 +736,9 @@ impl Wants {
         // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
         let up = state.as_ref().is_some_and(|r| r.is_ok());
         let get = |p: &str, q: &[(&str, String)]| -> Option<Answer> { up.then(|| be.get(p, q).map_err(|e| e.message)) };
+        let reviews = self.review.and_then(|_| get("reviews", &[]));
+        let newest = || reviews.as_ref()?.as_ref().ok().and_then(|l| arr(l, "reviews").first()?["id"].as_i64());
+        let review = self.review.and_then(|id| id.or_else(newest)).and_then(|id| get(&format!("reviews/{id}"), &[]).map(|v| (id, v)));
         Got {
             goals: get("goals", &[]).and_then(Result::ok),
             task: self.task.and_then(|r| get(&format!("tasks/{r}"), &[]).map(|v| (r, v))),
@@ -734,6 +752,8 @@ impl Wants {
             today: if self.home.is_some() { get("days", &[]).and_then(Result::ok) } else { None },
             home: self.home.and_then(|p| get("home", &[("project", p)]).and_then(Result::ok)),
             tasks: if self.tasks { get("tasks", &[]).and_then(Result::ok) } else { None },
+            reviews,
+            review,
             state,
         }
     }
@@ -811,6 +831,16 @@ impl Got {
         if self.today.is_some() {
             d.today = self.today;
         }
+        if m.page == Page::Review {
+            if let Some(v) = self.reviews {
+                land(&mut d.reviews, &mut d.errs.review, v, |v| v);
+            }
+            if let Some((id, v)) = self.review {
+                if m.review.id.is_none_or(|want| want == id) {
+                    land(&mut d.review, &mut d.errs.review, v, |v| v);
+                }
+            }
+        }
         if self.tasks.is_some() && (m.page == Page::Tasks || searching) {
             d.tasks = self.tasks;
         }
@@ -882,6 +912,7 @@ impl Render for MainWindow {
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
+            Page::Review => ui::review::render(self, window, cx),
         };
         let panel = match self.panel.clone() {
             Some(Panel::Task { .. }) => None,
@@ -960,6 +991,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Backlog => "Backlog",
         Page::Sessions => "Sessions",
         Page::Days => "Days",
+        Page::Review => "Review",
         Page::Tasks => "Tasks",
         Page::Board => "Task board",
     };
@@ -1550,6 +1582,33 @@ mod tests {
             assert!(m.page == Page::Backlog);
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_review_link_opens_the_review_and_marks_it_seen(cx: &mut gpui_kit::TestAppContext) {
+        use crate::backend::Backend as _;
+        let (w, rec) = window(cx);
+        let id = rec.board().post("reviews", json!({})).unwrap()["id"].as_i64().unwrap();
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link(&format!("taskboard://review/{id}"), cx)).unwrap();
+        settle(cx);
+        {
+            use gpui_kit::AppContext as _;
+            cx.update_window(w.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        }
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert!(m.page == Page::Review);
+            assert_eq!(m.review.id, Some(id));
+            assert_eq!(m.data.review.as_ref().and_then(|r| r["id"].as_i64()), Some(id));
+            assert!(m.data.review.as_ref().is_some_and(|r| !r["seen_at"].is_null()), "the seen answer replaces what's shown");
+        })
+        .unwrap();
+        let seen = format!("reviews/{id}/seen");
+        assert_eq!(rec.posts().iter().filter(|(p, _)| *p == seen).count(), 1, "opening it marks it seen once");
     }
 
     #[gpui_kit::test]
