@@ -262,6 +262,14 @@ background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 project_max = 5                      # a queued task opens its terminal while fewer of its project's terminals are busy (tb project set --max-terminals)
 global_max = 15                      # and while fewer than this many terminals are busy across every project
 
+# The model each task's terminal starts with (`--model`, unless its flags name one). A task picks
+# small or large at planning (tb task new --model small), or names a model outright.
+[models]
+enabled = true                       # false: no --model, Claude's own default
+small = "sonnet"                     # small, contained work
+large = "opus"                       # everything else
+default = "large"                    # tasks without a model: small, large, or a model name
+
 # Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
 # so many worktree agents don't each cold-build the project with every core at once.
 [builds]

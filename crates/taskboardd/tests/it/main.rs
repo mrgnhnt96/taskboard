@@ -37,6 +37,7 @@ mod merge_checks_running;
 mod merge_progress;
 mod merge_retry;
 mod merged_note;
+mod models;
 mod midna_sync;
 mod oct8;
 mod outside_work;

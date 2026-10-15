@@ -84,7 +84,7 @@ pub fn start_task(
             return err(409, format!("The board doesn't know the folder for the project “{}”.", t.st("project")));
         };
         let mut args = json!({"cwd": cwd, "title": title, "prompt": prompt, "queue": mode == "queue"});
-        if let Some(f) = flags {
+        if let Some(f) = with_model(flags, app.cfg.models.resolve(t.s("model")).as_deref()) {
             args["flags"] = json!(f);
         }
         board::create_job(app, "agent", args, Some(t.id()), "start", None)?
@@ -96,6 +96,35 @@ pub fn start_task(
     board::update_task(app, t.id(), f)?;
     app.info(format!("runner: {} start job {} ({mode})", rf("task", t.id()), rf("job", jid)));
     Ok(jid)
+}
+
+/// A task's `model` from a body: `small`, `large` or a model name; null, empty or `default` clears it.
+pub fn clean_model(v: Option<&serde_json::Value>) -> Result<Option<String>> {
+    let m = match v {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::String(s)) => s.trim().to_string(),
+        Some(_) => return err(400, "The model is small, large or a model name."),
+    };
+    if m.is_empty() || m == "default" {
+        return Ok(None);
+    }
+    if m.len() > 80 || !m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '[' | ']')) {
+        return err(400, format!("“{m}” isn't a model: use small, large or a model name like sonnet or claude-opus-5-5."));
+    }
+    Ok(Some(m))
+}
+
+/// The terminal's Claude flags with `--model` added, unless they already name one.
+fn with_model(flags: Option<String>, model: Option<&str>) -> Option<String> {
+    let Some(m) = model else { return flags };
+    if flags.as_deref().is_some_and(|f| f.split_whitespace().any(|w| w == "--model" || w.starts_with("--model="))) {
+        return flags;
+    }
+    let m = shlex::try_quote(m).map(|q| q.into_owned()).unwrap_or_else(|_| m.to_string());
+    Some(match flags.filter(|f| !f.trim().is_empty()) {
+        Some(f) => format!("{f} --model {m}"),
+        None => format!("--model {m}"),
+    })
 }
 
 fn start_parked(app: &App, t: &Row) -> Result<()> {
@@ -561,5 +590,30 @@ pub fn run(app: Arc<App>) {
         if app.wait_runner(Duration::from_secs(1)) {
             last_tick = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_model_adds_one_unless_the_flags_name_it() {
+        assert_eq!(with_model(None, Some("sonnet")).as_deref(), Some("--model sonnet"));
+        assert_eq!(with_model(Some("--resume c1".into()), Some("opus")).as_deref(), Some("--resume c1 --model opus"));
+        assert_eq!(with_model(Some("--model=haiku".into()), Some("opus")).as_deref(), Some("--model=haiku"));
+        assert_eq!(with_model(Some("--x".into()), None).as_deref(), Some("--x"));
+        assert_eq!(with_model(None, None), None);
+    }
+
+    #[test]
+    fn clean_model_takes_names_and_clears_on_default() {
+        assert_eq!(clean_model(Some(&json!("small"))).unwrap().as_deref(), Some("small"));
+        assert_eq!(clean_model(Some(&json!("claude-sonnet-5-5"))).unwrap().as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(clean_model(Some(&json!("default"))).unwrap(), None);
+        assert_eq!(clean_model(Some(&json!(""))).unwrap(), None);
+        assert_eq!(clean_model(None).unwrap(), None);
+        assert!(clean_model(Some(&json!("a b"))).is_err());
+        assert!(clean_model(Some(&json!(3))).is_err());
     }
 }

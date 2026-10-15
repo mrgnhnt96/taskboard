@@ -342,6 +342,9 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("ships_pr_set".into(), t.i("ships_pr").map(|v| json!(v != 0)).unwrap_or(Value::Null));
         o.insert("no_pr".into(), t.v("no_pr"));
         o.insert("no_evidence".into(), t.v("no_evidence"));
+        // The task's model and what its terminal runs with [models].
+        o.insert("model".into(), t.v("model"));
+        o.insert("model_runs".into(), json!(app.cfg.models.resolve(t.s("model"))));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);

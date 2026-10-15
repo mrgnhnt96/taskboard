@@ -36,6 +36,7 @@ pub struct FileConfig {
     pub limits: LimitsConfig,
     pub attachments: AttachmentsConfig,
     pub terminals: TerminalsConfig,
+    pub models: ModelsConfig,
     pub builds: crate::builds::BuildsConfig,
     pub comments: CommentsConfig,
     pub devices: crate::devices::DevicesConfig,
@@ -591,6 +592,41 @@ impl Default for TerminalsConfig {
     }
 }
 
+/// The model each task's terminal runs (`--model`): a task picks `small` or `large` at planning
+/// (`tb task new --model`), or names a model outright, and tasks without one get `default`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ModelsConfig {
+    /// Off, the board passes no `--model` and Claude uses its own default.
+    pub enabled: bool,
+    pub small: String,
+    pub large: String,
+    /// `small`, `large`, or a model name.
+    pub default: String,
+}
+
+impl Default for ModelsConfig {
+    fn default() -> Self {
+        ModelsConfig { enabled: true, small: "sonnet".into(), large: "opus".into(), default: "large".into() }
+    }
+}
+
+impl ModelsConfig {
+    /// The model to start a task's terminal with, from the task's own `model` (null: the default).
+    pub fn resolve(&self, task: Option<&str>) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        let pick = task.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(self.default.trim());
+        let model = match pick {
+            "small" => self.small.trim(),
+            "large" => self.large.trim(),
+            other => other,
+        };
+        (!model.is_empty()).then(|| model.to_string())
+    }
+}
+
 /// The comment guard: agents may not add code comments, pragmas aside.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -647,6 +683,7 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub attachments: AttachmentsConfig,
     pub terminals: TerminalsConfig,
+    pub models: ModelsConfig,
     pub builds: crate::builds::BuildsConfig,
     pub comments: CommentsConfig,
     pub devices: crate::devices::DevicesConfig,
@@ -810,6 +847,7 @@ impl Config {
             limits: f.limits,
             attachments: f.attachments,
             terminals: f.terminals,
+            models: f.models,
             builds: f.builds,
             comments: f.comments,
             devices: f.devices,
@@ -841,6 +879,8 @@ impl Config {
         // Tests never run the real claude (QA comments, screening and wave plans would ask it).
         c.claude = data.join("no-claude").to_string_lossy().to_string();
         c.runner = false;
+        // No `--model` in started terminals' flags unless a test turns it on.
+        c.models.enabled = false;
         c.open_midna = false;
         c.notify = false;
         c.midna = data.join("no-midna");
@@ -940,6 +980,22 @@ mod tests {
         assert_eq!(c.first_weekday, chrono::Weekday::Sun);
         assert_eq!(c.pr.approvals, DEFAULT_APPROVALS);
         assert_eq!(Config::from_file(FileConfig::default(), PathBuf::from("/tmp/x.toml")).pr.approvals, 2, "a PR needs 2 approvals unless told otherwise");
+    }
+
+    #[test]
+    fn task_models_resolve_through_the_tiers() {
+        let m = ModelsConfig::default();
+        assert_eq!(m.resolve(None).as_deref(), Some("opus"), "no model: the default, large");
+        assert_eq!(m.resolve(Some("small")).as_deref(), Some("sonnet"));
+        assert_eq!(m.resolve(Some("large")).as_deref(), Some("opus"));
+        assert_eq!(m.resolve(Some("claude-haiku-5-5")).as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(m.resolve(Some(" ")).as_deref(), Some("opus"));
+        let small = ModelsConfig { default: "small".into(), ..ModelsConfig::default() };
+        assert_eq!(small.resolve(None).as_deref(), Some("sonnet"));
+        let off = ModelsConfig { enabled: false, ..ModelsConfig::default() };
+        assert_eq!(off.resolve(Some("small")), None, "off: Claude's own default");
+        let c = Config::from_file(toml::from_str("[models]\nsmall = \"haiku\"").unwrap(), PathBuf::from("/tmp/x.toml"));
+        assert_eq!((c.models.small.as_str(), c.models.large.as_str(), c.models.enabled), ("haiku", "opus", true));
     }
 
     #[test]

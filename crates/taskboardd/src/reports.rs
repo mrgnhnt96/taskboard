@@ -2359,6 +2359,15 @@ static PLANNED_WITH_FILES: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s
 static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
 static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
+static PLANNED_MODEL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*model\s*=\s*([^:\s]*)\s*$").unwrap());
+
+/// A `--task` item's model part ("::model=small" at the very end), taken off before the rest is read.
+fn planned_model(item: &str) -> (String, Value) {
+    match PLANNED_MODEL.captures(item) {
+        Some(c) if !c[1].trim().is_empty() => (c[1].to_string(), json!(&c[2])),
+        _ => (item.to_string(), Value::Null),
+    }
+}
 
 /// "title::detail", "title::detail::2" (its wave) or "title::detail::<wave or nothing>::T14 #1" (what it
 /// waits for: a task, or the k-th task in the same command).
@@ -2432,12 +2441,13 @@ fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
 fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Result<Vec<String>> {
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
-        let (item, files) = match &item {
+        let (item, files, model) = match &item {
             Value::String(s) => {
-                let (rest, files) = planned_files(s);
-                (Value::String(rest), files)
+                let (s, model) = planned_model(s);
+                let (rest, files) = planned_files(&s);
+                (Value::String(rest), files, model)
             }
-            v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null)),
+            v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null), v.get("model").cloned().unwrap_or(Value::Null)),
         };
         let (title, detail, wave, waits) = match &item {
             Value::String(s) => split_planned(s),
@@ -2460,7 +2470,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
-                    "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"),
+                    "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model,
                     "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"),
                     "not_backlog": item.get("not_backlog").filter(|v| !v.is_null()).or(r.body.get("not_backlog")),
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
