@@ -52,6 +52,10 @@ fn an_item_ref_reads_as_its_task_and_others_stay() {
     assert_eq!(item_as_task("/start b3", i), "/start T40");
     assert_eq!(item_as_task("start B31 and B4", i), "start B31 and B4");
     assert_eq!(item_as_task("JIRAB3 is B3x", i), "JIRAB3 is B3x");
+    for dictated in ["start B-3", "start B 3", "start B #3", "start b–3"] {
+        assert_eq!(item_as_task(dictated, i), "start T40", "{dictated}");
+    }
+    assert_eq!(item_as_task("start B-31", i), "start B-31");
 }
 
 #[test]
