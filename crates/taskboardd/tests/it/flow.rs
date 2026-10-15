@@ -228,6 +228,28 @@ fn a_terminal_you_closed_waits_for_you_instead_of_restarting() {
 }
 
 #[test]
+fn a_new_terminal_names_the_lost_task_before_the_queued_one() {
+    let b = new_board();
+    new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    closed(&b, 1, "s1", "human");
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+    new_task(&b, "Next job", json!({}));
+
+    b.add_session("s2", "idle");
+    let ctx = b.report("hook.session_start", "s2", json!({"source": "startup"}))["context"].as_str().unwrap().to_string();
+    let lost = ctx.find("T1 “Long job” lost its terminal — tb take T1 if you are carrying it on.").expect(&ctx);
+    let queued = ctx.find("run tb take T2").expect(&ctx);
+    assert!(lost < queued, "the lost task comes first: {ctx}");
+
+    b.report("tb.take", "s2", json!({"task": "T1"}));
+    b.add_session("s3", "idle");
+    let ctx = b.report("hook.session_start", "s3", json!({"source": "startup"}))["context"].as_str().unwrap().to_string();
+    assert!(!ctx.contains("lost its terminal"), "a taken task isn't offered again: {ctx}");
+}
+
+#[test]
 fn a_terminal_an_agent_closed_still_restarts() {
     let b = new_board();
     let id = new_task(&b, "Long job", json!({}));
