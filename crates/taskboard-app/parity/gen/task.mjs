@@ -127,6 +127,11 @@ const hoursClosed = { ...STATE, work_hours: { ...STATE.work_hours, on: true, ope
 panel('needs: question, hours closed', asking, { ...withUi({}), state: hoursClosed });
 const hoursToday = { ...STATE, work_hours: { ...STATE.work_hours, on: true, open: false, next_open: '2026-10-07T18:00' } };
 panel('needs: question, hours open later today', asking, { ...withUi({}), state: hoursToday });
+panel('needs: question with options', task({ ...asking, ask: { picker: false, questions: [{ question: asking.question,
+  options: [{ label: 'Yes', description: 'Ask for the password first' }, { label: 'No', description: '' }] }] } }), withUi({}));
+panel('needs: picker in its terminal', task({ status: 'needs', needs_reason: 'attention', question: 'Pick a fruit (1 of 2 questions)', ...live('needs'),
+  ask: { picker: true, questions: [{ question: 'Pick a fruit', header: 'Fruit', multi: false, options: [{ label: 'Apple', description: 'Red' }, { label: 'Pear', description: '' }] },
+    { question: 'Pick sizes', header: 'Size', multi: true, options: [{ label: 'S', description: 'Small' }] }] } }), withUi({}));
 panel('needs: no question, live idle terminal', task({ status: 'needs', needs_reason: 'attention', latest: 'Waiting at its prompt.', ...live('idle') }), withUi({}));
 panel('needs: no question, no terminal', task({ status: 'needs', needs_reason: 'attention' }), withUi({}));
 panel('needs: alert and high priority', asking, { ...withUi({}), state: { ...STATE, alerts: [{ id: 'a1', at: at(3), text: 'Your answer to T7 didn’t arrive.', task: 'T7', goal: null }] } });

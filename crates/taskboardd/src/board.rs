@@ -32,6 +32,10 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
         Some(g) => goal_finished(app, g)?,
         None => true,
     };
+    // An ask's options belong to its question: a new question (or none) drops them.
+    if f.iter().any(|(k, _)| *k == "question") && !f.iter().any(|(k, _)| *k == "ask") {
+        f.push(("ask", Value::Null));
+    }
     f.push(("updated_at", json!(now_iso())));
     app.db.update("tasks", &json!(id), f)?;
     app.schedule_md(id);
@@ -339,6 +343,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("no_pr".into(), t.v("no_pr"));
         o.insert("no_evidence".into(), t.v("no_evidence"));
         o.insert("looks_finished".into(), crate::lost_done::card(t));
+        o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
         // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
         o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });

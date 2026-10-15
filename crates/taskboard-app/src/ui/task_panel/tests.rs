@@ -148,35 +148,17 @@ fn sent_note(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>) ->
 }
 
 #[gpui_kit::test]
-fn answer_sends_text_and_clears_the_draft(cx: &mut gpui_kit::TestAppContext) {
+fn an_option_answers_with_its_label(cx: &mut gpui_kit::TestAppContext) {
     let (w, rec) = parity::window(cx);
-    open(cx, &w, "T3");
-    // Empty: the web's "Write an answer first." and no request.
-    press(cx, &w, "answer", Some(""));
-    assert!(rec.last("tasks/T3/answer").is_none());
-    assert_eq!(note("ask:T3"), Some(("Write an answer first.".into(), true)));
-    typed(cx, &w, "answer:T3", "  Yes, ask for the password.  ");
-    press(cx, &w, "answer", Some(""));
-    assert_eq!(rec.last("tasks/T3/answer"), Some(json!({"text": "Yes, ask for the password.", "when": "now"})));
-    assert_eq!(ui(|u| u.drafts.get("answer:T3").cloned()), None, "draft cleared");
-    assert_eq!(note("ask:T3").map(|n| n.0), Some(sent_note(cx, &w)));
-}
-
-#[gpui_kit::test]
-fn answer_later_waits_for_work_hours(cx: &mut gpui_kit::TestAppContext) {
-    let (w, rec) = parity::window(cx);
-    // Close the work hours so "Send at …" is offered: a half hour twelve hours from now.
-    let start = chrono::Local::now() + chrono::Duration::hours(12);
-    let end = start + chrono::Duration::minutes(30);
-    let hours = json!({"on": true, "start": start.format("%H:%M").to_string(), "end": end.format("%H:%M").to_string(), "days": []});
-    rec.board().post("hours", hours).unwrap();
+    // T3's terminal asks again, this time with options.
+    let ask = json!({"event": "tb.question", "session": "fake-s2", "claude_session": "c-s2", "cwd": "",
+                     "text": "Should removing the last passkey require a password re-check?", "options": ["Yes: Ask for the password first", "No"]});
+    rec.board().post("report", ask).unwrap();
     w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
     open(cx, &w, "T3");
-    typed(cx, &w, "answer:T3", "Tomorrow is fine");
-    press(cx, &w, "answer", Some("morning"));
-    assert_eq!(rec.last("tasks/T3/answer"), Some(json!({"text": "Tomorrow is fine", "when": "morning"})));
-    let msg = note("ask:T3").unwrap().0;
-    assert!(msg.starts_with("Saved. It sends at "), "{msg}");
+    press(cx, &w, "answer-opt", Some("Yes"));
+    assert_eq!(rec.last("tasks/T3/answer"), Some(json!({"text": "Yes", "when": "now"})));
+    assert_eq!(note("ask:T3").map(|n| n.0), Some(sent_note(cx, &w)));
 }
 
 #[gpui_kit::test]

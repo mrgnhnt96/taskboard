@@ -571,6 +571,20 @@ pub fn last_turn_at(root: &Path, path: Option<&str>) -> Option<Turn> {
     turns_of(&lines(&p)).pop()
 }
 
+/// The text of the last reply in the transcript a hook named, when it's one of Claude's.
+pub fn last_reply_at(root: &Path, path: Option<&str>) -> Option<String> {
+    let p = std::fs::canonicalize(expand_home(path.filter(|p| !p.is_empty())?)).ok()?;
+    let root = std::fs::canonicalize(root).ok()?;
+    if p.extension().map(|e| e != "jsonl").unwrap_or(true) || !p.starts_with(&root) {
+        return None;
+    }
+    lines(&p).iter().rev().filter(|e| e["type"] == "assistant" && e["isSidechain"] != true).find_map(|e| {
+        let text: Vec<&str> = e["message"]["content"].as_array()?.iter().filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect();
+        let text = text.join("\n\n");
+        (!text.trim().is_empty()).then_some(text)
+    })
+}
+
 pub fn turns(app: &App, s: &Row, limit: usize) -> Value {
     let found = session_path(app, s).map(|p| turns_of(&lines(&p))).unwrap_or_default();
     let mut files: Vec<&String> = found.iter().flat_map(|t| t.files.iter()).collect();

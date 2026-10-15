@@ -459,13 +459,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
@@ -476,9 +476,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -615,13 +613,13 @@
         }
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Write an answer first. Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Write an answer first. Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
@@ -632,9 +630,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          "Yes, ask for it."
-        ]
+        "values": []
       }
     },
     {
@@ -765,13 +761,13 @@
         }
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Sending… Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer!",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
@@ -782,9 +778,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -911,28 +905,24 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Send at Thu 6am Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
-          "answer:morning",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
         ],
         "titles": [
-          "Hold the answer until work hours start; the task doesn’t start before then",
           "Take it off its terminal and put it back in the queue",
           "Close the terminal; a busy one is stopped",
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -1059,28 +1049,347 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Send at 6pm Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
-          "answer:morning",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
         ],
         "titles": [
-          "Hold the answer until work hours start; the task doesn’t start before then",
           "Take it off its terminal and put it back in the queue",
           "Close the terminal; a busy one is stopped",
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
+      }
+    },
+    {
+      "name": "needs: question with options",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "needs",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": "question",
+          "question": "Should removing the last passkey require a password re-check?",
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": {
+            "id": 1,
+            "ref": "G1",
+            "name": "Sign-in with passkeys",
+            "position": 2,
+            "total": 4,
+            "next_title": "Docs: passkey support",
+            "open_issues": 1
+          },
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "needs"
+          },
+          "terminals": [
+            {
+              "id": "s1",
+              "name": "T7 Sign in with a passkey",
+              "status": "needs",
+              "why": "Worked on the task",
+              "at": "2026-10-07T13:00:00.000Z"
+            }
+          ],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ask": {
+            "picker": false,
+            "questions": [
+              {
+                "question": "Should removing the last passkey require a password re-check?",
+                "options": [
+                  {
+                    "label": "Yes",
+                    "description": "Ask for the password first"
+                  },
+                  {
+                    "label": "No",
+                    "description": ""
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "ref": null,
+        "err": null,
+        "tab": "overview",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Yes Ask for the password first No Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log",
+          "answer-opt:Yes",
+          "answer-opt:No",
+          "focus",
+          "detach",
+          "close-term:force",
+          "term-focus"
+        ],
+        "titles": [
+          "Take it off its terminal and put it back in the queue",
+          "Close the terminal; a busy one is stopped",
+          "Open this terminal",
+          "Focus in Midna"
+        ],
+        "values": []
+      }
+    },
+    {
+      "name": "needs: picker in its terminal",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "needs",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": "attention",
+          "question": "Pick a fruit (1 of 2 questions)",
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "needs"
+          },
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "ask": {
+            "picker": true,
+            "questions": [
+              {
+                "question": "Pick a fruit",
+                "header": "Fruit",
+                "multi": false,
+                "options": [
+                  {
+                    "label": "Apple",
+                    "description": "Red"
+                  },
+                  {
+                    "label": "Pear",
+                    "description": ""
+                  }
+                ]
+              },
+              {
+                "question": "Pick sizes",
+                "header": "Size",
+                "multi": true,
+                "options": [
+                  {
+                    "label": "S",
+                    "description": "Small"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "ref": null,
+        "err": null,
+        "tab": "overview",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small Open terminal Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Needs you Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "acts": [
+          "close-panel",
+          "tab:overview",
+          "tab:context",
+          "tab:log",
+          "focus",
+          "detach",
+          "close-term:force",
+          "term-focus"
+        ],
+        "titles": [
+          "Take it off its terminal and put it back in the queue",
+          "Close the terminal; a busy one is stopped",
+          "Open this terminal",
+          "Focus in Midna"
+        ],
+        "values": []
       }
     },
     {
@@ -1191,13 +1500,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey needs you Waiting at its prompt. Send answer Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey needs you Waiting at its prompt. Open terminal Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
           "focus",
           "detach",
           "close-term",
@@ -1209,9 +1517,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -1318,18 +1624,15 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log The terminal needs you It’s waiting for you in Midna. Send answer Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log The terminal needs you It’s waiting for you in Midna. Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log",
-          "answer"
+          "tab:log"
         ],
         "titles": [],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -1464,13 +1767,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Needs you Your answer to T7 didn’t arrive. Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you Needs you T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Needs you Your answer to T7 didn’t arrive. Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
@@ -1482,9 +1785,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
@@ -1611,13 +1912,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you High priority T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Send answer Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you High priority T7 Sign in with a passkey webapp Asked 4m ago Running 2h 5m Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
           "tab:log",
-          "answer",
+          "focus",
           "detach",
           "close-term:force",
           "term-focus"
@@ -1628,9 +1929,7 @@
           "Open this terminal",
           "Focus in Midna"
         ],
-        "values": [
-          ""
-        ]
+        "values": []
       }
     },
     {
