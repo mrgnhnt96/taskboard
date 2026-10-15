@@ -375,6 +375,25 @@ fn an_empty_expected_list_doesn_t_wait() {
     assert_eq!(b.phase(id), "review", "no checks and none expected: no grace wait");
 }
 
+#[test]
+fn a_pr_with_no_checks_moves_on_to_review_once_the_grace_runs_out_without_another_read() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.clear();
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "a check may still register within the grace");
+    let read_at = b.flow(id)["checked_at"].clone();
+    prflow::waits_over(&b.app).unwrap();
+    assert_eq!(b.phase(id), "checks", "the grace isn't over yet");
+    // The grace runs out with no new read (a feed covers the PR, and nothing changes on it).
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 16.0 * 60.0}))]).unwrap();
+    prflow::waits_over(&b.app).unwrap();
+    assert_eq!(b.phase(id), "review");
+    assert_eq!(b.flow(id)["checked_at"], read_at, "the last read's time stays");
+}
+
 /// An `expected_cmd` that answers by head (h1: build and E2E; h2: none; h3: can't tell; h4: fails) and
 /// counts its runs in `runs`.
 fn expected_cmd_board() -> (Board, tempfile::TempDir) {
