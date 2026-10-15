@@ -85,7 +85,8 @@ pub fn head(w: &Value, prev: Option<&Value>, tasks: &[&Value]) -> Head {
     Head { title, meta, dot, stop: stopping(w) && !matches!(s(w, "state"), "stopped" | "done") }
 }
 
-/// The gate under a wave the goal stopped at, that's held, or that a task failed in.
+/// The gate under a wave the goal stopped at, that's held, or that a task failed in. A failed wave
+/// the goal already went on past (`passed`) stays `failed` but has nothing left to ask.
 pub fn gate(w: &Value, next: Option<&Value>) -> Option<Gate> {
     let wave = i(w, "wave");
     let on = next.map(|n| format!("wave {}", i(n, "wave"))).unwrap_or_else(|| "the rest of the goal".into());
@@ -96,7 +97,7 @@ pub fn gate(w: &Value, next: Option<&Value>) -> Option<Gate> {
     if s(w, "state") == "stopped" {
         return Some(Gate { bad: false, text: format!("Wave {wave} is done. Look it over, then let {on} start."), button: format!("Continue to {on}"), wave });
     }
-    if s(w, "state") == "failed" || (!failed.is_empty() && !b(w, "passed")) {
+    if (s(w, "state") == "failed" || !failed.is_empty()) && !b(w, "passed") {
         return Some(Gate { bad: true, text: format!("{} failed. {} waits.", failed.join(", "), fmt::cap(&on)), button: "Continue anyway".into(), wave });
     }
     None
@@ -315,6 +316,16 @@ mod tests {
         let stopped = json!({"wave": 1, "state": "stopped"});
         assert_eq!(gate(&stopped, Some(&w2)).unwrap().button, "Continue to wave 2");
         assert_eq!(gate(&w1, Some(&w2)), None);
+    }
+
+    #[test]
+    fn a_failed_wave_stops_asking_once_the_goal_went_on() {
+        let w6 = json!({"wave": 6, "state": "running"});
+        let holding = json!({"wave": 5, "state": "failed", "failed": ["T36"], "passed": false});
+        assert_eq!(gate(&holding, Some(&w6)).unwrap().text, "T36 failed. Wave 6 waits.");
+        let released = json!({"wave": 5, "state": "failed", "failed": ["T36"], "passed": true});
+        assert_eq!(gate(&released, Some(&w6)), None);
+        assert_eq!(gate(&released, None), None);
     }
 
     #[test]
