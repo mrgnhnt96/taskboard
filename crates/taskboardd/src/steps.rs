@@ -781,6 +781,7 @@ pub fn list(app: &App, t: &Row, head: Option<&str>) -> Result<Value> {
     let ignored: Vec<Value> = ignored_for(app, t).iter().map(|b| json!({"name": b.step, "why": b.why})).collect();
     Ok(json!({"task": rf("task", t.id()), "session": t.v("session_id"), "steps": steps, "ignored": ignored, "vars": vars_at(app, t, head),
               "head": known, "aim": aim_now(t), "aim_outside": aim_outside(t), "pr_open": t.s("status") == Some("done") && board::pr_still_open(t),
+              "ships_pr": crate::projects::task_ships_pr(app, t)? && !has(t.s("no_pr")),
               "passed_rounds": passed_rounds(app, t, &rounds, known.as_deref())?}))
 }
 

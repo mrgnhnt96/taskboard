@@ -107,7 +107,7 @@ pub fn report_block(app: &App, tb: &str) -> String {
             "- A question for {owner}: {tb} question \"<question>\", then wait for the answer (if it prints the board's \
              answer instead, carry on)"
         ),
-        format!("- Finished: {tb} submit \"<summary>\" (put the PR link in the summary if you opened one)"),
+        format!("- Finished: {tb} submit \"<summary>\" (--pr <link> for a PR that was open before the task)"),
         format!("- Can't be done: {tb} fail \"<why>\""),
         "If you find a problem outside this task, report it with found instead of fixing it.".to_string(),
     ]
@@ -131,8 +131,9 @@ fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
     }
     let mut s = "If this task changes code, it ends in one pull request: finished code that builds, breaks nothing \
                  that works today, and can be merged on its own. Keep it small and easy to review; split anything \
-                 bigger off with tb found. Open the PR with the repository's usual tools, then finish with tb submit and \
-                 the PR link in the summary."
+                 bigger off with tb found. The board opens the PR: push the rebased branch, write the description to a \
+                 file and finish with tb submit \"<summary>\" --pr-body <file> (it checks the description and that the \
+                 branch is pushed and rebased, then opens the PR). Opening it yourself from this terminal is refused."
         .to_string();
     let branch = branch_name(app, t)?;
     let key = t.s("jira_key").filter(|k| !k.is_empty());
@@ -145,9 +146,8 @@ fn pr_lines(app: &App, t: &Row, ships: bool) -> Result<String> {
         let setup = board::find_goal(app, t.i("goal_id"))?.is_some_and(|g| g.s("setup").is_some_and(|x| !x.trim().is_empty()));
         s += &format!(" Name its branch {b}{}.", if setup { " unless the goal's setup says otherwise" } else { "" });
     }
-    s += " Or let the board open it: write the description to a file and finish with tb submit \"<summary>\" --pr-body <file> \
-          (it checks the description and that the branch is pushed and rebased, then opens the PR). If it turns out no \
-          PR is needed after all, finish with tb submit \"<summary>\" --no-pr \"<why>\".";
+    s += " A PR that was already open before the task is linked with tb submit \"<summary>\" --pr <link>. If it turns \
+          out no PR is needed after all, finish with tb submit \"<summary>\" --no-pr \"<why>\".";
     if app.cfg.pr.watch && app.cfg.pr.wake {
         s += " Once it's done, the board watches the PR and brings this conversation back when a check fails or a \
               reviewer comments.";

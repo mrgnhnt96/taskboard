@@ -355,3 +355,15 @@ fn an_aim_at_another_repository_is_refused_with_the_reason() {
     b.report("tb.step_aim", json!({"worktree": b.repo().to_string_lossy()})).unwrap();
     assert!(b.steps(&"c".repeat(40))["aim_outside"].is_null());
 }
+
+#[test]
+fn the_listing_says_whether_the_board_opens_the_tasks_pr() {
+    // The hook refuses opening a PR from the terminal when the listing says the task ends in one.
+    let b = new_board();
+    b.new_task();
+    assert_eq!(b.steps("")["ships_pr"], false, "no git remote: no PR");
+    let b = new_board();
+    git(&b.repo(), &["remote", "add", "origin", "https://github.com/acme/webapp.git"]);
+    b.new_task();
+    assert_eq!(b.steps("")["ships_pr"], true);
+}

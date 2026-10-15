@@ -4,12 +4,14 @@ A project with no git remote has no PRs, and neither has a task set to `--pr no`
 
 ## Opening the PR
 
+The board opens the PR; opening it yourself from a task's terminal (`gh pr create`, a POST to `…/pulls` or `…/pullrequests`, a create-PR MCP tool) is refused.
+
 0. The owner's steps for before the PR (in your handoff; `tb steps` lists them and how to get past each; see SKILL.md). The board refuses the PR until they pass.
 1. Commit the work on the task's branch. Rebase onto the latest base branch (never merge it in), run the tests that cover your change (not the whole suite), and push. A rebased branch that was already pushed goes up with `git push --force-with-lease`, never plain `--force`.
-2. Open the PR with the repo's normal tools (on GitHub, `gh pr create`). Write the description for developers who have never seen the task board: a short summary of what changes and why, the changes, and how it was tested. No task, goal or backlog refs (T45, G3, B1).
-3. `tb submit "<summary>" --pr <url>` (or the PR's URL anywhere in the summary). The board picks up GitHub, GitLab and Bitbucket PR URLs and links the PR to the task. A plain `tb submit` on a task that ends in a PR, with none linked, is refused: give `--pr`, `--pr-body`, or `--no-pr "<why>"`.
+2. Write the description to a file with `## Summary`, `## Changes` and `## Testing` (bullet lists for the last two, short paragraphs), for developers who have never seen the task board: what changes and why, the changes, and how it was tested. No task, goal or backlog refs (T45, G3, B1).
+3. `tb submit "<summary>" --pr-body <file>` (`--title "…"` to name it; the ticket key goes first by itself). The board checks the description, the steps and the branch (pushed, rebased on the remote base, no merge commits), opens the PR into the right base and finishes. It says what to fix when it can't; `tb pr body-check <file>` checks just the description. The board adds a `## Context` section itself (the ticket, a stacked base, evidence, designs, and the task's bits with how to turn them on), so don't repeat those.
 
-Or let the board open it (GitHub): write the description to a file with `## Summary`, `## Changes` and `## Testing` (bullet lists for the last two, short paragraphs, no board refs), push the rebased branch, and run `tb submit "<summary>" --pr-body <file>` (`--title "…"` to name it; the ticket key goes first by itself). The board checks the description, the steps and the branch (pushed, rebased on the remote base, no merge commits), opens the PR into the right base and finishes. It says what to fix when it can't; `tb pr body-check <file>` checks just the description. The board adds a `## Context` section itself (the ticket, a stacked base, evidence, designs, and the task's bits with how to turn them on), so don't repeat those.
+A PR that was already open before the task (someone else's, or one the task was made for) is linked with `tb submit "<summary>" --pr <url>` (or its URL anywhere in the summary); the board picks up GitHub, GitLab and Bitbucket PR URLs. On GitLab, where the board can't open merge requests, open it with `glab mr create` and link it the same way. A plain `tb submit` on a task that ends in a PR, with none linked, is refused: give `--pr-body`, `--pr`, or `--no-pr "<why>"`.
 
 **A ticket for every PR**: while the board has Jira, `tb submit` with a PR is refused for a task with no ticket. Link one with `tb task set T<n> --jira ABC-123` (or `--jira new` to have the board find or make one), put the key in the PR title, then run `tb submit` again.
 
