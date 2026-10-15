@@ -816,11 +816,25 @@ fn project_files(app: &App, s: &Row, files: &[String]) -> Result<Vec<String>> {
     for f in files {
         let full = if f.starts_with('/') { f.clone() } else { format!("{}/{f}", if here.is_empty() { "" } else { &here }) };
         let full = std::path::Path::new(&full).components().collect::<std::path::PathBuf>().to_string_lossy().to_string();
-        if !out.contains(f) && roots.iter().any(|root| full == *root || full.starts_with(&format!("{root}/"))) {
+        if !out.contains(f) && !is_agent_memory(&full) && roots.iter().any(|root| full == *root || full.starts_with(&format!("{root}/"))) {
             out.push(f.clone());
         }
     }
     Ok(out)
+}
+
+/// A note in the agent's own memory (`~/.claude/projects/<project>/memory/…`): the agent's
+/// bookkeeping, not work on the project, even when a project holds the home folder.
+fn is_agent_memory(path: &str) -> bool {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home.trim_end_matches('/');
+    !home.is_empty() && memory_under(path, home)
+}
+
+fn memory_under(path: &str, home: &str) -> bool {
+    let Some(rest) = path.strip_prefix(&format!("{home}/.claude/projects/")) else { return false };
+    let mut parts = rest.split('/');
+    matches!((parts.next(), parts.next(), parts.next()), (Some(p), Some("memory"), Some(_)) if !p.is_empty())
 }
 
 fn shown_files(files: &[String]) -> String {
@@ -3113,6 +3127,15 @@ mod tests {
         assert_eq!(git_place("cd a; cd ./b && git push", "/w").as_deref(), Some("/w/a/b"));
         assert_eq!(git_place("git commit -m x", "/w/proj"), None);
         assert_eq!(git_place("git -C ../other status", "/w/proj"), None);
+    }
+
+    #[test]
+    fn agent_memory_notes_are_not_project_work() {
+        assert!(memory_under("/Users/m/.claude/projects/-Users-m-proj/memory/note.md", "/Users/m"));
+        assert!(memory_under("/Users/m/.claude/projects/-Users-m-proj/memory/MEMORY.md", "/Users/m"));
+        assert!(!memory_under("/Users/m/.claude/projects/-Users-m-proj/settings.json", "/Users/m"));
+        assert!(!memory_under("/Users/m/.claude/skills/x/SKILL.md", "/Users/m"));
+        assert!(!memory_under("/Users/m/proj/memory/note.md", "/Users/m"));
     }
 
     #[test]
