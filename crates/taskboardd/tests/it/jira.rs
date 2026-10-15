@@ -148,7 +148,7 @@ fn a_missing_connector_says_so_instead_of_each_ops_own_error() {
 }
 
 /// A live read through the real `claude` and the owner's connector: `TB_JIRA_LIVE_SITE=acme.atlassian.net
-/// cargo test -p taskboardd --test jira -- --ignored the_connector_is_reachable`. A Claude Code change that
+/// cargo test -p taskboardd --test it -- --ignored jira::the_connector_is_reachable`. A Claude Code change that
 /// drops the connector fails here with "Jira through Claude can't reach the connector".
 #[test]
 #[ignore]
