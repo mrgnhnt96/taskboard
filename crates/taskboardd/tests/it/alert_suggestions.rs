@@ -90,6 +90,28 @@ fn when_haiku_fails_or_answers_out_of_shape_the_alert_stays_plain_text() {
 }
 
 #[test]
+fn a_suggested_fix_opens_in_its_project_or_the_home_folder_when_it_has_none() {
+    let b = board(&good(), true);
+    b.post("/alerts", json!({"text": "T1: should the retries cap at 3 or 5?", "task": "T1"}));
+    b.post("/alerts", json!({"text": "The disk is nearly full"}));
+    suggest::tick(&b.app);
+    let repo = b._dir.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    b.app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    b.app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
+    let cwd = |text: &str| -> Value {
+        let a = dispatch::alerts(&b.app).into_iter().find(|a| a["text"] == text).unwrap();
+        assert_eq!(a["suggest"], "done", "{a}");
+        let r = dispatch::act(&b.app, a["id"].as_str().unwrap(), 0).unwrap();
+        let jid = r["job"].as_str().unwrap().trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<i64>().unwrap();
+        let j = b.app.db.q1("SELECT args FROM jobs WHERE id = ?", taskboardd::p![jid]).unwrap().unwrap();
+        serde_json::from_str::<Value>(j["args"].as_str().unwrap()).unwrap()["cwd"].clone()
+    };
+    assert_eq!(cwd("T1: should the retries cap at 3 or 5?"), b._dir.path().join("webapp").to_string_lossy().as_ref());
+    assert_eq!(cwd("The disk is nearly full"), dirs::home_dir().unwrap().to_string_lossy().as_ref());
+}
+
+#[test]
 fn with_suggestions_off_nothing_is_asked() {
     let b = board(&good(), false);
     b.post("/alerts", json!({"text": "T1: should the retries cap at 3 or 5?", "task": "T1"}));
