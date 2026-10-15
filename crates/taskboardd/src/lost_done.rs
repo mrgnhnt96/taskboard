@@ -160,7 +160,9 @@ fn commits(repo: &str, task: i64, branch: Option<&str>, version: Option<&str>, s
         let merges = merged_branch(subject)
             .is_some_and(|m| task_branch.is_match(m) || branch.is_some_and(|b| m == b || m.ends_with(&format!("/{b}"))));
         let releases = version.is_some_and(|v| subject.split(|c: char| c.is_whitespace() || c == ',').any(|w| w.trim_start_matches('v') == v));
-        if names_task.is_match(subject) || merges || releases {
+        // A merge subject names its two branches: "Merge branch 'main' into feat/t361-x" names the task but brings in main.
+        let names = merged_branch(subject).is_none() && names_task.is_match(subject);
+        if names || merges || releases {
             out.push(json!({"what": format!("Commit {sha}: {}", one_line(subject, 120)), "at": iso_of(at)}));
         }
         if out.len() >= 3 {
@@ -329,6 +331,7 @@ mod tests {
         let app = app(data.path());
         let id = lost_task(&app, "Lost cards", r.path(), "2026-10-15T21:00:00Z", json!({"where": {"branch": "feat/lost-cards"}}));
         sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'main' into feat/lost-cards"], "2026-10-15T21:10:00Z");
+        sh(r.path(), &["commit", "-q", "--allow-empty", "-m", &format!("Merge branch 'main' into feat/t{id}-lost-cards")], "2026-10-15T21:11:00Z");
         sweep(&app).unwrap();
         assert!(card(&board::get_task(&app, id).unwrap()).is_null());
         sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'feat/lost-cards'"], "2026-10-15T21:20:00Z");
@@ -350,6 +353,50 @@ mod tests {
         assert_eq!(card(&t)[0]["what"], "PR #12 merged: Lost cards");
         let log = app.db.q("SELECT text FROM events WHERE task_id = ?", p![id]).unwrap();
         assert!(!log.iter().any(|e| e.st("text").starts_with("Looks finished")));
+    }
+
+    #[test]
+    fn github_counts_published_releases_and_branch_prs_merged_after_the_close() {
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let gh = data.path().join("gh");
+        std::fs::write(
+            &gh,
+            r#"#!/bin/sh
+case "$*" in
+  "release view v1.2.3 "*) echo '{"publishedAt":"2026-10-15T22:26:00Z","url":"https://github.com/a/b/releases/tag/v1.2.3","isDraft":false}';;
+  "release view v2.0.0 "*) echo '{"publishedAt":"2026-10-15T22:26:00Z","url":"https://github.com/a/b/releases/tag/v2.0.0","isDraft":true}';;
+  "release view v3.0.0 "*) exit 1;;
+  "release view 3.0.0 "*) echo '{"publishedAt":"2026-10-15T22:40:00Z","url":"https://github.com/a/b/releases/tag/3.0.0","isDraft":false}';;
+  "release view v4.0.0 "*) echo '{"publishedAt":"2026-10-15T21:00:00Z","url":"https://github.com/a/b/releases/tag/v4.0.0","isDraft":false}';;
+  "pr list "*) echo '[{"number":12,"title":"Lost cards","url":"https://github.com/a/b/pull/12","mergedAt":"2026-10-15T22:30:00Z"},{"number":11,"title":"Earlier try","url":"https://github.com/a/b/pull/11","mergedAt":"2026-10-15T20:00:00Z"}]';;
+  *) exit 1;;
+esac
+"#,
+        )
+        .unwrap();
+        std::process::Command::new("chmod").arg("+x").arg(&gh).status().unwrap();
+        let mut cfg = Config::for_tests(data.path());
+        cfg.pr.gh = gh.to_string_lossy().to_string();
+        let app = App::for_tests(cfg);
+        let since = "2026-10-15T22:00:00Z";
+        let found = |title: &str, context: Value| {
+            let id = lost_task(&app, title, r.path(), since, context);
+            sweep(&app).unwrap();
+            card(&board::get_task(&app, id).unwrap())
+        };
+
+        let published = found("Release x v1.2.3", json!({}));
+        assert_eq!(published[0]["what"], "Release v1.2.3 published", "{published}");
+        assert_eq!(published[0]["url"], "https://github.com/a/b/releases/tag/v1.2.3");
+        assert!(found("Release x v2.0.0", json!({})).is_null(), "a draft isn't published");
+        assert_eq!(found("Release x v3.0.0", json!({}))[0]["what"], "Release 3.0.0 published");
+        assert!(found("Release x v4.0.0", json!({})).is_null(), "published before the close");
+
+        let merged = found("Lost cards", json!({"where": {"branch": "feat/lost-cards"}}));
+        let what: Vec<&str> = merged.as_array().unwrap().iter().map(|f| f["what"].as_str().unwrap()).collect();
+        assert_eq!(what, ["PR #12 merged: Lost cards"], "{merged}");
+        assert_eq!(merged[0]["url"], "https://github.com/a/b/pull/12");
     }
 
     #[test]
