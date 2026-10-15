@@ -116,7 +116,7 @@ pub fn get(app: &App, r: &str) -> Result<Row> {
         .ok_or_else(|| ApiError::new(404, format!("There's no release {}.", rf("release", id))))
 }
 
-fn clean_name(s: &str) -> Result<String> {
+pub(crate) fn clean_name(s: &str) -> Result<String> {
     let n = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if n.is_empty() {
         return err(400, "Say what the release is called (v1.4, 2026.10).");
@@ -138,9 +138,13 @@ fn clean_notes(body: &Value) -> Result<Option<String>> {
     Ok(if n.is_empty() { None } else { Some(n) })
 }
 
+/// Whether the project has a release with this name (any case) besides release `but`.
+pub(crate) fn named(app: &App, project: &str, name: &str, but: i64) -> Result<bool> {
+    Ok(app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND name = ? COLLATE NOCASE AND id != ?", p![project, name, but])? > 0)
+}
+
 fn name_taken(app: &App, project: &str, name: &str, but: i64) -> Result<()> {
-    let n = app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND name = ? COLLATE NOCASE AND id != ?", p![project, name, but])?;
-    if n > 0 {
+    if named(app, project, name, but)? {
         return err(409, format!("{project} already has a release called {name}."));
     }
     Ok(())
@@ -150,7 +154,7 @@ fn task_count(app: &App, id: i64) -> Result<i64> {
     app.db.count("SELECT COUNT(*) FROM tasks WHERE release_id = ?", p![id])
 }
 
-fn unreleased_rows(app: &App, project: &str) -> Result<Vec<Row>> {
+pub(crate) fn unreleased_rows(app: &App, project: &str) -> Result<Vec<Row>> {
     app.db.q(&format!("SELECT * FROM tasks WHERE project = ? AND {RELEASABLE} ORDER BY finished_at, id"), p![project])
 }
 
@@ -267,14 +271,20 @@ fn cut(app: &App, body: &Value) -> Result<Value> {
         return err(409, format!("Nothing to release in {project}: no done task waits in Unreleased."));
     }
     let who = board::caller(app, body, board::OWNER);
+    let id = put_in_release(app, &project, &name, notes, &tasks, &who)?;
+    show(app, &rf("release", id), &crate::api::Query::new())
+}
+
+/// Makes the release and puts the tasks in it, each with a "release" log line. The caller has checked the name.
+pub(crate) fn put_in_release(app: &App, project: &str, name: &str, notes: Option<String>, tasks: &[Row], who: &str) -> Result<i64> {
     let now = now_iso();
     let id = app.db.insert("releases", fields!["project" => project, "name" => name, "notes" => notes, "cut_at" => now, "cut_by" => who, "updated_at" => now])?;
     let r = rf("release", id);
-    for t in &tasks {
+    for t in tasks {
         board::update_task(app, t.id(), fields!["release_id" => id])?;
-        board::log_event(app, t.id(), &who, "release", &format!("In release {name} ({r})"))?;
+        board::log_event(app, t.id(), who, "release", &format!("In release {name} ({r})"))?;
     }
-    show(app, &r, &crate::api::Query::new())
+    Ok(id)
 }
 
 /// `POST /releases/R<n>`: rename it or change its notes.

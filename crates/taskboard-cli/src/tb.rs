@@ -1572,6 +1572,9 @@ enum ProjectCmd {
         /// Releases (tb release cut) for this project (default: config.toml's [releases] on)
         #[arg(long, value_parser = ["on", "off", "default"])]
         releases: Option<String>,
+        /// A tag pattern (v*): a new matching tag on the default branch cuts a release named after it, holding the work it contains (none: no tags)
+        #[arg(long = "release-tags")]
+        release_tags: Option<String>,
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
@@ -5735,8 +5738,9 @@ fn project_line(p: &Value) -> String {
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
+    let tags = p["release_tags"].as_str().map(|t| format!(", cut by tags {t}")).unwrap_or_default();
     let releases = match p["releases"].as_bool() {
-        Some(on) => format!(" · releases {}", if on { "on" } else { "off" }),
+        Some(on) => format!(" · releases {}{}", if on { "on" } else { "off" }, if on { tags.as_str() } else { "" }),
         None => String::new(),
     };
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
@@ -5811,7 +5815,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases, release_tags } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
@@ -5830,6 +5834,9 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             project_switch(&mut body, "agents_merge", agents_merge);
             project_switch(&mut body, "owner_review", owner_review);
             project_switch(&mut body, "releases", releases);
+            if let Some(t) = release_tags {
+                body.insert("release_tags".into(), json!(t));
+            }
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
             }
