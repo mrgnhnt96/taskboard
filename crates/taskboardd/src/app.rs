@@ -42,6 +42,8 @@ pub struct Shared {
     /// Claude is grouping new backlog issues; and when it last failed (it waits before trying again).
     pub grouping: bool,
     pub group_failed_at: Option<Instant>,
+    /// Claude is tidying the backlog (`tidy.rs`).
+    pub tidying: bool,
     /// The latest wave plan asked for on the Backlog page (`GET /backlog/plan`).
     pub plan: Option<serde_json::Value>,
     pub plan_seq: i64,

@@ -89,9 +89,15 @@ pub fn list(app: &App, project: &str) -> Result<Value> {
 // ------------------------------------------------------------------ asking Claude
 
 pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Result<Value, String> {
+    ask_in(app, prompt, schema, None, app.cfg.backlog.timeout_secs)
+}
+
+/// `ask`, run in `repo` with Claude's read-only tools (Read, Grep, Glob) there when it's given.
+pub(crate) fn ask_in(app: &App, prompt: String, schema: Value, repo: Option<&std::path::Path>, timeout_secs: u64) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let c = &app.cfg.backlog;
-    let args: Vec<String> = vec![
+    let tools = if repo.is_some() { "Read,Grep,Glob" } else { "" };
+    let mut args: Vec<String> = vec![
         "-p".into(),
         prompt,
         "--model".into(),
@@ -100,7 +106,7 @@ pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Resu
         "".into(),
         "--no-session-persistence".into(),
         "--tools".into(),
-        "".into(),
+        tools.into(),
         "--strict-mcp-config".into(),
         "--max-budget-usd".into(),
         c.budget_usd.clone(),
@@ -109,7 +115,11 @@ pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Resu
         "--output-format".into(),
         "json".into(),
     ];
-    let out = proc::run(&claude, &args, Some(&app.cfg.data), c.timeout_secs as f64).map_err(|_| "claude didn't answer in time".to_string())?;
+    if repo.is_some() {
+        args.extend(["--allowedTools".into(), tools.into()]);
+    }
+    let cwd = repo.unwrap_or(app.cfg.data.as_path());
+    let out = proc::run(&claude, &args, Some(cwd), timeout_secs as f64).map_err(|_| "claude didn't answer in time".to_string())?;
     let d: Value = serde_json::from_str(out.stdout.trim()).map_err(|_| "claude's answer wasn't JSON".to_string())?;
     d.get("structured_output")
         .cloned()
@@ -118,7 +128,7 @@ pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Resu
         .ok_or_else(|| "claude's answer had no result".to_string())
 }
 
-fn issue_block(b: &Row, with_fields: bool) -> String {
+pub(crate) fn issue_block(b: &Row, with_fields: bool) -> String {
     let mut lines = vec![format!("{} [{}] in {}: {}", rf("issue", b.id()), b.st("kind"), b.st("project"), one_line(&b.st("title"), 200))];
     if let Some(d) = b.s("detail").filter(|d| !d.is_empty()) {
         lines.push(format!("  Detail: {}", one_line(d, 500)));

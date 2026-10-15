@@ -1338,6 +1338,43 @@ enum BacklogCmd {
     },
     /// Add a note to a backlog issue's log; its detail stays as it is
     Note { issue: String, text: String },
+    /// Show or change the backlog tidy: on a timer, Claude closes open issues that repeat another or aren't real
+    Tidy {
+        /// Turn it on
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Turn it off
+        #[arg(long)]
+        off: bool,
+        /// How often: hourly, daily, or a length like 6h or 2d
+        #[arg(long)]
+        every: Option<String>,
+        /// Tidy now, every project, whether or not an issue was added since the last tidy
+        #[arg(long)]
+        now: bool,
+        /// Forget the changes and go back to config.toml's [backlog] tidy and tidy_every_hours
+        #[arg(long)]
+        reset: bool,
+    },
+}
+
+/// `tb backlog tidy --every`: hours from hourly, daily, or a length like 6h or 2d.
+fn tidy_hours(s: &str) -> Result<f64, String> {
+    let h = match s.trim().to_lowercase().as_str() {
+        "hourly" => 1.0,
+        "daily" => 24.0,
+        "weekly" => 168.0,
+        // parse_minutes counts a day as a work day; a timer's day is 24 hours.
+        x if ["days", "day", "d"].iter().any(|s| x.strip_suffix(s).is_some_and(|n| n.trim().parse::<f64>().is_ok())) => {
+            let n = ["days", "day", "d"].iter().find_map(|s| x.strip_suffix(s).and_then(|n| n.trim().parse::<f64>().ok())).unwrap_or(0.0);
+            n * 24.0
+        }
+        x =>taskboardd::util::parse_minutes(x).map(|m| m as f64 / 60.0).ok_or_else(|| format!("--every takes hourly, daily, or a length like 6h or 2d, not “{s}”."))?,
+    };
+    if !(1.0..=taskboardd::tidy::MAX_EVERY_HOURS).contains(&h) {
+        return Err("--every takes 1 hour to 30 days.".to_string());
+    }
+    Ok(h)
 }
 
 #[derive(Subcommand)]
@@ -4830,6 +4867,24 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(&format!("Closed {} as won't do.", issue_refs(&issues)?.join(", ")));
             Ok(0)
         }
+        Cmd::Backlog { action: BacklogCmd::Tidy { on, off, every, now, reset } } => {
+            let mut b = json!({});
+            if on || off {
+                b["on"] = json!(on);
+            }
+            if let Some(e) = every {
+                b["every_hours"] = json!(tidy_hours(&e)?);
+            }
+            if now {
+                b["now"] = json!(true);
+            }
+            if reset {
+                b["reset"] = json!(true);
+            }
+            let v = if b.as_object().is_some_and(|o| o.is_empty()) { c.call("GET", "/backlog/tidy", None)? } else { c.call("POST", "/backlog/tidy", Some(b))? };
+            out(v["line"].as_str().unwrap_or(""));
+            Ok(0)
+        }
         Cmd::Backlog { action: BacklogCmd::Reopen { issues } } => {
             backlog_bulk(c, "reopen", &issues, json!({}))?;
             out(&format!("Opened {} again.", issue_refs(&issues)?.join(", ")));
@@ -6262,6 +6317,18 @@ mod tests {
         assert_eq!(c.credited_here("GET", None), None, "a read sends nothing");
         let outside = Ctx { session: String::new(), ..c };
         assert_eq!(outside.credited_here("POST", Some(json!({"wave": 2}))), Some(json!({"wave": 2})), "outside Midna it stays the owner's");
+    }
+
+    #[test]
+    fn backlog_tidy_takes_plain_lengths() {
+        assert!(Cli::try_parse_from(["tb", "backlog", "tidy", "--off", "--every", "daily"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "backlog", "tidy", "--on", "--off"]).is_err());
+        assert_eq!(tidy_hours("hourly"), Ok(1.0));
+        assert_eq!(tidy_hours("Daily"), Ok(24.0));
+        assert_eq!(tidy_hours("6h"), Ok(6.0));
+        assert_eq!(tidy_hours("2d"), Ok(48.0));
+        assert!(tidy_hours("30m").is_err());
+        assert!(tidy_hours("soon").is_err());
     }
 
     #[test]

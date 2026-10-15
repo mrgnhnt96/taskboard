@@ -102,6 +102,8 @@ model = "sonnet"
 budget_usd = "1.00"
 timeout_secs = 240
 max_terminals = 2                    # how many terminals a goal made from the backlog runs at once
+tidy = true                          # Claude closes open issues that repeat another or aren't real (tb backlog tidy)
+tidy_every_hours = 24.0              # how often (1 for hourly); skipped when no issue was added since the last one
 
 # Pull requests. Any GitHub, GitLab or Bitbucket PR link an agent reports is linked to its task.
 # GitHub PRs are watched with the gh CLI (which must be logged in).
