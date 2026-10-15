@@ -35,6 +35,8 @@ pub struct Shared {
     pub jira_token_off: bool,
     pub jira_creds: Option<(String, String)>,
     pub remotes: std::collections::HashMap<String, (Instant, Option<bool>)>,
+    /// `projects::list_projects` as of a `Db::mark`: every task card asks for its project's path.
+    pub projects: Option<((i64, i64), Vec<serde_json::Value>)>,
     /// Claude is grouping new backlog issues; and when it last failed (it waits before trying again).
     pub grouping: bool,
     pub group_failed_at: Option<Instant>,

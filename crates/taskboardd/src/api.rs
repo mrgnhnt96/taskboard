@@ -541,23 +541,37 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
     for k in ["queued", "working", "needs", "done"] {
         cols.insert(k, vec![]);
     }
-    for t in app.db.q("SELECT * FROM tasks WHERE status != 'planned'", p![])? {
-        if !project_match(t.s("project"), project) || !task_goal_match(app, &t, goal)? {
-            continue;
-        }
-        let st = t.st("status");
-        if let Some(col) = cols.get_mut(st.as_str()) {
-            let c = board::task_card(app, &t)?;
-            col.push((c, t.st("created_at")));
-        }
-    }
-    let mut out_cols = serde_json::Map::new();
     let window = match q(query, "done", "24h") {
         "7d" => Some(7.0 * 86400.0),
         "all" => None,
         _ => Some(86400.0),
     };
-    let mut done_hidden = 0;
+    // Done tasks are many and their cards dear: pick the shown ones from the rows, then build only those.
+    let mut done = vec![];
+    for t in app.db.q("SELECT * FROM tasks WHERE status != 'planned'", p![])? {
+        if !project_match(t.s("project"), project) || !task_goal_match(app, &t, goal)? {
+            continue;
+        }
+        let st = t.st("status");
+        if st == "done" {
+            done.push(t);
+        } else if let Some(col) = cols.get_mut(st.as_str()) {
+            let c = board::task_card(app, &t)?;
+            col.push((c, t.st("created_at")));
+        }
+    }
+    let done_all = done.len();
+    let when = |t: &Row| board::when_of(t).0.as_str().unwrap_or("").to_string();
+    done.sort_by_cached_key(|t| std::cmp::Reverse(when(t)));
+    done.retain(|t| window.map(|w| wall_age_secs(Some(&when(t))).unwrap_or(0.0) <= w).unwrap_or(true));
+    done.truncate(DONE_SHOWN_MAX);
+    let done_hidden = done_all - done.len();
+    if let Some(col) = cols.get_mut("done") {
+        for t in &done {
+            col.push((board::task_card(app, t)?, t.st("created_at")));
+        }
+    }
+    let mut out_cols = serde_json::Map::new();
     let mut counts = serde_json::Map::new();
     for (k, mut v) in cols {
         if k == "queued" {
@@ -567,13 +581,8 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         } else {
             v.sort_by(|a, b| b.0["when"].as_str().unwrap_or("").cmp(a.0["when"].as_str().unwrap_or("")));
         }
-        let mut cards: Vec<Value> = v.into_iter().map(|(c, _)| c).collect();
-        if k == "done" {
-            let all = cards.len();
-            cards.retain(|c| window.map(|w| wall_age_secs(c["when"].as_str()).unwrap_or(0.0) <= w).unwrap_or(true));
-            cards.truncate(DONE_SHOWN_MAX);
-            done_hidden = all - cards.len();
-        } else {
+        let cards: Vec<Value> = v.into_iter().map(|(c, _)| c).collect();
+        if k != "done" {
             counts.insert(k.into(), json!(cards.len()));
         }
         out_cols.insert(k.into(), Value::Array(cards));
