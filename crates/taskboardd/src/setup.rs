@@ -1,7 +1,8 @@
 //! A project's setup gaps: rules that keep its work from finishing, such as a Review step with nobody
 //! the board can ask, or a PR flow turned on for a folder with no git remote. `tb project show`, the
 //! handoff and the app list them, and `sweep` alerts the owner once while a project with gaps has
-//! work on it (again when another of its PRs gets stuck on them).
+//! work on it (again when another of its PRs gets stuck on them). A project with no reviewers gets
+//! one reviewer sync of its own first (`auto_sync`).
 
 use serde_json::{json, Value};
 
@@ -13,6 +14,8 @@ use crate::util::*;
 /// Project name → what was last alerted for it (its gaps and stuck PRs), so a dismissed alert stays
 /// dismissed until something changes.
 const ALERTED_SETTING: &str = "setup_alerted";
+/// Project name → when the board ran the reviewer sync for it on its own.
+const AUTO_SYNCED_SETTING: &str = "reviewers_auto_synced";
 
 pub struct Gap {
     pub key: &'static str,
@@ -100,6 +103,34 @@ pub fn handoff_line(app: &App, project: &str) -> Result<Option<String>> {
         "Project setup: {project} isn't set up to finish its work: {}. It's the owner's to fix; don't change it, say so when your PR is up.",
         texts.join("; ")
     )))
+}
+
+/// Runs `tb reviewers sync` once for each project whose PRs have nobody the board can ask to review
+/// them: its commit authors join the roster and the host's members are matched. A project without a
+/// folder waits until it has one. What the sync can't fix is left to the setup alert. Outside a
+/// transaction: the sync reads git history and the PR host.
+pub fn auto_sync(app: &App) -> Result<()> {
+    let mut done = jloads_obj(app.db.get_setting(AUTO_SYNCED_SETTING)?.as_deref());
+    for p in crate::projects::list_projects(app)? {
+        let Some(project) = p["name"].as_str() else { continue };
+        let Some(repo) = p["path"].as_str().filter(|r| std::path::Path::new(r).is_dir()) else { continue };
+        if done.contains_key(project) || !crate::projects::ships_prs(app, project)? || !review_unstaffed(app, project)? {
+            continue;
+        }
+        let pr = crate::reviewers::last_pr(app, project)?;
+        match crate::picker::sync(app, project, Some(repo), pr.as_ref(), true) {
+            Ok(v) => app.info(format!("reviewers: synced {project} on its own (no reviewers): {v}")),
+            Err(e) => app.info(format!("reviewers: couldn't sync {project}: {}", e.message)),
+        }
+        if pr.is_none() {
+            // No PR to match the host's members against yet: the first ask (`picker::pick`) syncs
+            // again with its PR instead of waiting out `sync_every_hours`.
+            app.db.set_setting(&format!("reviewers_synced:{project}"), None)?;
+        }
+        done.insert(project.to_string(), json!(now_iso()));
+        app.db.set_setting(AUTO_SYNCED_SETTING, Some(&jdumps(&Value::Object(done.clone()))))?;
+    }
+    Ok(())
 }
 
 /// Alerts the owner about each project whose gaps stand in the way of work on it: queued or running

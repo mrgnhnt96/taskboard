@@ -191,3 +191,69 @@ fn a_pr_flow_on_without_a_git_remote_is_a_gap_and_the_handoff_says_so() {
     let line = setup::handoff_line(&b.app, "webapp").unwrap().unwrap();
     assert!(line.contains("no git remote"), "{line}");
 }
+
+#[test]
+fn a_project_with_no_reviewers_syncs_its_roster_once_on_its_own() {
+    let b = board_with(|c| c.reviewers.min_commits = 1);
+    let repo = b.dir.path().join("webapp");
+    let git = |args: &[&str]| crate::reviewers::sh_git(&repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", "https://github.com/acme/webapp.git"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=Me", "-c", "user.email=me@acme.dev", "commit", "-q", "-m", "a", "--author", "Sam Lee <7+sam-gh@users.noreply.github.com>"]);
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"]);
+
+    setup::auto_sync(&b.app).unwrap();
+    assert!(b.gap_keys().is_empty(), "Sam joined from the history with their host id");
+
+    // Once per project: after the owner takes Sam off, the board doesn't sync again on its own.
+    b.call("POST", "/reviewers/remove", json!({"project": "webapp", "reviewer": "Sam Lee"}));
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"]);
+    setup::auto_sync(&b.app).unwrap();
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"], "synced already");
+    // With no PR to match members against, the first ask's sync isn't held off.
+    assert_eq!(b.app.db.get_setting("reviewers_synced:webapp").unwrap(), None);
+}
+
+#[test]
+fn a_solo_project_synced_with_only_the_owner_keeps_its_gap() {
+    let b = board_with(|c| c.reviewers.min_commits = 1);
+    let repo = b.dir.path().join("webapp");
+    let git = |args: &[&str]| crate::reviewers::sh_git(&repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", "https://github.com/acme/webapp.git"]);
+    git(&["config", "user.name", "Me"]);
+    git(&["config", "user.email", "9+me-gh@users.noreply.github.com"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "a"]);
+
+    setup::auto_sync(&b.app).unwrap();
+    assert_eq!(b.gap_keys(), vec!["no_reviewers"], "the owner is never asked to review their own PRs");
+}
+
+fn auto_synced(b: &Board) -> Option<String> {
+    b.app.db.get_setting("reviewers_auto_synced").unwrap()
+}
+
+#[test]
+fn auto_sync_leaves_projects_without_the_gap_or_a_folder_alone() {
+    // Already staffed: nothing to sync.
+    let staffed = board_with(|_| {});
+    staffed.call("POST", "/reviewers", json!({"project": "webapp", "reviewer": "Sam", "user": "sam-gh"}));
+    setup::auto_sync(&staffed.app).unwrap();
+    assert_eq!(auto_synced(&staffed), None);
+
+    // No PRs (a folder with no remote): no Review step to staff.
+    let no_prs = board_with(|_| {});
+    crate::reviewers::sh_git(&no_prs.dir.path().join("webapp"), &["init", "-q"]);
+    setup::auto_sync(&no_prs.app).unwrap();
+    assert_eq!(auto_synced(&no_prs), None);
+
+    // No folder yet: it waits for one instead of spending its one sync.
+    let no_folder = board_with(|_| {});
+    std::fs::remove_dir_all(no_folder.dir.path().join("webapp")).unwrap();
+    setup::auto_sync(&no_folder.app).unwrap();
+    assert_eq!(auto_synced(&no_folder), None);
+}

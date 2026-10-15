@@ -239,9 +239,15 @@ pub fn review_on(app: &App, project: Option<&str>) -> bool {
 }
 
 /// Whether the board has anyone it could ask on a project's PRs: a roster reviewer, not removed,
-/// whose host id is known.
+/// whose host id is known, and not the owner (never asked to review their own PRs).
 pub fn any_askable(app: &App, project: &str) -> Result<bool> {
-    Ok(roster(app, project)?.iter().any(|r| r.s("removed_at").is_none() && has(r.s("host_user"))))
+    let known: Vec<Row> = roster(app, project)?.into_iter().filter(|r| r.s("removed_at").is_none() && has(r.s("host_user"))).collect();
+    if known.is_empty() {
+        return Ok(false);
+    }
+    let repo = crate::projects::project_path(app, Some(project))?;
+    let me = crate::picker::selves(app, repo.as_deref(), &Value::Null);
+    Ok(known.iter().any(|r| !idents(r).iter().any(|i| me.contains(i))))
 }
 
 /// Automation levels by name (`tb reviewers auto <who> low|normal|high|<number>`).
@@ -716,12 +722,16 @@ fn act(app: &App, action: &str, body: &Value) -> Result<Value> {
 fn sync(app: &App, body: &Value) -> Result<Value> {
     let project = project_of(app, body, None)?;
     let repo = crate::projects::project_path(app, Some(&project))?;
-    let last = app.db.q1("SELECT * FROM tasks WHERE project = ? AND pr_num IS NOT NULL AND pr_repo IS NOT NULL ORDER BY id DESC LIMIT 1", p![project])?;
-    let pr = last.as_ref().and_then(crate::prhost::PrRef::of);
-    let mut out = crate::picker::sync(app, &project, repo.as_deref(), pr.as_ref(), true)?;
+    let mut out = crate::picker::sync(app, &project, repo.as_deref(), last_pr(app, &project)?.as_ref(), true)?;
     out["project"] = json!(project);
     out["reviewers"] = json!(roster(app, &project)?.iter().map(|r| dict(app, r)).collect::<Result<Vec<_>>>()?);
     Ok(out)
+}
+
+/// The project's latest PR, for matching the host's members to the roster.
+pub fn last_pr(app: &App, project: &str) -> Result<Option<crate::prhost::PrRef>> {
+    let last = app.db.q1("SELECT * FROM tasks WHERE project = ? AND pr_num IS NOT NULL AND pr_repo IS NOT NULL ORDER BY id DESC LIMIT 1", p![project])?;
+    Ok(last.as_ref().and_then(crate::prhost::PrRef::of))
 }
 
 /// `/reviewers…`.

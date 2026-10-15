@@ -278,15 +278,30 @@ fn prflow_of(t: &Row) -> Row {
 }
 
 /// Who the PR's author is, in every form the board knows: never asked to review their own PR.
-fn selves(app: &App, repo: Option<&str>, rec: &Value) -> Vec<String> {
+pub fn selves(app: &App, repo: Option<&str>, rec: &Value) -> Vec<String> {
     let mut out: Vec<String> = app.cfg.reviewers.me.iter().chain(app.cfg.owner_emails.iter()).map(|s| s.to_lowercase()).collect();
     if let Some(a) = rec["author"].as_str().filter(|a| !a.is_empty()) {
         out.push(a.to_lowercase());
     }
-    if let Some(e) = repo.and_then(|r| git(r, &["config", "user.email"])) {
-        out.push(e.trim().to_lowercase());
+    if let Some(e) = repo.and_then(|r| repo_email(app, r)) {
+        out.push(e);
     }
     out
+}
+
+/// How long a repo's `git config user.email` is trusted before it's read again.
+const EMAIL_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The repo's `git config user.email`, lowercased; cached, since task cards ask for it on every render.
+fn repo_email(app: &App, repo: &str) -> Option<String> {
+    if let Some((at, v)) = app.shared.lock().git_emails.get(repo) {
+        if at.elapsed() < EMAIL_TTL {
+            return v.clone();
+        }
+    }
+    let found = git(repo, &["config", "user.email"]).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
+    app.shared.lock().git_emails.insert(repo.to_string(), (std::time::Instant::now(), found.clone()));
+    found
 }
 
 /// A roster row the board could ask, as (host id, due, weight): one with a host account, not
