@@ -43,6 +43,7 @@ pub struct FileConfig {
     pub bits: crate::bits::BitsConfig,
     pub planning: crate::planning::PlanningConfig,
     pub checkin: crate::checkin::CheckinConfig,
+    pub spans: crate::spans::SpansConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     /// `[hosts.<host>]`: each PR host's call budget (`prhost/limit.rs`).
@@ -641,6 +642,7 @@ pub struct Config {
     pub bits: crate::bits::BitsConfig,
     pub planning: crate::planning::PlanningConfig,
     pub checkin: crate::checkin::CheckinConfig,
+    pub spans: crate::spans::SpansConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
@@ -802,6 +804,7 @@ impl Config {
             bits: f.bits,
             planning: f.planning,
             checkin: f.checkin,
+            spans: f.spans,
             reviewers: f.reviewers,
             feed: f.feed,
             hosts: f.hosts,

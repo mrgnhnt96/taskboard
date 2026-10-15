@@ -340,6 +340,7 @@ impl Db {
         add_columns(&conn, crate::breaks::ADDED)?;
         add_columns(&conn, crate::lines::ADDED)?;
         conn.execute_batch(crate::lines::SCHEMA)?;
+        conn.execute_batch(crate::spans::SCHEMA)?;
         conn.execute_batch(BACKFILL_STATES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }

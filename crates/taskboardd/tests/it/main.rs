@@ -52,6 +52,7 @@ mod reproject;
 mod retro;
 mod reviewers;
 mod setup_gaps;
+mod spans;
 mod sleep;
 mod start_asks;
 mod start_item;
