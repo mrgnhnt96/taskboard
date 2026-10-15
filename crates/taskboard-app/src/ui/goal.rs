@@ -30,6 +30,9 @@ pub struct State {
     for_goal: String,
     /// Opened from a backlog link: the Backlog section lists every open issue.
     pub backlog_view: bool,
+    /// The Notes section is expanded, and the one kind it lists (`None`: every kind).
+    notes_open: bool,
+    note_filter: Option<&'static str>,
     // Kept across goals: a request's result by group, and the requests running.
     notes: HashMap<String, (String, bool)>,
     busy: HashSet<String>,
@@ -39,6 +42,10 @@ impl State {
     pub fn reset_for(&mut self, goal: &str) {
         self.for_goal = goal.to_string();
         self.backlog_view = std::env::var("TASKBOARD_GOAL_VIEW").is_ok_and(|v| v == "backlog");
+        // Dev: `TASKBOARD_GOAL_NOTES=open|Decision|Finding|Reference` expands Notes, filtered to that kind (screenshots).
+        let notes = std::env::var("TASKBOARD_GOAL_NOTES").unwrap_or_default();
+        self.notes_open = !notes.is_empty();
+        self.note_filter = ["Decision", "Finding", "Reference"].into_iter().find(|k| *k == notes);
     }
 }
 
@@ -307,10 +314,17 @@ pub fn how_runs(g: &Value) -> Vec<(&'static str, String)> {
 /// One note: "Decision · pinned" / "Finding · T12" / "Reference · you", its tone, and the text.
 #[derive(Debug, PartialEq)]
 pub struct NoteItem {
+    /// Decision, Finding or Reference: what the Notes filter matches.
+    pub group: &'static str,
     pub kind: String,
     /// goal, results or muted.
     pub tone: &'static str,
     pub text: String,
+}
+
+/// The Notes filters: each kind the notes hold, in a fixed order.
+pub fn note_groups(items: &[NoteItem]) -> Vec<&'static str> {
+    ["Decision", "Finding", "Reference"].into_iter().filter(|k| items.iter().any(|x| x.group == *k)).collect()
 }
 
 /// The goal's notes, pinned first, then oldest first.
@@ -326,7 +340,7 @@ pub fn note_items(notes: &[Value]) -> Vec<NoteItem> {
             };
             let parts = [Some(label.to_string()), b(n, "pinned").then(|| "pinned".to_string()), fmt::opt_s(n, "source").map(str::to_string)];
             let kind = parts.into_iter().flatten().collect::<Vec<_>>().join(" · ");
-            NoteItem { kind, tone, text: s(n, "text").split_whitespace().collect::<Vec<_>>().join(" ") }
+            NoteItem { group: label, kind, tone, text: s(n, "text").split_whitespace().collect::<Vec<_>>().join(" ") }
         })
         .collect()
 }
@@ -643,26 +657,23 @@ fn inline_note(m: &MainWindow, t: &Theme, grp: &str) -> Option<Div> {
 
 /// An aside section: an uppercase title with its count, then the body; a divider under it.
 pub(super) fn side(t: &Theme, title: &str, count: Option<String>, body: impl IntoElement) -> Div {
+    side_box(t).child(side_head(t, title, count).pb(px(8.))).child(body)
+}
+
+fn side_box(t: &Theme) -> Div {
+    div().flex().flex_col().px(px(18.)).py(px(16.)).border_b_1().border_color(t.divider)
+}
+
+fn side_head(t: &Theme, title: &str, count: Option<String>) -> Div {
     div()
         .flex()
-        .flex_col()
-        .px(px(18.))
-        .py(px(16.))
-        .border_b_1()
-        .border_color(t.divider)
-        .child(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(px(8.))
-                .pb(px(8.))
-                .text_size(px(11.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(t.muted)
-                .child(title.to_uppercase())
-                .when_some(count, |d, n| d.child(div().font_weight(FontWeight::NORMAL).child(n))),
-        )
-        .child(body)
+        .items_baseline()
+        .gap(px(8.))
+        .text_size(px(11.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(t.muted)
+        .child(title.to_uppercase())
+        .when_some(count, |d, n| d.child(div().font_weight(FontWeight::NORMAL).child(n)))
 }
 
 /// Goals › haymay › G31: the project crumb opens the Goals page on that project, Goals on all.
@@ -904,14 +915,37 @@ fn how_runs_el(t: &Theme, g: &Value) -> Div {
     side(t, "How it runs", None, kv)
 }
 
-fn notes_el(t: &Theme, g: &Value) -> Option<Div> {
+fn notes_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
     let items = note_items(arr(g, "notes"));
     if items.is_empty() {
         return None;
     }
-    let n = items.len();
+    let total = items.len();
+    let open = m.goal_page.notes_open;
+    let groups = note_groups(&items);
+    let filter = m.goal_page.note_filter.filter(|k| groups.contains(k));
+    let shown: Vec<NoteItem> = items.into_iter().filter(|x| filter.is_none_or(|k| x.group == k)).collect();
+    let count = if filter.is_some() { format!("{} of {total}", shown.len()) } else { total.to_string() };
+    let hover = t.accent;
+    let head = side_head(t, "Notes", Some(count)).child(div().flex_1()).child(
+        div()
+            .id("goal-notes-toggle")
+            .text_size(px(12.))
+            .font_weight(FontWeight::NORMAL)
+            .text_color(t.accent)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(hover).underline())
+            .child(if open { "Hide" } else { "Show" })
+            .on_click(cx.listener(|m, _, _, cx| {
+                m.goal_page.notes_open = !m.goal_page.notes_open;
+                cx.notify();
+            })),
+    );
+    if !open {
+        return Some(side_box(t).child(head));
+    }
     let mut list = div().flex().flex_col().gap(px(10.));
-    for (ix, x) in items.into_iter().enumerate() {
+    for (ix, x) in shown.into_iter().enumerate() {
         let fg = match x.tone {
             "goal" => t.goal,
             "results" => t.results,
@@ -926,7 +960,23 @@ fn notes_el(t: &Theme, g: &Value) -> Option<Div> {
                 .child(div().text_size(px(13.)).line_height(relative(1.45)).child(inline_el(t, &inline_segments(&x.text), format!("gnote-{ix}")))),
         );
     }
-    Some(side(t, "Notes", Some(n.to_string()), list))
+    let mut out = side_box(t).child(head.pb(px(8.)));
+    if groups.len() > 1 {
+        let labels: Vec<&str> = std::iter::once("All").chain(groups.iter().map(|k| match *k {
+            "Decision" => "Decisions",
+            "Finding" => "Findings",
+            _ => "References",
+        })).collect();
+        let on = filter.and_then(|k| groups.iter().position(|x| *x == k)).map_or(0, |i| i + 1);
+        out = out.child(div().pb(px(10.)).child(kit::seg(t, "goal-note-kind", &labels, on, |i, item| {
+            let pick = i.checked_sub(1).map(|i| groups[i]);
+            item.on_click(cx.listener(move |m, _, _, cx| {
+                m.goal_page.note_filter = pick;
+                cx.notify();
+            }))
+        })));
+    }
+    Some(out.child(list))
 }
 
 fn attachments_el(t: &Theme, g: &Value) -> Option<Div> {
@@ -993,7 +1043,7 @@ fn aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> 
         .gap(px(0.))
         .overflow_hidden()
         .child(how_runs_el(t, g))
-        .children(notes_el(t, g))
+        .children(notes_el(m, t, g, cx))
         .children(attachments_el(t, g))
         .children(pool::devices_aside(m, t, g, cx))
         .children(pool::bits_aside(t, g))
@@ -1188,9 +1238,11 @@ mod tests {
             json!({"kind": "decision", "text": "Pinned", "at": "2026-10-10T10:00:00Z", "pinned": true, "source": "T3"}),
         ];
         let got = note_items(&notes);
-        assert_eq!(got[0], NoteItem { kind: "Decision · pinned · T3".into(), tone: "goal", text: "Pinned".into() });
+        assert_eq!(got[0], NoteItem { group: "Decision", kind: "Decision · pinned · T3".into(), tone: "goal", text: "Pinned".into() });
         assert_eq!((got[1].kind.as_str(), got[1].tone), ("Reference", "muted"));
-        assert_eq!(got[2], NoteItem { kind: "Finding · T12".into(), tone: "results", text: "Late one".into() });
+        assert_eq!(got[2], NoteItem { group: "Finding", kind: "Finding · T12".into(), tone: "results", text: "Late one".into() });
+        assert_eq!(note_groups(&got), vec!["Decision", "Finding", "Reference"]);
+        assert_eq!(note_groups(&got[2..]), vec!["Finding"], "one kind: no filter to pick");
     }
 
     #[test]
