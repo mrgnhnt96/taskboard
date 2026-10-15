@@ -1,5 +1,5 @@
-//! Search (⌘K and the sidebar's search box): a palette over the page that finds tasks, goals and
-//! terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
+//! Search (⌘K and the sidebar's search box): a palette over the page that finds tasks, goals,
+//! backlog issues and terminals as you type. ↑ ↓ move, ↩ opens the result on its own page, esc closes.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, i, s};
 use crate::theme::Theme;
@@ -7,7 +7,7 @@ use crate::ui::goals_page::{GoalGroup, goal_group};
 use crate::ui::modals::Modal;
 use crate::ui::status::St;
 use crate::ui::text_input::FieldChanged;
-use crate::ui::{kit, sessions, sidebar, tasks};
+use crate::ui::{issue_panel, kit, sessions, sidebar, tasks};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
@@ -28,6 +28,7 @@ pub struct State {
 pub enum Kind {
     Tasks,
     Goals,
+    Backlog,
     Terminals,
 }
 
@@ -36,6 +37,7 @@ impl Kind {
         match self {
             Kind::Tasks => "Tasks",
             Kind::Goals => "Goals",
+            Kind::Backlog => "Backlog",
             Kind::Terminals => "Terminals",
         }
     }
@@ -45,6 +47,7 @@ impl Kind {
 pub enum Target {
     Task(String),
     Goal(String),
+    Issue(String),
     Terminal(String),
 }
 
@@ -52,13 +55,15 @@ pub enum Target {
 pub enum Dot {
     Status(St),
     Goal,
+    /// A backlog issue: filled while it's open.
+    Issue { open: bool },
     Idle,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub target: Target,
-    /// T12 / G3; empty for a terminal.
+    /// T12 / G3 / B7; empty for a terminal.
     pub r: String,
     pub title: String,
     /// The matched spans of `title` (byte ranges).
@@ -195,6 +200,34 @@ fn goal_hits(goals: &[Value], w: &[String]) -> Vec<Hit> {
         .collect()
 }
 
+/// Backlog issues only once something is typed: the open ones first, newest first.
+fn backlog_hits(backlog: &Value, w: &[String]) -> Vec<Hit> {
+    if w.is_empty() {
+        return vec![];
+    }
+    let rows = arr(backlog, "issues")
+        .iter()
+        .map(|b| {
+            let r = fmt::ref_of(b, "B");
+            let m = score(&r, s(b, "title"), &[s(b, "project"), s(&b["goal"], "name"), s(b, "area"), s(b, "detail"), s(b, "said")], w);
+            (b, m)
+        })
+        .collect();
+    rank(rows, w, |b| (issue_panel::issue_state(b).is_some() as u8, -i(b, "id")))
+        .into_iter()
+        .map(|(b, hl)| {
+            let r = fmt::ref_of(b, "B");
+            let state = issue_panel::issue_state(b);
+            let place = match (&state, fmt::opt_s(&b["goal"], "ref")) {
+                (Some((short, _)), _) => short.clone(),
+                (None, Some(g)) => format!("{} · {g}", issue_panel::kind_label(s(b, "kind"))),
+                (None, None) => format!("{} · {}", issue_panel::kind_label(s(b, "kind")), s(b, "project")),
+            };
+            Hit { target: Target::Issue(r.clone()), r, title: s(b, "title").to_string(), hl, place, dot: Dot::Issue { open: state.is_none() } }
+        })
+        .collect()
+}
+
 fn terminal_status(x: &Value) -> (u8, Dot, String) {
     match s(x, "status") {
         "needs" | "offline" => (0, Dot::Status(St::Needs), "needs you".into()),
@@ -232,12 +265,13 @@ fn terminal_title(x: &Value) -> String {
     }
 }
 
-/// The results for `q`: tasks, goals, then terminals, leaving out the kinds with none.
-pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], sessions: Option<&Value>) -> Vec<Group> {
+/// The results for `q`: tasks, goals, backlog issues, then terminals, leaving out the kinds with none.
+pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], backlog: Option<&Value>, sessions: Option<&Value>) -> Vec<Group> {
     let w = words(q);
     [
         group(Kind::Tasks, tasks.map(|v| task_hits(v, &w)).unwrap_or_default()),
         group(Kind::Goals, goal_hits(goals, &w)),
+        group(Kind::Backlog, backlog.map(|v| backlog_hits(v, &w)).unwrap_or_default()),
         group(Kind::Terminals, sessions.map(|v| terminal_hits(v, &w)).unwrap_or_default()),
     ]
     .into_iter()
@@ -247,7 +281,7 @@ pub fn results(q: &str, tasks: Option<&Value>, goals: &[Value], sessions: Option
 
 fn current(m: &MainWindow, cx: &App) -> Vec<Group> {
     let q = m.search.input.as_ref().map(|i| i.text(cx)).unwrap_or_default();
-    results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.sessions.as_ref())
+    results(&q, m.data.tasks.as_ref(), &m.data.goals, m.data.backlog.as_ref(), m.data.sessions.as_ref())
 }
 
 fn flat(groups: &[Group]) -> Vec<&Hit> {
@@ -263,7 +297,7 @@ pub fn is_open(m: &MainWindow) -> bool {
 /// ⌘K: open the palette with an empty query (again: back to the field).
 pub fn open(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
     if !is_open(m) {
-        let input = kit::Input::new(cx, "Search tasks, goals and terminals", false);
+        let input = kit::Input::new(cx, "Search tasks, goals, backlog and terminals", false);
         cx.subscribe(&input.field, |m: &mut MainWindow, _, _: &FieldChanged, cx| {
             m.search.sel = 0;
             m.search.scroll.scroll_to_item(0);
@@ -290,6 +324,7 @@ fn go(m: &mut MainWindow, target: Target, window: &mut Window, cx: &mut Context<
     match target {
         Target::Task(r) => m.open_task(r, cx),
         Target::Goal(r) => crate::ui::goal::open(m, &r, false, cx),
+        Target::Issue(r) => m.open_issue(r, cx),
         Target::Terminal(id) => {
             m.go(Page::Sessions, cx);
             sessions::open(m, &id, cx);
@@ -410,6 +445,7 @@ fn result_row(t: &Theme, h: &Hit, ix: usize, selected: bool, cx: &mut Context<Ma
     let dot = match h.dot {
         Dot::Status(st) => kit::dot(st.colors(t).2, 8.),
         Dot::Goal => div().flex_none().size(px(8.)).rounded(px(2.)).bg(t.goal),
+        Dot::Issue { open } => kit::dot(if open { t.backlog_dot } else { t.border_2 }, 8.),
         Dot::Idle => kit::dot(t.border_2, 8.),
     };
     let mark = HighlightStyle { background_color: Some(t.mark), color: Some(t.mark_fg), ..Default::default() };
@@ -494,7 +530,7 @@ mod tests {
     #[test]
     fn groups_tasks_goals_then_terminals_with_their_counts() {
         let (tasks, goals, sessions) = sample();
-        let g = results("pass", Some(&tasks), &goals, Some(&sessions));
+        let g = results("pass", Some(&tasks), &goals, None, Some(&sessions));
         assert_eq!(g.iter().map(|g| (g.kind, g.total)).collect::<Vec<_>>(), vec![(Kind::Tasks, 2), (Kind::Goals, 1), (Kind::Terminals, 1)]);
         // Both are a word inside the title; the one still to do comes first.
         assert_eq!(titles(&g[0]), vec!["Settings page: manage passkeys", "Sign in with a passkey"]);
@@ -512,7 +548,7 @@ mod tests {
     #[test]
     fn a_ref_finds_its_task_first() {
         let (tasks, goals, sessions) = sample();
-        let g = results("t3", Some(&tasks), &goals, Some(&sessions));
+        let g = results("t3", Some(&tasks), &goals, None, Some(&sessions));
         assert_eq!(g[0].hits[0].r, "T3");
         assert_eq!(g[0].total, 1);
     }
@@ -520,7 +556,7 @@ mod tests {
     #[test]
     fn nothing_typed_shows_open_tasks_pinned_goals_and_every_terminal() {
         let (tasks, goals, sessions) = sample();
-        let g = results("", Some(&tasks), &goals, Some(&sessions));
+        let g = results("", Some(&tasks), &goals, Some(&backlog()), Some(&sessions));
         assert_eq!(titles(&g[0]), vec!["Fix the API shell", "Settings page: manage passkeys"]);
         assert_eq!(g[1].total, 1);
         // The one that needs you first; an idle one says for how long.
@@ -532,15 +568,37 @@ mod tests {
     #[test]
     fn no_match_leaves_out_the_kind_and_lists_load_late() {
         let (tasks, goals, _) = sample();
-        let g = results("shell", Some(&tasks), &goals, None);
+        let g = results("shell", Some(&tasks), &goals, None, None);
         assert_eq!(g.iter().map(|g| g.kind).collect::<Vec<_>>(), vec![Kind::Tasks]);
-        assert!(results("zzz", Some(&tasks), &goals, None).is_empty());
+        assert!(results("zzz", Some(&tasks), &goals, None, None).is_empty());
+    }
+
+    fn backlog() -> Value {
+        let b4 = json!({"id": 4, "ref": "B4", "title": "Passkey prompt flickers", "kind": "bug", "project": "webapp", "state": "open", "goal": {"id": 3, "ref": "G3", "name": "Sign-in with passkeys"}});
+        let b5 = json!({"id": 5, "ref": "B5", "title": "Old passkey copy", "kind": "clean", "project": "webapp", "state": "drop"});
+        let b6 = json!({"id": 6, "ref": "B6", "title": "Retry the shell", "kind": "follow", "project": "api", "state": "open", "detail": "After a passkey login fails"});
+        json!({"issues": vec![b6, b5, b4]})
+    }
+
+    #[test]
+    fn backlog_issues_open_first_and_open_their_panel() {
+        let (tasks, goals, sessions) = sample();
+        let g = results("passkey", Some(&tasks), &goals, Some(&backlog()), Some(&sessions));
+        assert_eq!(g.iter().map(|g| g.kind).collect::<Vec<_>>(), vec![Kind::Tasks, Kind::Goals, Kind::Backlog, Kind::Terminals]);
+        let b = &g[2];
+        // Title matches before the one found in its detail; of those, the open one first.
+        assert_eq!(titles(b), vec!["Passkey prompt flickers", "Old passkey copy", "Retry the shell"]);
+        assert_eq!(b.hits[0].target, Target::Issue("B4".into()));
+        assert_eq!(b.hits[0].place, "Bug · G3");
+        assert_eq!((b.hits[1].place.as_str(), b.hits[1].dot), ("Won’t do", Dot::Issue { open: false }));
+        assert_eq!(b.hits[2].place, "Follow-up · api");
+        assert_eq!(results("b6", None, &[], Some(&backlog()), None)[0].hits[0].r, "B6");
     }
 
     #[test]
     fn a_group_shows_a_few_and_counts_all() {
         let many: Vec<Value> = (1..=9).map(|n| json!({"id": n, "title": format!("Task {n}"), "status": "queued"})).collect();
-        let g = results("task", Some(&json!({"tasks": many})), &[], None);
+        let g = results("task", Some(&json!({"tasks": many})), &[], None, None);
         assert_eq!((g[0].total, g[0].hits.len()), (9, PER_GROUP));
         assert_eq!(row_child(&g, 0), 1);
         assert_eq!(row_child(&g, 5), 6);

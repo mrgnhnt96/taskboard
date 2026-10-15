@@ -72,6 +72,8 @@ pub struct Data {
     pub today: Option<Value>,
     /// `GET /tasks` for the Tasks page.
     pub tasks: Option<Value>,
+    /// Every backlog issue (`GET /backlog?state=all`) for the ⌘K palette.
+    pub backlog: Option<Value>,
     /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
     pub reviews: Option<Value>,
     pub review: Option<Value>,
@@ -692,6 +694,8 @@ struct Wants {
     home: Option<String>,
     /// The Tasks page, for `GET /tasks`.
     tasks: bool,
+    /// The ⌘K palette, for `GET /backlog`.
+    backlog: bool,
     /// The Review page: the list, and the picked review (`None`: the newest).
     review: Option<Option<i64>>,
 }
@@ -714,6 +718,7 @@ struct Got {
     home: Option<Value>,
     today: Option<Value>,
     tasks: Option<Value>,
+    backlog: Option<Value>,
     reviews: Option<Answer>,
     review: Option<(i64, Answer)>,
 }
@@ -736,12 +741,13 @@ impl Wants {
                 _ => None,
             },
             goal_rows: if m.page == Page::Goals { ui::goals_page::in_progress(&m.data.goals, m.goals.project()) } else { vec![] },
-            // The ⌘K palette searches the task and terminal lists too.
+            // The ⌘K palette searches the task, terminal and backlog lists too.
             sessions: m.page == Page::Sessions || ui::search::is_open(m),
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
             tasks: m.page == Page::Tasks || ui::search::is_open(m),
+            backlog: ui::search::is_open(m),
             review: (m.page == Page::Review).then_some(m.review.id),
         }
     }
@@ -766,6 +772,7 @@ impl Wants {
             let today = self.home.is_some().then(|| s.spawn(move || get("days", &[])));
             let home = self.home.as_ref().map(|p| s.spawn(move || get("home", &[("project", p.clone())])));
             let tasks = self.tasks.then(|| s.spawn(move || get("tasks", &[])));
+            let backlog = self.backlog.then(|| s.spawn(move || get("backlog", &[("state", "all".into())])));
             let reviews = self.review.map(|id| {
                 s.spawn(move || {
                     let list = get("reviews", &[]);
@@ -789,6 +796,7 @@ impl Wants {
                 today: today.map(join).and_then(Result::ok),
                 home: home.map(join).and_then(Result::ok),
                 tasks: tasks.map(join).and_then(Result::ok),
+                backlog: backlog.map(join).and_then(Result::ok),
                 reviews,
                 review,
             }
@@ -882,6 +890,9 @@ impl Got {
         }
         if self.tasks.is_some() && (m.page == Page::Tasks || searching) {
             d.tasks = self.tasks;
+        }
+        if self.backlog.is_some() && searching {
+            d.backlog = self.backlog;
         }
         if let Some((id, v)) = self.session {
             if m.sessions.selected.as_deref() == Some(id.as_str()) {
