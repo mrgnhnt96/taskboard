@@ -311,6 +311,12 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
     if let (true, Some(tid), Some(cid)) = (as_is, j.i("task_id"), &resume) {
         app.db.tx(|| used_resume_as_is(app, tid, cid))?;
     }
+    // A `draft` is typed in once Claude is ready, without Enter: the owner reads it and sends it.
+    if let Some(d) = a.s("draft").filter(|d| !d.is_empty()) {
+        if let Err(e) = call(app, "queue.add", json!({"session": sid, "text": d, "enter": false})) {
+            return Ok(format!("Opened {sid}, but couldn't type its request in: {e}"));
+        }
+    }
     Ok(format!("Opened {sid}"))
 }
 

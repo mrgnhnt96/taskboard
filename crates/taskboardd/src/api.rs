@@ -503,6 +503,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             app.db.tx(|| alerts::clear_alerts(app, None, Some(id)))?;
             Ok(json!({"alerts": alerts::listing(app)}))
         }
+        ("POST", ["alerts", id, "act"]) => alerts::act(app, id, body["n"].as_u64().unwrap_or(0) as usize),
         ("POST", ["alerts", id, "snooze"]) => {
             let mins = body["mins"].as_i64().unwrap_or(0);
             let allowed: Vec<i64> = app.cfg.alerts.snooze_mins.iter().copied().filter(|m| *m > 0).collect();

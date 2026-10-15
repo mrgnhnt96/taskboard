@@ -92,6 +92,8 @@ pub struct Ask {
     pub answer: bool,
     /// Review and urgent alerts stay until what raised them clears.
     pub dismiss: bool,
+    /// The alert's fixes as (label, command), a button each beside Dismiss.
+    pub actions: Vec<(String, String)>,
 }
 
 impl Ask {
@@ -160,19 +162,33 @@ pub fn ask_vm(a: &Value) -> Ask {
     let act = act.or_else(|| r.clone().map(Act::OpenTask)).or_else(|| opt_s(a, "goal").map(|g| Act::OpenGoal(g.to_string())));
     let goal_ref = opt_s(a, "goal").map(str::to_string).or_else(|| obj(card, "goal").map(|g| s(g, "ref").to_string()));
     let goal_name = opt_s(a, "goal_name").filter(|n| !n.is_empty()).or_else(|| obj(card, "goal").and_then(|g| opt_s(g, "name"))).unwrap_or("");
-    let text = ask_text(a, card);
+    // An alert with a title of its own says it, with its detail line under it.
+    let own_title = opt_s(a, "title").filter(|x| !has_card && !x.is_empty());
+    let text = match own_title {
+        Some(_) => opt_s(a, "detail").filter(|d| !d.is_empty()).unwrap_or(s(a, "text")).to_string(),
+        None => ask_text(a, card),
+    };
     let pr_open = obj(card, "pr").is_some_and(|p| !p["num"].is_null() && crate::ui::goal::pr_open(p));
-    let title = if has_card { s(card, "title").to_string() } else if !goal_name.is_empty() { goal_name.to_string() } else { text.clone() };
+    let title = if let Some(t) = own_title {
+        t.to_string()
+    } else if has_card {
+        s(card, "title").to_string()
+    } else if !goal_name.is_empty() {
+        goal_name.to_string()
+    } else {
+        text.clone()
+    };
     Ask {
         id: s(a, "id").to_string(),
         sev,
         kind: kind.to_string(),
+        actions: crate::app::alert_actions(a),
         line: if pr_open { tile_vm(card).line } else if title == text { String::new() } else { text.clone() },
         text,
         title,
         task: r.map(|r| (r, s(card, "title").to_string())),
         goal: goal_ref.map(|g| (g, goal_name.to_string())),
-        project: s(card, "project").to_string(),
+        project: opt_s(card, "project").or(opt_s(a, "project")).unwrap_or("").to_string(),
         wave: card["wave"].as_i64(),
         at: s(a, "at").to_string(),
         time: short_ago(s(a, "at")),
@@ -213,6 +229,7 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         act: Some(Act::Continue(gr, n)),
         answer: false,
         dismiss: false,
+        actions: Vec::new(),
     })
 }
 
@@ -709,10 +726,17 @@ fn item(m: &MainWindow, t: &Theme, a: &Ask, window: &Window, cx: &mut Context<Ma
             let aid = a.id.clone();
             kit::btn(t, id("dismiss"), "Dismiss").on_click(cx.listener(move |m, _, _, cx| dismiss(m, &aid, cx)))
         });
-        card = card.child(
-            body.child(div().text_size(px(13.)).text_color(t.text_2).child(a.text.clone()))
-                .when_some(dismiss_btn, |d, b| d.child(div().flex().child(b))),
-        );
+        let fixes: Vec<_> = a
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(n, (label, command))| {
+                let (aid, label, command) = (a.id.clone(), label.clone(), command.clone());
+                kit::btn(t, id(&format!("fix-{n}")), label.clone()).on_click(cx.listener(move |m, _, _, cx| crate::app::run_alert_action(m, &aid, n, &label, &command, cx)))
+            })
+            .collect();
+        let buttons = (!fixes.is_empty() || dismiss_btn.is_some()).then(|| div().flex().flex_wrap().gap(px(8.)).children(fixes).children(dismiss_btn));
+        card = card.child(body.child(div().text_size(px(13.)).text_color(t.text_2).child(a.text.clone())).children(buttons));
     }
     card
 }
@@ -842,6 +866,27 @@ mod tests {
         assert_eq!(asks[0].act, Some(Act::OpenReview(4)));
         assert_eq!(asks[0].act.as_ref().map(Act::label), Some("Open review"));
         assert!(!asks[0].dismiss, "the board keeps it until the review is opened");
+    }
+
+    #[test]
+    fn a_setup_alert_has_a_short_title_a_detail_line_and_its_fixes() {
+        let home = json!({"needs": [
+            {"id": "a3", "at": "2026-10-12T09:00:00Z", "text": "work-deck isn't set up to finish its work: a long sentence.", "key": "setup:work-deck",
+             "title": "work-deck PRs can't merge", "detail": "T117 is waiting for 2 approvals, and work-deck has no reviewers", "project": "work-deck",
+             "actions": [{"label": "Turn off review for work-deck", "prompt": "p", "command": "tb project set work-deck --review off"},
+                         {"label": "Add a reviewer", "prompt": "p", "command": "tb reviewers add <name> --user <host id> --project work-deck"}]},
+            {"id": "a4", "at": "2026-10-12T08:00:00Z", "text": "Something plain happened"}
+        ]});
+        let asks = asks_vm(&home);
+        assert_eq!(asks[0].title, "work-deck PRs can't merge");
+        assert_eq!(asks[0].line, "T117 is waiting for 2 approvals, and work-deck has no reviewers");
+        assert_eq!(asks[0].text, asks[0].line);
+        assert_eq!(asks[0].project, "work-deck");
+        assert_eq!(asks[0].actions.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), vec!["Turn off review for work-deck", "Add a reviewer"]);
+        assert!(asks[0].dismiss);
+        // An old plain alert reads as before.
+        assert_eq!((asks[1].title.as_str(), asks[1].line.as_str(), asks[1].text.as_str()), ("Something plain happened", "", "Something plain happened"));
+        assert!(asks[1].actions.is_empty());
     }
 
     #[test]

@@ -198,6 +198,12 @@ pub fn raise(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, 
 /// An alert that goes with a thing rather than a task (a QA comment, `qa:3`): one per key, cleared by
 /// its key, and resolved by its owner (`qa::alert_resolved`).
 pub fn add_alert_keyed(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, key: &str) -> Result<()> {
+    add_alert_keyed_with(app, text, task_id, goal_id, key, Value::Null)
+}
+
+/// `add_alert_keyed`, carrying `fields` for the app's card: a short `title`, one `detail` line and the
+/// `actions` it offers (`AlertAction`). `text` still says it all, for the notification and `tb alerts`.
+pub fn add_alert_keyed_with(app: &App, text: &str, task_id: Option<i64>, goal_id: Option<i64>, key: &str, fields: Value) -> Result<()> {
     if alerts(app).iter().any(|a| a["key"] == key) {
         return Ok(());
     }
@@ -205,8 +211,52 @@ pub fn add_alert_keyed(app: &App, text: &str, task_id: Option<i64>, goal_id: Opt
     let mut rows = alerts(app);
     if let Some(a) = rows.iter_mut().find(|a| a["id"] == new["id"]) {
         a["key"] = json!(key);
+        for (k, v) in fields.as_object().into_iter().flatten() {
+            a[k] = v.clone();
+        }
     }
     keep(app, &rows)
+}
+
+/// A fix an alert offers: a button labelled `label` that opens a Claude terminal with `prompt` typed in
+/// for the owner to send, and `command`, what the fix runs (copied when no terminal can open).
+pub struct AlertAction {
+    pub label: String,
+    pub prompt: String,
+    pub command: String,
+}
+
+impl AlertAction {
+    pub fn json(&self) -> Value {
+        json!({"label": self.label, "prompt": self.prompt, "command": self.command})
+    }
+}
+
+/// `POST /alerts/:id/act {n}`: the alert's n-th action handed to Claude, in a new terminal in its
+/// project's folder (the alert's `project`) with the action's prompt typed in, not sent: the owner
+/// sends it. Refused while Midna is down or the folder is unknown; the app then copies the command.
+pub fn act(app: &App, id: &str, n: usize) -> Result<Value> {
+    let Some(a) = alerts(app).into_iter().find(|a| a["id"] == id) else { return err(404, "That alert is gone.") };
+    let Some(action) = a["actions"].as_array().and_then(|v| v.get(n)).cloned() else { return err(404, "That alert has no such fix.") };
+    if !midna::up(app) {
+        return err(409, "Midna isn't running, so the board can't open a terminal.");
+    }
+    let project = a["project"].as_str().unwrap_or("");
+    let Some(cwd) = crate::projects::project_path(app, Some(project))? else {
+        return err(409, format!("The board doesn't know the folder for the project “{project}”."));
+    };
+    let label = action["label"].as_str().unwrap_or("Fix");
+    let what = [a["title"].as_str(), a["detail"].as_str()].into_iter().flatten().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(": ");
+    let what = if what.is_empty() { a["text"].as_str().unwrap_or("").to_string() } else { what };
+    let context = format!(
+        "{owner} opened this terminal from an alert on the task board ({what}) by pressing “{label}”. Their request is typed into the prompt \
+         for them to send. Wait for it; don't start on anything by yourself. When it comes, make the change with tb and say what changed. \
+         You aren't on a task: don't take one.",
+        owner = app.cfg.owner
+    );
+    let args = json!({"cwd": cwd, "title": short(label, 40), "prompt": "", "draft": action["prompt"], "context": context, "queue": false});
+    let j = app.db.tx(|| board::create_job(app, "agent", args, None, "alert", Some(json!({"alert": id}))))?;
+    Ok(json!({"ok": true, "job": rf("job", j)}))
 }
 
 /// A quiet alert (`quiet`) keyed `key`, carrying `fields` (the review it opens): one per key.

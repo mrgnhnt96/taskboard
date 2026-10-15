@@ -93,6 +93,18 @@ fn a_green_pr_nobody_can_review_reads_stuck_and_alerts_the_owner_once() {
     let alerts = b.setup_alerts();
     assert_eq!(alerts.len(), 1, "{alerts:?}");
     assert!(alerts[0].contains(&format!("T{id}'s PR is stuck")) && alerts[0].contains("no reviewers"), "{}", alerts[0]);
+    // The app's card: a short title, one line, and a button per fix.
+    let a = dispatch::alerts(&b.app).into_iter().find(|a| a["key"] == "setup:webapp").unwrap();
+    assert_eq!(a["title"], "webapp PRs can't merge", "{a}");
+    let detail = a["detail"].as_str().unwrap();
+    assert!(detail.starts_with(&format!("T{id} is waiting for ")) && detail.ends_with(", and webapp has no reviewers"), "{detail}");
+    let labels: Vec<&str> = a["actions"].as_array().unwrap().iter().map(|x| x["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, vec!["Turn off review for webapp", "Add a reviewer"]);
+    assert_eq!(a["actions"][0]["command"], "tb project set webapp --review off");
+    // With Midna away the board can't open a terminal; the app copies the command instead.
+    let id_s = a["id"].as_str().unwrap();
+    assert!(api::dispatch(&b.app, "POST", &format!("/alerts/{id_s}/act"), &Query::new(), &json!({"n": 0})).is_err());
+    assert!(api::dispatch(&b.app, "POST", &format!("/alerts/{id_s}/act"), &Query::new(), &json!({"n": 5})).is_err(), "no such fix");
 
     let alert_id = dispatch::alerts(&b.app).iter().find(|a| a["key"] == "setup:webapp").unwrap()["id"].as_str().unwrap().to_string();
     dispatch::clear_alerts(&b.app, None, Some(&alert_id)).unwrap();
