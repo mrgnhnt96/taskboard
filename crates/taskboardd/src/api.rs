@@ -345,6 +345,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         (_, ["reviewers", rest @ ..]) => crate::reviewers::route(app, method, rest, query, body),
         ("POST", ["attachments", id]) => edit_attachment(app, id, body),
         ("POST", ["attachments", id, "remove"]) => remove_attachment(app, id),
+        ("GET", ["search"]) => search(app, query),
         ("GET", ["backlog"]) => list_backlog(app, query),
         ("POST", ["backlog"]) => post_issue(app, body),
         ("POST", ["backlog", "bulk"]) => backlog_bulk(app, body),
@@ -2268,6 +2269,31 @@ pub fn attachment_file(app: &App, id: &str) -> Result<std::path::PathBuf> {
         return err(404, "That file isn't there any more.");
     }
     Ok(p)
+}
+
+/// `GET /search?q=…`: tasks, backlog issues, goals and goal notes matching the words, best first.
+/// The project defaults to the caller's (from `cwd`); `project=all` searches every one. `kind` is
+/// task, backlog (or issue), goal or note; `open=1` keeps only what's still open.
+fn search(app: &App, query: &Query) -> Result<Value> {
+    let text = q(query, "q", "");
+    if crate::relevance::fts_query(text).is_none() {
+        return err(400, "Say what to search for: a few words.");
+    }
+    let kind = match q(query, "kind", "all") {
+        "all" => None,
+        "backlog" | "issue" => Some("issue"),
+        k @ ("task" | "goal" | "note") => Some(k),
+        k => return err(400, format!("“{k}” isn't a kind to search: say task, backlog, goal or note.")),
+    };
+    let project = match q(query, "project", "") {
+        "all" => None,
+        "" => crate::projects::project_for_path(app, query.get("cwd").map(String::as_str))?,
+        p => Some(p.to_string()),
+    };
+    let open = as_bool(query.get("open").map(|s| json!(s)).as_ref(), false);
+    let limit = q(query, "limit", "20").parse::<usize>().unwrap_or(20).clamp(1, 100);
+    let f = crate::relevance::Find { text, project: project.as_deref(), kind, open, limit };
+    Ok(json!({"project": project, "hits": crate::relevance::find(app, &f)?}))
 }
 
 fn list_backlog(app: &App, query: &Query) -> Result<Value> {

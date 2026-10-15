@@ -2,8 +2,8 @@
 //!
 //! - `task_paths`: the files each task's PR changed, read with git from the PR's base and head as
 //!   the PR moves (`tick`), so a task's code areas outlast its branch.
-//! - `search`: an FTS5 index of lessons, goal notes and task titles and details, kept in step by
-//!   triggers.
+//! - `search`: an FTS5 index of lessons, goal notes, task titles and details and backlog issues,
+//!   kept in step by triggers. `find` searches it for `GET /search` (`tb search`).
 //!
 //! A lesson scores on its own text matching the work, on the tasks and goals it was learned from
 //! (its evidence) matching it, and on how far the files its evidence changed overlap the files the
@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::p;
@@ -62,6 +62,21 @@ END;
 CREATE TRIGGER IF NOT EXISTS search_task_ad AFTER DELETE ON tasks BEGIN
   DELETE FROM search WHERE rowid = old.id * 4 + 3;
 END;
+
+CREATE TRIGGER IF NOT EXISTS search_issue_ai AFTER INSERT ON issues BEGIN
+  INSERT INTO search(rowid, text, kind, rid, goal, project)
+  VALUES (new.id * 4, COALESCE(new.title, '') || char(10) || COALESCE(new.detail, '') || char(10) || COALESCE(new.said, ''),
+          'issue', new.id, new.goal_id, new.project);
+END;
+CREATE TRIGGER IF NOT EXISTS search_issue_au AFTER UPDATE OF title, detail, said, project, goal_id ON issues BEGIN
+  DELETE FROM search WHERE rowid = old.id * 4;
+  INSERT INTO search(rowid, text, kind, rid, goal, project)
+  VALUES (new.id * 4, COALESCE(new.title, '') || char(10) || COALESCE(new.detail, '') || char(10) || COALESCE(new.said, ''),
+          'issue', new.id, new.goal_id, new.project);
+END;
+CREATE TRIGGER IF NOT EXISTS search_issue_ad AFTER DELETE ON issues BEGIN
+  DELETE FROM search WHERE rowid = old.id * 4;
+END;
 "#;
 
 /// Fills the index once, for a board made before it existed (the triggers keep it after that).
@@ -76,6 +91,14 @@ INSERT INTO search(rowid, text, kind, rid, goal, project)
   SELECT id * 4 + 3, COALESCE(title, '') || char(10) || COALESCE(detail, ''), 'task', id, goal_id, project FROM tasks
   WHERE (SELECT due FROM search_backfill);
 INSERT OR IGNORE INTO settings(key, value) VALUES ('search_indexed', datetime('now'));
+DROP TABLE search_backfill;
+
+CREATE TEMP TABLE IF NOT EXISTS search_backfill AS SELECT NOT EXISTS (SELECT 1 FROM settings WHERE key = 'search_issues_indexed') AS due;
+DELETE FROM search WHERE kind = 'issue' AND (SELECT due FROM search_backfill);
+INSERT INTO search(rowid, text, kind, rid, goal, project)
+  SELECT id * 4, COALESCE(title, '') || char(10) || COALESCE(detail, '') || char(10) || COALESCE(said, ''), 'issue', id, goal_id, project
+  FROM issues WHERE (SELECT due FROM search_backfill);
+INSERT OR IGNORE INTO settings(key, value) VALUES ('search_issues_indexed', datetime('now'));
 DROP TABLE search_backfill;
 "#;
 
@@ -182,17 +205,20 @@ const STOP: &[&str] = &[
     "goals", "here", "over", "after", "before", "about", "else", "instead", "same", "own", "new", "now",
 ];
 
-/// An FTS5 query matching any of the text's words, or None when it has none worth matching.
-pub fn fts_query(text: &str) -> Option<String> {
+/// The text's words worth matching, lowercased, each once.
+fn words(text: &str) -> Vec<String> {
     let mut seen = HashSet::new();
-    let words: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
+    text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|w| w.to_lowercase())
         .filter(|w| w.chars().count() >= 3 && !w.chars().all(|c| c.is_ascii_digit()) && !STOP.contains(&w.as_str()))
         .filter(|w| seen.insert(w.clone()))
         .take(40)
-        .map(|w| format!("\"{w}\""))
-        .collect();
+        .collect()
+}
+
+/// An FTS5 query matching any of the text's words, or None when it has none worth matching.
+pub fn fts_query(text: &str) -> Option<String> {
+    let words: Vec<String> = words(text).iter().map(|w| format!("\"{w}\"")).collect();
     (!words.is_empty()).then(|| words.join(" OR "))
 }
 
@@ -208,7 +234,8 @@ struct Hit {
 fn hits(app: &App, project: Option<&str>, text: &str) -> Result<Vec<Hit>> {
     let Some(q) = fts_query(text) else { return Ok(vec![]) };
     let rows = app.db.q(
-        "SELECT kind, rid, goal, bm25(search) AS rank FROM search WHERE search MATCH ? AND (project IS ? OR project IS NULL)
+        "SELECT kind, rid, goal, bm25(search) AS rank FROM search
+         WHERE search MATCH ? AND kind != 'issue' AND (project IS ? OR project IS NULL)
          ORDER BY rank LIMIT 80",
         p![q, project],
     )?;
@@ -223,6 +250,114 @@ fn hits(app: &App, project: Option<&str>, text: &str) -> Result<Vec<Hit>> {
             weight: if best > 0.0 { (-r.f("rank").unwrap_or(0.0)).max(0.0) / best } else { 0.0 },
         })
         .collect())
+}
+
+// ---- board search ----
+
+/// What `GET /search` looks for: the words, in a project (None: every project), of one kind (task,
+/// issue, goal or note; None: all of them), and whether only what's still open counts.
+pub struct Find<'a> {
+    pub text: &'a str,
+    pub project: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub open: bool,
+    pub limit: usize,
+}
+
+/// The tasks, backlog issues, goals and goal notes that match the words, best first, as cards with
+/// their state.
+pub fn find(app: &App, f: &Find) -> Result<Vec<Value>> {
+    let Some(q) = fts_query(f.text) else { return Ok(vec![]) };
+    let mut found: Vec<(f64, String, i64)> = vec![];
+    if f.kind != Some("goal") {
+        let rows = app.db.q(
+            "SELECT kind, rid, bm25(search) AS rank FROM search
+             WHERE search MATCH ? AND kind IN ('task', 'issue', 'note') AND (? IS NULL OR kind = ?) AND (? IS NULL OR project IS ?)
+             ORDER BY rank LIMIT 500",
+            p![q, f.kind, f.kind, f.project, f.project],
+        )?;
+        // bm25 is negative, more so for a better match.
+        let best = rows.iter().filter_map(|r| r.f("rank")).fold(0.0_f64, |a, b| a.max(-b));
+        for r in &rows {
+            let w = if best > 0.0 { (-r.f("rank").unwrap_or(0.0)).max(0.0) / best } else { 0.0 };
+            found.push((w, r.st("kind"), r.i0("rid")));
+        }
+    }
+    if f.kind.is_none() || f.kind == Some("goal") {
+        // Goals aren't in the index: a goal scores the share of the words its name, outcome and summary hold.
+        let ws = words(f.text);
+        for g in app.db.q("SELECT id, name, outcome, tldr FROM goals WHERE ? IS NULL OR project IS ?", p![f.project, f.project])? {
+            let hay = format!("{}\n{}\n{}", g.st("name"), g.st("outcome"), g.st("tldr")).to_lowercase();
+            let n = ws.iter().filter(|w| hay.contains(w.as_str())).count();
+            if n > 0 {
+                found.push((n as f64 / ws.len() as f64, "goal".into(), g.id()));
+            }
+        }
+    }
+    // A stable sort keeps the index's order among equal scores.
+    found.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut out = vec![];
+    for (w, kind, id) in found {
+        if out.len() >= f.limit {
+            break;
+        }
+        let Some((mut c, open)) = card(app, &kind, id)? else { continue };
+        if f.open && !open {
+            continue;
+        }
+        c["score"] = json!((w * 100.0).round() / 100.0);
+        out.push(c);
+    }
+    Ok(out)
+}
+
+/// A search hit's card, and whether it's still open (None when it's no longer on the board). A note
+/// carries its goal's ref and state: `tb goal show` reads it.
+fn card(app: &App, kind: &str, id: i64) -> Result<Option<(Value, bool)>> {
+    let goal = |gid: Option<i64>| crate::board::find_goal(app, gid);
+    let (c, open) = match kind {
+        "task" => {
+            let Some(t) = app.db.q1("SELECT * FROM tasks WHERE id = ?", p![id])? else { return Ok(None) };
+            let status = t.st("status");
+            let state = if t.b("failed") && status != "done" { "failed".to_string() } else { status.clone() };
+            let g = goal(t.i("goal_id"))?;
+            (json!({"kind": "task", "id": id, "ref": rf("task", id), "title": t.v("title"), "state": state,
+                    "project": t.v("project"), "goal": crate::board::goal_ref(g.as_ref())}), status != "done")
+        }
+        "issue" => {
+            let Some(b) = app.db.q1("SELECT * FROM issues WHERE id = ?", p![id])? else { return Ok(None) };
+            let g = goal(b.i("goal_id"))?;
+            (json!({"kind": "issue", "id": id, "ref": rf("issue", id), "title": b.v("title"), "state": b.v("state"),
+                    "issue_kind": b.v("kind"), "project": b.v("project"), "goal": crate::board::goal_ref(g.as_ref())}),
+             b.s("state") == Some("open"))
+        }
+        "goal" => {
+            let Some(g) = goal(Some(id))? else { return Ok(None) };
+            let state = goal_state(app, &g)?;
+            (json!({"kind": "goal", "id": id, "ref": rf("goal", id), "title": g.v("name"), "state": state,
+                    "project": g.v("project"), "goal": Value::Null}), state == "open")
+        }
+        "note" => {
+            let Some(n) = app.db.q1("SELECT * FROM goal_notes WHERE id = ?", p![id])? else { return Ok(None) };
+            let Some(g) = goal(n.i("goal_id"))? else { return Ok(None) };
+            let state = goal_state(app, &g)?;
+            (json!({"kind": "note", "id": id, "ref": rf("goal", g.id()), "title": short(&n.st("text"), 120), "state": state,
+                    "note_kind": n.v("kind"), "project": g.v("project"), "goal": crate::board::goal_ref(Some(&g))}),
+             state == "open")
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((c, open)))
+}
+
+/// A goal's state for search: archived, done (every task done) or open.
+fn goal_state(app: &App, g: &Row) -> Result<String> {
+    if g.b("archived") {
+        return Ok("archived".into());
+    }
+    let total = app.db.count("SELECT COUNT(*) FROM tasks WHERE goal_id = ?", p![g.id()])?;
+    let done = app.db.count("SELECT COUNT(*) FROM tasks WHERE goal_id = ? AND status = 'done'", p![g.id()])?;
+    Ok(if total > 0 && done == total { "done" } else { "open" }.into())
 }
 
 // ---- code areas ----
@@ -408,5 +543,110 @@ mod tests {
         assert!(same > near && near > 0.0 && far == 0.0, "{same} {near} {far}");
         assert!(folder >= 1.0, "a named folder covers its files: {folder}");
         assert_eq!(overlap(&set(&[]), &lesson).0, 0.0);
+    }
+
+    // ---- board search ----
+
+    fn board() -> (tempfile::TempDir, std::sync::Arc<App>) {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::for_tests(crate::config::Config::for_tests(dir.path()));
+        (dir, app)
+    }
+
+    fn issue(app: &App, project: &str, title: &str, detail: &str) -> i64 {
+        app.db.insert("issues", crate::fields!["project" => project, "kind" => "bug", "title" => title, "detail" => detail, "state" => "open"]).unwrap()
+    }
+
+    fn indexed(app: &App, id: i64) -> Option<String> {
+        app.db.q1("SELECT text FROM search WHERE rowid = ? AND kind = 'issue'", p![id * 4]).unwrap().map(|r| r.st("text"))
+    }
+
+    fn search(app: &App, pairs: &[(&str, &str)]) -> Vec<Value> {
+        let q: crate::api::Query = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        crate::api::dispatch(app, "GET", "/search", &q, &json!({})).unwrap()["hits"].as_array().unwrap().clone()
+    }
+
+    fn refs(hits: &[Value]) -> Vec<String> {
+        hits.iter().map(|h| format!("{} {}", h["kind"].as_str().unwrap(), h["ref"].as_str().unwrap())).collect()
+    }
+
+    #[test]
+    fn backlog_issues_are_indexed_as_they_change() {
+        let (_d, app) = board();
+        let b = issue(&app, "webapp", "Login button stalls", "Spinner never stops.");
+        assert_eq!(indexed(&app, b).as_deref(), Some("Login button stalls\nSpinner never stops.\n"));
+        app.db.update("issues", &json!(b), crate::fields!["said" => "it hangs on Safari"]).unwrap();
+        assert!(indexed(&app, b).unwrap().ends_with("it hangs on Safari"));
+        // A change to a column that isn't searched leaves the row as it was.
+        app.db.update("issues", &json!(b), crate::fields!["state" => "drop"]).unwrap();
+        assert_eq!(app.db.count("SELECT COUNT(*) FROM search WHERE kind = 'issue'", p![]).unwrap(), 1);
+        app.db.x("DELETE FROM issues WHERE id = ?", p![b]).unwrap();
+        assert_eq!(indexed(&app, b), None);
+    }
+
+    #[test]
+    fn issues_made_before_the_index_are_backfilled_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        let b = {
+            let db = crate::db::Db::open(&path).unwrap();
+            for t in ["ai", "au", "ad"] {
+                db.x(&format!("DROP TRIGGER search_issue_{t}"), p![]).unwrap();
+            }
+            db.x("DELETE FROM settings WHERE key = 'search_issues_indexed'", p![]).unwrap();
+            db.insert("issues", crate::fields!["project" => "webapp", "title" => "Old flaky test", "state" => "open"]).unwrap()
+        };
+        let db = crate::db::Db::open(&path).unwrap();
+        assert_eq!(db.q1("SELECT text FROM search WHERE rowid = ?", p![b * 4]).unwrap().map(|r| r.st("text")).as_deref(), Some("Old flaky test\n\n"));
+        db.x("DELETE FROM search WHERE rowid = ?", p![b * 4]).unwrap();
+        drop(db);
+        let db = crate::db::Db::open(&path).unwrap();
+        assert_eq!(db.count("SELECT COUNT(*) FROM search WHERE kind = 'issue'", p![]).unwrap(), 0, "only once");
+    }
+
+    #[test]
+    fn search_ranks_tasks_issues_goals_and_notes_by_their_words() {
+        let (_d, app) = board();
+        let g = app.db.insert("goals", crate::fields!["name" => "Faster login", "project" => "webapp"]).unwrap();
+        let t = app.db.insert("tasks", crate::fields!["title" => "Cache the login token", "detail" => "Login is slow.", "project" => "webapp",
+                                                       "status" => "queued", "goal_id" => g]).unwrap();
+        let b = issue(&app, "webapp", "Token expires early", "Seen after a long weekend away from the desk.");
+        let n = app.db.insert("goal_notes", crate::fields!["goal_id" => g, "kind" => "decision", "text" => "Keep the token in the keychain."]).unwrap();
+        issue(&app, "webapp", "Dark mode colours", "");
+
+        let hits = search(&app, &[("q", "login token"), ("project", "webapp")]);
+        let mut all = refs(&hits);
+        all.sort();
+        assert_eq!(all, [format!("goal G{g}"), format!("issue B{b}"), format!("note G{g}"), format!("task T{t}")], "{hits:?}");
+        assert_eq!(refs(&hits)[0], format!("task T{t}"), "both words beat one: {hits:?}");
+        let of = |kind: &str| hits.iter().find(|h| h["kind"] == kind).unwrap();
+        assert_eq!(of("task")["state"], "queued");
+        assert_eq!(of("task")["goal"]["ref"], format!("G{g}"));
+        assert_eq!(of("issue")["state"], "open");
+        assert_eq!(of("goal")["state"], "open");
+        assert_eq!(of("note")["id"], n);
+        assert_eq!(of("note")["title"], "Keep the token in the keychain.");
+        let scores: Vec<f64> = hits.iter().map(|h| h["score"].as_f64().unwrap()).collect();
+        assert!(scores.windows(2).all(|w| w[0] >= w[1]), "best first: {scores:?}");
+    }
+
+    #[test]
+    fn search_keeps_to_the_project_kind_and_open_things_asked_for() {
+        let (_d, app) = board();
+        let mine = issue(&app, "webapp", "Retry flaky upload", "");
+        let other = issue(&app, "api", "Retry flaky webhook", "");
+        let done = app.db.insert("tasks", crate::fields!["title" => "Retry flaky download", "project" => "webapp", "status" => "done"]).unwrap();
+
+        assert_eq!(refs(&search(&app, &[("q", "retry flaky"), ("project", "webapp")])).len(), 2);
+        let every = refs(&search(&app, &[("q", "retry flaky"), ("project", "all")]));
+        assert!(every.contains(&format!("issue B{other}")) && every.len() == 3, "{every:?}");
+        assert_eq!(refs(&search(&app, &[("q", "retry flaky"), ("project", "webapp"), ("kind", "backlog")])), [format!("issue B{mine}")]);
+        assert_eq!(refs(&search(&app, &[("q", "retry flaky"), ("project", "webapp"), ("kind", "task")])), [format!("task T{done}")]);
+        assert_eq!(refs(&search(&app, &[("q", "retry flaky"), ("project", "webapp"), ("open", "1")])), [format!("issue B{mine}")]);
+
+        let q: crate::api::Query = [("q".to_string(), "the and".to_string())].into();
+        assert!(crate::api::dispatch(&app, "GET", "/search", &q, &json!({})).is_err(), "no words to search");
+        let q: crate::api::Query = [("q".to_string(), "retry".to_string()), ("kind".to_string(), "lesson".to_string())].into();
+        assert!(crate::api::dispatch(&app, "GET", "/search", &q, &json!({})).is_err(), "not a kind");
     }
 }
