@@ -256,6 +256,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The last check-in on the terminal's turn (`checkin.rs`): which turn it read (its `status_at`),
     // when, Haiku's verdict and why, and the terminal's last lines.
     ("sessions", "stuck_check", "TEXT"),
+    // A backlog issue that misses its goal's own done-when (`tb found --misses-goal`): it alerts the
+    // owner, and the goal isn't finished while it's open (`board::open_misses`).
+    ("issues", "misses_goal", "INT DEFAULT 0"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

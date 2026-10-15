@@ -99,6 +99,10 @@ pub fn report_block(app: &App, tb: &str) -> String {
         format!("- At each milestone and before a long step: {tb} checkpoint --done \"…\" --next \"…\" --decision \"…\""),
         format!("- A problem outside this task: {tb} found \"<problem>\" --kind bug|gap|follow|clean --output \"<excerpt>\""),
         format!(
+            "- The goal's own done-when isn't met: {tb} found \"<what misses>\" --misses-goal. It goes to {owner}, not the \
+             backlog, and the goal stays open until it's settled"
+        ),
+        format!(
             "- Needs another task's work that isn't there yet: {tb} wait-for T<n> --why \"<what you need>\". Don't ask \
              {owner}. The board starts that task and carries this conversation on once it's done (add --merged when \
              you need its PR merged first)"

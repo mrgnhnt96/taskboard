@@ -42,23 +42,59 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
         }
         if let (Some(g), false) = (goal, goal_was_finished) {
             if goal_finished(app, g)? {
-                let goal = get_goal(app, g)?;
-                hooks::fire_goal(app, "goal.finished", &goal, Some(&after));
-                crate::chain::finished(app, &goal)?;
-                crate::quality::finished(app, &goal)?;
-                crate::retro::finished(app, &goal)?;
+                on_goal_finished(app, g, Some(&after))?;
             }
         }
     }
     Ok(())
 }
 
-/// Every task in the goal is done and no PR of theirs is still open (`goal_counts`' finished_at, cheaply).
+/// What runs once a goal finishes: its hook, the goals chained after it, its quality and retro.
+fn on_goal_finished(app: &App, goal_id: i64, task: Option<&Row>) -> Result<()> {
+    let goal = get_goal(app, goal_id)?;
+    hooks::fire_goal(app, "goal.finished", &goal, task);
+    crate::chain::finished(app, &goal)?;
+    crate::quality::finished(app, &goal)?;
+    crate::retro::finished(app, &goal)?;
+    Ok(())
+}
+
+/// An open miss on a goal's done-when (`issue`, read before it left the backlog) was made a task, ticketed
+/// or closed: its alert comes down, and when it was the last thing open the goal finishes (it couldn't
+/// have been finished while the miss was open).
+pub fn miss_settled(app: &App, issue: &Row) -> Result<()> {
+    if !issue.b("misses_goal") {
+        return Ok(());
+    }
+    crate::dispatch::clear_alert_key(app, &miss_key(issue.id()))?;
+    match issue.i("goal_id") {
+        Some(g) if goal_finished(app, g)? => on_goal_finished(app, g, None),
+        _ => Ok(()),
+    }
+}
+
+/// Every task in the goal is done, none failed, no PR of theirs is still open and no miss on its done-when is
+/// open (`goal_counts`' finished_at, cheaply).
 pub fn goal_finished(app: &App, goal_id: i64) -> Result<bool> {
     let rows = crate::shared::counted_tasks(app, goal_id)?;
     Ok(!rows.is_empty()
-        && rows.iter().all(|r| r.s("status") == Some("done"))
-        && !rows.iter().any(|r| !r.b("failed") && pr_still_open(r)))
+        && rows.iter().all(|r| r.s("status") == Some("done") && !r.b("failed") && !pr_still_open(r))
+        && open_misses(app, goal_id)? == 0)
+}
+
+/// The alert key of a miss on a goal's done-when (`tb found --misses-goal`).
+pub fn miss_key(issue: i64) -> String {
+    format!("miss:{issue}")
+}
+
+/// The goal's open misses on its own done-when: issues filed with `--misses-goal` still in the backlog, or
+/// made into a task that isn't done yet. One the owner sent to Jira or closed no longer holds the goal.
+pub fn open_misses(app: &App, goal_id: i64) -> Result<i64> {
+    app.db.count(
+        "SELECT COUNT(*) FROM issues i WHERE i.goal_id = ? AND i.misses_goal = 1 AND (i.state = 'open' \
+         OR (i.state = 'task' AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = i.task_id AND (t.status != 'done' OR t.failed = 1))))",
+        p![goal_id],
+    )
 }
 
 /// Changes a goal and announces it being paused, resumed or archived.
@@ -596,7 +632,10 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     let n = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count() as i64;
     // A submitted task whose PR is still open is in review, not done, until the PR merges.
     let in_review = |r: &Row| r.s("status") == Some("done") && !r.b("failed") && pr_still_open(r);
-    let done = n(&|r| r.s("status") == Some("done") && !in_review(r));
+    // A failed task isn't done either: the goal's outcome isn't met while one is in it.
+    let failed = n(&|r| r.s("status") == Some("done") && r.b("failed"));
+    let done = n(&|r| r.s("status") == Some("done") && !r.b("failed") && !in_review(r));
+    let misses = open_misses(app, goal_id)?;
     let mut blocked = 0;
     let mut held = 0;
     for r in &rows {
@@ -617,7 +656,7 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     }
     let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
-    let finished_at = if total > 0 && done == total && bits_waiting == 0 {
+    let finished_at = if total > 0 && done == total && bits_waiting == 0 && misses == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
         Value::Null
@@ -633,7 +672,8 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         "held": held,
         "bits_waiting": bits_waiting,
         "planned": n(&|r| r.s("status") == Some("planned")),
-        "failed": n(&|r| r.s("status") == Some("done") && r.b("failed")),
+        "failed": failed,
+        "misses": misses,
         "prs_open": prs_open,
         "prs": n(&|r| r.i("pr_num").is_some()),
         "prs_planned": prs_planned,
@@ -648,6 +688,19 @@ pub fn goal_state_line(c: &Value) -> String {
     let total = c["total"].as_i64().unwrap_or(0);
     let done = c["done"].as_i64().unwrap_or(0);
     let open = c["prs_open"].as_array().cloned().unwrap_or_default();
+    let failed = c["failed"].as_i64().unwrap_or(0);
+    let misses = c["misses"].as_i64().unwrap_or(0);
+    // Every task has had its turn, but one failed or a miss on the done-when is open.
+    if total > 0 && done + open.len() as i64 + failed == total && failed + misses > 0 {
+        let mut why = vec![];
+        if failed > 0 {
+            why.push(format!("{failed} failed"));
+        }
+        if misses > 0 {
+            why.push(format!("{misses} {}", if misses == 1 { "miss" } else { "misses" }));
+        }
+        return format!("Outcome not met: {}", why.join(", "));
+    }
     if total > 0 && done + open.len() as i64 == total {
         let bits = c["bits_waiting"].as_i64().unwrap_or(0);
         return match open.len() {

@@ -113,6 +113,49 @@ fn a_task_whose_pr_is_open_isnt_done_and_keeps_its_goal_in_progress() {
 }
 
 #[test]
+fn a_miss_on_the_done_when_alerts_the_owner_and_keeps_the_goal_open_until_its_settled() {
+    let b = new_board();
+    let (g, t) = goal(&b);
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
+    b.set(t[4], vec![("status", json!("working")), ("session_id", json!("s1"))]);
+    let found = reports::handle(&b.app, json!({"event": "tb.found", "session": "s1", "title": "Sign-in fails on Android", "kind": "gap", "misses_goal": true}), false).unwrap();
+    assert_eq!(found["misses_goal"], true);
+    let issue: i64 = found["issue"].as_str().unwrap()[1..].parse().unwrap();
+    let alerts = b.get("/state")["alerts"].clone();
+    assert!(alerts.as_array().unwrap().iter().any(|a| a["text"].as_str().unwrap().contains("misses its done-when")), "{alerts}");
+
+    for id in &t {
+        b.set(*id, vec![("status", json!("done"))]);
+    }
+    let c = b.get(&format!("goals/G{g}"));
+    assert_eq!((&c["done"], &c["misses"], &c["state"]), (&json!(5), &json!(1), &json!("Outcome not met: 1 miss")));
+    assert!(c["finished_at"].is_null());
+    assert!(!board::goal_finished(&b.app, g).unwrap());
+    assert_eq!(b.get("summary")["goals"][0]["done"], 5, "it's still listed with the goals in progress");
+    assert!(b.get("/state")["alerts"].as_array().unwrap().iter().any(|a| a["text"].as_str().unwrap().contains("misses its done-when")), "finishing the task doesn't clear it");
+
+    b.post(&format!("backlog/B{issue}/drop"), json!({"reason": "fine on Android after all"}));
+    let c = b.get(&format!("goals/G{g}"));
+    assert_eq!((&c["misses"], &c["state"]), (&json!(0), &json!("Done")));
+    assert_eq!(b.get("summary")["goals"], json!([]));
+    assert!(!b.get("/state")["alerts"].as_array().unwrap().iter().any(|a| a["text"].as_str().unwrap().contains("misses its done-when")));
+}
+
+#[test]
+fn a_failed_task_isnt_done_and_its_goal_isnt_finished() {
+    let b = new_board();
+    let (g, t) = goal(&b);
+    api::dispatch(&b.app, "POST", &format!("goals/G{g}/run"), &[(api::FROM.to_string(), "app".to_string())].into_iter().collect::<Query>(), &json!({})).unwrap();
+    for id in &t {
+        b.set(*id, vec![("status", json!("done"))]);
+    }
+    b.set(t[2], vec![("failed", json!(1))]);
+    let c = b.get(&format!("goals/G{g}"));
+    assert_eq!((&c["done"], &c["failed"], &c["state"]), (&json!(4), &json!(1), &json!("Outcome not met: 1 failed")));
+    assert!(!board::goal_finished(&b.app, g).unwrap());
+}
+
+#[test]
 fn a_finished_goal_leaves_home() {
     let b = new_board();
     let (g, t) = goal(&b);

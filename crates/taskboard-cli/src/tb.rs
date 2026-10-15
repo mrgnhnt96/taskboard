@@ -65,6 +65,9 @@ enum Cmd {
         detail: Option<String>,
         #[arg(long)]
         output: Option<String>,
+        /// It misses the goal's own done-when: it goes to the owner, and the goal stays open until it's settled
+        #[arg(long)]
+        misses_goal: bool,
         #[command(flatten)]
         t: TaskArg,
     },
@@ -3940,13 +3943,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let f = checkpoint_body(done, next, decisions, files)?;
             c.run_report("tb.checkpoint", f, t.task, true, |v| format!("Checkpoint saved on {}.", v["task"].as_str().unwrap_or("")))
         }
-        Cmd::Found { title, kind, detail, output, t } => c.run_report(
+        Cmd::Found { title, kind, detail, output, misses_goal, t } => c.run_report(
             "tb.found",
-            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>())}),
+            json!({"title": short_title(&title)?, "kind": kind, "detail": detail, "output": output.map(|o| o.chars().take(4000).collect::<String>()), "misses_goal": misses_goal}),
             t.task,
             false,
             |v| {
-                if v["seen"] == true {
+                if v["misses_goal"] == true {
+                    format!("Sent {} to the owner as a miss on the goal's done-when; the goal stays open until it's settled.", v["issue"].as_str().unwrap_or(""))
+                } else if v["seen"] == true {
                     format!("Already in the backlog as {}; added this sighting.", v["issue"].as_str().unwrap_or(""))
                 } else {
                     format!("Added {} to the backlog.", v["issue"].as_str().unwrap_or(""))
