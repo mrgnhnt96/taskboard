@@ -182,6 +182,7 @@ pub struct MainWindow {
     pub days: ui::days::State,
     pub tasks: ui::tasks::State,
     pub goals: ui::goals_page::State,
+    pub search: ui::search::State,
     /// The goal list answered at least once (before that the state's goals stand in).
     goals_loaded: bool,
     /// Bumped by every refresh so a slow, older answer never overwrites a newer one.
@@ -220,6 +221,7 @@ impl MainWindow {
             days: Default::default(),
             tasks: Default::default(),
             goals: Default::default(),
+            search: Default::default(),
             goals_loaded: false,
             generation: 0,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
@@ -266,6 +268,13 @@ impl MainWindow {
         })
         .detach();
         m.start_polling(cx);
+        // Dev: `TASKBOARD_SEARCH=pass` opens the ⌘K palette with that query (screenshots).
+        if let Ok(q) = std::env::var("TASKBOARD_SEARCH") {
+            ui::search::open(&mut m, window, cx);
+            if let Some(i) = &m.search.input {
+                i.set_text(&q, cx);
+            }
+        }
         m
     }
 
@@ -698,11 +707,12 @@ impl Wants {
                 _ => None,
             },
             goal_rows: if m.page == Page::Goals { ui::goals_page::in_progress(&m.data.goals, m.goals.project()) } else { vec![] },
-            sessions: m.page == Page::Sessions,
+            // The ⌘K palette searches the task and terminal lists too.
+            sessions: m.page == Page::Sessions || ui::search::is_open(m),
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
             days_q: (m.page == Page::Days).then(|| m.days.query()),
             home: (m.page == Page::Board).then(|| m.filters.project.clone()),
-            tasks: m.page == Page::Tasks,
+            tasks: m.page == Page::Tasks || ui::search::is_open(m),
         }
     }
 
@@ -759,6 +769,7 @@ impl Got {
             m.goals_loaded = true;
         }
         // Only keep answers for what is still open.
+        let searching = ui::search::is_open(m);
         let d = &mut m.data;
         if let Some((r, v)) = self.task {
             if matches!(&m.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
@@ -800,7 +811,7 @@ impl Got {
         if self.today.is_some() {
             d.today = self.today;
         }
-        if self.tasks.is_some() && m.page == Page::Tasks {
+        if self.tasks.is_some() && (m.page == Page::Tasks || searching) {
             d.tasks = self.tasks;
         }
         if let Some((id, v)) = self.session {

@@ -150,7 +150,7 @@ fn rank(x: &Value) -> u8 {
 
 /// `idleMs`: since `last_activity` (else `seen_at`), 0 when neither parses. The board's `idle_secs`
 /// wins when it sends one: it leaves out the time the Mac slept.
-fn idle_ms(x: &Value) -> i64 {
+pub fn idle_ms(x: &Value) -> i64 {
     if let Some(secs) = x.get("idle_secs").and_then(|v| v.as_i64()) {
         return secs * 1000;
     }
