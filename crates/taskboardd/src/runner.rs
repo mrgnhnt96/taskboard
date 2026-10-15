@@ -373,18 +373,18 @@ pub fn close_for_usage(app: &App) -> Result<()> {
         if s.s("status") != Some("idle") {
             continue;
         }
-        app.db.tx(|| close_for(app, &s, &t, board::USAGE_CLOSE, "The 5-hour usage ran out"))?;
+        app.db.tx(|| close_for(app, &s, &t, board::USAGE_CLOSE, "The usage ran out"))?;
         made += 1;
     }
     if made > 0 && app.db.get_setting("usage_closed_for")?.as_deref() != Some(out.as_str()) {
         app.db.set_setting("usage_closed_for", Some(&out))?;
-        app.info(format!("usage: 5-hour window ran out; closing {made} terminals until {out}"));
+        app.info(format!("usage: ran out; closing {made} terminals until {out}"));
         dispatch::notify(
             app,
             &format!(
-                "Out of 5-hour usage. Closed {}; their tasks start again from their handoffs at {}.",
+                "Out of usage. Closed {}; their tasks start again from their handoffs {}.",
                 plural(made, "task terminal"),
-                hours::clock(&local_hhmm(Some(&out)))
+                hours::at_time(&hours::say_reset(&out))
             ),
             &app.cfg.page_url,
         );

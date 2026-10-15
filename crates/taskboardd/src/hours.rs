@@ -314,6 +314,23 @@ pub fn say_when(at: &str) -> String {
     }
 }
 
+/// A usage reset (ISO), as `when` says it: the 7-day window's can be days away.
+pub fn say_reset(at: &str) -> String {
+    match parse_iso(at) {
+        Some(ts) => when(&local_dt(ts).naive_local(), &now_local()),
+        None => clock(&local_hhmm(Some(at))),
+    }
+}
+
+/// "at 12:50 PM" for a time today, else the day and time as they are.
+pub fn at_time(when: &str) -> String {
+    if when.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("at {when}")
+    } else {
+        when.to_string()
+    }
+}
+
 fn span(h: &Hours, first: chrono::Weekday) -> String {
     let all: Vec<String> = DAYS.iter().map(|d| d.to_string()).collect();
     let d = if h.days == all {
@@ -359,7 +376,7 @@ pub fn state(app: &App) -> Value {
         "Outside work hours".into()
     };
     if let Some(out) = usage::out_until(app) {
-        line = format!("Out of 5-hour usage: agents start again at {}", clock(&local_hhmm(Some(&out))));
+        line = format!("Out of usage: agents start again {}", at_time(&say_reset(&out)));
     }
     let every = h.alert_every_mins;
     let alerts_line = if every > 0 {
@@ -382,7 +399,7 @@ pub fn state(app: &App) -> Value {
 /// Why a queued task waits on the clock, if it does.
 pub fn blocker(app: &App) -> Option<String> {
     if let Some(out) = usage::out_until(app) {
-        return Some(format!("Waits for the 5-hour usage to reset ({})", clock(&local_hhmm(Some(&out)))));
+        return Some(format!("Waits for the usage to reset ({})", say_reset(&out)));
     }
     if is_open(app) {
         return None;
