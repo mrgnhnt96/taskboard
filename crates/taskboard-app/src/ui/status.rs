@@ -92,6 +92,7 @@ pub fn row(c: &Value) -> Row {
     let run = fmt::running_for(c).trim_start_matches("running ").to_string();
     let (st, line, loud, age) = match tile.status.as_str() {
         "Lost" => (St::Failed, format!("Terminal lost · {}", tile.line), true, short(fmt::ago(when))),
+        "Looks finished" => (St::Needs, format!("Looks finished · {}", tile.line), true, short(fmt::ago(when))),
         "Couldn’t start" | "Couldn’t compact" => (St::Failed, format!("{} · {}", tile.status, tile.line), true, short(fmt::ago(when))),
         "Question" => (St::Needs, format!("Question: {}", opt_s(c, "question").unwrap_or("")), true, short(fmt::ago(when))),
         "Needs you" | "Needs setup" if s(c, "status") == "needs" => (St::Needs, opt_s(c, "latest").unwrap_or(&tile.line).to_string(), true, short(fmt::ago(when))),
@@ -161,6 +162,11 @@ mod tests {
         let q = row(&card(json!({"status": "needs", "needs_reason": "question", "question": "10 or 30?"})));
         assert_eq!((q.st, q.line.as_str(), q.loud), (St::Needs, "Question: 10 or 30?", true));
         assert_eq!(row(&card(json!({"status": "needs", "lost": true}))).st, St::Failed);
+        // Lost with signs it shipped still waits on the user, never reads as done.
+        let found = json!([{"what": "Tag v1.2.3 pushed", "at": "2026-10-15T16:21:00Z"}]);
+        let looks = row(&card(json!({"status": "needs", "lost": true, "looks_finished": found})));
+        assert_eq!((looks.st, looks.loud), (St::Needs, true));
+        assert!(looks.line.starts_with("Looks finished · Tag v1.2.3 pushed"), "{}", looks.line);
         assert_eq!(row(&card(json!({"latest": "Running tests"}))).line, "Running tests");
         let queued = row(&card(json!({"status": "queued", "waiting": "Waits for T4 to finish"})));
         assert_eq!((queued.st, queued.line.as_str()), (St::Queued, "Waits for T4 to finish"));

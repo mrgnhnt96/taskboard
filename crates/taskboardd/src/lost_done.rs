@@ -157,8 +157,9 @@ fn commits(repo: &str, task: i64, branch: Option<&str>, version: Option<&str>, s
         if !after(at, since) {
             continue;
         }
-        let merges = merged_branch(subject)
-            .is_some_and(|m| task_branch.is_match(m) || branch.is_some_and(|b| m == b || m.ends_with(&format!("/{b}"))));
+        let ours = |m: &str| task_branch.is_match(m) || branch.is_some_and(|b| m == b || m.ends_with(&format!("/{b}")));
+        // Pulling the branch into itself ("Merge branch 'feat/361-x' of … into feat/361-x") syncs work still going on.
+        let merges = merged_branch(subject).is_some_and(|m| ours(m) && !merge_target(subject).is_some_and(ours));
         let releases = version.is_some_and(|v| subject.split(|c: char| c.is_whitespace() || c == ',').any(|w| w.trim_start_matches('v') == v));
         // A merge subject names its two branches: "Merge branch 'main' into feat/t361-x" names the task but brings in main.
         let names = merged_branch(subject).is_none() && names_task.is_match(subject);
@@ -181,6 +182,12 @@ fn merged_branch(subject: &str) -> Option<&str> {
     }
     let rest = subject.strip_prefix("Merge branch '").or_else(|| subject.strip_prefix("Merge remote-tracking branch '"))?;
     rest.split_once('\'').map(|(b, _)| b)
+}
+
+/// The branch a local merge lands on, when its subject names one: "Merge branch 'main' into feat/361-x" lands on `feat/361-x`.
+fn merge_target(subject: &str) -> Option<&str> {
+    merged_branch(subject)?;
+    subject.rsplit_once(" into ").map(|(_, b)| b.trim())
 }
 
 fn gh(app: &App, repo: &str, args: &[&str]) -> Option<Value> {
@@ -332,12 +339,30 @@ mod tests {
         let id = lost_task(&app, "Lost cards", r.path(), "2026-10-15T21:00:00Z", json!({"where": {"branch": "feat/lost-cards"}}));
         sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'main' into feat/lost-cards"], "2026-10-15T21:10:00Z");
         sh(r.path(), &["commit", "-q", "--allow-empty", "-m", &format!("Merge branch 'main' into feat/t{id}-lost-cards")], "2026-10-15T21:11:00Z");
+        // Another terminal picking the work up and pulling it: the branch merging into itself.
+        sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'feat/lost-cards' of github.com:me/repo into feat/lost-cards"], "2026-10-15T21:12:00Z");
+        sh(r.path(), &["commit", "-q", "--allow-empty", "-m", &format!("Merge remote-tracking branch 'origin/feat/t{id}-lost-cards' into feat/t{id}-lost-cards")], "2026-10-15T21:13:00Z");
         sweep(&app).unwrap();
         assert!(card(&board::get_task(&app, id).unwrap()).is_null());
         sh(r.path(), &["commit", "-q", "--allow-empty", "-m", "Merge branch 'feat/lost-cards'"], "2026-10-15T21:20:00Z");
         app.db.x("UPDATE tasks SET looks_finished = json_remove(looks_finished, '$.checked_at') WHERE id = ?", p![id]).unwrap();
         sweep(&app).unwrap();
         assert_eq!(card(&board::get_task(&app, id).unwrap()).as_array().map(|a| a.len()), Some(1));
+    }
+
+    #[test]
+    fn losing_the_terminal_again_starts_over_without_the_old_evidence() {
+        let r = repo();
+        let data = tempfile::tempdir().unwrap();
+        let app = app(data.path());
+        let id = lost_task(&app, "Lost cards", r.path(), "2026-10-15T21:00:00Z", json!({}));
+        let seen = json!({"lost_at": "2026-10-15T21:00:00Z", "found": [{"what": "PR #12 merged: Lost cards", "at": "2026-10-15T21:30:00Z"}]});
+        app.db.x("UPDATE tasks SET looks_finished = ?, lost = 0, status = 'working' WHERE id = ?", p![jdumps(&seen), id]).unwrap();
+        board::mark_lost(&app, &board::get_task(&app, id).unwrap(), "logout").unwrap();
+        let t = board::get_task(&app, id).unwrap();
+        assert!(t.b("lost") && card(&t).is_null());
+        let lf: Value = serde_json::from_str(&t.st("looks_finished")).unwrap();
+        assert!(lf["found"].is_null() && lf["lost_at"].as_str().is_some_and(|a| a != "2026-10-15T21:00:00Z"), "{lf}");
     }
 
     #[test]
