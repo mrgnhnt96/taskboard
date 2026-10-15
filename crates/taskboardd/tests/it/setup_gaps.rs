@@ -212,4 +212,31 @@ fn a_project_with_no_reviewers_syncs_its_roster_once_on_its_own() {
     assert_eq!(b.gap_keys(), vec!["no_reviewers"]);
     setup::auto_sync(&b.app).unwrap();
     assert_eq!(b.gap_keys(), vec!["no_reviewers"], "synced already");
+    // With no PR to match members against, the first ask's sync isn't held off.
+    assert_eq!(b.app.db.get_setting("reviewers_synced:webapp").unwrap(), None);
+}
+
+fn auto_synced(b: &Board) -> Option<String> {
+    b.app.db.get_setting("reviewers_auto_synced").unwrap()
+}
+
+#[test]
+fn auto_sync_leaves_projects_without_the_gap_or_a_folder_alone() {
+    // Already staffed: nothing to sync.
+    let staffed = board_with(|_| {});
+    staffed.call("POST", "/reviewers", json!({"project": "webapp", "reviewer": "Sam", "user": "sam-gh"}));
+    setup::auto_sync(&staffed.app).unwrap();
+    assert_eq!(auto_synced(&staffed), None);
+
+    // No PRs (a folder with no remote): no Review step to staff.
+    let no_prs = board_with(|_| {});
+    crate::reviewers::sh_git(&no_prs.dir.path().join("webapp"), &["init", "-q"]);
+    setup::auto_sync(&no_prs.app).unwrap();
+    assert_eq!(auto_synced(&no_prs), None);
+
+    // No folder yet: it waits for one instead of spending its one sync.
+    let no_folder = board_with(|_| {});
+    std::fs::remove_dir_all(no_folder.dir.path().join("webapp")).unwrap();
+    setup::auto_sync(&no_folder.app).unwrap();
+    assert_eq!(auto_synced(&no_folder), None);
 }

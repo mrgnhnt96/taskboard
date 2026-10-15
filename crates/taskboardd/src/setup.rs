@@ -117,9 +117,15 @@ pub fn auto_sync(app: &App) -> Result<()> {
         if done.contains_key(project) || !crate::projects::ships_prs(app, project)? || !review_unstaffed(app, project)? {
             continue;
         }
-        match crate::picker::sync(app, project, Some(repo), crate::reviewers::last_pr(app, project)?.as_ref(), true) {
+        let pr = crate::reviewers::last_pr(app, project)?;
+        match crate::picker::sync(app, project, Some(repo), pr.as_ref(), true) {
             Ok(v) => app.info(format!("reviewers: synced {project} on its own (no reviewers): {v}")),
             Err(e) => app.info(format!("reviewers: couldn't sync {project}: {}", e.message)),
+        }
+        if pr.is_none() {
+            // No PR to match the host's members against yet: the first ask (`picker::pick`) syncs
+            // again with its PR instead of waiting out `sync_every_hours`.
+            app.db.set_setting(&format!("reviewers_synced:{project}"), None)?;
         }
         done.insert(project.to_string(), json!(now_iso()));
         app.db.set_setting(AUTO_SYNCED_SETTING, Some(&jdumps(&Value::Object(done.clone()))))?;
