@@ -115,7 +115,7 @@ pub fn clean_model(v: Option<&serde_json::Value>) -> Result<Option<String>> {
 }
 
 /// The terminal's Claude flags with `--model` added, unless they already name one.
-fn with_model(flags: Option<String>, model: Option<&str>) -> Option<String> {
+pub(crate) fn with_model(flags: Option<String>, model: Option<&str>) -> Option<String> {
     let Some(m) = model else { return flags };
     if flags.as_deref().is_some_and(|f| f.split_whitespace().any(|w| w == "--model" || w.starts_with("--model="))) {
         return flags;

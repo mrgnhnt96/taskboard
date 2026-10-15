@@ -26,6 +26,8 @@ use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
 pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
+/// The visits that don't change code: they start fresh on `[models] pr_visit` (`fresh_visit`).
+const MECHANICAL: &[&str] = &["merge", "ask"];
 pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
 pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits", "stack"];
@@ -500,13 +502,56 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
     .join("\n")
 }
 
+/// The conversation a PR visit resumes: the task's own, kept aside while fresh visits run (`resume_cid`).
+fn task_conversation(t: &Row, last: Option<&Row>) -> Option<String> {
+    let set = |c: Option<&str>| c.filter(|c| !c.is_empty()).map(|s| s.to_string());
+    set(flow(t).s("resume_cid")).or_else(|| set(last.and_then(|l| l.s("claude_session_id")))).or_else(|| set(t.s("claude_session_id")))
+}
+
+/// The old terminal a visit takes over; never the Jira desk, even if the task ever landed on it.
+fn replaceable(app: &App, last: Option<Row>) -> Option<Value> {
+    last.filter(|l| l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false)).map(|l| l.v("id"))
+}
+
+/// A visit that doesn't change code (`MECHANICAL`): a fresh conversation on `[models] pr_visit` with
+/// a short prompt, keeping the task's conversation aside for the next visit that does.
+fn fresh_visit(app: &App, t: &Row, phase: &str, mut args: Value) -> Result<Value> {
+    let last = board::get_session(app, flow(t).s("session"))?;
+    if !flow(t).contains_key("resume_cid") {
+        if let Some(cid) = task_conversation(t, last.as_ref()) {
+            merge_flow(app, t.id(), fields!["resume_cid" => cid])?;
+        }
+    }
+    let ctx = board::task_context(t);
+    let branch = ctx.get("where").and_then(|w| w.get("branch")).and_then(|b| b.as_str()).filter(|b| !b.is_empty());
+    let mut place = format!("Worktree: {}.", args["cwd"].as_str().unwrap_or(""));
+    if let Some(b) = branch {
+        place = format!("Branch: {b}. {place}");
+    }
+    args["prompt"] = json!(format!("{}\n\nThis is a fresh conversation for this step only. {place}", args["prompt"].as_str().unwrap_or("")));
+    let model = app.cfg.models.resolve_pr_visit(t.s("model"));
+    if let Some(f) = runner::with_model(None, model.as_deref()) {
+        args["flags"] = json!(f);
+    }
+    if let Some(id) = replaceable(app, last) {
+        args["replace"] = id;
+    }
+    let on = model.map(|m| format!(" on {m}")).unwrap_or_default();
+    board::log_event(app, t.id(), board::BOARD, "handoff", &format!("Starting a fresh conversation{on} for PR #{}: {}", t.i0("pr_num"), label(phase).to_lowercase()))?;
+    Ok(args)
+}
+
 fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     let last = board::get_session(app, flow(t).s("session"))?;
-    let cid = last
-        .as_ref()
-        .and_then(|l| l.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()))
-        .or_else(|| t.s("claude_session_id").filter(|c| !c.is_empty()).map(|s| s.to_string()))
+    let cid = task_conversation(t, last.as_ref())
         .filter(|c| transcript::conversation_saved(&app.cfg.claude_projects, args["cwd"].as_str().unwrap_or(""), c));
+    let model = app.cfg.models.resolve(t.s("model"));
+    if let Some(f) = runner::with_model(None, model.as_deref()) {
+        args["flags"] = json!(f);
+    }
+    if flow(t).contains_key("resume_cid") {
+        merge_flow(app, t.id(), fields!["resume_cid" => null])?;
+    }
     let live = last.as_ref().is_some_and(|l| l.s("status") != Some("gone") && board::runs_claude(l));
     let too_big = match (&cid, live) {
         (Some(cid), false) => {
@@ -528,10 +573,9 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
             args["prompt"] = json!(p);
         }
         Some(cid) => {
-            args["flags"] = json!(format!("--resume {cid}"));
-            // Never the Jira desk, even if the task ever landed on it.
-            if let Some(l) = last.filter(|l| l.s("status") != Some("gone") && !crate::jira_desk::is_desk(app, l.s("id")).unwrap_or(false)) {
-                args["replace"] = l.v("id");
+            args["flags"] = json!(runner::with_model(Some(format!("--resume {cid}")), model.as_deref()));
+            if let Some(id) = replaceable(app, last) {
+                args["replace"] = id;
             }
         }
     }
@@ -557,7 +601,7 @@ pub fn wake(app: &App, t: &Row, phase: &str, rec: &Value, extra: Option<&str>) -
         text += &format!("\n{e}");
     }
     let args = json!({"cwd": cwd, "title": short(&format!("PR #{}: {}", t.i0("pr_num"), t.st("title")), 40), "prompt": text, "queue": false});
-    let args = resume_or_fresh(app, t, args)?;
+    let args = if app.cfg.models.fresh_pr_visits && MECHANICAL.contains(&phase) { fresh_visit(app, t, phase, args)? } else { resume_or_fresh(app, t, args)? };
     let jid = board::create_job(app, "agent", args, Some(t.id()), "pr", None)?;
     board::log_event(app, t.id(), board::BOARD, "handoff", &format!("Brought the conversation back for PR #{}: {}", t.i0("pr_num"), label(phase).to_lowercase()))?;
     Ok(Some(jid))

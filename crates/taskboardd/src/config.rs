@@ -603,11 +603,23 @@ pub struct ModelsConfig {
     pub large: String,
     /// `small`, `large`, or a model name.
     pub default: String,
+    /// The model of PR visits that don't change code (merging, asking for reviews): `small`, `large` or a
+    /// model name. Empty runs them on the task's own model.
+    pub pr_visit: String,
+    /// Those visits start a fresh conversation with a short prompt instead of resuming the task's.
+    pub fresh_pr_visits: bool,
 }
 
 impl Default for ModelsConfig {
     fn default() -> Self {
-        ModelsConfig { enabled: true, small: "sonnet".into(), large: "opus".into(), default: "large".into() }
+        ModelsConfig {
+            enabled: true,
+            small: "sonnet".into(),
+            large: "opus".into(),
+            default: "large".into(),
+            pr_visit: "sonnet".into(),
+            fresh_pr_visits: true,
+        }
     }
 }
 
@@ -624,6 +636,14 @@ impl ModelsConfig {
             other => other,
         };
         (!model.is_empty()).then(|| model.to_string())
+    }
+
+    /// The model of a PR visit that doesn't change code; the task's own when `pr_visit` is empty.
+    pub fn resolve_pr_visit(&self, task: Option<&str>) -> Option<String> {
+        match self.pr_visit.trim() {
+            "" => self.resolve(task),
+            m => self.resolve(Some(m)),
+        }
     }
 }
 
@@ -881,6 +901,7 @@ impl Config {
         c.runner = false;
         // No `--model` in started terminals' flags unless a test turns it on.
         c.models.enabled = false;
+        c.models.fresh_pr_visits = false;
         c.open_midna = false;
         c.notify = false;
         c.midna = data.join("no-midna");
@@ -996,6 +1017,12 @@ mod tests {
         assert_eq!(off.resolve(Some("small")), None, "off: Claude's own default");
         let c = Config::from_file(toml::from_str("[models]\nsmall = \"haiku\"").unwrap(), PathBuf::from("/tmp/x.toml"));
         assert_eq!((c.models.small.as_str(), c.models.large.as_str(), c.models.enabled), ("haiku", "opus", true));
+        assert_eq!(m.resolve_pr_visit(Some("large")).as_deref(), Some("sonnet"), "PR visits: sonnet by default");
+        let own = ModelsConfig { pr_visit: "".into(), ..ModelsConfig::default() };
+        assert_eq!(own.resolve_pr_visit(Some("small")).as_deref(), Some("sonnet"), "empty: the task's own");
+        let tier = ModelsConfig { pr_visit: "large".into(), ..ModelsConfig::default() };
+        assert_eq!(tier.resolve_pr_visit(None).as_deref(), Some("opus"));
+        assert_eq!(off.resolve_pr_visit(None), None);
     }
 
     #[test]

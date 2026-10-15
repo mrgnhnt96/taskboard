@@ -269,6 +269,8 @@ enabled = true                       # false: no --model, Claude's own default
 small = "sonnet"                     # small, contained work
 large = "opus"                       # everything else
 default = "large"                    # tasks without a model: small, large, or a model name
+pr_visit = "sonnet"                  # PR visits that don't change code (merge, ask for reviews); "" for the task's model
+fresh_pr_visits = true               # those visits start a fresh, short conversation instead of resuming the task's
 
 # Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
 # so many worktree agents don't each cold-build the project with every core at once.
