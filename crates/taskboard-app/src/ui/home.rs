@@ -8,6 +8,7 @@
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
 use crate::theme::Theme;
+use crate::ui::issue_panel as ip;
 use crate::ui::kit;
 use crate::ui::status::St;
 use gpui_kit::prelude::*;
@@ -17,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 const PAGE_X: f32 = 36.;
+const PROJECT_FILTER: &str = "home-project";
 
 thread_local! {
     /// The answer fields by task ref: a draft outlives renders and refetches until it's sent.
@@ -492,17 +494,11 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         (n, Some(o)) => format!("{n} · oldest {o}"),
         (n, None) => n.to_string(),
     };
-    let mut labels = vec!["All projects".to_string()];
-    labels.extend(names.iter().map(|p| format!("{p} · {}", all.iter().filter(|a| &a.project == p).count())));
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let on = names.iter().position(|p| *p == project).map_or(0, |i| i + 1);
-    let tabs = kit::seg(&t, "home-project", &refs, on, |i, item| {
-        let p = if i == 0 { "all".to_string() } else { names[i - 1].clone() };
-        item.on_click(cx.listener(move |m, _, _, cx| {
-            let mut f = m.filters.clone();
-            f.project = p.clone();
-            m.set_filters(f, cx);
-        }))
+    let counts: Vec<(String, usize)> = names.iter().map(|p| (p.clone(), all.iter().filter(|a| &a.project == p).count())).collect();
+    let tabs = ip::project_filter(&t, PROJECT_FILTER, &project, &counts, cx, |m, p, cx| {
+        let mut f = m.filters.clone();
+        f.project = p;
+        m.set_filters(f, cx);
     });
     page = page.child(
         div()
@@ -554,7 +550,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             page = page.child(item(m, &t, a, window, cx));
         }
     }
-    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().bg(t.bg).child(page).into_any_element()
+    let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
+    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().bg(t.bg).child(page).children(filter).into_any_element()
 }
 
 fn group_label(t: &Theme, text: &str, n: usize) -> Div {

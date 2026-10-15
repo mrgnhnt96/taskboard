@@ -5,6 +5,7 @@
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, opt_s, s};
 use crate::theme::Theme;
+use crate::ui::issue_panel as ip;
 use crate::ui::kit;
 use crate::ui::status::{self, St};
 use crate::ui::text_input::FieldChanged;
@@ -15,6 +16,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 const PAGE_X: f32 = 28.;
+const PROJECT_FILTER: &str = "tasks-project";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GroupBy {
@@ -409,16 +411,9 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).text_color(t.muted).child(format!("{} open · {} done this week", hd.open, hd.done_week)))
         .children(search);
 
-    let names: Vec<String> = all.projects.iter().map(|(p, _)| p.clone()).collect();
-    let labels: Vec<String> = ["All projects".to_string()].into_iter().chain(all.projects.iter().map(|(p, n)| format!("{p} · {n}"))).collect();
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let on = picked.as_ref().and_then(|p| names.iter().position(|n| n == p)).map_or(0, |i| i + 1);
-    let projects = kit::seg(&t, "tasks-project", &refs, on, |i, item| {
-        let pick = if i == 0 { None } else { names.get(i - 1).cloned() };
-        item.on_click(cx.listener(move |m, _, _, cx| {
-            m.tasks.project = pick.clone();
-            cx.notify();
-        }))
+    let projects = ip::project_filter(&t, PROJECT_FILTER, picked.as_deref().unwrap_or("all"), &all.projects, cx, |m, p, cx| {
+        m.tasks.project = (p != "all").then_some(p);
+        cx.notify();
     });
 
     let show_labels: Vec<String> = SHOW
@@ -460,7 +455,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         list = list.child(group_card(&t, g, open, by, cx));
     }
     let page = div().flex().flex_col().gap(px(16.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head_row).child(filters).child(list);
-    shell.child(page).into_any_element()
+    let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
+    shell.child(page).children(filter).into_any_element()
 }
 
 /// The home page's "N queued" on a project's card: the Tasks page, narrowed to that project.

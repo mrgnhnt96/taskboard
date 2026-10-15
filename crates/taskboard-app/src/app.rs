@@ -486,6 +486,10 @@ impl MainWindow {
     /// Esc (the web's keydown handler, in its order): an open menu, then the alerts dialog, then the task panel (or an issue panel on the board),
     /// then, on the board with nothing focused, the board's filters.
     pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An open picker closes first, giving focus back and keeping the Backlog's checks.
+        if self.issue_panel.picker.as_ref().is_some_and(|p| self.menu_open(&p.key).is_some()) {
+            return ui::issue_panel::close_picker(self, window, cx);
+        }
         // On the Backlog page esc unchecks everything, closing its menu too.
         if ui::backlog::escape(self, cx) {
             return;
@@ -973,10 +977,7 @@ impl Render for MainWindow {
                 // A click anywhere outside an open menu closes it.
                 d.child(deferred(div().id("menu-dismiss").absolute().top_0().left_0().size_full().on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|m, _, _, cx| {
-                        m.menu = None;
-                        cx.notify();
-                    }),
+                    cx.listener(|m, _, window, cx| ui::issue_panel::close_picker(m, window, cx)),
                 )).with_priority(2))
             })
     }
