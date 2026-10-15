@@ -331,7 +331,21 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["target", "since", "week", "save"])]
         list: bool,
     },
-    /// Add, change or delete a task
+    /// Tasks, one line each: this terminal's project's (with --goal, every project's)
+    Tasks {
+        /// The project, or all (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        /// G4, or none for tasks outside a goal
+        #[arg(long)]
+        goal: Option<String>,
+        #[arg(long, value_parser = ["planned", "queued", "working", "needs", "review", "done"])]
+        status: Option<String>,
+        /// Print the board's answer as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add, change, show or delete a task
     Task {
         #[command(subcommand)]
         action: TaskCmd,
@@ -1263,10 +1277,47 @@ enum TaskCmd {
     },
     /// Delete a task with its log (only when the owner asks)
     Delete { task: String },
+    /// A task: its title, status, goal, PR, detail and latest log entries
+    Show {
+        task: String,
+        /// How many log entries, newest last
+        #[arg(long, default_value_t = 5)]
+        log: usize,
+        /// Print the board's answer as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum BacklogCmd {
+    /// Backlog issues, one line each: this terminal's project's open ones (with --goal, every project's)
+    List {
+        /// The project, or all (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+        /// G4, or none for issues outside a goal
+        #[arg(long)]
+        goal: Option<String>,
+        #[arg(long, value_parser = ["bug", "gap", "follow", "clean"])]
+        kind: Option<String>,
+        /// open (the default), task, ticket, defer, drop, or all
+        #[arg(long)]
+        state: Option<String>,
+        /// new (the default), old, or kind
+        #[arg(long, value_parser = ["new", "old", "kind"])]
+        sort: Option<String>,
+        /// Print the board's answer as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// A backlog issue: its title, state, goal, detail and history
+    Show {
+        issue: String,
+        /// Print the board's answer as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Add an issue to the backlog
     Add {
         title: String,
@@ -2731,6 +2782,148 @@ fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
         }
     }
     Ok(0)
+}
+
+/// The project whose folder holds `cwd` (the deepest one), else the folder's name, as the board decides.
+fn project_at(projects: &[Value], cwd: &str) -> Option<String> {
+    let cwd = cwd.trim_end_matches('/');
+    projects
+        .iter()
+        .filter_map(|p| Some((p["name"].as_str().filter(|n| !n.is_empty())?, p["path"].as_str()?.trim_end_matches('/'))))
+        .filter(|(_, pp)| !pp.is_empty() && (cwd == *pp || cwd.starts_with(&format!("{pp}/"))))
+        .max_by_key(|(_, pp)| pp.len())
+        .map(|(n, _)| n.to_string())
+        .or_else(|| cwd.rsplit('/').next().filter(|n| !n.is_empty()).map(|n| n.to_string()))
+}
+
+/// The project and goal filters of `tb tasks` and `tb backlog list`: this terminal's project unless
+/// a project (or all) is given, or a goal is, which already says which project.
+fn list_query(c: &Ctx, project: Option<String>, goal: Option<String>) -> Result<Vec<String>, String> {
+    let goal = goal.map(|g| if g == "none" { Ok(g) } else { goal_ref(&g) }).transpose()?;
+    let project = match (project, &goal) {
+        (Some(p), _) => p,
+        (None, Some(g)) if g != "none" => "all".into(),
+        _ => {
+            let v = c.call("GET", "/projects", None)?;
+            project_at(v["projects"].as_array().map(|a| a.as_slice()).unwrap_or(&[]), &c.cwd).ok_or("this folder isn't in a project; pass --project NAME or --project all")?
+        }
+    };
+    let mut q = vec![format!("project={}", qv(&project))];
+    if let Some(g) = goal {
+        q.push(format!("goal={}", qv(&g)));
+    }
+    Ok(q)
+}
+
+fn goal_word(v: &Value) -> &str {
+    v["goal"]["ref"].as_str().unwrap_or("-")
+}
+
+/// "T412  queued   G41   Fix the login", for `tb tasks`.
+fn task_list_line(t: &Value) -> String {
+    let status = if t["failed"] == true { "failed" } else { t["status"].as_str().unwrap_or("") };
+    let pr = t["pr"]["num"].as_i64().map(|n| format!("  PR #{n}")).unwrap_or_default();
+    format!("{:<5}  {:<7}  {:<4}  {}{pr}", t["ref"].as_str().unwrap_or(""), status, goal_word(t), t["title"].as_str().unwrap_or(""))
+}
+
+/// "B12  open  bug     G4    Crash on save", for `tb backlog list`.
+fn issue_list_line(b: &Value) -> String {
+    let task = b["task_ref"].as_str().map(|t| format!("  → {t}")).unwrap_or_default();
+    format!(
+        "{:<4}  {:<6}  {:<6}  {:<4}  {}{task}",
+        b["ref"].as_str().unwrap_or(""),
+        b["state"].as_str().unwrap_or(""),
+        b["kind"].as_str().unwrap_or(""),
+        goal_word(b),
+        b["title"].as_str().unwrap_or("")
+    )
+}
+
+/// The head line of a show: "T12 · working · taskboard · G4 Find tasks".
+fn show_head(v: &Value, state: &str) -> String {
+    let mut head = vec![v["ref"].as_str().unwrap_or("").to_string(), state.to_string()];
+    head.extend(v["project"].as_str().map(|p| p.to_string()));
+    if let Some(g) = v["goal"]["ref"].as_str() {
+        head.push(format!("{g} {}", v["goal"]["name"].as_str().unwrap_or("")).trim_end().to_string());
+    }
+    head.join(" · ")
+}
+
+fn indented(label: &str, text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return vec![];
+    }
+    std::iter::once(format!("{label}:")).chain(text.lines().map(|l| format!("  {l}"))).collect()
+}
+
+/// The last `n` entries of a log, oldest first: "  Oct 15, 3:04 PM · T12 · note: Built it".
+fn log_lines(label: &str, entries: &[Value], n: usize) -> Vec<String> {
+    let shown: Vec<&Value> = entries.iter().take(n).collect();
+    if shown.is_empty() {
+        return vec![];
+    }
+    std::iter::once(format!("{label}:"))
+        .chain(shown.into_iter().rev().map(|e| {
+            let who = e["who"].as_str().filter(|w| !w.is_empty()).map(|w| format!(" · {w}")).unwrap_or_default();
+            format!("  {}{who} · {}: {}", local_when(e["at"].as_str().unwrap_or("")), e["kind"].as_str().unwrap_or(""), e["text"].as_str().unwrap_or("").trim())
+        }))
+        .collect()
+}
+
+/// `tb task show`: GET /tasks/<id> with its latest `n` log entries (the board sends them newest first).
+fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
+    let status = if v["failed"] == true { "failed" } else { v["status"].as_str().unwrap_or("") };
+    let mut lines = vec![show_head(v, status), v["title"].as_str().unwrap_or("").to_string()];
+    if let Some(num) = v["pr"]["num"].as_i64() {
+        lines.push(format!("PR: #{num} {} {}", v["pr"]["state"].as_str().unwrap_or(""), v["pr"]["url"].as_str().unwrap_or("")).trim_end().to_string());
+    }
+    if let Some(w) = v["who"].as_str().filter(|w| !w.is_empty()) {
+        lines.push(format!("Terminal: {w}"));
+    }
+    for (label, key) in [("Detail", "detail"), ("Summary", "summary")] {
+        let block = indented(label, v[key].as_str().unwrap_or(""));
+        if !block.is_empty() {
+            lines.push(String::new());
+            lines.extend(block);
+        }
+    }
+    let log = log_lines("Log", v["log"].as_array().map(|a| a.as_slice()).unwrap_or(&[]), n);
+    if !log.is_empty() {
+        lines.push(String::new());
+        lines.extend(log);
+    }
+    lines
+}
+
+/// `tb backlog show`: GET /backlog/<id> with its history (the board sends it oldest first).
+fn issue_show_lines(v: &Value) -> Vec<String> {
+    let state = format!("{} · {}", v["state"].as_str().unwrap_or(""), v["kind"].as_str().unwrap_or(""));
+    let mut lines = vec![show_head(v, &state), v["title"].as_str().unwrap_or("").to_string()];
+    if let Some(t) = v["task_ref"].as_str() {
+        lines.push(format!("Task: {t}"));
+    }
+    if let Some(k) = v["jira_key"].as_str().filter(|k| !k.is_empty()) {
+        lines.push(format!("Jira: {k}"));
+    }
+    if let Some(f) = v["from"].as_str().filter(|f| !f.is_empty()) {
+        lines.push(f.to_string());
+    }
+    for (label, key) in [("Detail", "detail"), ("Said", "said"), ("How", "how")] {
+        let block = indented(label, v[key].as_str().unwrap_or(""));
+        if !block.is_empty() {
+            lines.push(String::new());
+            lines.extend(block);
+        }
+    }
+    let mut history: Vec<Value> = v["history"].as_array().cloned().unwrap_or_default();
+    history.reverse();
+    let history = log_lines("History", &history, 5);
+    if !history.is_empty() {
+        lines.push(String::new());
+        lines.extend(history);
+    }
+    lines
 }
 
 fn lesson_ref(v: &str) -> Result<String, String> {
@@ -4765,7 +4958,61 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("Deleted {t} and its log."));
                 Ok(0)
             }
+            TaskCmd::Show { task, log, json } => {
+                let v = c.call("GET", &format!("/tasks/{}", task_ref(&task)?), None)?;
+                if json {
+                    out(&serde_json::to_string_pretty(&v).unwrap_or_default());
+                } else {
+                    task_show_lines(&v, log).iter().for_each(|l| out(l));
+                }
+                Ok(0)
+            }
         },
+        Cmd::Tasks { project, goal, status, json } => {
+            let mut q = list_query(c, project, goal)?;
+            if let Some(s) = status {
+                q.push(format!("status={}", qv(&s)));
+            }
+            let v = c.call("GET", &format!("/tasks?{}", q.join("&")), None)?;
+            if json {
+                out(&serde_json::to_string_pretty(&v).unwrap_or_default());
+                return Ok(0);
+            }
+            let tasks = v["tasks"].as_array().cloned().unwrap_or_default();
+            if tasks.is_empty() {
+                out("No tasks.");
+            }
+            tasks.iter().for_each(|t| out(&task_list_line(t)));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::List { project, goal, kind, state, sort, json } } => {
+            let mut q = list_query(c, project, goal)?;
+            for (k, v) in [("kind", kind), ("state", state), ("sort", sort)] {
+                if let Some(v) = v {
+                    q.push(format!("{k}={}", qv(&v)));
+                }
+            }
+            let v = c.call("GET", &format!("/backlog?{}", q.join("&")), None)?;
+            if json {
+                out(&serde_json::to_string_pretty(&v).unwrap_or_default());
+                return Ok(0);
+            }
+            let issues = v["issues"].as_array().cloned().unwrap_or_default();
+            if issues.is_empty() {
+                out("No backlog issues.");
+            }
+            issues.iter().for_each(|b| out(&issue_list_line(b)));
+            Ok(0)
+        }
+        Cmd::Backlog { action: BacklogCmd::Show { issue, json } } => {
+            let v = c.call("GET", &format!("/backlog/{}", issue_ref(&issue)?), None)?;
+            if json {
+                out(&serde_json::to_string_pretty(&v).unwrap_or_default());
+            } else {
+                issue_show_lines(&v).iter().for_each(|l| out(l));
+            }
+            Ok(0)
+        }
         Cmd::Backlog { action: BacklogCmd::Add { title, kind, detail, goal, project, area } } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let name = c.who();
@@ -6006,6 +6253,57 @@ mod tests {
             panic!("not tb backlog note")
         };
         assert_eq!((issue.as_str(), text.as_str()), ("B2", "seen again on the tablet build"));
+    }
+
+    #[test]
+    fn tb_tasks_and_backlog_list_parse_and_print_one_line_each() {
+        let Cmd::Tasks { project, goal, status, json } = Cli::try_parse_from(["tb", "tasks", "--goal", "G41", "--status", "queued", "--json"]).unwrap().cmd else { panic!("not tb tasks") };
+        assert_eq!((project, goal.as_deref(), status.as_deref(), json), (None, Some("G41"), Some("queued"), true));
+        assert!(Cli::try_parse_from(["tb", "tasks", "--status", "busy"]).is_err(), "an unknown status");
+        let Cmd::Backlog { action: BacklogCmd::List { project, kind, state, sort, .. } } = Cli::try_parse_from(["tb", "backlog", "list", "--project", "all", "--kind", "gap", "--state", "all", "--sort", "old"]).unwrap().cmd else {
+            panic!("not tb backlog list")
+        };
+        assert_eq!((project.as_deref(), kind.as_deref(), state.as_deref(), sort.as_deref()), (Some("all"), Some("gap"), Some("all"), Some("old")));
+        let t = json!({"ref": "T412", "status": "queued", "goal": {"ref": "G41", "name": "Find"}, "title": "Fix the login", "pr": null});
+        assert_eq!(task_list_line(&t), "T412   queued   G41   Fix the login");
+        let t = json!({"ref": "T9", "status": "done", "failed": true, "goal": null, "title": "Ship", "pr": {"num": 435}});
+        assert_eq!(task_list_line(&t), "T9     failed   -     Ship  PR #435");
+        let b = json!({"ref": "B12", "state": "task", "kind": "bug", "goal": null, "title": "Crash on save", "task_ref": "T88"});
+        assert_eq!(issue_list_line(&b), "B12   task    bug     -     Crash on save  → T88");
+    }
+
+    #[test]
+    fn tb_list_defaults_to_the_project_this_terminal_is_in() {
+        let projects = [json!({"name": "web", "path": "/src/web"}), json!({"name": "web-admin", "path": "/src/web/admin/"})];
+        assert_eq!(project_at(&projects, "/src/web/lib").as_deref(), Some("web"));
+        assert_eq!(project_at(&projects, "/src/web/admin/ui").as_deref(), Some("web-admin"), "the deepest project");
+        assert_eq!(project_at(&projects, "/src/webby").as_deref(), Some("webby"), "not a project: the folder's name");
+        let (c, data) = board_down_ctx("tb-list");
+        assert_eq!(list_query(&c, Some("all".into()), Some("41".into())).unwrap(), ["project=all", "goal=G41"]);
+        assert_eq!(list_query(&c, None, Some("G41".into())).unwrap(), ["project=all", "goal=G41"], "a goal says which project");
+        assert_eq!(list_query(&c, Some("my app".into()), Some("none".into())).unwrap(), ["project=my%20app", "goal=none"]);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn tb_task_and_backlog_show_read_the_item() {
+        let Cmd::Task { action: TaskCmd::Show { task, log, json } } = Cli::try_parse_from(["tb", "task", "show", "T383"]).unwrap().cmd else { panic!("not tb task show") };
+        assert_eq!((task.as_str(), log, json), ("T383", 5, false));
+        let Cmd::Backlog { action: BacklogCmd::Show { issue, json } } = Cli::try_parse_from(["tb", "backlog", "show", "B7", "--json"]).unwrap().cmd else { panic!("not tb backlog show") };
+        assert_eq!((issue.as_str(), json), ("B7", true));
+        let log: Vec<Value> = (1..=4).rev().map(|n| json!({"at": "", "who": "T383", "kind": "note", "text": format!("step {n}")})).collect();
+        let v = json!({"ref": "T383", "status": "working", "project": "taskboard", "goal": {"ref": "G41", "name": "Find tasks"},
+                       "title": "tb tasks", "who": "Terminal 3", "detail": "Add readers.\nCLI only.", "summary": null,
+                       "pr": {"num": 435, "state": "OPEN", "url": "https://github.com/o/r/pull/435"}, "log": log});
+        let lines = task_show_lines(&v, 2);
+        assert_eq!(lines[..4], ["T383 · working · taskboard · G41 Find tasks", "tb tasks", "PR: #435 OPEN https://github.com/o/r/pull/435", "Terminal: Terminal 3"]);
+        assert_eq!(lines[4..8], ["", "Detail:", "  Add readers.", "  CLI only."]);
+        assert_eq!(lines[8..], ["", "Log:", "   · T383 · note: step 3", "   · T383 · note: step 4"], "the latest two, oldest first");
+        assert_eq!(task_show_lines(&v, 0).len(), 8, "--log 0 leaves the log out");
+        let b = json!({"ref": "B7", "state": "open", "kind": "gap", "project": "taskboard", "goal": null, "title": "No readers",
+                       "task_ref": null, "jira_key": "", "from": "Found by T12", "detail": "tb can't list tasks.",
+                       "history": [{"at": "", "who": "T12", "kind": "found", "text": "Filed"}]});
+        assert_eq!(issue_show_lines(&b), ["B7 · open · gap · taskboard", "No readers", "Found by T12", "", "Detail:", "  tb can't list tasks.", "", "History:", "   · T12 · found: Filed"]);
     }
 
     #[test]
