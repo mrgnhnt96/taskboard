@@ -76,6 +76,7 @@ pub mod seed;
 pub mod server;
 pub mod setup;
 pub mod shared;
+pub mod spans;
 pub mod stack;
 pub mod startword;
 pub mod statusbar;
@@ -159,6 +160,8 @@ pub fn start_threads(app: &Arc<App>) {
         std::thread::Builder::new().name("feed-listener".into()).spawn(move || feed::listener_loop(a)).ok();
         let a = app.clone();
         std::thread::Builder::new().name("checkin".into()).spawn(move || checkin::run(a)).ok();
+        let a = app.clone();
+        std::thread::Builder::new().name("spans".into()).spawn(move || spans::run(a)).ok();
     } else {
         let a = app.clone();
         std::thread::Builder::new()
