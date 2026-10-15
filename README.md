@@ -122,7 +122,7 @@ scripts/dev-app.sh --seed                                    # install "Taskboar
 A board on any data folder but the default runs without its runner (it never opens or closes terminals,
 moves tickets or sends notifications) unless you pass `--runner`. Screenshots without a screen:
 `cargo build -p taskboard-app --features snapshot`, then run with `TASKBOARD_BACKEND=fake TASKBOARD_SNAPSHOT=out.png`
-(`TASKBOARD_PAGE=backlog|sessions|G1`, `TASKBOARD_OPEN=T3|B1`, `TASKBOARD_THEME=dark`).
+(`TASKBOARD_PAGE=backlog|sessions|G1`, `TASKBOARD_OPEN=T3|B1`, `TASKBOARD_SEARCH=pass`, `TASKBOARD_THEME=dark`).
 
 ## Removing it
 

@@ -11,6 +11,8 @@ use std::cmp::Ordering;
 
 pub enum Modal {
     Alerts,
+    /// The ⌘K palette (`ui::search`).
+    Search,
 }
 
 /// JavaScript's `a.localeCompare(b)` (ICU root collation) for the names the board shows:
@@ -80,6 +82,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     }
     let body = match &m.modal {
         Some(Modal::Alerts) => alerts(m, &t, cx),
+        Some(Modal::Search) => return crate::ui::search::render(m, window, cx),
         None => return div().into_any_element(),
     };
     deferred(
