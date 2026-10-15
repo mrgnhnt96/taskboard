@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, jobs, keep_awake, limits, p, proc};
+use crate::{board, dispatch, jobs, keep_awake, limits, p, proc};
 
 const DOWN_EXIT: i32 = 3;
 const OPEN_EVERY: Duration = Duration::from_secs(30);
@@ -554,6 +554,51 @@ fn read_settings(app: &App) {
     }
 }
 
+/// How often the board checks that Midna (maybe restarted) has its link patterns.
+const LINKS_EVERY: Duration = Duration::from_secs(30);
+/// The name Midna files the board's link patterns under (and shows in its Settings).
+fn links_owner(app: &App) -> &'static str {
+    if app.cfg.page_url.starts_with("taskboard-dev:") { "Taskboard Dev" } else { "Taskboard" }
+}
+
+/// The refs that become links in agent terminals, each opening this build's own page for it.
+pub fn link_patterns(app: &App) -> Vec<String> {
+    [("T", "task"), ("G", "goal"), ("B", "issue")]
+        .iter()
+        .map(|(letter, page)| format!(r"\b({letter}\d+)\b = {} agents", dispatch::page_link(app, &format!("{page}/$1"))))
+        .collect()
+}
+
+/// Registers the board's link patterns with each Midna it meets: once per Midna run, checked every
+/// `LINKS_EVERY`. A Midna too old to know `links.patterns.register` is logged once and left be.
+fn register_links(app: &App) {
+    if app.shared.lock().midna_links.as_ref().is_some_and(|(at, _)| at.elapsed() < LINKS_EVERY) {
+        return;
+    }
+    let last = app.shared.lock().midna_links.as_ref().and_then(|(_, r)| r.clone());
+    let Ok(info) = call_timeout(app, "daemon.info", json!({}), 5.0) else {
+        app.shared.lock().midna_links = Some((Instant::now(), last));
+        return;
+    };
+    let run = format!("{} {}", info["pid"], info["started_at"]);
+    let has = if last.as_deref() == Some(run.as_str()) {
+        true
+    } else {
+        match call_timeout(app, "links.patterns.register", json!({"owner": links_owner(app), "patterns": link_patterns(app)}), 5.0) {
+            Ok(_) => true,
+            Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
+                app.info("midna: it doesn't take link patterns yet (links.patterns.register); T, G and B refs stay plain text there");
+                true
+            }
+            Err(e) => {
+                app.info(format!("midna: couldn't register link patterns: {e}"));
+                false
+            }
+        }
+    };
+    app.shared.lock().midna_links = Some((Instant::now(), if has { Some(run) } else { last }));
+}
+
 /// How far back the first look at Midna's event log reaches (the board keeps its place after that).
 const CLOSED_LOOKBACK_SECS: f64 = 60.0;
 
@@ -611,6 +656,7 @@ pub fn sync_once(app: &App) -> MResult<()> {
     app.shared.lock().midna_usage = usage.and_then(|u| u.get("claude").cloned()).filter(|v| v.is_object());
     keep_awake::sync(app);
     read_settings(app);
+    register_links(app);
     crate::statusbar::offer(app);
     for sid in to_close.into_iter().filter(|_| app.cfg.runner) {
         if let Err(e) = call(app, "session.close", json!({"id": sid})) {
@@ -634,6 +680,28 @@ pub fn sync_loop(app: Arc<App>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_patterns_open_this_builds_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.page_url = "taskboard://".into();
+        let app = App::for_tests(cfg);
+        assert_eq!(links_owner(&app), "Taskboard");
+        assert_eq!(
+            link_patterns(&app),
+            [
+                r"\b(T\d+)\b = taskboard://task/$1 agents",
+                r"\b(G\d+)\b = taskboard://goal/$1 agents",
+                r"\b(B\d+)\b = taskboard://issue/$1 agents",
+            ]
+        );
+        let mut cfg = crate::config::Config::for_tests(dir.path());
+        cfg.page_url = "taskboard-dev://".into();
+        let app = App::for_tests(cfg);
+        assert_eq!(links_owner(&app), "Taskboard Dev");
+        assert_eq!(link_patterns(&app)[2], r"\b(B\d+)\b = taskboard-dev://issue/$1 agents");
+    }
 
     #[test]
     fn tab_titles() {

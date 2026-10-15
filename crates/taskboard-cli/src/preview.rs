@@ -19,10 +19,12 @@ const LINE_MAX: usize = 160;
 pub enum Target {
     Task(i64),
     Goal(i64),
+    Issue(i64),
 }
 
-/// The task or goal a taskboard:// link names: taskboard://task/T6, taskboard://goal/G3,
-/// taskboard://#/?task=T6, taskboard://tasks#/goals/G5 (a bare number works too). Any taskboard
+/// The task, goal or backlog item a taskboard:// link names: taskboard://task/T6, taskboard://goal/G3,
+/// taskboard://issue/B4, taskboard://#/?task=T6, taskboard://tasks#/goals/G5 (a bare number works
+/// too). Any taskboard
 /// scheme: Taskboard Dev's is taskboard-dev://.
 pub fn parse_url(url: &str) -> Option<Target> {
     let (scheme, rest) = url.trim().split_once(':')?;
@@ -31,25 +33,29 @@ pub fn parse_url(url: &str) -> Option<Target> {
     }
     let words: Vec<&str> = rest.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
     words.windows(2).rev().find_map(|w| {
-        let goal = match w[0].to_ascii_lowercase().as_str() {
-            "task" | "tasks" => false,
-            "goal" | "goals" => true,
+        let letter = match w[0].to_ascii_lowercase().as_str() {
+            "task" | "tasks" => 't',
+            "goal" | "goals" => 'g',
+            "issue" | "issues" => 'b',
             _ => return None,
         };
-        let letter = if goal { 'g' } else { 't' };
         let digits = match w[1].strip_prefix(|c: char| c.is_ascii_alphabetic()) {
             Some(d) if w[1].starts_with([letter, letter.to_ascii_uppercase()]) => d,
             Some(_) => return None,
             None => w[1],
         };
         let n = digits.parse::<i64>().ok().filter(|n| *n > 0)?;
-        Some(if goal { Target::Goal(n) } else { Target::Task(n) })
+        Some(match letter {
+            'g' => Target::Goal(n),
+            'b' => Target::Issue(n),
+            _ => Target::Task(n),
+        })
     })
 }
 
 /// `port`: the board to ask when it isn't this machine's usual one (Taskboard Dev's).
 pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
-    let target = parse_url(url).ok_or_else(|| format!("not a task or goal link: {url}"))?;
+    let target = parse_url(url).ok_or_else(|| format!("not a task, goal or backlog link: {url}"))?;
     let mut cfg = client::config();
     if let Some(p) = port {
         cfg.port = p;
@@ -57,6 +63,7 @@ pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
     let path = match target {
         Target::Task(n) => format!("/tasks/T{n}"),
         Target::Goal(n) => format!("/goals/G{n}"),
+        Target::Issue(n) => format!("/backlog/B{n}"),
     };
     let v = client::request(&cfg, "GET", &path, None, BOARD_TIMEOUT).map_err(|e| match e {
         CallError::Refused(m) | CallError::Unreachable(m) | CallError::TimedOut(m) => m,
@@ -64,6 +71,7 @@ pub fn run(url: &str, port: Option<u16>) -> Result<i32, String> {
     let card = match target {
         Target::Task(_) => task_preview(&v, &chrono::Local::now()),
         Target::Goal(_) => goal_preview(&v),
+        Target::Issue(_) => issue_preview(&v),
     };
     println!("{card}");
     Ok(0)
@@ -226,6 +234,44 @@ pub fn goal_preview(g: &Value) -> Value {
     card
 }
 
+fn issue_status(b: &Value) -> Value {
+    match s(b, "state") {
+        "task" => status("Now a task", "ok"),
+        "ticket" => status(b["jira_key"].as_str().unwrap_or("Ticket asked for"), "busy"),
+        "drop" => status("Won’t do", "idle"),
+        "defer" => status("Deferred", "idle"),
+        "closed" => status("Closed", "ok"),
+        _ => status("Open", "warn"),
+    }
+}
+
+pub fn issue_preview(b: &Value) -> Value {
+    let goal = &b["goal"];
+    let subtitle = match goal["ref"].as_str() {
+        Some(g) => format!("{g} · {} · {}", s(goal, "name"), s(b, "project")),
+        None => s(b, "project").to_string(),
+    };
+    let mut fields: Vec<Value> = vec![];
+    if !s(b, "kind_label").is_empty() {
+        fields.push(json!(["Kind", s(b, "kind_label")]));
+    }
+    if let Some(t) = b["task_ref"].as_str() {
+        fields.push(json!(["Task", t]));
+    }
+    if !s(b, "from").is_empty() {
+        fields.push(json!(["From", s(b, "from")]));
+    }
+    let lines: Vec<String> = s(b, "detail").lines().map(str::trim).filter(|l| !l.is_empty()).map(clip).take(MAX_LINES).collect();
+    json!({
+        "title": format!("{} · {}", s(b, "ref"), s(b, "title")),
+        "subtitle": subtitle,
+        "status": issue_status(b),
+        "fields": fields,
+        "lines": lines,
+        "open_label": "Open item",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +287,8 @@ mod tests {
         assert_eq!(parse_url("taskboard://task/12"), Some(Target::Task(12)));
         assert_eq!(parse_url("taskboard://tasks#/?goal=G2&task=T9"), Some(Target::Task(9)));
         assert_eq!(parse_url("taskboard-dev://task/T6"), Some(Target::Task(6)));
+        assert_eq!(parse_url("taskboard://issue/B4"), Some(Target::Issue(4)));
+        assert_eq!(parse_url("taskboard-dev://issue/b4"), Some(Target::Issue(4)));
     }
 
     #[test]
@@ -249,6 +297,7 @@ mod tests {
         assert_eq!(parse_url("taskboard://tasks"), None);
         assert_eq!(parse_url("taskboard://task/G6"), None);
         assert_eq!(parse_url("taskboard://goal/T6"), None);
+        assert_eq!(parse_url("taskboard://issue/T6"), None);
         assert_eq!(parse_url("taskboard://task/T0"), None);
         assert_eq!(parse_url("https://example.com/task/T6"), None);
     }
@@ -399,5 +448,30 @@ mod tests {
         let p = goal_preview(&goal(json!({"done": 0, "total": 0, "tasks": [], "prs_open": []})));
         assert!(p.get("progress").is_none());
         assert_eq!(p["fields"], json!([["Tasks", "0 of 0 done"]]));
+    }
+
+    #[test]
+    fn a_backlog_item_shows_its_kind_task_and_detail() {
+        let b = json!({
+            "ref": "B4", "title": "Login drops the session", "project": "midna", "state": "task", "kind_label": "Bug",
+            "task_ref": "T9", "from": "Found by T3 · api · 2:05 PM", "goal": {"ref": "G2", "name": "Polish"},
+            "detail": "First line\n\nSecond line",
+        });
+        assert_eq!(
+            issue_preview(&b),
+            json!({
+                "title": "B4 · Login drops the session",
+                "subtitle": "G2 · Polish · midna",
+                "status": {"label": "Now a task", "tone": "ok"},
+                "fields": [["Kind", "Bug"], ["Task", "T9"], ["From", "Found by T3 · api · 2:05 PM"]],
+                "lines": ["First line", "Second line"],
+                "open_label": "Open item",
+            })
+        );
+        let open = json!({"ref": "B5", "title": "x", "project": "p", "state": "open", "goal": null, "task_ref": null});
+        let p = issue_preview(&open);
+        assert_eq!(p["status"], json!({"label": "Open", "tone": "warn"}));
+        assert_eq!(p["subtitle"], json!("p"));
+        assert_eq!(p["fields"], json!([]));
     }
 }
