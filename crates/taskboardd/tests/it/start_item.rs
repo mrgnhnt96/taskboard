@@ -67,6 +67,16 @@ fn naming_the_item_starts_its_task() {
 }
 
 #[test]
+fn the_owners_leave_or_a_dictated_item_ref_starts_its_task() {
+    for said in ["Got it. So we can start B{item}", "Let's start B-{item}"] {
+        let b = board();
+        let (item, task) = b.item_task("Header clips on narrow windows");
+        b.said(&said.replace("{item}", &item.to_string()));
+        assert!(b.tb_start(task).is_ok(), "{said}");
+    }
+}
+
+#[test]
 fn the_start_command_with_the_item_starts_its_task() {
     let b = board();
     let (item, task) = b.item_task("Header clips on narrow windows");
