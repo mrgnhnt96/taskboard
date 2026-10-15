@@ -1030,6 +1030,44 @@ fn alert_kind(a: &Value) -> &'static str {
     if a["urgent"] == true { "urgent" } else { "alert" }
 }
 
+/// What the alert says: its title and detail line when it has them, else its text.
+pub fn alert_says(a: &Value) -> String {
+    let (title, detail) = (s(a, "title"), s(a, "detail"));
+    match (title.is_empty(), detail.is_empty()) {
+        (true, _) => s(a, "text").to_string(),
+        (false, true) => title.to_string(),
+        (false, false) => format!("{title}. {detail}"),
+    }
+}
+
+/// The alert's fixes as (label, command), one button each.
+pub fn alert_actions(a: &Value) -> Vec<(String, String)> {
+    arr(a, "actions").iter().filter(|x| !s(x, "label").is_empty()).map(|x| (s(x, "label").to_string(), s(x, "command").to_string())).collect()
+}
+
+fn alert_row_view(a: &Value) -> BannerRow {
+    BannerRow { kind: alert_kind(a), text: alert_says(a), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }
+}
+
+/// An alert's fix button: the board opens a Claude terminal in Midna with the request typed in for
+/// the owner to send. When it can't, the command goes on the clipboard instead.
+pub fn run_alert_action(m: &mut MainWindow, id: &str, n: usize, label: &str, command: &str, cx: &mut Context<MainWindow>) {
+    let (label, command) = (label.to_string(), command.to_string());
+    m.post_or(
+        format!("alerts/{id}/act"),
+        json!({"n": n}),
+        cx,
+        move |m, _, cx| m.toast(format!("{label}: opened Claude in Midna"), false, cx),
+        move |m, e, cx| {
+            if command.is_empty() {
+                return m.toast(e.message, true, cx);
+            }
+            cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
+            m.toast(format!("Copied {command}"), false, cx);
+        },
+    );
+}
+
 /// `renderBanner`: the "isn't answering" line, a line for each urgent alert, then either one line per other
 /// alert or, with more than one, a single "N tasks need your attention." line with Show all.
 pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
@@ -1039,7 +1077,7 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
     }
     let (urgent, alerts): (Vec<Value>, Vec<Value>) = alerts.iter().cloned().partition(|a| a["urgent"] == true);
     for a in &urgent {
-        out.push(BannerRow { kind: "urgent", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) });
+        out.push(BannerRow { kind: "urgent", ..alert_row_view(a) });
     }
     if alerts.len() > 1 {
         out.push(BannerRow {
@@ -1050,7 +1088,7 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
         });
     } else {
         for a in &alerts {
-            out.push(BannerRow { kind: "alert", text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) });
+            out.push(BannerRow { kind: "alert", ..alert_row_view(a) });
         }
     }
     out
@@ -1059,7 +1097,7 @@ pub fn banner_view(down: Option<&str>, alerts: &[Value]) -> Vec<BannerRow> {
 /// `alertsDialogHtml`: (title, rows); its foot is "Dismiss all" while any alert can be dismissed. (For the dialog in modals.rs.)
 pub fn alerts_dialog_view(alerts: &[Value]) -> (String, Vec<BannerRow>) {
     let title = format!("{} your attention", fmt::plural(alerts.len() as i64, "task needs", "tasks need"));
-    let rows = alerts.iter().map(|a| BannerRow { kind: alert_kind(a), text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) }).collect();
+    let rows = alerts.iter().map(alert_row_view).collect();
     (title, rows)
 }
 
@@ -1239,8 +1277,15 @@ fn alert_text(r: &BannerRow, ago: Hsla) -> Div {
 /// One alert: its text and age, "Open T12" and Dismiss. Also used by the alerts dialog.
 pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
     let id = s(a, "id").to_string();
-    let r = BannerRow { kind: alert_kind(a), text: s(a, "text").to_string(), ago: Some(fmt::ago(s(a, "at"))), buttons: alert_buttons(a) };
+    let r = alert_row_view(a);
     let (task, goal) = (fmt::opt_s(a, "task").map(str::to_string), fmt::opt_s(a, "goal").map(str::to_string));
+    let fixes = alert_actions(a).into_iter().enumerate().map(|(n, (label, command))| {
+        let aid = id.clone();
+        banner_btn(t, SharedString::from(format!("alert-act-{id}-{n}")), label.clone(), true)
+            .when(a["urgent"] == true, |d| d.text_color(t.on_accent))
+            .on_click(cx.listener(move |m, _, _, cx| run_alert_action(m, &aid, n, &label, &command, cx)))
+    });
+    let fixes: Vec<_> = fixes.collect();
     // An urgent alert is solid red; the others are red on the soft red.
     let urgent = r.kind == "urgent";
     let row = if urgent { bar(t.down, t.on_accent, t.down).font_weight(FontWeight::SEMIBOLD) } else { bar(t.down_soft, t.down, t.down_line) };
@@ -1252,6 +1297,7 @@ pub fn alert_row(t: &Theme, a: &Value, cx: &mut Context<MainWindow>) -> Div {
                 open_alert(m, task.as_deref(), goal.as_deref(), window, cx);
             }))
         }))
+        .children(fixes)
         .child({
             let text = r.text.clone();
             banner_btn(t, SharedString::from(format!("alert-copy-{id}")), "Copy", false)
@@ -1486,6 +1532,19 @@ mod tests {
         assert!(rows[0].buttons.iter().any(|(a, _)| *a == "alert-open"));
         assert!(super::alert_stays(&urgent));
         assert!(!super::alert_stays(&json!({"id": "a2"})));
+    }
+
+    #[::core::prelude::v1::test]
+    fn a_structured_alert_says_its_title_and_detail_and_offers_its_fixes() {
+        let a = json!({"id": "a1", "text": "work-deck isn't set up to finish its work: a long sentence.", "at": "2026-10-08T10:00:00Z",
+            "title": "work-deck PRs can't merge", "detail": "T117 is waiting for 2 approvals, and work-deck has no reviewers",
+            "actions": [{"label": "Turn off review for work-deck", "prompt": "Turn off…", "command": "tb project set work-deck --review off"}, {"label": "", "command": "x"}]});
+        let rows = banner_view(None, &[a.clone()]);
+        assert_eq!(rows[0].text, "work-deck PRs can't merge. T117 is waiting for 2 approvals, and work-deck has no reviewers");
+        assert_eq!(super::alert_actions(&a), vec![("Turn off review for work-deck".to_string(), "tb project set work-deck --review off".to_string())]);
+        let plain = json!({"id": "a2", "text": "Alert a2", "at": "2026-10-08T10:00:00Z"});
+        assert_eq!(banner_view(None, &[plain.clone()])[0].text, "Alert a2");
+        assert!(super::alert_actions(&plain).is_empty());
     }
 
     #[::core::prelude::v1::test]

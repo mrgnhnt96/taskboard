@@ -6,6 +6,7 @@
 use serde_json::{json, Value};
 
 use crate::app::App;
+use crate::dispatch::AlertAction;
 use crate::p;
 use crate::util::*;
 
@@ -17,29 +18,46 @@ pub struct Gap {
     pub key: &'static str,
     pub text: String,
     pub fix: String,
+    /// The fixes its alert offers as buttons.
+    pub actions: Vec<AlertAction>,
 }
 
 impl Gap {
     pub fn json(&self) -> Value {
-        json!({"key": self.key, "text": self.text, "fix": self.fix})
+        json!({"key": self.key, "text": self.text, "fix": self.fix, "actions": self.actions.iter().map(AlertAction::json).collect::<Vec<_>>()})
     }
+}
+
+fn action(label: String, prompt: String, command: String) -> AlertAction {
+    AlertAction { label, prompt, command }
 }
 
 pub fn gaps(app: &App, project: &str) -> Result<Vec<Gap>> {
     let mut out = vec![];
     let ships = crate::projects::ships_prs(app, project)?;
     if ships && review_unstaffed(app, project)? {
+        let off = format!("tb project set {project} --review off");
+        let add = format!("tb reviewers add <name> --user <host id> --project {project}");
         out.push(Gap {
             key: "no_reviewers",
             text: format!("its PRs need {} to merge, but it has no reviewers the board can ask", approvals_words(app, project)),
-            fix: format!("tb reviewers add <name> --user <host id> --project {project}, or tb project set {project} --review off"),
+            fix: format!("{add}, or {off}"),
+            actions: vec![
+                action(format!("Turn off review for {project}"), format!("Turn off the Review step for {project}'s PRs: {off}"), off),
+                action("Add a reviewer".into(), format!("Add a reviewer the board can ask for {project}'s PRs ({add}). Ask me who."), add),
+            ],
         });
     }
     if crate::projects::pr_flow(app, project)? == "on" && crate::projects::has_remote(app, project)? == Some(false) {
+        let auto = format!("tb project set {project} --pr-flow auto");
         out.push(Gap {
             key: "no_remote",
             text: "its PR flow is on, but its folder has no git remote to open PRs on".into(),
-            fix: format!("add a git remote, or tb project set {project} --pr-flow auto"),
+            fix: format!("add a git remote, or {auto}"),
+            actions: vec![
+                action("Set PR flow to auto".into(), format!("Set {project}'s PR flow to auto, so its tasks finish without a PR while it has no remote: {auto}"), auto),
+                action("Add a git remote".into(), format!("Add a git remote to {project}'s folder so the board can open its PRs. Ask me for the URL."), "git remote add origin <url>".into()),
+            ],
         });
     }
     Ok(out)
@@ -112,7 +130,7 @@ pub fn sweep(app: &App) -> Result<()> {
             continue;
         }
         crate::dispatch::clear_alert_key(app, &key)?;
-        crate::dispatch::add_alert_keyed(app, &alert_text(project, &gaps, &stuck), None, None, &key)?;
+        crate::dispatch::add_alert_keyed_with(app, &alert_text(project, &gaps, &stuck), None, None, &key, card_fields(app, project, &gaps, &stuck))?;
         alerted.insert(project.to_string(), said);
     }
     if alerted != before {
@@ -130,4 +148,29 @@ fn alert_text(project: &str, gaps: &[Gap], stuck: &[i64]) -> String {
         many => format!(" {} have PRs stuck at review.", many.iter().map(|t| rf("task", *t)).collect::<Vec<_>>().join(", ")),
     };
     format!("{project} isn't set up to finish its work: {}.{held} To fix it: {}.", texts.join("; "), fixes.join("; "))
+}
+
+/// The app's card for the alert: a short title, one line on what's stuck and why, and each gap's fixes.
+fn card_fields(app: &App, project: &str, gaps: &[Gap], stuck: &[i64]) -> Value {
+    let has = |k: &str| gaps.iter().any(|g| g.key == k);
+    let title = match (has("no_remote"), has("no_reviewers")) {
+        (true, true) => format!("{project} can't open or merge PRs"),
+        (true, false) => format!("{project} can't open PRs"),
+        _ => format!("{project} PRs can't merge"),
+    };
+    let mut lines = vec![];
+    if has("no_reviewers") {
+        let refs: Vec<String> = stuck.iter().map(|t| rf("task", *t)).collect();
+        let who = match refs.len() {
+            0 => "Its PRs need".to_string(),
+            1 => format!("{} is waiting for", refs[0]),
+            n => format!("{} and {} are waiting for", refs[..n - 1].join(", "), refs[n - 1]),
+        };
+        lines.push(format!("{who} {}, and {project} has no reviewers", approvals_words(app, project)));
+    }
+    if has("no_remote") {
+        lines.push(format!("{project}'s PR flow is on, but its folder has no git remote"));
+    }
+    let actions: Vec<Value> = gaps.iter().flat_map(|g| g.actions.iter().map(AlertAction::json)).collect();
+    json!({"title": title, "detail": lines.join("; "), "actions": actions, "project": project})
 }

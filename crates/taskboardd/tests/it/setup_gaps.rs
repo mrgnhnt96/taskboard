@@ -93,6 +93,18 @@ fn a_green_pr_nobody_can_review_reads_stuck_and_alerts_the_owner_once() {
     let alerts = b.setup_alerts();
     assert_eq!(alerts.len(), 1, "{alerts:?}");
     assert!(alerts[0].contains(&format!("T{id}'s PR is stuck")) && alerts[0].contains("no reviewers"), "{}", alerts[0]);
+    // The app's card: a short title, one line, and a button per fix.
+    let a = dispatch::alerts(&b.app).into_iter().find(|a| a["key"] == "setup:webapp").unwrap();
+    assert_eq!(a["title"], "webapp PRs can't merge", "{a}");
+    let detail = a["detail"].as_str().unwrap();
+    assert!(detail.starts_with(&format!("T{id} is waiting for ")) && detail.ends_with(", and webapp has no reviewers"), "{detail}");
+    let labels: Vec<&str> = a["actions"].as_array().unwrap().iter().map(|x| x["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, vec!["Turn off review for webapp", "Add a reviewer"]);
+    assert_eq!(a["actions"][0]["command"], "tb project set webapp --review off");
+    // With Midna away the board can't open a terminal; the app copies the command instead.
+    let id_s = a["id"].as_str().unwrap();
+    assert!(api::dispatch(&b.app, "POST", &format!("/alerts/{id_s}/act"), &Query::new(), &json!({"n": 0})).is_err());
+    assert!(api::dispatch(&b.app, "POST", &format!("/alerts/{id_s}/act"), &Query::new(), &json!({"n": 5})).is_err(), "no such fix");
 
     let alert_id = dispatch::alerts(&b.app).iter().find(|a| a["key"] == "setup:webapp").unwrap()["id"].as_str().unwrap().to_string();
     dispatch::clear_alerts(&b.app, None, Some(&alert_id)).unwrap();
@@ -103,6 +115,55 @@ fn a_green_pr_nobody_can_review_reads_stuck_and_alerts_the_owner_once() {
     b.sweep();
     assert!(b.setup_alerts().is_empty());
     assert_ne!(b.stage(id)["label"], "Stuck: no reviewers", "fixed: it moves on");
+}
+
+/// A `midna` that logs each call's method and params and opens terminal s9.
+fn fake_midna(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let exe = dir.join("midna");
+    std::fs::write(&exe, format!("#!/bin/sh\necho \"$2 $3\" >> '{}'\necho '{{\"id\": \"s9\"}}'\n", dir.join("calls.log").display())).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+#[test]
+fn a_fix_button_opens_claude_in_the_project_with_the_request_typed_in_not_sent() {
+    let b = board_with(|c| {
+        c.pr.owner_review = Some(false);
+        c.midna = fake_midna(&c.data.clone());
+    });
+    b.green_pr();
+    b.sweep();
+    let a = dispatch::alerts(&b.app).into_iter().find(|a| a["key"] == "setup:webapp").unwrap();
+    let id_s = a["id"].as_str().unwrap().to_string();
+    let _ = std::fs::remove_file(b.dir.path().join("calls.log"));
+    b.app.shared.lock().midna_seen_at = Some(taskboardd::util::now_iso());
+
+    let r = b.call("POST", &format!("/alerts/{id_s}/act"), json!({"n": 0}));
+    let jid = r["job"].as_str().unwrap().trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<i64>().unwrap();
+    let j = b.app.db.q1("SELECT * FROM jobs WHERE id = ?", taskboardd::p![jid]).unwrap().unwrap();
+    midna::run_job(&b.app, &j);
+
+    let log = std::fs::read_to_string(b.dir.path().join("calls.log")).unwrap();
+    let call = |m: &str| -> Value {
+        let line = log.lines().find_map(|l| l.strip_prefix(&format!("{m} "))).unwrap_or_else(|| panic!("no {m} in {log}"));
+        serde_json::from_str(line).unwrap()
+    };
+    let open = call("session.open");
+    assert_eq!(open["cwd"], b.dir.path().join("webapp").to_string_lossy().as_ref(), "{open}");
+    assert!(open.get("prompt").is_none(), "nothing is sent for the owner: {open}");
+    let typed = call("queue.add");
+    assert_eq!(typed["session"], "s9");
+    assert_eq!(typed["enter"], false, "typed in, not sent");
+    assert_eq!(typed["text"], a["actions"][0]["prompt"]);
+
+    // A project the board has no folder for: refused, so the app copies the command.
+    let fix = json!({"title": "nowhere can't open PRs", "project": "nowhere", "actions": [a["actions"][0].clone()]});
+    b.app.db.tx(|| dispatch::add_alert_keyed_with(&b.app, "nowhere can't open PRs", None, None, "setup:nowhere", fix.clone())).unwrap();
+    let other = dispatch::alerts(&b.app).into_iter().find(|a| a["key"] == "setup:nowhere").unwrap();
+    let path = format!("/alerts/{}/act", other["id"].as_str().unwrap());
+    let e = api::dispatch(&b.app, "POST", &path, &Query::new(), &json!({"n": 0})).unwrap_err();
+    assert_eq!(e.status, 409, "{}", e.message);
 }
 
 #[test]
