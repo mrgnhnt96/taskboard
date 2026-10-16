@@ -377,3 +377,31 @@ fn whoami_carries_the_tasks_detail() {
     assert_eq!(w["task"]["ref"], t1);
     assert_eq!(w["task"]["detail"], "Asked for.", "tb peek hands a reviewer the ask, not just the title");
 }
+
+#[test]
+fn a_failed_task_handed_in_later_is_submitted_or_done_and_its_terminal_stays_put() {
+    let b = new_board();
+    let t1 = b.on_task("s1", "Fix the header");
+    b.report("tb.fail", "s1", json!({"reason": "Stuck."}));
+    assert_eq!(b.task(&t1)["failed"], true);
+    let t2 = b.on_task("s1", "Make the footer sticky");
+
+    let out = b.report("tb.done", "s1", json!({"task": t1, "summary": "It worked after all.", "pr": "https://github.com/acme/webapp/pull/7"}));
+    assert_eq!(out["task"], t1);
+    let card = b.task(&t1);
+    assert_eq!(card["status"], "done");
+    assert_eq!(card["failed"], false);
+    assert_eq!(card["pr"]["num"], 7);
+    assert_eq!(b.on("s1").as_deref(), Some(t2.as_str()), "the terminal stays on the task it's on now");
+
+    let t3 = b.on_task("s2", "Tidy the nav");
+    b.report("tb.fail", "s2", json!({"reason": "Stuck."}));
+    b.report("tb.done", "s2", json!({"task": t3, "summary": "Not needed.", "no_pr": "Already fixed"}));
+    let card = b.task(&t3);
+    assert_eq!(card["status"], "done");
+    assert_eq!(card["failed"], false);
+
+    // Handed in, it isn't handed in twice.
+    b.report("tb.done", "s2", json!({"task": t3, "summary": "Again."}));
+    assert_eq!(b.task(&t3)["summary"], "Not needed.");
+}

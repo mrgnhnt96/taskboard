@@ -444,7 +444,7 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     if text.trim().is_empty() {
         return Ok(());
     }
-    let Some(t) = t.filter(|t| t.s("status") != Some("done")) else { return Ok(()) };
+    let Some(t) = t.filter(|t| !board::handed_in(t)) else { return Ok(()) };
     if has(t.s("pr_url")) {
         body["pr"] = json!(t.st("pr_url"));
         return Ok(());
