@@ -368,6 +368,16 @@ impl MainWindow {
         }
     }
 
+    /// A task's own "Back to T1": ⌘← when that's the place before this one. False when it isn't.
+    pub fn back_to_task(&mut self, r: &str, cx: &mut Context<Self>) -> bool {
+        let to = Nav { page: self.page.clone(), task: Some(r.to_string()) };
+        if self.back.last() != Some(&to) {
+            return false;
+        }
+        self.go_back(cx);
+        true
+    }
+
     /// The page on screen, and the task over it.
     fn here(&self) -> Nav {
         let task = match &self.panel {

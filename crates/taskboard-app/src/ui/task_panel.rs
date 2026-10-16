@@ -235,7 +235,9 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
                 target
             });
             if let Some(x) = target {
-                m.open_task(x, cx);
+                if !m.back_to_task(&x, cx) {
+                    m.open_task(x, cx);
+                }
             }
         }
         "open-task" => open_from_panel(m, &id, cx),
