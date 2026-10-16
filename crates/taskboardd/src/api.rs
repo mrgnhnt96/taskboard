@@ -135,6 +135,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["projects", "agents-merge"]) => set_agents_merge(app, body),
         ("GET", ["projects", "owner-review"]) => Ok(projects::describe_owner_review(app)),
         ("POST", ["projects", "owner-review"]) => set_owner_review(app, body),
+        ("GET", ["projects", "lens"]) => Ok(crate::lens::describe_board(app)),
+        ("POST", ["projects", "lens"]) => set_lens(app, body),
         ("POST", ["projects", name]) => patch_project(app, name, body),
         ("GET", ["sessions"]) => Ok(json!({"sessions": ops::session_list(app, q(query, "project", "all"))?})),
         ("GET", ["sessions", "closed"]) => {
@@ -702,15 +704,28 @@ fn set_owner_review(app: &App, body: &Value) -> Result<Value> {
     Ok(projects::describe_owner_review(app))
 }
 
+/// `tb project lens on|off|default`: whether `tb submit` needs a lens review on projects that don't say.
+fn set_lens(app: &App, body: &Value) -> Result<Value> {
+    let on = match body.get("lens") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) if s == "on" => Some(true),
+        Some(Value::String(s)) if s == "off" => Some(false),
+        Some(Value::Null) => None,
+        _ => return err(400, "lens is true (on), false (off) or null (config.toml's [lens] on)."),
+    };
+    app.db.tx(|| crate::lens::set_board(app, on))?;
+    Ok(crate::lens::describe_board(app))
+}
+
 fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
     let list = projects::list_projects(app)?;
     let Some(p) = list.iter().find(|p| p["name"] == name) else { return err(404, format!("There's no project called {name}.")) };
     let rules = projects::PR_RULE_KEYS.iter().any(|k| body.get(*k).is_some());
     let flow = body.get("pr_flow").filter(|v| !v.is_null()).map(|_| body_str(body, "pr_flow"));
-    if flow.is_none() && !rules && body.get("max_terminals").is_none() && body.get("waits_on").is_none() && body.get("releases").is_none() && body.get("release_tags").is_none() && body.get("release_script").is_none() {
+    if flow.is_none() && !rules && body.get("max_terminals").is_none() && body.get("waits_on").is_none() && body.get("releases").is_none() && body.get("release_tags").is_none() && body.get("release_script").is_none() && body.get("lens").is_none() {
         return err(
             400,
-            format!("Say what to change: pr_flow, max_terminals, waits_on, releases, release_tags, release_script, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")),
+            format!("Say what to change: pr_flow, max_terminals, waits_on, releases, release_tags, release_script, lens, or the PR rules {}.", projects::PR_RULE_KEYS.join(", ")),
         );
     }
     if flow.as_ref().is_some_and(|f| !projects::PR_FLOWS.contains(&f.as_str())) {
@@ -725,6 +740,7 @@ fn patch_project(app: &App, name: &str, body: &Value) -> Result<Value> {
         crate::releases::set_setting(app, name, body)?;
         crate::release_tags::set_setting(app, name, body)?;
         crate::releases::set_script(app, name, body)?;
+        crate::lens::set_project(app, name, body)?;
         projects::set_pr_rules(app, name, body).map(|_| ())
     })?;
     projects::describe(app, p)

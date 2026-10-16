@@ -433,6 +433,11 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("release_tags".into(), json!(crate::release_tags::pattern(app, name)?));
     o.insert("release_script".into(), json!(crate::releases::script(app, name)?));
     o.insert("waits_on".into(), json!(waits_on(app, name)));
+    // lens's review at `tb submit`, only where lens is installed.
+    if crate::lens::bin(app).is_some() {
+        o.insert("lens".into(), json!(crate::lens::on(app, Some(name))));
+        o.insert("lens_set".into(), json!(crate::lens::project_set(app, name)?));
+    }
     o.insert("setup_gaps".into(), crate::setup::gaps_json(app, name)?);
     // Its areas from `.taskboard.toml` (`areas.rs`), and what in that file was left out.
     let areas = match p["path"].as_str().filter(|p| !p.is_empty()) {
