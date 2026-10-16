@@ -5502,7 +5502,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Alert { action: AlertCmd::Raise { text, urgent, key, task, goal } } => {
             let task = task.map(|t| task_ref(&t)).transpose()?;
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
-            let v = c.call("POST", "/alerts", Some(json!({"text": text, "urgent": urgent, "key": key, "task": task, "goal": goal})))?;
+            let v = c.call("POST", "/alerts", Some(json!({"text": text, "urgent": urgent, "key": key, "task": task, "goal": goal, "session": c.session})))?;
             let a = &v["alert"];
             out(&format!(
                 "Raised {}alert {}{}.",
