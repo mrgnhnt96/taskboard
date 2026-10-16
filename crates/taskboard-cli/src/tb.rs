@@ -80,6 +80,14 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Take back a question that got its answer another way, so the task stops waiting on the owner
+    #[command(alias = "unask")]
+    Withdraw {
+        /// How it got answered
+        why: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// Hand the task in: with its PR it waits in review until the PR merges; with --no-pr it's finished
     #[command(alias = "done")]
     Submit {
@@ -4544,6 +4552,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             res
         }
+        Cmd::Withdraw { why, t } => c.run_report("tb.withdraw", json!({"why": why}), t.task, true, |v| {
+            format!("Withdrew the question on {}; it's no longer waiting on {}.", v["task"].as_str().unwrap_or("the task"), c.cfg.owner)
+        }),
         Cmd::Submit { summary, pr, pr_body, pr_title, no_pr, no_evidence, merged_note, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
             let Some(file) = pr_body else {

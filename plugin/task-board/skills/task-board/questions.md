@@ -11,3 +11,5 @@ Ask the owner only about what the work should do. Make routine calls yourself, n
 - **Plans that disagree** (two goals naming something differently, an API one expects and the other shapes another way): pick the option that keeps both goals working, note it on both goals (`tb note --goal --kind decision`), and carry on.
 
 Still the owner's call? `tb question "<the question>"`, then stop. When it has a few likely answers, give each as `--option "<label>: <what it means>"` (up to 8), so the owner answers with one click; keep labels short. The board may check it against the owner's rules, the task and the goal first. If it prints an answer, the question never reached the owner: follow the answer and carry on. If the answer really doesn't fit, ask again and say why.
+
+Got the answer some other way after asking (the owner said it in the terminal, or you found it)? `tb withdraw "<how it got answered>"` takes the question back, so the task stops waiting on the owner. Carry on with the work.

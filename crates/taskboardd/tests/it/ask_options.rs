@@ -103,3 +103,24 @@ fn an_idle_prompt_says_what_the_last_reply_ended_on() {
     let c = b.card();
     assert_eq!((c["status"].as_str(), c["question"].as_str()), (Some("needs"), Some("Should I also drop the old topic?")));
 }
+
+#[test]
+fn a_question_answered_another_way_is_withdrawn() {
+    let b = new_board();
+    let none = reports::handle(&b.app, json!({"event": "tb.withdraw", "session": "s1", "why": "Found it"}), false).unwrap_err();
+    assert_eq!(none.status, 409, "nothing to withdraw before a question");
+
+    b.report("tb.question", json!({"text": "10 or 30 retries?", "options": ["10", "30"]}));
+    assert_eq!(b.card()["status"], "needs");
+    let empty = reports::handle(&b.app, json!({"event": "tb.withdraw", "session": "s1", "why": " "}), false).unwrap_err();
+    assert_eq!(empty.status, 400, "a withdrawal says how it got answered");
+
+    let v = b.report("tb.withdraw", json!({"why": "The config already says 10"}));
+    assert_eq!(v["task"], "T1");
+    let c = b.card();
+    assert_eq!((c["status"].as_str(), c["question"].as_str(), c["ask"].as_object()), (Some("working"), None, None));
+    let t = board::get_task(&b.app, 1).unwrap();
+    assert_eq!(t.s("needs_reason"), None);
+    let logged = b.app.db.q1("SELECT text FROM events WHERE task_id = 1 ORDER BY id DESC LIMIT 1", taskboardd::p![]).unwrap().unwrap().st("text");
+    assert_eq!(logged, "Withdrew the question: The config already says 10");
+}
