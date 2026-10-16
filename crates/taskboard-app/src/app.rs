@@ -450,12 +450,17 @@ impl MainWindow {
     }
 
     fn show_task(&mut self, r: String, cx: &mut Context<Self>) {
-        if !matches!(&self.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
-            self.data.task = None;
-            self.data.errs.task = None;
-            self.task_panel = Default::default();
-        }
-        self.panel = Some(Panel::Task { r, tab: TaskTab::Overview });
+        // The same task stays as it was (its tab too) beside a new page.
+        let tab = match &self.panel {
+            Some(Panel::Task { r: cur, tab }) if *cur == r => *tab,
+            _ => {
+                self.data.task = None;
+                self.data.errs.task = None;
+                self.task_panel = Default::default();
+                TaskTab::Overview
+            }
+        };
+        self.panel = Some(Panel::Task { r, tab });
         self.refresh(cx);
     }
 
@@ -1790,8 +1795,14 @@ mod tests {
             assert!(m.task_panel_open());
             m.go(Page::Board, cx);
             assert!(m.task_panel_open() && m.page == Page::Board, "another page keeps the panel beside it");
+            if let Some(Panel::Task { tab, .. }) = m.panel.as_mut() {
+                *tab = TaskTab::Log;
+            }
             m.go(Page::Goal("G1".into()), cx);
-            assert!(m.task_panel_open() && m.page == Page::Goal("G1".into()));
+            assert!(matches!(m.panel, Some(Panel::Task { tab: TaskTab::Log, .. })) && m.page == Page::Goal("G1".into()), "on the tab it was on");
+            m.go_back(cx);
+            assert!(matches!(m.panel, Some(Panel::Task { tab: TaskTab::Log, .. })), "⌘← keeps the tab too");
+            m.go_forward(cx);
             m.escape(window, cx);
             assert!(m.panel.is_none() && m.page == Page::Goal("G1".into()), "Esc closes it and keeps the page");
         })
