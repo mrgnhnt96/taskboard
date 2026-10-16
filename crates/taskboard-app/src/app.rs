@@ -38,6 +38,13 @@ pub enum Page {
     Releases,
 }
 
+/// A place in the ⌘← / ⌘→ history: a page, and the task open over it.
+#[derive(Clone, Debug, PartialEq)]
+struct Nav {
+    page: Page,
+    task: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TaskTab {
     #[default]
@@ -169,10 +176,10 @@ pub struct MainWindow {
     pub data: Data,
     pub filters: Filters,
     pub page: Page,
-    /// Pages left behind, newest last; ⌘← walks back through them.
-    back: Vec<Page>,
-    /// Pages ⌘← stepped away from, newest last; ⌘→ returns to them and a fresh visit clears them.
-    forward: Vec<Page>,
+    /// Places left behind, newest last; ⌘← walks back through them.
+    back: Vec<Nav>,
+    /// Places ⌘← stepped away from, newest last; ⌘→ returns to them and a fresh visit clears them.
+    forward: Vec<Nav>,
     pub panel: Option<Panel>,
     pub modal: Option<ui::modals::Modal>,
     /// A popover menu, by key, and where it opens.
@@ -330,33 +337,65 @@ impl MainWindow {
         self.goals_loaded
     }
 
+    /// A task is a page of its own: going anywhere leaves it.
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
-        // A task is a page of its own: going anywhere leaves it.
-        if self.task_page_open() {
+        let to = Nav { page, task: None };
+        if self.here() != to {
+            self.remember();
+            self.show(to, cx);
+        }
+    }
+
+    /// ⌘←: the place before this one.
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        let here = self.here();
+        while let Some(nav) = self.back.pop() {
+            if nav != here {
+                self.forward.push(here);
+                return self.show(nav, cx);
+            }
+        }
+    }
+
+    /// ⌘→: the place ⌘← left.
+    pub fn go_forward(&mut self, cx: &mut Context<Self>) {
+        let here = self.here();
+        while let Some(nav) = self.forward.pop() {
+            if nav != here {
+                self.back.push(here);
+                return self.show(nav, cx);
+            }
+        }
+    }
+
+    /// The page on screen, and the task over it.
+    fn here(&self) -> Nav {
+        let task = match &self.panel {
+            Some(Panel::Task { r, .. }) => Some(r.clone()),
+            _ => None,
+        };
+        Nav { page: self.page.clone(), task }
+    }
+
+    /// A fresh visit: keep this place for ⌘← and drop the forward ones.
+    fn remember(&mut self) {
+        let here = self.here();
+        if self.back.last() != Some(&here) {
+            self.back.push(here);
+        }
+        self.forward.clear();
+    }
+
+    /// Go to a place without touching the history.
+    fn show(&mut self, nav: Nav, cx: &mut Context<Self>) {
+        if nav.task.is_none() && self.task_page_open() {
             self.panel = None;
             self.data.task = None;
             cx.notify();
         }
-        if self.page != page {
-            self.back.push(self.page.clone());
-            self.forward.clear();
-            self.visit(page, cx);
-        }
-    }
-
-    /// ⌘←: the page before this one.
-    pub fn go_back(&mut self, cx: &mut Context<Self>) {
-        if let Some(page) = self.back.pop() {
-            self.forward.push(self.page.clone());
-            self.visit(page, cx);
-        }
-    }
-
-    /// ⌘→: the page ⌘← left.
-    pub fn go_forward(&mut self, cx: &mut Context<Self>) {
-        if let Some(page) = self.forward.pop() {
-            self.back.push(self.page.clone());
-            self.visit(page, cx);
+        self.visit(nav.page, cx);
+        if let Some(r) = nav.task {
+            self.show_task(r, cx);
         }
     }
 
@@ -394,6 +433,13 @@ impl MainWindow {
 
     pub fn open_task(&mut self, r: impl Into<String>, cx: &mut Context<Self>) {
         let r = r.into();
+        if self.here().task.as_ref() != Some(&r) {
+            self.remember();
+        }
+        self.show_task(r, cx);
+    }
+
+    fn show_task(&mut self, r: String, cx: &mut Context<Self>) {
         if !matches!(&self.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
             self.data.task = None;
             self.data.errs.task = None;
@@ -450,6 +496,10 @@ impl MainWindow {
     }
 
     pub fn close_panel(&mut self, cx: &mut Context<Self>) {
+        // Closing a task is a step in the history: ⌘← opens it again.
+        if self.task_page_open() {
+            self.remember();
+        }
         self.panel = None;
         self.data.task = None;
         self.data.issue = None;
@@ -1733,6 +1783,38 @@ mod tests {
             m.open_task("T1", cx);
             m.go(Page::Board, cx);
             assert!(m.panel.is_none() && m.page == Page::Board);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn cmd_left_leaves_a_task_for_the_page_it_was_opened_from(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            let task = |m: &MainWindow| match &m.panel {
+                Some(Panel::Task { r, .. }) => Some(r.clone()),
+                _ => None,
+            };
+            m.go(Page::Goals, cx);
+            m.go(Page::Goal("G1".into()), cx);
+            m.open_task("T1", cx);
+            m.open_task("T2", cx);
+            m.go_back(cx);
+            assert_eq!((m.page.clone(), task(m)), (Page::Goal("G1".into()), Some("T1".into())), "back to the task before");
+            m.go_back(cx);
+            assert_eq!((m.page.clone(), task(m)), (Page::Goal("G1".into()), None), "back to the goal, not the Goals page under a task");
+            m.go_back(cx);
+            assert_eq!((m.page.clone(), task(m)), (Page::Goals, None));
+            m.go_forward(cx);
+            m.go_forward(cx);
+            assert_eq!((m.page.clone(), task(m)), (Page::Goal("G1".into()), Some("T1".into())), "forward reopens the task");
+            m.close_panel(cx);
+            assert_eq!(task(m), None);
+            m.go_back(cx);
+            assert_eq!((m.page.clone(), task(m)), (Page::Goal("G1".into()), Some("T1".into())), "a closed task is a step back");
+            m.go(Page::Board, cx);
+            m.go_back(cx);
+            assert_eq!((m.page.clone(), task(m)), (Page::Goal("G1".into()), Some("T1".into())), "leaving a task by the sidebar comes back to it");
         })
         .unwrap();
     }

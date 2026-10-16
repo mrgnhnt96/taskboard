@@ -425,11 +425,9 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
     }
     match g {
         Go::Goal(r) => {
-            m.close_panel(cx);
             m.go(Page::Goal(r.clone()), cx);
         }
         Go::GoalBacklog(r) => {
-            m.close_panel(cx);
             crate::ui::goal::open(m, &r, true, cx);
         }
         Go::Session(id) => {
@@ -438,7 +436,6 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
                 Some(Panel::Task { r, .. }) => r.clone(),
                 _ => String::new(),
             };
-            m.close_panel(cx);
             crate::ui::sessions::open_from_task(m, id, &tref, cx);
         }
         Go::Issue(r) => {
