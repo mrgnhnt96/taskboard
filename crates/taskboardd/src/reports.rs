@@ -1642,6 +1642,35 @@ fn on_question(r: &mut Report) -> Result<Value> {
     Ok(with(ok(Some(&t), None), rewrite(&screened)))
 }
 
+/// `tb withdraw`: the agent takes back a question that got its answer another way (the owner said it in the
+/// terminal, or the agent found it), so the task stops waiting on the owner.
+fn on_withdraw(r: &mut Report) -> Result<Value> {
+    let app = r.app;
+    r.touch_session(true)?;
+    let why = one_line(&r.b("why"), 500);
+    if why.is_empty() {
+        return err(400, "Say how it got answered: tb withdraw \"<how>\".");
+    }
+    let t = r.task()?;
+    if let Some(v) = prflow::visited_by(app, r.sid().unwrap_or(""))? {
+        if t.as_ref().map(|t| t.id() == v.id()).unwrap_or(true) {
+            prflow::resumed(app, &v)?;
+            r.set_session_status("working")?;
+            crate::dispatch::clear_alerts(app, Some(v.id()), None)?;
+            r.log(v.id(), "status", &format!("Withdrew the question: {why}"), None)?;
+            return Ok(ok(Some(&v), None));
+        }
+    }
+    let Some(t) = t else { return Ok(ok(None, None)) };
+    if t.s("status") != Some("needs") || t.s("needs_reason") != Some("question") {
+        return err(409, format!("{} has no question waiting on {}, so there's nothing to withdraw.", rf("task", t.id()), app.cfg.owner));
+    }
+    r.set_session_status("working")?;
+    board::set_working(app, &t, &r.name(), Some(&format!("Withdrew the question: {why}")))?;
+    crate::dispatch::clear_alerts(app, Some(t.id()), None)?;
+    Ok(ok(Some(&t), None))
+}
+
 fn on_wait_for(r: &mut Report) -> Result<Value> {
     let app = r.app;
     r.touch_session(true)?;
@@ -2879,6 +2908,7 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
                 Some(("ask", format!("Asked you: {}", out.get("question").and_then(|q| q.as_str()).map(|s| s.to_string()).unwrap_or_else(|| r.b("text")))))
             }
         }
+        "tb.withdraw" => Some(("ask", format!("Withdrew its question: {}", r.b("why")))),
         "tb.done" => Some(("done", format!("Finished {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("summary")))),
         "tb.step" if out["passed"] == false => out["step"].as_str().map(|s| ("step", format!("The step {s} didn't pass"))),
         "tb.step" => out["step"].as_str().map(|s| ("step", format!("Did the step {s}"))),
@@ -2912,6 +2942,7 @@ fn handler(event: &str) -> Option<Handler> {
         "tb.checkpoint" => on_checkpoint,
         "tb.found" => on_found,
         "tb.question" => on_question,
+        "tb.withdraw" => on_withdraw,
         "tb.wait_for" => on_wait_for,
         "tb.done" => on_done,
         "tb.fail" => on_fail,
