@@ -190,8 +190,8 @@ enum Cmd {
         goal: String,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
-        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M]")]
+        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs and/or "::project=api" to put it in another project than the goal's
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::project=P]")]
         tasks: Vec<String>,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog")]
@@ -1090,8 +1090,8 @@ enum GoalCmd {
         after: Vec<String>,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
         /// or with "::<src/a.rs, src/b.rs>" after the waits, the files the wave plans for it (its wave mates are told);
-        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs
-        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M]")]
+        /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs and/or "::project=api" to put it in another project than the goal's
+        #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::project=P]")]
         tasks: Vec<String>,
         /// One of its project's areas (`.taskboard.toml` at the repo's root), any case
         #[arg(long, value_name = "NAME")]
@@ -3696,12 +3696,20 @@ fn done_bit(g: &Value) -> String {
     }
 }
 
+/// A goal's projects: its own, then the others its tasks are in ("taskboard + midna").
+fn goal_projects(g: &Value) -> String {
+    match g["projects"].as_array().filter(|ps| ps.len() > 1) {
+        Some(ps) => ps.iter().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(" + "),
+        None => g["project"].as_str().unwrap_or("").to_string(),
+    }
+}
+
 fn goal_lines(g: &Value) -> Vec<String> {
     let mut lines = vec![format!(
         "{} · {} · {}{} · {}",
         g["ref"].as_str().unwrap_or(""),
         g["name"].as_str().unwrap_or(""),
-        g["project"].as_str().unwrap_or(""),
+        goal_projects(g),
         area_bit(g),
         done_bit(g)
     )];
@@ -4839,7 +4847,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     "{} · {} · {}{} · {}{}",
                     g["ref"].as_str().unwrap_or(""),
                     g["name"].as_str().unwrap_or(""),
-                    g["project"].as_str().unwrap_or(""),
+                    goal_projects(&g),
                     area_bit(&g),
                     done_bit(&g),
                     if g["paused"] == true { " · paused" } else { "" }

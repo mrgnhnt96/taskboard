@@ -2389,6 +2389,24 @@ static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
 static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
 static PLANNED_MODEL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*model\s*=\s*([^:\s]*)\s*$").unwrap());
+static PLANNED_PROJECT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*project\s*=\s*([^:\s]*)\s*$").unwrap());
+
+/// A `--task` item's project part ("::project=api" at the very end, before or after the model), taken off
+/// before the rest is read.
+fn planned_project(item: &str) -> (String, Value) {
+    match PLANNED_PROJECT.captures(item) {
+        Some(c) if !c[1].trim().is_empty() => (c[1].to_string(), json!(&c[2])),
+        _ => (item.to_string(), Value::Null),
+    }
+}
+
+/// The project a planned task goes in: the one it names, in the board's spelling, or its goal's.
+fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
+    match named.as_str().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) if Some(p) != g.s("project") => Ok(json!(crate::reproject::name(r.app, &json!(p))?)),
+        _ => Ok(g.v("project")),
+    }
+}
 
 /// A `--task` item's model part ("::model=small" at the very end), taken off before the rest is read.
 fn planned_model(item: &str) -> (String, Value) {
@@ -2470,14 +2488,18 @@ fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
 fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Result<Vec<String>> {
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
-        let (item, files, model) = match &item {
+        let (item, files, model, project) = match &item {
             Value::String(s) => {
-                let (s, model) = planned_model(s);
+                let (s, project) = planned_project(s);
+                let (s, model) = planned_model(&s);
+                let (s, project) = if project.is_null() { planned_project(&s) } else { (s, project) };
                 let (rest, files) = planned_files(&s);
-                (Value::String(rest), files, model)
+                (Value::String(rest), files, model, project)
             }
-            v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null), v.get("model").cloned().unwrap_or(Value::Null)),
+            v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null), v.get("model").cloned().unwrap_or(Value::Null),
+                  v.get("project").cloned().unwrap_or(Value::Null)),
         };
+        let project = planned_in(r, g, &project)?;
         let (title, detail, wave, waits) = match &item {
             Value::String(s) => split_planned(s),
             Value::Object(o) => (
@@ -2494,7 +2516,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
         }
         let c = ops::new_task(
             r.app,
-            &json!({"title": title, "detail": detail.trim(), "project": g.v("project"), "goal_id": g.id(),
+            &json!({"title": title, "detail": detail.trim(), "project": project, "goal_id": g.id(),
                     "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
@@ -2573,10 +2595,12 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     }
     if body_has(&r.body, "goal") {
         let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
-        if let Some(b) = issue.as_ref().filter(|b| b.s("project") != g.s("project")) {
-            return err(400, format!("{} is in {}, not {}'s project {}.", rf("issue", b.id()), b.st("project"), rf("goal", g.id()), g.st("project")));
+        let in_project = planned_in(r, &g, &r.body["project"])?;
+        if let Some(b) = issue.as_ref().filter(|b| b.v("project") != in_project) {
+            return err(400, format!("{} is in {}, not {}; add --project {} to make its task there.", rf("issue", b.id()), b.st("project"),
+                                    in_project.as_str().unwrap_or(""), b.st("project")));
         }
-        let mut item = json!([{"title": title, "detail": r.b("detail"), "also": r.body.get("also"), "wave": r.body.get("wave"),
+        let mut item = json!([{"title": title, "detail": r.b("detail"), "project": in_project, "also": r.body.get("also"), "wave": r.body.get("wave"),
                            "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),

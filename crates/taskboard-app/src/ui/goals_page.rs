@@ -63,9 +63,19 @@ pub fn goal_group(g: &Value) -> GoalGroup {
     }
 }
 
+/// The projects goal `g` holds work in: its own, then the others its tasks are in.
+fn goal_projects(g: &Value) -> Vec<&str> {
+    let ps: Vec<&str> = fmt::arr(g, "projects").iter().filter_map(|p| p.as_str()).collect();
+    if ps.is_empty() { vec![s(g, "project")] } else { ps }
+}
+
+fn in_project(g: &Value, project: &str) -> bool {
+    project == "all" || goal_projects(g).contains(&project)
+}
+
 /// The goals in progress, in the project picked: the ones the page fetches in full.
 pub fn in_progress(goals: &[Value], project: &str) -> Vec<String> {
-    let mut v: Vec<&Value> = goals.iter().filter(|g| !fmt::b(g, "archived") && goal_group(g) == GoalGroup::Active && (project == "all" || s(g, "project") == project)).collect();
+    let mut v: Vec<&Value> = goals.iter().filter(|g| !fmt::b(g, "archived") && goal_group(g) == GoalGroup::Active && in_project(g, project)).collect();
     v.sort_by(|a, b| locale_cmp(s(a, "project"), s(b, "project")).then(i(a, "id").cmp(&i(b, "id"))));
     v.into_iter().map(|g| fmt::ref_of(g, "G")).collect()
 }
@@ -253,7 +263,7 @@ pub fn goal_row(g: &Value, d: Option<&Value>) -> GoalRow {
     GoalRow {
         r: fmt::ref_of(g, "G"),
         name: s(g, "name").into(),
-        project: s(g, "project").into(),
+        project: goal_projects(g).join(" + "),
         parts: tally.parts(),
         done: i(g, "done"),
         review: tally.review,
@@ -370,9 +380,11 @@ pub fn shelves(goals: &[&Value], now: DateTime<Utc>) -> Vec<Shelf> {
 fn projects(goals: &[Value]) -> Vec<(String, usize)> {
     let mut v: Vec<(String, usize)> = vec![];
     for g in goals.iter().filter(|g| !fmt::b(g, "archived") && goal_group(g) != GoalGroup::Finished) {
-        match v.iter_mut().find(|(p, _)| p == s(g, "project")) {
-            Some((_, n)) => *n += 1,
-            None => v.push((s(g, "project").into(), 1)),
+        for project in goal_projects(g) {
+            match v.iter_mut().find(|(p, _)| p == project) {
+                Some((_, n)) => *n += 1,
+                None => v.push((project.into(), 1)),
+            }
         }
     }
     v.sort_by(|a, b| locale_cmp(&a.0, &b.0));
@@ -668,7 +680,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     if project != "all" && !tabs.iter().any(|(p, _)| *p == project) && m.goals_loaded() {
         project = "all".into();
     }
-    let shown: Vec<&Value> = all.iter().filter(|g| project == "all" || s(g, "project") == project).collect();
+    let shown: Vec<&Value> = all.iter().filter(|g| in_project(g, &project)).collect();
     let going = in_progress(&all, &project);
 
     let mut right = div().flex().flex_none().gap(px(6.));
@@ -788,6 +800,15 @@ mod tests {
             ]
         );
         assert_eq!(projects(&gs), [("api".to_string(), 1), ("web".to_string(), 3)]);
+    }
+
+    #[test]
+    fn a_goal_shows_under_every_project_its_tasks_are_in() {
+        let gs = [goal(1, "web", 1, 3, json!({"active": 1, "projects": ["web", "api"]})), goal(2, "web", 0, 1, json!({"active": 1}))];
+        assert_eq!(in_progress(&gs, "api"), ["G1"]);
+        assert_eq!(in_progress(&gs, "web"), ["G1", "G2"]);
+        assert_eq!(projects(&gs), [("api".to_string(), 1), ("web".to_string(), 2)]);
+        assert_eq!(goal_row(&gs[0], None).project, "web + api");
     }
 
     #[test]
