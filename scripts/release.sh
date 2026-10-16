@@ -3,6 +3,7 @@
 #
 #   ./scripts/release.sh 1.1.0          a public release, from main
 #   ./scripts/release.sh 1.2.0-beta.1   a beta, from any branch
+#   ./scripts/release.sh v1.2.0-beta.1  the same; one leading v is dropped
 #
 # Pushing the v1.1.0 tag runs .github/workflows/release.yml, which builds,
 # signs and notarizes Taskboard.app and publishes the GitHub release with the
@@ -17,7 +18,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Take the tag name too, so a release name can be passed straight through.
 version="${1:-}"
+version="${version#v}"
 if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
   echo "Usage: $0 <major.minor.patch[-beta.N]>" >&2
   exit 1

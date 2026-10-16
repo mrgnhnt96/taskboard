@@ -3,6 +3,7 @@
 #
 #   ./scripts/set-version.sh 1.1.0          write 1.1.0 into every file
 #   ./scripts/set-version.sh 1.2.0-beta.1   a beta works the same way
+#   ./scripts/set-version.sh v1.2.0-beta.1  one leading v is dropped
 #   ./scripts/set-version.sh --check [v]    fail unless every file has the same version (and it's v)
 #
 # Git tags are the source of truth: scripts/release.sh calls this before it
@@ -42,6 +43,7 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 version="${1:-}"
+version="${version#v}"
 if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
   echo "Usage: $0 <major.minor.patch[-beta.N]> | --check [version]" >&2
   exit 1
