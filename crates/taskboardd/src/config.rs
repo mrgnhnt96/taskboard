@@ -167,7 +167,10 @@ impl Default for Questions {
 pub struct BacklogAi {
     /// Ask Claude. Off (or no `claude`), the board groups by kind and plans waves by priority.
     pub ai: bool,
+    /// Wave planning, tidies, review fixes and retros.
     pub model: String,
+    /// Grouping new issues, a classification job. Empty: `model`.
+    pub group_model: String,
     pub budget_usd: String,
     pub timeout_secs: u64,
     /// How many terminals a goal made from the backlog runs at once.
@@ -179,9 +182,16 @@ pub struct BacklogAi {
     pub tidy_every_hours: f64,
 }
 
+impl BacklogAi {
+    /// The model that groups new issues.
+    pub fn group_model(&self) -> &str {
+        if self.group_model.trim().is_empty() { &self.model } else { &self.group_model }
+    }
+}
+
 impl Default for BacklogAi {
     fn default() -> Self {
-        BacklogAi { ai: true, model: "sonnet".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0 }
+        BacklogAi { ai: true, model: "sonnet".into(), group_model: "haiku".into(), budget_usd: "1.00".into(), timeout_secs: 240, max_terminals: 2, tidy: true, tidy_every_hours: 24.0 }
     }
 }
 

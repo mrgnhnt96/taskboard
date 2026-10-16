@@ -10,6 +10,7 @@ mod away_waits;
 mod background;
 mod backlog_actions;
 mod backlog_match;
+mod backlog_models;
 mod backlog_tidy;
 mod beta5_prflow;
 mod breaks;
