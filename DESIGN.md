@@ -21,7 +21,7 @@ one a "handoff" prompt, and the Claude plugin's hooks and the `tb` CLI report pr
 | Mac app | `crates/taskboard-app` — GPUI via `gpui-kit` 0.7, a client of the daemon's JSON API (`backend.rs`). `TASKBOARD_BACKEND=fake` runs the board in-process on sample data. |
 | Packaging | `packaging/build-app.sh` → `Taskboard.app` (app + daemon + tb; the daemon's LaunchAgent is registered with SMAppService on first launch); `scripts/dev-app.sh` → "Taskboard Dev" |
 | Claude plugin | `plugin/` — marketplace + `task-board` plugin whose hooks call `tb hook …` |
-| Code review | the lens plugin (its own repo): when it's installed, `tb submit` needs a fresh `/lens:review` of the checkout (`lens.rs`) |
+| Code review | the lens binary (its own repo): when it's installed and `[lens]` is on, `tb submit` needs a fresh `lens review` of the checkout (`lens.rs`) |
 
 ## Kept (generalized)
 

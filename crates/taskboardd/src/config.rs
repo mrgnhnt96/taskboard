@@ -47,6 +47,7 @@ pub struct FileConfig {
     pub checkin: crate::checkin::CheckinConfig,
     pub spans: crate::spans::SpansConfig,
     pub review: crate::review::ReviewConfig,
+    pub lens: crate::lens::SubmitConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     /// `[hosts.<host>]`: each PR host's call budget (`prhost/limit.rs`).
@@ -317,33 +318,20 @@ pub struct PrProject {
     pub rebase: Option<RebasePolicy>,
 }
 
-/// `[pr.lens]`: on a new PR, run lens's PR pass headless (`claude -p "/lens:review --pr <n>"`, from the
-/// lens plugin, which must be installed) and let it post its verified findings on the PR. It shows as
-/// the `lens` stage and never holds a merge.
+/// `[pr.lens]`: on a new PR, run lens's PR pass (`lens review --pr <n>`, the binary `[lens] bin` names)
+/// and let it post its verified findings on the PR. It shows as the `lens` stage and never holds a merge.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct LensConfig {
     /// Run it on every project's new PRs (a project's `lens` says otherwise). Off by default.
     pub on: bool,
-    /// The model for the run. Empty: Claude Code's default.
-    pub model: String,
     /// How long one run may take, in minutes. A run past it is stopped, and the stage moves on.
     pub timeout_mins: f64,
-    /// `--permission-mode` for the run.
-    pub permission_mode: String,
-    /// `--allowedTools` for the run: headless, a tool not listed is denied.
-    pub allowed_tools: Vec<String>,
 }
 
 impl Default for LensConfig {
     fn default() -> Self {
-        LensConfig {
-            on: false,
-            model: String::new(),
-            timeout_mins: 30.0,
-            permission_mode: "default".into(),
-            allowed_tools: ["Bash", "Read", "Grep", "Glob", "Write", "Agent", "Task", "Skill", "TodoWrite"].iter().map(|t| t.to_string()).collect(),
-        }
+        LensConfig { on: false, timeout_mins: 30.0 }
     }
 }
 
@@ -715,6 +703,7 @@ pub struct Config {
     pub checkin: crate::checkin::CheckinConfig,
     pub spans: crate::spans::SpansConfig,
     pub review: crate::review::ReviewConfig,
+    pub lens: crate::lens::SubmitConfig,
     pub reviewers: crate::reviewers::ReviewersConfig,
     pub feed: crate::feed::FeedConfig,
     pub hosts: std::collections::BTreeMap<String, crate::prhost::limit::HostConfig>,
@@ -880,6 +869,7 @@ impl Config {
             checkin: f.checkin,
             spans: f.spans,
             review: f.review,
+            lens: f.lens,
             reviewers: f.reviewers,
             feed: f.feed,
             hosts: f.hosts,
@@ -901,6 +891,7 @@ impl Config {
         c.claude_projects = data.join("claude-projects");
         // Tests never run the real claude (QA comments, screening and wave plans would ask it).
         c.claude = data.join("no-claude").to_string_lossy().to_string();
+        c.lens.bin = data.join("no-lens").to_string_lossy().to_string();
         c.runner = false;
         // No `--model` in started terminals' flags unless a test turns it on.
         c.models.enabled = false;

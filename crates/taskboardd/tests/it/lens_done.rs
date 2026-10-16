@@ -1,5 +1,5 @@
-//! lens at `tb submit`: with the lens plugin installed, a task finishes only on a fresh review of its
-//! checkout; findings become notes, an open blocker holds it and an escalated one asks the owner.
+//! lens at `tb submit`: with `[lens]` on and the lens binary installed, a task finishes only on a fresh
+//! review of its checkout; findings become notes, an open blocker holds it and an escalated one asks the owner.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,8 +31,12 @@ fn git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn new_board(lens: bool) -> Board {
+    board_with(lens, |_| {})
+}
+
+fn board_with(lens: bool, f: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = Config::for_tests(dir.path());
+    let mut cfg = Config::for_tests(dir.path());
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -42,11 +46,11 @@ fn new_board(lens: bool) -> Board {
     git(&repo, &["checkout", "-qb", "feat/x"]);
     std::fs::write(repo.join("app.rs"), "fn main() { login(); }\n").unwrap();
     if lens {
-        let plugins = cfg.claude_projects.parent().unwrap().join("plugins");
-        std::fs::create_dir_all(&plugins).unwrap();
-        let installed = json!({"version": 2, "plugins": {"lens@lens": [{"scope": "user", "installPath": "/x", "version": "0.1.0"}]}});
-        std::fs::write(plugins.join("installed_plugins.json"), installed.to_string()).unwrap();
+        let bin = dir.path().join("lens");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        cfg.lens.bin = bin.to_string_lossy().to_string();
     }
+    f(&mut cfg);
     let app = App::for_tests(cfg);
     app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
     midna::sync(&app, &[json!({"id": "s1", "name": "Term", "agent": "claude", "cwd": repo.to_string_lossy(), "status": {"state": "working"}})], &[]).unwrap();
@@ -80,7 +84,7 @@ impl Board {
         rows.iter().map(|e| e.st("text")).filter(|t| t.starts_with("lens ")).collect()
     }
 
-    /// Writes the report `/lens:review` would for the checkout as it is now.
+    /// Writes the report `lens review` would for the checkout as it is now.
     fn review(&self, findings: Value) -> PathBuf {
         let merge_base = git(&self.repo, &["merge-base", "main", "HEAD"]);
         let work = self.repo.join(".review/feat/x");
@@ -137,12 +141,32 @@ fn without_lens_tb_done_is_as_before() {
 }
 
 #[test]
+fn lens_off_for_the_board_or_the_project_skips_the_review() {
+    let b = board_with(true, |c| c.lens.on = false);
+    let id = b.task();
+    b.done().unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+    let b = board_with(true, |c| {
+        c.lens.projects.insert("webapp".into(), false);
+    });
+    let id = b.task();
+    b.done().unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+    let b = board_with(true, |c| {
+        c.lens.on = false;
+        c.lens.projects.insert("webapp".into(), true);
+    });
+    b.task();
+    assert_eq!(b.done().unwrap_err().0, 409, "a project can turn it back on");
+}
+
+#[test]
 fn with_lens_and_no_review_it_asks_for_one_and_writes_the_intent() {
     let b = new_board(true);
     let id = b.task();
     let (code, why) = b.done().unwrap_err();
     assert_eq!(code, 409, "{why}");
-    assert!(why.contains("/lens:review --intent"), "{why}");
+    assert!(why.contains("Run `lens review --intent "), "{why}");
     let intent = std::fs::read_to_string(b.repo.join(format!(".review/T{id}-intent.md"))).unwrap();
     assert!(intent.contains("Sign-in screen") && intent.contains("Call login on start."), "{intent}");
     assert_eq!(std::fs::read_to_string(b.repo.join(".review/.gitignore")).unwrap(), "*\n");
@@ -192,7 +216,7 @@ fn an_open_blocker_holds_tb_done_for_the_fix_loop() {
     b.review(json!([finding("F1", "blocker", Value::Null)]));
     let (code, why) = b.done().unwrap_err();
     assert_eq!(code, 409, "{why}");
-    assert!(why.contains("lens fix start --report ") && why.contains("/webapp/.review/feat/x.json --finding F1"), "{why}");
+    assert!(why.contains("(F1). Run `lens review` again in ") && why.contains("/webapp (it picks the fix loop up"), "{why}");
     b.done().unwrap_err();
     assert_eq!(b.notes(id).len(), 1, "each finding is noted once");
     std::fs::write(b.repo.join("app.rs"), "fn main() { load_config(); login(); }\n").unwrap();
