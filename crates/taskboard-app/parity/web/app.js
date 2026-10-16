@@ -981,10 +981,16 @@ function overviewTab(t) {
       <div class="row">${btn('New Midna terminal', 'start', { id: r, arg: 'new', cls: 'primary', grp: act })}${btn('Queue in Midna', 'start', { id: r, arg: 'queue', grp: act })}</div>${note(act)}</div>`);
   } else if (t.status === 'needs') {
     const asking = t.question && (t.needs_reason === 'question' || (t.ask && t.ask.picker));
+    const opts = askOptions(t.ask, r);
+    // No terminal to open and nothing to click: answer a question, otherwise resume it.
+    const bare = !sessionLive(t) && !(opts && !(t.ask && t.ask.picker));
+    const answers = bare && t.question && t.needs_reason === 'question';
+    const fallback = !bare ? '' : answers ? answerBtns(r) : btn('Resume in a new terminal', 'resume', { id: r, arg: 'fresh', cls: 'primary', grp: 'ask:' + r });
     out.push(`<div class="box ask"><span class="box-label">${esc(who)} ${asking ? 'is asking' : 'needs you'}</span>
       <p>${esc(t.question || t.latest || 'It’s waiting for you in Midna.')}</p>
-      ${askOptions(t.ask, r)}
-      <div class="row">${sessionLive(t) ? btn('Open terminal', 'focus', { id: r, grp: 'ask:' + r }) : ''}${note('ask:' + r)}</div></div>`);
+      ${opts}
+      ${answers ? `<textarea class="input" id="ans-${esc(r)}" data-k="answer:${esc(r)}" rows="2" aria-label="Your answer">${esc(S.drafts['answer:' + r] || '')}</textarea>` : ''}
+      <div class="row">${sessionLive(t) ? btn('Open terminal', 'focus', { id: r, grp: 'ask:' + r }) : fallback}${note('ask:' + r)}</div></div>`);
   }
 
   if (startsByHand(t)) {

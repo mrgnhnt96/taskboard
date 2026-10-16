@@ -1624,12 +1624,13 @@
         "ui": {}
       },
       "expect": {
-        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log The terminal needs you It’s waiting for you in Midna. Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "Needs you T7 Sign in with a passkey webapp Updated 4m ago Running 2h 5m Overview Context Log The terminal needs you It’s waiting for you in Midna. Resume in a new terminal Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
         "acts": [
           "close-panel",
           "tab:overview",
           "tab:context",
-          "tab:log"
+          "tab:log",
+          "resume:fresh"
         ],
         "titles": [],
         "values": []
