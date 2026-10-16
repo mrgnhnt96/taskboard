@@ -1187,18 +1187,8 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
     Ok(d)
 }
 
-fn live_session(app: &App, t: &Row) -> Result<Option<Row>> {
-    if let Some(s) = board::get_session(app, t.s("session_id"))? {
-        if s.s("status") != Some("gone") {
-            return Ok(Some(s));
-        }
-    }
-    let v = prflow::visitor(t);
-    Ok(board::get_session(app, v.as_deref())?.filter(|s| s.s("status") != Some("gone")))
-}
-
 fn need_live(app: &App, t: &Row) -> Result<Row> {
-    live_session(app, t)?.ok_or_else(|| ApiError::new(409, "This task has no open Midna terminal."))
+    board::live_session(app, t)?.ok_or_else(|| ApiError::new(409, "This task has no open Midna terminal."))
 }
 
 /// Runs a step's hooks for the owner's action (outside its transaction). A stop is refused with its
@@ -1359,7 +1349,7 @@ fn launch(app: &App, id: i64, mode: &str, session_id: Option<&str>, started: &st
         if t.s("status") == Some("done") {
             return err(409, "This task is done. Queue it again first.");
         }
-        if matches!(t.s("status"), Some("working") | Some("needs")) && live_session(app, &t)?.is_some() && !t.b("lost") {
+        if matches!(t.s("status"), Some("working") | Some("needs")) && board::live_session(app, &t)?.is_some() && !t.b("lost") {
             return err(409, format!("It's already on {}.", t.s("session_name").unwrap_or("a terminal")));
         }
         if board::live_start_job(app, &t)?.map(|j| matches!(j.s("state"), Some("pending") | Some("running"))).unwrap_or(false) {
@@ -1402,7 +1392,7 @@ fn answer(app: &App, id: i64, body: &Value) -> Result<Value> {
         let mut answers = str_list(ctx.get("answers"));
         answers.push(entry);
         ctx.insert("answers".into(), json!(answers));
-        let s = live_session(app, &t)?;
+        let s = board::live_session(app, &t)?;
         board::save_context(app, id, &ctx, s.is_none())?;
         let later = if when == "morning" { hours::until_open(app) } else { None };
         if later.is_none() {
@@ -1531,13 +1521,36 @@ fn close_terminal(app: &App, id: i64, body: &Value) -> Result<Value> {
     task_detail(app, id)
 }
 
+/// Shows the task's terminal. A task waiting on your answer with none open gets a new one that
+/// sums up where it stands and asks again.
 fn focus_task(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    if board::live_session(app, &t)?.is_none() && t.s("status") == Some("needs") && has(t.s("question")) {
+        resume(app, id, &json!({"mode": "ask"}))?;
+        return Ok(json!({"ok": true, "opened": true}));
+    }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let s = need_live(app, &t)?;
         board::create_job(app, "focus", json!({"session": s.v("id")}), Some(id), "focus", None)?;
         Ok(json!({"ok": true}))
     })
+}
+
+/// The new terminal's first words when the owner opens one to answer the task's question.
+fn ask_again_prompt(t: &Row, tb: &str, owner: &str) -> String {
+    let mut q = t.st("question");
+    for ask in crate::ask::card(t)["questions"].as_array().into_iter().flatten() {
+        let opts: Vec<String> = ask["options"].as_array().into_iter().flatten().filter_map(|o| o["label"].as_str()).map(|l| format!("- {l}")).collect();
+        if !opts.is_empty() {
+            q = format!("{q}\n{}", opts.join("\n"));
+        }
+    }
+    format!(
+        "{owner} opened this terminal to answer the question you asked, since your old terminal is gone. \
+         Sum up in a few lines what this task is and where it stands, then ask the question again here and \
+         wait for the answer (not with {tb} question; they're here). The question:\n\n{q}"
+    )
 }
 
 fn checkpoint_request(app: &App, id: i64) -> Result<Value> {
@@ -1555,8 +1568,8 @@ fn checkpoint_request(app: &App, id: i64) -> Result<Value> {
 
 fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mode = { let m = body_str(body, "mode"); if m.is_empty() { "fresh".to_string() } else { m } };
-    if !matches!(mode.as_str(), "fresh" | "reopen" | "finish") {
-        return err(400, "Resume mode must be fresh, reopen or finish.");
+    if !matches!(mode.as_str(), "fresh" | "reopen" | "finish" | "ask") {
+        return err(400, "Resume mode must be fresh, reopen, finish or ask.");
     }
     if gate(app, id, "task.starting", "Stopped from starting")? {
         return task_detail(app, id);
@@ -1574,6 +1587,7 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         // Read before `lost` is cleared: what the board found goes in the new terminal's prompt.
         let finish = (mode == "finish").then(|| crate::lost_done::finish_prompt(&t, &board::tb_cmd(app)));
+        let ask = (mode == "ask").then(|| ask_again_prompt(&t, &board::tb_cmd(app), &app.cfg.owner));
         let mut ctx = board::task_context(&t);
         let cwd = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
         // Reopening after its compact failed means resuming the conversation as it is.
@@ -1591,7 +1605,7 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
         } else {
             let edited = body_str(body, "handoff");
             let mut text = if edited.is_empty() { handoff::build(app, id)? } else { edited.clone() };
-            if let Some(f) = &finish {
+            if let Some(f) = finish.as_ref().or(ask.as_ref()) {
                 text = format!("{marker} {f}\n\n{text}");
             }
             if !text.contains(&marker) {
@@ -1600,6 +1614,8 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
             runner::start_task(app, &t, "new", None, Some(text), None, cwd)?;
             if finish.is_some() {
                 board::log_event(app, id, OWNER, "handoff", "Asked a new terminal to check the work shipped and mark it done")?;
+            } else if ask.is_some() {
+                board::log_event(app, id, OWNER, "handoff", "Opened a new terminal to answer the question")?;
             } else {
                 let note = if mode == "fresh" { "" } else { " (the old conversation isn't known, so it starts fresh)" };
                 board::log_event(app, id, OWNER, "handoff", &format!("Resumed in a new terminal with the handoff{}{note}", if edited.is_empty() { "" } else { " (edited)" }))?;
@@ -1616,7 +1632,7 @@ fn requeue(app: &App, id: i64) -> Result<Value> {
         if matches!(t.s("status"), Some("queued") | Some("planned")) {
             return err(409, "It's already waiting to start.");
         }
-        if t.s("status") == Some("working") && live_session(app, &t)?.is_some() {
+        if t.s("status") == Some("working") && board::live_session(app, &t)?.is_some() {
             return err(409, format!("It's on {} right now. Detach it first.", t.s("session_name").unwrap_or("a terminal")));
         }
         let pickup = if t.s("pickup") == Some("manual") { "queue".to_string() } else { t.st("pickup") };
@@ -1741,7 +1757,7 @@ fn remove_md(app: &App, ids: &[i64]) {
 fn delete_task(app: &App, id: i64) -> Result<Value> {
     let t = app.db.tx(|| {
         let t = board::get_task(app, id)?;
-        if matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost") && live_session(app, &t)?.is_some() {
+        if matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost") && board::live_session(app, &t)?.is_some() {
             return err(409, format!("It's running on {}. Send it back to the queue first.", t.s("session_name").unwrap_or("a terminal")));
         }
         purge_tasks(app, &[id])?;
@@ -1912,7 +1928,7 @@ fn delete_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         let mut busy = vec![];
         for t in &tasks {
-            if matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost") && live_session(app, t)?.is_some() {
+            if matches!(t.s("status"), Some("working") | Some("needs")) && !t.b("lost") && board::live_session(app, t)?.is_some() {
                 busy.push(format!("{} on {}", rf("task", t.id()), t.s("session_name").unwrap_or("a terminal")));
             }
         }

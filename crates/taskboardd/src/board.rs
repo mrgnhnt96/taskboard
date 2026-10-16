@@ -352,6 +352,8 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("ships_pr".into(), json!(crate::projects::task_ships_pr(app, t)?));
         o.insert("ships_pr_set".into(), t.i("ships_pr").map(|v| json!(v != 0)).unwrap_or(Value::Null));
         o.insert("no_pr".into(), t.v("no_pr"));
+        // Whether Focus shows a terminal or opens a new one.
+        o.insert("terminal_open".into(), json!(live_session(app, t)?.is_some()));
         o.insert("no_evidence".into(), t.v("no_evidence"));
         // The task's model and what its terminal runs with [models].
         o.insert("model".into(), t.v("model"));
@@ -363,6 +365,17 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
     }
     Ok(card)
+}
+
+/// The task's open terminal: its own, or one visiting its PR.
+pub fn live_session(app: &App, t: &Row) -> Result<Option<Row>> {
+    if let Some(s) = get_session(app, t.s("session_id"))? {
+        if s.s("status") != Some("gone") {
+            return Ok(Some(s));
+        }
+    }
+    let v = prflow::visitor(t);
+    Ok(get_session(app, v.as_deref())?.filter(|s| s.s("status") != Some("gone")))
 }
 
 pub fn task_for_session(app: &App, sid: Option<&str>) -> Result<Option<Row>> {

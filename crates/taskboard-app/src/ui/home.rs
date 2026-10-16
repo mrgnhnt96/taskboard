@@ -46,6 +46,9 @@ pub enum Act {
     Start(String),
     /// Show the task's terminal: `POST /tasks/:id/focus`.
     Focus(String),
+    /// A question whose terminal is gone: the same `POST /tasks/:id/focus` opens a new one that sums
+    /// up the task and asks again.
+    AskAgain(String),
     /// A goal held after a wave for your review: `POST /goals/:id/waves/:n/continue`.
     Continue(String, i64),
     OpenPr(String),
@@ -64,6 +67,7 @@ impl Act {
             Act::MarkDone(_) => "Mark done",
             Act::Start(_) => "Start",
             Act::Focus(_) => "Open terminal",
+            Act::AskAgain(_) => "Open new terminal",
             Act::Continue(..) => "Continue",
             Act::OpenPr(_) => "Open PR",
             Act::OpenTask(_) => "Open task",
@@ -185,6 +189,8 @@ pub fn ask_vm(a: &Value) -> Ask {
     let reason = s(card, "needs_reason");
     // A task found the goal's done-when unmet: the backlog item it filed holds the goal open.
     let miss = s(a, "key").strip_prefix("miss:").filter(|n| !n.is_empty()).map(|n| format!("B{n}"));
+    // Its terminal is gone and it still asks: Focus opens a new terminal to ask again.
+    let focus = |r: String| if card["terminal_open"] == false && opt_s(card, "question").is_some() { Act::AskAgain(r) } else { Act::Focus(r) };
     let (sev, kind, act): (Sev, &str, Option<Act>) = if let Some(id) = a["review_id"].as_i64() {
         (Sev::Ok, "Weekly review", Some(Act::OpenReview(id)))
     } else if let Some(b) = &miss {
@@ -206,9 +212,9 @@ pub fn ask_vm(a: &Value) -> Ask {
     } else if has_card && phase(card) == "merge" {
         (Sev::Ok, "Ready to merge", pr_url(card).map(Act::OpenPr))
     } else if has_card && s(card, "status") == "needs" && reason == "question" {
-        (Sev::Warn, "Question", r.clone().map(Act::Focus))
+        (Sev::Warn, "Question", r.clone().map(focus))
     } else if has_card && s(card, "status") == "needs" {
-        (Sev::Warn, "Needs you", r.clone().map(Act::Focus))
+        (Sev::Warn, "Needs you", r.clone().map(focus))
     } else {
         (Sev::Warn, "Needs you", r.clone().map(Act::OpenTask))
     };
@@ -490,6 +496,7 @@ pub fn run_act(m: &mut MainWindow, act: &Act, cx: &mut Context<MainWindow>) {
         Act::MarkDone(r) => m.post(format!("tasks/{r}/resume"), json!({"mode": "finish"}), cx, move |m, _, cx| sent(m, format!("A new terminal checks {r} and marks it done"), cx)),
         Act::Start(r) => m.post(format!("tasks/{r}/start"), json!({"mode": "new"}), cx, move |m, _, cx| sent(m, format!("Starting {r}"), cx)),
         Act::Focus(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Showing {r}’s terminal in Midna"), cx)),
+        Act::AskAgain(r) => m.post(format!("tasks/{r}/focus"), json!({}), cx, move |m, _, cx| sent(m, format!("Opening a new terminal for {r}"), cx)),
         Act::Continue(g, n) => m.post(format!("goals/{g}/waves/{n}/continue"), json!({}), cx, move |m, v, cx| {
             let note = if v["let_start"] == true { format!("Wave {} can start", n + 1) } else { "The goal goes on".into() };
             sent(m, note, cx)
@@ -753,10 +760,8 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
     let body = div().flex().flex_col().gap(px(10.)).pl(px(58.)).pr(px(20.)).pb(px(16.));
     if question {
         let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
-        let focus = kit::btn(t, id("focus"), Act::Focus(r.clone()).label()).on_click(cx.listener({
-            let r = r.clone();
-            move |m, _, _, cx| run_act(m, &Act::Focus(r.clone()), cx)
-        }));
+        let act = a.act.clone().filter(|x| matches!(x, Act::Focus(_) | Act::AskAgain(_))).unwrap_or_else(|| Act::Focus(r.clone()));
+        let focus = kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)));
         // An option answers in one click; a picker's options only say what it asks, and are
         // answered in the terminal. The alert's suggested answers answer like options.
         let mut n = 0;
@@ -987,6 +992,16 @@ mod tests {
         assert_eq!(asks[2].act, Some(Act::OpenPr("https://x/pr/4".into())));
         assert!(!asks[2].dismiss, "a PR waiting on your review stays until you review it");
         assert!(asks[0].dismiss);
+    }
+
+    #[test]
+    fn a_question_with_no_terminal_opens_a_new_one() {
+        let q = |open: bool| json!({"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep it?", "task": "T5",
+            "card": card(json!({"ref": "T5", "status": "needs", "needs_reason": "question", "question": "Keep it?", "terminal_open": open}))});
+        let gone = ask_vm(&q(false));
+        assert_eq!(gone.act, Some(Act::AskAgain("T5".into())));
+        assert_eq!(gone.act.as_ref().map(Act::label), Some("Open new terminal"));
+        assert_eq!(ask_vm(&q(true)).act, Some(Act::Focus("T5".into())));
     }
 
     #[test]
