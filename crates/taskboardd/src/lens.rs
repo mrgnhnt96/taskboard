@@ -55,10 +55,80 @@ impl Default for SubmitConfig {
     }
 }
 
-/// Whether `tb submit` reviews this project's tasks.
+/// `tb project lens on|off`: the board's own word on `[lens] on`, over config.toml's.
+const BOARD_SETTING: &str = "lens_on";
+/// `tb project set --lens`: name → the board's word on `[lens.projects]`, over config.toml's.
+const PROJECT_SETTING: &str = "project_lens";
+
+/// Whether `tb submit` reviews this project's tasks: the project's word on the board, else
+/// `[lens.projects]`, else the board's (`tb project lens`), else `[lens] on`.
 pub fn on(app: &App, project: Option<&str>) -> bool {
     let l = &app.cfg.lens;
-    project.and_then(|p| l.projects.get(p).copied()).unwrap_or(l.on)
+    project
+        .and_then(|p| project_set(app, p).ok().flatten().or_else(|| l.projects.get(p).copied()))
+        .unwrap_or_else(|| board_default(app))
+}
+
+/// Whether `tb submit` reviews tasks on projects that don't say: the board's word, else `[lens] on`.
+pub fn board_default(app: &App) -> bool {
+    board_set(app).unwrap_or(app.cfg.lens.on)
+}
+
+/// What `tb project lens` set on the board, if anything.
+pub fn board_set(app: &App) -> Option<bool> {
+    match app.db.get_setting(BOARD_SETTING).ok().flatten()?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Sets the board's word on `[lens] on`; None goes back to config.toml's.
+pub fn set_board(app: &App, on: Option<bool>) -> Result<()> {
+    app.db.set_setting(BOARD_SETTING, on.map(|b| if b { "true" } else { "false" }))
+}
+
+/// `GET /projects/lens`: the board-wide switch, what the board set, config.toml's, and whether lens is installed.
+pub fn describe_board(app: &App) -> Value {
+    json!({"lens": board_default(app), "set": board_set(app), "config": app.cfg.lens.on, "installed": bin(app).is_some()})
+}
+
+fn project_overrides(app: &App) -> Result<Row> {
+    Ok(jloads_obj(app.db.get_setting(PROJECT_SETTING)?.as_deref()))
+}
+
+/// What `tb project set --lens` put on a project, if anything.
+pub fn project_set(app: &App, project: &str) -> Result<Option<bool>> {
+    Ok(project_overrides(app)?.get(project).and_then(|v| v.as_bool()))
+}
+
+/// Sets a project's lens review from a body's `lens` (on/off, true/false; null or "default": back to
+/// config.toml's). False when the body doesn't name it.
+pub fn set_project(app: &App, project: &str, body: &Value) -> Result<bool> {
+    let Some(v) = body.get("lens") else { return Ok(false) };
+    let to = match v {
+        Value::Null => None,
+        Value::Bool(b) => Some(*b),
+        Value::String(s) => match s.trim().to_lowercase().as_str() {
+            "on" | "true" => Some(true),
+            "off" | "false" => Some(false),
+            "default" => None,
+            _ => return err(400, "lens is on, off or default."),
+        },
+        _ => return err(400, "lens is on, off or default."),
+    };
+    let mut all = project_overrides(app)?;
+    match to {
+        Some(b) => all.insert(project.into(), json!(b)),
+        None => all.remove(project),
+    };
+    app.db.set_setting(PROJECT_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
+/// Whether `tb submit` would look for a lens review of this task: lens is on for its project and installed.
+pub fn applies(app: &App, project: Option<&str>) -> bool {
+    on(app, project) && bin(app).is_some()
 }
 
 /// The lens binary, when it's installed.
@@ -69,7 +139,7 @@ pub fn bin(app: &App) -> Option<PathBuf> {
 /// Looks at the lens review of the checkout at `cwd` for task `t`. `None` when lens is off for its
 /// project or isn't installed, or `cwd` isn't a git checkout: `tb submit` goes on as it would without lens.
 pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
-    if !on(app, t.s("project")) || bin(app).is_none() {
+    if !applies(app, t.s("project")) {
         return Ok(None);
     }
     let Some(root) = Git::new(cwd).out(&["rev-parse", "--show-toplevel"]).map(PathBuf::from) else { return Ok(None) };

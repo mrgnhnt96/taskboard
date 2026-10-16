@@ -1844,6 +1844,10 @@ fn on_done(r: &mut Report) -> Result<Value> {
         board::update_task(r.app, t.id(), fields!["no_evidence" => no_evidence])?;
         r.log(t.id(), "status", &format!("No evidence: {no_evidence}"), None)?;
     }
+    let no_lens = one_line(&r.b("no_lens"), NO_PR_MAX);
+    if !no_lens.is_empty() && crate::lens::applies(r.app, t.s("project")) {
+        r.log(t.id(), "status", &format!("Skipped the lens review: {no_lens}"), None)?;
+    }
     let pr = if no_pr.is_empty() { pr } else { None };
     if let Some(pr) = pr {
         prflow::link_pr(r.app, &t, &pr, &r.name())?;
@@ -1899,6 +1903,15 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
         }
         if why.chars().count() > NO_PR_MAX {
             return err(400, format!("Keep the --no-pr reason to one short line ({NO_PR_MAX} characters or fewer); put the rest in the summary."));
+        }
+    }
+    if let Some(raw) = r.body.get("no_lens").filter(|v| !v.is_null()) {
+        let why = one_line(raw.as_str().unwrap_or(""), 100_000);
+        if why.is_empty() {
+            return err(400, format!("Say why {me} skips the lens review: {tb} submit \"<summary>\" --no-lens \"<why>\"."));
+        }
+        if why.chars().count() > NO_PR_MAX {
+            return err(400, format!("Keep the --no-lens reason to one short line ({NO_PR_MAX} characters or fewer); put the rest in the summary."));
         }
     }
     let no_pr = !r.b("no_pr").is_empty();
@@ -1980,11 +1993,11 @@ fn finishing(r: &Report) -> Result<()> {
 
 /// lens's local review before `tb submit`, when lens is installed: notes its findings on the task and
 /// refuses while it's missing, stale or has a blocker in the fix loop; an escalated blocker is asked
-/// of the owner.
+/// of the owner. `--no-lens "<why>"` skips it (the reason goes on the task).
 fn lens_review(r: &Report, t: &Row) -> Result<()> {
     let app = r.app;
     let Some(cwd) = r.cwd.as_deref().filter(|_| !r.spooled) else { return Ok(()) };
-    if r.away(t)? {
+    if r.away(t)? || !r.b("no_lens").trim().is_empty() {
         return Ok(());
     }
     let Some(review) = crate::lens::review(app, t, cwd)? else { return Ok(()) };

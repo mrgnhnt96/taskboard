@@ -107,6 +107,9 @@ enum Cmd {
         /// It finishes without evidence (screenshots, results), and why
         #[arg(long = "no-evidence", value_name = "WHY")]
         no_evidence: Option<String>,
+        /// It finishes without the lens review, when the owner said to skip it, and why
+        #[arg(long = "no-lens", value_name = "WHY")]
+        no_lens: Option<String>,
         /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`; see tb jira)
         #[arg(long = "merged-note", value_name = "MARKDOWN", conflicts_with = "no_pr")]
         merged_note: Option<String>,
@@ -1585,6 +1588,9 @@ enum ProjectCmd {
         /// Releases (tb release cut) for this project (default: config.toml's [releases] on)
         #[arg(long, value_parser = ["on", "off", "default"])]
         releases: Option<String>,
+        /// tb submit needs a lens review of its tasks (default: config.toml's [lens.projects], else tb project lens)
+        #[arg(long, value_parser = ["on", "off", "default"])]
+        lens: Option<String>,
         /// A tag pattern (v*): a new matching tag on the default branch cuts a release named after it, holding the work it contains (none: no tags)
         #[arg(long = "release-tags")]
         release_tags: Option<String>,
@@ -1599,6 +1605,11 @@ enum ProjectCmd {
     },
     /// Whether green PRs wait for your review on every project that doesn't say; off: the board marks them reviewed (default: config.toml's pr.owner_review)
     OwnerReview {
+        #[arg(value_parser = ["on", "off", "default"])]
+        value: Option<String>,
+    },
+    /// Whether tb submit needs a lens review on every project that doesn't say (default: config.toml's [lens] on)
+    Lens {
         #[arg(value_parser = ["on", "off", "default"])]
         value: Option<String>,
     },
@@ -4566,8 +4577,8 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Withdraw { why, t } => c.run_report("tb.withdraw", json!({"why": why}), t.task, true, |v| {
             format!("Withdrew the question on {}; it's no longer waiting on {}.", v["task"].as_str().unwrap_or("the task"), c.cfg.owner)
         }),
-        Cmd::Submit { summary, pr, pr_body, pr_title, no_pr, no_evidence, merged_note, human, t } => {
-            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "merged_note": merged_note});
+        Cmd::Submit { summary, pr, pr_body, pr_title, no_pr, no_evidence, no_lens, merged_note, human, t } => {
+            let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "no_lens": no_lens, "merged_note": merged_note});
             let Some(file) = pr_body else {
                 // The board runs the task.finishing hooks and checks the diff before it answers.
                 let task = t.task.map(|x| task_ref(&x)).transpose()?;
@@ -5837,6 +5848,7 @@ fn project_line(p: &Value) -> String {
         Some(on) => format!(" · releases {}{}", if on { "on" } else { "off" }, if on { tags.as_str() } else { "" }),
         None => String::new(),
     };
+    let lens = p["lens"].as_bool().map(|on| format!(" · lens review {}", if on { "on" } else { "off" })).unwrap_or_default();
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
     let gaps: String = p["setup_gaps"]
@@ -5844,7 +5856,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().map(|g| format!("\n  Needs setup: {}. To fix it: {}", g["text"].as_str().unwrap_or(""), g["fix"].as_str().unwrap_or(""))).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{releases}{waits_on}{approvals}{expected}{switches}{gaps}",
+        "{} · PR flow {} · {} · {remote}{terminals}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -5909,7 +5921,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases, release_tags, release_script } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases, lens, release_tags, release_script } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
@@ -5928,6 +5940,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             project_switch(&mut body, "agents_merge", agents_merge);
             project_switch(&mut body, "owner_review", owner_review);
             project_switch(&mut body, "releases", releases);
+            project_switch(&mut body, "lens", lens);
             if let Some(t) = release_tags {
                 body.insert("release_tags".into(), json!(t));
             }
@@ -5970,6 +5983,21 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             let on = if v["owner_review"] == true { "on" } else { "off: the board marks green PRs reviewed" };
             let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's pr.owner_review" };
             out(&format!("Owner review: {on} for projects that don't say ({from})."));
+            Ok(0)
+        }
+        ProjectCmd::Lens { value } => {
+            let v = match value {
+                None => c.call("GET", "/projects/lens", None)?,
+                Some(s) => {
+                    let mut body = serde_json::Map::new();
+                    project_switch(&mut body, "lens", Some(s));
+                    c.call("POST", "/projects/lens", Some(Value::Object(body)))?
+                }
+            };
+            let on = if v["lens"] == true { "on" } else { "off: tb submit doesn't look for a lens review" };
+            let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's [lens] on" };
+            let installed = if v["installed"] == true { "" } else { " lens isn't installed, so it doesn't run anywhere yet." };
+            out(&format!("Lens review: {on} for projects that don't say ({from}).{installed}"));
             Ok(0)
         }
     }
@@ -7142,6 +7170,10 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "tail"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "task", "set", "T1", "--stack-merge", "sideways"]).is_err());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--no-pr", "covered by T3", "--no-evidence", "no UI"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--no-lens", "the owner said to skip it"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "lens", "off"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "set", "webapp", "--lens", "default"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "project", "set", "webapp", "--lens", "maybe"]).is_err());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--title", "Add x"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--pr-body", "body.md", "--no-pr", "why"]).is_err());
         assert!(Cli::try_parse_from(["tb", "submit", "x", "--title", "Add x"]).is_err());

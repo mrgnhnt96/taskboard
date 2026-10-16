@@ -127,6 +127,8 @@ approvals = 2                        # approvals a PR needs before it's ready to
 # bin = "lens"                       # the lens binary (looked up on the PATH), for [pr.lens] too
 # [lens.projects]
 # webapp = false                     # turn it off (or on) for one project
+# The board's word beats these: tb project lens on|off|default, tb project set <name> --lens on|off|default.
+# One submit skips it with tb submit "<summary>" --no-lens "<why>" (the reason goes on the task).
 
 # The lens review stage: the board runs lens's PR pass (`lens review --pr <n>`) on each new PR, which
 # posts its verified findings inline (needs lens installed, see [lens], and gh logged in). Never holds a merge.

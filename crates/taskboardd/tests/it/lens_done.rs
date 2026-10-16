@@ -161,6 +161,53 @@ fn lens_off_for_the_board_or_the_project_skips_the_review() {
 }
 
 #[test]
+fn the_board_wide_and_project_switches_override_config() {
+    let b = new_board(true);
+    let off = b.post("/projects/lens", json!({"lens": "off"}));
+    assert_eq!((off["lens"].clone(), off["set"].clone(), off["config"].clone()), (json!(false), json!(false), json!(true)));
+    let id = b.task();
+    b.done().unwrap();
+    assert_eq!(b.row(id).st("status"), "done", "off on the board, no review is needed");
+    let p = b.post("/projects/webapp", json!({"lens": "on"}));
+    assert_eq!((p["lens"].clone(), p["lens_set"].clone()), (json!(true), json!(true)));
+    b.task();
+    assert_eq!(b.done().unwrap_err().0, 409, "the project's word beats the board's");
+    assert_eq!(b.post("/projects/webapp", json!({"lens": "default"}))["lens"], false, "back to the board's");
+    assert_eq!(b.post("/projects/lens", json!({"lens": null}))["lens"], true, "back to config.toml's (on)");
+    let b = board_with(true, |c| {
+        c.lens.projects.insert("webapp".into(), false);
+    });
+    b.post("/projects/webapp", json!({"lens": true}));
+    assert!(taskboardd::lens::on(&b.app, Some("webapp")), "the board's word on a project beats [lens.projects]");
+}
+
+#[test]
+fn no_lens_skips_the_review_and_notes_why() {
+    let b = new_board(true);
+    let id = b.task();
+    let (code, why) = b.report("tb.done", json!({"summary": "Done", "no_lens": "  "})).unwrap_err();
+    assert_eq!(code, 400, "{why}");
+    assert!(why.contains("--no-lens \"<why>\""), "{why}");
+    b.report("tb.done", json!({"summary": "Done", "no_lens": "the owner said to skip it"})).unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+    let log = b.app.db.q("SELECT text FROM events WHERE task_id = ?", p![id]).unwrap();
+    assert!(log.iter().any(|e| e.st("text") == "Skipped the lens review: the owner said to skip it"), "{log:?}");
+}
+
+#[test]
+fn with_lens_off_submit_says_nothing_about_it() {
+    let b = board_with(true, |c| c.lens.on = false);
+    let id = b.task();
+    b.report("tb.done", json!({"summary": "Done", "no_lens": "not needed"})).unwrap();
+    let log = b.app.db.q("SELECT text FROM events WHERE task_id = ?", p![id]).unwrap();
+    assert!(!log.iter().any(|e| e.st("text").contains("lens")), "{log:?}");
+    let b = new_board(false);
+    let projects = api::dispatch(&b.app, "GET", "/projects", &Query::new(), &json!({})).unwrap();
+    let webapp = projects["projects"].as_array().unwrap().iter().find(|p| p["name"] == "webapp").unwrap().clone();
+    assert!(webapp.get("lens").is_none(), "no lens switch on a project while lens isn't installed: {webapp}");
+}
+
+#[test]
 fn with_lens_and_no_review_it_asks_for_one_and_writes_the_intent() {
     let b = new_board(true);
     let id = b.task();
