@@ -35,6 +35,8 @@ thread_local! {
     /// Handoffs being fetched (`loadHandoff`), and note generations (so an old timer doesn't
     /// clear a newer note).
     static LOADING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// The task state each fetched handoff was built from (`handoff_stamp`), so a newer one is fetched.
+    static HANDOFF_AT: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static NOTE_GEN: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
 }
 
@@ -459,12 +461,22 @@ fn open_target(url: &str, cx: &mut App) {
     }
 }
 
-/// `loadHandoff(r)`: fetch the handoff once when the Context tab needs it and the task has none.
+/// What a task's handoff is built from, as the polled detail shows it: a change means the
+/// fetched handoff is out of date.
+fn handoff_stamp(t: &Value) -> String {
+    let newest = t["log"].get(0).map(|e| e["at"].to_string()).unwrap_or_default();
+    format!("{}|{}|{}|{newest}", t["ctx_version"], t["updated_at"], t["status"])
+}
+
+/// `loadHandoff(r)`: fetch the handoff when the Context tab needs it and the task has none, or
+/// the task changed since it was fetched (the old one shows until the new one lands).
 fn load_handoff(m: &MainWindow, cx: &mut Context<MainWindow>) {
     let Some(Panel::Task { r, tab: TaskTab::Context }) = &m.panel else { return };
     let Some(task) = m.data.task.as_ref() else { return };
     let r = r.clone();
-    if ui(|u| view::handoff_text(task, u).is_some()) || LOADING.with(|l| !l.borrow_mut().insert(r.clone())) {
+    let stamp = handoff_stamp(task);
+    let fresh = ui(|u| view::handoff_text(task, u).is_some()) && (task.get("handoff").is_some() || HANDOFF_AT.with(|h| h.borrow().get(&r) == Some(&stamp)));
+    if fresh || LOADING.with(|l| !l.borrow_mut().insert(r.clone())) {
         return;
     }
     let backend = m.backend.clone();
@@ -477,6 +489,7 @@ fn load_handoff(m: &MainWindow, cx: &mut Context<MainWindow>) {
         };
         let _ = this.update(cx, |_, cx| {
             LOADING.with(|l| l.borrow_mut().remove(&r));
+            HANDOFF_AT.with(|h| h.borrow_mut().insert(r.clone(), stamp));
             ui(|u| u.handoffs.insert(r, text));
             cx.notify();
         });

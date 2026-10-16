@@ -1,7 +1,7 @@
 //! The task panel against the web board: every panel state from `parity/golden/task.json` (what
 //! the web showed, its controls, tooltips and fields), and every action's request.
 use super::view::{self, Ctx, Ui};
-use super::{Act, act, build, on_input, save_meta, ui};
+use super::{Act, act, build, handoff_stamp, on_input, save_meta, ui};
 use crate::app::{MainWindow, Panel, TaskTab};
 use crate::parity::{self, golden, settle};
 use crate::backend::Backend;
@@ -715,4 +715,16 @@ fn a_long_note_for_testers_shows_bold_and_folds_after_its_first_block() {
     assert!(text.contains("Show more") && !text.contains("Please check"), "{text}");
     let open = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.note": "open"}}})));
     assert!(open.contains("Please check: Reconnect to the Core 1 times") && open.contains("Show less") && !open.contains("Show more"), "{open}");
+}
+
+#[test]
+fn a_fetched_handoff_is_out_of_date_once_the_task_moves_on() {
+    let t = json!({"ctx_version": 3, "updated_at": "2026-10-16T10:00:00", "status": "working", "log": [{"at": "2026-10-16T10:00:00"}]});
+    let same = handoff_stamp(&t);
+    assert_eq!(handoff_stamp(&t.clone()), same, "the same task keeps its handoff");
+    for (k, v) in [("ctx_version", json!(4)), ("updated_at", json!("2026-10-16T10:05:00")), ("status", json!("review")), ("log", json!([{"at": "2026-10-16T10:07:00"}]))] {
+        let mut moved = t.clone();
+        moved[k] = v;
+        assert_ne!(handoff_stamp(&moved), same, "a new {k} fetches the handoff again");
+    }
 }

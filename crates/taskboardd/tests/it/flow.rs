@@ -125,6 +125,7 @@ fn a_task_starts_is_claimed_reports_and_finishes() {
     assert!(handoff.contains("Done: Wrote the form."));
     assert!(handoff.contains("Keep: Use fetch."));
     assert!(handoff.contains("Branch: feature/x"));
+    assert!(b.get("/tasks/T1").get("handoff").is_none(), "the detail leaves the handoff to its own endpoint");
 
     let done = b.report("tb.done", "s1", json!({"summary": "Login works. PR: https://github.com/acme/webapp/pull/7"}));
     assert_eq!(done["task"], "T1");
