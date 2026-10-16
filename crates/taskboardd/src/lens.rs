@@ -1,10 +1,12 @@
-//! lens at `tb submit`: when the lens plugin is installed, a task finishes only on a fresh local review
-//! (`/lens:review`) of what's in its checkout. Verified findings become task notes; a blocker holds
-//! `tb submit` while lens's fix loop runs, and only a blocker the loop escalates is asked of the owner.
+//! lens at `tb submit`: with `[lens]` on for the task's project and the `lens` binary installed, a task
+//! finishes only on a fresh local review (`lens review`) of what's in its checkout. Verified findings
+//! become task notes; a blocker holds `tb submit` while lens's fix loop runs, and only a blocker the
+//! loop escalates is asked of the owner.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::App;
@@ -35,36 +37,45 @@ impl Review {
 const NOTED: &str = "lens_noted";
 const ASKED: &str = "lens_asked";
 
-/// Is lens installed for the repo at `root`, per Claude Code's `installed_plugins.json`?
-pub fn installed(claude_dir: &Path, root: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(claude_dir.join("plugins/installed_plugins.json")) else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else { return false };
-    let Some(plugins) = v["plugins"].as_object() else { return false };
-    plugins.iter().filter(|(name, _)| name.split('@').next() == Some("lens")).any(|(_, installs)| {
-        installs.as_array().is_some_and(|a| {
-            a.iter().any(|i| match i["projectPath"].as_str().filter(|p| !p.is_empty()) {
-                Some(p) if i["scope"].as_str() != Some("user") => root.starts_with(p),
-                _ => true,
-            })
-        })
-    })
+/// `[lens]` in config.toml: the review at `tb submit`, and the binary both it and `[pr.lens]` run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SubmitConfig {
+    /// Review every project's tasks at `tb submit` (`projects` says otherwise for one). On by default.
+    pub on: bool,
+    /// Per project, by name: `false` turns the review off for it, `true` on.
+    pub projects: std::collections::BTreeMap<String, bool>,
+    /// The lens binary: a name looked up on the PATH, or a path.
+    pub bin: String,
 }
 
-/// The Claude Code folder (`~/.claude`) that holds the projects folder the board reads.
-pub fn claude_dir(app: &App) -> PathBuf {
-    app.cfg.claude_projects.parent().map(Path::to_path_buf).unwrap_or_default()
+impl Default for SubmitConfig {
+    fn default() -> Self {
+        SubmitConfig { on: true, projects: Default::default(), bin: "lens".into() }
+    }
 }
 
-/// Looks at the lens review of the checkout at `cwd` for task `t`. `None` when lens isn't installed
-/// or `cwd` isn't a git checkout: `tb submit` goes on as it would without lens.
+/// Whether `tb submit` reviews this project's tasks.
+pub fn on(app: &App, project: Option<&str>) -> bool {
+    let l = &app.cfg.lens;
+    project.and_then(|p| l.projects.get(p).copied()).unwrap_or(l.on)
+}
+
+/// The lens binary, when it's installed.
+pub fn bin(app: &App) -> Option<PathBuf> {
+    crate::proc::which(&app.cfg.lens.bin)
+}
+
+/// Looks at the lens review of the checkout at `cwd` for task `t`. `None` when lens is off for its
+/// project or isn't installed, or `cwd` isn't a git checkout: `tb submit` goes on as it would without lens.
 pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
-    let Some(root) = Git::new(cwd).out(&["rev-parse", "--show-toplevel"]).map(PathBuf::from) else { return Ok(None) };
-    if !installed(&claude_dir(app), &root) {
+    if !on(app, t.s("project")) || bin(app).is_none() {
         return Ok(None);
     }
+    let Some(root) = Git::new(cwd).out(&["rev-parse", "--show-toplevel"]).map(PathBuf::from) else { return Ok(None) };
     let git = Git::new(&root.to_string_lossy());
     let intent = write_intent(app, t, &root)?;
-    let run = format!("Run /lens:review --intent {} in {}, then tb submit again.", intent.display(), root.display());
+    let run = format!("Run `lens review --intent {}` in {}, then tb submit again.", intent.display(), root.display());
     let Some(now) = git.tree_now() else { return Ok(Some(Review::verdict(Verdict::Refuse(format!("lens couldn't read the checkout. {run}"))))) };
     let report_path = root.join(".review").join(format!("{}.json", git.branch()));
     let report = std::fs::read_to_string(&report_path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
@@ -78,11 +89,11 @@ pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
     if !fresh(&git, &root, &report, &now) {
         return Ok(Some(Review::verdict(Verdict::Refuse(format!("The lens review at {} is older than the change. {run}", report_path.display())))));
     }
-    Ok(Some(judge(t, &report, &report_path)))
+    Ok(Some(judge(t, &report, &root)))
 }
 
 /// What the fresh report means for `tb submit`.
-fn judge(t: &Row, report: &Value, report_path: &Path) -> Review {
+fn judge(t: &Row, report: &Value, root: &Path) -> Review {
     let ctx = board::task_context(t);
     let noted = str_list(ctx.get(NOTED));
     let asked = str_list(ctx.get(ASKED));
@@ -96,13 +107,12 @@ fn judge(t: &Row, report: &Value, report_path: &Path) -> Review {
     let open: Vec<&&Value> = blockers.iter().filter(|f| f["fix"]["status"] != "resolved" && f["fix"]["status"] != "escalated").collect();
     if !open.is_empty() {
         let ids = open.iter().map(|f| f["id"].as_str().unwrap_or("?")).collect::<Vec<_>>().join(", ");
-        let first = open[0]["id"].as_str().unwrap_or("F1");
         let why = format!(
-            "lens found {} blocker{} not through its fix loop yet ({ids}). Run the loop as /lens:review step 7 says, \
-             starting with `lens fix start --report {} --finding {first}`, then tb submit again.",
+            "lens found {} blocker{} not through its fix loop yet ({ids}). Run `lens review` again in {} \
+             (it picks the fix loop up where it stopped), then tb submit again.",
             open.len(),
             if open.len() == 1 { "" } else { "s" },
-            report_path.display(),
+            root.display(),
         );
         return Review { notes, verdict: Verdict::Refuse(why) };
     }
@@ -197,7 +207,7 @@ fn escalation(f: &Value, ledger: &Value) -> String {
     )
 }
 
-/// Writes the task's intent (title, detail, goal) for `/lens:review --intent` under `.review/`,
+/// Writes the task's intent (title, detail, goal) for `lens review --intent` under `.review/`,
 /// which ignores itself in git.
 fn write_intent(app: &App, t: &Row, root: &Path) -> Result<PathBuf> {
     let dir = root.join(".review");

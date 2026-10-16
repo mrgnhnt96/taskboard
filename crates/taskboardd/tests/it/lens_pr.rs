@@ -1,5 +1,5 @@
-//! The lens review stage (`[pr.lens]`, `lens_pr.rs`): a new PR gets lens's PR pass, run headless, and
-//! the `lens` stage while it runs; it never holds a merge.
+//! The lens review stage (`[pr.lens]`, `lens_pr.rs`): a new PR gets lens's PR pass (`lens review --pr`),
+//! and the `lens` stage while it runs; it never holds a merge.
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -16,26 +16,21 @@ struct Board {
     dir: tempfile::TempDir,
 }
 
-/// A board whose `claude` records its arguments and folder, and answers with `answer.json` (exit 0) or,
-/// when `fail` exists, exits 1.
+/// A board whose `lens` records its arguments and folder, and prints a summary (exit 0) or, when `fail`
+/// exists, exits 1.
 fn board_with(f: impl FnOnce(&mut Config)) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     cfg.pr.watch = true;
     cfg.pr.wake = true;
-    let claude = dir.path().join("fake-claude");
+    let lens = dir.path().join("fake-lens");
     std::fs::write(
-        &claude,
-        "#!/bin/sh\nd=$(dirname \"$0\")\necho \"$PWD|$*\" >> \"$d/calls.txt\"\nif [ -f \"$d/fail\" ]; then echo 'no gh login' >&2; exit 1; fi\ncat \"$d/answer.json\"\n",
+        &lens,
+        "#!/bin/sh\nd=$(dirname \"$0\")\necho \"$PWD|$*\" >> \"$d/calls.txt\"\nif [ -f \"$d/fail\" ]; then echo 'Error: no gh login' >&2; exit 1; fi\necho 'Posted 2 findings.'\n",
     )
     .unwrap();
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(dir.path().join("answer.json"), r#"{"type":"result","is_error":false,"result":"Posted 2 findings."}"#).unwrap();
-    cfg.claude = claude.to_string_lossy().to_string();
-    let plugins = cfg.claude_projects.parent().unwrap().join("plugins");
-    std::fs::create_dir_all(&plugins).unwrap();
-    let installed = json!({"version": 2, "plugins": {"lens@lens": [{"scope": "user", "installPath": "/x", "version": "0.1.0"}]}});
-    std::fs::write(plugins.join("installed_plugins.json"), installed.to_string()).unwrap();
+    std::fs::set_permissions(&lens, std::fs::Permissions::from_mode(0o755)).unwrap();
+    cfg.lens.bin = lens.to_string_lossy().to_string();
     f(&mut cfg);
     let repo = dir.path().join("webapp");
     std::fs::create_dir_all(&repo).unwrap();
@@ -96,7 +91,7 @@ fn off_by_default_a_new_pr_gets_no_lens_review() {
     let b = board_with(|_| {});
     let id = b.pr_task();
     prflow::apply(&b.app, id, &green()).unwrap();
-    assert!(b.calls().is_empty(), "claude wasn't run");
+    assert!(b.calls().is_empty(), "lens wasn't run");
     assert!(b.lens(id).is_null());
     assert_eq!(b.task(id).s("pr_phase"), Some("review"));
 }
@@ -111,7 +106,7 @@ fn a_new_pr_gets_the_lens_pr_pass_once() {
     let repo = b.dir.path().join("webapp").canonicalize().unwrap();
     let (cwd, args) = calls[0].split_once('|').unwrap();
     assert_eq!(std::path::Path::new(cwd).canonicalize().unwrap(), repo, "run from the PR's repo");
-    assert!(args.starts_with("-p /lens:review --pr 9 --permission-mode default --allowedTools Bash,"), "{args}");
+    assert_eq!(args, "review --pr 9");
     let lens = b.lens(id);
     assert_eq!(lens["state"], "done", "{lens}");
     assert_eq!(lens["head"], "h1");
@@ -158,13 +153,13 @@ fn a_failed_run_is_noted_and_the_pr_moves_on() {
 }
 
 #[test]
-fn without_the_plugin_installed_the_run_fails_without_calling_claude() {
+fn without_lens_installed_the_run_fails() {
     let b = lens_on();
-    std::fs::remove_file(b.app.cfg.claude_projects.parent().unwrap().join("plugins/installed_plugins.json")).unwrap();
+    std::fs::remove_file(&b.app.cfg.lens.bin).unwrap();
     let id = b.pr_task();
     prflow::apply(&b.app, id, &green()).unwrap();
     assert!(b.calls().is_empty());
-    assert_eq!(b.lens(id)["error"], "the lens plugin isn't installed for claude");
+    assert_eq!(b.lens(id)["error"], "lens isn't installed");
     assert_eq!(b.task(id).s("pr_phase"), Some("review"));
 }
 

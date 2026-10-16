@@ -1248,8 +1248,8 @@ latest (`pr_flow.answered_changes`). The old review isn't an answer to the new a
 request for changes doesn't make it one.
 
 **The `lens` stage** (`[pr.lens] on`, off by default; per project `[pr.projects.<name>] lens`). The first time the
-board reads a new, open PR, it queues lens's PR pass (`claude -p "/lens:review --pr <n>"` from the PR's repo, with only
-`[pr.lens] allowed_tools`), which posts its verified findings on the PR as inline comments. Runs go one at a time on
+board reads a new, open PR, it queues lens's PR pass (`lens review --pr <n>` from the PR's repo, the binary `[lens] bin` names),
+which posts its verified findings on the PR as inline comments. Runs go one at a time on
 their own thread. The run is kept in `pr_flow.lens` (`pr.bar.lens`), its output in `data/lens/T<id>-pr<n>.log`,
 and its outcome as a `lens` event. While it's queued or running, the PR's phase is `lens` in place of `ask` or
 `review` (so the owner isn't asked to look until lens has posted); every other stage still wins, so it never holds a

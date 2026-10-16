@@ -120,14 +120,18 @@ azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, 
 # rebase = "conflicts"               # when tb pr status asks for a rebase onto the base: "conflicts" (only when the PR conflicts with it), "moved" (whenever the base moved since the push) or "never"
 approvals = 2                        # approvals a PR needs before it's ready to merge, when its project doesn't say (0: the host's decision, or any approval)
 
-# The lens review stage: the board runs lens's PR pass headless on each new PR, which posts its verified
-# findings inline (needs the lens plugin installed for claude, and gh logged in). Never holds a merge.
+# lens at tb submit: with lens installed, a task finishes only on a fresh `lens review` of its checkout.
+# [lens]
+# on = true                          # on by default
+# bin = "lens"                       # the lens binary (looked up on the PATH), for [pr.lens] too
+# [lens.projects]
+# webapp = false                     # turn it off (or on) for one project
+
+# The lens review stage: the board runs lens's PR pass (`lens review --pr <n>`) on each new PR, which
+# posts its verified findings inline (needs lens installed, see [lens], and gh logged in). Never holds a merge.
 # [pr.lens]
 # on = true                          # off by default; a project can say otherwise
-# model = ""                         # claude's --model (empty: claude's default)
 # timeout_mins = 30.0
-# permission_mode = "default"
-# allowed_tools = ["Bash", "Read", "Grep", "Glob", "Write", "Agent", "Task", "Skill", "TodoWrite"]
 
 # Per-project PR rules, by project name. Every key is optional. `tb project set <name> --approvals N
 # --expected-check <check> --expected-wait <mins>` changes the first three on the board, over these.
