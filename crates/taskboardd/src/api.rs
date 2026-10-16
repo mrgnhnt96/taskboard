@@ -1588,13 +1588,8 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
         // Read before `lost` is cleared: what the board found goes in the new terminal's prompt.
         let finish = (mode == "finish").then(|| crate::lost_done::finish_prompt(&t, &board::tb_cmd(app)));
         let ask = (mode == "ask").then(|| ask_again_prompt(&t, &board::tb_cmd(app), &app.cfg.owner));
-        let mut ctx = board::task_context(&t);
+        let ctx = board::task_context(&t);
         let cwd = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
-        // Reopening after its compact failed means resuming the conversation as it is.
-        if mode == "reopen" && t.s("needs_reason") == Some("compact_failed") && has(t.s("claude_session_id")) {
-            ctx.insert("resume_as_is".into(), json!(t.st("claude_session_id")));
-            board::save_context(app, id, &ctx, false)?;
-        }
         let repo = t.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()).or(cwd.clone());
         board::update_task(app, id, fields!["lost" => 0, "session_id" => null, "needs_reason" => null, "question" => null, "repo_path" => repo])?;
         let t = board::get_task(app, id)?;

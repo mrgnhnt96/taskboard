@@ -6,13 +6,12 @@
 //! `[limits]` in config.toml is where they start; `tb limits` changes them on the board.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{proc, transcript};
+use crate::transcript;
 
 const KEY: &str = "limits";
 /// The longest gap `tb limits --review-gap` sets between a step's rounds, in minutes.
@@ -32,8 +31,6 @@ fn whole(v: &Value, tokens: bool) -> Option<i64> {
         None => s.parse().ok(),
     }
 }
-/// How long a headless `/compact` may take before the resume goes ahead without it.
-const COMPACT_TIMEOUT: f64 = 600.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Limits {
@@ -307,31 +304,6 @@ pub fn is_cold(app: &App, c: &Conversation) -> bool {
     cold > 0 && c.idle_mins.is_some_and(|m| m > cold as f64)
 }
 
-/// Compacts a conversation that isn't open anywhere with a headless `claude -p /compact --resume`.
-/// No user settings or hooks load into the run, and its JSON result says whether it worked.
-pub fn compact(app: &App, cwd: &str, cid: &str) -> std::result::Result<(), String> {
-    let Some(claude) = proc::which(&app.cfg.claude) else { return Err(format!("couldn't find {}", app.cfg.claude)) };
-    let args: Vec<String> = ["-p", "/compact", "--resume", cid, "--output-format", "json", "--setting-sources", ""].iter().map(|s| s.to_string()).collect();
-    match proc::run(&claude, &args, Some(Path::new(cwd)), COMPACT_TIMEOUT) {
-        Ok(o) => compact_outcome(o.code, &o.stdout, &o.stderr),
-        Err(proc::RunError::TimedOut) => Err(format!("it took over {} minutes", COMPACT_TIMEOUT as i64 / 60)),
-        Err(proc::RunError::Spawn(e)) => Err(e.to_string()),
-    }
-}
-
-/// Reads a headless compact's exit code and `--output-format json` result.
-fn compact_outcome(code: Option<i32>, stdout: &str, stderr: &str) -> std::result::Result<(), String> {
-    if code != Some(0) {
-        return Err(one_line(if stderr.trim().is_empty() { stdout } else { stderr }, 300));
-    }
-    let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) else { return Err(format!("its result wasn't JSON: {}", one_line(stdout, 300))) };
-    if v["is_error"] != false {
-        let why = v["result"].as_str().filter(|s| !s.trim().is_empty()).or(v["subtype"].as_str()).unwrap_or("it reported an error");
-        return Err(one_line(why, 300));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,15 +315,6 @@ mod tests {
         assert_eq!(mins_text(90), "1h 30m");
         assert_eq!(mins_text(45), "45m");
         assert_eq!(mins_text(120), "2h");
-    }
-
-    #[test]
-    fn reads_the_compact_result() {
-        assert!(compact_outcome(Some(0), r#"{"type":"result","subtype":"success","is_error":false,"result":""}"#, "").is_ok());
-        assert_eq!(compact_outcome(Some(0), r#"{"type":"result","is_error":true,"result":"Not enough messages to compact."}"#, "").unwrap_err(), "Not enough messages to compact.");
-        assert_eq!(compact_outcome(Some(0), r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#, "").unwrap_err(), "error_during_execution");
-        assert!(compact_outcome(Some(0), "Compacted.", "").unwrap_err().starts_with("its result wasn't JSON"));
-        assert_eq!(compact_outcome(Some(1), "", "No conversation found").unwrap_err(), "No conversation found");
     }
 
     #[test]
