@@ -337,9 +337,9 @@ impl MainWindow {
         self.goals_loaded
     }
 
-    /// A task is a page of its own: going anywhere leaves it.
+    /// Go to a page; an open task panel stays beside it.
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
-        let to = Nav { page, task: None };
+        let to = Nav { page, task: self.here().task };
         if self.here() != to {
             self.remember();
             self.show(to, cx);
@@ -398,7 +398,7 @@ impl MainWindow {
 
     /// Go to a place without touching the history.
     fn show(&mut self, nav: Nav, cx: &mut Context<Self>) {
-        if nav.task.is_none() && self.task_page_open() {
+        if nav.task.is_none() && self.task_panel_open() {
             self.panel = None;
             self.data.task = None;
             cx.notify();
@@ -436,8 +436,8 @@ impl MainWindow {
         }
     }
 
-    /// Whether a task fills the main area (its page) over the current page.
-    pub fn task_page_open(&self) -> bool {
+    /// Whether the task panel is open beside the current page.
+    pub fn task_panel_open(&self) -> bool {
         matches!(self.panel, Some(Panel::Task { .. }))
     }
 
@@ -450,12 +450,17 @@ impl MainWindow {
     }
 
     fn show_task(&mut self, r: String, cx: &mut Context<Self>) {
-        if !matches!(&self.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
-            self.data.task = None;
-            self.data.errs.task = None;
-            self.task_panel = Default::default();
-        }
-        self.panel = Some(Panel::Task { r, tab: TaskTab::Overview });
+        // The same task stays as it was (its tab too) beside a new page.
+        let tab = match &self.panel {
+            Some(Panel::Task { r: cur, tab }) if *cur == r => *tab,
+            _ => {
+                self.data.task = None;
+                self.data.errs.task = None;
+                self.task_panel = Default::default();
+                TaskTab::Overview
+            }
+        };
+        self.panel = Some(Panel::Task { r, tab });
         self.refresh(cx);
     }
 
@@ -507,7 +512,7 @@ impl MainWindow {
 
     pub fn close_panel(&mut self, cx: &mut Context<Self>) {
         // Closing a task is a step in the history: ⌘← opens it again.
-        if self.task_page_open() {
+        if self.task_panel_open() {
             self.remember();
         }
         self.panel = None;
@@ -1079,7 +1084,6 @@ impl Render for MainWindow {
         window.set_window_title(&self.title());
 
         let page = match self.page.clone() {
-            _ if self.task_page_open() => ui::task_panel::render_page(self, window, cx),
             Page::Board => ui::home::render(self, window, cx),
             Page::Tasks => ui::tasks::render(self, window, cx),
             Page::Goals => ui::goals_page::render(self, window, cx),
@@ -1090,10 +1094,10 @@ impl Render for MainWindow {
             Page::Review => ui::review::render(self, window, cx),
             Page::Releases => ui::releases::render(self, window, cx),
         };
-        let panel = match self.panel.clone() {
-            Some(Panel::Task { .. }) => None,
-            Some(Panel::Issue { .. }) => Some(ui::issue_panel::render(self, window, cx)),
-            None => None,
+        let (task_panel, panel) = match self.panel.clone() {
+            Some(Panel::Task { .. }) => (Some(ui::task_panel::render(self, window, cx)), None),
+            Some(Panel::Issue { .. }) => (None, Some(ui::issue_panel::render(self, window, cx))),
+            None => (None, None),
         };
         let modal = self.modal.is_some().then(|| ui::modals::render(self, window, cx));
         let hours_menu = ui::hours::render_menu(self, window, cx);
@@ -1142,7 +1146,9 @@ impl Render for MainWindow {
                             .child(div().flex_none().h(px(12.)).on_mouse_down(MouseButton::Left, crate::settings::drag_window))
                             .children(banner(self, &t, cx))
                             .child(div().flex().flex_1().min_h_0().child(page)),
-                    ),
+                    )
+                    // The task panel sits beside the page, not over it.
+                    .children(task_panel),
             )
             .children(panel)
             .children(modal)
@@ -1781,18 +1787,24 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_task_is_a_page_that_any_page_leaves(cx: &mut gpui_kit::TestAppContext) {
+    fn the_task_panel_stays_open_across_pages(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
-        w.update(cx, |m: &mut MainWindow, _, cx| {
+        w.update(cx, |m: &mut MainWindow, window, cx| {
             m.go(Page::Goals, cx);
             m.open_task("T1", cx);
-            assert!(m.task_page_open());
-            m.go(Page::Goals, cx);
-            assert!(!m.task_page_open(), "the same page in the sidebar leaves the task too");
-            assert_eq!(m.page, Page::Goals);
-            m.open_task("T1", cx);
+            assert!(m.task_panel_open());
             m.go(Page::Board, cx);
-            assert!(m.panel.is_none() && m.page == Page::Board);
+            assert!(m.task_panel_open() && m.page == Page::Board, "another page keeps the panel beside it");
+            if let Some(Panel::Task { tab, .. }) = m.panel.as_mut() {
+                *tab = TaskTab::Log;
+            }
+            m.go(Page::Goal("G1".into()), cx);
+            assert!(matches!(m.panel, Some(Panel::Task { tab: TaskTab::Log, .. })) && m.page == Page::Goal("G1".into()), "on the tab it was on");
+            m.go_back(cx);
+            assert!(matches!(m.panel, Some(Panel::Task { tab: TaskTab::Log, .. })), "⌘← keeps the tab too");
+            m.go_forward(cx);
+            m.escape(window, cx);
+            assert!(m.panel.is_none() && m.page == Page::Goal("G1".into()), "Esc closes it and keeps the page");
         })
         .unwrap();
     }
