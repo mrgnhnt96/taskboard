@@ -33,6 +33,9 @@ pub struct ReleasesConfig {
 
 /// `tb project set --releases`: name → whether the project has releases, over config.toml's.
 const SETTING: &str = "project_releases";
+/// `tb project set --release-script`: name → the command `tb release cut` runs first.
+const SCRIPT_SETTING: &str = "project_release_script";
+const SCRIPT_MAX: usize = 500;
 
 /// A done task that goes in the next cut: not failed, in no release, its PR merged or with no PR.
 const RELEASABLE: &str = "status = 'done' AND COALESCE(failed, 0) = 0 AND release_id IS NULL
@@ -198,6 +201,42 @@ fn groups(app: &App, tasks: &[Row]) -> Result<Vec<Value>> {
         .collect()
 }
 
+fn scripts(app: &App) -> Result<Row> {
+    Ok(jloads_obj(app.db.get_setting(SCRIPT_SETTING)?.as_deref()))
+}
+
+/// The command `tb release cut` runs before recording a release, if the project has one.
+pub fn script(app: &App, project: &str) -> Result<Option<String>> {
+    Ok(scripts(app)?.get(project).and_then(|v| v.as_str()).map(str::to_string))
+}
+
+/// Sets a project's release script from a body's `release_script` (null, "", "none" or "default":
+/// none). False when the body doesn't name it.
+pub fn set_script(app: &App, project: &str, body: &Value) -> Result<bool> {
+    let Some(v) = body.get("release_script") else { return Ok(false) };
+    let to = match v {
+        Value::Null => None,
+        Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() || s.eq_ignore_ascii_case("none") || s.eq_ignore_ascii_case("default") {
+                None
+            } else if s.chars().count() > SCRIPT_MAX || s.contains(['\n', '\r']) {
+                return err(400, format!("release_script is one line of {SCRIPT_MAX} characters at most, or none."));
+            } else {
+                Some(s.to_string())
+            }
+        }
+        _ => return err(400, "release_script is a command like scripts/release.sh, or none."),
+    };
+    let mut all = scripts(app)?;
+    match to {
+        Some(s) => all.insert(project.into(), json!(s)),
+        None => all.remove(project),
+    };
+    app.db.set_setting(SCRIPT_SETTING, Some(&jdumps(&Value::Object(all))))?;
+    Ok(true)
+}
+
 /// A changelog ready to paste: the release's name and date, its notes, then its tasks under their goals.
 fn markdown(title: &str, notes: Option<&str>, groups: &[Value]) -> String {
     let mut out = format!("## {title}\n");
@@ -259,7 +298,9 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     Ok(json!({"project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases}))
 }
 
-/// `POST /releases`: cut a release holding every task in Unreleased.
+/// `POST /releases`: cut a release holding every task in Unreleased. With `check`, only says whether
+/// the cut would go through, and the project's release script and where to run it, without cutting:
+/// `tb release cut` asks first so a doomed cut doesn't run the script.
 fn cut(app: &App, body: &Value) -> Result<Value> {
     let project = body_project(app, body)?;
     need_on(app, &project)?;
@@ -269,6 +310,14 @@ fn cut(app: &App, body: &Value) -> Result<Value> {
     let tasks = unreleased_rows(app, &project)?;
     if tasks.is_empty() {
         return err(409, format!("Nothing to release in {project}: no done task waits in Unreleased."));
+    }
+    if body["check"] == true {
+        // The script runs in the terminal's checkout, unless --project named another project.
+        let cwd = body["cwd"].as_str().filter(|c| !c.is_empty());
+        let here = body_str(body, "project").is_empty() || crate::projects::project_for_path(app, cwd)?.as_deref() == Some(project.as_str());
+        let path = crate::projects::list_projects(app)?.into_iter().find(|p| p["name"] == project.as_str()).and_then(|p| p["path"].as_str().map(str::to_string));
+        let dir = if here { cwd.map(str::to_string) } else { path };
+        return Ok(json!({"project": project, "name": name, "unreleased": tasks.len(), "script": script(app, &project)?, "dir": dir}));
     }
     let who = board::caller(app, body, board::OWNER);
     let id = put_in_release(app, &project, &name, notes, &tasks, &who)?;

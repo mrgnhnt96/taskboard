@@ -431,6 +431,7 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("releases".into(), json!(crate::releases::on(app, name)));
     o.insert("releases_set".into(), json!(crate::releases::setting(app, name)?));
     o.insert("release_tags".into(), json!(crate::release_tags::pattern(app, name)?));
+    o.insert("release_script".into(), json!(crate::releases::script(app, name)?));
     o.insert("waits_on".into(), json!(waits_on(app, name)));
     o.insert("setup_gaps".into(), crate::setup::gaps_json(app, name)?);
     // Its areas from `.taskboard.toml` (`areas.rs`), and what in that file was left out.

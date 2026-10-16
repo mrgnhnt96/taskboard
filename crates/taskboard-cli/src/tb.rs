@@ -719,7 +719,8 @@ enum BitCmd {
 
 #[derive(Subcommand)]
 enum ReleaseCmd {
-    /// Cut a release holding every done task in Unreleased (its PR merged, or done with no PR)
+    /// Cut a release holding every done task in Unreleased (its PR merged, or done with no PR). A project
+    /// with a release script runs it first, with the name, and records the release only if it succeeds
     Cut {
         name: String,
         /// The project (this terminal's when left out)
@@ -727,6 +728,9 @@ enum ReleaseCmd {
         project: Option<String>,
         #[arg(long)]
         notes: Option<String>,
+        /// Record the release without running the project's release script (for a release already out)
+        #[arg(long = "no-script")]
+        no_script: bool,
     },
     /// A release's tasks (R<n>, or unreleased), grouped by goal
     Show {
@@ -1575,6 +1579,9 @@ enum ProjectCmd {
         /// A tag pattern (v*): a new matching tag on the default branch cuts a release named after it, holding the work it contains (none: no tags)
         #[arg(long = "release-tags")]
         release_tags: Option<String>,
+        /// A command tb release cut runs in the checkout, with the release name, before recording the release (none: no script)
+        #[arg(long = "release-script")]
+        release_script: Option<String>,
     },
     /// Whether agents merge approved, green PRs on every project that doesn't say (default: config.toml's pr.agents_merge)
     AgentsMerge {
@@ -3221,12 +3228,76 @@ fn release_groups(v: &Value) {
     }
 }
 
+enum ReleaseCut {
+    Cut(Value),
+    /// The release script's exit status: nothing was recorded.
+    ScriptFailed(i32),
+}
+
+/// `tb release cut`: unless `no_script`, asks the board whether the cut would go through (Unreleased
+/// isn't empty, the name is free) and for the project's release script, runs the script with the
+/// release name, and records the release only when it exits 0. `call` posts to /releases; `run` runs
+/// a script (command, release name, folder) and gives its exit status.
+fn cut_release(
+    call: &mut dyn FnMut(Value) -> Result<Value, String>,
+    run: &mut dyn FnMut(&str, &str, Option<&str>) -> Result<i32, String>,
+    body: Value,
+    no_script: bool,
+) -> Result<ReleaseCut, String> {
+    if !no_script {
+        let mut check = body.clone();
+        check["check"] = json!(true);
+        let v = call(check)?;
+        if let Some(script) = v["script"].as_str() {
+            let code = run(script, v["name"].as_str().unwrap_or(""), v["dir"].as_str())?;
+            if code != 0 {
+                return Ok(ReleaseCut::ScriptFailed(code));
+            }
+        }
+    }
+    call(body).map(ReleaseCut::Cut)
+}
+
+/// Runs a project's release script in its checkout (the folder's git top level) with the release name
+/// as its one argument, its output going straight to this terminal.
+fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+    let dir = dir.map(str::to_string).unwrap_or_else(|| ".".into());
+    let top = std::process::Command::new("git")
+        .args(["-C", &dir, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(dir);
+    out(&format!("Running the release script in {top}: {script} {name}"));
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{script} \"$1\""))
+        .arg("sh")
+        .arg(name)
+        .current_dir(&top)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("couldn't start the release script: {e}"))?;
+    // Killed by a signal: no code, so say 1.
+    Ok(status.code().unwrap_or(1))
+}
+
 fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
     match action {
-        ReleaseCmd::Cut { name, project, notes } => {
-            let v = c.call("POST", "/releases", Some(json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd})))?;
-            out(&format!("Cut {}.", release_line(&v)));
-            release_groups(&v);
+        ReleaseCmd::Cut { name, project, notes, no_script } => {
+            let body = json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd});
+            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run_release_script, body, no_script)? {
+                ReleaseCut::Cut(v) => {
+                    out(&format!("Cut {}.", release_line(&v)));
+                    release_groups(&v);
+                }
+                ReleaseCut::ScriptFailed(code) => {
+                    eprintln!("tb: the release script exited {code}, so {name} isn't recorded. Fix it and run tb release cut again.");
+                    return Ok(code);
+                }
+            }
         }
         ReleaseCmd::Show { release, project, markdown } => {
             let r = release_ref(&release)?;
@@ -5738,7 +5809,8 @@ fn project_line(p: &Value) -> String {
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
-    let tags = p["release_tags"].as_str().map(|t| format!(", cut by tags {t}")).unwrap_or_default();
+    let tags = p["release_tags"].as_str().map(|t| format!(", cut by tags {t}")).unwrap_or_default()
+        + &p["release_script"].as_str().map(|s| format!(", release script {s}")).unwrap_or_default();
     let releases = match p["releases"].as_bool() {
         Some(on) => format!(" · releases {}{}", if on { "on" } else { "off" }, if on { tags.as_str() } else { "" }),
         None => String::new(),
@@ -5815,7 +5887,7 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases, release_tags } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases, release_tags, release_script } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
@@ -5836,6 +5908,9 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             project_switch(&mut body, "releases", releases);
             if let Some(t) = release_tags {
                 body.insert("release_tags".into(), json!(t));
+            }
+            if let Some(s) = release_script {
+                body.insert("release_script".into(), json!(s));
             }
             if let Some(flow) = pr_flow {
                 body.insert("pr_flow".into(), json!(flow));
@@ -7152,5 +7227,79 @@ mod tests {
     fn basic_auth() {
         assert_eq!(basic("a@b.co", "tok"), "YUBiLmNvOnRvaw==");
         assert_eq!(basic("ab", "c"), "YWI6Yw==");
+    }
+
+    /// `cut_release` against a fake board: the bodies it posted, and the scripts it ran.
+    fn cut_with(script: Option<&str>, code: i32, no_script: bool) -> (Result<ReleaseCut, String>, Vec<Value>, Vec<(String, String, Option<String>)>) {
+        let mut posted = vec![];
+        let mut ran = vec![];
+        let r = cut_release(
+            &mut |b| {
+                posted.push(b.clone());
+                Ok(if b["check"] == true {
+                    json!({"project": "webapp", "name": "v1.4", "script": script, "dir": "/repo"})
+                } else {
+                    json!({"ref": "R1", "name": "v1.4"})
+                })
+            },
+            &mut |s, n, d| {
+                ran.push((s.to_string(), n.to_string(), d.map(str::to_string)));
+                Ok(code)
+            },
+            json!({"name": "v1.4", "cwd": "/repo"}),
+            no_script,
+        );
+        (r, posted, ran)
+    }
+
+    #[test]
+    fn release_cut_runs_the_script_then_records_the_release() {
+        let (r, posted, ran) = cut_with(Some("scripts/release.sh"), 0, false);
+        assert!(matches!(r, Ok(ReleaseCut::Cut(v)) if v["ref"] == "R1"));
+        assert_eq!(ran, vec![("scripts/release.sh".into(), "v1.4".into(), Some("/repo".into()))]);
+        assert_eq!(posted.len(), 2);
+        assert_eq!(posted[0]["check"], true, "it asks before running the script");
+        assert_eq!(posted[1].get("check"), None);
+    }
+
+    #[test]
+    fn release_cut_records_nothing_when_the_script_fails() {
+        let (r, posted, ran) = cut_with(Some("scripts/release.sh"), 3, false);
+        assert!(matches!(r, Ok(ReleaseCut::ScriptFailed(3))));
+        assert_eq!(ran.len(), 1);
+        assert_eq!(posted.len(), 1, "only the check, no cut");
+    }
+
+    #[test]
+    fn release_cut_without_a_script_or_with_no_script_just_records() {
+        let (r, posted, ran) = cut_with(None, 0, false);
+        assert!(matches!(r, Ok(ReleaseCut::Cut(_))));
+        assert!(ran.is_empty());
+        assert_eq!(posted.len(), 2);
+
+        let (r, posted, ran) = cut_with(Some("scripts/release.sh"), 1, true);
+        assert!(matches!(r, Ok(ReleaseCut::Cut(_))));
+        assert!(ran.is_empty(), "--no-script skips it");
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].get("check"), None);
+    }
+
+    #[test]
+    fn release_cut_stops_when_the_board_refuses_the_check() {
+        let mut ran = false;
+        let r = cut_release(&mut |_| Err("Nothing to release".into()), &mut |_, _, _| { ran = true; Ok(0) }, json!({"name": "v1"}), false);
+        assert_eq!(r.err().as_deref(), Some("Nothing to release"));
+        assert!(!ran, "a doomed cut never runs the script");
+    }
+
+    #[test]
+    fn release_script_gets_the_name_as_one_argument() {
+        let dir = std::env::temp_dir().join(format!("tb-release-script-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
+        assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d)).unwrap(), 7);
+        assert_eq!(run_release_script("true", "v1", Some(&d)).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -175,3 +175,34 @@ fn a_done_task_moves_between_releases_in_its_project() {
     assert_eq!((s["name"].as_str(), s["notes"].as_str()), (Some("v2.0"), Some("Logout lands.")));
     assert_eq!(try_call(&app, "POST", "/releases/R2", &[], json!({"name": "v1"})).unwrap_err().0, 409, "the name is taken");
 }
+
+#[test]
+fn a_release_script_is_a_project_setting_the_cut_check_hands_back() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    assert_eq!(project(&app, "webapp")["release_script"], Value::Null);
+    let v = call(&app, "POST", "/projects/webapp", json!({"release_script": "  scripts/release.sh  "}));
+    assert_eq!(v["release_script"], "scripts/release.sh");
+    assert_eq!(project(&app, "webapp")["release_script"], "scripts/release.sh");
+    assert_eq!(project(&app, "api")["release_script"], Value::Null);
+    assert_eq!(try_call(&app, "POST", "/projects/webapp", &[], json!({"release_script": "a\nb"})).unwrap_err().0, 400);
+
+    // The check refuses a doomed cut before any script runs.
+    let (code, msg) = try_call(&app, "POST", "/releases", &[], json!({"name": "v1", "project": "webapp", "check": true})).unwrap_err();
+    assert_eq!(code, 409, "{msg}");
+    let a = task(&app, "webapp", "Login form", None);
+    done(&app, a, None);
+    let v = call(&app, "POST", "/releases", json!({"name": "v1", "project": "webapp", "check": true}));
+    assert_eq!(v["script"], "scripts/release.sh");
+    assert_eq!(v["name"], "v1");
+    assert!(v["dir"].as_str().unwrap().ends_with("webapp"), "{v}");
+    assert_eq!(get(&app, "/releases", "webapp")["releases"].as_array().unwrap().len(), 0, "a check cuts nothing");
+
+    call(&app, "POST", "/releases", json!({"name": "v1", "project": "webapp"}));
+    let b = task(&app, "webapp", "Logout", None);
+    done(&app, b, None);
+    assert_eq!(try_call(&app, "POST", "/releases", &[], json!({"name": "v1", "project": "webapp", "check": true})).unwrap_err().0, 409, "the name is taken");
+
+    let v = call(&app, "POST", "/projects/webapp", json!({"release_script": "none"}));
+    assert_eq!(v["release_script"], Value::Null);
+}
