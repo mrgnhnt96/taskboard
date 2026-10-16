@@ -149,3 +149,31 @@ fn a_tag_holds_work_merged_through_origin() {
     let cut = release_tags::look(&app, "webapp").unwrap();
     assert_eq!(release_tasks(&app, &cut[0]), vec![format!("T{one}")]);
 }
+
+#[test]
+fn a_tag_for_a_release_already_cut_is_skipped() {
+    let (_d, app, repo) = new_board();
+    set(&app, json!({"releases": "on", "release_tags": "v*"}));
+    assert!(release_tags::look(&app, "webapp").unwrap().is_empty());
+
+    // `tb release cut v1.0` records the release, then its script tags the merged work.
+    let one = merged_task(&app, "One", 1);
+    commit(&repo, "Merge pull request #1 from o/feat/one");
+    let r = call(&app, "POST", "/releases", json!({"project": "webapp", "name": "v1.0"}))["ref"].as_str().unwrap().to_string();
+    let two = merged_task(&app, "Two", 2);
+    commit(&repo, "Two (#2)");
+    git(&repo, &["tag", "V1.0"]);
+
+    assert!(release_tags::look(&app, "webapp").unwrap().is_empty());
+    let q: api::Query = [("project".to_string(), "webapp".to_string())].into_iter().collect();
+    let list = api::dispatch(&app, "GET", "/releases", &q, &json!({})).unwrap();
+    assert_eq!(list["releases"].as_array().unwrap().len(), 1);
+    assert_eq!(release_tasks(&app, &r), vec![format!("T{one}")]);
+    assert_eq!(release_tasks(&app, "unreleased"), vec![format!("T{two}")]);
+
+    // The tag is settled, not retried; the next one cuts as usual.
+    assert!(release_tags::look(&app, "webapp").unwrap().is_empty());
+    git(&repo, &["tag", "v1.1"]);
+    let cut = release_tags::look(&app, "webapp").unwrap();
+    assert_eq!(release_tasks(&app, &cut[0]), vec![format!("T{two}")]);
+}
