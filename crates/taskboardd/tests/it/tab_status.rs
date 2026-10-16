@@ -229,8 +229,13 @@ fn an_older_task_s_merge_keeps_the_tab_of_a_task_finished_since() {
     assert_eq!(b.tabs(), tab("s1", "in_review"));
     b.set(first, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
     assert_eq!(b.tabs(), vec![]);
+    let third = b.task_on("s1", "Profile");
+    b.report("tb.question", "s1", json!({"text": "Which avatar size?"})).unwrap();
+    assert_eq!(b.tabs(), tab("s1", "question"), "an open task still gets the tab after earlier ones finished");
+    b.set(third, fields!["status" => "done", "finished_at" => "2026-10-16T12:00:00Z", "no_pr" => "nothing to change"]);
+    b.tabs();
     b.set(second, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
-    assert_eq!(b.tabs(), tab("s1", "done"));
+    assert_eq!(b.tabs(), vec![], "the newest finished task has the tab");
 }
 
 #[test]
@@ -239,6 +244,8 @@ fn an_alert_on_a_task_from_elsewhere_sets_the_task_s_terminal() {
     let id = b.task_on("s1", "Login");
     b.post("/alerts", json!({"text": "The build server is down", "task": format!("T{id}"), "session": ""}));
     assert_eq!(b.tabs(), tab("s1", "alert"));
+    b.post("/alerts", json!({"text": "The tests are flaky", "task": format!("T{id}")}));
+    assert_eq!(b.tabs(), tab("s1", "alert"), "a hook's alert sends no session at all");
     b.post("/alerts", json!({"text": "Disk is nearly full"}));
     assert_eq!(b.tabs(), vec![], "an alert with no terminal and no task sets no tab");
 }

@@ -683,8 +683,8 @@ pub fn tab_terminal(app: &App, t: &Row) -> Result<Option<String>> {
         return Ok(None);
     };
     let other = app.db.count(
-        "SELECT COUNT(*) FROM tasks WHERE session_id = ? AND id != ? AND (status != 'done' OR COALESCE(finished_at, '') > ?)",
-        p![sid, t.id(), t.st("finished_at")],
+        "SELECT COUNT(*) FROM tasks WHERE session_id = ? AND id != ? AND (status != 'done' OR (? != '' AND COALESCE(finished_at, '') > ?))",
+        p![sid, t.id(), t.st("finished_at"), t.st("finished_at")],
     )?;
     Ok((other == 0).then_some(sid))
 }
