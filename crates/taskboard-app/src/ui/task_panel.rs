@@ -235,7 +235,9 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
                 target
             });
             if let Some(x) = target {
-                m.open_task(x, cx);
+                if !m.back_to_task(&x, cx) {
+                    m.open_task(x, cx);
+                }
             }
         }
         "open-task" => open_from_panel(m, &id, cx),
@@ -425,11 +427,9 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
     }
     match g {
         Go::Goal(r) => {
-            m.close_panel(cx);
             m.go(Page::Goal(r.clone()), cx);
         }
         Go::GoalBacklog(r) => {
-            m.close_panel(cx);
             crate::ui::goal::open(m, &r, true, cx);
         }
         Go::Session(id) => {
@@ -438,7 +438,6 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
                 Some(Panel::Task { r, .. }) => r.clone(),
                 _ => String::new(),
             };
-            m.close_panel(cx);
             crate::ui::sessions::open_from_task(m, id, &tref, cx);
         }
         Go::Issue(r) => {

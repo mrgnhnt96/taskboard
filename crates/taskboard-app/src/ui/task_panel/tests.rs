@@ -386,6 +386,46 @@ fn links_leave_the_panel(cx: &mut gpui_kit::TestAppContext) {
     .unwrap();
 }
 
+#[gpui_kit::test]
+fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
+    use crate::app::Page;
+    let (w, _rec) = parity::window(cx);
+    let at = |m: &MainWindow| (m.page.clone(), match &m.panel {
+        Some(Panel::Task { r, .. }) => Some(r.clone()),
+        _ => None,
+    });
+    let g1 = || Page::Goal("G1".into());
+    w.update(cx, |m, _, cx| m.go(g1(), cx)).unwrap();
+    // A goal, goal-backlog or terminal link: one ⌘← comes back to the task, the next to the goal it was opened on.
+    for link in [view::Go::Goal("G2".into()), view::Go::GoalBacklog("G2".into()), view::Go::Session("fake-s1".into())] {
+        open(cx, &w, "T1");
+        w.update(cx, |m, _, cx| super::go(m, &link, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m, _, cx| {
+            assert!(m.panel.is_none(), "{link:?} leaves the task");
+            m.go_back(cx);
+            assert_eq!(at(m), (g1(), Some("T1".into())), "{link:?}: back to the task");
+            m.go_back(cx);
+            assert_eq!(at(m), (g1(), None), "{link:?}: then the goal");
+        })
+        .unwrap();
+        settle(cx);
+    }
+    // A linked task's "Back to T1" steps back, not forward: ⌘← then reaches the goal, ⌘→ the linked task.
+    open(cx, &w, "T1");
+    w.update(cx, |m, _, cx| act(m, &Act::new("open-task", "", "T2", ""), cx)).unwrap();
+    w.update(cx, |m, _, cx| {
+        act(m, &Act::new("task-back", "", "T2", ""), cx);
+        assert_eq!(at(m), (g1(), Some("T1".into())));
+        m.go_back(cx);
+        assert_eq!(at(m), (g1(), None));
+        m.go_forward(cx);
+        m.go_forward(cx);
+        assert_eq!(at(m), (g1(), Some("T2".into())));
+    })
+    .unwrap();
+}
+
 /// A done task whose green PR waits for its owner.
 fn awaiting_review(awaiting: bool) -> Value {
     json!({"ref": "T1", "id": 1, "title": "Add passkeys", "status": "done", "project": "webapp",
