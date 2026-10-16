@@ -219,7 +219,9 @@ fn cut_for(app: &App, project: &str, repo: &str, tag: &str, sha: &str) -> Result
     let Ok(name) = crate::releases::clean_name(tag) else { return Ok(None) };
     let ids = held(repo, sha, &crate::releases::unreleased_rows(app, project)?);
     app.db.tx(|| {
+        // A release script run by `tb release cut` pushes the tag after the board recorded the release.
         if crate::releases::named(app, project, &name, 0)? {
+            app.info(format!("release tags: {project}: tag {tag} already has its release, so no second one"));
             return Ok(None);
         }
         let tasks: Vec<Row> = crate::releases::unreleased_rows(app, project)?.into_iter().filter(|t| ids.contains(&t.id())).collect();
