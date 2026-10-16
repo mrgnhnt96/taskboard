@@ -278,7 +278,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let archived = as_bool(query.get("archived").map(|s| json!(s)).as_ref(), false);
             let mut out = vec![];
             for g in app.db.q("SELECT * FROM goals ORDER BY id", p![])? {
-                if project_match(g.s("project"), project) && (archived || !g.b("archived")) {
+                if (archived || !g.b("archived")) && (project_match(g.s("project"), project) || board::goal_projects(app, &g)?.iter().any(|p| p == project)) {
                     out.push(board::goal_dict(app, &g)?);
                 }
             }

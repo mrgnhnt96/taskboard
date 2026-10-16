@@ -171,6 +171,17 @@ pub fn goal_tasks(app: &App, goal_id: i64) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM tasks WHERE goal_id = ? ORDER BY position, id", p![goal_id])
 }
 
+/// The projects goal `g` holds work in: its own first, then each of its tasks' projects.
+pub fn goal_projects(app: &App, g: &Row) -> Result<Vec<String>> {
+    let mut out: Vec<String> = g.s("project").filter(|p| !p.is_empty()).map(|p| vec![p.to_string()]).unwrap_or_default();
+    for t in app.db.q("SELECT project FROM tasks WHERE goal_id = ? ORDER BY position, id", p![g.id()])? {
+        if let Some(p) = t.s("project").filter(|p| !p.is_empty() && !out.iter().any(|o| o == p)) {
+            out.push(p.to_string());
+        }
+    }
+    Ok(out)
+}
+
 pub fn renumber_goal(app: &App, goal_id: i64) -> Result<()> {
     let rows = app.db.q("SELECT id, position FROM tasks WHERE goal_id = ? ORDER BY position, id", p![goal_id])?;
     for (i, t) in rows.iter().enumerate() {
@@ -739,7 +750,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
     let mut d = json!({
         "id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "outcome": g.v("outcome"),
         "tldr": g.s("tldr").unwrap_or(""), "hours_until": g.v("hours_until"),
-        "project": g.v("project"), "area": g.v("area"), "repo_path": g.v("repo_path"),
+        "project": g.v("project"), "projects": goal_projects(app, g)?, "area": g.v("area"), "repo_path": g.v("repo_path"),
         "epic_key": g.v("epic_key"), "epic_status": g.v("epic_status"),
         "epic_url": jira_url(app, g.s("epic_key").unwrap_or("")), "product": g.v("product"),
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
