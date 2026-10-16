@@ -98,7 +98,8 @@ suggest = true
 # waves. Off, or without `claude`, issues are grouped by kind and waves follow priority.
 [backlog]
 ai = true
-model = "sonnet"
+model = "sonnet"                     # wave planning, tidies, review fixes and retros
+group_model = "haiku"                # grouping new issues (empty: model)
 budget_usd = "1.00"
 timeout_secs = 240
 max_terminals = 2                    # how many terminals a goal made from the backlog runs at once

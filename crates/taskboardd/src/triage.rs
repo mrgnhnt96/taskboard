@@ -94,6 +94,11 @@ pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Resu
 
 /// `ask`, run in `repo` with Claude's read-only tools (Read, Grep, Glob) there when it's given.
 pub(crate) fn ask_in(app: &App, prompt: String, schema: Value, repo: Option<&std::path::Path>, timeout_secs: u64) -> std::result::Result<Value, String> {
+    ask_model(app, &app.cfg.backlog.model, prompt, schema, repo, timeout_secs)
+}
+
+/// `ask_in` on `model` rather than `[backlog] model`.
+fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, timeout_secs: u64) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let c = &app.cfg.backlog;
     let tools = if repo.is_some() { "Read,Grep,Glob" } else { "" };
@@ -101,7 +106,7 @@ pub(crate) fn ask_in(app: &App, prompt: String, schema: Value, repo: Option<&std
         "-p".into(),
         prompt,
         "--model".into(),
-        c.model.clone(),
+        model.into(),
         "--setting-sources".into(),
         "".into(),
         "--no-session-persistence".into(),
@@ -226,7 +231,8 @@ fn group_now(app: &App) -> std::result::Result<(), String> {
     if !done.is_empty() {
         parts.push(format!("Already sorted (for context; don't answer for these):\n{}", done.iter().map(|b| issue_block(b, true)).collect::<Vec<_>>().join("\n")));
     }
-    let v = ask(app, parts.join("\n\n"), group_schema())?;
+    let c = &app.cfg.backlog;
+    let v = ask_model(app, c.group_model(), parts.join("\n\n"), group_schema(), None, c.timeout_secs)?;
     let mut answers: HashMap<i64, Value> = HashMap::new();
     for x in v["issues"].as_array().cloned().unwrap_or_default() {
         if let Some(id) = x["id"].as_i64() {
