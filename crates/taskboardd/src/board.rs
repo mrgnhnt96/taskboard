@@ -336,7 +336,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "compacting": if matches!(status.as_str(), "working" | "needs") {
             get_session(app, t.s("session_id"))?.map(|s| compacting_since(&s)).unwrap_or(Value::Null)
         } else {
-            start_compacting_since(app, t)?
+            Value::Null
         },
         "stuck": if status == "working" {
             get_session(app, t.s("session_id"))?.map(|s| crate::checkin::stuck_view(&s)).unwrap_or(Value::Null)
@@ -533,12 +533,6 @@ pub fn compacting_since(s: &Row) -> Value {
         Some(at) if wall_age_secs(Some(at)).is_some_and(|a| a < COMPACTING_SHOWN_SECS) => json!(at),
         _ => Value::Null,
     }
-}
-
-/// When the headless compact before a cold resume started, while the task's start job runs it.
-pub fn start_compacting_since(app: &App, t: &Row) -> Result<Value> {
-    let Some(j) = live_start_job(app, t)?.filter(|j| j.s("state") == Some("running")) else { return Ok(Value::Null) };
-    Ok(job_target(&j).get("compacting_at").filter(|v| v.is_string()).cloned().unwrap_or(Value::Null))
 }
 
 pub fn close_rule(s: Option<&Row>) -> Option<&'static str> {

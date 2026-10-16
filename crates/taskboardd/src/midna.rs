@@ -218,56 +218,21 @@ fn compact_first(app: &App, j: &Row, sid: &str) -> MResult<()> {
     Ok(())
 }
 
-/// How a refused start says its headless compact failed; `jobs::after_result` holds the task for the owner.
-pub const COMPACT_FAILED: &str = "The board couldn't compact its conversation";
-
-/// A conversation resumed in a new terminal after going cold is compacted first, headless. While it
-/// runs, the job's target carries `compacting_at` for the task's card. A failed compact refuses the job
-/// rather than resuming the conversation at full size, unless the owner chose to resume it as it is
-/// (`resume_as_is` in the task's context). True when it resumes as it is: the choice is cleared once
-/// the terminal has opened (`used_resume_as_is`), so an open that doesn't go through keeps it.
-fn compact_before_resume(app: &App, j: &Row, cwd: &str, cid: &str) -> MResult<bool> {
-    if !limits::is_cold(app, &limits::conversation(app, cwd, cid, None)) {
-        return Ok(false);
+/// A conversation resumed in a new terminal after going cold: its size and idle minutes, logged on the
+/// job's task. The terminal opens at once and compacts it in the tab, ahead of the prompt.
+fn cold_resume(app: &App, j: &Row, cwd: &str, cid: &str) -> Option<limits::Conversation> {
+    let c = limits::conversation(app, cwd, cid, None);
+    if !limits::is_cold(app, &c) {
+        return None;
     }
-    let log = |what: &str| {
-        app.info(format!("job {}: {what}", rf("job", j.id())));
-        if let Some(tid) = j.i("task_id") {
-            let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "handoff", what).map(|_| ()));
-        }
-    };
-    if j.i("task_id").is_some_and(|tid| resume_as_is(app, tid, cid).unwrap_or(false)) {
-        log("Resuming its cold conversation as it is, without compacting it, as the owner chose");
-        return Ok(true);
+    let mins = c.idle_mins.unwrap_or(0.0) as i64;
+    let size = c.tokens.map(|n| format!(" ({} tokens)", limits::tokens_text(n))).unwrap_or_default();
+    let what = format!("Its conversation has been idle {mins} min{size}, so the new terminal compacts it before carrying on.");
+    app.info(format!("job {}: {what}", rf("job", j.id())));
+    if let Some(tid) = j.i("task_id") {
+        let _ = app.db.tx(|| board::log_event(app, tid, board::BOARD, "handoff", &what).map(|_| ()));
     }
-    set_target(app, j.id(), "compacting_at", json!(now_iso()))?;
-    let res = limits::compact(app, cwd, cid);
-    set_target(app, j.id(), "compacting_at", Value::Null)?;
-    match res {
-        Ok(()) => {
-            log("Compacted its cold conversation before resuming it");
-            Ok(false)
-        }
-        Err(e) => Err(MidnaError::Refused(format!("{COMPACT_FAILED}: {e}"))),
-    }
-}
-
-/// The owner chose to resume this conversation as it is after its compact failed.
-pub fn resume_as_is(app: &App, task_id: i64, cid: &str) -> Result<bool> {
-    let Some(t) = board::find_task(app, Some(task_id))? else { return Ok(false) };
-    Ok(board::task_context(&t).get("resume_as_is").and_then(|v| v.as_str()) == Some(cid))
-}
-
-/// A terminal resumed the conversation as it is: the choice covered that one resume, so the next cold
-/// resume compacts again.
-pub fn used_resume_as_is(app: &App, task_id: i64, cid: &str) -> Result<()> {
-    if !resume_as_is(app, task_id, cid)? {
-        return Ok(());
-    }
-    let Some(t) = board::find_task(app, Some(task_id))? else { return Ok(()) };
-    let mut ctx = board::task_context(&t);
-    ctx.remove("resume_as_is");
-    board::save_context(app, task_id, &ctx, false)
+    Some(c)
 }
 
 fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
@@ -290,17 +255,16 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
         }
     }
     let (agent_args, resume) = claude_args(&a)?;
-    let as_is = match &resume {
-        Some(cid) => compact_before_resume(app, j, &cwd, cid)?,
-        None => false,
-    };
+    let cold = resume.as_deref().and_then(|cid| cold_resume(app, j, &cwd, cid)).is_some();
+    let prompt = a.s("prompt").filter(|p| !p.is_empty());
     let mut params = json!({"kind": "agent", "agent": "claude", "cwd": cwd,
                             "name": tab_title(a.s("title").unwrap_or("Claude"), j.i("task_id")),
                             "background": as_bool(a.get("background"), false) || opens_in_background(app, j), "close_on_exit": true, "agent_args": agent_args});
     if let Some(r) = &resume {
         params["resume"] = json!(r);
     }
-    if let Some(pr) = a.s("prompt").filter(|p| !p.is_empty()) {
+    // A cold conversation's prompt waits behind `/compact` in the terminal's queue instead.
+    if let Some(pr) = prompt.filter(|_| !cold) {
         params["prompt"] = json!(pr);
     }
     let s = call(app, "session.open", params)?;
@@ -308,8 +272,15 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
         return Err(MidnaError::Refused("Midna opened no terminal".into()));
     };
     set_target(app, j.id(), "session", json!(sid))?;
-    if let (true, Some(tid), Some(cid)) = (as_is, j.i("task_id"), &resume) {
-        app.db.tx(|| used_resume_as_is(app, tid, cid))?;
+    // The prompt goes in even when its compact couldn't: a full-size conversation beats one with no prompt.
+    if cold {
+        let compacted = send(app, &sid, "/compact");
+        if let Some(Err(e)) = prompt.map(|pr| send(app, &sid, pr)) {
+            return Ok(format!("Opened {sid}, but couldn't queue its prompt: {e}"));
+        }
+        if let Err(e) = compacted {
+            return Ok(format!("Opened {sid}, but couldn't queue its compact: {e}"));
+        }
     }
     // A `draft` is typed in once Claude is ready, without Enter: the owner reads it and sends it.
     if let Some(d) = a.s("draft").filter(|d| !d.is_empty()) {

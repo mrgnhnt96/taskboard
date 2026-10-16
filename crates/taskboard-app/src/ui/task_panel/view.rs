@@ -753,7 +753,7 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
                 K::Row,
                 vec![
                     c.btn("Start fresh with the handoff", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
-                    c.btn("Resume it as it is", Act::new("resume", "reopen", &r, &grp), Look::Plain, false, None),
+                    c.btn("Reopen the old conversation", Act::new("resume", "reopen", &r, &grp), Look::Plain, false, None),
                 ],
             ),
         ];
