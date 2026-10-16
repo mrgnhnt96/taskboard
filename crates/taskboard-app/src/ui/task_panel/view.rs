@@ -767,10 +767,21 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
             txt(format!("{who} {}", if asking { "is asking" } else { "needs you" }), St::BoxLabel),
             txt(q.or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::Plain),
         ];
-        bx.extend(ask_options(c, &t["ask"], &r, &grp));
+        let opts = ask_options(c, &t["ask"], &r, &grp);
+        let clickable = !opts.is_empty() && !b(&t["ask"], "picker");
+        bx.extend(opts);
         let mut row = step_btns(c, t, &r, &grp);
         if session_live(t) {
             row.push(c.btn("Open terminal", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
+        } else if row.is_empty() && !clickable {
+            // No terminal to open and nothing to click: an answer queues it again with the answer in its
+            // handoff (`api::answer`); anything else starts it again from its handoff.
+            if q.is_some() && s(t, "needs_reason") == "question" {
+                bx.push(answer_field(c, &r));
+                row.extend(answer_btns(c, &r));
+            } else {
+                row.push(c.btn("Resume in a new terminal", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None));
+            }
         }
         row.extend(c.note(&grp));
         bx.push(el(K::Row, row));

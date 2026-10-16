@@ -111,6 +111,21 @@ fn lost_task_shows_what_shipped_since() {
     assert!(plain.contains("Terminal lost") && !plain.contains("Looks finished"), "{plain}");
 }
 
+#[::core::prelude::v1::test]
+fn a_needs_box_without_a_terminal_still_offers_an_action() {
+    let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    let asked = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"});
+    let a = acts(asked.clone());
+    assert!(a.contains("\"answer\"") && !a.contains("\"focus\""), "{a}");
+    let fields = json!(view::values(&tree(&json!({"state": {}, "task": asked, "tab": "overview", "ui": {"drafts": {"answer:T5": "yes"}}}))));
+    assert_eq!(fields, json!(["yes"]), "the answer box shows its draft");
+    let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention"}));
+    assert!(a.contains("\"resume:fresh\""), "{a}");
+    // With its terminal open, the terminal is the action.
+    let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
+    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+}
+
 // ------------------------------------------------------------------ actions
 
 /// Open task `r` in the panel and let its detail load.
