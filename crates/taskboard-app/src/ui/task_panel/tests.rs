@@ -354,7 +354,7 @@ fn renders_every_tab(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn links_leave_the_panel(cx: &mut gpui_kit::TestAppContext) {
+fn page_links_keep_the_panel_beside_them(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;
     let (w, _rec) = parity::window(cx);
     open(cx, &w, "T2");
@@ -362,7 +362,7 @@ fn links_leave_the_panel(cx: &mut gpui_kit::TestAppContext) {
     w.update(cx, |m, _, cx| super::go(m, &view::Go::Session("fake-s1".into()), cx)).unwrap();
     settle(cx);
     w.update(cx, |m, _, _| {
-        assert!(m.panel.is_none());
+        assert!(matches!(&m.panel, Some(Panel::Task { r, .. }) if r == "T2"));
         assert_eq!(m.page, Page::Sessions);
         assert_eq!(m.sessions.selected.as_deref(), Some("fake-s1"));
     })
@@ -376,12 +376,12 @@ fn links_leave_the_panel(cx: &mut gpui_kit::TestAppContext) {
         assert!(matches!(&m.panel, Some(Panel::Issue { r }) if r == "B1"));
     })
     .unwrap();
-    // The goal's name: its page, panel closed.
+    // The goal's name: its page, the panel still beside it.
     open(cx, &w, "T2");
     w.update(cx, |m, _, cx| super::go(m, &view::Go::Goal("G1".into()), cx)).unwrap();
     w.update(cx, |m, _, _| {
         assert_eq!(m.page, Page::Goal("G1".into()));
-        assert!(m.panel.is_none());
+        assert!(matches!(&m.panel, Some(Panel::Task { r, .. }) if r == "T2"));
     })
     .unwrap();
 }
@@ -396,15 +396,15 @@ fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     });
     let g1 = || Page::Goal("G1".into());
     w.update(cx, |m, _, cx| m.go(g1(), cx)).unwrap();
-    // A goal, goal-backlog or terminal link: one ⌘← comes back to the task, the next to the goal it was opened on.
+    // A goal, goal-backlog or terminal link keeps the task open: one ⌘← comes back to the page it was opened on, the next closes it.
     for link in [view::Go::Goal("G2".into()), view::Go::GoalBacklog("G2".into()), view::Go::Session("fake-s1".into())] {
         open(cx, &w, "T1");
         w.update(cx, |m, _, cx| super::go(m, &link, cx)).unwrap();
         settle(cx);
         w.update(cx, |m, _, cx| {
-            assert!(m.panel.is_none(), "{link:?} leaves the task");
+            assert_eq!(at(m).1, Some("T1".into()), "{link:?} keeps the task");
             m.go_back(cx);
-            assert_eq!(at(m), (g1(), Some("T1".into())), "{link:?}: back to the task");
+            assert_eq!(at(m), (g1(), Some("T1".into())), "{link:?}: back to the page under the task");
             m.go_back(cx);
             assert_eq!(at(m), (g1(), None), "{link:?}: then the goal");
         })

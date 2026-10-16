@@ -110,7 +110,6 @@ fn square(color: Hsla, outline: bool) -> Div {
 pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement {
     let st = m.state().clone();
     let page = m.page.clone();
-    let task_open = m.task_page_open();
     let needs = m.data.home.as_ref().map(|h| arr(h, "needs").iter().filter(|a| !crate::ui::prwatch::shown_as_master(&st, a)).count() as i64).unwrap_or_else(|| m.needs_count());
     let running = arr(&st, "sessions").iter().filter(|x| s(x, "status") == "working").count();
     let counts = &st["counts"];
@@ -124,7 +123,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
             m.go(to.clone(), cx);
         }))
     };
-    let on = |p: Page| !task_open && page == p;
+    let on = |p: Page| page == p;
     let mut col = div()
         .id("sidebar")
         .flex()
@@ -144,10 +143,10 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         .child(div().h(px(6.)))
         .child(nav("nav-needs", "Needs you", kit::dot(t.warn, 8.), (needs > 0).then(|| (needs.to_string(), true)), Page::Board, on(Page::Board), cx))
         .child(nav("nav-running", "Running", kit::dot(t.accent, 8.), (running > 0).then(|| (running.to_string(), false)), Page::Sessions, on(Page::Sessions), cx))
-        .child(nav("nav-goals", "Goals", square(t.goal, false), (active_goals > 0).then(|| (active_goals.to_string(), false)), Page::Goals, on(Page::Goals) || (!task_open && matches!(page, Page::Goal(_))), cx))
-        .child(nav("nav-tasks", "Tasks", square(t.muted, true), (open_tasks > 0).then(|| (open_tasks.to_string(), false)), Page::Tasks, on(Page::Tasks) || task_open, cx))
+        .child(nav("nav-goals", "Goals", square(t.goal, false), (active_goals > 0).then(|| (active_goals.to_string(), false)), Page::Goals, on(Page::Goals) || matches!(page, Page::Goal(_)), cx))
+        .child(nav("nav-tasks", "Tasks", square(t.muted, true), (open_tasks > 0).then(|| (open_tasks.to_string(), false)), Page::Tasks, on(Page::Tasks), cx))
         .child(nav("nav-backlog", "Backlog", kit::dot(t.backlog_dot, 8.), (untriaged > 0).then(|| (untriaged.to_string(), false)), Page::Backlog, on(Page::Backlog), cx))
-        .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days) || (!task_open && page == Page::Review), cx));
+        .child(nav("nav-days", "Days", square(t.results, false), None, Page::Days, on(Page::Days) || page == Page::Review, cx));
     if !crate::ui::releases::projects_on(&st).is_empty() {
         col = col.child(nav("nav-releases", "Releases", square(t.up, true), None, Page::Releases, on(Page::Releases), cx));
     }
@@ -156,7 +155,7 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         col = col.child(div().pt(px(18.)).pb(px(4.)).px(px(10.)).text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(t.muted).child("ACTIVE GOALS"));
         let mut list = div().id("sidebar-goals").flex().flex_col().gap(px(1.)).flex_1().min_h_0().overflow_y_scroll();
         let open_goal = match &page {
-            Page::Goal(r) if !task_open => Some(r.clone()),
+            Page::Goal(r) => Some(r.clone()),
             _ => None,
         };
         for g in &goals {

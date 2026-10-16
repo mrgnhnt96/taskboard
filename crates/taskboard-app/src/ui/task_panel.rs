@@ -554,40 +554,34 @@ fn on_input(m: &mut MainWindow, key: &str, text: String) {
 
 // ------------------------------------------------------------------ render
 
-/// The task as a page of its own in the main area (the sidebar stays): the panel's body in a
-/// column as wide as it reads well. Esc and its close button go back to the page under it.
-pub fn render_page(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+/// `.panel { width: min(480px, 100vw) }`, as wide as the issue panel.
+pub const WIDTH: f32 = 480.;
+
+/// The task panel on the right, beside the page under it: going to another page keeps it; Esc
+/// and its close button close it.
+pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
     let t = cx.global::<Theme>().clone();
-    let Some(body) = body(m, &t, window, cx) else {
-        let msg = m.data.errs.task.clone().unwrap_or_else(|| "Loading…".into());
-        return div().flex_1().pt(px(22.)).px(px(36.)).child(kit::help(&t, msg)).into_any_element();
+    let body = match body(m, &t, window, cx) {
+        Some(b) => b,
+        None => {
+            let msg = m.data.errs.task.clone().unwrap_or_else(|| "Loading…".into());
+            div().px(px(24.)).pt(px(24.)).child(kit::help(&t, msg)).into_any_element()
+        }
     };
     div()
-        .id("task-page")
+        .id("task-panel")
         .flex()
-        .flex_1()
-        .min_w_0()
-        .h_full()
         .flex_col()
-        .gap(px(12.))
-        .px(px(36.))
-        .pt(px(10.))
-        .child(breadcrumb(m, &t, cx))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .max_w(px(PAGE_MAX))
-                .bg(t.card)
-                .border_1()
-                .border_color(t.border)
-                .rounded_t(px(12.))
-                .overflow_hidden()
-                .child(body),
-        )
+        .flex_none()
+        .w(px(WIDTH))
+        .max_w(relative(0.6))
+        .h_full()
+        .bg(t.card)
+        .border_l_1()
+        .border_color(t.border)
+        .shadow_lg()
+        .child(breadcrumb(m, &t, cx).px(px(24.)).pt(px(16.)))
+        .child(div().flex().flex_col().flex_1().min_h_0().child(body))
         .into_any_element()
 }
 
@@ -606,6 +600,9 @@ fn breadcrumb(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
         .flex_none()
         .items_center()
         .gap(px(6.))
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
         .text_size(px(12.5))
         .text_color(t.muted)
         .child(link("crumb-tasks", "Tasks".into(), t.muted).on_click(cx.listener(|m, _, _, cx| m.go(Page::Tasks, cx))));
@@ -614,16 +611,13 @@ fn breadcrumb(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
         let open = gr.clone();
         row = row
             .child(sep())
-            .child(link("crumb-goal", format!("{gr} {}", s(g, "name")), t.goal).font_weight(FontWeight::SEMIBOLD).on_click(cx.listener(move |m, _, _, cx| crate::ui::goal::open(m, &open, false, cx))));
+            .child(link("crumb-goal", format!("{gr} {}", s(g, "name")), t.goal).min_w_0().overflow_hidden().text_ellipsis().font_weight(FontWeight::SEMIBOLD).on_click(cx.listener(move |m, _, _, cx| crate::ui::goal::open(m, &open, false, cx))));
         if let Some(w) = task["wave"].as_i64() {
             row = row.child(sep()).child(format!("Wave {w}"));
         }
     }
     row.child(sep()).child(div().font_family(t.mono_font.clone()).child(r))
 }
-
-/// The task page's widest column.
-const PAGE_MAX: f32 = 900.;
 
 fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
     let Some(Panel::Task { r, tab }) = m.panel.clone() else {
