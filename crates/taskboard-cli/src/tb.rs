@@ -88,7 +88,7 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
-    /// Hand the task in: with its PR it waits in review until the PR merges; with --no-pr it's finished
+    /// Hand the task in (a failed one too, with --task): with its PR it waits in review until the PR merges; with --no-pr it's finished
     #[command(alias = "done")]
     Submit {
         summary: String,

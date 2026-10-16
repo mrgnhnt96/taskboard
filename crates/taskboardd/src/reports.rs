@@ -1802,7 +1802,7 @@ pub fn finish_task(app: &App, t: &Row, who: &str, summary: &str, failed: bool, a
 fn on_done(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
-    if t.s("status") == Some("done") {
+    if board::handed_in(&t) {
         return Ok(ok(Some(&t), None));
     }
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
@@ -1850,7 +1850,8 @@ fn on_done(r: &mut Report) -> Result<Value> {
     }
     let t = board::get_task(r.app, t.id())?;
     let at = r.at.clone();
-    let held = t.s("session_id").map(|s| s.to_string());
+    // A failed task handed in later let go of its terminal's line when it failed: that terminal stays put.
+    let held = t.s("session_id").filter(|_| !t.b("failed")).map(|s| s.to_string());
     let t = finish_task(r.app, &t, &r.name(), &summary, false, Some(&at))?;
     let next = next_in_line(r, held.as_deref(), &format!("{} is done", rf("task", t.id())))?;
     Ok(with(ok(Some(&t), next), json!({"pr_url": t.v("pr_url")})))
@@ -1888,7 +1889,7 @@ pub fn no_ticket_refusal(t: &Row) -> String {
 
 fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
     let app = r.app;
-    let Some(t) = t.filter(|t| t.s("status") != Some("done")) else { return Ok(()) };
+    let Some(t) = t.filter(|t| !board::handed_in(t)) else { return Ok(()) };
     let me = rf("task", t.id());
     let tb = board::tb_cmd(app);
     if let Some(raw) = r.body.get("no_pr").filter(|v| !v.is_null()) {
@@ -1941,7 +1942,7 @@ fn done_refusals(r: &Report, t: Option<&Row>) -> Result<()> {
 fn finishing(r: &Report) -> Result<()> {
     let app = r.app;
     let Some(t) = r.task()? else { return Ok(()) };
-    if t.s("status") == Some("done") {
+    if board::handed_in(&t) {
         return Ok(());
     }
     lens_review(r, &t)?;

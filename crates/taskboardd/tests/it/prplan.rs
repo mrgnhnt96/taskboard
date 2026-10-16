@@ -618,6 +618,34 @@ fn done_with_a_pr_body_checks_it_and_opens_the_pr() {
 }
 
 #[test]
+fn a_failed_task_handed_in_with_a_pr_body_opens_its_pr() {
+    let b = new_board_with("", |c| {
+        c.jira.site = "acme.atlassian.net".into();
+        c.jira.project = "ABC".into();
+    });
+    let repo = git_repo(&b);
+    b.app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": repo.to_string_lossy()}]).to_string())).unwrap();
+    let id = b.task("Add passkeys", json!({}));
+    board::update_task(&b.app, id, vec![("jira_key", json!("ABC-12"))]).unwrap();
+    b.take(id);
+    git(&repo, &["switch", "-q", "-c", "feat/passkeys"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["commit", "-q", "-m", "Add a"]);
+    git(&repo, &["push", "-q", "-u", "origin", "feat/passkeys"]);
+    b.report("tb.fail", json!({"reason": "Stuck."})).unwrap();
+    assert!(b.row(id).b("failed"));
+
+    let cwd = repo.to_string_lossy().to_string();
+    let v = b.report("tb.done", json!({"task": format!("T{id}"), "summary": "Passkeys", "pr_body": BODY, "cwd": cwd})).unwrap();
+    assert_eq!(v["pr_url"], "https://github.com/acme/webapp/pull/77", "{v}");
+    let t = b.row(id);
+    assert_eq!(t.st("status"), "done");
+    assert!(!t.b("failed"));
+    assert_eq!(t.i("pr_num"), Some(77));
+}
+
+#[test]
 fn a_change_from_a_terminal_is_credited_to_that_terminal() {
     let b = new_board();
     b.session();

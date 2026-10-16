@@ -635,6 +635,11 @@ pub fn pr_still_open(t: &Row) -> bool {
         && !matches!(t.s("pr_phase"), Some("merged") | Some("declined"))
 }
 
+/// Done and not failed: `tb submit` has nothing left to do. A failed task can still be handed in.
+pub fn handed_in(t: &Row) -> bool {
+    t.s("status") == Some("done") && !t.b("failed")
+}
+
 pub fn is_blocked(app: &App, t: &Row) -> Result<bool> {
     Ok(t.s("status") == Some("queued") && t.i("start_job").is_none() && waitsfor::blocker(app, t)?.is_some())
 }
