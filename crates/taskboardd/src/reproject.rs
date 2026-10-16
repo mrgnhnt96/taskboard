@@ -33,9 +33,10 @@ pub fn check_task(t: &Row) -> Result<()> {
     Ok(())
 }
 
-/// Whether task `t` is on a terminal: it carries on there after the move, as it was.
+/// Whether task `t` is on a terminal that's still open: it carries on there after the move, as it was.
+/// One whose terminal closed (lost) has nothing to carry on in.
 fn on_terminal(t: &Row) -> bool {
-    t.s("session_id").is_some() && t.s("status") != Some("done")
+    t.s("session_id").is_some() && !t.b("lost") && t.s("status") != Some("done")
 }
 
 /// Whether task `t` is finished (a failed one is open to a retry): it stays finished, its PR and its

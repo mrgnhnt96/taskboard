@@ -85,7 +85,14 @@ fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
     let t = r["created"][0].as_str().unwrap().to_string();
     let before = b.row(&t);
     assert_eq!(before.st("session_id"), "s1");
+    b.app.db.update("tasks", &json!(before.id()), vec![("line_session", json!("s1"))]).unwrap();
+    let mut ctx = board::task_context(&before);
+    ctx.insert("where".into(), json!({"worktree": b.repo("taskboard"), "branch": "fix/sync"}));
+    board::save_context(&b.app, before.id(), &ctx, false).unwrap();
     b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
+    let row = b.row(&t);
+    assert_eq!(row.s("line_session"), Some("s1"), "keeps its place in the terminal's line");
+    assert_eq!(board::task_context(&row)["where"]["branch"], json!("fix/sync"), "and the checkout it works in");
     let row = b.row(&t);
     assert_eq!(row.st("project"), "taskboard");
     assert_eq!(row.st("repo_path"), b.repo("taskboard"));
@@ -98,6 +105,27 @@ fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
     q.insert("session".into(), "s1".into());
     let steps = api::dispatch(&b.app, "GET", "steps", &q, &json!({})).unwrap();
     assert_eq!((steps["task"].as_str(), steps["vars"]["repo"].as_str()), (Some(t.as_str()), Some(b.repo("taskboard").as_str())), "{steps}");
+}
+
+#[test]
+fn a_task_whose_terminal_closed_lets_go_of_it_and_its_old_checkout() {
+    let b = new_board();
+    let t = b.task(json!({"title": "Its terminal closed", "project": "lens", "status": "planned"}));
+    let id = b.row(&t).id();
+    b.app
+        .db
+        .update("tasks", &json!(id), vec![("status", json!("needs")), ("lost", json!(1)), ("needs_reason", json!("lost")),
+                                          ("session_id", json!("s1")), ("session_name", json!("Lens 1")), ("claude_session_id", json!("c-s1"))])
+        .unwrap();
+    let mut ctx = board::task_context(&b.row(&t));
+    ctx.insert("where".into(), json!({"worktree": b.repo("lens"), "branch": "fix/sync"}));
+    board::save_context(&b.app, id, &ctx, false).unwrap();
+    b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
+    let row = b.row(&t);
+    assert_eq!((row.st("status").as_str(), row.st("pickup").as_str()), ("queued", "manual"), "waits for Start");
+    assert_eq!((row.s("session_id"), row.s("claude_session_id"), row.b("lost")), (None, None, false));
+    assert!(board::task_context(&row).get("where").is_none(), "Start won't run it in the old checkout");
+    assert!(!b.log(&t).contains("carries on"), "{}", b.log(&t));
 }
 
 #[test]
