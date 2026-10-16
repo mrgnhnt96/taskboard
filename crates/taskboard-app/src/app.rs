@@ -66,6 +66,8 @@ pub struct Data {
     pub goals: Vec<Value>,
     /// `GET /tasks/:id` for the open task panel.
     pub task: Option<Value>,
+    /// The open task's row as the page already had it, shown until `task` answers.
+    pub task_card: Option<Value>,
     /// `GET /backlog/:id` for the open issue panel.
     pub issue: Option<Value>,
     /// `GET /goals/:id` for the goal page.
@@ -208,6 +210,8 @@ pub struct MainWindow {
     generation: u64,
     /// The newest refresh that has answered: behind `generation` while one is still out.
     answered: u64,
+    /// The task whose own `GET /tasks/:id` is out (it opened just now): a refresh leaves it out.
+    task_fetch: Option<String>,
     /// The Claude Code hooks (status bar), and whether an install is running.
     pub hooks: crate::hooks::Hooks,
     pub hooks_busy: bool,
@@ -248,6 +252,7 @@ impl MainWindow {
             goals_loaded: false,
             generation: 0,
             answered: 0,
+            task_fetch: None,
             hooks: if crate::hooks::target().is_some() { crate::hooks::Hooks::Checking } else { crate::hooks::Hooks::Hidden },
             hooks_busy: false,
         };
@@ -401,6 +406,7 @@ impl MainWindow {
         if nav.task.is_none() && self.task_panel_open() {
             self.panel = None;
             self.data.task = None;
+            self.data.task_card = None;
             cx.notify();
         }
         self.visit(nav.page, cx);
@@ -454,14 +460,38 @@ impl MainWindow {
         let tab = match &self.panel {
             Some(Panel::Task { r: cur, tab }) if *cur == r => *tab,
             _ => {
+                // What the clicked row already knows shows at once; the rest fills in when the
+                // task's own answer lands.
                 self.data.task = None;
+                self.data.task_card = task_card(&self.data, &self.goals.details, &r);
                 self.data.errs.task = None;
                 self.task_panel = Default::default();
+                self.fetch_task(r.clone(), cx);
                 TaskTab::Overview
             }
         };
         self.panel = Some(Panel::Task { r, tab });
         self.refresh(cx);
+    }
+
+    /// `GET /tasks/:id` on its own, so a task just opened doesn't wait for the rest of a refresh.
+    fn fetch_task(&mut self, r: String, cx: &mut Context<Self>) {
+        self.task_fetch = Some(r.clone());
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let path = format!("tasks/{r}");
+            let v: Answer = cx.background_executor().spawn(async move { backend.get(&path, &[]).map_err(|e| e.message) }).await;
+            let _ = this.update(cx, |m, cx| {
+                if m.task_fetch.as_ref() == Some(&r) {
+                    m.task_fetch = None;
+                }
+                if matches!(&m.panel, Some(Panel::Task { r: cur, .. }) if *cur == r) {
+                    land(&mut m.data.task, &mut m.data.errs.task, v, |v| v);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn open_issue(&mut self, r: impl Into<String>, cx: &mut Context<Self>) {
@@ -517,6 +547,7 @@ impl MainWindow {
         }
         self.panel = None;
         self.data.task = None;
+        self.data.task_card = None;
         self.data.issue = None;
         cx.notify();
     }
@@ -771,6 +802,26 @@ fn releases_wanted(m: &MainWindow) -> Vec<String> {
     shown.into_iter().chain(rows).collect()
 }
 
+/// Task `r`'s row in the lists already loaded (the board's columns, the Tasks page, home, a goal
+/// page), for its panel to show before `GET /tasks/:id` answers.
+fn task_card(d: &Data, goal_rows: &std::collections::HashMap<String, Value>, r: &str) -> Option<Value> {
+    let state = d.state.as_ref();
+    let columns = state.and_then(|s| s["columns"].as_object()).into_iter().flat_map(|c| c.values());
+    let lists = columns
+        .chain(state.map(|s| &s["planned"]))
+        .chain(d.tasks.as_ref().map(|t| &t["tasks"]))
+        .chain(d.goal.as_ref().map(|g| &g["tasks"]))
+        .chain(goal_rows.values().map(|g| &g["tasks"]))
+        .chain(d.home.as_ref().into_iter().flat_map(|h| arr(h, "goals").iter().map(|g| &g["now"])));
+    let needs = d.home.as_ref().into_iter().flat_map(|h| arr(h, "needs").iter().map(|n| &n["card"]));
+    lists
+        .filter_map(Value::as_array)
+        .flatten()
+        .chain(needs)
+        .find(|t| t["ref"].as_str() == Some(r) && t["title"].is_string())
+        .cloned()
+}
+
 /// What one refresh fetches, decided on the UI thread from the current view.
 struct Wants {
     state_q: Vec<(&'static str, String)>,
@@ -825,8 +876,9 @@ impl Wants {
         let state_q = crate::ui::board::state_query(&m.filters, &m.board.keep);
         Wants {
             state_q,
+            // A task that just opened is fetched on its own (`fetch_task`).
             task: match &m.panel {
-                Some(Panel::Task { r, .. }) => Some(r.clone()),
+                Some(Panel::Task { r, .. }) if m.task_fetch.as_ref() != Some(r) => Some(r.clone()),
                 _ => None,
             },
             issue: match &m.panel {

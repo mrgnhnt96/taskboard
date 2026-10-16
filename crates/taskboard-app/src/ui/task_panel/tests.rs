@@ -48,6 +48,7 @@ fn tree(i: &Value) -> view::Node {
     let c = Ctx {
         state: &i["state"],
         task: i["task"].is_object().then_some(&i["task"]),
+        card: i["card"].is_object().then_some(&i["card"]),
         r: &r,
         tab: i["tab"].as_str().unwrap_or("overview"),
         trail: &trail,
@@ -112,6 +113,22 @@ fn lost_task_shows_what_shipped_since() {
 }
 
 #[::core::prelude::v1::test]
+fn a_card_shows_until_the_task_answers() {
+    let card = json!({"ref": "T7", "id": 7, "title": "Passkey sign-in", "status": "working", "project": "web",
+                      "pr": {"num": 12, "title": "Passkey sign-in", "url": "https://github.com/o/r/pull/12", "repo": "o/r"}});
+    let text = json!(view::text(&tree(&json!({"state": {}, "ref": "T7", "card": card, "tab": "overview"})))).to_string();
+    assert!(text.contains("Passkey sign-in") && text.contains("#12") && text.contains("Loading…"), "{text}");
+    assert!(!text.contains("Overview"), "no tabs before the task answers: {text}");
+    // Its own answer replaces the card.
+    let task = json!({"ref": "T7", "id": 7, "title": "Passkey sign-in (full)", "status": "working"});
+    let text = json!(view::text(&tree(&json!({"state": {}, "card": card, "task": task, "tab": "overview"})))).to_string();
+    assert!(text.contains("(full)") && !text.contains("Loading…"), "{text}");
+    // A failed fetch says why instead.
+    let text = json!(view::text(&tree(&json!({"state": {}, "ref": "T7", "card": card, "err": "No such task.", "tab": "overview"})))).to_string();
+    assert!(text.contains("No such task.") && !text.contains("Loading…"), "{text}");
+}
+
+#[::core::prelude::v1::test]
 fn a_needs_box_without_a_terminal_still_offers_an_action() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
     let asked = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"});
@@ -160,6 +177,21 @@ fn note(grp: &str) -> Option<(String, bool)> {
 
 fn sent_note(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>) -> String {
     w.update(cx, |m, _, _| view::sent_note(m.state()).to_string()).unwrap()
+}
+
+#[gpui_kit::test]
+fn a_task_opens_from_its_row_and_loads_on_its_own(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    let title = rec.board().get("tasks/T3", &[]).unwrap()["title"].as_str().unwrap().to_string();
+    // The board's column already has T3: its panel shows the row's title before anything answers.
+    w.update(cx, |m, _, cx| m.open_task("T3", cx)).unwrap();
+    let first = w.update(cx, |m, _, _| view::text(&build(m).expect("panel open"))).unwrap();
+    assert!(first.contains(&title) && first.contains("Loading…"), "{first}");
+    // Its own fetch lands even when the rest of the refresh can't.
+    rec.fail("state", 500, "down");
+    settle(cx);
+    let after = w.update(cx, |m, _, _| view::text(&build(m).expect("panel open"))).unwrap();
+    assert!(after.contains("Overview") && !after.contains("Loading…"), "{after}");
 }
 
 #[gpui_kit::test]
