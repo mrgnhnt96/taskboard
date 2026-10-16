@@ -320,6 +320,8 @@ impl Ui {
 pub struct Ctx<'a> {
     pub state: &'a Value,
     pub task: Option<&'a Value>,
+    /// The task's row from the page it opened from, shown until `task` answers.
+    pub card: Option<&'a Value>,
     /// The panel's task ref (`S.taskRef`).
     pub r: &'a str,
     /// overview | context | log
@@ -578,8 +580,27 @@ fn close_btn(c: &Ctx) -> Node {
 }
 
 /// `taskPanel()`.
+/// A task just opened, before its own answer: what its row knew (status, title, project, PR), the
+/// rest still loading. Nothing to press yet but Back and close.
+fn card_panel(c: &Ctx, t: &Value) -> Node {
+    let mut top = Vec::new();
+    top.extend(back_btn(c));
+    top.push(status_pill(t));
+    top.push(pill(c.r, Tone::Ref));
+    top.push(close_btn(c));
+    let mut kids = vec![el(K::Top, top), txt(or_empty(&t["title"]), St::Title), el(K::Sub, vec![pill(or_empty(&t["project"]), Tone::Repo), txt(fmt::when_line(t), St::Sub)])];
+    if pr_of(t).is_some() {
+        kids.push(pr_row(c, t));
+    }
+    kids.push(txt("Loading…", St::Muted));
+    el(K::Col, kids)
+}
+
 pub fn panel(c: &Ctx) -> Node {
     let Some(t) = c.task else {
+        if let Some(card) = c.card.filter(|_| c.err.is_none()) {
+            return card_panel(c, card);
+        }
         let mut top = Vec::new();
         top.extend(back_btn(c));
         top.push(pill(c.r, Tone::Ref));

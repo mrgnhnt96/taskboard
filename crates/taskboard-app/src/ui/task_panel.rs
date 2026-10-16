@@ -88,6 +88,7 @@ pub fn build(m: &MainWindow) -> Option<Node> {
     let c = view::Ctx {
         state: m.data.state.as_ref().unwrap_or(&null),
         task: m.data.task.as_ref().filter(|t| fmt::ref_of(t, "T") == *r),
+        card: m.data.task_card.as_ref().filter(|t| fmt::ref_of(t, "T") == *r),
         r,
         tab: tab_name(*tab),
         trail: &trail,
@@ -601,7 +602,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
 /// Tasks › G3 Sign-in with passkeys › Wave 2 › T15: where the task sits. Tasks and the goal open
 /// their pages.
 fn breadcrumb(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
-    let task = m.data.task.clone().unwrap_or(Value::Null);
+    // Before the task answers, its row's goal and wave stand in.
+    let task = m.data.task.clone().or_else(|| m.data.task_card.clone()).unwrap_or(Value::Null);
     let r = m.task_panel.r.clone();
     let link = |id: &'static str, text: String, color: Hsla| {
         let hover = t.text;
