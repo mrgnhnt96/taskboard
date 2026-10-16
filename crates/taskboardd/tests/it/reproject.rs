@@ -1,6 +1,7 @@
 //! `tb task set --project` and `tb backlog set --project`: work filed under the wrong project moves to the right
-//! one by name in any case, keeping its goal; a task that already ran lets go of its terminal and waits for Start
-//! in the new repo (a failed one too, for a retry), and finished work or a PR stays put.
+//! one by name in any case, keeping its goal, in any state: a task on a terminal carries on there, one with a PR
+//! keeps it, a done one stays done, and one that ran with no terminal waits for Start in the new repo (a failed
+//! one too, for a retry).
 
 use std::sync::Arc;
 
@@ -70,7 +71,7 @@ fn a_planned_task_moves_with_its_repo_and_keeps_its_goal() {
 }
 
 #[test]
-fn a_task_on_a_terminal_lets_go_of_it_and_waits_for_start() {
+fn a_task_on_a_terminal_carries_on_there_in_the_new_repo() {
     let b = new_board();
     midna::sync(&b.app, &[json!({"id": "s1", "name": "Lens 1", "agent": "claude", "cwd": b.repo("lens"), "status": {"state": "working"}})], &[])
         .unwrap();
@@ -82,14 +83,33 @@ fn a_task_on_a_terminal_lets_go_of_it_and_waits_for_start() {
     )
     .unwrap();
     let t = r["created"][0].as_str().unwrap().to_string();
-    assert_eq!(b.row(&t).st("session_id"), "s1");
+    let before = b.row(&t);
+    assert_eq!(before.st("session_id"), "s1");
     b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
     let row = b.row(&t);
     assert_eq!(row.st("project"), "taskboard");
-    assert_eq!(row.s("session_id"), None, "the Lens terminal is let go");
-    assert_eq!(row.s("claude_session_id"), None, "its conversation ran in the old repo");
+    assert_eq!(row.st("repo_path"), b.repo("taskboard"));
+    assert_eq!(row.s("session_id"), Some("s1"), "the terminal carries on with it");
+    assert_eq!(row.s("claude_session_id"), Some("c-s1"), "and keeps its conversation");
+    assert_eq!(row.st("status"), before.st("status"), "still in progress");
+    assert!(b.log(&t).contains("Lens 1 carries on with it in taskboard's repo"), "{}", b.log(&t));
+    // The hook that refuses work in another repository now reads the new one as the task's.
+    let mut q = Query::new();
+    q.insert("session".into(), "s1".into());
+    let steps = api::dispatch(&b.app, "GET", "steps", &q, &json!({})).unwrap();
+    assert_eq!((steps["task"].as_str(), steps["vars"]["repo"].as_str()), (Some(t.as_str()), Some(b.repo("taskboard").as_str())), "{steps}");
+}
+
+#[test]
+fn a_task_that_ran_with_no_terminal_waits_for_start_in_the_new_repo() {
+    let b = new_board();
+    let t = b.task(json!({"title": "Lost its terminal", "project": "lens", "status": "planned"}));
+    b.app.db.update("tasks", &json!(b.row(&t).id()), vec![("status", json!("idle")), ("claude_session_id", json!("c-old"))]).unwrap();
+    b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
+    let row = b.row(&t);
     assert_eq!((row.st("status").as_str(), row.st("pickup").as_str()), ("queued", "manual"), "waits for Start");
-    assert!(b.log(&t).contains("let go of Lens 1"), "{}", b.log(&t));
+    assert_eq!(row.s("claude_session_id"), None, "its conversation ran in the old repo");
+    assert!(b.log(&t).contains("press Start to run it in taskboard"), "{}", b.log(&t));
 }
 
 #[test]
@@ -148,16 +168,29 @@ fn here_refuses_a_project_the_board_doesnt_know_or_a_folder_with_no_project() {
 }
 
 #[test]
-fn an_unknown_project_or_a_done_task_is_refused() {
+fn an_unknown_project_is_refused() {
     let b = new_board();
     let t = b.task(json!({"title": "Wrong home", "project": "lens", "status": "planned"}));
     let (code, msg) = b.post_err(&format!("tasks/{t}"), json!({"project": "nowhere"}));
     assert_eq!(code, 400);
     assert!(msg.contains("lens, taskboard"), "names the projects it knows: {msg}");
-    b.app.db.update("tasks", &json!(b.row(&t).id()), vec![("status", json!("done"))]).unwrap();
-    let (code, msg) = b.post_err(&format!("tasks/{t}"), json!({"project": "taskboard"}));
-    assert_eq!(code, 409, "{msg}");
     assert_eq!(b.row(&t).st("project"), "lens");
+}
+
+#[test]
+fn a_done_task_moves_and_stays_done_out_of_the_old_projects_release() {
+    let b = new_board();
+    let t = b.task(json!({"title": "Shipped under the wrong project", "project": "lens", "status": "planned"}));
+    b.app
+        .db
+        .update("tasks", &json!(b.row(&t).id()), vec![("status", json!("done")), ("summary", json!("Fixed it")), ("release_id", json!(3))])
+        .unwrap();
+    b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
+    let row = b.row(&t);
+    assert_eq!(row.st("project"), "taskboard");
+    assert_eq!(row.st("status"), "done", "finished work stays finished");
+    assert_eq!(row.s("summary"), Some("Fixed it"));
+    assert_eq!(row.i("release_id"), None, "waits in the new project's Unreleased");
 }
 
 #[test]
@@ -177,13 +210,33 @@ fn a_failed_task_moves_and_waits_for_start_to_try_again() {
 }
 
 #[test]
-fn a_task_with_a_pr_stays_put() {
+fn a_submitted_task_moves_with_its_pr() {
     let b = new_board();
     let t = b.task(json!({"title": "Has a PR", "project": "lens", "status": "planned"}));
-    b.app.db.update("tasks", &json!(b.row(&t).id()), vec![("pr_num", json!(12))]).unwrap();
+    b.app
+        .db
+        .update(
+            "tasks",
+            &json!(b.row(&t).id()),
+            vec![("status", json!("done")), ("pr_num", json!(12)), ("pr_state", json!("open")), ("pr_repo", json!("me/taskboard"))],
+        )
+        .unwrap();
+    b.post(&format!("tasks/{t}"), json!({"project": "taskboard"}));
+    let row = b.row(&t);
+    assert_eq!(row.st("project"), "taskboard");
+    assert_eq!((row.st("status").as_str(), row.i("pr_num")), ("done", Some(12)), "still in review on its PR");
+    assert_eq!(row.st("pr_state"), "open");
+    assert_eq!(row.st("pr_repo"), "me/taskboard");
+}
+
+#[test]
+fn a_stacked_task_is_refused_until_unstacked() {
+    let b = new_board();
+    let parent = b.task(json!({"title": "Base", "project": "lens", "status": "planned"}));
+    let t = b.task(json!({"title": "On top", "project": "lens", "status": "planned", "stack_on": parent}));
     let (code, msg) = b.post_err(&format!("tasks/{t}"), json!({"project": "taskboard"}));
     assert_eq!(code, 409);
-    assert!(msg.contains("PR"), "{msg}");
+    assert!(msg.contains("--stack-on none"), "{msg}");
 }
 
 #[test]

@@ -1,6 +1,9 @@
 //! Moving a task or backlog issue to another project (`tb task set --project`, `tb backlog set --project`).
-//! Its goal stays (a goal can hold more than one project's work); a task's repo and area follow the move,
-//! and a task that already ran lets go of its terminal in the old repo and waits for Start in the new one.
+//! Its goal stays (a goal can hold more than one project's work); a task's repo and area follow the move.
+//! Any task moves, so work filed under the wrong project can still be finished: one on a terminal keeps it
+//! (its work is often already in the new repo, refused there until the move), one with a PR keeps it, and a
+//! finished one waits in the new project's Unreleased. A task that ran but has no terminal now waits for
+//! Start in the new repo.
 
 use serde_json::Value;
 
@@ -21,37 +24,44 @@ pub fn name(app: &App, v: &Value) -> Result<String> {
     err(400, format!("The board knows no project “{want}”. Its projects: {}.", known.join(", ")))
 }
 
-/// Refuses a task whose work can't follow it: a finished one, or one with a PR or a stacked parent in the old repo.
-/// A failed one is still open to a retry, so it moves.
+/// Refuses a task stacked on a parent in the old repo: its PR can't follow it there.
 pub fn check_task(t: &Row) -> Result<()> {
     let r = rf("task", t.id());
-    if t.s("status") == Some("done") && !t.b("failed") {
-        return err(409, format!("{r} is done; only open work moves to another project."));
-    }
-    if t.i("pr_num").is_some() {
-        return err(409, format!("{r} has a PR in {}; close it and make a new task in the other project.", t.st("project")));
-    }
     if let Some(parent) = t.i("pr_after") {
         return err(409, format!("{r} is stacked on {}; unstack it first with tb task set {r} --stack-on none.", rf("task", parent)));
     }
     Ok(())
 }
 
-/// Whether task `t` has run: moving it then lets go of its terminal and conversation.
-fn has_run(t: &Row) -> bool {
-    t.s("session_id").is_some() || t.i("start_job").is_some() || matches!(t.s("status"), Some("working") | Some("needs") | Some("idle") | Some("done"))
+/// Whether task `t` is on a terminal: it carries on there after the move, as it was.
+fn on_terminal(t: &Row) -> bool {
+    t.s("session_id").is_some() && t.s("status") != Some("done")
 }
 
-/// The fields that put task `t` (in goal `goal`) in `project`: its repo and area there, and back on the board
-/// waiting for Start when it already ran in the old repo.
+/// Whether task `t` is finished (a failed one is open to a retry): it stays finished, its PR and its
+/// jobs on that PR with it.
+fn finished(t: &Row) -> bool {
+    t.s("status") == Some("done") && !t.b("failed")
+}
+
+/// Whether task `t` ran and has no terminal to carry on in: moving it puts it back for Start in the new repo.
+fn restarts(t: &Row) -> bool {
+    if on_terminal(t) || finished(t) {
+        return false;
+    }
+    t.i("start_job").is_some() || matches!(t.s("status"), Some("working") | Some("needs") | Some("idle") | Some("done"))
+}
+
+/// The fields that put task `t` (in goal `goal`) in `project`: its repo and area there, out of the old project's
+/// release, and back on the board waiting for Start when it ran and has no terminal to carry on in.
 pub fn task_fields(app: &App, t: &Row, project: &str, goal: Option<i64>) -> Result<Vec<(&'static str, Value)>> {
     let repo = board::find_goal(app, goal)?
         .filter(|g| g.s("project") == Some(project))
         .and_then(|g| g.s("repo_path").filter(|r| !r.is_empty()).map(|r| r.to_string()))
         .or(projects::project_path(app, Some(project))?);
     let area = crate::areas::clean(app, project, &t.v("area")).unwrap_or(Value::Null);
-    let mut f = fields!["project" => project, "repo_path" => repo, "area" => area];
-    if has_run(t) {
+    let mut f = fields!["project" => project, "repo_path" => repo, "area" => area, "release_id" => null];
+    if restarts(t) {
         f.extend(fields!["session_id" => null, "claude_session_id" => null, "start_job" => null, "status" => "queued",
                          "pickup" => "manual", "pickup_session" => null, "needs_reason" => null, "question" => null, "lost" => 0,
                          "failed" => 0, "finished_at" => null, "summary" => null, "start_tries" => 0, "retry_at" => null,
@@ -61,8 +71,11 @@ pub fn task_fields(app: &App, t: &Row, project: &str, goal: Option<i64>) -> Resu
 }
 
 /// What moving task `t` leaves behind in the old repo: its open jobs, its place in a terminal's line and
-/// the checkout it last ran in.
+/// the checkout it last ran in. A task on a terminal, or a finished one, keeps all of it.
 pub fn leave_old(app: &App, t: &Row) -> Result<()> {
+    if on_terminal(t) || finished(t) {
+        return Ok(());
+    }
     deliver::drop(app, t.id(), "it moved to another project")?;
     lines::leave(app, t)?;
     let mut ctx = board::task_context(t);
@@ -72,14 +85,17 @@ pub fn leave_old(app: &App, t: &Row) -> Result<()> {
     Ok(())
 }
 
-/// The log line for task `t` moving to `to`, naming the terminal it let go of.
+/// The log line for task `t` moving to `to`, naming the terminal that carries on with it.
 pub fn moved_text(t: &Row, to: &str) -> String {
     let from = t.s("project").filter(|p| !p.is_empty()).unwrap_or("no project");
-    match t.s("session_name").filter(|n| !n.is_empty() && t.s("session_id").is_some()) {
-        Some(n) => format!("Moved from {from} to {to} and let go of {n}; press Start to run it in {to}"),
-        None if has_run(t) => format!("Moved from {from} to {to}; press Start to run it in {to}"),
-        None => format!("Moved from {from} to {to}"),
+    if on_terminal(t) {
+        let n = t.s("session_name").filter(|n| !n.is_empty()).unwrap_or("its terminal");
+        return format!("Moved from {from} to {to}; {n} carries on with it in {to}'s repo");
     }
+    if restarts(t) {
+        return format!("Moved from {from} to {to}; press Start to run it in {to}");
+    }
+    format!("Moved from {from} to {to}")
 }
 
 /// The fields that put issue `b` in `project`, with its area there when the project has one by that name.
