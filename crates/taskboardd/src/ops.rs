@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, fields, handoff, hooks, jira, jobs, p, projects, shared, transcript, waitsfor};
+use crate::{board, fields, hooks, jira, jobs, p, projects, shared, transcript, waitsfor};
 
 fn merge(mut v: Value, extra: Value) -> Value {
     if let (Some(o), Value::Object(e)) = (v.as_object_mut(), extra) {
@@ -392,7 +392,7 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
             "ctx_version": t.v("ctx_version"), "created_at": t.v("created_at"), "updated_at": t.v("updated_at"),
             "started_at": t.v("started_at"), "finished_at": t.v("finished_at"),
             "origin": Some(jloads_obj(t.s("origin"))).filter(|o| !o.is_empty()).map(Value::Object).unwrap_or(Value::Null),
-            "log": log, "handoff": handoff::build(app, id)?, "goal": gd,
+            "log": log, "goal": gd,
             "blocked_by": waitsfor::blocked_by(app, &t)?, "attachable": attachable, "found": found,
             "from_issue": fi.map(|b| json!({"id": b.id(), "ref": rf("issue", b.id()), "title": b.v("title")})).unwrap_or(Value::Null),
             "jobs": jobs_now,
