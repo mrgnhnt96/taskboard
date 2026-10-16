@@ -15,7 +15,24 @@
 # plugin.json, so a plugin change (hooks, skill) reaches installed copies with
 # the release: Claude Code keeps running its cached copy until that version
 # changes (plugin/README.md, "The version").
+#
+# tb release cut runs this with TB_RELEASE set and records the release on the
+# board when it succeeds, so run that instead. --force runs it without the
+# board (when the board is down).
 set -euo pipefail
+
+force=
+args=()
+for a in "$@"; do
+  if [ "$a" = --force ]; then force=1; else args+=("$a"); fi
+done
+set -- ${args[@]+"${args[@]}"}
+if [ -z "${TB_RELEASE:-}" ] && [ -z "$force" ]; then
+  v="${1:-<version>}"
+  echo "Run tb release cut v${v#v} instead; it runs this script and records the release. (--force to run it without the board.)" >&2
+  exit 1
+fi
+
 cd "$(dirname "$0")/.."
 
 # Take the tag name too, so a release name can be passed straight through.
