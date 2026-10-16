@@ -3267,7 +3267,8 @@ fn cut_release(
 }
 
 /// Runs a project's release script in its checkout (the folder's git top level) with the release name
-/// as its one argument, its output going straight to this terminal.
+/// as its one argument and in TB_RELEASE (so the script can tell tb started it), its output going
+/// straight to this terminal.
 fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
     let dir = dir.map(str::to_string).unwrap_or_else(|| ".".into());
     let top = std::process::Command::new("git")
@@ -3285,6 +3286,7 @@ fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32
         .arg("sh")
         .arg(name)
         .current_dir(&top)
+        .env("TB_RELEASE", name)
         .stdin(std::process::Stdio::null())
         .status()
         .map_err(|e| format!("couldn't start the release script: {e}"))?;
@@ -7308,9 +7310,37 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tb-release-script-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let d = dir.to_string_lossy().to_string();
-        std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
+        std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && test \"$TB_RELEASE\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
         assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d)).unwrap(), 7);
         assert_eq!(run_release_script("true", "v1", Some(&d)).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs this repo's scripts/release.sh with `args` and TB_RELEASE (unset when None): its exit
+    /// code and stderr. A bad version makes it stop at the usage check, right after the guard.
+    fn release_sh(args: &[&str], tb_release: Option<&str>) -> (i32, String) {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/release.sh");
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg(script).args(args).env_remove("TB_RELEASE");
+        if let Some(r) = tb_release {
+            cmd.env("TB_RELEASE", r);
+        }
+        let o = cmd.output().unwrap();
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stderr).into_owned())
+    }
+
+    #[test]
+    fn release_sh_refuses_unless_tb_started_it() {
+        let (code, err) = release_sh(&["1.2.3"], None);
+        assert_eq!(code, 1);
+        assert!(err.contains("Run tb release cut v1.2.3 instead"), "{err}");
+
+        let (code, err) = release_sh(&["not-a-version"], Some("not-a-version"));
+        assert_eq!(code, 1);
+        assert!(err.starts_with("Usage:"), "past the guard with TB_RELEASE: {err}");
+
+        let (code, err) = release_sh(&["--force", "not-a-version"], None);
+        assert_eq!(code, 1);
+        assert!(err.starts_with("Usage:"), "past the guard with --force: {err}");
     }
 }
