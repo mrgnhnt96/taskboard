@@ -343,6 +343,9 @@ pub fn run_job(app: &App, j: &Row) {
 pub fn jobs_loop(app: Arc<App>) {
     while !app.stopping() {
         let down = app.shared.lock().midna_down;
+        if !down {
+            send_tabs(&app);
+        }
         let j = if down {
             None
         } else {
@@ -567,7 +570,160 @@ fn register_links(app: &App) {
             }
         }
     };
+    if app.cfg.runner {
+        install_tab_triggers(app, &run);
+    }
     app.shared.lock().midna_links = Some((Instant::now(), if has { Some(run) } else { last }));
+}
+
+/// The tab statuses the board gives a task's terminal: what it sends, the label, its color and the
+/// state Midna sorts and notifies by. Each is a local trigger the board keeps in Midna.
+pub const TAB_STATUSES: [(&str, &str, &str, &str); 6] = [
+    ("in_review", "In review", "purple", "done"),
+    ("done", "Done", "green", "done"),
+    ("question", "Question", "amber", "needs_you"),
+    ("alert", "Alert", "red", "needs_you"),
+    ("failed", "Task failed", "red", "failed"),
+    ("waiting", "Waiting", "blue", "idle"),
+];
+/// What the board sends to take its tab status down.
+pub const TAB_CLEAR: &str = "clear";
+/// The most tab statuses kept while Midna is away; older ones are stale by the time it's back.
+const TABS_KEPT: usize = 50;
+/// The task fields a tab status is read from (`task_tab`).
+pub fn tab_field(field: &str) -> bool {
+    matches!(field, "status" | "failed" | "needs_reason" | "waits_for" | "pr_num" | "pr_url" | "pr_phase" | "pr_state" | "pr_flow")
+}
+
+/// The hook event the board's tab statuses ride on: one per build, so a dev board never sets the real one's.
+fn tab_event(app: &App) -> String {
+    links_owner(app).replace(' ', "")
+}
+
+/// The local triggers that turn the board's tab events into tab statuses, each cleared by the next prompt.
+pub fn tab_triggers(app: &App) -> Vec<Value> {
+    let owner = links_owner(app);
+    let event = format!("hook.{}", tab_event(app));
+    let trigger = |tab: &str, name: &str, action: Value| {
+        json!({"name": format!("{owner}: {name}"), "source": "local", "event": event, "filter": {"match": {"tab": tab}},
+               "action": action, "cooldown_secs": 0, "enabled": true})
+    };
+    let mut all: Vec<Value> = TAB_STATUSES
+        .iter()
+        .map(|(tab, label, color, base)| trigger(tab, label, json!({"kind": "set_status", "label": label, "color": color, "base": base, "clear_on": "prompt"})))
+        .collect();
+    all.push(trigger(TAB_CLEAR, "Clear status", json!({"kind": "clear_status"})));
+    all
+}
+
+/// Puts the tab-status triggers in a Midna run (`run`, its pid and start) that lacks them: once per run.
+/// One an older board made is brought up to date; one Morgan turned off stays off.
+fn install_tab_triggers(app: &App, run: &str) {
+    if app.shared.lock().midna_tab_triggers.as_deref() == Some(run) {
+        return;
+    }
+    let have = match call_timeout(app, "trigger.list", json!({}), 5.0) {
+        Ok(v) => v.as_array().cloned().unwrap_or_default(),
+        Err(MidnaError::Down(_)) => return,
+        Err(e) => {
+            app.info(format!("midna: couldn't read its triggers, so terminal tabs show no task status: {e}"));
+            app.shared.lock().midna_tab_triggers = Some(run.to_string());
+            return;
+        }
+    };
+    for want in tab_triggers(app) {
+        let found = have.iter().find(|t| t["name"] == want["name"] && t["source"] == "local");
+        let r = match found {
+            None => call_timeout(app, "trigger.add", want.clone(), 5.0),
+            Some(t) if ["event", "filter", "action", "cooldown_secs"].iter().any(|k| t[*k] != want[*k]) => {
+                let mut up = json!({"id": t["id"]});
+                for k in ["event", "filter", "action", "cooldown_secs"] {
+                    up[k] = want[k].clone();
+                }
+                call_timeout(app, "trigger.update", up, 5.0)
+            }
+            Some(_) => continue,
+        };
+        if let Err(e) = r {
+            app.info(format!("midna: couldn't keep the {} trigger: {e}", want["name"].as_str().unwrap_or("")));
+        }
+    }
+    app.shared.lock().midna_tab_triggers = Some(run.to_string());
+}
+
+/// What a task's terminal tab shows for its state, if anything.
+pub fn task_tab(t: &Row) -> Option<&'static str> {
+    if t.s("status") == Some("done") {
+        let merged = t.s("pr_phase") == Some("merged") || t.s("pr_state").is_some_and(|s| s.eq_ignore_ascii_case("MERGED"));
+        let asked = jloads_obj(t.s("pr_flow")).get("stopped").is_some_and(|s| s["asked"] == true);
+        return if t.b("failed") {
+            Some("failed")
+        } else if merged || (t.i("pr_num").is_none() && !has(t.s("pr_url"))) {
+            Some("done")
+        } else if board::pr_still_open(t) {
+            Some(if asked { "question" } else { "in_review" })
+        } else {
+            None
+        };
+    }
+    if t.s("status") == Some("needs") && t.s("needs_reason") == Some("question") {
+        return Some("question");
+    }
+    (!crate::waitsfor::ids(t).is_empty()).then_some("waiting")
+}
+
+/// The terminal a task's tab status goes on: the one visiting its PR, else its own. None when that
+/// terminal has moved on to another task.
+pub fn tab_terminal(app: &App, t: &Row) -> Result<Option<String>> {
+    let visit = jloads_obj(t.s("pr_flow")).get("session").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let Some(sid) = visit.filter(|_| t.s("status") == Some("done")).or_else(|| t.s("session_id").map(|s| s.to_string())).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let other = app.db.count("SELECT COUNT(*) FROM tasks WHERE session_id = ? AND status != 'done' AND id != ?", p![sid, t.id()])?;
+    Ok((other == 0).then_some(sid))
+}
+
+/// Sets a task's terminal tab when its state moved from `before` to `after` changes what it shows.
+pub fn task_changed(app: &App, before: &Row, after: &Row) -> Result<()> {
+    let now = task_tab(after);
+    if now == task_tab(before) || !app.cfg.runner {
+        return Ok(());
+    }
+    if let Some(sid) = tab_terminal(app, after)? {
+        set_tab(app, &sid, now.unwrap_or(TAB_CLEAR));
+    }
+    Ok(())
+}
+
+/// Queues a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) for a terminal; the jobs thread sends it.
+pub fn set_tab(app: &App, sid: &str, tab: &'static str) {
+    if !app.cfg.runner || sid.is_empty() {
+        return;
+    }
+    let mut s = app.shared.lock();
+    if s.midna_tabs.len() >= TABS_KEPT {
+        s.midna_tabs.pop_front();
+    }
+    s.midna_tabs.push_back((sid.to_string(), tab));
+    drop(s);
+    app.notify_jobs();
+}
+
+/// Sends the queued tab statuses, in order. One Midna won't take is logged and dropped; with Midna
+/// down they wait.
+pub fn send_tabs(app: &App) {
+    loop {
+        let Some((sid, tab)) = app.shared.lock().midna_tabs.pop_front() else { return };
+        let hook = json!({"agent": "claude", "event": tab_event(app), "session": sid, "payload": {"tab": tab}});
+        match call_timeout(app, "agent.hook", hook, 5.0) {
+            Ok(_) => {}
+            Err(MidnaError::Down(_)) => {
+                app.shared.lock().midna_tabs.push_front((sid, tab));
+                return;
+            }
+            Err(MidnaError::Refused(e)) => app.info(format!("midna: couldn't set {sid}'s tab to {tab}: {e}")),
+        }
+    }
 }
 
 /// How far back the first look at Midna's event log reaches (the board keeps its place after that).

@@ -74,6 +74,7 @@ mod state_board;
 mod step_aim;
 mod steps;
 mod stream;
+mod tab_status;
 mod wait_merged;
 mod waves;
 mod zz_probe;

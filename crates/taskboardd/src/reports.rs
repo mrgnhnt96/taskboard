@@ -3033,6 +3033,16 @@ fn seen_before(app: &App, body: &Value, spooled: bool) -> bool {
 }
 
 pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
+    // A refused `tb submit` changes nothing on the task, so its terminal's tab is told here.
+    let submit = (body["event"] == "tb.done").then(|| s_of(&body, "session")).flatten();
+    let res = handle_report(app, body, spooled);
+    if let (Err(_), Some(sid)) = (&res, submit) {
+        crate::midna::set_tab(app, &sid, "failed");
+    }
+    res
+}
+
+fn handle_report(app: &App, body: Value, spooled: bool) -> Result<Value> {
     if !body.is_object() {
         return err(400, "A report must be a JSON object.");
     }

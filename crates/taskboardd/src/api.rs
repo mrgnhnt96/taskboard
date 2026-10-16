@@ -489,6 +489,15 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             let a = app.db.tx(|| {
                 let a = alerts::raise(app, &text, task, goal, (!key.is_empty()).then_some(key.as_str()), as_bool(body.get("urgent"), false))?;
                 alerts::want_suggestions(app, a["id"].as_str().unwrap_or(""))?;
+                // The terminal that raised it, else the task's, shows it on its tab.
+                let sid = match (body_str(body, "session"), task) {
+                    (s, _) if !s.is_empty() => Some(s),
+                    (_, Some(t)) => crate::midna::tab_terminal(app, &board::get_task(app, t)?)?,
+                    _ => None,
+                };
+                if let Some(sid) = sid {
+                    crate::midna::set_tab(app, &sid, "alert");
+                }
                 Ok(a)
             })?;
             Ok(json!({"alert": a}))
