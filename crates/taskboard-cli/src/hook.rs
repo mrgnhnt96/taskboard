@@ -114,7 +114,8 @@ fn elsewhere(place: &Path, home: &Path, task: &str, project: &str) -> Option<(St
             "{task} is {project}'s work, but this changes {shown}, another repository. The board doesn't track {task}'s work there, so it \
              refuses it: the task would show as in progress while its work happens beside the board. Keep {task}'s work in {project}. \
              Work in {shown} needs its own task in that repository's project: tb found it, or tb task new \"<title>\" --project <its project> \
-             (no project for it yet? midna project add {shown}). If {task} can't be done without it, tb fail \"<why>\"."
+             (no project for it yet? midna project add {shown}). If {task} itself was filed under the wrong project, move it and carry \
+             on here: tb task set {task} --project <its project>. If {task} can't be done without it, tb fail \"<why>\"."
         ),
         top,
     ))
@@ -731,6 +732,7 @@ mod tests {
         let (why, top) = elsewhere(&b.join("src/x.rs"), &a, "T115", "a").expect("another repository");
         assert_eq!(top, b.canonicalize().unwrap());
         assert!(why.contains("T115 is a's work") && why.contains("midna project add"), "{why}");
+    assert!(why.contains("tb task set T115 --project <its project>"), "a task filed under the wrong project can move: {why}");
         assert!(elsewhere(&a.join("src/x.rs"), &a, "T115", "a").is_none(), "the task's own repository");
         assert!(elsewhere(&root.join("loose.txt"), &a, "T115", "a").is_none(), "outside any repository");
 

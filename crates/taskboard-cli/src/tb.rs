@@ -1350,7 +1350,8 @@ enum TaskCmd {
         /// The model its terminal runs: small or large (`[models]` in config.toml) or a model name; default for `[models] default`
         #[arg(long, value_name = "small|large|NAME|default")]
         model: Option<String>,
-        /// Move it to another project, any case; a task that already ran lets go of its terminal and waits for Start there
+        /// Move it to another project, any case, in any state: on a terminal it carries on there, a PR stays with it,
+        /// and one that ran with no terminal waits for Start there
         #[arg(long, value_name = "NAME")]
         project: Option<String>,
     },
