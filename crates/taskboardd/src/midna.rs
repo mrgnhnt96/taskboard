@@ -669,17 +669,23 @@ pub fn task_tab(t: &Row) -> Option<&'static str> {
     if t.s("status") == Some("needs") && t.s("needs_reason") == Some("question") {
         return Some("question");
     }
-    (!crate::waitsfor::ids(t).is_empty()).then_some("waiting")
+    // waits_for outlives the wait, so only a task parked on it is waiting.
+    (t.s("status") == Some("queued") && crate::waitsfor::parked(t).is_some()).then_some("waiting")
 }
 
-/// The terminal a task's tab status goes on: the one visiting its PR, else its own. None when that
-/// terminal has moved on to another task.
+/// The terminal a task's tab status goes on: the one visiting its PR, else its own, else the one it
+/// was parked from. None when that terminal has moved on to another task, open or finished since.
 pub fn tab_terminal(app: &App, t: &Row) -> Result<Option<String>> {
     let visit = jloads_obj(t.s("pr_flow")).get("session").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let Some(sid) = visit.filter(|_| t.s("status") == Some("done")).or_else(|| t.s("session_id").map(|s| s.to_string())).filter(|s| !s.is_empty()) else {
+    let parked = crate::waitsfor::parked(t).and_then(|p| p.get("session").and_then(|s| s.as_str()).map(|s| s.to_string()));
+    let own = t.s("session_id").filter(|s| !s.is_empty()).map(|s| s.to_string());
+    let Some(sid) = visit.filter(|_| t.s("status") == Some("done")).or(own).or(parked).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let other = app.db.count("SELECT COUNT(*) FROM tasks WHERE session_id = ? AND status != 'done' AND id != ?", p![sid, t.id()])?;
+    let other = app.db.count(
+        "SELECT COUNT(*) FROM tasks WHERE session_id = ? AND id != ? AND (status != 'done' OR COALESCE(finished_at, '') > ?)",
+        p![sid, t.id(), t.st("finished_at")],
+    )?;
     Ok((other == 0).then_some(sid))
 }
 

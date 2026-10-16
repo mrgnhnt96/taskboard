@@ -202,3 +202,54 @@ fn the_triggers_go_in_once_per_midna_run() {
     midna::sync_once(&b.app).unwrap();
     assert_eq!(adds(), 0);
 }
+
+#[test]
+fn a_wait_on_ready_work_or_a_finished_wait_isn_t_waiting() {
+    let b = new_board(true);
+    let other = b.task_on("s2", "Schema");
+    b.set(other, fields!["status" => "done", "no_pr" => "nothing to change", "finished_at" => "2026-10-16T10:00:00Z"]);
+    b.task_on("s1", "Login");
+    b.tabs();
+    b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{other}")]})).unwrap();
+    assert_eq!(b.tabs(), vec![], "it isn't parked, so it isn't waiting");
+    b.report("tb.question", "s1", json!({"text": "Which login page?"})).unwrap();
+    assert_eq!(b.tabs(), tab("s1", "question"));
+    b.report("tb.withdraw", "s1", json!({"why": "Found it"})).unwrap();
+    assert_eq!(b.tabs(), tab("s1", "clear"), "a waits_for left from the done task doesn't show as waiting");
+}
+
+#[test]
+fn an_older_task_s_merge_keeps_the_tab_of_a_task_finished_since() {
+    let b = new_board(true);
+    let first = b.task_on("s1", "Login");
+    b.set(first, fields!["status" => "done", "finished_at" => "2026-10-16T10:00:00Z", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks"]);
+    b.tabs();
+    let second = b.task_on("s1", "Signup");
+    b.set(second, fields!["status" => "done", "finished_at" => "2026-10-16T11:00:00Z", "pr_num" => 10, "pr_state" => "OPEN", "pr_phase" => "checks"]);
+    assert_eq!(b.tabs(), tab("s1", "in_review"));
+    b.set(first, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
+    assert_eq!(b.tabs(), vec![]);
+    b.set(second, fields!["pr_phase" => "merged", "pr_state" => "MERGED"]);
+    assert_eq!(b.tabs(), tab("s1", "done"));
+}
+
+#[test]
+fn an_alert_on_a_task_from_elsewhere_sets_the_task_s_terminal() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    b.post("/alerts", json!({"text": "The build server is down", "task": format!("T{id}"), "session": ""}));
+    assert_eq!(b.tabs(), tab("s1", "alert"));
+    b.post("/alerts", json!({"text": "Disk is nearly full"}));
+    assert_eq!(b.tabs(), vec![], "an alert with no terminal and no task sets no tab");
+}
+
+#[test]
+fn a_pr_visit_sets_the_visiting_terminal_and_a_stop_to_ask_is_a_question() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks",
+                      "pr_flow" => json!({"session": "v1"}).to_string()]);
+    assert_eq!(b.tabs(), tab("v1", "in_review"));
+    b.set(id, fields!["pr_flow" => json!({"session": "v1", "stopped": {"asked": true}}).to_string()]);
+    assert_eq!(b.tabs(), tab("v1", "question"));
+}
