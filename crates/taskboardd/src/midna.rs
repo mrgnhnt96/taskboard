@@ -272,10 +272,14 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
         return Err(MidnaError::Refused("Midna opened no terminal".into()));
     };
     set_target(app, j.id(), "session", json!(sid))?;
+    // The prompt goes in even when its compact couldn't: a full-size conversation beats one with no prompt.
     if cold {
-        let queued = send(app, &sid, "/compact").and_then(|_| prompt.map_or(Ok(()), |pr| send(app, &sid, pr)));
-        if let Err(e) = queued {
-            return Ok(format!("Opened {sid}, but couldn't queue its compact and prompt: {e}"));
+        let compacted = send(app, &sid, "/compact");
+        if let Some(Err(e)) = prompt.map(|pr| send(app, &sid, pr)) {
+            return Ok(format!("Opened {sid}, but couldn't queue its prompt: {e}"));
+        }
+        if let Err(e) = compacted {
+            return Ok(format!("Opened {sid}, but couldn't queue its compact: {e}"));
         }
     }
     // A `draft` is typed in once Claude is ready, without Enter: the owner reads it and sends it.

@@ -20,6 +20,11 @@ struct Board {
 /// A board whose Midna logs each call and opens S9, and whose Claude marks any headless run. The
 /// conversation `c1` last spoke at `last_at`.
 fn new_board(last_at: &str) -> Board {
+    board_with(last_at, "")
+}
+
+/// As `new_board`, with Midna refusing any `queue.add` whose params contain `refuse`.
+fn board_with(last_at: &str, refuse: &str) -> Board {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::for_tests(dir.path());
     let repo = dir.path().join("webapp");
@@ -27,7 +32,9 @@ fn new_board(last_at: &str) -> Board {
     let midna_exe = dir.path().join("fake-midna");
     std::fs::write(
         &midna_exe,
-        "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s %s\\n' \"$2\" \"$3\" >> \"$d/calls\"\nif [ \"$2\" = session.open ]; then echo '{\"id\": \"S9\"}'; exit 0; fi\necho '{}'\n",
+        format!(
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s %s\\n' \"$2\" \"$3\" >> \"$d/calls\"\nif [ \"$2\" = session.open ]; then echo '{{\"id\": \"S9\"}}'; exit 0; fi\ncase \"$2 $3\" in queue.add*'{refuse}'*) [ -n '{refuse}' ] && {{ echo 'queue is full' >&2; exit 1; }};; esac\necho '{{}}'\n"
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&midna_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -51,10 +58,16 @@ impl Board {
     }
     /// Runs a resume of `c1` for a new task and returns Midna's calls: method and params.
     fn resume(&self) -> (i64, Vec<(String, Value)>) {
+        let (t, _, calls) = self.resume_job();
+        (t, calls)
+    }
+    /// As `resume`, with the job's row once it ran.
+    fn resume_job(&self) -> (i64, taskboardd::util::Row, Vec<(String, Value)>) {
         let t = self.post("/tasks", json!({"title": "Fix the tab bar", "detail": "Do it.", "project": "webapp"}))["id"].as_i64().unwrap();
         let args = json!({"flags": "--resume c1", "cwd": self.repo, "prompt": "[T1] continue"});
         let jid = board::create_job(&self.app, "agent", args, Some(t), "start", None).unwrap();
-        midna::run_job(&self.app, &self.app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap());
+        let job = || self.app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap();
+        midna::run_job(&self.app, &job());
         let calls = std::fs::read_to_string(self.dir.path().join("calls")).unwrap_or_default();
         let calls = calls
             .lines()
@@ -63,7 +76,7 @@ impl Board {
                 (m.to_string(), serde_json::from_str(p).unwrap())
             })
             .collect();
-        (t, calls)
+        (t, job(), calls)
     }
 }
 
@@ -97,4 +110,25 @@ fn a_warm_resume_opens_with_its_prompt_and_no_compact() {
     let open = calls.iter().find(|(m, _)| m == "session.open").map(|(_, p)| p).unwrap();
     assert_eq!(open["prompt"], "[T1] continue");
     assert!(queued(&calls).is_empty(), "{calls:?}");
+}
+
+#[test]
+fn a_cold_resume_whose_compact_couldn_t_queue_still_gets_its_prompt() {
+    let b = board_with("2000-01-01T00:00:00Z", "/compact");
+    let (_, job, calls) = b.resume_job();
+
+    assert_eq!(queued(&calls), ["/compact", "[T1] continue"], "the prompt is queued after the refused compact");
+    assert_eq!(calls.iter().filter(|(m, _)| m == "session.open").count(), 1, "no second terminal: {calls:?}");
+    assert_eq!(job.s("state"), Some("done"), "the terminal opened, so the job isn't retried");
+    assert!(job.st("result").contains("Opened S9, but couldn't queue its compact"), "{}", job.st("result"));
+}
+
+#[test]
+fn a_cold_resume_whose_prompt_couldn_t_queue_says_so() {
+    let b = board_with("2000-01-01T00:00:00Z", "continue");
+    let (_, job, calls) = b.resume_job();
+
+    assert_eq!(calls.iter().filter(|(m, _)| m == "session.open").count(), 1, "no second terminal: {calls:?}");
+    assert_eq!(job.s("state"), Some("done"), "the terminal opened, so the job isn't retried");
+    assert!(job.st("result").contains("Opened S9, but couldn't queue its prompt"), "{}", job.st("result"));
 }
