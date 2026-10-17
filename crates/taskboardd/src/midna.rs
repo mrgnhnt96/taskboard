@@ -1,6 +1,7 @@
 //! Midna, the terminal app: the board calls its CLI (`midna call <method> '<json>'`).
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -571,13 +572,13 @@ fn register_links(app: &App) {
         }
     };
     if app.cfg.runner {
-        install_tab_triggers(app, &run);
+        remove_old_triggers(app, &run);
     }
     app.shared.lock().midna_links = Some((Instant::now(), if has { Some(run) } else { last }));
 }
 
 /// The tab statuses the board gives a task's terminal: what it sends, the label, its color and the
-/// state Midna sorts and notifies by. Each is a local trigger the board keeps in Midna.
+/// state Midna sorts and notifies by. Each comes off with the terminal's next prompt.
 pub const TAB_STATUSES: [(&str, &str, &str, &str); 6] = [
     ("in_review", "In review", "purple", "done"),
     ("done", "Done", "green", "done"),
@@ -595,60 +596,48 @@ pub fn tab_field(field: &str) -> bool {
     matches!(field, "status" | "failed" | "needs_reason" | "waits_for" | "pr_num" | "pr_url" | "pr_phase" | "pr_state" | "pr_flow")
 }
 
-/// The hook event the board's tab statuses ride on: one per build, so a dev board never sets the real one's.
-fn tab_event(app: &App) -> String {
-    links_owner(app).replace(' ', "")
+/// The Midna call that puts a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) on terminal `sid`.
+pub fn tab_call(sid: &str, tab: &str) -> (&'static str, Value) {
+    match TAB_STATUSES.iter().find(|(t, ..)| *t == tab) {
+        Some((_, label, color, base)) => {
+            ("session.set_status", json!({"id": sid, "label": label, "color": color, "base": base, "clear_on": "prompt"}))
+        }
+        None => ("session.clear_status", json!({"id": sid})),
+    }
 }
 
-/// The local triggers that turn the board's tab events into tab statuses, each cleared by the next prompt.
-pub fn tab_triggers(app: &App) -> Vec<Value> {
-    let owner = links_owner(app);
-    let event = format!("hook.{}", tab_event(app));
-    let trigger = |tab: &str, name: &str, action: Value| {
-        json!({"name": format!("{owner}: {name}"), "source": "local", "event": event, "filter": {"match": {"tab": tab}},
-               "action": action, "cooldown_secs": 0, "enabled": true})
-    };
-    let mut all: Vec<Value> = TAB_STATUSES
-        .iter()
-        .map(|(tab, label, color, base)| trigger(tab, label, json!({"kind": "set_status", "label": label, "color": color, "base": base, "clear_on": "prompt"})))
-        .collect();
-    all.push(trigger(TAB_CLEAR, "Clear status", json!({"kind": "clear_status"})));
-    all
-}
-
-/// Puts the tab-status triggers in a Midna run (`run`, its pid and start) that lacks them: once per run.
-/// One an older board made is brought up to date; one Morgan turned off stays off.
-fn install_tab_triggers(app: &App, run: &str) {
-    if app.shared.lock().midna_tab_triggers.as_deref() == Some(run) {
+/// Takes out the local triggers older boards kept in Midna for tab statuses (hook events the board
+/// no longer sends), once per Midna run (`run`, its pid and start). An enabled one is paused first,
+/// since Midna asks Morgan before removing an enabled trigger.
+fn remove_old_triggers(app: &App, run: &str) {
+    if app.shared.lock().midna_old_triggers.as_deref() == Some(run) {
         return;
     }
     let have = match call_timeout(app, "trigger.list", json!({}), 5.0) {
         Ok(v) => v.as_array().cloned().unwrap_or_default(),
         Err(MidnaError::Down(_)) => return,
         Err(e) => {
-            app.info(format!("midna: couldn't read its triggers, so terminal tabs show no task status: {e}"));
-            app.shared.lock().midna_tab_triggers = Some(run.to_string());
+            app.info(format!("midna: couldn't read its triggers to take out the old tab-status ones: {e}"));
+            app.shared.lock().midna_old_triggers = Some(run.to_string());
             return;
         }
     };
-    for want in tab_triggers(app) {
-        let found = have.iter().find(|t| t["name"] == want["name"] && t["source"] == "local");
-        let r = match found {
-            None => call_timeout(app, "trigger.add", want.clone(), 5.0),
-            Some(t) if ["event", "filter", "action", "cooldown_secs"].iter().any(|k| t[*k] != want[*k]) => {
-                let mut up = json!({"id": t["id"]});
-                for k in ["event", "filter", "action", "cooldown_secs"] {
-                    up[k] = want[k].clone();
-                }
-                call_timeout(app, "trigger.update", up, 5.0)
-            }
-            Some(_) => continue,
+    let owner = links_owner(app);
+    let event = format!("hook.{}", owner.replace(' ', ""));
+    let names: Vec<String> =
+        TAB_STATUSES.iter().map(|(_, label, ..)| *label).chain(["Clear status"]).map(|n| format!("{owner}: {n}")).collect();
+    let old = have.iter().filter(|t| t["source"] == "local" && t["event"] == event.as_str() && names.iter().any(|n| t["name"] == n.as_str()));
+    for t in old {
+        let id = &t["id"];
+        let paused = match t["enabled"] == true {
+            true => call_timeout(app, "trigger.set_enabled", json!({"id": id, "enabled": false}), 5.0),
+            false => Ok(Value::Null),
         };
-        if let Err(e) = r {
-            app.info(format!("midna: couldn't keep the {} trigger: {e}", want["name"].as_str().unwrap_or("")));
+        if let Err(e) = paused.and_then(|_| call_timeout(app, "trigger.remove", json!({"id": id}), 5.0)) {
+            app.info(format!("midna: couldn't remove the old {} trigger: {e}", t["name"].as_str().unwrap_or("")));
         }
     }
-    app.shared.lock().midna_tab_triggers = Some(run.to_string());
+    app.shared.lock().midna_old_triggers = Some(run.to_string());
 }
 
 /// What a task's terminal tab shows for its state, if anything.
@@ -716,16 +705,22 @@ pub fn set_tab(app: &App, sid: &str, tab: &'static str) {
 }
 
 /// Sends the queued tab statuses, in order. One Midna won't take is logged and dropped; with Midna
-/// down they wait.
+/// down they wait. A Midna too old for `session.set_status` is logged once and its tabs show none.
 pub fn send_tabs(app: &App) {
+    static TOO_OLD: AtomicBool = AtomicBool::new(false);
     loop {
         let Some((sid, tab)) = app.shared.lock().midna_tabs.pop_front() else { return };
-        let hook = json!({"agent": "claude", "event": tab_event(app), "session": sid, "payload": {"tab": tab}});
-        match call_timeout(app, "agent.hook", hook, 5.0) {
+        let (method, params) = tab_call(&sid, tab);
+        match call_timeout(app, method, params, 5.0) {
             Ok(_) => {}
             Err(MidnaError::Down(_)) => {
                 app.shared.lock().midna_tabs.push_front((sid, tab));
                 return;
+            }
+            Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
+                if !TOO_OLD.swap(true, Ordering::Relaxed) {
+                    app.info(format!("midna: it doesn't take tab statuses yet ({method}); terminal tabs show no task status until it's updated"));
+                }
             }
             Err(MidnaError::Refused(e)) => app.info(format!("midna: couldn't set {sid}'s tab to {tab}: {e}")),
         }
