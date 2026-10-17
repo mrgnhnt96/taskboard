@@ -31,8 +31,8 @@ pub struct Shared {
     pub midna_resumes_network: Option<(Instant, bool)>,
     /// When the board last checked its link patterns in Midna, and the Midna (pid and start) that has them.
     pub midna_links: Option<(Instant, Option<String>)>,
-    /// The Midna run (pid and start) that has the board's tab-status triggers.
-    pub midna_tab_triggers: Option<String>,
+    /// The Midna run (pid and start) rid of the tab-status triggers older boards kept there.
+    pub midna_old_triggers: Option<String>,
     /// Tab statuses waiting to go to Midna: each terminal and what its tab shows (`midna::set_tab`).
     pub midna_tabs: VecDeque<(String, &'static str)>,
     pub recent_reports: VecDeque<String>,

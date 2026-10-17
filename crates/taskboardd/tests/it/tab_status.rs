@@ -1,5 +1,5 @@
 //! A task's terminal tab in Midna follows the task: In review, Done, Question, Alert, Task failed and
-//! Waiting, set through local triggers the board keeps in Midna.
+//! Waiting, set with Midna's `session.set_status`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -164,43 +164,49 @@ fn a_board_without_the_runner_sends_no_tabs() {
     assert_eq!(b.tabs(), vec![]);
 }
 
+/// The calls the fake Midna got with `method`, as their params.
+fn calls(b: &Board, method: &str) -> Vec<Value> {
+    let calls = std::fs::read_to_string(b.dir.path().join("calls")).unwrap_or_default();
+    calls.lines().filter_map(|l| l.strip_prefix(&format!("{method} "))).map(|p| serde_json::from_str(p).unwrap()).collect()
+}
+
 #[test]
-fn queued_tabs_go_to_midna_as_hook_events() {
+fn queued_tabs_go_to_midna_as_status_labels() {
     let b = new_board(true);
     midna::set_tab(&b.app, "s1", "question");
+    midna::set_tab(&b.app, "s2", "clear");
     midna::send_tabs(&b.app);
-    let calls = std::fs::read_to_string(b.dir.path().join("calls")).unwrap();
-    let line = calls.lines().find(|l| l.starts_with("agent.hook ")).expect("an agent.hook call");
-    let params: Value = serde_json::from_str(line.trim_start_matches("agent.hook ")).unwrap();
-    assert_eq!(params, json!({"agent": "claude", "event": "Taskboard", "session": "s1", "payload": {"tab": "question"}}));
+    assert_eq!(
+        calls(&b, "session.set_status"),
+        vec![json!({"id": "s1", "label": "Question", "color": "amber", "base": "needs_you", "clear_on": "prompt"})]
+    );
+    assert_eq!(calls(&b, "session.clear_status"), vec![json!({"id": "s2"})]);
+    assert!(calls(&b, "agent.hook").is_empty());
     assert!(b.tabs().is_empty());
 }
 
 #[test]
-fn the_triggers_go_in_once_per_midna_run() {
+fn the_old_tab_triggers_come_out_once_per_midna_run() {
     let b = new_board(true);
-    let adds = || {
-        std::fs::read_to_string(b.dir.path().join("calls")).unwrap_or_default().lines().filter(|l| l.starts_with("trigger.add ")).count()
+    let trigger = |id: &str, name: &str, event: &str, enabled: bool| {
+        json!({"id": id, "name": name, "source": "local", "event": event, "enabled": enabled})
     };
-    midna::sync_once(&b.app).unwrap();
-    assert_eq!(adds(), 7);
-    let want = midna::tab_triggers(&b.app);
-    assert_eq!(want[0]["name"], "Taskboard: In review");
-    assert_eq!(want[0]["event"], "hook.Taskboard");
-    assert_eq!(want[0]["action"], json!({"kind": "set_status", "label": "In review", "color": "purple", "base": "done", "clear_on": "prompt"}));
-    assert_eq!(want[6]["action"], json!({"kind": "clear_status"}));
-    // A Midna that already has them (a restarted board, the same Midna run or not) gets none again.
-    std::fs::write(b.dir.path().join("calls"), "").unwrap();
-    let have: Vec<Value> = want.iter().enumerate().map(|(i, t)| {
-        let mut t = t.clone();
-        t["id"] = json!(format!("t_{i}"));
-        t
-    }).collect();
+    let have = vec![
+        trigger("t_1", "Taskboard: In review", "hook.Taskboard", true),
+        trigger("t_2", "Taskboard: Clear status", "hook.Taskboard", false),
+        trigger("t_3", "Taskboard: Done", "hook.Stop", true),
+        trigger("t_4", "Keep awake", "hook.Taskboard", true),
+    ];
     std::fs::write(b.dir.path().join("triggers"), serde_json::to_string(&have).unwrap()).unwrap();
-    b.app.shared.lock().midna_tab_triggers = None;
+    midna::sync_once(&b.app).unwrap();
+    assert_eq!(calls(&b, "trigger.set_enabled"), vec![json!({"id": "t_1", "enabled": false})], "an enabled one is paused first");
+    assert_eq!(calls(&b, "trigger.remove"), vec![json!({"id": "t_1"}), json!({"id": "t_2"})], "only the board's own");
+    assert!(calls(&b, "trigger.add").is_empty());
+    // The same Midna run isn't looked at again.
+    std::fs::write(b.dir.path().join("calls"), "").unwrap();
     b.app.shared.lock().midna_links = None;
     midna::sync_once(&b.app).unwrap();
-    assert_eq!(adds(), 0);
+    assert!(calls(&b, "trigger.list").is_empty());
 }
 
 #[test]
