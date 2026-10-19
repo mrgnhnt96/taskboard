@@ -94,14 +94,20 @@ pub(crate) fn ask(app: &App, prompt: String, schema: Value) -> std::result::Resu
 
 /// `ask`, run in `repo` with Claude's read-only tools (Read, Grep, Glob) there when it's given.
 pub(crate) fn ask_in(app: &App, prompt: String, schema: Value, repo: Option<&std::path::Path>, timeout_secs: u64) -> std::result::Result<Value, String> {
-    ask_model(app, &app.cfg.backlog.model, prompt, schema, repo, timeout_secs)
+    ask_model(app, &app.cfg.backlog.model, prompt, schema, repo, &[], timeout_secs)
+}
+
+/// `ask_in`, with `extra` tools (WebSearch, WebFetch) allowed beside the read-only ones.
+pub(crate) fn ask_in_with(app: &App, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64) -> std::result::Result<Value, String> {
+    ask_model(app, &app.cfg.backlog.model, prompt, schema, repo, extra, timeout_secs)
 }
 
 /// `ask_in` on `model` rather than `[backlog] model`.
-fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, timeout_secs: u64) -> std::result::Result<Value, String> {
+fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option<&std::path::Path>, extra: &[&str], timeout_secs: u64) -> std::result::Result<Value, String> {
     let claude = proc::which(&app.cfg.claude).ok_or("claude isn't installed")?;
     let c = &app.cfg.backlog;
-    let tools = if repo.is_some() { "Read,Grep,Glob" } else { "" };
+    let read: &[&str] = if repo.is_some() { &["Read", "Grep", "Glob"] } else { &[] };
+    let tools = read.iter().chain(extra).copied().collect::<Vec<_>>().join(",");
     let mut args: Vec<String> = vec![
         "-p".into(),
         prompt,
@@ -111,7 +117,7 @@ fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option
         "".into(),
         "--no-session-persistence".into(),
         "--tools".into(),
-        tools.into(),
+        tools.clone(),
         "--strict-mcp-config".into(),
         "--max-budget-usd".into(),
         c.budget_usd.clone(),
@@ -120,8 +126,8 @@ fn ask_model(app: &App, model: &str, prompt: String, schema: Value, repo: Option
         "--output-format".into(),
         "json".into(),
     ];
-    if repo.is_some() {
-        args.extend(["--allowedTools".into(), tools.into()]);
+    if !tools.is_empty() {
+        args.extend(["--allowedTools".into(), tools]);
     }
     let cwd = repo.unwrap_or(app.cfg.data.as_path());
     let out = proc::run(&claude, &args, Some(cwd), timeout_secs as f64).map_err(|_| "claude didn't answer in time".to_string())?;
@@ -232,7 +238,7 @@ fn group_now(app: &App) -> std::result::Result<(), String> {
         parts.push(format!("Already sorted (for context; don't answer for these):\n{}", done.iter().map(|b| issue_block(b, true)).collect::<Vec<_>>().join("\n")));
     }
     let c = &app.cfg.backlog;
-    let v = ask_model(app, c.group_model(), parts.join("\n\n"), group_schema(), None, c.timeout_secs)?;
+    let v = ask_model(app, c.group_model(), parts.join("\n\n"), group_schema(), None, &[], c.timeout_secs)?;
     let mut answers: HashMap<i64, Value> = HashMap::new();
     for x in v["issues"].as_array().cloned().unwrap_or_default() {
         if let Some(id) = x["id"].as_i64() {

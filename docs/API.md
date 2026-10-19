@@ -1164,8 +1164,14 @@ separate from bits (feature flags). Search finds ideas by their title and detail
 `idea`: `{id, ref: "I4", project, title, detail, state, goal: "G9"|null, source, created_at, updated_at, notes: int,
 rounds: int}`. Shown on its own (every response below but the list), `notes` is `[{id, text, source, at}]` oldest
 first and `rounds` is `[round]` newest first. `round`: `{id, focus: str ("" for the whole idea), report: object|null,
-sha: str|null (the commit it ran at), web: bool, started_at, finished_at, error: str|null, source}`. `source` is who
-added it (`by_session`'s terminal, `who`, else the owner).
+sha: str|null (the commit it ran at), web: bool, started_at, finished_at, error: str|null, source, behind: int|null,
+stale: bool}`. `source` is who added it (`by_session`'s terminal, `who`, else the owner). `behind` is how many commits
+the project's checkout is past the round's `sha` (null with no checkout or no sha); `stale` is true at 50 or more, or
+when the sha is no longer in the checkout's history.
+
+`report`: `{verdict: "fits"|"partly"|"doesnt_fit", why, builds_on: [{what, files: [str]}], ways_to_extend: [str],
+risks: [{kind: "security"|"privacy"|"performance"|"maintenance", risk}], pitfalls: [str], open_questions: [str],
+related: [ref]}`. `related` only holds refs (goals, backlog issues, done tasks, lessons) the dig's prompt listed.
 
 | Request | Body | What |
 |---|---|---|
@@ -1177,8 +1183,12 @@ added it (`by_session`'s terminal, `who`, else the owner).
 | `POST /ideas/:ref/shelve` | `{reason?, by_session?, who?}` | `tb idea shelve`. Put it aside for later; a reason is kept as a note. |
 | `POST /ideas/:ref/drop` | `{reason?, by_session?, who?}` | `tb idea drop`. It won't be built; a reason is kept as a note. |
 | `POST /ideas/:ref/reopen` | `{reason?, by_session?, who?}` | `tb idea reopen`. A shelved or dropped idea goes back to `reported` when a round has a report, else `new`; an open one is left as it is. |
+| `POST /ideas/:ref/dig` | `{focus?, web?, by_session?, who?}` | `tb idea dig`. Starts a report round and answers with the idea (now `digging`, the round open). A headless `claude -p` reads the project's checkout with Read, Grep and Glob only (WebSearch and WebFetch too when `web` is true; off by default), for up to 15 minutes. The round then gets its `report`, or its `error`, and the idea goes back to `reported` (or `new` with no report yet). The focus is 1000 characters at most. 409 on a `planned`, `shelved` or `dropped` idea, while it's being dug into already, when claude isn't installed, or when the project has no checkout on this Mac. Nothing digs on its own. |
 
 Shelve, drop and reopen are 409 on a `planned` idea (work on its goal instead) and while it's `digging`.
+
+A dig the board lost (it stopped while Claude read) is closed the next time any `/ideas` route is called: its round
+gets an error and the idea goes back as above.
 
 ## Reviewers
 
