@@ -7,6 +7,8 @@ pub mod goals;
 pub mod goals_page;
 pub mod home;
 pub mod hours;
+pub mod idea;
+pub mod ideas;
 pub mod issue_panel;
 pub mod kit;
 pub mod md;

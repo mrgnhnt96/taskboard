@@ -36,6 +36,10 @@ pub enum Page {
     Review,
     /// Each project's releases, for the projects with releases on (`ui::releases`).
     Releases,
+    /// Each project's ideas (`ui::ideas`).
+    Ideas,
+    /// An idea ref, `I3` (`ui::idea`).
+    Idea(String),
 }
 
 /// A place in the ⌘← / ⌘→ history: a page, and the task open over it.
@@ -88,6 +92,9 @@ pub struct Data {
     /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
     pub reviews: Option<Value>,
     pub review: Option<Value>,
+    /// `GET /ideas` for the Ideas page and `GET /ideas/:id` for an idea's page.
+    pub ideas: Option<Value>,
+    pub idea: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -103,6 +110,8 @@ pub struct Errs {
     pub session: Option<String>,
     pub days: Option<String>,
     pub review: Option<String>,
+    pub ideas: Option<String>,
+    pub idea: Option<String>,
 }
 
 /// The board's filters (sent with `GET /state`).
@@ -203,6 +212,8 @@ pub struct MainWindow {
     pub tasks: ui::tasks::State,
     pub goals: ui::goals_page::State,
     pub releases: ui::releases::State,
+    pub ideas: ui::ideas::State,
+    pub idea: ui::idea::State,
     pub search: ui::search::State,
     /// The goal list answered at least once (before that the state's goals stand in).
     goals_loaded: bool,
@@ -248,6 +259,8 @@ impl MainWindow {
             tasks: Default::default(),
             goals: Default::default(),
             releases: Default::default(),
+            ideas: Default::default(),
+            idea: Default::default(),
             search: Default::default(),
             goals_loaded: false,
             generation: 0,
@@ -265,7 +278,9 @@ impl MainWindow {
                 "tasks" => Page::Tasks,
                 "goals" => Page::Goals,
                 "releases" => Page::Releases,
+                "ideas" => Page::Ideas,
                 g if g.starts_with('G') => Page::Goal(g.into()),
+                i if i.starts_with('I') => Page::Idea(i.into()),
                 _ => Page::Board,
             };
         }
@@ -432,6 +447,12 @@ impl MainWindow {
                     self.data.errs.goal = None;
                 }
             }
+            if let Page::Idea(r) = &page {
+                if self.data.idea.as_ref().and_then(|i| i["ref"].as_str()) != Some(r.as_str()) {
+                    self.data.idea = None;
+                    self.data.errs.idea = None;
+                }
+            }
             let entering_backlog = page == Page::Backlog;
             self.page = page;
             if entering_backlog {
@@ -525,6 +546,8 @@ impl MainWindow {
             ("issue", r) if !r.is_empty() => self.open_issue(r.to_uppercase(), cx),
             ("goal" | "goals", r) if !r.is_empty() => ui::goal::open(self, &r.to_uppercase(), param("view") == Some("backlog"), cx),
             ("goals", _) => self.open_goals(cx),
+            ("idea" | "ideas", r) if !r.is_empty() => ui::idea::open(self, &r.to_uppercase(), cx),
+            ("ideas", _) => self.go(Page::Ideas, cx),
             ("session", id) if !id.is_empty() => {
                 self.sessions.selected = Some(id.to_string());
                 self.go(Page::Sessions, cx);
@@ -844,6 +867,10 @@ struct Wants {
     /// The Releases page: the projects it lists, and its open rows.
     releases: Vec<String>,
     release_rows: Vec<String>,
+    /// The Ideas page, for `GET /ideas`.
+    ideas: bool,
+    /// An idea's page, for `GET /ideas/:id`.
+    idea: Option<String>,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -869,6 +896,8 @@ struct Got {
     review: Option<(i64, Answer)>,
     releases: Vec<(String, Answer)>,
     release_rows: Vec<(String, Answer)>,
+    ideas: Option<Answer>,
+    idea: Option<(String, Answer)>,
 }
 
 impl Wants {
@@ -900,6 +929,11 @@ impl Wants {
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
             release_rows: ui::releases::open_rows(&m.releases, &releases_shown(m)),
+            ideas: m.page == Page::Ideas,
+            idea: match &m.page {
+                Page::Idea(r) => Some(r.clone()),
+                _ => None,
+            },
         }
     }
 
@@ -943,6 +977,8 @@ impl Wants {
                     })
                 })
                 .collect();
+            let ideas = self.ideas.then(|| s.spawn(move || get("ideas", &[("project", "all".into()), ("state", "all".into())])));
+            let idea = self.idea.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("ideas/{r}"), &[]))));
             let (reviews, review) = reviews.map(join).map_or((None, None), |(l, one)| (Some(l), one));
             Got {
                 state: Some(join(state)),
@@ -963,6 +999,8 @@ impl Wants {
                 review,
                 releases: releases.into_iter().map(join).collect(),
                 release_rows: release_rows.into_iter().map(join).collect(),
+                ideas: ideas.map(join),
+                idea: idea.map(join),
             }
         });
         // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
@@ -1031,6 +1069,14 @@ impl Got {
         if let Some((r, v)) = self.goal {
             if m.page == Page::Goal(r) {
                 land(&mut d.goal, &mut d.errs.goal, v, merge_goal);
+            }
+        }
+        if let Some(v) = self.ideas {
+            land(&mut d.ideas, &mut d.errs.ideas, v, |v| v);
+        }
+        if let Some((r, v)) = self.idea {
+            if m.page == Page::Idea(r) {
+                land(&mut d.idea, &mut d.errs.idea, v, |v| v);
             }
         }
         if m.page == Page::Goals {
@@ -1145,6 +1191,8 @@ impl Render for MainWindow {
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),
             Page::Releases => ui::releases::render(self, window, cx),
+            Page::Ideas => ui::ideas::render(self, window, cx),
+            Page::Idea(_) => ui::idea::render(self, cx),
         };
         let (task_panel, panel) = match self.panel.clone() {
             Some(Panel::Task { .. }) => (Some(ui::task_panel::render(self, window, cx)), None),
@@ -1230,6 +1278,7 @@ pub fn page_title(page: &Page, needs: i64) -> String {
         Page::Days => "Days",
         Page::Review => "Review",
         Page::Releases => "Releases",
+        Page::Ideas | Page::Idea(_) => "Ideas",
         Page::Tasks => "Tasks",
         Page::Board => "Task board",
     };
