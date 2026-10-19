@@ -824,6 +824,21 @@ mod tests {
     }
 
     #[test]
+    fn a_shelf_line_says_what_its_goal_is_for() {
+        let gs = [
+            goal(1, "web", 0, 2, json!({"tldr": "Short", "outcome": "Long"})),
+            goal(2, "web", 0, 2, json!({"outcome": "Long"})),
+            goal(3, "web", 0, 2, json!({"tldr": "Short"})),
+            goal(4, "web", 0, 2, json!({})),
+        ];
+        let refs: Vec<&Value> = gs.iter().collect();
+        let sh = shelves(&refs, Utc::now());
+        let mut got: Vec<(&str, &str)> = sh[0].lines.iter().map(|l| (l.r.as_str(), l.about.as_str())).collect();
+        got.sort();
+        assert_eq!(got, [("G1", "Short"), ("G2", "Long"), ("G3", "Short"), ("G4", "")]);
+    }
+
+    #[test]
     fn a_goal_shows_under_every_project_its_tasks_are_in() {
         let gs = [goal(1, "web", 1, 3, json!({"active": 1, "projects": ["web", "api"]})), goal(2, "web", 0, 1, json!({"active": 1}))];
         assert_eq!(in_progress(&gs, "api"), ["G1"]);
