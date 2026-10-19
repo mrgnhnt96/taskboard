@@ -38,23 +38,71 @@ pub struct Who {
     pub name: String,
 }
 
-/// Who `who` is on this PR: a roster reviewer (by any of their names), else someone on the PR's
-/// reviewer list, else a host id as given.
+/// Looks like a host account id: what `clearly_host_id` takes, a Bitbucket `account_id`
+/// (`557058:…`) or a 24-hex-digit one.
+fn looks_like_host_id(s: &str) -> bool {
+    let s = s.trim();
+    reviewers::clearly_host_id(s)
+        || (s.len() == 24 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        || s.split_once(':').is_some_and(|(a, b)| a.len() >= 5 && a.chars().all(|c| c.is_ascii_digit()) && !b.is_empty())
+}
+
+/// Whether `w` (lowercased) is the start of `name` or of one of its words.
+fn starts_name(name: &str, w: &str) -> bool {
+    let n = name.to_lowercase();
+    !w.is_empty() && (n.starts_with(w) || n.split_whitespace().any(|part| part.starts_with(w)))
+}
+
+/// Who `who` is on this PR: a roster reviewer (by any of their names, else a unique first-name or
+/// prefix match), else someone on the PR's reviewer list, else a host id that looks like one.
+/// Anything else is refused, with the closest name when there is one.
 pub fn resolve(app: &App, t: &Row, rec: &Value, who: &str) -> Result<Who> {
     let who = who.trim();
-    if let Some(r) = reviewers::find(app, &t.st("project"), who)? {
+    let project = t.st("project");
+    let roster = reviewers::roster(app, &project)?;
+    let w = who.trim_start_matches('@').to_lowercase();
+    let found = match reviewers::find(app, &project, who)? {
+        Some(r) => Some(r),
+        None => {
+            let mut near = roster.iter().filter(|r| starts_name(&r.st("name"), &w));
+            match (near.next(), near.next()) {
+                (Some(r), None) => Some(r.clone()),
+                _ => None,
+            }
+        }
+    };
+    if let Some(r) = found {
         let Some(user) = r.s("host_user").filter(|u| !u.is_empty()) else {
             return err(409, format!("The board doesn't know {}'s account on the PR host yet. Add it: tb reviewers add \"{}\" --user <their id>.", r.st("name"), r.st("name")));
         };
         return Ok(Who { user: user.to_string(), name: r.st("name") });
     }
-    let w = who.trim_start_matches('@').to_lowercase();
-    for r in rec["reviewers"].as_array().cloned().unwrap_or_default() {
-        if r["user"].as_str().map(|u| u.to_lowercase()) == Some(w.clone()) || r["name"].as_str().map(|u| u.to_lowercase()) == Some(w.clone()) {
-            return Ok(Who { user: r["user"].as_str().unwrap_or("").to_string(), name: r["name"].as_str().unwrap_or("").to_string() });
+    let on = rec["reviewers"].as_array().cloned().unwrap_or_default();
+    let pr_name = |r: &Value, f: &dyn Fn(&str) -> bool| r["user"].as_str().is_some_and(f) || r["name"].as_str().is_some_and(f);
+    let mut hit = on.iter().filter(|r| pr_name(r, &|u| u.to_lowercase() == w));
+    let mut hit = hit.next().or_else(|| {
+        let mut near = on.iter().filter(|r| r["name"].as_str().is_some_and(|n| starts_name(n, &w)));
+        match (near.next(), near.next()) {
+            (Some(r), None) => Some(r),
+            _ => None,
         }
+    });
+    if let Some(r) = hit.take() {
+        return Ok(Who { user: r["user"].as_str().unwrap_or("").to_string(), name: r["name"].as_str().unwrap_or("").to_string() });
     }
-    Ok(Who { user: who.trim_start_matches('@').to_string(), name: who.trim_start_matches('@').to_string() })
+    if looks_like_host_id(who) {
+        let id = who.trim_start_matches('@').to_string();
+        return Ok(Who { user: id.clone(), name: id });
+    }
+    let mut close: Vec<String> = roster.iter().map(|r| r.st("name")).filter(|n| starts_name(n, &w)).collect();
+    let pr_close: Vec<String> = on.iter().filter_map(|r| r["name"].as_str()).filter(|n| starts_name(n, &w) && !close_has(&close, n)).map(|n| n.to_string()).collect();
+    close.extend(pr_close);
+    let mean = if close.is_empty() { String::new() } else { format!(" Did you mean {}?", close.join(" or ")) };
+    err(404, format!("{project} has no reviewer “{who}” and nobody on the PR by that name. tb reviewers list shows them.{mean}"))
+}
+
+fn close_has(list: &[String], n: &str) -> bool {
+    list.iter().any(|x| x == n)
 }
 
 /// Refuses asking the PR's author or someone removed from the roster.
