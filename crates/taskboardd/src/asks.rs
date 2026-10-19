@@ -63,6 +63,8 @@ pub fn resolve(app: &App, t: &Row, rec: &Value, who: &str) -> Result<Who> {
     let w = who.trim_start_matches('@').to_lowercase();
     let found = match reviewers::find(app, &project, who)? {
         Some(r) => Some(r),
+        // An explicit `@login` is a host id, never a name prefix.
+        None if who.starts_with('@') => None,
         None => {
             let mut near = roster.iter().filter(|r| starts_name(&r.st("name"), &w));
             match (near.next(), near.next()) {
@@ -81,6 +83,9 @@ pub fn resolve(app: &App, t: &Row, rec: &Value, who: &str) -> Result<Who> {
     let pr_name = |r: &Value, f: &dyn Fn(&str) -> bool| r["user"].as_str().is_some_and(f) || r["name"].as_str().is_some_and(f);
     let mut hit = on.iter().filter(|r| pr_name(r, &|u| u.to_lowercase() == w));
     let mut hit = hit.next().or_else(|| {
+        if who.starts_with('@') {
+            return None;
+        }
         let mut near = on.iter().filter(|r| r["name"].as_str().is_some_and(|n| starts_name(n, &w)));
         match (near.next(), near.next()) {
             (Some(r), None) => Some(r),
