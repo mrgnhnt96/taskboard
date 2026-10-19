@@ -65,6 +65,7 @@ mod releases;
 mod reply_questions;
 mod reproject;
 mod retro;
+mod running_goal_joins;
 mod review;
 mod review_fixes;
 mod reviewers;

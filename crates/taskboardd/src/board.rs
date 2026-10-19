@@ -78,6 +78,29 @@ pub fn miss_settled(app: &App, issue: &Row) -> Result<()> {
     }
 }
 
+/// The goal was run and isn't through yet: one of its own tasks is queued, working or needs the owner.
+pub fn goal_running(app: &App, goal_id: i64) -> Result<bool> {
+    Ok(app.db.count(
+        "SELECT COUNT(*) FROM tasks t JOIN goals g ON g.id = t.goal_id WHERE t.goal_id = ? AND COALESCE(g.archived, 0) = 0 \
+         AND t.status IN ('queued', 'working', 'needs')",
+        p![goal_id],
+    )? > 0)
+}
+
+/// The status a task joining the goal comes in with, and why, for the command's output: queued while the
+/// goal is running, so the run picks it up (it still waits for its wave, waits-for and stack parent);
+/// planned when `planned` asks for it or the goal isn't running.
+pub fn joining_status(app: &App, goal_id: i64, planned: bool) -> Result<(&'static str, String)> {
+    let g = rf("goal", goal_id);
+    Ok(if planned {
+        ("planned", "planned (asked)".into())
+    } else if goal_running(app, goal_id)? {
+        ("queued", format!("queued: {g} is running"))
+    } else {
+        ("planned", format!("planned: {g} isn't running"))
+    })
+}
+
 /// Every task in the goal is done, none failed, no PR of theirs is still open and no miss on its done-when is
 /// open (`goal_counts`' finished_at, cheaply).
 pub fn goal_finished(app: &App, goal_id: i64) -> Result<bool> {

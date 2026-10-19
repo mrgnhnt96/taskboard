@@ -910,6 +910,7 @@ fn meta(v: Option<&Value>) -> Result<Value> {
 
 fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mut warnings: Vec<String> = vec![];
+    let mut joined: Option<String> = None;
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         let who = board::caller(app, body, OWNER);
@@ -1015,17 +1016,25 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
                 new_status = Some(want.to_string());
             }
         }
-        // A queued task that never started joins its new goal's plan, so the goal's run picks it up.
+        // A planned task, or a queued one that never started, joins its new goal the way the goal's own
+        // tasks are: queued while the goal is running, so its run picks it up, else planned for its run.
         let mut goal_planned = false;
-        if matches!(new_goal_id, Some(Some(_)))
-            && !has_key("status")
-            && t.s("status") == Some("queued")
-            && t.s("session_id").is_none()
-            && t.i("start_job").is_none()
-            && t.s("started_at").is_none()
-        {
-            f.push(("status", json!("planned")));
-            goal_planned = true;
+        if let Some(Some(g)) = new_goal_id.filter(|_| !has_key("status")) {
+            let fresh = t.s("status") == Some("queued") && t.s("session_id").is_none() && t.i("start_job").is_none() && t.s("started_at").is_none();
+            if t.s("status") == Some("planned") || fresh {
+                let (status, why) = board::joining_status(app, g, false)?;
+                goal_planned = status == "planned";
+                if Some(status) != t.s("status") {
+                    f.push(("status", json!(status)));
+                }
+                // Waiting for a Start on the board would keep it out of the run.
+                if status == "queued" && !has_key("pickup") && t.s("pickup") == Some("manual") {
+                    f.push(("pickup", json!("queue")));
+                }
+                joined = Some(why);
+            }
+        } else if matches!(new_goal_id, Some(Some(_))) && body["status"] == "planned" {
+            joined = Some("planned (asked)".into());
         }
         if has_key("pickup") {
             let (mode, sid) = ops::pickup(app, body)?;
@@ -1169,7 +1178,11 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             board::log_event(app, id, &who, "status", if st == "queued" { "Queued" } else { "Moved back to planned" })?;
         } else if let Some(g) = new_goal_id {
             let name = match g {
-                Some(g) => format!("Moved to the goal “{}”{}", board::get_goal(app, g)?.st("name"), if goal_planned { " as planned" } else { "" }),
+                Some(g) => format!("Moved to the goal “{}”{}", board::get_goal(app, g)?.st("name"), match &joined {
+                    Some(_) if goal_planned => " as planned".to_string(),
+                    Some(why) => format!(", {why}"),
+                    None => String::new(),
+                }),
                 None => "Taken out of its goal".into(),
             };
             board::log_event(app, id, &who, "status", &name)?;
@@ -1210,6 +1223,9 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
     let mut d = task_detail(app, id)?;
     if !warnings.is_empty() {
         d["warnings"] = json!(warnings);
+    }
+    if let Some(why) = joined {
+        d["why"] = json!(why);
     }
     Ok(d)
 }
@@ -2496,16 +2512,25 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
     }
     let b = board::get_issue(app, id)?;
     need_open(&b)?;
-    let planned = where_ == "goal" && b.i("goal_id").is_some();
+    // In its goal: planned, or queued when the goal is running so its run picks the task up.
+    let join = match b.i("goal_id").filter(|_| where_ == "goal") {
+        Some(g) => Some(board::joining_status(app, g, as_bool(body.get("planned"), false))?),
+        None => None,
+    };
+    let planned = join.as_ref().is_some_and(|(s, _)| *s == "planned");
     let mut fields = issue_task_fields(app, &b, &who);
     fields["goal_id"] = b.v("goal_id");
     fields["status"] = json!(if planned { "planned" } else { "queued" });
     fields["priority"] = body.get("priority").cloned().unwrap_or(json!("normal"));
     fields["pickup"] = body.get("pickup").cloned().unwrap_or(json!({"mode": "queue"}));
-    let c = new_task(app, &fields, &who, Some(&format!("Added from the backlog ({}){}", rf("issue", id), if planned { " as planned" } else { "" })))?;
+    let c = new_task(app, &fields, &who, Some(&format!("Added from the backlog ({}){}", rf("issue", id), match &join {
+        Some((_, why)) if !planned => format!(", {why}"),
+        _ if planned => " as planned".into(),
+        _ => String::new(),
+    })))?;
     let cref = c["ref"].as_str().unwrap_or("").to_string();
-    let text = if planned {
-        format!("Made into {cref}, a planned task in its goal. Its handoff starts with this report and snapshot.")
+    let text = if join.is_some() {
+        format!("Made into {cref}, a {} task in its goal. Its handoff starts with this report and snapshot.", if planned { "planned" } else { "queued" })
     } else {
         format!(
             "Made into {cref}, a queued task{}. Its handoff starts with this report and snapshot.",
@@ -2513,7 +2538,7 @@ pub(crate) fn promote(app: &App, id: i64, body: &Value) -> Result<Value> {
         )
     };
     issue_tasked(app, id, c["id"].as_i64().unwrap_or(0), &who, &text)?;
-    Ok(json!({"issue": issue_detail(app, id)?, "task": task_detail(app, c["id"].as_i64().unwrap_or(0))?}))
+    Ok(json!({"issue": issue_detail(app, id)?, "task": task_detail(app, c["id"].as_i64().unwrap_or(0))?, "why": join.map(|(_, why)| why)}))
 }
 
 fn ticket(app: &App, id: i64, body: &Value) -> Result<Value> {
@@ -2673,7 +2698,12 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
                 return err(409, format!("{} is already open, so nothing changed.", rf("issue", *id)));
             }
             match action.as_str() {
-                "task" => tasks.push(promote(app, *id, body)?["task"].clone()),
+                "task" => {
+                    let made = promote(app, *id, body)?;
+                    let mut t = made["task"].clone();
+                    t["why"] = made["why"].clone();
+                    tasks.push(t);
+                }
                 "ticket" => {
                     ticket(app, *id, body)?;
                 }
