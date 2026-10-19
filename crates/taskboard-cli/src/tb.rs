@@ -731,7 +731,7 @@ enum BitCmd {
 #[derive(Subcommand)]
 enum ReleaseCmd {
     /// Cut a release holding every done task in Unreleased (its PR merged, or done with no PR). A project
-    /// with a release script runs it first, with the name, and records the release only if it succeeds
+    /// with a release script runs it first (from main or a release/* branch), with the name, and records the release only if it succeeds
     Cut {
         name: String,
         /// The project (this terminal's when left out)
@@ -3278,19 +3278,42 @@ fn cut_release(
     call(body).map(ReleaseCut::Cut)
 }
 
-/// Runs a project's release script in its checkout (the folder's git top level) with the release name
-/// as its one argument and in TB_RELEASE (so the script can tell tb started it), its output going
-/// straight to this terminal.
-fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+/// Releases come from main or a release/* branch: a cut from a feature branch would tag work that hasn't merged.
+fn need_release_branch(branch: &str) -> Result<(), String> {
+    if branch == "main" || branch.starts_with("release/") {
+        return Ok(());
+    }
+    let on = if branch.is_empty() { "a detached HEAD".to_string() } else { branch.to_string() };
+    Err(format!("release cut only runs on main or a release/* branch, and this checkout is on {on}. Switch to one and run it again."))
+}
+
+/// The checkout a release script runs in: the folder's git top level, else the folder.
+fn release_checkout(dir: Option<&str>) -> String {
     let dir = dir.map(str::to_string).unwrap_or_else(|| ".".into());
-    let top = std::process::Command::new("git")
+    std::process::Command::new("git")
         .args(["-C", &dir, "rev-parse", "--show-toplevel"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or(dir);
+        .unwrap_or(dir)
+}
+
+/// The checkout's branch, empty on a detached HEAD or outside git.
+fn checkout_branch(top: &str) -> String {
+    std::process::Command::new("git")
+        .args(["-C", top, "branch", "--show-current"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Runs a project's release script in its checkout with the release name as its one argument and in
+/// TB_RELEASE (so the script can tell tb started it), its output going straight to this terminal.
+fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+    let top = release_checkout(dir);
     out(&format!("Running the release script in {top}: {script} {name}"));
     let status = std::process::Command::new("sh")
         .arg("-c")
@@ -3306,11 +3329,17 @@ fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32
     Ok(status.code().unwrap_or(1))
 }
 
+/// `tb release cut`'s runner: the release script, once the checkout is on main or a release/* branch.
+fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+    need_release_branch(&checkout_branch(&release_checkout(dir)))?;
+    run_release_script(script, name, dir)
+}
+
 fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
     match action {
         ReleaseCmd::Cut { name, project, notes, no_script } => {
             let body = json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd});
-            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run_release_script, body, no_script)? {
+            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run_release_script_on_a_release_branch, body, no_script)? {
                 ReleaseCut::Cut(v) => {
                     out(&format!("Cut {}.", release_line(&v)));
                     release_groups(&v);
@@ -7339,6 +7368,14 @@ mod tests {
     }
 
     #[test]
+    fn release_cut_runs_only_on_main_or_a_release_branch() {
+        assert!(need_release_branch("main").is_ok());
+        assert!(need_release_branch("release/1.4").is_ok());
+        assert!(need_release_branch("feat/t1-x").unwrap_err().contains("on feat/t1-x"));
+        assert!(need_release_branch("").unwrap_err().contains("detached HEAD"));
+    }
+
+    #[test]
     fn release_cut_stops_when_the_board_refuses_the_check() {
         let mut ran = false;
         let r = cut_release(&mut |_| Err("Nothing to release".into()), &mut |_, _, _| { ran = true; Ok(0) }, json!({"name": "v1"}), false);
@@ -7354,6 +7391,32 @@ mod tests {
         std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && test \"$TB_RELEASE\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
         assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d)).unwrap(), 7);
         assert_eq!(run_release_script("true", "v1", Some(&d)).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn release_cut_runs_the_script_only_from_main_or_a_release_branch() {
+        let dir = std::env::temp_dir().join(format!("tb-release-branch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&d).args(args).output().unwrap().status.success());
+        git(&["init", "-q", "-b", "main"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        let ran = dir.join("ran");
+        let script = format!("touch '{}' #", ran.display());
+        let run = |branch: &str| {
+            git(&["checkout", "-q", "-B", branch]);
+            let _ = std::fs::remove_file(&ran);
+            let r = run_release_script_on_a_release_branch(&script, "v1", Some(&d));
+            (r, ran.exists())
+        };
+
+        let (r, did) = run("feat/t1-x");
+        assert!(r.unwrap_err().contains("on feat/t1-x"));
+        assert!(!did, "a feature branch doesn't run the script");
+        assert!(matches!(run("release/1.4"), (Ok(0), true)));
+        assert!(matches!(run("main"), (Ok(0), true)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
