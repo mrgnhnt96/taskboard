@@ -182,7 +182,7 @@ pub fn rf_opt(kind: &str, id: Option<i64>) -> Value {
     id.map(|i| Value::String(rf(kind, i))).unwrap_or(Value::Null)
 }
 
-static REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([TtGgBbJjQqMmLlRrIi])?(\d+)$").unwrap());
+static REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([TtHhGgBbJjQqMmLlRrIi])?(\d+)$").unwrap());
 
 pub fn parse_ref(v: &Value, kind: &str) -> Result<Option<i64>> {
     match v {
@@ -203,7 +203,9 @@ pub fn parse_ref_str(s: &str, kind: &str) -> Result<Option<i64>> {
         return err(400, format!("“{s}” isn't a valid id."));
     };
     if let Some(p) = c.get(1) {
-        if !kind.is_empty() && p.as_str().to_uppercase() != prefix(kind) {
+        // H<n> is a human task's ref: still a task.
+        let p = if p.as_str().eq_ignore_ascii_case("h") { "T".to_string() } else { p.as_str().to_uppercase() };
+        if !kind.is_empty() && p != prefix(kind) {
             return err(400, format!("“{s}” isn't a {kind} id."));
         }
     }

@@ -299,6 +299,23 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         "close-term" => run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx),
         "focus" => run(m, a, tp("/focus"), json!({}), |m, _| sent(m), cx),
         "step" => run(m, a, tp("/step"), json!({"skip": a.arg == "skip"}), |m, _| sent(m), cx),
+        // A human task's Done, with the note the owner wrote for the agents waiting on it.
+        "did" => {
+            let k = format!("did:{id}");
+            let note = ui(|u| u.drafts.get(&k).cloned().unwrap_or_default()).trim().to_string();
+            run(
+                m,
+                a,
+                tp("/did"),
+                json!({"note": note}),
+                move |m, _| {
+                    ui(|u| u.drafts.remove(&k));
+                    drop_field(m, &k);
+                    "Done".into()
+                },
+                cx,
+            );
+        }
         "open-url" => open_target(&a.arg, cx),
         "term-focus" => run(m, a, format!("sessions/{id}/focus"), json!({}), |m, _| sent(m), cx),
         "resume" => run(m, a, tp("/resume"), json!({"mode": a.arg}), |m, _| sent(m), cx),

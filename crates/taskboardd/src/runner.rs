@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, jira, jobs, limits, locks, midna, p, prflow, projects, reports, transcript, usage, waitsfor, worktrees};
+use crate::{board, deliver, dispatch, fields, gitattrs, handoff, hooks, hours, human, jira, jobs, limits, locks, midna, p, prflow, projects, reports, transcript, usage, waitsfor, worktrees};
 
 pub fn task_cwd(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(r) = t.s("repo_path").filter(|r| !r.is_empty()) {
@@ -32,6 +32,7 @@ pub fn start_task(
     flags: Option<String>,
     cwd: Option<String>,
 ) -> Result<i64> {
+    human::refuse_terminal(app, t)?;
     if mode == "attach" && crate::jira_desk::is_desk(app, session_id)? {
         return err(409, "Tasks can't go to the Jira desk.");
     }
@@ -175,7 +176,7 @@ pub fn goal_blocker(app: &App, t: &Row, g: &Row) -> Result<Option<String>> {
         .iter()
         .filter(|x| x.id() != t.id())
         .filter(|x| {
-            (matches!(x.s("status"), Some("working") | Some("needs")) && x.s("needs_reason") != Some("start_failed"))
+            (matches!(x.s("status"), Some("working") | Some("needs")) && !matches!(x.s("needs_reason"), Some("start_failed") | Some(human::NEEDS)))
                 || (x.s("status") == Some("queued") && x.i("start_job").is_some())
         })
         .count() as i64;
@@ -252,6 +253,10 @@ pub fn start_queued(app: &App) -> Result<Vec<i64>> {
             }
         }
         if jira::ticket_blocker(app, &t)? || waitsfor::blocker(app, &t)?.is_some() || locks::blocker(app, &t)?.is_some() {
+            continue;
+        }
+        if human::is(&t) {
+            app.db.tx(|| human::ready(app, &t))?;
             continue;
         }
         if crate::devices::blocker(app, &t)?.is_some() {

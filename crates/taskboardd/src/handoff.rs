@@ -380,6 +380,9 @@ fn other_tasks(app: &App, t: &Row) -> Result<Vec<String>> {
     if !text.is_empty() {
         out.push(text);
     }
+    if let Some(text) = crate::human::goal_text(app, t)? {
+        out.push(text);
+    }
     let waiting = waitsfor::waiting_on(app, t)?;
     if !waiting.is_empty() {
         let names: Vec<String> =

@@ -640,7 +640,8 @@ updated task detail for task routes, the goal detail for goal routes and the iss
 | `POST /tasks/:id/resume` | `{mode: "fresh"\|"reopen"}` | Lost terminal: new terminal with the handoff, or `--resume` the old conversation. |
 | `POST /tasks/:id/requeue` | `{}` | Try again (failed) / Queue again (done). |
 | `POST /tasks/:id/detach` | `{}` | Take it off its terminal; back to queued. |
-| `POST /tasks/:id/done` | `{summary?}` | Mark done by hand (the app has no button; `tb submit` reports through `/report`). |
+| `POST /tasks/:id/done` | `{summary?}` | Mark done by hand (the app has no button; `tb submit` reports through `/report`). 409 for a human task. |
+| `POST /tasks/:id/did` | `{note?}` | Done on a human task (`kind: "human"`, ref `H<n>`): finishes it with the owner's note (`owner_note` on the card), clears its alert and frees what waits for it; a parked task resumes with the note in its prompt. Only from the app (`X-Task-Board-From: app`), else 403. `tb submit`, `tb fail`, `tb take`, `/done`, `/fail` and Start answer 409 for a human task. |
 | `POST /tasks/:id/fail` | `{reason?}` | Mark failed by hand (the app has no button; `tb fail` reports through `/report`). |
 | `POST /tasks/:id/close-terminal` | `{force: bool}` | `force` false from the done box; true from Manage when the terminal is busy. |
 | `POST /tasks/:id/focus` | `{}` | Bring its terminal to the front in Midna. |

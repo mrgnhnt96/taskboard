@@ -266,6 +266,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     // The model the task's terminal starts with (`tb task new --model`, `[models]`): `small`, `large`
     // or a model name; null for `[models] default`.
     ("tasks", "model", "TEXT"),
+    // `human` for a task only the owner can do (`tb task new --human`, `human.rs`); null for an agent's.
+    ("tasks", "kind", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {

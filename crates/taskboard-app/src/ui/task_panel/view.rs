@@ -624,6 +624,9 @@ pub fn panel(c: &Ctx) -> Node {
     if s(t, "priority") == "high" {
         top.push(pill("High priority", Tone::High));
     }
+    if s(t, "kind") == "human" {
+        top.push(Node::Pill { s: "Human task".into(), tone: Tone::Needs, tip: Some("Only you can do it; no agent works on it".into()) });
+    }
     top.push(pill(&r, Tone::Ref));
     top.push(close_btn(c));
 
@@ -707,8 +710,67 @@ fn answer_field(c: &Ctx, r: &str) -> Node {
     Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false }
 }
 
+/// The web links in a human task's steps, each once.
+fn step_links(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in text.split(|ch: char| ch.is_whitespace() || matches!(ch, '(' | ')' | '<' | '>' | '[' | ']' | '"' | '`')) {
+        let u = w.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'']);
+        if is_web(u) && !out.iter().any(|x| x == u) {
+            out.push(u.to_string());
+        }
+    }
+    out
+}
+
+fn link_label(u: &str) -> String {
+    let host = u.split("://").nth(1).unwrap_or(u).split('/').next().unwrap_or(u);
+    format!("Open {}", host.trim_start_matches("www."))
+}
+
+/// A human task (`kind: human`): the owner's steps, their links, and Done with a note for the agents
+/// waiting on it. Done is the app's only say on it; it never gets a terminal.
+fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
+    let r = rf(t, "T");
+    let grp = format!("did:{r}");
+    let status = s(t, "status");
+    let detail = opt_s(t, "detail").unwrap_or("");
+    let mut out = Vec::new();
+    if status == "done" {
+        let mut bx = vec![txt("Done by you", St::BoxLabel)];
+        if let Some(n) = opt_s(t, "owner_note") {
+            bx.push(txt(n, St::Plain));
+        }
+        out.push(el(K::Box(BoxTone::Done), bx));
+    } else {
+        let mut bx = vec![txt("Yours to do", St::BoxLabel)];
+        if let Some(w) = opt_s(t, "waiting").filter(|_| status == "queued") {
+            bx.push(txt(w, St::Small));
+        }
+        bx.push(note_body(detail));
+        let links = step_links(detail);
+        if !links.is_empty() {
+            bx.push(el(K::Row, links.iter().map(|u| c.btn(&link_label(u), Act::new("open-url", u, &r, &grp), Look::Plain, false, Some(u))).collect()));
+        }
+        let k = format!("did:{r}");
+        bx.push(Node::Field { value: c.draft(&k), key: k, placeholder: "", multi: true, mono: false });
+        let mut row = vec![c.btn("Done", Act::new("did", "", &r, &grp), Look::Primary, false, Some("Anything waiting for this goes on, with what you wrote"))];
+        row.extend(c.note(&grp));
+        bx.push(el(K::Row, row));
+        out.push(el(K::Box(BoxTone::Ask), bx));
+    }
+    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
+    out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
+    if status == "done" {
+        out.push(fold(Fold::What, c.fold_open(Fold::What, false), txt("Steps", St::Strong), vec![note_body(detail)]));
+    }
+    out
+}
+
 /// `overviewTab(t)`.
 fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
+    if s(t, "kind") == "human" {
+        return human_tab(c, t);
+    }
     let r = rf(t, "T");
     let who = who(t);
     let act = format!("act:{r}");
@@ -1462,7 +1524,7 @@ pub fn linkify(c: &Ctx, text: &str) -> Vec<Node> {
 }
 
 fn is_task_ref(w: &str) -> bool {
-    w.len() > 1 && w.starts_with('T') && w[1..].chars().all(|c| c.is_ascii_digit())
+    w.len() > 1 && (w.starts_with('T') || w.starts_with('H')) && w[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 /// `ABC-12`: a Jira key.

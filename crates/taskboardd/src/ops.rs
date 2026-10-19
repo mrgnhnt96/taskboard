@@ -99,6 +99,10 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         return err(400, "Pick a project.");
     }
     refuse_backlog_match(app, body, &title, &project, goal_id)?;
+    let kind = crate::human::clean_kind(body)?;
+    if kind.is_some() {
+        crate::human::refuse_bare(body)?;
+    }
     let priority = if body["priority"] == "high" { "high" } else { "normal" };
     let (mode, sid) = pickup(app, body)?;
     let status = if body["status"] == "planned" { "planned" } else { "queued" };
@@ -109,11 +113,14 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         _ => json!({}),
     };
     let mut jmode = jopt["mode"].as_str().unwrap_or("none").to_string();
-    if !app.cfg.jira_on() {
+    if !app.cfg.jira_on() || kind.is_some() {
         jmode = "none".into();
     }
     let ships = projects::ships_prs(app, &project)?;
     if body_has(body, "ships_pr") && projects::clean_ships_pr(&body["ships_pr"])? == Some(1) {
+        if kind.is_some() {
+            return err(400, "A human task ships no PR.");
+        }
         projects::refuse_without_prs(app, &project)?;
     }
     // A new ticket for a project whose work gets none is quietly dropped, as the old board did.
@@ -137,7 +144,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
     let lock_names = crate::locks::clean(body.get("locks"))?;
     let lock_warning = crate::locks::unseen_warning(app, lock_names.as_deref(), None)?;
     let alone = crate::locks::clean_alone(body.get("alone"))?;
-    let model = crate::runner::clean_model(body.get("model"))?;
+    let model = if kind.is_some() { None } else { crate::runner::clean_model(body.get("model"))? };
     let area = crate::areas::clean(app, &project, body.get("area").unwrap_or(&Value::Null))?;
     let tid = app.db.insert(
         "tasks",
@@ -153,7 +160,8 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
                 "origin" => jdumps(&origin(body.get("origin"), who)), "locks" => lock_names, "alone" => alone, "model" => model,
                 "latest" => if latest.is_empty() { None } else { Some(latest) },
                 "ticket_summary" => if ticket_summary.is_empty() { None } else { Some(ticket_summary) },
-                "ticket_text" => if ticket_text.is_empty() { None } else { Some(ticket_text) }],
+                "ticket_text" => if ticket_text.is_empty() { None } else { Some(ticket_text) },
+                "kind" => kind, "ships_pr" => if kind.is_some() { Some(0) } else { None }],
     )?;
     if let Some(w) = body.get("wave").filter(|w| !w.is_null()) {
         let w = wave_of(w)?;
@@ -178,7 +186,7 @@ pub fn new_task(app: &App, body: &Value, who: &str, log_text: Option<&str>) -> R
         }
         board::update_task(app, tid, fields!["stack_merge" => crate::stack::clean_merge(&body["stack_merge"])?])?;
     }
-    if body_has(body, "ships_pr") {
+    if body_has(body, "ships_pr") && kind.is_none() {
         board::update_task(app, tid, fields!["ships_pr" => projects::clean_ships_pr(&body["ships_pr"])?])?;
     }
     let mut text = log_text.map(|s| s.to_string()).unwrap_or_else(|| if status == "planned" { "Added as planned".into() } else { "Added to the queue".into() });

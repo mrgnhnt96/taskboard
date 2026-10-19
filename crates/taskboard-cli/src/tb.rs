@@ -1346,6 +1346,11 @@ enum TaskCmd {
         /// The model its terminal runs: small or large (`[models]` in config.toml) or a model name; `[models] default` when left out
         #[arg(long, value_name = "small|large|NAME")]
         model: Option<String>,
+        /// It's work only the owner can do (make an account, sign something): shown as H<n>, no terminal
+        /// starts on it, --detail holds the steps and links, and the owner presses Done in the app.
+        /// Tasks that wait for it (--waits-for H<n>, or later in its goal) go on after that
+        #[arg(long, conflicts_with_all = ["here", "pr", "stack_on", "model", "lock", "alone"], requires = "detail")]
+        human: bool,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog", conflicts_with = "issue")]
         not_backlog: bool,
@@ -2124,7 +2129,8 @@ fn out_to(w: &mut impl std::io::Write, gone: &std::sync::atomic::AtomicBool, lin
 
 fn task_ref(v: &str) -> Result<String, String> {
     let s = v.trim();
-    let digits = s.trim_start_matches(['T', 't']);
+    // H<n> is a human task's ref for the same task.
+    let digits = s.trim_start_matches(['T', 't', 'H', 'h']);
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
         return Err(format!("expected T<number>, got {v:?}"));
     }
@@ -5386,7 +5392,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, human, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -5411,6 +5417,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if here {
                     body["here"] = json!(true);
+                }
+                if human {
+                    body["kind"] = json!("human");
                 }
                 if next || now {
                     body["line"] = json!(if next { "next" } else { "now" });
@@ -5467,7 +5476,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     }
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
-                        let where_ = v["goal"].as_str().map(|g| format!(" in {g} as planned")).unwrap_or_else(|| format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"));
+                        let where_ = match v["goal"].as_str() {
+                            Some(g) => format!(" in {g} as planned"),
+                            None if human => " on the board; it goes to the owner as soon as nothing holds it back, and anything waiting for it goes on once they press Done".to_string(),
+                            None => format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"),
+                        };
                         out(&format!("Added {r}{where_}. {}#/?task={r}", c.cfg.page_url));
                         print_warnings(&v);
                         midna_pin(&r, v["title"].as_str().unwrap_or(&title));

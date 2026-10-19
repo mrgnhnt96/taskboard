@@ -304,7 +304,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         pr["bar"] = crate::prbar::bar(app, t)?;
     }
     let mut card = json!({
-        "id": t.id(), "ref": rf("task", t.id()), "title": t.v("title"), "project": t.v("project"), "area": t.v("area"),
+        "id": t.id(), "ref": crate::human::task_ref(t), "title": t.v("title"), "project": t.v("project"), "area": t.v("area"),
         "status": status, "priority": t.s("priority").unwrap_or("normal"),
         "failed": t.b("failed"), "lost": t.b("lost"), "needs_reason": t.v("needs_reason"),
         "question": t.v("question"), "latest": t.v("latest"), "summary": t.v("summary"),
@@ -322,7 +322,9 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         "waits_for": waits,
         // What it waits for, and the task it stacks on (`stack: true`).
         "waits_for_state": waitsfor::deps(t).into_iter().map(|n| {
-            let mut w = json!({"ref": rf("task", n), "done": waitsfor::ready_for(app, t, n, find_task(app, Some(n))?.as_ref())?});
+            let other = find_task(app, Some(n))?;
+            let r = other.as_ref().map(crate::human::task_ref).unwrap_or_else(|| rf("task", n));
+            let mut w = json!({"ref": r, "done": waitsfor::ready_for(app, t, n, other.as_ref())?});
             if crate::stack::parent_id(t) == Some(n) {
                 w["stack"] = json!(true);
             }
@@ -362,6 +364,9 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         o.insert("looks_finished".into(), crate::lost_done::card(t));
         o.insert("ask".into(), crate::ask::card(t));
         o.insert("stack_on".into(), crate::stack::card(app, t)?);
+        // `human` for a task only the owner does (`human.rs`), with the note they left on Done.
+        o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
+        o.insert("owner_note".into(), json!(crate::human::note(t)));
         // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
         o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
     }
@@ -1168,6 +1173,9 @@ pub fn claim(app: &App, t: &Row, sid: &str, claude: Option<&str>, who: Option<&s
     let tref = rf("task", t.id());
     if t.s("status") == Some("done") && !(reopen_pr && pr_still_open(t)) {
         return Ok(Err(format!("{tref} is already done.")));
+    }
+    if let Err(e) = crate::human::refuse_terminal(app, t) {
+        return Ok(Err(e.message));
     }
     if let Some(other_sid) = t.s("session_id").filter(|s| !s.is_empty() && *s != sid) {
         if let Some(other) = get_session(app, Some(other_sid))? {
