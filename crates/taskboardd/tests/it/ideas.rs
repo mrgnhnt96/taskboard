@@ -118,8 +118,10 @@ fn shelve_drop_and_reopen() {
     assert_eq!(v["rounds"][0]["report"]["fit"], "good");
     assert_eq!(v["rounds"][0]["web"], true);
 
+    app.shared.lock().digging.insert(id);
     app.db.update("ideas", &json!(id), taskboardd::fields!["state" => "digging"]).unwrap();
     assert_eq!(try_call(&app, "POST", &format!("/ideas/{r}/shelve"), &[], json!({})).unwrap_err().0, 409);
+    app.shared.lock().digging.remove(&id);
     app.db.update("ideas", &json!(id), taskboardd::fields!["state" => "planned", "goal_id" => 7]).unwrap();
     let (code, msg) = try_call(&app, "POST", &format!("/ideas/{r}/drop"), &[], json!({})).unwrap_err();
     assert_eq!((code, msg.as_str()), (409, "I1 became G7 already; work on the goal instead."));

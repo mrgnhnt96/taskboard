@@ -68,7 +68,8 @@ pub fn dict(app: &App, i: &Row) -> Result<Value> {
     }))
 }
 
-/// The idea with its notes (oldest first) and report rounds (newest first).
+/// The idea with its notes (oldest first) and report rounds (newest first), each round with how far
+/// the checkout has moved since (`behind`, `stale`).
 pub fn show(app: &App, i: &Row) -> Result<Value> {
     let mut v = dict(app, i)?;
     let notes: Vec<Value> = app
@@ -77,8 +78,9 @@ pub fn show(app: &App, i: &Row) -> Result<Value> {
         .iter()
         .map(|n| json!({"id": n.id(), "text": n.v("text"), "source": n.v("source"), "at": n.v("at")}))
         .collect();
-    let rounds: Vec<Value> =
+    let mut rounds: Vec<Value> =
         app.db.q("SELECT * FROM idea_rounds WHERE idea_id = ? ORDER BY id DESC", p![i.id()])?.iter().map(round_dict).collect();
+    crate::dig::mark_drift(app, &i.st("project"), &mut rounds)?;
     v["notes"] = json!(notes);
     v["rounds"] = json!(rounds);
     Ok(v)
@@ -230,6 +232,7 @@ fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
 
 /// `/ideas…` routes.
 pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, body: &Value) -> Result<Value> {
+    crate::dig::settle_lost(app)?;
     match (method, rest) {
         ("GET", []) => list(app, query),
         ("POST", []) => app.db.tx(|| add(app, body)),
@@ -239,6 +242,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("POST", [r, "shelve"]) => app.db.tx(|| move_to(app, r, "shelved", body)),
         ("POST", [r, "drop"]) => app.db.tx(|| move_to(app, r, "dropped", body)),
         ("POST", [r, "reopen"]) => app.db.tx(|| move_to(app, r, "reopen", body)),
+        ("POST", [r, "dig"]) => crate::dig::start(app, r, body),
         _ => err(404, "There's nothing at that address."),
     }
 }

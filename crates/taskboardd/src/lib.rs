@@ -24,6 +24,7 @@ pub mod db;
 pub mod deliver;
 pub mod devfocus;
 pub mod devices;
+pub mod dig;
 pub mod digest;
 pub mod dispatch;
 pub mod export;

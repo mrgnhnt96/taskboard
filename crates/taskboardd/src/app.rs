@@ -50,6 +50,8 @@ pub struct Shared {
     pub group_failed_at: Option<Instant>,
     /// Claude is tidying the backlog (`tidy.rs`).
     pub tidying: bool,
+    /// The ideas Claude is digging into now (`dig.rs`).
+    pub digging: HashSet<i64>,
     /// The latest wave plan asked for on the Backlog page (`GET /backlog/plan`).
     pub plan: Option<serde_json::Value>,
     pub plan_seq: i64,
@@ -259,8 +261,8 @@ impl App {
         self.ai_jobs.lock().pop_front()
     }
 
-    /// Lens reviews of new PRs (`lens_pr.rs`) run one at a time on their own thread: each takes about 15
-    /// minutes, too long to wait behind or hold up the other headless calls.
+    /// Lens reviews of new PRs (`lens_pr.rs`) and idea digs (`dig.rs`) run one at a time on their own
+    /// thread: each takes about 15 minutes, too long to wait behind or hold up the other headless calls.
     pub fn queue_lens(&self, f: Deferred) {
         if self.inline_deferred {
             f(self);

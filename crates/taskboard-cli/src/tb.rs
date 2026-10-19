@@ -887,6 +887,15 @@ enum IdeaCmd {
     },
     /// Bring back a shelved or dropped idea
     Reopen { idea: String },
+    /// Have Claude read the project's code and report whether the idea fits; it runs on its own
+    Dig {
+        idea: String,
+        /// What this round should look at most (the whole idea when left out)
+        focus: Option<String>,
+        /// Let Claude search and read the web too
+        #[arg(long)]
+        web: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3230,7 +3239,8 @@ fn idea_show(i: &Value) {
     if !rounds.is_empty() {
         out("");
         out("Report rounds:");
-        for r in &rounds {
+        let latest = rounds.iter().position(|r| r["report"].is_object());
+        for (n, r) in rounds.iter().enumerate() {
             let focus = r["focus"].as_str().filter(|f| !f.is_empty()).unwrap_or("the whole idea");
             let sha: String = r["sha"].as_str().unwrap_or("").chars().take(8).collect();
             let at = |k: &str| r[k].as_str().map(local_when);
@@ -3242,8 +3252,54 @@ fn idea_show(i: &Value) {
             };
             let sha = if sha.is_empty() { String::new() } else { format!(" at {sha}") };
             let web = if r["web"].as_bool().unwrap_or(false) { ", with the web" } else { "" };
-            out(&format!("  {focus} · {state}{sha}{web}"));
+            let verdict = r["report"]["verdict"].as_str().map(|v| format!(" · {}", v.replace('_', " "))).unwrap_or_default();
+            let stale = match (r["stale"].as_bool().unwrap_or(false), r["behind"].as_i64()) {
+                (false, _) => String::new(),
+                (true, Some(b)) => format!(" · stale: {b} commits since"),
+                (true, None) => " · stale: its commit is gone".into(),
+            };
+            out(&format!("  {focus} · {state}{sha}{web}{verdict}{stale}"));
+            if Some(n) == latest {
+                round_report(&r["report"]);
+            }
         }
+    }
+}
+
+/// A round's report in full, under its line in `tb idea show`.
+fn round_report(rep: &Value) {
+    let items = |k: &str| rep[k].as_array().cloned().unwrap_or_default();
+    let text = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let why = text(&rep["why"]);
+    if !why.is_empty() {
+        out(&format!("    {why}"));
+    }
+    let builds: Vec<String> = items("builds_on")
+        .iter()
+        .map(|b| {
+            let files: Vec<String> = b["files"].as_array().map(|f| f.iter().map(text).collect()).unwrap_or_default();
+            if files.is_empty() { text(&b["what"]) } else { format!("{} ({})", text(&b["what"]), files.join(", ")) }
+        })
+        .collect();
+    let risks: Vec<String> = items("risks").iter().map(|r| format!("{}: {}", text(&r["kind"]), text(&r["risk"]))).collect();
+    let plain = |k: &str| items(k).iter().map(text).collect::<Vec<_>>();
+    for (head, list) in [
+        ("Builds on", builds),
+        ("Ways to extend", plain("ways_to_extend")),
+        ("Risks", risks),
+        ("Pitfalls", plain("pitfalls")),
+        ("Open questions", plain("open_questions")),
+    ] {
+        if !list.is_empty() {
+            out(&format!("    {head}:"));
+            for x in list {
+                out(&format!("      - {x}"));
+            }
+        }
+    }
+    let related = plain("related");
+    if !related.is_empty() {
+        out(&format!("    Related: {}", related.join(", ")));
     }
 }
 
@@ -3272,6 +3328,9 @@ fn idea_cmd(c: &Ctx, action: IdeaCmd) -> Result<i32, String> {
         IdeaCmd::Drop { idea, reason } => (post(format!("{}/drop", idea_ref(&idea)?), json!({"reason": reason}))?, "Dropped"),
         IdeaCmd::Shelve { idea, reason } => (post(format!("{}/shelve", idea_ref(&idea)?), json!({"reason": reason}))?, "Shelved"),
         IdeaCmd::Reopen { idea } => (post(format!("{}/reopen", idea_ref(&idea)?), json!({}))?, "Reopened"),
+        IdeaCmd::Dig { idea, focus, web } => {
+            (post(format!("{}/dig", idea_ref(&idea)?), json!({"focus": focus, "web": web}))?, "Digging into")
+        }
     };
     if !did.is_empty() {
         out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));
