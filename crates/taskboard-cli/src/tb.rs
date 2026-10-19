@@ -3329,15 +3329,17 @@ fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32
     Ok(status.code().unwrap_or(1))
 }
 
+/// `tb release cut`'s runner: the release script, once the checkout is on main or a release/* branch.
+fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+    need_release_branch(&checkout_branch(&release_checkout(dir)))?;
+    run_release_script(script, name, dir)
+}
+
 fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
     match action {
         ReleaseCmd::Cut { name, project, notes, no_script } => {
             let body = json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd});
-            let mut run = |script: &str, name: &str, dir: Option<&str>| {
-                need_release_branch(&checkout_branch(&release_checkout(dir)))?;
-                run_release_script(script, name, dir)
-            };
-            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run, body, no_script)? {
+            match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run_release_script_on_a_release_branch, body, no_script)? {
                 ReleaseCut::Cut(v) => {
                     out(&format!("Cut {}.", release_line(&v)));
                     release_groups(&v);
@@ -7389,6 +7391,32 @@ mod tests {
         std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && test \"$TB_RELEASE\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
         assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d)).unwrap(), 7);
         assert_eq!(run_release_script("true", "v1", Some(&d)).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn release_cut_runs_the_script_only_from_main_or_a_release_branch() {
+        let dir = std::env::temp_dir().join(format!("tb-release-branch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&d).args(args).output().unwrap().status.success());
+        git(&["init", "-q", "-b", "main"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        let ran = dir.join("ran");
+        let script = format!("touch '{}' #", ran.display());
+        let run = |branch: &str| {
+            git(&["checkout", "-q", "-B", branch]);
+            let _ = std::fs::remove_file(&ran);
+            let r = run_release_script_on_a_release_branch(&script, "v1", Some(&d));
+            (r, ran.exists())
+        };
+
+        let (r, did) = run("feat/t1-x");
+        assert!(r.unwrap_err().contains("on feat/t1-x"));
+        assert!(!did, "a feature branch doesn't run the script");
+        assert!(matches!(run("release/1.4"), (Ok(0), true)));
+        assert!(matches!(run("main"), (Ok(0), true)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
