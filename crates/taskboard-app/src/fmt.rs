@@ -125,6 +125,14 @@ pub fn running_for(t: &Value) -> String {
     }
 }
 
+/// How long it's run since it started: "12m", "2h 5m"; "" before it started.
+pub fn run_span(t: &Value) -> String {
+    match minutes_since(s(t, "started_at")) {
+        Some(m) if m >= 0 => span(m),
+        _ => String::new(),
+    }
+}
+
 /// "Took 1h" on a done task.
 pub fn took_line(t: &Value) -> String {
     let (Some(a), Some(b)) = (parse(s(t, "started_at")), parse(s(t, "finished_at"))) else { return String::new() };

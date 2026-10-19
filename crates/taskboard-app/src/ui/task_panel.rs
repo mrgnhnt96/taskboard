@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 pub use view::{Act, Go, Node};
-use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, Tone};
+use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, TlSt, Tone};
 
 /// How long an inline note stays (`setNote`: 5 s, errors 15 s).
 const NOTE_OK: Duration = Duration::from_secs(5);
@@ -38,6 +38,8 @@ thread_local! {
     /// The task state each fetched handoff was built from (`handoff_stamp`), so a newer one is fetched.
     static HANDOFF_AT: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static NOTE_GEN: RefCell<HashMap<String, u64>> = RefCell::new(HashMap::new());
+    /// When a click outside last closed the terminal menu, so the same click on ⋯ doesn't reopen it.
+    static MENU_CLOSED: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
 fn ui<R>(f: impl FnOnce(&mut view::Ui) -> R) -> R {
@@ -59,13 +61,14 @@ pub struct State {
 fn tab_name(tab: TaskTab) -> &'static str {
     match tab {
         TaskTab::Overview => "overview",
+        TaskTab::What => "what",
         TaskTab::Context => "context",
         TaskTab::Log => "log",
     }
 }
 
 fn folds() -> HashMap<String, String> {
-    [Fold::Linked, Fold::Summary, Fold::What, Fold::Terms, Fold::Findings, Fold::Note, Fold::Tail]
+    [Fold::Findings, Fold::Note, Fold::Tail]
         .iter()
         .filter_map(|f| crate::prefs::get_str(f.key()).map(|v| (f.key().to_string(), v)))
         .collect()
@@ -78,10 +81,6 @@ pub fn build(m: &MainWindow) -> Option<Node> {
         let t = t.borrow();
         if t.0 == *r { t.1.clone() } else { Vec::new() }
     });
-    let goal_page = match &m.page {
-        Page::Goal(g) => Some(g.as_str()),
-        _ => None,
-    };
     let folds = folds();
     let u = UI.with(|u| u.borrow().clone());
     let null = Value::Null;
@@ -92,7 +91,6 @@ pub fn build(m: &MainWindow) -> Option<Node> {
         r,
         tab: tab_name(*tab),
         trail: &trail,
-        goal_page,
         err: m.data.errs.task.as_deref(),
         ui: &u,
         folds: &folds,
@@ -247,6 +245,7 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         "tab" => {
             if let Some(Panel::Task { tab, .. }) = m.panel.as_mut() {
                 *tab = match a.arg.as_str() {
+                    "what" => TaskTab::What,
                     "context" => TaskTab::Context,
                     "log" => TaskTab::Log,
                     _ => TaskTab::Overview,
@@ -295,8 +294,19 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
         // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
         "bit-made" => run(m, a, format!("bits/{}/made", a.arg), json!({}), |_, _| String::new(), cx),
-        "detach" => run(m, a, tp("/detach"), json!({}), |_, _| "Detached. It’s back in the queue.".into(), cx),
-        "close-term" => run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx),
+        "term-menu" => {
+            let just_closed = MENU_CLOSED.with(|c| c.take()).is_some_and(|at| at.elapsed() < Duration::from_millis(300));
+            ui(|u| u.term_menu = !u.term_menu && !just_closed);
+            cx.notify();
+        }
+        "detach" => {
+            ui(|u| u.term_menu = false);
+            run(m, a, tp("/detach"), json!({}), |_, _| "Detached. It’s back in the queue.".into(), cx)
+        }
+        "close-term" => {
+            ui(|u| u.term_menu = false);
+            run(m, a, tp("/close-terminal"), json!({"force": a.arg == "force"}), |m, _| sent(m), cx)
+        }
         "focus" => run(m, a, tp("/focus"), json!({}), |m, _| sent(m), cx),
         "step" => run(m, a, tp("/step"), json!({"skip": a.arg == "skip"}), |m, _| sent(m), cx),
         // A human task's Done, with the note the owner wrote for the agents waiting on it.
@@ -454,9 +464,6 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
     match g {
         Go::Goal(r) => {
             m.go(Page::Goal(r.clone()), cx);
-        }
-        Go::GoalBacklog(r) => {
-            crate::ui::goal::open(m, &r, true, cx);
         }
         Go::Session(id) => {
             // `termHref`: the Sessions page with this terminal, and "Back to T12".
@@ -626,10 +633,12 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     };
     if m.task_panel.r != r {
         m.task_panel = State { r: r.clone(), ..Default::default() };
-        // Dev: `TASKBOARD_TAB=context|log` opens the panel on that tab (screenshots).
+        ui(|u| u.term_menu = false);
+        // Dev: `TASKBOARD_TAB=what|context|log` opens the panel on that tab (screenshots).
         if let (Ok(want), Some(Panel::Task { tab: cur, .. })) = (std::env::var("TASKBOARD_TAB"), m.panel.as_mut()) {
             if *cur == TaskTab::Overview {
                 *cur = match want.as_str() {
+                    "what" => TaskTab::What,
                     "context" => TaskTab::Context,
                     "log" => TaskTab::Log,
                     _ => TaskTab::Overview,
@@ -681,10 +690,16 @@ impl Draw<'_> {
         let Node::El { kids, .. } = tree else { return div().into_any_element() };
         let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(16.)).pb(px(32.)).line_height(relative(1.5));
         let mut head = Some(div().flex().flex_col().min_w_0());
+        let mut foot = None;
         self.within.push(K::Col);
         for (i, k) in kids.iter().enumerate() {
             self.path.push(i);
             let e = self.node(m, k, None, cx);
+            if let Node::El { k: K::Foot, .. } = k {
+                self.path.pop();
+                foot = Some(e);
+                continue;
+            }
             self.path.pop();
             let gap = match k {
                 Node::El { k: K::Top, .. } => Some(0.),
@@ -702,7 +717,9 @@ impl Draw<'_> {
         self.within.pop();
         col = col.children(head);
         let r = m.task_panel.r.clone();
-        div().id(SharedString::from(format!("task-body-{r}"))).size_full().overflow_y_scroll().text_size(px(14.)).child(col).into_any_element()
+        // `.panel-foot { position: sticky; bottom: 0 }`: pinned under the scrolling sheet.
+        let body = div().id(SharedString::from(format!("task-body-{r}"))).flex_1().min_h_0().overflow_y_scroll().child(col);
+        div().size_full().flex().flex_col().text_size(px(14.)).child(body).children(foot).into_any_element()
     }
 
     fn kids(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> Vec<AnyElement> {
@@ -764,7 +781,7 @@ impl Draw<'_> {
     #[inline(never)]
     fn leaf_pill(&self, s: &str, tone: Tone, tip: &Option<String>) -> AnyElement {
         // `.pill.sm` for the repo, a Jira status and a terminal's state.
-        let small = tone == Tone::Jira ||self.parent() == Some(K::TlSub);
+        let small = tone == Tone::Jira;
         let p = pill(self.t, s, tone, small);
         match tip {
             Some(tip) => div().id(self.id("pill")).flex_none().child(p).tooltip(kit::tip(tip.clone())).into_any_element(),
@@ -783,7 +800,7 @@ impl Draw<'_> {
             // Attached ▾ / ▴
             Look::Chip { on } if a.act == "att-drop" => self::chip(self.t, div().id(self.id("btn")), on).child(label.to_string()).child(chevron(true, self.t.muted)),
             // `.box .btn { padding: 0 12px }`
-            _ if boxed.is_some() && !matches!(look, Look::Icon(_) | Look::Menu | Look::Src | Look::Ref) => button(self.t, self.id("btn"), label, look).px(px(12.)),
+            _ if boxed.is_some() && !matches!(look, Look::Icon(_) | Look::Menu | Look::Ref) => button(self.t, self.id("btn"), label, look).px(px(12.)),
             _ => button(self.t, self.id("btn"), label, look),
         };
         let b = if disabled {
@@ -792,7 +809,6 @@ impl Draw<'_> {
             let a = a.clone();
             b.on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx)))
         };
-        let b = if look == Look::Icon(Icon::More) { b.opacity(0.).group_hover("tp-att", |s| s.opacity(1.)) } else { b };
         match tip {
             Some(tip) => b.tooltip(kit::tip(tip.clone())).into_any_element(),
             None => b.into_any_element(),
@@ -859,12 +875,7 @@ impl Draw<'_> {
 
     #[inline(never)]
     fn leaf_dot(&self, d: Dot) -> AnyElement {
-        // `.tl-dot` is 9px (an empty ring for a closed terminal); `.dot` 8px.
-        let size = if self.parent() == Some(K::TlItem) { 9. } else { 8. };
-        match dot_color(self.t, d) {
-            Some(c) => kit::dot(c, size).into_any_element(),
-            None => div().flex_none().size(px(size)).rounded_full().border_1().border_color(self.t.faint).bg(self.t.card).into_any_element(),
-        }
+        kit::dot(dot_color(self.t, d), 8.).into_any_element()
     }
 
     #[inline(never)]
@@ -881,7 +892,7 @@ impl Draw<'_> {
             St::WarnHelp => d.text_size(px(12.5)).text_color(t.warn_fg),
             St::BoxLabel => div().min_w_0().child(s.to_uppercase()).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(match boxed {
                 Some(BoxTone::Ask) => t.warn_fg,
-                Some(BoxTone::Lost | BoxTone::Failed) => t.down,
+                Some(BoxTone::Lost) => t.down,
                 Some(BoxTone::Done) => t.up_fg,
                 _ => t.accent_fg,
             }),
@@ -905,13 +916,16 @@ impl Draw<'_> {
             St::StepName => d.text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap(),
             St::StepSub => d.text_size(px(11.5)).text_center(),
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
+            St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text),
+            St::TlS => d.text_size(px(12.)).text_color(t.muted),
+            St::TlText => d.text_size(px(13.)).line_height(relative(1.5)).text_color(t.text),
             St::Count => d.flex_none().px(px(7.)).rounded_full().bg(t.col).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             St::JiraChip => {
                 let (key, rest) = s.split_once(' ').map(|(k, r)| (k.to_string(), Some(r.to_string()))).unwrap_or((s.to_string(), None));
                 div().flex_none().child(chip(t, div().id(self.id("jira")), false).cursor_default().child(div().font_family(t.mono_font.clone()).text_color(t.jira).child(key)).children(rest))
             }
             St::Jkey => d.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg),
-            St::Glyph(dot) => div().child(s.to_string()).flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot).unwrap_or(t.muted)),
+            St::Glyph(dot) => div().child(s.to_string()).flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot)),
         }
     }
 
@@ -924,14 +938,16 @@ impl Draw<'_> {
             K::Head => self.c_head(m, n, boxed, cx),
             K::DropItem(kind) => self.c_drop_item(m, n, kind, boxed, cx),
             K::Tabs => self.c_tabs(m, n, boxed, cx),
-            K::Linked => self.c_linked(m, n, boxed, cx),
             K::Lrow => self.c_lrow(m, n, boxed, cx),
-            K::Lsec => self.c_lsec(m, n, boxed, cx),
-            K::Tl => self.c_tl(m, n, boxed, cx),
-            K::TlItem => self.c_tl_item(m, n, boxed, cx),
             K::Steps => self.c_steps(m, n, boxed, cx),
+            K::Tline => self.c_tline(m, n, boxed, cx),
+            K::TlNode { st, card } => self.c_tl_node(m, n, st, card, true, boxed, cx),
+            K::TlHead => self.c_tl_head(m, n, boxed, cx),
+            K::TlActs => self.c_tl_acts(m, n, boxed, cx),
+            K::TermMenu => self.c_term_menu(m, n, boxed, cx),
+            K::MenuItem { danger } => self.c_menu_item(n, danger, cx),
+            K::Foot => self.c_foot(m, n, cx),
             K::Step(st) => self.c_step(m, n, st, boxed, cx),
-            K::Att => self.c_att(m, n, boxed, cx),
             K::Kv => self.c_kv(m, n, boxed, cx),
             K::Files => self.c_files(m, n, boxed, cx),
             K::LogItem => self.c_log_item(m, n, boxed, cx),
@@ -947,11 +963,8 @@ impl Draw<'_> {
         let t = self.t;
         let in_lrow = self.parent() == Some(K::Lrow);
         let kids = self.kids(m, n, boxed, cx);
-        let small_btns = matches!(n, Node::El { kids, .. } if kids.iter().any(|x| matches!(x, Node::Btn { look: Look::Small | Look::DangerSmall, .. })));
-        // `.stack` is 6px apart; the manage box, Files touched and Details 8px.
-        let wide = small_btns
-            || matches!(n, Node::El { kids, .. } if kids.iter().any(|x| matches!(x, Node::El { k: K::Row, kids, .. } if kids.iter().any(|b| matches!(b, Node::Btn { look: Look::Small | Look::DangerSmall, .. })))
-                || matches!(kids.first(), Some(Node::Text { s, st: St::H3, .. }) if s == "Files touched" || s == "Details")));
+        // `.stack` is 6px apart; Files touched 8px.
+        let wide = matches!(n, Node::El { kids, .. } if matches!(kids.first(), Some(Node::Text { s, st: St::H3, .. }) if s == "Files touched"));
         let d = match k {
             // `.crumb`: goal › ref, cut short before the close button.
             K::Crumb => div().flex().items_center().gap(px(6.)).flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(13.)),
@@ -959,25 +972,19 @@ impl Draw<'_> {
             K::Drop => div().flex().flex_col().w(px(280.)).p(px(6.)).rounded(px(10.)).border_1().border_color(t.border_2).bg(t.panel_2).shadow_lg(),
             // `.fchips`
             K::Chips => div().flex().flex_wrap().gap(px(6.)),
-            K::Seg => div().self_start().flex().flex_wrap().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg),
             // `.tabbody`
             K::Body => div().flex().flex_col().gap(px(18.)),
-            // `.manage .row` is 6px apart; `.row` 8px.
-            K::Row => div().flex().flex_wrap().items_center().gap(px(if small_btns { 6. } else { 8. })),
+            // `.row`
+            K::Row => div().flex().flex_wrap().items_center().gap(px(8.)),
             // `.lrow .line`
             K::Line if in_lrow => div().flex().flex_wrap().items_center().gap(px(8.)).text_size(px(13.)),
             K::Line => div().flex().flex_wrap().items_center(),
             // `.pr-head`
             K::PrHead => div().flex().flex_col().gap(px(2.)),
-            // `.tl-name` / `.tl-sub` are styled by the item (live or not).
-            K::TlName => div().flex().flex_wrap().items_center().gap(px(6.)).min_h(px(24.)),
-            K::TlSub => div().flex().flex_wrap().items_center().gap(px(6.)),
-            K::AttMeta => div().flex().items_center().gap(px(4.)).text_size(px(12.)).text_color(t.muted).whitespace_nowrap().overflow_hidden(),
-            // `.stack` (the manage box and files 8px apart; lists 6px).
+            // `.stack` (files 8px apart; lists 6px).
             K::Stack => div().flex().flex_col().gap(px(if wide { 8. } else { 6. })).min_w_0(),
             K::Md => div().flex().flex_col().gap(px(10.)).min_w_0().text_size(px(14.)).line_height(relative(1.55)).text_color(t.text),
             K::List => div().flex().flex_col().gap(px(4.)).min_w_0(),
-            K::Atts => div().flex().flex_col().min_w_0(),
             K::MdUl => div().flex().flex_col().gap(px(4.)).pl(px(4.)).min_w_0(),
             K::Col => div().flex().flex_col().gap(px(18.)).min_w_0(),
             // `.pr-bar`
@@ -985,8 +992,6 @@ impl Draw<'_> {
                 let (fg, bg, line) = if warn { (t.warn_text, t.warn_soft, t.warn_line) } else { (t.text_2, t.panel_2, transparent_black()) };
                 div().flex().items_center().gap(px(8.)).w_full().px(px(12.)).py(px(7.)).rounded(px(8.)).bg(bg).border_1().border_color(line).text_color(fg).text_size(px(13.))
             }
-            K::AttMenu => kit::menu_box(t, 160.),
-            K::AttEdit => div().flex().flex_col().gap(px(8.)).w_full().py(px(6.)),
             K::KvRow => div().flex().gap(px(12.)),
             // `.meta-row`: 140px name, value, 32px remove.
             K::MetaRow => div().flex().items_center().gap(px(8.)),
@@ -1019,41 +1024,8 @@ impl Draw<'_> {
             _ => String::new(),
         };
         let head = match f {
-            // `.linked-d > summary`: 12.5px semibold uppercase muted, a chevron before.
-            Fold::Linked | Fold::What => div()
-                .id(self.id("fold"))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .pt(px(2.))
-                .pb(px(8.))
-                .cursor_pointer()
-                .text_size(px(12.5))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(t.muted)
-                .hover(move |d| d.text_color(hover))
-                .child(div().mr(px(2.)).child(chevron(open, t.muted)))
-                .child(label.to_uppercase()),
-            // `.box-fold > summary`: the box label with a chevron, 8px apart.
-            Fold::Summary => {
-                let summary = self.kid(m, n, 0, boxed, cx);
-                let c = match boxed {
-                    Some(BoxTone::Failed | BoxTone::Lost) => t.down,
-                    Some(BoxTone::Ask) => t.warn_fg,
-                    _ => t.up_fg,
-                };
-                // The label wraps rather than running off the box's edge.
-                div()
-                    .id(self.id("fold"))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .cursor_pointer()
-                    .child(div().flex_none().child(chevron(open, c)))
-                    .child(div().flex_1().min_w_0().children(summary))
-            }
             // `.tl-more > summary`: 12.5px muted, the browser's disclosure triangle.
-            Fold::Terms | Fold::Findings | Fold::Tail => div()
+            Fold::Findings | Fold::Tail => div()
                 .id(self.id("fold"))
                 .flex()
                 .items_center()
@@ -1088,16 +1060,12 @@ impl Draw<'_> {
         let mut col = div().flex().flex_col().min_w_0().child(head);
         if open {
             let gap = match f {
-                Fold::Linked => 0.,
-                Fold::What => 2.,
-                Fold::Summary => 8.,
-                Fold::Terms => 10.,
                 Fold::Findings | Fold::Tail => 6.,
                 Fold::Note => 10.,
             };
             for i in 1..kids.len() {
                 if let Some(e) = self.kid(m, n, i, boxed, cx) {
-                    col = col.child(div().mt(px(gap)).min_w_0().when(f == Fold::What, |d| d.text_size(px(14.))).child(e));
+                    col = col.child(div().mt(px(gap)).min_w_0().child(e));
                 }
             }
         }
@@ -1111,7 +1079,6 @@ impl Draw<'_> {
         let (bg, line, gap) = match tone {
             BoxTone::Ask => (t.warn_soft, None, 8.),
             BoxTone::Lost => (t.down_soft, None, 10.),
-            BoxTone::Failed => (t.down_soft, None, 8.),
             BoxTone::Done => (t.up_soft, None, 8.),
             BoxTone::Info => (accent_tint(t), Some(t.accent_line), 10.),
         };
@@ -1214,18 +1181,6 @@ impl Draw<'_> {
         div().flex().flex_none().gap(px(4.)).mx(px(-24.)).px(px(24.)).border_b_1().border_color(t.border).children(kids).into_any_element()
     }
 
-    /// `.linked`: a bordered card of rows split by hairlines.
-    #[inline(never)]
-    fn c_linked(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
-        let kids = self.kids(m, n, boxed, cx);
-        let mut col = div().flex().flex_col().min_w_0().rounded(px(12.)).border_1().border_color(t.border);
-        for (i, e) in kids.into_iter().enumerate() {
-            col = col.child(div().min_w_0().when(i > 0, |d| d.border_t_1().border_color(t.divider)).child(e));
-        }
-        col.into_any_element()
-    }
-
     /// `.lrow`: a 92px key, then the value column (8px apart), 14px 16px.
     #[inline(never)]
     fn c_lrow(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -1244,76 +1199,6 @@ impl Draw<'_> {
             .into_any_element()
     }
 
-    /// `.lsec`: a titled section in the linked card (Attached).
-    #[inline(never)]
-    fn c_lsec(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
-        let mut kids = self.kids(m, n, boxed, cx).into_iter();
-        let head = kids.next();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .px(px(16.))
-            .py(px(14.))
-            .min_w_0()
-            // `.lsec-h`
-            .child(div().text_size(px(12.5)).text_color(t.muted).children(head))
-            .children(kids)
-            .into_any_element()
-    }
-
-    /// `.tl`: terminals 12px apart, joined by a thin line.
-    #[inline(never)]
-    fn c_tl(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
-        let kids = self.kids(m, n, boxed, cx);
-        let last = kids.len().saturating_sub(1);
-        let mut col = div().flex().flex_col().gap(px(12.)).min_w_0();
-        for (i, e) in kids.into_iter().enumerate() {
-            col = col.child(
-                div()
-                    .relative()
-                    .min_w_0()
-                    .when(i < last, |d| d.child(div().absolute().left(px(4.)).top(px(20.)).bottom(px(-10.)).w(px(1.)).bg(t.border_2)))
-                    .child(e),
-            );
-        }
-        col.into_any_element()
-    }
-
-    /// `.tl-item`: dot, name and state, time.
-    #[inline(never)]
-    fn c_tl_item(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
-        let live = !matches!(n, Node::El { kids, .. } if matches!(kids.first(), Some(Node::Dot(Dot::None))));
-        let mut kids = self.kids(m, n, boxed, cx).into_iter();
-        let (dot, name, sub, at) = (kids.next(), kids.next(), kids.next(), kids.next());
-        div()
-            .flex()
-            .items_start()
-            .gap(px(10.))
-            .child(div().flex_none().w(px(9.)).pt(px(8.)).children(dot))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .font_weight(if live { FontWeight::BOLD } else { FontWeight::SEMIBOLD })
-                            .when(!live, |d| d.text_color(t.muted))
-                            .children(name),
-                    )
-                    .child(div().text_size(px(12.5)).text_color(if live { t.muted } else { t.faint }).children(sub)),
-            )
-            .children(at.map(|a| div().flex_none().pt(px(4.)).text_color(if live { t.muted } else { t.faint }).child(a)))
-            .into_any_element()
-    }
-
     /// `.pr-steps`: three steps joined by lines.
     #[inline(never)]
     fn c_steps(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -1327,6 +1212,182 @@ impl Draw<'_> {
             row = row.child(e);
         }
         row.into_any_element()
+    }
+
+    /// `.tline`: the stops top to bottom, a rail joining each to the next.
+    #[inline(never)]
+    fn c_tline(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let Node::El { kids, .. } = n else { return div().into_any_element() };
+        let mut col = div().flex().flex_col().min_w_0();
+        self.within.push(K::Tline);
+        for (i, kid) in kids.iter().enumerate() {
+            self.path.push(i);
+            let last = i + 1 == kids.len();
+            col = col.child(match kid {
+                Node::El { k: K::TlNode { st, card }, .. } => self.c_tl_node(m, kid, *st, *card, last, boxed, cx),
+                _ => self.node(m, kid, boxed, cx),
+            });
+            self.path.pop();
+        }
+        self.within.pop();
+        col.into_any_element()
+    }
+
+    /// `.tl-node`: a 10px dot on the rail, then the stop (a card for now).
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn c_tl_node(&mut self, m: &MainWindow, n: &Node, st: TlSt, card: bool, last: bool, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let kids = self.kids(m, n, boxed, cx);
+        let dot = div().size(px(10.)).rounded_full();
+        let dot = match st {
+            TlSt::Done => dot.bg(t.up),
+            TlSt::Now => dot.bg(t.accent),
+            TlSt::Warn => dot.bg(t.warn),
+            TlSt::Fail => dot.bg(t.down),
+            TlSt::Todo => dot.border_2().border_color(t.border_2),
+        };
+        // `box-shadow: 0 0 0 4px`: a soft ring around now.
+        let ring = match st {
+            TlSt::Now => Some(t.accent_soft),
+            TlSt::Warn => Some(t.warn_soft),
+            _ => None,
+        };
+        let rail = div().flex_none().w(px(20.)).pt(px(4.)).pl(px(5.)).child(match ring {
+            Some(c) => div().mt(px(-4.)).ml(px(-4.)).size(px(18.)).rounded_full().bg(c).flex().items_center().justify_center().child(dot),
+            None => dot,
+        });
+        let main = div().flex().flex_col().gap(px(8.)).flex_1().min_w_0().when(card, |d| d.bg(t.panel_2).rounded(px(10.)).px(px(14.)).py(px(12.)));
+        div()
+            .relative()
+            .flex()
+            .gap(px(12.))
+            .pb(px(16.))
+            .when(!last, |d| d.child(div().absolute().left(px(9.)).top(px(14.)).bottom(px(-2.)).w(px(2.)).bg(t.border)))
+            .child(rail)
+            .child(main.children(kids))
+            .into_any_element()
+    }
+
+    /// `.tl-head`: name, subline, and the time at the far end.
+    #[inline(never)]
+    fn c_tl_head(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
+        let at = match nodes.last() {
+            Some(Node::Text { s, st: St::Time, .. }) if nodes.len() > 1 => Some(s.clone()),
+            _ => None,
+        };
+        let mut kids = self.kids(m, n, boxed, cx);
+        if at.is_some() {
+            kids.pop();
+        }
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.))
+            .children(kids)
+            .children(at.map(|s| div().ml_auto().text_size(px(12.)).text_color(t.faint).whitespace_nowrap().child(s)))
+            .into_any_element()
+    }
+
+    /// `.tl-acts`: Focus in Midna, the ⋯ button at the far end with its menu hanging below.
+    #[inline(never)]
+    fn c_tl_acts(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
+        let kids = self.kids(m, n, boxed, cx);
+        let mut row = div().flex().items_center().gap(px(8.));
+        let mut at = div().relative().ml_auto();
+        for (kid, e) in nodes.iter().zip(kids) {
+            match kid {
+                Node::Btn { act: a, .. } if a.act == "term-menu" => at = at.child(e),
+                Node::El { k: K::TermMenu, .. } => at = at.child(div().absolute().right_0().top(px(34.)).child(deferred(e).with_priority(2))),
+                _ => row = row.child(e),
+            }
+        }
+        row.child(at).into_any_element()
+    }
+
+    /// `.term-menu`: Detach and Close terminal, each with what it does. A click outside closes it.
+    #[inline(never)]
+    fn c_term_menu(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let kids = self.kids(m, n, boxed, cx);
+        div()
+            .id(self.id("term-menu"))
+            .flex()
+            .flex_col()
+            .w(px(220.))
+            .p(px(6.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(t.border_2)
+            .bg(t.panel_2)
+            .shadow_lg()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| {
+                // The ⋯ button toggles it itself: closing here first would reopen it.
+                if ui(|u| std::mem::replace(&mut u.term_menu, false)) {
+                    MENU_CLOSED.with(|c| c.set(Some(std::time::Instant::now())));
+                    cx.notify();
+                }
+            }))
+            .children(kids)
+            .into_any_element()
+    }
+
+    /// A `.term-menu` item: the action in bold (red for Close terminal), what it does below.
+    #[inline(never)]
+    fn c_menu_item(&mut self, n: &Node, danger: bool, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids, .. } = n else { return div().into_any_element() };
+        let (label, a) = match kids.first() {
+            Some(Node::Btn { label, act: a, .. }) => (label.clone(), a.clone()),
+            _ => return div().into_any_element(),
+        };
+        let sub = match kids.get(1) {
+            Some(Node::Text { s, .. }) => s.clone(),
+            _ => String::new(),
+        };
+        let tint = t.tint;
+        div()
+            .id(self.id("menu-item"))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(move |d| d.bg(tint))
+            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(if danger { t.down } else { t.text }).child(label))
+            .child(div().text_size(px(12.)).text_color(t.muted).child(sub))
+            .on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx)))
+            .into_any_element()
+    }
+
+    /// `.panel-foot`: What to do, Context and Full log (with its count), pinned under the sheet.
+    #[inline(never)]
+    fn c_foot(&mut self, m: &MainWindow, n: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids: nodes, .. } = n else { return div().into_any_element() };
+        let kids = self.kids(m, n, None, cx);
+        let mut row = div().flex().flex_none().items_center().gap(px(22.)).px(px(24.)).pt(px(14.)).pb(px(16.)).border_t_1().border_color(t.border).bg(t.card);
+        let mut prev: Option<AnyElement> = None;
+        for (kid, e) in nodes.iter().zip(kids) {
+            match kid {
+                Node::Text { s, st: St::Count, .. } => {
+                    let count = div().text_size(px(13.)).text_color(t.faint).child(s.clone());
+                    prev = Some(div().flex().items_center().gap(px(4.)).children(prev.take()).child(count).into_any_element());
+                }
+                _ => {
+                    row = row.children(prev.take());
+                    prev = Some(e);
+                }
+            }
+        }
+        row.children(prev).into_any_element()
     }
 
     /// `.pr-step`: a 22px dot, the name, the state below.
@@ -1353,48 +1414,6 @@ impl Draw<'_> {
             .child(dot)
             .child(div().text_color(name_c).when(bold, |d| d.font_weight(FontWeight::BOLD)).children(name))
             .children(sub.map(|s| div().text_color(sub_c).child(s)))
-            .into_any_element()
-    }
-
-    /// `.att`: the kind's icon, the name over its kind / source / age, the menu button.
-    #[inline(never)]
-    fn c_att(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
-        let t = self.t;
-        let kind = match n {
-            Node::El { kids, .. } => match kids.get(1) {
-                Some(Node::El { kids: meta, .. }) => match meta.first() {
-                    Some(Node::Text { s, .. }) => view::ATT_KINDS.iter().find(|k| view::att_kind_label(k) == s).copied().unwrap_or("other"),
-                    _ => "other",
-                },
-                _ => "other",
-            },
-            _ => "other",
-        };
-        let (fg, bg) = att_tint(t, kind);
-        let mut it = self.kids(m, n, boxed, cx).into_iter();
-        let (name, meta, more, menu) = (it.next(), it.next(), it.next(), it.next());
-        let tint = t.tint;
-        div()
-            .id(self.id("att"))
-            .group("tp-att")
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .p(px(6.))
-            .mx(px(-6.))
-            .rounded(px(8.))
-            .text_size(px(13.))
-            .hover(move |d| d.bg(tint))
-            .child(div().flex_none().size(px(26.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(kind, fg)))
-            .child(div().flex().flex_col().gap(px(1.)).flex_1().min_w_0().children(name).children(meta))
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .w(px(24.))
-                    .children(more)
-                    .children(menu.map(|x| div().absolute().right_0().top(px(28.)).child(deferred(x).with_priority(2)))),
-            )
             .into_any_element()
     }
 
@@ -1522,17 +1541,15 @@ fn on_key(m: &mut MainWindow, key: &str, ev: &KeyDownEvent, cx: &mut Context<Mai
     }
 }
 
-fn dot_color(t: &Theme, d: Dot) -> Option<Hsla> {
-    Some(match d {
-        Dot::Idle | Dot::Faint => t.faint,
-        Dot::Working | Dot::Accent => t.accent,
-        Dot::Needs | Dot::Warn => t.warn,
-        Dot::Gone => t.border_2,
+fn dot_color(t: &Theme, d: Dot) -> Hsla {
+    match d {
+        Dot::Faint => t.faint,
+        Dot::Accent => t.accent,
+        Dot::Warn => t.warn,
         Dot::AccentFg => t.accent_fg,
         Dot::Up => t.up,
         Dot::Goal => t.goal,
-        Dot::None => return None,
-    })
+    }
 }
 
 /// `.pill` (12px semibold, 2px 10px, round) / `.pill.sm` (1px 8px).
@@ -1653,27 +1670,11 @@ fn link(t: &Theme, id: SharedString, s: &str, look: LinkLook) -> Stateful<Div> {
     let text = s.to_string();
     let a = div().id(id).flex_none().cursor_pointer();
     match look {
-        // `.term-link`: the text colour, underlined in the accent on hover.
-        LinkLook::Term => {
-            let h = t.accent_fg;
-            a.hover(move |d| d.text_color(h).underline()).child(text)
-        }
         // `<a>`: accent, underlined.
         LinkLook::Plain => a.flex_shrink(1.).text_color(t.accent).underline().child(text),
         LinkLook::Small => a.text_size(px(12.5)).text_color(t.accent).underline().child(text),
-        LinkLook::GoalName => a.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).underline().child(text),
         LinkLook::Jkey => a.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).underline().child(text),
         LinkLook::AttName => a.flex_shrink(1.).min_w_0().font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg).truncate().hover(|d| d.underline()).child(text),
-        LinkLook::SrcGoal => a
-            .px(px(5.))
-            .rounded(px(5.))
-            .font_family(t.mono_font.clone())
-            .text_size(px(11.5))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(t.goal)
-            .bg(t.goal_soft)
-            .hover(|d| d.underline())
-            .child(text),
         // `.crumb a`: the goal in its colour.
         LinkLook::Crumb => {
             let h = t.text;
@@ -1732,6 +1733,7 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
     match look {
         Look::Plain => base(t, id, label),
         Look::Chip { on } => chip(t, div().id(id), on).child(label),
+        Look::Foot { on } => div().id(id).flex().items_center().gap(px(6.)).text_size(px(13.)).text_color(if on { t.text } else { t.text_2 }).cursor_pointer().hover(|d| d.text_color(t.text)).child(label),
         Look::Primary | Look::PrimaryWide => {
             let b = raw(t, id, label).bg(t.accent_btn).border_color(transparent_black()).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).hover(|d| d.opacity(0.94));
             // `.lg.wide`: 42px, 14px, sharing the row.
@@ -1740,29 +1742,11 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
         Look::SoftWide => soft(t, id, label).flex_1().h(px(42.)).px(px(16.)).text_size(px(14.)),
         Look::Soft => soft(t, id, label),
         Look::SoftSmall => sm(soft(t, id, label)),
-        Look::Small => sm(base(t, id, label)),
         Look::Danger => danger(t, id, label),
-        Look::DangerSmall => sm(danger(t, id, label)),
-        Look::Ghost => {
-            let h = t.text;
-            sm(raw(t, id, label).border_color(transparent_black()).bg(transparent_black()).text_color(t.muted).hover(move |d| d.text_color(h)))
-        }
         // `.btn.link`: accent text, underlined.
         Look::Link => div().id(id).flex_none().self_start().cursor_pointer().min_h(px(28.)).flex().items_center().text_size(px(13.)).text_color(t.accent_fg).underline().child(label),
         // `.btn.link.inline`
         Look::Ref => div().id(id).flex_none().cursor_pointer().text_color(t.accent_fg).underline().child(label),
-        Look::Src => div()
-            .id(id)
-            .px(px(5.))
-            .rounded(px(5.))
-            .cursor_pointer()
-            .font_family(t.mono_font.clone())
-            .text_size(px(11.5))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(t.accent_fg)
-            .bg(t.accent_soft)
-            .hover(|d| d.underline())
-            .child(label),
         Look::Menu => kit::menu_item(t, id, label, false),
         // Segmented buttons (the attachment kind picker).
         Look::Tab { on } => {
@@ -1787,7 +1771,6 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
             Icon::Close => icon_btn(t, id, 30., 7., paint(Ic::X, 14., 2.2, t.muted)),
             Icon::Back => icon_btn(t, id, 36., 8., paint(Ic::Back, 16., 2.2, t.muted)),
             Icon::Remove => icon_btn(t, id, 32., 7., paint(Ic::X, 16., 2.2, t.muted)),
-            Icon::External => icon_btn(t, id, 24., 6., paint(Ic::Ext, 12., 2.4, t.muted)),
             Icon::More => icon_btn(t, id, 24., 6., paint(Ic::More, 16., 0., t.muted)),
         },
     }
@@ -1799,7 +1782,6 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
 enum Ic {
     X,
     Back,
-    Ext,
     More,
     Check,
     Clock,
@@ -1857,11 +1839,6 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
                     line(&[(18., 6.), (6., 18.)], window);
                 }
                 Ic::Back => line(&[(15., 6.), (9., 12.), (15., 18.)], window),
-                Ic::Ext => {
-                    line(&[(14., 4.), (20., 4.), (20., 10.)], window);
-                    line(&[(20., 4.), (11., 13.)], window);
-                    line(&[(18., 14.), (18., 20.), (4., 20.), (4., 6.), (10., 6.)], window);
-                }
                 Ic::More => {
                     for x in [5., 12., 19.] {
                         fill_dot((x, 12.), 1.8, window);

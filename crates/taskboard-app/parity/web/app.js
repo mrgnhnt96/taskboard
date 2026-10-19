@@ -252,7 +252,7 @@ function onRoute() {
   const prev = S.route;
   S.route = parseRoute();
   const tr = S.route.q.task ? ref(S.route.q.task, 'T') : null;
-  if (tr !== S.taskRef) { S.taskRef = tr; S.task = null; S.taskErr = ''; }
+  if (tr !== S.taskRef) { S.taskRef = tr; S.task = null; S.taskErr = ''; S.termMenu = false; }
   if (prev.page !== S.route.page || prev.id !== S.route.id) {
     if (typeof resetPageState === 'function') resetPageState(prev, S.route);
   }
@@ -829,6 +829,7 @@ document.addEventListener('drop', e => {
   dropTargets(false);
   run({ dataset: { id: r } }, () => post(`/tasks/${encodeURIComponent(r)}/start`, { mode: 'new' }), { ok: `Starting ${r}`, toast: true });
 });
+document.addEventListener('mousedown', e => { if (S.termMenu && !e.target.closest('.term-menu, [data-act="term-menu"]')) { S.termMenu = false; renderAll(); } }, true);
 document.addEventListener('mousedown', e => { if (S.doneMenu && !e.target.closest('.att-menu, [data-act="done-menu"]')) { S.doneMenu = false; renderAll(); } }, true);
 document.addEventListener('keydown', e => { if (S.doneMenu && e.key === 'Escape') { S.doneMenu = false; renderAll(); } });
 
@@ -955,19 +956,29 @@ function taskPanel() {
   }
   const r = ref(t, 'T');
   const alert = currentAlerts().find(a => a.task === r);
-  const tab = ['context', 'log'].includes(S.route.q.tab) ? S.route.q.tab : 'overview';
-  const body = tab === 'context' ? contextTab(t) : tab === 'log' ? logTab(t) : overviewTab(t);
-  const tabs = [['overview', 'Overview'], ['context', 'Context'], ['log', 'Log']].map(([id, label]) =>
-    `<button type="button" role="tab" class="tab" aria-selected="${tab === id}" data-act="tab" data-arg="${id}">${label}</button>`).join('');
+  const tab = ['what', 'context', 'log'].includes(S.route.q.tab) ? S.route.q.tab : 'overview';
+  const body = tab === 'what' ? whatView(t) : tab === 'context' ? contextTab(t) : tab === 'log' ? logTab(t) : timeline(t);
   return `<aside class="panel" aria-label="Task detail" data-scroll="task-${esc(r)}-${tab}">
     ${panelTop(t)}
     ${S.taskErr ? `<p class="note err">${esc(S.taskErr)}</p>` : ''}
     <h2 class="title">${esc(t.title)}</h2>
     ${headChips(t)}
     ${alert ? `<div class="box ask" role="alert"><span class="box-label">Needs you</span><p>${esc(alert.text)}</p></div>` : ''}
-    <div class="tabs" role="tablist" aria-label="Task sections">${tabs}</div>
-    <div class="tabbody" role="tabpanel">${body}</div>
+    <div class="tabbody">${body}</div>
+    ${panelFoot(t, tab)}
   </aside>`;
+}
+
+// What to do, Context and the full log open in the panel; Timeline goes back.
+function panelFoot(t, tab) {
+  const n = Array.isArray(t.log) ? t.log.length : 0;
+  const views = [tab !== 'overview' && ['overview', 'Timeline'], ['what', 'What to do'], ['context', 'Context'], ['log', 'Full log']].filter(Boolean);
+  return `<nav class="panel-foot" aria-label="Task views">${views.map(([id, label]) =>
+    `<button type="button" class="foot-btn" aria-current="${tab === id}" data-act="tab" data-arg="${id}">${label}${id === 'log' && n ? ` <span class="count">${n}</span>` : ''}</button>`).join('')}</nav>`;
+}
+
+function whatView(t) {
+  return t.detail ? `<div class="note-body what">${noteBody(t.detail)}</div>` : '<p class="what">Nothing written yet.</p>';
 }
 
 const awaitingMerge = t => t.status === 'done' && !t.failed && t.pr && t.pr.num != null && prOpen(t.pr);
@@ -1006,11 +1017,51 @@ function savedLine(t) {
     : '';
 }
 
-function overviewTab(t) {
+// One stop on the task's timeline: its dot, a head (name, subline, time) and what's under it.
+function tlNode(st, head, body = '', card = false) {
+  return `<li class="tl-node n-${st}"><span class="tl-dot" aria-hidden="true"></span><div class="tl-main${card ? ' tl-card' : ''}">${head}${body}</div></li>`;
+}
+function tlHead(name, sub = '', at = '') {
+  return `<div class="tl-head"><span class="tl-h">${name}</span>${sub ? `<span class="tl-s">${esc(sub)}</span>` : ''}${at ? `<span class="tl-t">${esc(at)}</span>` : ''}</div>`;
+}
+
+// The task from start to merge: where it started, what it's doing now and what's left.
+function timeline(t) {
+  const nodes = [];
+  if (t.started_at && t.status !== 'queued' && t.status !== 'planned') nodes.push(startedNode(t));
+  if (t.status === 'done') nodes.push(doneNode(t));
+  if (t.status !== 'done' || prStopped(t)) nodes.push(nowNode(t));
+  nodes.push(...prNodes(t));
+  return `<ol class="tline">${nodes.join('')}</ol>`;
+}
+
+function startedNode(t) {
+  const name = (t.session && t.session.name) || t.who;
+  const cur = (t.session || {}).id;
+  const closed = (t.terminals || []).filter(x => x.id !== cur && (!x.status || x.status === 'gone')).length;
+  const sub = [name ? `In ${name}` : '', closed ? `${closed} closed earlier` : ''].filter(Boolean).join(' · ');
+  return tlNode('done', tlHead('Started', sub, hhmm(t.started_at)));
+}
+
+function doneNode(t) {
+  const r = ref(t, 'T');
+  const act = 'act:' + r;
+  return tlNode(t.failed ? 'fail' : 'done', tlHead(t.failed ? 'Failed' : 'Done', '', hhmm(t.finished_at)),
+    `<p class="tl-text">${esc(t.summary || t.latest || 'No summary was given.')}</p>
+    <div class="row">${btn(t.failed ? 'Try again' : 'Queue again', 'requeue', { id: r, grp: act })}${sessionLive(t) ? btn('Close its terminal', 'close-term', { id: r, cls: 'danger', grp: act }) : ''}</div>${note(act)}`);
+}
+
+// What the task is doing now, with what it needs from you and its terminal's controls.
+function nowNode(t) {
   const r = ref(t, 'T');
   const who = t.who || (t.session && t.session.name) || 'The terminal';
-  const out = [];
   const act = 'act:' + r;
+  const out = [];
+  const working = t.status === 'working';
+  const warn = t.lost || t.status === 'needs' || prStopped(t);
+  const m = Math.round((Date.now() + serverClockOffset - Date.parse(t.started_at)) / 60000);
+  const sub = working ? [isNaN(m) || m < 0 ? '' : span(m), t.updated_at ? `updated ${ago(t.updated_at)}` : ''].filter(Boolean).join(' · ') : '';
+  if (working && t.latest) out.push(`<p class="tl-text">${esc(t.latest)}</p>`);
 
   if (t.lost) {
     out.push(`<div class="box lost"><span class="box-label">Terminal lost</span>
@@ -1054,30 +1105,45 @@ function overviewTab(t) {
       <div class="row">${answerBtns(r)}${btn('Focus in Midna', 'focus', { id: r, grp: 'ask:' + r })}${note('ask:' + r)}</div></div>`);
   }
 
-  if (t.status === 'done') {
-    out.push(`<div class="box ${t.failed ? 'failed' : 'done'}"><details class="box-fold" data-fold="summary"${foldOpen('summary', true) ? ' open' : ''}><summary class="box-label">Summary from ${esc(who)}</summary>
-      <p>${esc(t.summary || t.latest || 'No summary was given.')}</p></details>
-      <div class="row">${btn(t.failed ? 'Try again' : 'Queue again', 'requeue', { id: r, grp: act })}${sessionLive(t) ? btn('Close its terminal', 'close-term', { id: r, cls: 'danger', grp: act }) : ''}</div>${note(act)}</div>`);
-  } else if (t.status !== 'planned') {
-    out.push(manageBox(t));
-  }
-
-  out.push(`<details class="linked-d" data-linked${linkedOpen() ? ' open' : ''}><summary>Details</summary><section class="linked" aria-label="Linked">${blockedRow(t)}${goalRow(t)}${terminalRow(t)}${jiraRow(t)}${prRow(t)}${attachRow(t)}</section></details>`);
-  out.push(`<details class="linked-d" data-fold="what"${foldOpen('what', true) ? ' open' : ''}><summary>What to do</summary>${t.detail ? `<div class="note-body what">${noteBody(t.detail)}</div>` : '<p class="what">Nothing written yet.</p>'}</details>`);
-  return out.join('');
+  out.push(blockedRow(t));
+  if (t.status !== 'done') out.push(termActions(t));
+  return tlNode(warn ? 'warn' : 'now', tlHead(statusPill(t, stKey(t)), sub), out.join(''), true);
 }
 
-// Your manual overrides for a task that isn't done: focus, detach, close the terminal, mark done or failed.
-function manageBox(t) {
+// Focus in Midna, and Detach and Close terminal behind the ⋯ menu.
+function termActions(t) {
   const r = ref(t, 'T');
   const grp = 'manage:' + r;
   const live = sessionLive(t);
-  const buttons = [
-    live && t.status === 'working' ? btn('Focus in Midna', 'focus', { id: r, cls: 'sm', grp }) : '',
-    t.session_id || live ? btn('Detach', 'detach', { id: r, cls: 'sm', grp, title: 'Take it off its terminal and put it back in the queue' }) : '',
-    live ? btn('Close its terminal', 'close-term', { id: r, arg: t.session && t.session.status === 'idle' ? '' : 'force', cls: 'sm danger', grp, title: 'Close the terminal; a busy one is stopped' }) : '',
-  ].filter(Boolean).join('');
-  return `<div class="stack manage" style="gap:8px"><div class="row" style="gap:6px">${buttons}</div>${note(grp)}</div>`;
+  const focus = live && t.status === 'working' ? btn('Focus in Midna', 'focus', { id: r, cls: 'soft sm', grp }) : '';
+  const more = t.session_id || live
+    ? `<button type="button" class="icon-btn" data-act="term-menu" data-id="${esc(r)}" aria-haspopup="menu" aria-expanded="${!!S.termMenu}" title="Terminal actions">${ICON.more}</button>` : '';
+  if (!focus && !more) return note(grp);
+  const item = (label, act, sub, o = {}) => `<button type="button" role="menuitem" class="${o.cls || ''}" data-act="${act}" data-id="${esc(r)}"${o.arg != null ? ` data-arg="${esc(o.arg)}"` : ''} data-grp="${esc(grp)}"><b>${label}</b><span>${sub}</span></button>`;
+  const menu = S.termMenu && more ? `<div class="ctxmenu term-menu" role="menu" aria-label="Terminal actions">
+    ${item('Detach', 'detach', 'Take it off this terminal and queue it again')}
+    ${live ? item('Close terminal', 'close-term', 'Stops the command that is running', { cls: 'danger', arg: t.session && t.session.status === 'idle' ? '' : 'force' }) : ''}</div>` : '';
+  return `<div class="row tl-acts">${focus}<span class="menu-at">${more}${menu}</span></div>${note(grp)}`;
+}
+
+// The PR's way to the main branch: opened, checks and review, merged.
+function prNodes(t) {
+  const p = t.pr;
+  if (!p || p.num == null) return [tlNode('todo', tlHead('Pull request')), tlNode('todo', tlHead('Checks and review')), tlNode('todo', tlHead('Merged'))];
+  const key = t.jira && t.jira.key;
+  const title = key && (p.title || '').startsWith(key) ? p.title.slice(key.length).replace(/^[\s:–-]+/, '') : p.title;
+  const num = `<b>#${esc(p.num)}</b> ${esc(title || p.repo || '')}`;
+  const head = `<div class="pr-head">${p.url ? `<a class="pr-link" href="${esc(safeUrl(p.url))}" target="_blank" rel="noopener" title="Open the pull request">${num}</a>` : `<span class="pr-link">${num}</span>`}
+      <span class="small pr-repo">${title ? esc(p.repo) : ''}</span></div>`;
+  const steps = [checksStep(p), reviewStep(p)];
+  const sts = steps.map(x => x.st);
+  const st = sts.includes('fail') ? 'fail' : sts.includes('ask') ? 'warn' : sts.every(x => x === 'done') ? 'done' : sts.every(x => x === 'todo') ? 'todo' : 'now';
+  const merge = mergeStep(p);
+  return [
+    tlNode('done', tlHead('Pull request'), head),
+    tlNode(st, tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${steps.map(stepHtml).join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>${prBar(t, p)}`),
+    tlNode(merge.st === 'todo' ? 'todo' : merge.st === 'done' ? 'done' : merge.st === 'fail' ? 'fail' : 'now', tlHead(merge.st === 'fail' ? 'Closed without merging' : 'Merged', merge.st === 'done' || merge.st === 'fail' ? '' : merge.sub || '')),
+  ];
 }
 
 function linkedOpen() { try { return localStorage.getItem('tb.linked') !== 'closed'; } catch { return true; } }
@@ -1800,7 +1866,8 @@ const ACTIONS = {
     run(el, () => post(tp(el, '/answer'), { text, when: el.dataset.arg === 'morning' ? 'morning' : 'now' }), { ok: () => { delete S.drafts[k]; return el.dataset.arg === 'morning' ? `Saved. It sends at ${hoursOpenAt() || 'the start of work hours'}.` : sentNote(); } });
   },
   'requeue': el => run(el, () => post(tp(el, '/requeue'), {}), { ok: 'Back in the queue' }),
-  'detach': el => run(el, () => post(tp(el, '/detach'), {}), { ok: 'Detached. It’s back in the queue.' }),
+  'term-menu': () => { S.termMenu = !S.termMenu; renderAll(); },
+  'detach': el => { S.termMenu = false; run(el, () => post(tp(el, '/detach'), {}), { ok: 'Detached. It’s back in the queue.' }); },
   'mark-done': el => {
     const r = el.dataset.id, k = 'summary:' + r;
     const summary = (S.drafts[k] || '').trim();
@@ -1811,7 +1878,7 @@ const ACTIONS = {
     const reason = (S.drafts[k] || '').trim();
     run(el, () => post(tp(el, '/fail'), reason ? { reason } : {}), { ok: () => { delete S.drafts[k]; delete S.reveal['fail:' + r]; return 'Marked failed'; } });
   },
-  'close-term': el => run(el, () => post(tp(el, '/close-terminal'), { force: el.dataset.arg === 'force' })),
+  'close-term': el => { S.termMenu = false; run(el, () => post(tp(el, '/close-terminal'), { force: el.dataset.arg === 'force' })); },
   'focus': el => run(el, () => post(tp(el, '/focus'), {})),
   'answer-opt': el => run(el, () => post(tp(el, '/answer'), { text: el.dataset.arg, when: 'now' })),
   'term-focus': el => run(el, () => post(`/sessions/${encodeURIComponent(el.dataset.id)}/focus`)),

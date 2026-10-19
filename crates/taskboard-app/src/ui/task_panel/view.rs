@@ -40,10 +40,7 @@ pub enum Look {
     SoftWide,
     Soft,
     SoftSmall,
-    Small,
     Danger,
-    DangerSmall,
-    Ghost,
     /// `.btn.link`: text-only.
     Link,
     /// An icon button (`.icon-btn`): close, back, focus, the attachment menu, remove a field.
@@ -54,17 +51,16 @@ pub enum Look {
     Menu,
     /// A task ref shown as a link (blocked-by refs).
     Ref,
-    /// `.att-src.t`: a task ref chip.
-    Src,
     /// A header chip (`.hchip`); `on` while its dropdown is open.
     Chip { on: bool },
+    /// A footer view (`.foot-btn`); `on` while it's the one open.
+    Foot { on: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
     Close,
     Back,
-    External,
     More,
     Remove,
 }
@@ -74,11 +70,8 @@ pub enum Icon {
 pub enum LinkLook {
     #[default]
     Plain,
-    Term,
-    GoalName,
     Jkey,
     AttName,
-    SrcGoal,
     Small,
     /// The breadcrumb's goal (`.crumb a`).
     Crumb,
@@ -91,7 +84,6 @@ pub enum LinkLook {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Go {
     Goal(String),
-    GoalBacklog(String),
     Session(String),
     /// The board page with this issue's panel open.
     Issue(String),
@@ -151,6 +143,11 @@ pub enum St {
     JiraChip,
     /// A coloured list glyph (✓ → • !).
     Glyph(Dot),
+    /// A timeline stop's name (`.tl-h`) and its subline (`.tl-s`).
+    TlH,
+    TlS,
+    /// What a timeline stop says (`.tl-text`): its summary, or the latest line.
+    TlText,
 }
 
 /// Containers (the web's layout elements).
@@ -175,25 +172,13 @@ pub enum K {
     Stack,
     /// A `<details>` fold: first kid is the summary, the rest show when open.
     Fold(Fold, bool),
-    Linked,
     /// `.lrow`: first kid is the key text.
     Lrow,
-    Lsec,
     Line,
-    Tl,
-    TlItem,
-    TlName,
-    TlSub,
     PrHead,
     Steps,
     Step(StepSt),
     PrBar { warn: bool },
-    Atts,
-    Att,
-    AttMeta,
-    AttMenu,
-    AttEdit,
-    Seg,
     Kv,
     KvRow,
     List,
@@ -207,6 +192,30 @@ pub enum K {
     MdP,
     MdUl,
     MdLi,
+    /// The task's timeline (`.tline`): its stops in order.
+    Tline,
+    /// One stop (`.tl-node`): its dot, then a head and what's under it; `card` for the now stop.
+    TlNode { st: TlSt, card: bool },
+    /// A stop's name, subline and time.
+    TlHead,
+    /// Focus in Midna and the ⋯ menu.
+    TlActs,
+    /// The terminal's ⋯ menu.
+    TermMenu,
+    /// A menu row: its button, then what it does.
+    MenuItem { danger: bool },
+    /// The views at the panel's foot: What to do, Context, Full log.
+    Foot,
+}
+
+/// A timeline stop's dot (`.n-*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlSt {
+    Done,
+    Now,
+    Warn,
+    Fail,
+    Todo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,16 +223,11 @@ pub enum BoxTone {
     Ask,
     Lost,
     Done,
-    Failed,
     Info,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
-    Linked,
-    Summary,
-    What,
-    Terms,
     /// A step's findings (`step_results`), under its headline.
     Findings,
     /// The rest of a long note for testers, after its first block.
@@ -236,10 +240,6 @@ impl Fold {
     /// The localStorage key the web kept this fold's state under.
     pub fn key(self) -> &'static str {
         match self {
-            Fold::Linked => "tb.linked",
-            Fold::Summary => "tb.fold.summary",
-            Fold::What => "tb.fold.what",
-            Fold::Terms => "tb.fold.terms",
             Fold::Findings => "tb.fold.findings",
             Fold::Note => "tb.fold.note",
             Fold::Tail => "tb.fold.tail",
@@ -258,16 +258,9 @@ pub enum StepSt {
     Todo,
 }
 
-/// Session dot colours (`SESS_DOT`).
+/// Log dots by kind (`LOG_DOT`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dot {
-    Idle,
-    Working,
-    Needs,
-    Gone,
-    /// A closed terminal: no colour.
-    None,
-    /// Log dots by kind (`LOG_DOT`).
     Accent,
     Faint,
     Warn,
@@ -323,6 +316,8 @@ pub struct Ui {
     pub att_edit: Option<String>,
     /// The header's Attached dropdown is open.
     pub att_drop: bool,
+    /// The now stop's ⋯ terminal menu is open.
+    pub term_menu: bool,
 }
 
 impl Ui {
@@ -338,12 +333,10 @@ pub struct Ctx<'a> {
     pub card: Option<&'a Value>,
     /// The panel's task ref (`S.taskRef`).
     pub r: &'a str,
-    /// overview | context | log
+    /// overview | what | context | log
     pub tab: &'a str,
     /// Tasks opened from the panel before this one (`taskTrail()`).
     pub trail: &'a [String],
-    /// The goal whose page is open, if any (`S.route.page === 'goal'`, `S.route.id`).
-    pub goal_page: Option<&'a str>,
     /// Why the task couldn't be fetched (`S.taskErr`).
     pub err: Option<&'a str>,
     pub ui: &'a Ui,
@@ -352,11 +345,6 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// `linkedOpen`: the Details fold, open unless closed.
-    fn linked_open(&self) -> bool {
-        self.folds.get("tb.linked").map(String::as_str) != Some("closed")
-    }
-
     /// `foldOpen(k, shut)`.
     fn fold_open(&self, f: Fold, shut: bool) -> bool {
         match self.folds.get(f.key()) {
@@ -683,7 +671,7 @@ fn card_panel(c: &Ctx, t: &Value) -> Node {
     let mut kids = vec![top_row(c, Some(t)), txt(or_empty(&t["title"]), St::Title)];
     kids.extend(head_chips(c, t));
     if pr_of(t).is_some() {
-        kids.push(pr_row(c, t));
+        kids.push(el(K::Tline, pr_nodes(c, t)));
     }
     kids.push(txt("Loading…", St::Muted));
     el(K::Col, kids)
@@ -702,7 +690,7 @@ pub fn panel(c: &Ctx) -> Node {
     };
     let r = rf(t, "T");
     let alert = arr(c.state, "alerts").iter().find(|a| s(a, "task") == r);
-    let tab = if matches!(c.tab, "context" | "log") { c.tab } else { "overview" };
+    let tab = if matches!(c.tab, "what" | "context" | "log") { c.tab } else { "overview" };
 
     let mut kids = vec![top_row(c, Some(t))];
     if let Some(e) = c.err {
@@ -713,18 +701,39 @@ pub fn panel(c: &Ctx) -> Node {
     if let Some(a) = alert {
         kids.push(el(K::Box(BoxTone::Ask), vec![txt("Needs you", St::BoxLabel), txt(or_empty(&a["text"]), St::Plain)]));
     }
-    let tabs = [("overview", "Overview"), ("context", "Context"), ("log", "Log")]
-        .iter()
-        .map(|(id, label)| c.btn(label, Act::new("tab", *id, "", ""), Look::Tab { on: tab == *id }, false, None))
-        .collect();
-    kids.push(el(K::Tabs, tabs));
     let body = match tab {
+        "what" => vec![what_view(t)],
         "context" => context_tab(c, t),
         "log" => log_tab(c, t),
-        _ => overview_tab(c, t),
+        _ => timeline(c, t),
     };
     kids.push(el(K::Body, body));
+    kids.push(panel_foot(c, t, tab));
     el(K::Col, kids)
+}
+
+/// `panelFoot(t, tab)`: What to do, Context and the full log; Timeline goes back.
+fn panel_foot(c: &Ctx, t: &Value, tab: &str) -> Node {
+    let n = arr(t, "log").len();
+    let mut kids = Vec::new();
+    for (id, label) in [("overview", "Timeline"), ("what", "What to do"), ("context", "Context"), ("log", "Full log")] {
+        if id == "overview" && tab == "overview" {
+            continue;
+        }
+        kids.push(c.btn(label, Act::new("tab", id, "", ""), Look::Foot { on: tab == id }, false, None));
+        if id == "log" && n > 0 {
+            kids.push(txt(n.to_string(), St::Count));
+        }
+    }
+    el(K::Foot, kids)
+}
+
+/// `whatView(t)`.
+fn what_view(t: &Value) -> Node {
+    match opt_s(t, "detail") {
+        Some(d) => note_body(d),
+        None => txt("Nothing written yet.", St::Plain),
+    }
 }
 
 /// `answerBtns(r)`.
@@ -820,24 +829,124 @@ fn human_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         bx.push(el(K::Row, row));
         out.push(el(K::Box(BoxTone::Ask), bx));
     }
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
-    out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
-    if status == "done" {
-        out.push(fold(Fold::What, c.fold_open(Fold::What, false), txt("Steps", St::Strong), vec![note_body(detail)]));
-    }
+    out.extend(blocked_row(c, t));
     out
 }
 
-/// `overviewTab(t)`.
-fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
+/// `tlNode(st, head, body, card)`.
+fn tl_node(st: TlSt, head: Node, body: Vec<Node>, card: bool) -> Node {
+    let mut kids = vec![head];
+    kids.extend(body);
+    el(K::TlNode { st, card }, kids)
+}
+
+/// `tlHead(name, sub, at)`.
+fn tl_head(name: Node, sub: &str, at: &str) -> Node {
+    let mut kids = vec![name];
+    if !sub.is_empty() {
+        kids.push(txt(sub, St::TlS));
+    }
+    if !at.is_empty() {
+        kids.push(txt(at, St::Time));
+    }
+    el(K::TlHead, kids)
+}
+
+fn tl_name(name: &str) -> Node {
+    txt(name, St::TlH)
+}
+
+/// `timeline(t)`: where it started, the steps it passed, what it's doing now and what's left.
+fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
     if s(t, "kind") == "human" {
         return human_tab(c, t);
     }
+    let status = s(t, "status");
+    let mut nodes = Vec::new();
+    if opt_s(t, "started_at").is_some() && !matches!(status, "queued" | "planned") {
+        nodes.push(started_node(t));
+    }
+    nodes.extend(arr(t, "step_results").iter().map(|x| result_node(c, x)));
+    if status == "done" {
+        nodes.push(done_node(c, t));
+    }
+    if status != "done" || pr_stopped(t).is_some() {
+        nodes.push(now_node(c, t));
+    }
+    nodes.extend(pr_nodes(c, t));
+    vec![el(K::Tline, nodes)]
+}
+
+/// `startedNode(t)`: "In Midna 3 · 2 closed earlier".
+fn started_node(t: &Value) -> Node {
+    let name = obj(t, "session").and_then(|x| opt_s(x, "name")).or(opt_s(t, "who"));
+    let cur = field(&t["session"], "id");
+    let closed = arr(t, "terminals").iter().filter(|x| !js_eq(field(x, "id"), cur) && opt_s(x, "status").is_none_or(|st| st == "gone")).count();
+    let mut sub = Vec::new();
+    sub.extend(name.map(|n| format!("In {n}")));
+    if closed > 0 {
+        sub.push(format!("{closed} closed earlier"));
+    }
+    tl_node(TlSt::Done, tl_head(tl_name("Started"), &sub.join(" · "), &fmt::hhmm(s(t, "started_at"))), vec![], false)
+}
+
+/// A step that ran a round (`step_results`): its headline, and its findings in a fold.
+fn result_node(c: &Ctx, x: &Value) -> Node {
+    let open = x["open"].as_i64().unwrap_or(0);
+    let mut body = Vec::new();
+    if b(x, "stale") {
+        body.push(el(K::Line, vec![pill("Moved since", Tone::Needs)]));
+    }
+    let findings = arr(x, "findings");
+    if !findings.is_empty() {
+        let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
+        body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, findings.iter().map(finding_item).collect())]));
+    }
+    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_head(tl_name(s(x, "name")), s(x, "headline"), ""), body, false)
+}
+
+/// `doneNode(t)`: Done or Failed, with its summary.
+fn done_node(c: &Ctx, t: &Value) -> Node {
+    let r = rf(t, "T");
+    let act = format!("act:{r}");
+    let failed = b(t, "failed");
+    let mut body = vec![txt(opt_s(t, "summary").or(opt_s(t, "latest")).unwrap_or("No summary was given."), St::TlText)];
+    for (k, label) in [("no_pr", "PR canceled:"), ("no_evidence", "No evidence:")] {
+        if let Some(why) = opt_s(t, k) {
+            let mut line = vec![txt(label, St::Strong)];
+            line.extend(linkify(c, why));
+            body.push(el(K::Line, line));
+        }
+    }
+    let mut row = vec![c.btn(if failed { "Try again" } else { "Queue again" }, Act::new("requeue", "", &r, &act), Look::Plain, false, None)];
+    if session_live(t) {
+        row.push(c.btn("Close its terminal", Act::new("close-term", "", &r, &act), Look::Danger, false, None));
+    }
+    body.push(el(K::Row, row));
+    body.extend(c.note(&act));
+    let name = if failed { "Failed" } else { "Done" };
+    tl_node(if failed { TlSt::Fail } else { TlSt::Done }, tl_head(tl_name(name), "", &fmt::hhmm(s(t, "finished_at"))), body, false)
+}
+
+/// `nowNode(t)`: what the task is doing now, with what it needs from you and its terminal's controls.
+fn now_node(c: &Ctx, t: &Value) -> Node {
     let r = rf(t, "T");
     let who = who(t);
     let act = format!("act:{r}");
     let status = s(t, "status");
+    let working = status == "working";
+    let warn = b(t, "lost") || status == "needs" || pr_stopped(t).is_some();
+    let sub = if working {
+        let mut sub = vec![fmt::run_span(t)];
+        sub.extend(opt_s(t, "updated_at").map(|at| format!("updated {}", fmt::ago(at))));
+        sub.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")
+    } else {
+        String::new()
+    };
     let mut out = Vec::new();
+    if let Some(latest) = opt_s(t, "latest").filter(|_| working) {
+        out.push(txt(latest, St::TlText));
+    }
 
     if b(t, "lost") {
         let saved = saved_line(t);
@@ -933,13 +1042,10 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         out.push(el(K::Box(BoxTone::Ask), bx));
     }
 
-    if let Some(why) = fmt::stuck(t).filter(|_| status == "working") {
+    if let Some(why) = fmt::stuck(t).filter(|_| working) {
         let mut bx = vec![txt(format!("{who} may be stuck"), St::BoxLabel), txt(why, St::Plain)];
         if let Some(tail) = opt_s(&t["stuck"], "tail").filter(|x| !x.is_empty()) {
             bx.push(fold(Fold::Tail, c.fold_open(Fold::Tail, false), txt("Its terminal’s last lines", St::Small), vec![txt(tail, St::Code)]));
-        }
-        if session_live(t) {
-            bx.push(el(K::Row, vec![c.btn("Focus in Midna", Act::new("focus", "", &r, &act), Look::Plain, false, None)]));
         }
         out.push(el(K::Box(BoxTone::Ask), bx));
     }
@@ -1006,33 +1112,11 @@ fn overview_tab(c: &Ctx, t: &Value) -> Vec<Node> {
         ));
     }
 
-    if status == "done" {
-        let failed = b(t, "failed");
-        let summary = fold(
-            Fold::Summary,
-            c.fold_open(Fold::Summary, true),
-            txt(format!("Summary from {who}"), St::BoxLabel),
-            vec![txt(opt_s(t, "summary").or(opt_s(t, "latest")).unwrap_or("No summary was given."), St::Plain)],
-        );
-        let mut row = vec![c.btn(if failed { "Try again" } else { "Queue again" }, Act::new("requeue", "", &r, &act), Look::Plain, false, None)];
-        if session_live(t) {
-            row.push(c.btn("Close its terminal", Act::new("close-term", "", &r, &act), Look::Danger, false, None));
-        }
-        let mut bx = vec![summary, el(K::Row, row)];
-        bx.extend(c.note(&act));
-        out.push(el(K::Box(if failed { BoxTone::Failed } else { BoxTone::Done }), bx));
-    } else if status != "planned" {
-        out.push(manage_box(c, t));
+    out.extend(blocked_row(c, t));
+    if status != "done" {
+        out.extend(term_actions(c, t));
     }
-
-    let linked: Vec<Node> = [blocked_row(c, t), goal_row(c, t), Some(terminal_row(c, t)), jira_row(c, t), merged_note_row(c, t), Some(pr_row(c, t)), steps_row(c, t), Some(attach_row(c, t))].into_iter().flatten().collect();
-    out.push(fold(Fold::Linked, c.linked_open(), txt("Details", St::Strong), vec![el(K::Linked, linked)]));
-    let what = match opt_s(t, "detail") {
-        Some(d) => note_body(d),
-        None => txt("Nothing written yet.", St::Plain),
-    };
-    out.push(fold(Fold::What, c.fold_open(Fold::What, true), txt("What to do", St::Strong), vec![what]));
-    out
+    tl_node(if warn { TlSt::Warn } else { TlSt::Now }, tl_head(status_pill(t), &sub, ""), out, true)
 }
 
 /// A fold (`<details>`): its summary, then what shows when it's open.
@@ -1042,25 +1126,37 @@ fn fold(f: Fold, open: bool, summary: Node, body: Vec<Node>) -> Node {
     el(K::Fold(f, open), kids)
 }
 
-/// `manageBox(t)`. No Mark done / Mark failed: Claude finishes a task (`tb submit`, `tb fail`).
-fn manage_box(c: &Ctx, t: &Value) -> Node {
+/// `termActions(t)`: Focus in Midna, and Detach and Close terminal behind the ⋯ menu. No Mark done /
+/// Mark failed: Claude finishes a task (`tb submit`, `tb fail`).
+fn term_actions(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let grp = format!("manage:{r}");
     let live = session_live(t);
-    let mut buttons = Vec::new();
+    let mut row = Vec::new();
     if live && s(t, "status") == "working" {
-        buttons.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Small, false, None));
+        row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::SoftSmall, false, None));
     }
     if opt_s(t, "session_id").is_some() || live {
-        buttons.push(c.btn("Detach", Act::new("detach", "", &r, &grp), Look::Small, false, Some("Take it off its terminal and put it back in the queue")));
+        row.push(c.btn("", Act::new("term-menu", "", &r, ""), Look::Icon(Icon::More), false, Some("Terminal actions")));
+        if c.ui.term_menu {
+            let mut items = vec![menu_item(c, "Detach", "Take it off this terminal and queue it again", Act::new("detach", "", &r, &grp), false)];
+            if live {
+                let arg = if s(&t["session"], "status") == "idle" { "" } else { "force" };
+                items.push(menu_item(c, "Close terminal", "Stops the command that is running", Act::new("close-term", arg, &r, &grp), true));
+            }
+            row.push(el(K::TermMenu, items));
+        }
     }
-    if live {
-        let arg = if s(&t["session"], "status") == "idle" { "" } else { "force" };
-        buttons.push(c.btn("Close its terminal", Act::new("close-term", arg, &r, &grp), Look::DangerSmall, false, Some("Close the terminal; a busy one is stopped")));
+    let mut out = Vec::new();
+    if !row.is_empty() {
+        out.push(el(K::TlActs, row));
     }
-    let mut kids = vec![el(K::Row, buttons)];
-    kids.extend(c.note(&grp));
-    el(K::Stack, kids)
+    out.extend(c.note(&grp));
+    out
+}
+
+fn menu_item(c: &Ctx, label: &str, sub: &str, act: Act, danger: bool) -> Node {
+    el(K::MenuItem { danger }, vec![c.btn(label, act, Look::Menu, false, None), txt(sub, St::Small)])
 }
 
 fn lrow(key: &str, mut body: Vec<Node>) -> Node {
@@ -1083,162 +1179,6 @@ fn blocked_row(c: &Ctx, t: &Value) -> Option<Node> {
     Some(lrow("Blocked by", body))
 }
 
-/// `goalRow(t)`.
-fn goal_row(c: &Ctx, t: &Value) -> Option<Node> {
-    if let Some(g) = obj(t, "goal").filter(|g| !g["id"].is_null() || !g["ref"].is_null()) {
-        let gr = rf(g, "G");
-        if c.goal_page == Some(gr.as_str()) {
-            return None;
-        }
-        let total = g["total"].as_f64().unwrap_or(0.);
-        let pos = g["position"].as_i64().filter(|_| g["position"].is_i64() || g["position"].is_u64()).filter(|p| total != 0. && (*p as f64) <= total);
-        let mut line = vec![Node::Link { s: or_empty(&g["name"]), go: Go::Goal(gr.clone()), tip: None, look: LinkLook::GoalName }];
-        if let Some(p) = pos {
-            line.push(txt(format!("Task {p} of {}", or_empty(&g["total"])), St::Small));
-        }
-        let n = g["open_issues"].as_i64().unwrap_or(0);
-        return Some(lrow(
-            "Goal",
-            vec![
-                el(K::Line, line),
-                txt(match opt_s(g, "next_title") {
-                    Some(x) => format!("Next in this goal: {x}"),
-                    None => "Last task in this goal".into(),
-                }, St::Small),
-                Node::Link {
-                    s: if n != 0 { format!("{n} open in the goal’s backlog") } else { "Nothing in the goal’s backlog".into() },
-                    go: Go::GoalBacklog(gr),
-                    tip: None,
-                    look: LinkLook::Small,
-                },
-            ],
-        ));
-    }
-    Some(lrow("Goal", vec![txt("Not in a goal.", St::Small)]))
-}
-
-/// `SESS`, with what's running ("2 agents running") while the terminal's background work runs.
-fn sess_label(st: &str, background: &Value) -> String {
-    match st {
-        "idle" => "Idle".into(),
-        "working" => "Working".into(),
-        "waiting" => fmt::background_label(background),
-        "needs" => "Needs you".into(),
-        _ => "Gone".into(),
-    }
-}
-
-/// `termItem(x, cur)`.
-fn term_item(c: &Ctx, x: &Value, cur: &Value) -> Node {
-    let raw = match s(x, "status") {
-        k @ ("idle" | "working" | "waiting" | "needs" | "gone") => k,
-        _ => "gone",
-    };
-    let stage = &cur["pr"]["stage"];
-    // `waitsOnYou`
-    let waiting = raw != "gone" && obj(stage, "stopped").is_some() && js_eq(field(stage, "session"), field(x, "id"));
-    let st = if waiting { "needs" } else { raw };
-    let live = st != "gone";
-    let why = if waiting {
-        if b(&stage["stopped"], "asked") { "Asked you a question".to_string() } else { "Stopped before it was finished".to_string() }
-    } else {
-        match s(x, "why") {
-            "Worked on the task" => "Task".into(),
-            "Worked on the PR" => "PR".into(),
-            _ => or_empty(&x["why"]),
-        }
-    };
-    let id = opt_s(x, "id").map(str::to_string);
-    let name = opt_s(x, "name").map(str::to_string).unwrap_or_else(|| or_empty(&x["id"]));
-    let state = if live {
-        sess_label(st, &x["background"])
-    } else if b(cur, "lost") && js_eq(field(x, "id"), cur.get("session").and_then(|ss| field(ss, "id"))) {
-        "Gone".into()
-    } else {
-        "Closed".into()
-    };
-    let mut head = Vec::new();
-    match &id {
-        Some(sid) => head.push(Node::Link { s: name.clone(), go: Go::Session(sid.clone()), tip: Some("Open this terminal".into()), look: LinkLook::Term }),
-        None => head.push(txt(name.clone(), St::Plain)),
-    }
-    if let (true, Some(sid)) = (live, &id) {
-        head.push(c.btn("", Act::new("term-focus", "", sid, format!("term:{}", rf(cur, "T"))), Look::Icon(Icon::External), false, Some("Focus in Midna")));
-    }
-    let mut sub = vec![pill(state, st_tone(if live { st } else { "closed" }))];
-    if !why.is_empty() {
-        sub.push(txt(why, St::Small));
-    }
-    let dot = if !live {
-        Dot::None
-    } else {
-        match st {
-            "working" | "waiting" => Dot::Working,
-            "needs" => Dot::Needs,
-            "idle" => Dot::Idle,
-            _ => Dot::Gone,
-        }
-    };
-    let mut kids = vec![Node::Dot(dot), el(K::TlName, head), el(K::TlSub, sub)];
-    if let Some(at) = opt_s(x, "at") {
-        kids.push(txt(fmt::hhmm(at), St::Time));
-    }
-    el(K::TlItem, kids)
-}
-
-/// `terminalRow(t)`.
-fn terminal_row(c: &Ctx, t: &Value) -> Node {
-    let grp = format!("term:{}", rf(t, "T"));
-    let sess = &t["session"];
-    let mut all: Vec<Value> = arr(t, "terminals").to_vec();
-    if all.is_empty() && session_live(t) {
-        let name = opt_s(sess, "name").or(opt_s(t, "who")).map(Value::from).unwrap_or_else(|| sess["id"].clone());
-        all.push(serde_json::json!({"id": sess["id"], "name": name, "status": sess["status"], "why": "Attached", "at": t["started_at"]}));
-    }
-    if all.is_empty() && opt_s(t, "who").is_some() && !matches!(s(t, "status"), "queued" | "planned") {
-        all.push(serde_json::json!({"name": t["who"], "status": "gone"}));
-    }
-    if all.is_empty() {
-        let none = match s(t, "status") {
-            "done" => "No terminal.",
-            "queued" if b(t, "starting") => opt_s(t, "waiting").unwrap_or("No terminal yet."),
-            _ => "No terminal yet.",
-        };
-        let mut body = vec![txt(none, St::Small)];
-        if s(t, "status") != "done" {
-            body.extend(c.note(&grp));
-        }
-        return lrow("Terminal", body);
-    }
-    let cur = opt_s(sess, "id");
-    let rank = |x: &Value| {
-        if cur.is_some() && opt_s(x, "id") == cur {
-            0
-        } else if opt_s(x, "status").is_some_and(|st| st != "gone") {
-            1
-        } else {
-            2
-        }
-    };
-    let mut ranked: Vec<(usize, Value)> = all.into_iter().enumerate().collect();
-    ranked.sort_by_key(|(k, x)| (rank(x), *k));
-    let all: Vec<Value> = ranked.into_iter().map(|(_, x)| x).collect();
-    let shown = if all.len() > 2 { 1 } else { all.len() };
-    let mut body = vec![el(K::Tl, all[..shown].iter().map(|x| term_item(c, x, t)).collect())];
-    let rest = &all[shown..];
-    if !rest.is_empty() {
-        body.push(fold(
-            Fold::Terms,
-            c.fold_open(Fold::Terms, true),
-            txt(fmt::plural(rest.len() as i64, "earlier terminal", "earlier terminals"), St::Small),
-            vec![el(K::Tl, rest.iter().map(|x| term_item(c, x, t)).collect())],
-        ));
-    }
-    body.extend(c.note(&grp));
-    lrow(if all.len() > 1 { "Terminals" } else { "Terminal" }, body)
-}
-
-/// `jiraRow(t)`.
 /// The note for testers the board posts on the ticket at merge (`[jira] merged_note`), or that it's waiting for one.
 fn merged_note_row(c: &Ctx, t: &Value) -> Option<Node> {
     let n = obj(t, "merged_note")?;
@@ -1266,32 +1206,6 @@ fn folded_note(c: &Ctx, text: &str) -> Node {
     let open = c.fold_open(Fold::Note, true);
     kids.push(fold(Fold::Note, open, txt(if open { "Show less" } else { "Show more" }, St::Small), vec![el(K::Md, rest)]));
     Node::El { k, tip, kids }
-}
-
-fn jira_row(c: &Ctx, t: &Value) -> Option<Node> {
-    let j = obj(t, "jira");
-    let key = j.and_then(|j| opt_s(j, "key"));
-    let on = b(&c.state["jira"], "enabled");
-    if !on && key.is_none() {
-        return None;
-    }
-    let v = match (j, key) {
-        (Some(j), Some(key)) => {
-            let mut line = vec![match opt_s(j, "url") {
-                Some(url) => Node::Link { s: key.to_string(), go: Go::Url(url.to_string()), tip: Some(format!("Open {key} in Jira")), look: LinkLook::Jkey },
-                None => txt(key, St::Jkey),
-            }];
-            if let Some(st) = opt_s(j, "status") {
-                line.push(pill(st, Tone::Jira));
-            }
-            el(K::Line, line)
-        }
-        // A ticket that couldn't be made reads as a warning (`tb task set --jira new` tries again).
-        (Some(j), None) if b(j, "failed") => txt(opt_s(j, "status").unwrap_or("Ticket asked for"), St::WarnHelp),
-        (Some(j), None) => txt(opt_s(j, "status").unwrap_or("Ticket asked for"), St::Small),
-        _ => txt("No ticket.", St::Small),
-    };
-    Some(lrow("Jira", vec![v]))
 }
 
 /// One PR step: name, state, sub (`checksStep` / `reviewStep` / `mergeStep`).
@@ -1599,64 +1513,6 @@ fn is_ticket(w: &str) -> bool {
         && n.chars().all(|c| c.is_ascii_digit())
 }
 
-/// The PR row of a task with no PR: why it finished without one, or whether it's meant to have one.
-fn no_pr_row(c: &Ctx, t: &Value) -> Node {
-    let mut body = Vec::new();
-    if let Some(why) = opt_s(t, "no_pr") {
-        let mut line = vec![txt("PR canceled:", St::Strong)];
-        line.extend(linkify(c, why));
-        body.push(el(K::Line, line));
-    } else if t["ships_pr"].is_boolean() {
-        body.push(if t["ships_pr"] == true {
-            el(K::Line, vec![pill("Ends in a PR", Tone::Review), txt("No PR yet.", St::Small)])
-        } else {
-            el(K::Line, vec![pill("No PR", Tone::Neutral)])
-        });
-    } else {
-        body.push(txt("No PR yet.", St::Small));
-    }
-    // The review step (WD) runs before the PR opens, on a task that ends in one ("Not reviewed by WD yet"
-    // before its first round).
-    let wd = obj(t, "wd").or_else(|| arr(t, "step_results").iter().find(|r| opt_s(r, "bar").is_some()));
-    if let Some(wd) = wd.filter(|_| opt_s(t, "no_pr").is_none() && t["ships_pr"] != false) {
-        body.push(step_nodes(vec![wd_step(wd)]));
-    }
-    if let Some(so) = obj(t, "stack_on") {
-        body.push(stacks_line(c, so));
-    }
-    if let Some(why) = opt_s(t, "no_evidence") {
-        let mut line = vec![txt("No evidence:", St::Strong)];
-        line.extend(linkify(c, why));
-        body.push(el(K::Line, line));
-    }
-    lrow("Pull request", body)
-}
-
-/// Each step that ran a round (`step_results`): its headline, and its findings in a fold.
-fn steps_row(c: &Ctx, t: &Value) -> Option<Node> {
-    let results = arr(t, "step_results");
-    if results.is_empty() {
-        return None;
-    }
-    let mut body = Vec::new();
-    for r in results {
-        let mut line = vec![txt(s(r, "name"), St::Strong), txt(s(r, "headline"), St::Plain)];
-        if b(r, "stale") {
-            line.push(pill("Moved since", Tone::Needs));
-        }
-        body.push(el(K::Line, line));
-        let findings = arr(r, "findings");
-        if findings.is_empty() {
-            continue;
-        }
-        let open = r["open"].as_i64().unwrap_or(0);
-        let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
-        let items = findings.iter().map(finding_item).collect();
-        body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, items)]));
-    }
-    Some(lrow("Steps", body))
-}
-
 /// One finding: its state, severity, title and where it is.
 fn finding_item(f: &Value) -> Node {
     let state = opt_s(f, "state").unwrap_or("open");
@@ -1692,10 +1548,15 @@ fn js_lower(v: &Value) -> String {
     }
 }
 
-/// `prRow(t)` with `prBar`.
-fn pr_row(c: &Ctx, t: &Value) -> Node {
+/// The review step a `step_results` node already shows (its `bar` name, like WD), left out of the PR's steps.
+fn shown_bar(t: &Value) -> Option<&str> {
+    arr(t, "step_results").iter().find_map(|r| opt_s(r, "bar"))
+}
+
+/// `prNodes(t)`: Pull request, Checks and review, Merged.
+fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     let Some(p) = pr_of(t) else {
-        return no_pr_row(c, t);
+        return no_pr_nodes(c, t);
     };
     let key = obj(t, "jira").and_then(|j| opt_s(j, "key"));
     let raw = opt_s(p, "title");
@@ -1705,23 +1566,34 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
     };
     let shown = title.clone().filter(|x| !x.is_empty()).or_else(|| opt_s(p, "repo").map(str::to_string)).unwrap_or_default();
     let label = format!("#{} {shown}", or_empty(&p["num"]));
-    let head = match opt_s(p, "url").filter(|u| is_web(u)) {
-        Some(url) => Node::Link { s: label, go: Go::Url(url.to_string()), tip: Some("Open the pull request".into()), look: LinkLook::Plain },
-        None => {
-            // safeUrl('') → '#': a url that isn't http(s) still renders as a link that goes nowhere.
-            match opt_s(p, "url") {
-                Some(_) => Node::Link { s: label, go: Go::Url(String::new()), tip: Some("Open the pull request".into()), look: LinkLook::Plain },
-                None => txt(label, St::Strong),
-            }
-        }
+    let head = match opt_s(p, "url") {
+        // safeUrl('') → '#': a url that isn't http(s) still renders as a link that goes nowhere.
+        Some(url) => Node::Link { s: label, go: Go::Url(if is_web(url) { url.to_string() } else { String::new() }), tip: Some("Open the pull request".into()), look: LinkLook::Plain },
+        None => txt(label, St::Strong),
     };
     let repo = if title.as_deref().is_some_and(|x| !x.is_empty()) { or_empty(&p["repo"]) } else { String::new() };
     let bar = obj(p, "bar");
-    let list: Vec<PrStep> = match bar {
+    let mut list: Vec<PrStep> = match bar {
         Some(bar) => pr_steps_full(p, bar),
         None => pr_steps(p).into_iter().map(|(name, st, sub)| PrStep { name: name.to_string(), st, sub, link: None }).collect(),
     };
-    let mut body = vec![el(K::PrHead, vec![head, txt(repo, St::Small)]), step_nodes(list)];
+    let merge = list.pop().expect("the PR's steps end with Merge");
+    if let Some(wd) = shown_bar(t) {
+        list.retain(|x| x.name != wd);
+    }
+    let st = if list.iter().any(|x| x.st == StepSt::Fail) {
+        TlSt::Fail
+    } else if list.iter().any(|x| x.st == StepSt::Ask) {
+        TlSt::Warn
+    } else if list.iter().all(|x| x.st == StepSt::Done) {
+        TlSt::Done
+    } else if list.iter().all(|x| x.st == StepSt::Todo) {
+        TlSt::Todo
+    } else {
+        TlSt::Now
+    };
+
+    let mut body = vec![step_nodes(list)];
     if let Some(n) = not_ours_box(p) {
         body.push(n);
     }
@@ -1740,14 +1612,13 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         let label = or_empty(&stage["label"]);
         let text = if stopped { format!("Needs you · {label}") } else { label };
         let mut kids = vec![Node::Dot(if stopped { Dot::Warn } else { Dot::Accent }), txt(text, St::Plain)];
-        let (tip, go) = match opt_s(stage, "session") {
+        let tip = match opt_s(stage, "session") {
             Some(sid) => {
                 kids.push(Node::Link { s: "Terminal ›".into(), go: Go::Session(sid.to_string()), tip: None, look: LinkLook::Plain });
-                (if stopped { "Its terminal stopped before it was finished" } else { "Open the terminal doing this" }, true)
+                if stopped { "Its terminal stopped before it was finished" } else { "Open the terminal doing this" }
             }
-            None => ("Waiting for its terminal to open", false),
+            None => "Waiting for its terminal to open",
         };
-        let _ = go;
         body.push(Node::El { k: K::PrBar { warn: stopped && opt_s(stage, "session").is_some() }, tip: Some(tip.into()), kids });
     }
     // The owner's own look at a green PR (the You step): "Waiting on your review · Mark reviewed ›".
@@ -1764,7 +1635,41 @@ fn pr_row(c: &Ctx, t: &Value) -> Node {
         body.push(el(K::Row, vec![c.btn("I reviewed it", Act::new("pr-reviewed", "", &r, &grp), Look::SoftSmall, false, Some("Tell the board you've looked at this PR"))]));
         body.extend(c.note(&grp));
     }
-    lrow("Pull request", body)
+
+    let merge_st = match merge.st {
+        StepSt::Todo => TlSt::Todo,
+        StepSt::Done => TlSt::Done,
+        StepSt::Fail => TlSt::Fail,
+        _ => TlSt::Now,
+    };
+    let merge_sub = if matches!(merge_st, TlSt::Done | TlSt::Fail) { String::new() } else { merge.sub.unwrap_or_default() };
+    let merge_name = if merge_st == TlSt::Fail { "Closed without merging" } else { "Merged" };
+    vec![
+        tl_node(TlSt::Done, tl_head(tl_name("Pull request"), "", ""), vec![el(K::PrHead, vec![head, txt(repo, St::Small)])], false),
+        tl_node(st, tl_head(tl_name("Checks and review"), "", ""), body, false),
+        tl_node(merge_st, tl_head(tl_name(merge_name), &merge_sub, ""), merged_note_row(c, t).into_iter().collect(), false),
+    ]
+}
+
+/// What's left before it merges, on a task with no PR yet; nothing on one that doesn't end in a PR.
+fn no_pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
+    if opt_s(t, "no_pr").is_some() || t["ships_pr"] == false {
+        return Vec::new();
+    }
+    let mut body = Vec::new();
+    // The review step (WD) runs before the PR opens ("Not reviewed by WD yet" before its first round);
+    // a round it ran is its own node.
+    if let Some(wd) = obj(t, "wd").filter(|_| shown_bar(t).is_none()) {
+        body.push(step_nodes(vec![wd_step(wd)]));
+    }
+    if let Some(so) = obj(t, "stack_on") {
+        body.push(stacks_line(c, so));
+    }
+    vec![
+        tl_node(TlSt::Todo, tl_head(tl_name("Pull request"), "", ""), body, false),
+        tl_node(TlSt::Todo, tl_head(tl_name("Checks and review"), "", ""), vec![], false),
+        tl_node(TlSt::Todo, tl_head(tl_name("Merged"), "", ""), vec![], false),
+    ]
 }
 
 /// The "Failed, but not because of this PR" box: this push's checks cleared with `tb pr not-ours`,
@@ -1826,100 +1731,6 @@ pub const ATT_KINDS: [&str; 6] = ["design", "proposal", "doc", "evidence", "resu
 pub fn att_href(a: &Value) -> Option<String> {
     let url = s(a, "url");
     if is_web(url) || url.starts_with('~') || url.starts_with('/') { Some(url.to_string()) } else { None }
-}
-
-/// `attachList(list, 'tasks', r)` items (with `attSrc`, `attMenuHtml`, `attEditHtml`).
-fn attach_items(c: &Ctx, list: &[Value], owner: &str, r: &str) -> Vec<Node> {
-    let fk = format!("att:{owner}:{r}");
-    let mut out = Vec::new();
-    for a in list {
-        let aid = or_empty(&a["id"]);
-        if c.ui.att_edit.as_deref() == Some(aid.as_str()) {
-            out.push(att_edit(c, a));
-            continue;
-        }
-        let url = or_empty(&a["url"]);
-        let web = is_web(&url);
-        let href = att_href(a);
-        let kind = if att_kind_label(s(a, "kind")).is_empty() { "other" } else { s(a, "kind") };
-        let title = or_empty(&a["title"]);
-        let name = match &href {
-            Some(h) => Node::Link { s: title.clone(), go: Go::Url(h.clone()), tip: Some(if web { title.clone() } else { format!("{title}\n{url}") }), look: LinkLook::AttName },
-            None => Node::Text { s: title.clone(), st: St::Mono, tip: Some(url.clone()) },
-        };
-        let mut meta = vec![txt(att_kind_label(kind), St::Small)];
-        // `attSrc`
-        let src = opt_s(a, "task").or(opt_s(a, "goal"));
-        if let Some(x) = src.filter(|x| !(owner == "goals" && *x == r)) {
-            meta.push(txt("·", St::Small));
-            if opt_s(a, "task").is_some() {
-                meta.push(c.btn(x, Act::new("open-task", "", x, ""), Look::Src, false, Some(&format!("Open {x}"))));
-            } else {
-                meta.push(Node::Link { s: x.to_string(), go: Go::Goal(x.to_string()), tip: Some(format!("Open {x}")), look: LinkLook::SrcGoal });
-            }
-        }
-        if let Some(at) = opt_s(a, "at") {
-            meta.push(txt("·", St::Small));
-            meta.push(txt(fmt::ago(at), St::Small));
-        }
-        let mut kids = vec![name, el(K::AttMeta, meta), c.btn("", Act::new("att-menu", "", &aid, ""), Look::Icon(Icon::More), false, None)];
-        if c.ui.att_menu.as_deref() == Some(aid.as_str()) {
-            let mut menu = Vec::new();
-            if href.is_some() {
-                menu.push(c.btn("Open", Act::new("att-menu-close", "", &aid, ""), Look::Menu, false, None));
-            }
-            menu.push(c.btn(if web { "Copy link" } else { "Copy path" }, Act::new("att-copy", "", &aid, &fk), Look::Menu, false, None));
-            menu.push(c.btn("Edit", Act::new("att-edit", "", &aid, &fk), Look::Menu, false, None));
-            menu.push(c.btn("Remove", Act::new("att-remove", "", &aid, &fk), Look::Menu, false, None));
-            kids.push(el(K::AttMenu, menu));
-        }
-        out.push(el(K::Att, kids));
-    }
-    out
-}
-
-/// `attEditHtml(a)`.
-fn att_edit(c: &Ctx, a: &Value) -> Node {
-    let aid = or_empty(&a["id"]);
-    let k = format!("attedit:{aid}");
-    let kind = c.ui.drafts.get(&format!("{k}:kind")).cloned().or(opt_s(a, "kind").map(str::to_string)).unwrap_or_else(|| "other".into());
-    let seg = ATT_KINDS.iter().map(|id| c.btn(att_kind_label(id), Act::new("att-ekind", *id, &aid, ""), Look::Tab { on: kind == *id }, false, None)).collect();
-    let title = c.ui.drafts.get(&format!("{k}:title")).cloned().unwrap_or_else(|| or_empty(&a["title"]));
-    let url = c.ui.drafts.get(&format!("{k}:url")).cloned().unwrap_or_else(|| or_empty(&a["url"]));
-    let mut kids = vec![
-        el(K::Seg, seg),
-        Node::Field { key: format!("{k}:title"), value: title, placeholder: "Title", multi: false, mono: false },
-        Node::Field { key: format!("{k}:url"), value: url, placeholder: "https://… or /path/to/file", multi: false, mono: true },
-        el(
-            K::Row,
-            vec![
-                c.btn("Save", Act::new("att-esave", "", &aid, &k), Look::SoftSmall, false, None),
-                c.btn("Cancel", Act::new("att-ecancel", "", &aid, ""), Look::Ghost, false, None),
-            ],
-        ),
-    ];
-    kids.extend(c.note(&k));
-    el(K::AttEdit, kids)
-}
-
-/// `attachRow(t)`.
-fn attach_row(c: &Ctx, t: &Value) -> Node {
-    let r = rf(t, "T");
-    let list: Vec<Value> = arr(t, "attachments").iter().chain(arr(t, "goal_attachments")).cloned().collect();
-    let fk = format!("att:tasks:{r}");
-    let items = attach_items(c, &list, "tasks", &r);
-    let mut head = vec![txt("Attached", St::Strong)];
-    if !list.is_empty() {
-        head.push(txt(list.len().to_string(), St::Count));
-    }
-    let mut kids = vec![el(K::Row, head)];
-    if items.is_empty() {
-        kids.push(txt("Nothing yet. Designs, proposals, docs and results go here.", St::Small));
-    } else {
-        kids.push(el(K::Atts, items));
-    }
-    kids.extend(c.note(&fk));
-    el(K::Lsec, kids)
 }
 
 // ------------------------------------------------------------------ context

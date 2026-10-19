@@ -324,11 +324,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 The board answered 500. Sign in with a passkey webapp Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 The board answered 500. Sign in with a passkey webapp Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -463,25 +463,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -621,25 +616,20 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Write an answer first. Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Write an answer first. Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -773,25 +763,20 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -921,25 +906,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -1069,25 +1049,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -1235,27 +1210,22 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Yes Ask for the password first No Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Yes Ask for the password first No Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "answer-opt:Yes",
           "answer-opt:No",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -1399,24 +1369,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log T7 Sign in with a passkey is asking Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small Open terminal Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Needs you Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Pick a fruit (1 of 2 questions) Pick a fruit Apple Red Pear Pick sizes S Small Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -1529,24 +1494,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log T7 Sign in with a passkey needs you Waiting at its prompt. Open terminal Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey needs you Waiting at its prompt. Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -1655,14 +1615,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log The terminal needs you It’s waiting for you in Midna. Resume in a new terminal Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started 12:55 PM Needs you The terminal needs you It’s waiting for you in Midna. Resume in a new terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "resume:fresh",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "resume:fresh"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -1803,25 +1763,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Needs you Your answer to T7 didn’t arrive. Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Needs you Your answer to T7 didn’t arrive. Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -1951,25 +1906,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Detach Close its terminal Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal T7 Sign in with a passkey Needs you Task 1:00 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Started In T7 Sign in with a passkey 12:55 PM Needs you T7 Sign in with a passkey is asking Should removing the last passkey require a password re-check? Open terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "Open G1 · next up: T8",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -2094,23 +2044,22 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 old 12:55 PM Needs you Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "resume:fresh",
           "resume:reopen",
           "resume:finish",
           "tab:context",
-          "detach"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Open this terminal"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -2231,24 +2180,23 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 old 12:55 PM Needs you Terminal lost The terminal closed before the task was done. Resume in a new terminal Reopen the old conversation Mark done See what the new terminal gets Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "resume:fresh",
           "resume:reopen!",
           "resume:finish",
           "tab:context",
-          "detach"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
           "No conversation was saved for this task",
-          "Take it off its terminal and put it back in the queue",
-          "Open this terminal"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -2380,23 +2328,22 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done Sent to Midna See what the new terminal gets Detach Details Goal Not in a goal. Terminal T7 old Gone Task 1:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 old 12:55 PM Needs you Terminal lost The terminal closed at 2:10. Saved at 2:30 PM · 12 turns · 1 checkpoint Resume in a new terminal Reopen the old conversation Mark done Sent to Midna See what the new terminal gets Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "resume:fresh",
           "resume:reopen",
           "resume:finish",
           "tab:context",
-          "detach"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Open this terminal"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -2505,15 +2452,15 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Couldn’t start in Midna Midna didn’t start a terminal for this task. New Midna terminal Queue in Midna Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started 12:55 PM Needs you Couldn’t start in Midna Midna didn’t start a terminal for this task. New Midna terminal Queue in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "start:new",
-          "start:queue"
+          "start:queue",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -2625,15 +2572,15 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Couldn’t start in Midna Midna answered: no such project. New Midna terminal Queue in Midna Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started 12:55 PM Needs you Couldn’t start in Midna Midna answered: no such project. New Midna terminal Queue in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "start:new",
-          "start:queue"
+          "start:queue",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -2745,15 +2692,15 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Start Start when the repo’s free Not starting yet: Waits for work hours (tomorrow 6am). Start runs it now anyway. Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Queued Start Start when the repo’s free Not starting yet: Waits for work hours (tomorrow 6am). Start runs it now anyway. Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "start:new",
-          "start:queue"
+          "start:queue",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -2875,15 +2822,15 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Sending… Start when the repo’s free Sent to Midna Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Queued Sending… Start when the repo’s free Sent to Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "start:new!",
-          "start:queue"
+          "start:queue",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -2995,11 +2942,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Starting Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -3140,15 +3087,15 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log Details Blocked by T4 Working Add the registration endpoint T5 Blocked Migrations Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Blocked Blocked by T4 Working Add the registration endpoint T5 Blocked Migrations Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "open-task",
-          "open-task"
+          "open-task",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -3270,14 +3217,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log Queue it now Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Planned Queue it now Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "queue-planned",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "queue-planned"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -3391,15 +3338,15 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Start Start when the repo’s free Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Planned Start Start when the repo’s free Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "start:new",
-          "start:queue"
+          "start:queue",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -3520,14 +3467,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log Queue it now Details Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Planned Queue it now Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "queue-planned",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "queue-planned"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -3650,14 +3597,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log Queue it now Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Planned Queue it now Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "queue-planned",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "queue-planned"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -3779,11 +3726,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 G › T7 Sign in with a passkey webapp 4 of 4 Overview Context Log Details Goal G Task 4 of 4 Last task in this goal Nothing in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 G › T7 Sign in with a passkey webapp 4 of 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -3904,11 +3851,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 G › T7 Sign in with a passkey webapp Overview Context Log Details Goal G Last task in this goal Nothing in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 G › T7 Sign in with a passkey webapp Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -4048,24 +3995,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -4204,25 +4146,19 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals T7 first try Closed Task 11:40 AM PR fixer Closed PR Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -4361,21 +4297,19 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -4514,24 +4448,19 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do Add the login ceremony. POST /auth/passkeys/login button on sign-in.tsx continued code line See https://example.com/spec .",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -4673,24 +4602,19 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -4829,24 +4753,19 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -4959,24 +4878,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:55 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:55 PM Working 2h 5m · updated 4m ago Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -5089,18 +5003,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Detach Details Goal Not in a goal. Terminal T7 x Closed Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 x 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "term-menu",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "detach"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -5213,24 +5127,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Working Attached 2:50 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 2:50 PM Working 10m · updated 4m ago Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -5358,27 +5267,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals Current Working Task 2:55 PM Older Idle Looked at it 2:10 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:55 PM Working 2h 5m · updated 4m ago Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -5520,24 +5421,19 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Detached. It’s back in the queue. Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Detached. It’s back in the queue. Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
@@ -5650,17 +5546,16 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Progress Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira PROJ-12 In Progress Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Progress Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open PROJ-12 in Jira",
           "Open PROJ-12 in Jira"
         ],
         "values": []
@@ -5774,11 +5669,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira PROJ-12 Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -5896,11 +5791,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira Ticket asked for Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -6014,11 +5909,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Jira No ticket. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -6132,14 +6027,14 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminal T7 Sign in with a passkey Closed Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "requeue",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "requeue"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -6259,21 +6154,18 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Summary from T7 Sign in with a passkey Login ceremony is in. Queue again Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Idle Attached 12:30 PM Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Close its terminal Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
           "close-term",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
-          "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna"
+          "Project · /tmp/webapp"
         ],
         "values": []
       }
@@ -6386,14 +6278,14 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Summary from T7 Sign in with a passkey Couldn’t reproduce. Try again Details Goal Not in a goal. Terminal T7 Sign in with a passkey Closed Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:30 PM Failed 2:30 PM Couldn’t reproduce. Try again Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "requeue",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "requeue"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -6509,14 +6401,14 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Summary from The terminal No summary was given. Queue again Details Goal Not in a goal. Terminal No terminal. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started 12:30 PM Done 2:30 PM No summary was given. Queue again Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "requeue",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "requeue"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -6635,14 +6527,14 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Summary from T7 Sign in with a passkey Queue again Back in the queue Details Goal Not in a goal. Terminal T7 Sign in with a passkey Closed Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Back in the queue Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "requeue",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "requeue"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -6782,21 +6674,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Running Review Not asked Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Running Review Not asked Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -6934,21 +6822,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks None Review Approved Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks None Review Approved Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -7086,21 +6970,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review Changes asked Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Passed Review Changes asked Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -7238,21 +7118,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Waiting Review Not asked Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Waiting Review Not asked Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -7395,21 +7271,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Running Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Running Review Waiting Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -7552,21 +7424,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Fix starting Review Waiting Merge Fixing checks Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Fix starting Review Waiting Fixing checks Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request",
           "Waiting for its terminal to open"
         ],
@@ -7710,21 +7578,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Being fixed Review Waiting Merge Fixing checks Terminal › Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Being fixed Review Waiting Fixing checks Terminal › Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request",
           "Open the terminal doing this"
         ],
@@ -7871,23 +7735,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log PR visitor stopped on the PR Tests still fail on CI only. Send answer Focus in Midna Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Needs you Stopped before it was finished 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Fix stopped Review Waiting Merge Needs you · Fixing checks Terminal › Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Needs you PR visitor stopped on the PR Tests still fail on CI only. Send answer Focus in Midna Pull request #42 Passkey sign-in webapp Checks and review Checks Fix stopped Review Waiting Needs you · Fixing checks Terminal › Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
+          "requeue",
           "answer",
           "focus",
-          "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
+          "Its terminal stopped on PR #42 before it was finished",
           "Open the pull request",
           "Its terminal stopped before it was finished"
         ],
@@ -8036,23 +7897,20 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log PR visitor asks you about the PR Should I rename the helper as the reviewer asks? Send answer Focus in Midna Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Needs you Asked you a question 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review New comments Merge Needs you · Answering comments Terminal › Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Needs you PR visitor asks you about the PR Should I rename the helper as the reviewer asks? Send answer Focus in Midna Pull request #42 Passkey sign-in webapp Checks and review Checks Passed Review New comments Needs you · Answering comments Terminal › Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
+          "requeue",
           "answer",
           "focus",
-          "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
+          "Its terminal asked you about PR #42",
           "Open the pull request",
           "Its terminal stopped before it was finished"
         ],
@@ -8198,21 +8056,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Passed Review Waiting Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -8355,21 +8209,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review Approved Merge Merging Merging Terminal › Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Passed Review Approved Merging Terminal › Merged Merging What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request",
           "Open the terminal doing this"
         ],
@@ -8513,21 +8363,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review Awaiting re-review Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Passed Review Awaiting re-review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -8670,21 +8516,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Passed Review Approved Merge Merged Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Passed Review Approved Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -8822,21 +8664,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Failed Review Not asked Merge Declined Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Failed Review Not asked Closed without merging What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -8974,21 +8812,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 Passkey sign-in webapp Checks Running Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 Passkey sign-in webapp Checks and review Checks Running Review Waiting Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
-          "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal"
+          "Project · /tmp/webapp"
         ],
         "values": []
       }
@@ -9125,21 +8959,17 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Overview Context Log Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminals PR visitor Idle PR 2:40 PM T7 Sign in with a passkey Closed Task 1:20 PM Jira PROJ-12 In Review Pull request #42 webapp Checks Running Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp PROJ-12 In Review Started In T7 Sign in with a passkey · 1 closed earlier 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request #42 webapp Checks and review Checks Running Review Waiting Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "requeue",
-          "term-focus"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open this terminal",
-          "Focus in Midna",
-          "Open this terminal",
           "Open the pull request"
         ],
         "values": []
@@ -9262,24 +9092,19 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminal T7 Sign in with a passkey Working Attached 12:55 PM Pull request #42 Passkey sign-in webapp Checks Failed Review Waiting Merge Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:55 PM Working 2h 5m · updated 4m ago Focus in Midna Pull request #42 Passkey sign-in webapp Checks and review Checks Failed Review Waiting Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna",
+          "Terminal actions",
           "Open the pull request"
         ],
         "values": []
@@ -9410,19 +9235,20 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Its terminal stopped on the PR Stuck. Send answer Focus in Midna Summary from T7 Sign in with a passkey Queue again Details Goal Not in a goal. Terminal T7 Sign in with a passkey Closed Pull request #42 Passkey sign-in webapp Checks Running Review Waiting Merge Needs you · Fixing checks Terminal › Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Needs you Its terminal stopped on the PR Stuck. Send answer Focus in Midna Pull request #42 Passkey sign-in webapp Checks and review Checks Running Review Waiting Needs you · Fixing checks Terminal › Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
+          "requeue",
           "answer",
           "focus",
-          "requeue"
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
+          "Its terminal stopped on PR #42 before it was finished",
           "Open the pull request",
           "Its terminal stopped before it was finished"
         ],
@@ -9582,31 +9408,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "open-task",
-          "att-menu",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 · next up: T8",
-          "Login mock",
-          "Open T7",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 · next up: T8"
         ],
         "values": []
       }
@@ -9765,31 +9578,18 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 2 · 2 of 4 Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 2 · 2 of 4 Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "open-task",
-          "att-menu",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 at wave 2 · next up: T8",
-          "Login mock",
-          "Open T7",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 at wave 2 · next up: T8"
         ],
         "values": []
       }
@@ -9907,11 +9707,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Overview Context Log Details Goal Sign-in with passkeys Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -10035,11 +9835,11 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 3 · 4 of 4 Overview Context Log Details Goal Sign-in with passkeys Task 4 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp Wave 3 · 4 of 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -10203,35 +10003,18 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago Open Copy link Edit Remove bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "att-menu-close",
-          "att-copy",
-          "att-edit",
-          "att-remove",
-          "open-task",
-          "att-menu",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 · next up: T8",
-          "Login mock",
-          "Open T7",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 · next up: T8"
         ],
         "values": []
       }
@@ -10389,35 +10172,18 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Open Copy path Edit Remove Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "open-task",
-          "att-menu",
-          "att-menu-close",
-          "att-copy",
-          "att-edit",
-          "att-remove",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 · next up: T8",
-          "Login mock",
-          "Open T7",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 · next up: T8"
         ],
         "values": []
       }
@@ -10575,34 +10341,18 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Copy path Edit Remove Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "open-task",
-          "att-menu",
-          "att-menu",
-          "att-copy",
-          "att-edit",
-          "att-remove",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 · next up: T8",
-          "Login mock",
-          "Open T7",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 · next up: T8"
         ],
         "values": []
       }
@@ -10760,40 +10510,20 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Design Proposal Doc Evidence Results Link Save Cancel bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "att-ekind:design",
-          "att-ekind:proposal",
-          "att-ekind:doc",
-          "att-ekind:evidence",
-          "att-ekind:results",
-          "att-ekind:other",
-          "att-esave",
-          "att-ecancel",
-          "open-task",
-          "att-menu",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 · next up: T8",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 · next up: T8"
         ],
-        "values": [
-          "Login mock",
-          "https://figma.com/file/abc"
-        ]
+        "values": []
       }
     },
     {
@@ -10953,40 +10683,20 @@
         }
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Overview Context Log Details Goal Sign-in with passkeys Task 2 of 4 Next in this goal: Docs: passkey support 1 open in the goal’s backlog Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago Design Proposal Doc Evidence Results Link Save Cancel Spec Link Plan Proposal · G1 · 10h ago What to do",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "att-ekind:design",
-          "att-ekind:proposal",
-          "att-ekind:doc",
-          "att-ekind:evidence",
-          "att-ekind:results",
-          "att-ekind:other",
-          "att-esave",
-          "att-ecancel",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
-          "Open G1 · next up: T8",
-          "Login mock",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Open G1 · next up: T8"
         ],
-        "values": [
-          "Bench",
-          "~/out/bench.txt"
-        ]
+        "values": []
       }
     },
     {
@@ -11138,30 +10848,17 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Attached 4 Overview Context Log Details Goal Not in a goal. Terminal No terminal yet. Pull request No PR yet. Attached 4 Login mock Design · T7 · 40m ago bench.txt Results · T7 · 10m ago Spec Link Plan Proposal · G1 · 10h ago Removed What to do",
+        "text": "T7 Sign in with a passkey webapp Attached 4 Started 12:55 PM Working 2h 5m · updated 4m ago Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "att-drop",
-          "tab:overview",
+          "tab:what",
           "tab:context",
-          "tab:log",
-          "open-task",
-          "att-menu",
-          "open-task",
-          "att-menu",
-          "att-menu",
-          "att-menu"
+          "tab:log"
         ],
         "titles": [
-          "Project · /tmp/webapp",
-          "Login mock",
-          "Open T7",
-          "bench.txt\n~/out/bench.txt",
-          "Open T7",
-          "notes/spec.md",
-          "Plan",
-          "Open G1"
+          "Project · /tmp/webapp"
         ],
         "values": []
       }
@@ -11322,15 +11019,16 @@
         "ui": {}
       },
       "expect": {
-        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Overview Context Log Saved at 2:40 PM · 3 turns · 2 checkpoints Branch feature/passkeys Worktree /tmp/webapp-wt Last commit a1b2c3 Add login Not committed 2 files Conversation Can be reopened in a new terminal Done so far ✓ Endpoint ✓ Tests Next → Button Decisions • Keep passwords Your answers • Yes, re-check Found, not fixed here ! No test for expired challenge (in the goal’s backlog) Files touched login.ts README.md Details What a new terminal gets You are working on T7.",
+        "text": "G1 Sign-in with passkeys › T7 Sign in with a passkey webapp 2 of 4 Saved at 2:40 PM · 3 turns · 2 checkpoints Branch feature/passkeys Worktree /tmp/webapp-wt Last commit a1b2c3 Add login Not committed 2 files Conversation Can be reopened in a new terminal Done so far ✓ Endpoint ✓ Tests Next → Button Decisions • Keep passwords Your answers • Yes, re-check Found, not fixed here ! No test for expired challenge (in the goal’s backlog) Files touched login.ts README.md Details What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "meta-del:0",
-          "meta-del:1"
+          "meta-del:1",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -11460,11 +11158,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Not committed Nothing Found, not fixed here ! Gap (in the backlog) Files touched None yet. What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Not committed Nothing Found, not fixed here ! Gap (in the backlog) Files touched None yet. What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -11577,11 +11276,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not started Worktree webapp Files touched None yet. What a new terminal gets Loading…",
+        "text": "T7 Sign in with a passkey webapp Branch Not started Worktree webapp Files touched None yet. What a new terminal gets Loading… Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -11698,11 +11398,12 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets Fetched handoff text.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets Fetched handoff text. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -11818,11 +11519,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets Object handoff.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets Object handoff. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -11939,11 +11641,12 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets Couldn’t load the handoff: The board answered 500.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets Couldn’t load the handoff: The board answered 500. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -12061,11 +11764,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Not committed unknown Files touched None yet. What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Not committed unknown Files touched None yet. What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -12183,11 +11887,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp From Added on the board · You Files touched None yet. What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp From Added on the board · You Files touched None yet. What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -12306,11 +12011,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp From Backlog B3: Flaky test · T2 Sign in Files touched None yet. What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp From Backlog B3: Flaky test · T2 Sign in Files touched None yet. What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -12427,11 +12133,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp From Code changed in T7 x while Sam worked there Files touched None yet. What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp From Code changed in T7 x while Sam worked there Files touched None yet. What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -12548,11 +12255,12 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Files touched None yet. What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
           "tab:overview",
+          "tab:what",
           "tab:context",
           "tab:log"
         ],
@@ -12682,17 +12390,18 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. Details What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Files touched None yet. Details What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "meta-del:0",
           "meta-del:1",
           "meta-del:2",
-          "meta-del:3"
+          "meta-del:3",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -12837,15 +12546,16 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Branch Not reported yet Worktree /tmp/webapp Files touched None yet. Details Saved What a new terminal gets You are working on T7.",
+        "text": "T7 Sign in with a passkey webapp Branch Not reported yet Worktree /tmp/webapp Files touched None yet. Details Saved What a new terminal gets You are working on T7. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "meta-del:0",
-          "meta-del:1"
+          "meta-del:1",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -13037,20 +12747,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira 2:59 PM T7 Sign in Turn Ran the tests. 2:57 PM Task board Status Working Yesterday 1:00 PM Alex Answer Yes. 1:50 PM T7 Sign in Question Which? 1:40 PM T7 Sign in Commit a1b2 Add 1:30 PM Task board Checkpoint Saved 1:25 PM Task board Found B3 1:24 PM Jira Jira PROJ-12 In Progress 1:23 PM Midna Midna Opened 1:22 PM Task board Handoff Handed off 1:21 PM You Note A note 1:20 PM x Custom_kind Odd The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira 2:59 PM T7 Sign in Turn Ran the tests. 2:57 PM Task board Status Working Yesterday 1:00 PM Alex Answer Yes. 1:50 PM T7 Sign in Question Which? 1:40 PM T7 Sign in Commit a1b2 Add 1:30 PM Task board Checkpoint Saved 1:25 PM Task board Found B3 1:24 PM Jira Jira PROJ-12 In Progress 1:23 PM Midna Midna Opened 1:22 PM Task board Handoff Handed off 1:21 PM You Note A note 1:20 PM x Custom_kind Odd The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -13249,20 +12960,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira 2:57 PM Task board Status Working 1:23 PM Midna Midna Opened 1:22 PM Task board Handoff Handed off The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira 2:57 PM Task board Status Working 1:23 PM Midna Midna Opened 1:22 PM Task board Handoff Handed off The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -13452,20 +13164,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira 2:59 PM T7 Sign in Turn Ran the tests. 1:40 PM T7 Sign in Commit a1b2 Add The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira 2:59 PM T7 Sign in Turn Ran the tests. 1:40 PM T7 Sign in Commit a1b2 Add The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -13654,20 +13367,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira 1:30 PM Task board Checkpoint Saved The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira 1:30 PM Task board Checkpoint Saved The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -13855,20 +13569,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira Yesterday 1:00 PM Alex Answer Yes. 1:50 PM T7 Sign in Question Which? The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira Yesterday 1:00 PM Alex Answer Yes. 1:50 PM T7 Sign in Question Which? The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -14057,20 +13772,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira 1:25 PM Task board Found B3 The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira 1:25 PM Task board Found B3 The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -14258,20 +13974,21 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira 1:24 PM Jira Jira PROJ-12 In Progress The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira 1:24 PM Jira Jira PROJ-12 In Progress The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 12",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp",
@@ -14384,20 +14101,21 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira Nothing logged yet. The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira Nothing logged yet. The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -14518,20 +14236,695 @@
         }
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log All Status Turns Checkpoints Questions Found Jira Nothing of this kind yet. The log is saved as it happens, so it survives a closed terminal or a restart.",
+        "text": "T7 Sign in with a passkey webapp All Status Turns Checkpoints Questions Found Jira Nothing of this kind yet. The log is saved as it happens, so it survives a closed terminal or a restart. Timeline What to do Context Full log 1",
         "acts": [
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "log-filter:all",
           "log-filter:status",
           "log-filter:turn",
           "log-filter:checkpoint",
           "log-filter:question",
           "log-filter:found",
-          "log-filter:jira"
+          "log-filter:jira",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [
+          "Project · /tmp/webapp"
+        ],
+        "values": []
+      }
+    },
+    {
+      "name": "working: terminal menu open",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": "Wiring the assertion check.",
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "working"
+          },
+          "terminals": [
+            {
+              "id": "s1",
+              "name": "T7 Sign in with a passkey",
+              "status": "working",
+              "why": "Worked on the task",
+              "at": "2026-10-07T14:00:00.000Z"
+            },
+            {
+              "id": "s0",
+              "name": "T7 first try",
+              "status": "gone",
+              "why": "Worked on the task",
+              "at": "2026-10-07T11:40:00.000Z"
+            },
+            {
+              "id": null,
+              "name": "PR fixer",
+              "status": "gone",
+              "why": "Worked on the PR",
+              "at": null
+            }
+          ],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "ref": null,
+        "err": null,
+        "tab": "overview",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {
+          "term_menu": true
+        }
+      },
+      "expect": {
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Detach Take it off this terminal and queue it again Close terminal Stops the command that is running Pull request Checks and review Merged What to do Context Full log",
+        "acts": [
+          "close-panel",
+          "open-project:webapp",
+          "focus",
+          "term-menu",
+          "detach",
+          "close-term:force",
+          "tab:what",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [
+          "Project · /tmp/webapp",
+          "Terminal actions"
+        ],
+        "values": []
+      }
+    },
+    {
+      "name": "idle: terminal menu open",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "idle"
+          },
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "ref": null,
+        "err": null,
+        "tab": "overview",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {
+          "term_menu": true
+        }
+      },
+      "expect": {
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:55 PM Working 2h 5m · updated 4m ago Focus in Midna Detach Take it off this terminal and queue it again Close terminal Stops the command that is running Pull request Checks and review Merged What to do Context Full log",
+        "acts": [
+          "close-panel",
+          "open-project:webapp",
+          "focus",
+          "term-menu",
+          "detach",
+          "close-term",
+          "tab:what",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [
+          "Project · /tmp/webapp",
+          "Terminal actions"
+        ],
+        "values": []
+      }
+    },
+    {
+      "name": "done, terminal gone: terminal menu open",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "done",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": "Login ceremony is in.",
+          "when": "2026-10-07T14:30:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:30:00.000Z",
+          "finished_at": "2026-10-07T14:30:00.000Z",
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "gone"
+          },
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "ref": null,
+        "err": null,
+        "tab": "overview",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {
+          "term_menu": true
+        }
+      },
+      "expect": {
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey 12:30 PM Done 2:30 PM Login ceremony is in. Queue again Pull request Checks and review Merged What to do Context Full log",
+        "acts": [
+          "close-panel",
+          "open-project:webapp",
+          "requeue",
+          "tab:what",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [
+          "Project · /tmp/webapp"
+        ],
+        "values": []
+      }
+    },
+    {
+      "name": "what tab",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": "Wiring the assertion check.",
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "working"
+          },
+          "terminals": [
+            {
+              "id": "s1",
+              "name": "T7 Sign in with a passkey",
+              "status": "working",
+              "why": "Worked on the task",
+              "at": "2026-10-07T14:00:00.000Z"
+            },
+            {
+              "id": "s0",
+              "name": "T7 first try",
+              "status": "gone",
+              "why": "Worked on the task",
+              "at": "2026-10-07T11:40:00.000Z"
+            },
+            {
+              "id": null,
+              "name": "PR fixer",
+              "status": "gone",
+              "why": "Worked on the PR",
+              "at": null
+            }
+          ],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": []
+        },
+        "ref": null,
+        "err": null,
+        "tab": "what",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "T7 Sign in with a passkey webapp Nothing written yet. Timeline What to do Context Full log",
+        "acts": [
+          "close-panel",
+          "open-project:webapp",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
+        ],
+        "titles": [
+          "Project · /tmp/webapp"
+        ],
+        "values": []
+      }
+    },
+    {
+      "name": "what tab: no prompt",
+      "input": {
+        "fn": "panel",
+        "task": {
+          "id": 7,
+          "ref": "T7",
+          "title": "Sign in with a passkey",
+          "project": "webapp",
+          "status": "working",
+          "priority": "normal",
+          "failed": false,
+          "lost": false,
+          "needs_reason": null,
+          "question": null,
+          "latest": null,
+          "summary": null,
+          "when": "2026-10-07T14:56:00.000Z",
+          "updated_at": "2026-10-07T14:56:00.000Z",
+          "started_at": "2026-10-07T12:55:00.000Z",
+          "finished_at": null,
+          "who": "T7 Sign in with a passkey",
+          "session_id": "s1",
+          "goal": null,
+          "jira": null,
+          "pr": null,
+          "position": null,
+          "starting": false,
+          "waiting": null,
+          "blocked": false,
+          "detail": "",
+          "repo_path": "/tmp/webapp",
+          "created_at": "2026-10-07T10:00:00.000Z",
+          "session": {
+            "id": "s1",
+            "name": "T7 Sign in with a passkey",
+            "status": "working"
+          },
+          "terminals": [],
+          "claude_session_id": null,
+          "blocked_by": [],
+          "meta": [],
+          "context": {},
+          "log": [],
+          "handoff": "You are working on T7.",
+          "found": [],
+          "attachments": [],
+          "goal_attachments": [],
+          "prompt": ""
+        },
+        "ref": null,
+        "err": null,
+        "tab": "what",
+        "from": null,
+        "page": "board",
+        "page_id": null,
+        "state": {
+          "now": "2026-10-07T15:00:00.000Z",
+          "midna": {
+            "up": true,
+            "seen_at": "2026-10-07T15:00:00.000Z"
+          },
+          "jira": {
+            "enabled": false
+          },
+          "alerts": [],
+          "work_hours": {
+            "on": false,
+            "start": "09:00",
+            "end": "17:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": true,
+            "line": "No work hours",
+            "next_open": null,
+            "today_until": null
+          },
+          "usage": null,
+          "projects": [
+            {
+              "name": "webapp",
+              "path": "/tmp/webapp"
+            }
+          ],
+          "sessions": [],
+          "session_projects": [],
+          "goals": [],
+          "columns": {
+            "backlog": [],
+            "backlog_open": 0,
+            "queued": [],
+            "working": [],
+            "needs": [],
+            "done": []
+          },
+          "counts": {
+            "needs": 0,
+            "open_issues": 0,
+            "done_hidden": 0
+          }
+        },
+        "ui": {}
+      },
+      "expect": {
+        "text": "T7 Sign in with a passkey webapp Nothing written yet. Timeline What to do Context Full log",
+        "acts": [
+          "close-panel",
+          "open-project:webapp",
+          "tab:overview",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Project · /tmp/webapp"
@@ -14669,26 +15062,21 @@
         "ui": {}
       },
       "expect": {
-        "text": "T7 Sign in with a passkey webapp Overview Context Log Focus in Midna Detach Close its terminal Details Goal Not in a goal. Terminals T7 Sign in with a passkey Working Task 2:00 PM 2 earlier terminals Pull request No PR yet. Attached Nothing yet. Designs, proposals, docs and results go here. What to do",
+        "text": "T7 Sign in with a passkey webapp Started In T7 Sign in with a passkey · 2 closed earlier 12:55 PM Working 2h 5m · updated 4m ago Wiring the assertion check. Focus in Midna Pull request Checks and review Merged What to do Context Full log",
         "acts": [
           "task-back",
           "close-panel",
           "open-project:webapp",
-          "tab:overview",
-          "tab:context",
-          "tab:log",
           "focus",
-          "detach",
-          "close-term:force",
-          "term-focus"
+          "term-menu",
+          "tab:what",
+          "tab:context",
+          "tab:log"
         ],
         "titles": [
           "Back to T5",
           "Project · /tmp/webapp",
-          "Take it off its terminal and put it back in the queue",
-          "Close the terminal; a busy one is stopped",
-          "Open this terminal",
-          "Focus in Midna"
+          "Terminal actions"
         ],
         "values": []
       }
