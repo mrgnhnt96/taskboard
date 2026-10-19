@@ -420,6 +420,32 @@ fn page_links_keep_the_panel_beside_them(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn header_chips_drop_the_attachments_and_open_the_project(cx: &mut gpui_kit::TestAppContext) {
+    use crate::app::Page;
+    let (w, rec) = parity::window(cx);
+    rec.board().post("tasks/T2/attachments", json!({"kind": "design", "title": "Mock", "url": "https://figma.com/x"})).unwrap();
+    open(cx, &w, "T2");
+    // "Attached N" opens its list and a second tap closes it.
+    press(cx, &w, "att-drop", None);
+    assert!(ui(|u| u.att_drop));
+    press(cx, &w, "att-drop", None);
+    assert!(!ui(|u| u.att_drop));
+    // Picking a row closes the list.
+    press(cx, &w, "att-drop", None);
+    w.update(cx, |m, _, cx| super::go(m, &view::Go::Url(String::new()), cx)).unwrap();
+    assert!(!ui(|u| u.att_drop));
+    // The project chip: the Tasks page filtered to that project.
+    let project = control(cx, &w, "open-project", None).arg;
+    assert!(!project.is_empty());
+    press(cx, &w, "open-project", Some(&project));
+    w.update(cx, |m, _, _| {
+        assert_eq!(m.page, Page::Tasks);
+        assert_eq!(m.tasks.project.as_deref(), Some(project.as_str()));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;
     let (w, _rec) = parity::window(cx);
