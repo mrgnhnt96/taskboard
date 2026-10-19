@@ -502,7 +502,8 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
         }
         _ => return false,
     };
-    let mut at = cwd.map(Path::to_path_buf);
+    // Resolved like `real_dir` (lowercase, symlinks followed), so the two compare.
+    let mut at = cwd.and_then(|c| resolve(&c.to_string_lossy(), None));
     for cmd in &script.commands {
         let (walks, lists) = match tool {
             "Bash" => (walks(cmd), command_word(cmd).is_some_and(|(n, _)| n == "ls") && !walks(cmd)),
@@ -773,6 +774,8 @@ mod tests {
             format!("ls -R {d}"),
             "cd ~/.config && tar czf /tmp/b.tgz taskboard".into(),
             "cd ~ && rg -l secret".into(),
+            "rg -l secret".into(),
+            "grep -r x".into(),
             "cd ~/.config && grep -r x *".into(),
             format!("python3 -c \"import os; print(os.listdir('{d}'))\""),
             format!("node -e \"require('fs').readdirSync('{d}/')\""),
