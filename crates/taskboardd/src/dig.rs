@@ -75,9 +75,9 @@ fn settled_state(app: &App, id: i64) -> Result<&'static str> {
 
 /// Closes the digs the board lost: an idea left digging with no dig running (the board stopped).
 pub fn settle_lost(app: &App) -> Result<()> {
-    let running = app.shared.lock().digging.clone();
+    // Read the set after the ideas: a dig joins it before its idea turns digging.
     for i in app.db.q("SELECT id FROM ideas WHERE state = 'digging'", p![])? {
-        if running.contains(&i.id()) {
+        if app.shared.lock().digging.contains(&i.id()) {
             continue;
         }
         app.db.tx(|| {
@@ -95,11 +95,7 @@ pub fn settle_lost(app: &App) -> Result<()> {
 pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
     let i = ideas::get(app, r)?;
     let me = rf("idea", i.id());
-    match i.st("state").as_str() {
-        "planned" => return err(409, format!("{me} became a goal already; work on the goal instead.")),
-        "shelved" | "dropped" => return err(409, format!("{me} is {}; reopen it first (tb idea reopen {me}).", i.st("state"))),
-        _ => {}
-    }
+    diggable(&i)?;
     let focus = body_str(body, "focus").trim().to_string();
     if focus.chars().count() > FOCUS_MAX {
         return err(400, format!("A dig's focus is {FOCUS_MAX} characters at most."));
@@ -118,6 +114,8 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
         return err(409, format!("{me} is being dug into already; wait for that report."));
     }
     let round = app.db.tx(|| {
+        // Shelved, dropped or planned while the prompt was put together: leave it.
+        diggable(&ideas::get(app, r)?)?;
         let now = now_iso();
         let round = app.db.insert(
             "idea_rounds",
@@ -144,6 +142,16 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
         a.shared.lock().digging.remove(&id);
     }));
     ideas::show(app, &ideas::get(app, r)?)
+}
+
+/// 409 unless the idea is open (new, digging or reported).
+fn diggable(i: &Row) -> Result<()> {
+    let me = rf("idea", i.id());
+    match i.st("state").as_str() {
+        "planned" => err(409, format!("{me} became a goal already; work on the goal instead.")),
+        "shelved" | "dropped" => err(409, format!("{me} is {}; reopen it first (tb idea reopen {me}).", i.st("state"))),
+        _ => Ok(()),
+    }
 }
 
 fn finish(app: &App, id: i64, round: i64, answer: std::result::Result<Value, String>) -> Result<()> {

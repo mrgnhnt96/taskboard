@@ -158,6 +158,14 @@ fn a_dig_the_board_lost_is_closed_as_failed() {
     assert_eq!(v["state"], "new");
     assert!(v["rounds"][0]["error"].as_str().unwrap().contains("board stopped"), "{}", v["rounds"][0]);
     assert!(v["rounds"][0]["finished_at"].is_string());
+
+    b.answer(report());
+    b.post(&format!("/ideas/{i}/dig"), json!({}));
+    b.app.db.insert("idea_rounds", fields!["idea_id" => id, "focus" => "", "web" => 0, "started_at" => "2026-10-19T12:00:00Z"]).unwrap();
+    b.app.db.x("UPDATE ideas SET state = 'digging' WHERE id = ?", p![id]).unwrap();
+    let v = b.get(&format!("/ideas/{i}"));
+    assert_eq!(v["state"], "reported", "a round with a report brings it back reported");
+    assert_eq!(v["rounds"][1]["report"]["verdict"], "partly", "the earlier report is kept");
 }
 
 #[test]
