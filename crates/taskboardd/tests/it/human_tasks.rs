@@ -121,6 +121,11 @@ fn only_the_app_marks_it_done() {
     assert_eq!(status, 409);
     let (status, _) = b.report("tb.done", "s1", json!({"task": h, "summary": "Did it."})).unwrap_err();
     assert_eq!(status, 409);
+    let (status, _) = b.report("tb.fail", "s1", json!({"task": h, "reason": "Couldn't."})).unwrap_err();
+    assert_eq!(status, 409);
+    let (status, _) = b.post(&format!("tasks/{h}/fail"), json!({})).unwrap_err();
+    assert_eq!(status, 409);
+    assert_eq!(b.row(id_of(&h)).st("status"), "needs", "nothing an agent sends finishes it");
 
     let card = b.from_app(&format!("tasks/{h}/did"), json!({"note": "Tenancy acme-dev, region us-ashburn-1"})).unwrap();
     assert_eq!(card["status"], "done");
@@ -180,6 +185,27 @@ fn in_a_goal_it_holds_later_tasks_but_takes_no_terminal_slot() {
     assert_eq!(runner::start_queued(&b.app).unwrap(), vec![id_of(&next)], "a done human task frees the goal");
     let prompt = board::job_args(&b.starts(id_of(&next))[0]).st("prompt");
     assert!(prompt.contains("Tenancy acme-dev"), "the handoff names what the owner did: {prompt}");
+}
+
+#[test]
+fn waiting_on_the_owner_it_leaves_the_goals_terminal_free() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Move to Oracle", "project": "webapp", "run_in_order": false, "max_terminals": 1})).unwrap();
+    let gref = g["ref"].as_str().unwrap().to_string();
+    b.session("s1");
+    let h = b.human("s1", json!({"goal": gref}));
+    let other = b.report("tb.new_task", "s1", json!({"title": "Write the deploy script", "detail": "Ship it.", "goal": gref})).unwrap()["created"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    b.from_app(&format!("goals/{gref}/run"), json!({})).unwrap();
+
+    let started = runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.row(id_of(&h)).st("needs_reason"), "human");
+    if !started.contains(&id_of(&other)) {
+        assert_eq!(runner::start_queued(&b.app).unwrap(), vec![id_of(&other)], "the human task holds no slot");
+    }
+    assert_eq!(b.starts(id_of(&other)).len(), 1);
 }
 
 #[test]
