@@ -1,6 +1,6 @@
 //! Sample data for trying the page: `taskboardd seed --data /tmp/tb-dev`.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
@@ -59,8 +59,91 @@ pub fn seed(app: &App) -> Result<()> {
         seed_pool(app, gid, t2, t3)?;
         seed_today(app, &[(t1, "done"), (t2, "working"), (t3, "needs")])?;
         seed_history(app)?;
+        seed_ideas(app, gid, t2)?;
         Ok(())
     })
+}
+
+/// Ideas in every state: two reported (one with notes and two rounds), one digging, one new, one
+/// planned into the passkeys goal and one shelved in the api project.
+fn seed_ideas(app: &App, gid: i64, task: i64) -> Result<()> {
+    let ago = |mins: f64| iso(now_ts() - mins * 60.0);
+    let idea = |project: &str, title: &str, detail: &str, state: &str, goal: Option<i64>, mins: f64| {
+        app.db.insert(
+            "ideas",
+            fields!["project" => project, "title" => title, "detail" => detail, "state" => state, "goal_id" => goal,
+                    "source" => "you", "created_at" => ago(mins + 60.0 * 24.0), "updated_at" => ago(mins)],
+        )
+    };
+    let round = |id: i64, focus: &str, report: Option<Value>, sha: &str, web: bool, mins: f64, error: Option<&str>| {
+        let finished = (report.is_some() || error.is_some()).then(|| ago(mins));
+        app.db.insert(
+            "idea_rounds",
+            fields!["idea_id" => id, "focus" => focus, "report" => report.map(|r| jdumps(&r)), "sha" => sha, "web" => i64::from(web),
+                    "started_at" => ago(mins + 6.0), "finished_at" => finished, "error" => error, "source" => "you"],
+        )
+    };
+    let note = |id: i64, text: &str, source: &str, mins: f64| app.db.insert("idea_notes", fields!["idea_id" => id, "text" => text, "source" => source, "at" => ago(mins)]);
+
+    let offline = idea("webapp", "Offline mode", "Queue writes while the network is down and **sync on reconnect**.\n\nThe mobile web users lose edits on trains.", "reported", None, 40.0)?;
+    note(offline, "Support asked about this twice this month.", "you", 60.0 * 30.0)?;
+    note(offline, "Conflicts should keep both edits, not pick one.", "you", 60.0 * 3.0)?;
+    round(offline, "", None, "", false, 60.0 * 24.0 * 9.0, Some("claude timed out after 10 minutes"))?;
+    round(
+        offline,
+        "",
+        Some(json!({"verdict": "partly", "why": "Writes already go through one fetch wrapper, but nothing stores them while offline.",
+                    "builds_on": [{"what": "The fetch wrapper every write goes through", "files": ["src/lib/api.ts:12"]}],
+                    "ways_to_extend": ["Show a pending-changes count in the header"],
+                    "risks": [{"kind": "privacy", "risk": "Queued writes sit in IndexedDB on shared computers"}],
+                    "pitfalls": ["Writes replayed out of order"], "open_questions": ["How long may a write wait?"], "related": []})),
+        "4e1f0a9c2b7d",
+        false,
+        60.0 * 24.0 * 6.0,
+        None,
+    )?;
+    round(
+        offline,
+        "conflicts",
+        Some(json!({"verdict": "fits", "why": "A service worker can queue writes in the fetch wrapper, and the passkeys work already keeps a session across reloads, so a replay can sign itself in.",
+                    "builds_on": [{"what": "The fetch wrapper every write goes through", "files": ["src/lib/api.ts:12", "src/lib/api.ts:48"]},
+                                  {"what": "The session cookie set in middleware", "files": ["middleware/auth.ts:30"]}],
+                    "ways_to_extend": ["Show a pending-changes count in the header", "Let drafts save offline too"],
+                    "risks": [{"kind": "security", "risk": "A replayed write could run after the user signed out"},
+                              {"kind": "performance", "risk": "A long queue replays all at once on reconnect"}],
+                    "pitfalls": ["Two tabs replaying the same queue", "Clock skew when ordering edits"],
+                    "open_questions": ["Should a conflict ask the user or keep both?"],
+                    "related": [format!("G{gid}"), format!("T{task}"), "B1"]})),
+        "9b0413c7e2aa",
+        true,
+        40.0,
+        None,
+    )?;
+
+    let theme = idea("webapp", "Dark theme", "Follow the system appearance.", "reported", None, 60.0 * 26.0)?;
+    round(
+        theme,
+        "",
+        Some(json!({"verdict": "doesnt_fit", "why": "Colours are hard-coded in 140 components; there are no theme tokens to switch.",
+                    "builds_on": [], "ways_to_extend": [], "risks": [{"kind": "maintenance", "risk": "Two palettes to keep in step"}],
+                    "pitfalls": ["Images with white backgrounds"], "open_questions": [], "related": []})),
+        "1a2b3c4d5e6f",
+        false,
+        60.0 * 26.0,
+        None,
+    )?;
+
+    let search = idea("webapp", "Search across projects", "One box that finds pages, people and files.", "digging", None, 4.0)?;
+    round(search, "", None, "", false, -2.0, None)?;
+    app.shared.lock().digging.insert(search);
+
+    idea("webapp", "Keyboard shortcuts sheet", "Press ? to see every shortcut.", "new", None, 60.0 * 5.0)?;
+    let passkeys = idea("webapp", "Passkey sign-in", "Sign in without a password.", "planned", Some(gid), 60.0 * 24.0 * 12.0)?;
+    round(passkeys, "", Some(json!({"verdict": "fits", "why": "Auth already runs through one middleware.", "builds_on": [], "ways_to_extend": [],
+                                     "risks": [], "pitfalls": [], "open_questions": [], "related": []})), "77aa01b3c4d5", false, 60.0 * 24.0 * 13.0, None)?;
+    let limits = idea("api", "Rate limits per key", "Stop one client starving the rest.", "shelved", None, 60.0 * 24.0 * 3.0)?;
+    note(limits, "Shelved: Not until we have paying API customers.", "you", 60.0 * 24.0 * 3.0)?;
+    Ok(())
 }
 
 /// A goal planned in waves: a review stop it was let past, a wave running, one waiting, a task with
