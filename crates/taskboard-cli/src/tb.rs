@@ -731,7 +731,7 @@ enum BitCmd {
 #[derive(Subcommand)]
 enum ReleaseCmd {
     /// Cut a release holding every done task in Unreleased (its PR merged, or done with no PR). A project
-    /// with a release script runs it first, with the name, and records the release only if it succeeds
+    /// with a release script runs it first (from main only), with the name, and records the release only if it succeeds
     Cut {
         name: String,
         /// The project (this terminal's when left out)
@@ -3278,6 +3278,15 @@ fn cut_release(
     call(body).map(ReleaseCut::Cut)
 }
 
+/// Releases come from main only: a cut from a feature branch would tag work that hasn't merged.
+fn need_main(branch: &str) -> Result<(), String> {
+    if branch == "main" {
+        return Ok(());
+    }
+    let on = if branch.is_empty() { "a detached HEAD".to_string() } else { branch.to_string() };
+    Err(format!("release cut only runs on main, and this checkout is on {on}. Switch to main and run it again."))
+}
+
 /// Runs a project's release script in its checkout (the folder's git top level) with the release name
 /// as its one argument and in TB_RELEASE (so the script can tell tb started it), its output going
 /// straight to this terminal.
@@ -3291,6 +3300,13 @@ fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|t| !t.is_empty())
         .unwrap_or(dir);
+    let branch = std::process::Command::new("git")
+        .args(["-C", &top, "branch", "--show-current"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    need_main(&branch)?;
     out(&format!("Running the release script in {top}: {script} {name}"));
     let status = std::process::Command::new("sh")
         .arg("-c")
@@ -7336,6 +7352,13 @@ mod tests {
         assert!(ran.is_empty(), "--no-script skips it");
         assert_eq!(posted.len(), 1);
         assert_eq!(posted[0].get("check"), None);
+    }
+
+    #[test]
+    fn release_cut_runs_only_on_main() {
+        assert!(need_main("main").is_ok());
+        assert!(need_main("feat/t1-x").unwrap_err().contains("on feat/t1-x"));
+        assert!(need_main("").unwrap_err().contains("detached HEAD"));
     }
 
     #[test]
