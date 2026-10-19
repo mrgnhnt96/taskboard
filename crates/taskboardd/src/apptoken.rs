@@ -367,6 +367,40 @@ fn walks(cmd: &[String]) -> bool {
     }
 }
 
+/// Whether a walking command searches its working folder because it's given no folder: `rg x`,
+/// `grep -r x`, `find -name x`, `du`. Flags' values count as names, so this can miss one.
+fn walks_cwd(cmd: &[String]) -> bool {
+    let Some((name, args)) = command_word(cmd) else { return false };
+    let names = args.iter().filter(|a| !a.starts_with('-')).count();
+    match name {
+        "rg" | "ag" | "ack" | "fd" | "grep" | "egrep" | "fgrep" => names <= 1,
+        "find" => args.first().is_none_or(|a| a.starts_with('-')),
+        "du" | "tree" => names == 0,
+        _ => false,
+    }
+}
+
+/// Commands that run a script handed to them as an argument (`python3 -c '…'`, `node -e '…'`).
+fn interprets(cmd: &[String]) -> bool {
+    command_word(cmd).is_some_and(|(n, _)| {
+        n.starts_with("python") || matches!(n, "node" | "perl" | "ruby" | "php" | "osascript" | "deno" | "bun" | "swift" | "lua")
+    })
+}
+
+/// Whether script text spells the folder `dir` as a whole, or a glob or variable in it, rather than
+/// one named file in it (`…/config.toml`).
+fn spells_folder(text: &str, dir: &Path) -> bool {
+    let text = as_shell_reads(text, dir).to_lowercase();
+    spellings(dir).iter().map(|d| d.to_lowercase()).any(|d| {
+        text.match_indices(&d).any(|(at, _)| {
+            let rest = &text[at + d.len()..];
+            let Some(r) = rest.strip_prefix('/') else { return true };
+            let name = r.find(|c: char| !(c.is_ascii_alphanumeric() || "_.-".contains(c))).unwrap_or(r.len());
+            name == 0 || r[name..].starts_with(['*', '?', '[', '{', '$'])
+        })
+    })
+}
+
 /// Whether a glob's segments past a folder (`pattern`) reach the token, whose path below that folder
 /// is `target` (`[…, "taskboard", "<file>"]`): they match the file, the folder it's in (unless the
 /// command only lists names), or, for a command that walks, any folder above it. `**` matches any
@@ -389,7 +423,8 @@ fn words_reach(words: &[String], walks: bool, lists: bool, dir: &Path, real_dir:
         // `--path=/x` and `X=/x` hand over the part after `=`.
         let after = word.split_once('=').map(|(_, v)| v).filter(|_| word.starts_with('-') || ASSIGN_RE.is_match(word));
         for w in std::iter::once(word.as_str()).chain(after).map(|w| shell_word(w, dir)) {
-            if !(w.starts_with('/') || w.starts_with('.') || w.contains('/')) {
+            // A walking command's bare names are folders too (`cd ~/.config && tar c taskboard`).
+            if !(walks || w.starts_with('/') || w.starts_with('.') || w.contains('/')) {
                 continue;
             }
             let segs: Vec<&str> = w.split('/').collect();
@@ -476,6 +511,14 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
         if words_reach(cmd, walks, lists, dir, &real_dir, at.as_deref()) {
             return true;
         }
+        if tool == "Bash" {
+            if walks_cwd(cmd) && at.as_deref().is_some_and(|c| real_dir.starts_with(c)) {
+                return true;
+            }
+            if interprets(cmd) && cmd.iter().skip(1).any(|a| spells_folder(a, dir)) {
+                return true;
+            }
+        }
         // A `cd` moves where the next commands' relative paths start (`cd x && grep -r . ../..`).
         // One the hook can't follow (`cd $X`, `cd -`) leaves it where it was.
         if let Some(("cd", args)) = command_word(cmd) {
@@ -498,18 +541,7 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
     }
     // A heredoc feeding a script (`python3 - <<EOF`) that spells the folder as a whole, not one file
     // in it.
-    for body in script.bodies.iter().map(|b| as_shell_reads(b, dir).to_lowercase()) {
-        for d in spellings(dir).iter().map(|d| d.to_lowercase()) {
-            for (at, _) in body.match_indices(&d) {
-                let rest = &body[at + d.len()..];
-                let one_file = rest.strip_prefix('/').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'));
-                if !one_file {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    script.bodies.iter().any(|b| spells_folder(b, dir))
 }
 
 /// What the hook tells an agent whose tool call reaches the app token.
@@ -726,6 +758,8 @@ mod tests {
             format!("sqlite3 -readonly {d}/tasks.db \"select token_count from usage\""),
             format!("grep -n '^\\[questions\\]' {d}/config.toml"),
             format!("ls -la {d}/"),
+            format!("python3 -c \"print(open('{d}/config.toml').read())\""),
+            "cd ~/Development/x && grep -rn foo src".into(),
             "git commit -m 'find / and grep -r ~ in prose'".into(),
         ] {
             assert!(!bash(&no), "{no}");
@@ -737,6 +771,12 @@ mod tests {
             "cat ~/.config/*/*".into(),
             format!("cd {d} && cat x"),
             format!("ls -R {d}"),
+            "cd ~/.config && tar czf /tmp/b.tgz taskboard".into(),
+            "cd ~ && rg -l secret".into(),
+            "cd ~/.config && grep -r x *".into(),
+            format!("python3 -c \"import os; print(os.listdir('{d}'))\""),
+            format!("node -e \"require('fs').readdirSync('{d}/')\""),
+            format!("python3 -c \"import glob; print(glob.glob('{d}/x*'))\""),
             format!("python3 - <<'EOF'\nimport os; print(os.listdir('{d}'))\nEOF"),
         ] {
             assert!(bash(&yes), "{yes}");
