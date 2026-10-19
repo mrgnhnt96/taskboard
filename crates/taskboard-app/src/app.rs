@@ -342,7 +342,7 @@ impl MainWindow {
         self.goals_loaded
     }
 
-    /// Go to a page; an open task panel stays beside it.
+    /// Go to a page; an open task panel stays over it.
     pub fn go(&mut self, page: Page, cx: &mut Context<Self>) {
         let to = Nav { page, task: self.here().task };
         if self.here() != to {
@@ -1184,6 +1184,7 @@ impl Render for MainWindow {
             // The sidebar holds the pages, search, the goals in flight and the board's health.
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_1()
                     .min_h_0()
@@ -1199,8 +1200,10 @@ impl Render for MainWindow {
                             .children(banner(self, &t, cx))
                             .child(div().flex().flex_1().min_h_0().child(page)),
                     )
-                    // The task panel sits beside the page, not over it.
-                    .children(task_panel),
+                    // The task panel floats over the page's right edge; no scrim, so the page stays usable.
+                    .children(task_panel.map(|p| {
+                        div().absolute().top_0().right_0().bottom_0().w(px(ui::task_panel::WIDTH)).max_w(relative(0.6)).child(p)
+                    })),
             )
             .children(panel)
             .children(modal)
