@@ -338,6 +338,11 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             }
             save_meta(m, &id, "Removed", cx);
         }
+        "open-project" => crate::ui::tasks::open_for(m, &a.arg, cx),
+        "att-drop" => {
+            ui(|u| u.att_drop = !u.att_drop);
+            cx.notify();
+        }
         "att-menu" => {
             ui(|u| u.att_menu = if u.att_menu.as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) });
             cx.notify();
@@ -427,6 +432,7 @@ fn attachment(m: &MainWindow, id: &str) -> Option<Value> {
 fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
     match g {
         Go::Url(u) => {
+            ui(|u| u.att_drop = false);
             if !u.is_empty() {
                 open_target(u, cx);
             }
@@ -610,44 +616,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         .border_color(t.border)
         .shadow_lg()
         .occlude()
-        .child(breadcrumb(m, &t, cx).px(px(24.)).pt(px(16.)))
         .child(div().flex().flex_col().flex_1().min_h_0().child(body))
         .into_any_element()
-}
-
-/// Tasks › G3 Sign-in with passkeys › Wave 2 › T15: where the task sits. Tasks and the goal open
-/// their pages.
-fn breadcrumb(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
-    // Before the task answers, its row's goal and wave stand in.
-    let task = m.data.task.clone().or_else(|| m.data.task_card.clone()).unwrap_or(Value::Null);
-    let r = m.task_panel.r.clone();
-    let link = |id: &'static str, text: String, color: Hsla| {
-        let hover = t.text;
-        div().id(id).cursor_pointer().text_color(color).hover(move |s| s.text_color(hover)).child(text)
-    };
-    let sep = || div().text_color(t.faint).child("›");
-    let mut row = div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(6.))
-        .min_w_0()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_size(px(12.5))
-        .text_color(t.muted)
-        .child(link("crumb-tasks", "Tasks".into(), t.muted).on_click(cx.listener(|m, _, _, cx| m.go(Page::Tasks, cx))));
-    if let Some(g) = task.get("goal").filter(|g| g.is_object()) {
-        let gr = s(g, "ref").to_string();
-        let open = gr.clone();
-        row = row
-            .child(sep())
-            .child(link("crumb-goal", format!("{gr} {}", s(g, "name")), t.goal).min_w_0().overflow_hidden().text_ellipsis().font_weight(FontWeight::SEMIBOLD).on_click(cx.listener(move |m, _, _, cx| crate::ui::goal::open(m, &open, false, cx))));
-        if let Some(w) = task["wave"].as_i64() {
-            row = row.child(sep()).child(format!("Wave {w}"));
-        }
-    }
-    row.child(sep()).child(div().font_family(t.mono_font.clone()).child(r))
 }
 
 fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
@@ -705,36 +675,32 @@ impl Draw<'_> {
         self.within.last().copied()
     }
 
-    /// The whole sheet scrolls as one (`.panel { overflow-y: auto; gap: 18px; padding: 24px 24px 32px }`),
-    /// the title and its subline stacked 4px apart.
+    /// The whole sheet scrolls as one (`.panel { overflow-y: auto; gap: 18px; padding: 16px 24px 32px }`),
+    /// the header (breadcrumb, title, chips) packed closer above it.
     fn panel(&mut self, m: &MainWindow, tree: &Node, cx: &mut Context<MainWindow>) -> AnyElement {
         let Node::El { kids, .. } = tree else { return div().into_any_element() };
-        let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(24.)).pb(px(32.)).line_height(relative(1.5));
-        let mut title: Option<Div> = None;
+        let mut col = div().flex().flex_col().gap(px(18.)).px(px(24.)).pt(px(16.)).pb(px(32.)).line_height(relative(1.5));
+        let mut head = Some(div().flex().flex_col().min_w_0());
         self.within.push(K::Col);
         for (i, k) in kids.iter().enumerate() {
             self.path.push(i);
             let e = self.node(m, k, None, cx);
             self.path.pop();
-            match k {
-                Node::Text { st: St::Title, .. } => title = Some(div().flex().flex_col().gap(px(4.)).min_w_0().child(e)),
-                Node::El { k: K::Sub, .. } if title.is_some() => {
-                    if let Some(x) = title.take() {
-                        col = col.child(x.child(e));
-                    }
-                }
-                _ => {
-                    if let Some(x) = title.take() {
-                        col = col.child(x);
-                    }
-                    col = col.child(e);
+            let gap = match k {
+                Node::El { k: K::Top, .. } => Some(0.),
+                Node::Note { err: true, .. } | Node::Text { st: St::Title, .. } => Some(10.),
+                Node::El { k: K::Head, .. } => Some(12.),
+                _ => None,
+            };
+            match (gap, head.take()) {
+                (Some(g), Some(h)) => head = Some(h.child(div().mt(px(g)).min_w_0().child(e))),
+                (_, h) => {
+                    col = col.children(h).child(e);
                 }
             }
         }
         self.within.pop();
-        if let Some(x) = title.take() {
-            col = col.child(x);
-        }
+        col = col.children(head);
         let r = m.task_panel.r.clone();
         div().id(SharedString::from(format!("task-body-{r}"))).size_full().overflow_y_scroll().text_size(px(14.)).child(col).into_any_element()
     }
@@ -798,7 +764,7 @@ impl Draw<'_> {
     #[inline(never)]
     fn leaf_pill(&self, s: &str, tone: Tone, tip: &Option<String>) -> AnyElement {
         // `.pill.sm` for the repo, a Jira status and a terminal's state.
-        let small = matches!(tone, Tone::Repo | Tone::Jira) || self.parent() == Some(K::TlSub);
+        let small = tone == Tone::Jira ||self.parent() == Some(K::TlSub);
         let p = pill(self.t, s, tone, small);
         match tip {
             Some(tip) => div().id(self.id("pill")).flex_none().child(p).tooltip(kit::tip(tip.clone())).into_any_element(),
@@ -814,6 +780,8 @@ impl Draw<'_> {
         let b = match look {
             Look::Tab { on } if tab => tab_btn(self.t, self.id("btn"), label, on),
             Look::Tab { on } if chip => fchip(self.t, self.id("btn"), label, on),
+            // Attached ▾ / ▴
+            Look::Chip { on } if a.act == "att-drop" => self::chip(self.t, div().id(self.id("btn")), on).child(label.to_string()).child(chevron(true, self.t.muted)),
             // `.box .btn { padding: 0 12px }`
             _ if boxed.is_some() && !matches!(look, Look::Icon(_) | Look::Menu | Look::Src | Look::Ref) => button(self.t, self.id("btn"), label, look).px(px(12.)),
             _ => button(self.t, self.id("btn"), label, look),
@@ -907,7 +875,6 @@ impl Draw<'_> {
             // Inherits the container's size and colour.
             St::Plain => d.min_w_0(),
             St::Title => d.text_size(px(20.)).font_weight(FontWeight::BOLD).line_height(px(26.)),
-            St::Sub => d.text_size(px(13.)).text_color(t.muted),
             St::Small if boxed.is_some() && self.parent() != Some(K::Lrow) => d.text_size(px(13.)).text_color(t.text_2),
             St::Small | St::Help => d.text_size(px(12.5)).text_color(t.muted),
             St::Muted => d.text_color(t.muted).when(self.parent() == Some(K::Body), |d| d.text_size(px(13.))),
@@ -939,6 +906,10 @@ impl Draw<'_> {
             St::StepSub => d.text_size(px(11.5)).text_center(),
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             St::Count => d.flex_none().px(px(7.)).rounded_full().bg(t.col).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
+            St::JiraChip => {
+                let (key, rest) = s.split_once(' ').map(|(k, r)| (k.to_string(), Some(r.to_string()))).unwrap_or((s.to_string(), None));
+                div().flex_none().child(chip(t, div().id(self.id("jira")), false).cursor_default().child(div().font_family(t.mono_font.clone()).text_color(t.jira).child(key)).children(rest))
+            }
             St::Jkey => d.font_family(t.mono_font.clone()).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_fg),
             St::Glyph(dot) => div().child(s.to_string()).flex_none().w(px(14.)).flex().justify_center().text_color(dot_color(t, dot).unwrap_or(t.muted)),
         }
@@ -950,6 +921,8 @@ impl Draw<'_> {
             K::Fold(f, open) => self.c_fold(m, n, f, open, boxed, cx),
             K::Box(tone) => self.c_box(m, n, tone, cx),
             K::Top => self.c_top(m, n, boxed, cx),
+            K::Head => self.c_head(m, n, boxed, cx),
+            K::DropItem(kind) => self.c_drop_item(m, n, kind, boxed, cx),
             K::Tabs => self.c_tabs(m, n, boxed, cx),
             K::Linked => self.c_linked(m, n, boxed, cx),
             K::Lrow => self.c_lrow(m, n, boxed, cx),
@@ -980,8 +953,10 @@ impl Draw<'_> {
             || matches!(n, Node::El { kids, .. } if kids.iter().any(|x| matches!(x, Node::El { k: K::Row, kids, .. } if kids.iter().any(|b| matches!(b, Node::Btn { look: Look::Small | Look::DangerSmall, .. })))
                 || matches!(kids.first(), Some(Node::Text { s, st: St::H3, .. }) if s == "Files touched" || s == "Details")));
         let d = match k {
-            // `.subline`
-            K::Sub => div().flex().flex_wrap().items_center().gap_x(px(12.)).gap_y(px(6.)).text_size(px(13.)).text_color(t.muted),
+            // `.crumb`: goal › ref, cut short before the close button.
+            K::Crumb => div().flex().items_center().gap(px(6.)).flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(13.)),
+            // `.att-drop`
+            K::Drop => div().flex().flex_col().w(px(280.)).p(px(6.)).rounded(px(10.)).border_1().border_color(t.border_2).bg(t.panel_2).shadow_lg(),
             // `.fchips`
             K::Chips => div().flex().flex_wrap().gap(px(6.)),
             K::Seg => div().self_start().flex().flex_wrap().gap(px(2.)).p(px(3.)).rounded(px(9.)).bg(t.seg),
@@ -1170,6 +1145,67 @@ impl Draw<'_> {
         row.into_any_element()
     }
 
+    /// `.chips`: the header's chips, Attached's dropdown hanging below the row.
+    #[inline(never)]
+    fn c_head(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let drop = matches!(n, Node::El { kids, .. } if matches!(kids.last(), Some(Node::El { k: K::Drop, .. })));
+        let mut kids = self.kids(m, n, boxed, cx);
+        let menu = if drop { kids.pop() } else { None };
+        div()
+            .relative()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.))
+            .children(kids)
+            .children(menu.map(|x| div().absolute().right_0().top(px(34.)).child(deferred(x).with_priority(2))))
+            .into_any_element()
+    }
+
+    /// `.att-drop .item`: the kind's tile, the title over kind · ref · age; the whole row opens it.
+    #[inline(never)]
+    fn c_drop_item(&mut self, m: &MainWindow, n: &Node, kind: &'static str, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let Node::El { kids, .. } = n else { return div().into_any_element() };
+        let (title, href) = match kids.first() {
+            Some(Node::Link { s, go: Go::Url(h), .. }) => (s.clone(), Some(h.clone())),
+            Some(Node::Text { s, .. }) => (s.clone(), None),
+            _ => (String::new(), None),
+        };
+        let meta = match kids.get(1) {
+            Some(Node::Text { s, .. }) => s.clone(),
+            _ => String::new(),
+        };
+        let (fg, bg) = att_tint(t, kind);
+        let tint = t.tint;
+        let row = div()
+            .id(self.id("drop"))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .p(px(6.))
+            .rounded(px(7.))
+            .hover(move |d| d.bg(tint))
+            .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(kind, fg)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_size(px(13.)).text_color(t.text).truncate().child(title))
+                    .child(div().text_size(px(11.)).text_color(t.muted).truncate().child(meta)),
+            );
+        let _ = (m, boxed);
+        match href {
+            Some(h) => {
+                let g = Go::Url(h);
+                row.cursor_pointer().on_click(cx.listener(move |m, _, _, cx| go(m, &g, cx))).into_any_element()
+            }
+            None => row.into_any_element(),
+        }
+    }
+
     /// `.tabs`: underlined tabs on a rule that runs the sheet's full width.
     #[inline(never)]
     fn c_tabs(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
@@ -1334,14 +1370,7 @@ impl Draw<'_> {
             },
             _ => "other",
         };
-        let (fg, bg) = match kind {
-            "design" => (t.warn, t.warn_soft),
-            "proposal" => (t.goal, t.goal_soft),
-            "doc" => (t.accent_fg, t.accent_soft),
-            "evidence" => (t.up, t.up_soft),
-            "results" => (t.results, t.results_soft),
-            _ => (t.text_2, t.col),
-        };
+        let (fg, bg) = att_tint(t, kind);
         let mut it = self.kids(m, n, boxed, cx).into_iter();
         let (name, meta, more, menu) = (it.next(), it.next(), it.next(), it.next());
         let tint = t.tint;
@@ -1512,16 +1541,15 @@ fn pill(t: &Theme, s: &str, tone: Tone, small: bool) -> Div {
         Tone::Queued | Tone::Neutral => (t.text_2, t.col, None),
         Tone::Review => (t.warn_fg, t.col, Some(t.warn)),
         Tone::Needs | Tone::Blocked => (t.warn_fg, t.warn_soft, None),
-        Tone::High => (t.warn, t.warn_soft, None),
         Tone::Done => (t.up_fg, t.up_soft, None),
         Tone::Failed => (t.down, t.down_soft, None),
         Tone::Planned => (t.muted, t.card, Some(t.border)),
         Tone::Working | Tone::Jira => (t.accent_fg, t.accent_soft, None),
-        Tone::Idle | Tone::Repo => (t.text_2, t.panel_2, None),
-        Tone::Ref | Tone::Gone => (t.muted, t.panel_2, None),
+        Tone::Idle => (t.text_2, t.panel_2, None),
+        Tone::Gone => (t.muted, t.panel_2, None),
         Tone::Closed => (t.faint, transparent_black(), Some(t.border)),
     };
-    let p = div()
+    div()
         .flex()
         .flex_none()
         .items_center()
@@ -1535,8 +1563,7 @@ fn pill(t: &Theme, s: &str, tone: Tone, small: bool) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .whitespace_nowrap()
         .when_some(line, |d, c| d.border_1().border_color(c))
-        .child(s.to_string());
-    if matches!(tone, Tone::Ref | Tone::Repo) { p.font_family(t.mono_font.clone()).font_weight(FontWeight::MEDIUM) } else { p }
+        .child(s.to_string())
 }
 
 /// `.btn`: 36px, 13px, 14px sides, 8px corners, the light border; hover darkens the border.
@@ -1647,7 +1674,37 @@ fn link(t: &Theme, id: SharedString, s: &str, look: LinkLook) -> Stateful<Div> {
             .bg(t.goal_soft)
             .hover(|d| d.underline())
             .child(text),
+        // `.crumb a`: the goal in its colour.
+        LinkLook::Crumb => {
+            let h = t.text;
+            a.flex_shrink(1.).min_w_0().truncate().text_color(t.goal).hover(move |d| d.text_color(h)).child(text)
+        }
+        LinkLook::Chip => chip(t, a, false).child(text),
+        // The key in mono blue, then the status.
+        LinkLook::JiraChip => {
+            let (key, rest) = text.split_once(' ').map(|(k, r)| (k.to_string(), Some(r.to_string()))).unwrap_or((text, None));
+            chip(t, a, false).child(div().font_family(t.mono_font.clone()).text_color(t.jira).child(key)).children(rest)
+        }
     }
+}
+
+/// `.chip`: 12px on the raised fill, 5px 10px, 7px corners; `.on` while its dropdown is open.
+fn chip(t: &Theme, d: Stateful<Div>, on: bool) -> Stateful<Div> {
+    let h = t.border_2;
+    d.flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .px(px(10.))
+        .py(px(5.))
+        .rounded(px(7.))
+        .border_1()
+        .border_color(transparent_black())
+        .bg(if on { t.accent_soft } else { t.panel_2 })
+        .text_size(px(12.))
+        .text_color(t.text_2)
+        .cursor_pointer()
+        .hover(move |d| d.border_color(h))
 }
 
 /// `.icon-btn` (36px), `.sm` (32px) and `.xs` (24px).
@@ -1674,6 +1731,7 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
     let label = label.to_string();
     match look {
         Look::Plain => base(t, id, label),
+        Look::Chip { on } => chip(t, div().id(id), on).child(label),
         Look::Primary | Look::PrimaryWide => {
             let b = raw(t, id, label).bg(t.accent_btn).border_color(transparent_black()).text_color(t.on_accent).font_weight(FontWeight::SEMIBOLD).hover(|d| d.opacity(0.94));
             // `.lg.wide`: 42px, 14px, sharing the row.
@@ -1726,7 +1784,7 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
                 .child(label)
         }
         Look::Icon(icon) => match icon {
-            Icon::Close => icon_btn(t, id, 36., 8., paint(Ic::X, 16., 2.2, t.muted)),
+            Icon::Close => icon_btn(t, id, 30., 7., paint(Ic::X, 14., 2.2, t.muted)),
             Icon::Back => icon_btn(t, id, 36., 8., paint(Ic::Back, 16., 2.2, t.muted)),
             Icon::Remove => icon_btn(t, id, 32., 7., paint(Ic::X, 16., 2.2, t.muted)),
             Icon::External => icon_btn(t, id, 24., 6., paint(Ic::Ext, 12., 2.4, t.muted)),
@@ -1858,6 +1916,18 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
     )
     .size(px(size))
     .flex_none()
+}
+
+/// An attachment kind's icon colour and tile.
+fn att_tint(t: &Theme, kind: &str) -> (Hsla, Hsla) {
+    match kind {
+        "design" => (t.warn, t.warn_soft),
+        "proposal" => (t.goal, t.goal_soft),
+        "doc" => (t.accent_fg, t.accent_soft),
+        "evidence" => (t.up, t.up_soft),
+        "results" => (t.results, t.results_soft),
+        _ => (t.text_2, t.col),
+    }
 }
 
 fn att_icon(kind: &'static str, color: Hsla) -> impl IntoElement {

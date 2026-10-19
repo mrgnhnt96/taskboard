@@ -350,9 +350,10 @@ pub fn task_detail(app: &App, id: i64) -> Result<Value> {
         Some(g) => {
             let rows = board::goal_tasks(app, g.id())?;
             let idx = rows.iter().position(|x| x.id() == t.id());
-            let next = idx.and_then(|i| rows.get(i + 1)).map(|x| x.v("title")).unwrap_or(Value::Null);
+            let after = idx.and_then(|i| rows.get(i + 1));
+            let next = after.map(|x| x.v("title")).unwrap_or(Value::Null);
             json!({"id": g.id(), "ref": rf("goal", g.id()), "name": g.v("name"), "position": idx.map(|i| i + 1),
-                   "total": rows.len(), "next_title": next,
+                   "total": rows.len(), "next_title": next, "next_ref": after.map(|x| rf("task", x.id())),
                    "open_issues": app.db.count("SELECT COUNT(*) FROM issues WHERE goal_id = ? AND state = 'open'", p![g.id()])?,
                    "run_in_order": g.b("run_in_order"), "epic_key": g.v("epic_key")})
         }

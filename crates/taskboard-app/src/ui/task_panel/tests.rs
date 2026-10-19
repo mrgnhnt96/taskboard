@@ -35,6 +35,7 @@ fn ui_from(v: &Value) -> Ui {
         log_filter: v["log_filter"].as_str().unwrap_or("").to_string(),
         att_menu: v["att_menu"].as_str().map(str::to_string),
         att_edit: v["att_edit"].as_str().map(str::to_string),
+        att_drop: v["att_drop"].as_bool().unwrap_or(false),
     }
 }
 

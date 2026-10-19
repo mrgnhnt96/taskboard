@@ -902,24 +902,68 @@ const backBtn = () => {
 const closeBtn = act => `<button type="button" class="icon-btn" data-act="${act}" aria-label="Close">${ICON.x}</button>`;
 const lrow = (k, v) => `<div class="lrow"><span class="k">${esc(k)}</span><div class="v">${v}</div></div>`;
 
+const hasGoal = t => t && t.goal && (t.goal.id != null || t.goal.ref);
+// Back, the breadcrumb (goal › ref) and close.
+function panelTop(t) {
+  const g = hasGoal(t) ? `<a class="crumb-goal" href="#/goals/${esc(ref(t.goal, 'G'))}">${esc(ref(t.goal, 'G'))} ${esc(t.goal.name || '')}</a><span class="muted">›</span>` : '';
+  return `<div class="panel-top">${backBtn()}<nav class="crumb">${g}<span class="mono">${esc(t ? ref(t, 'T') : S.taskRef)}</span></nav><div class="grow"></div>${closeBtn('close-panel')}</div>`;
+}
+// "Wave 5 · 18 of 20", opening the goal.
+function goalChip(t) {
+  if (!hasGoal(t)) return '';
+  const g = t.goal, gr = ref(g, 'G'), total = g.total || 0;
+  const words = [t.wave != null ? `Wave ${t.wave}` : '', g.position != null && total > 0 && g.position <= total ? `${g.position} of ${total}` : ''].filter(Boolean);
+  if (!words.length) return '';
+  const tip = `Open ${gr}${t.wave != null ? ` at wave ${t.wave}` : ''}${g.next_ref ? ` · next up: ${g.next_ref}` : ''}`;
+  return `<a class="chip" href="#/goals/${esc(gr)}" title="${esc(tip)}">${esc(words.join(' · '))}</a>`;
+}
+// One attachment in the Attached dropdown.
+function dropItem(a) {
+  const kind = ATT_KIND[a.kind] ? a.kind : 'other';
+  const href = attHref(a);
+  const name = href ? `<a class="att-name" href="${esc(href)}" target="_blank" rel="noopener">${esc(a.title || '')}</a>` : `<strong>${esc(a.title || '')}</strong>`;
+  const meta = [ATT_KIND[kind], a.task || a.goal, a.at ? ago(a.at) : ''].filter(Boolean).join(' · ');
+  return `<li class="drop-item"><span class="att-k ${kind}" aria-hidden="true">${ATT_ICON[kind]}</span><span class="att-t">${name}<span class="small">${esc(meta)}</span></span></li>`;
+}
+// Project, Jira, the goal position and Attached, each only when the task has it.
+function headChips(t) {
+  const out = [];
+  if (t.project) {
+    const p = t.repo_path || ((S.state && S.state.projects) || []).find(x => x.name === t.project)?.path;
+    out.push(`<button type="button" class="chip" data-act="open-project" data-arg="${esc(t.project)}"${p ? ` title="Project · ${esc(p)}"` : ''}>${esc(t.project)}</button>`);
+  }
+  const j = t.jira;
+  if (j && j.key) {
+    const label = `<span class="mono">${esc(j.key)}</span>${j.status ? ` ${esc(j.status)}` : ''}`;
+    out.push(j.url ? `<a class="chip jira" href="${esc(safeUrl(j.url))}" target="_blank" rel="noopener" title="Open ${esc(j.key)} in Jira">${label}</a>` : `<span class="chip jira">${label}</span>`);
+  }
+  out.push(goalChip(t));
+  const list = [...(t.attachments || []), ...(t.goal_attachments || [])];
+  if (list.length) {
+    out.push(`<button type="button" class="chip${S.attDrop ? ' on' : ''}" data-act="att-drop" aria-expanded="${!!S.attDrop}">Attached ${list.length}</button>`);
+    if (S.attDrop) out.push(`<ul class="att-drop">${list.map(dropItem).join('')}</ul>`);
+  }
+  const html = out.filter(Boolean).join('');
+  return html ? `<div class="chips head-chips">${html}</div>` : '';
+}
+
 function taskPanel() {
   const t = S.task;
   if (!t) {
-    return `<aside class="panel" aria-label="Task detail"><div class="panel-top">${backBtn()}<span class="pill ref">${esc(S.taskRef)}</span><div class="grow"></div>${closeBtn('close-panel')}</div>
+    return `<aside class="panel" aria-label="Task detail">${panelTop(null)}
       <p class="${S.taskErr ? 'note err' : 'muted'}">${esc(S.taskErr || 'Loading…')}</p></aside>`;
   }
   const r = ref(t, 'T');
-  const k = stKey(t);
   const alert = currentAlerts().find(a => a.task === r);
   const tab = ['context', 'log'].includes(S.route.q.tab) ? S.route.q.tab : 'overview';
   const body = tab === 'context' ? contextTab(t) : tab === 'log' ? logTab(t) : overviewTab(t);
   const tabs = [['overview', 'Overview'], ['context', 'Context'], ['log', 'Log']].map(([id, label]) =>
     `<button type="button" role="tab" class="tab" aria-selected="${tab === id}" data-act="tab" data-arg="${id}">${label}</button>`).join('');
   return `<aside class="panel" aria-label="Task detail" data-scroll="task-${esc(r)}-${tab}">
-    <div class="panel-top">${backBtn()}${statusPill(t, k)}${alert ? `<span class="pill st-needs" title="${esc(alert.text)}">Needs you</span>` : ''}${t.priority === 'high' ? '<span class="pill high">High priority</span>' : ''}<span class="pill ref">${esc(r)}</span><div class="grow"></div>${closeBtn('close-panel')}</div>
+    ${panelTop(t)}
     ${S.taskErr ? `<p class="note err">${esc(S.taskErr)}</p>` : ''}
-    <div class="stack" style="gap:4px"><h2 class="title">${esc(t.title)}</h2>
-      <div class="subline"><span class="pill sm repo">${esc(t.project)}</span><span>${esc(whenLine(t))}</span>${tookLine(t) ? `<span>${esc(tookLine(t))}</span>` : ''}${(t.status === 'working' || t.status === 'needs') && runningFor(t) ? `<span>${esc(cap(runningFor(t)))}</span>` : ''}</div></div>
+    <h2 class="title">${esc(t.title)}</h2>
+    ${headChips(t)}
     ${alert ? `<div class="box ask" role="alert"><span class="box-label">Needs you</span><p>${esc(alert.text)}</p></div>` : ''}
     <div class="tabs" role="tablist" aria-label="Task sections">${tabs}</div>
     <div class="tabbody" role="tabpanel">${body}</div>

@@ -28,9 +28,6 @@ pub enum Tone {
     Gone,
     Closed,
     Jira,
-    High,
-    Ref,
-    Repo,
 }
 
 /// Button looks (`.btn` classes).
@@ -59,6 +56,8 @@ pub enum Look {
     Ref,
     /// `.att-src.t`: a task ref chip.
     Src,
+    /// A header chip (`.hchip`); `on` while its dropdown is open.
+    Chip { on: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +80,11 @@ pub enum LinkLook {
     AttName,
     SrcGoal,
     Small,
+    /// The breadcrumb's goal (`.crumb a`).
+    Crumb,
+    /// A header chip (`.hchip`); a Jira chip's text is its key, a space, then its status.
+    Chip,
+    JiraChip,
 }
 
 /// Where a plain link (`<a href>`) goes.
@@ -123,7 +127,6 @@ pub enum St {
     #[default]
     Plain,
     Title,
-    Sub,
     Small,
     Muted,
     Help,
@@ -144,6 +147,8 @@ pub enum St {
     Count,
     /// `.jkey` without a link.
     Jkey,
+    /// A Jira header chip without a link: key, a space, then status.
+    JiraChip,
     /// A coloured list glyph (✓ → • !).
     Glyph(Dot),
 }
@@ -154,7 +159,14 @@ pub enum K {
     #[default]
     Col,
     Top,
-    Sub,
+    /// The breadcrumb: goal › ref.
+    Crumb,
+    /// The header chips under the title.
+    Head,
+    /// The Attached chip's dropdown.
+    Drop,
+    /// A dropdown row: kind, then the title (a link when it opens), then "Kind · ref · age".
+    DropItem(&'static str),
     Tabs,
     Body,
     /// `.box` in a tone: ask (warn), lost / failed (down), done (up), info.
@@ -309,6 +321,8 @@ pub struct Ui {
     pub log_filter: String,
     pub att_menu: Option<String>,
     pub att_edit: Option<String>,
+    /// The header's Attached dropdown is open.
+    pub att_drop: bool,
 }
 
 impl Ui {
@@ -579,16 +593,95 @@ fn close_btn(c: &Ctx) -> Node {
     c.btn("", Act::new("close-panel", "", "", ""), Look::Icon(Icon::Close), false, None)
 }
 
-/// `taskPanel()`.
-/// A task just opened, before its own answer: what its row knew (status, title, project, PR), the
-/// rest still loading. Nothing to press yet but Back and close.
-fn card_panel(c: &Ctx, t: &Value) -> Node {
+/// `panelTop(t)`: back, the breadcrumb (goal › ref) and close.
+fn top_row(c: &Ctx, t: Option<&Value>) -> Node {
+    let mut crumb = Vec::new();
+    if let Some(g) = t.and_then(|t| obj(t, "goal")).filter(|g| g.get("id").is_some_and(|x| !x.is_null()) || opt_s(g, "ref").is_some()) {
+        let gr = rf(g, "G");
+        crumb.push(Node::Link { s: format!("{gr} {}", or_empty(&g["name"])), go: Go::Goal(gr), tip: None, look: LinkLook::Crumb });
+        crumb.push(txt("›", St::Muted));
+    }
+    crumb.push(txt(t.map(|t| rf(t, "T")).unwrap_or_else(|| c.r.to_string()), St::Mono));
     let mut top = Vec::new();
     top.extend(back_btn(c));
-    top.push(status_pill(t));
-    top.push(pill(c.r, Tone::Ref));
+    top.push(el(K::Crumb, crumb));
     top.push(close_btn(c));
-    let mut kids = vec![el(K::Top, top), txt(or_empty(&t["title"]), St::Title), el(K::Sub, vec![pill(or_empty(&t["project"]), Tone::Repo), txt(fmt::when_line(t), St::Sub)])];
+    el(K::Top, top)
+}
+
+/// `headChips(t)`: project, Jira, the goal position and Attached, each only when the task has it.
+fn head_chips(c: &Ctx, t: &Value) -> Option<Node> {
+    let mut chips = Vec::new();
+    if s(t, "kind") == "human" {
+        chips.push(Node::Pill { s: "Human task".into(), tone: Tone::Needs, tip: Some("Only you can do it; no agent works on it".into()) });
+    }
+    let project = or_empty(&t["project"]);
+    if !project.is_empty() {
+        let path = opt_s(t, "repo_path")
+            .or_else(|| arr(c.state, "projects").iter().find(|p| s(p, "name") == project).and_then(|p| opt_s(p, "path")))
+            .map(|p| format!("Project · {p}"));
+        chips.push(c.btn(&project, Act::new("open-project", &project, "", ""), Look::Chip { on: false }, false, path.as_deref()));
+    }
+    let j = &t["jira"];
+    if let Some(key) = opt_s(j, "key") {
+        let label = match opt_s(j, "status") {
+            Some(st) => format!("{key} {st}"),
+            None => key.to_string(),
+        };
+        chips.push(match opt_s(j, "url") {
+            Some(url) => Node::Link { s: label, go: Go::Url(url.to_string()), tip: Some(format!("Open {key} in Jira")), look: LinkLook::JiraChip },
+            None => txt(label, St::JiraChip),
+        });
+    }
+    chips.extend(goal_chip(t));
+    let list: Vec<Value> = arr(t, "attachments").iter().chain(arr(t, "goal_attachments")).cloned().collect();
+    if !list.is_empty() {
+        chips.push(c.btn(&format!("Attached {}", list.len()), Act::new("att-drop", "", "", ""), Look::Chip { on: c.ui.att_drop }, false, None));
+        if c.ui.att_drop {
+            chips.push(el(K::Drop, list.iter().map(drop_item).collect()));
+        }
+    }
+    (!chips.is_empty()).then(|| el(K::Head, chips))
+}
+
+/// `goalChip(t)`: "Wave 5 · 18 of 20", opening the goal.
+fn goal_chip(t: &Value) -> Option<Node> {
+    let g = obj(t, "goal").filter(|g| g.get("id").is_some_and(|x| !x.is_null()) || opt_s(g, "ref").is_some())?;
+    let gr = rf(g, "G");
+    let wave = t["wave"].as_i64();
+    let (pos, total) = (g["position"].as_i64(), g["total"].as_i64().unwrap_or(0));
+    let mut words = Vec::new();
+    words.extend(wave.map(|w| format!("Wave {w}")));
+    words.extend(pos.filter(|p| total > 0 && *p <= total).map(|p| format!("{p} of {total}")));
+    if words.is_empty() {
+        return None;
+    }
+    let mut tip = format!("Open {gr}");
+    tip.extend(wave.map(|w| format!(" at wave {w}")));
+    tip.extend(opt_s(g, "next_ref").map(|n| format!(" · next up: {n}")));
+    Some(Node::Link { s: words.join(" · "), go: Go::Goal(gr), tip: Some(tip), look: LinkLook::Chip })
+}
+
+/// `dropItem(a)`: one attachment in the Attached dropdown.
+fn drop_item(a: &Value) -> Node {
+    let kind = ATT_KINDS.iter().find(|k| **k == s(a, "kind")).copied().unwrap_or("other");
+    let title = or_empty(&a["title"]);
+    let name = match att_href(a) {
+        Some(h) => Node::Link { s: title, go: Go::Url(h), tip: None, look: LinkLook::AttName },
+        None => txt(title, St::Strong),
+    };
+    let mut meta = vec![att_kind_label(kind).to_string()];
+    meta.extend(opt_s(a, "task").or(opt_s(a, "goal")).map(str::to_string));
+    meta.extend(opt_s(a, "at").map(fmt::ago));
+    el(K::DropItem(kind), vec![name, txt(meta.join(" · "), St::Small)])
+}
+
+/// `taskPanel()`.
+/// A task just opened, before its own answer: what its row knew (title, project, PR), the rest
+/// still loading. Nothing to press yet but Back, close and the chips.
+fn card_panel(c: &Ctx, t: &Value) -> Node {
+    let mut kids = vec![top_row(c, Some(t)), txt(or_empty(&t["title"]), St::Title)];
+    kids.extend(head_chips(c, t));
     if pr_of(t).is_some() {
         kids.push(pr_row(c, t));
     }
@@ -601,53 +694,22 @@ pub fn panel(c: &Ctx) -> Node {
         if let Some(card) = c.card.filter(|_| c.err.is_none()) {
             return card_panel(c, card);
         }
-        let mut top = Vec::new();
-        top.extend(back_btn(c));
-        top.push(pill(c.r, Tone::Ref));
-        top.push(close_btn(c));
         let msg = match c.err {
             Some(e) => Node::Note { s: e.to_string(), err: true },
             None => txt("Loading…", St::Muted),
         };
-        return el(K::Col, vec![el(K::Top, top), msg]);
+        return el(K::Col, vec![top_row(c, None), msg]);
     };
     let r = rf(t, "T");
     let alert = arr(c.state, "alerts").iter().find(|a| s(a, "task") == r);
     let tab = if matches!(c.tab, "context" | "log") { c.tab } else { "overview" };
 
-    let mut top = Vec::new();
-    top.extend(back_btn(c));
-    top.push(status_pill(t));
-    if let Some(a) = alert {
-        top.push(Node::Pill { s: "Needs you".into(), tone: Tone::Needs, tip: Some(or_empty(&a["text"])) });
-    }
-    if s(t, "priority") == "high" {
-        top.push(pill("High priority", Tone::High));
-    }
-    if s(t, "kind") == "human" {
-        top.push(Node::Pill { s: "Human task".into(), tone: Tone::Needs, tip: Some("Only you can do it; no agent works on it".into()) });
-    }
-    top.push(pill(&r, Tone::Ref));
-    top.push(close_btn(c));
-
-    let mut sub = vec![pill(or_empty(&t["project"]), Tone::Repo), txt(fmt::when_line(t), St::Sub)];
-    let took = fmt::took_line(t);
-    if !took.is_empty() {
-        sub.push(txt(took, St::Sub));
-    }
-    if matches!(s(t, "status"), "working" | "needs") {
-        let run = fmt::running_for(t);
-        if !run.is_empty() {
-            sub.push(txt(fmt::cap(&run), St::Sub));
-        }
-    }
-
-    let mut kids = vec![el(K::Top, top)];
+    let mut kids = vec![top_row(c, Some(t))];
     if let Some(e) = c.err {
         kids.push(Node::Note { s: e.to_string(), err: true });
     }
     kids.push(txt(or_empty(&t["title"]), St::Title));
-    kids.push(el(K::Sub, sub));
+    kids.extend(head_chips(c, t));
     if let Some(a) = alert {
         kids.push(el(K::Box(BoxTone::Ask), vec![txt("Needs you", St::BoxLabel), txt(or_empty(&a["text"]), St::Plain)]));
     }
