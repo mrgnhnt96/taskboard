@@ -12,7 +12,7 @@ routes under the same prefix (see `crates/taskboard-cli`).
   (at least `{}`), `Content-Type: application/json` and `X-Task-Board: 1`. A POST without that header gets 403.
 - **Errors.** Any non-2xx response should have the body `{"error": "<a sentence for the reader>"}`. The UI shows
   `error` as is (toasts, inline notes, the banner). If it can't parse JSON it says "The board answered <status>."
-- **Refs.** Tasks `T12`, goals `G3`, backlog issues `B7`. Path segments are sent as refs (`/tasks/T12`,
+- **Refs.** Tasks `T12`, goals `G3`, backlog issues `B7`, ideas `I4`. Path segments are sent as refs (`/tasks/T12`,
   `/goals/G3`, `/backlog/B7`); the server must accept either `T12` or `12`. Body fields named `goal_id` are sent as
   numbers (or `null`). Objects always carry both `id` (number) and `ref` (string) where listed.
 - **Times.** ISO 8601 strings. UTC with `Z` is fine everywhere except `work_hours.next_open` (see there). `state.now`
@@ -1152,6 +1152,33 @@ the order their first task finished, tasks with no goal last.
 | `GET /releases/:ref` | `R<n>`, or `unreleased` with the project query above | `tb release show`. The release (or `{ref: "unreleased", project, name: "Unreleased", tasks}`) with `groups: [group]` and `markdown`: a changelog ready to paste (`tb release show --markdown`): `## <name> (<date>)`, the notes, then `### <goal>` per group (`Other changes` for no goal) with `- <title> ([#<n>](<pr>))`. |
 | `POST /releases/:ref` | `{name?, notes?}` | `tb release set`. Rename it or change its notes (2000 characters at most; `""` or null clears them). At least one key. |
 | `POST /releases/move` | `{task: "T4", release: "R3"\|"unreleased", who?}` | `tb release move`. Put a done task in another of its project's releases, or back in Unreleased. 409 when the task isn't done, the release is another project's, or the task is already there. `{task, release: "R3"\|null, text}`. |
+
+## Ideas
+
+An idea (`I<n>`) is something the owner may want built one day, kept in a project until it's ready to plan. It is
+`new` when added, `digging` while a report round runs, `reported` once one has, `planned` once it became a goal, or
+put aside as `shelved` (for later) or `dropped` (won't be built). New, digging and reported are open. Ideas are
+separate from bits (feature flags). Search finds ideas by their title and detail (`GET /search?kind=idea`; a hit's
+`state` is the idea's, open as above).
+
+`idea`: `{id, ref: "I4", project, title, detail, state, goal: "G9"|null, source, created_at, updated_at, notes: int,
+rounds: int}`. Shown on its own (every response below but the list), `notes` is `[{id, text, source, at}]` oldest
+first and `rounds` is `[round]` newest first. `round`: `{id, focus: str ("" for the whole idea), report: object|null,
+sha: str|null (the commit it ran at), web: bool, started_at, finished_at, error: str|null, source}`. `source` is who
+added it (`by_session`'s terminal, `who`, else the owner).
+
+| Request | Body | What |
+|---|---|---|
+| `GET /ideas` | query `project` (`all` for every project), else `cwd`; `state`: `open` (default), `all`, or one state | `tb idea list`. `{project, ideas: [idea]}`, the most recently changed first. |
+| `POST /ideas` | `{title, detail?, project?, by_session?, cwd?, who?}` | `tb idea add`. The title is one line, 200 characters at most; the detail 20000. The project defaults to the caller's task's, else the `cwd`'s; 400 when there's none. |
+| `GET /ideas/:ref` | | `tb idea show`. The idea. |
+| `POST /ideas/:ref` | `{title?, detail?, project?}` | `tb idea set`. At least one key; `detail: ""` clears it. |
+| `POST /ideas/:ref/note` | `{text, by_session?, who?}` | `tb idea note`. Add a note (4000 characters at most). |
+| `POST /ideas/:ref/shelve` | `{reason?, by_session?, who?}` | `tb idea shelve`. Put it aside for later; a reason is kept as a note. |
+| `POST /ideas/:ref/drop` | `{reason?, by_session?, who?}` | `tb idea drop`. It won't be built; a reason is kept as a note. |
+| `POST /ideas/:ref/reopen` | `{reason?, by_session?, who?}` | `tb idea reopen`. A shelved or dropped idea goes back to `reported` when a round has a report, else `new`; an open one is left as it is. |
+
+Shelve, drop and reopen are 409 on a `planned` idea (work on its goal instead) and while it's `digging`.
 
 ## Reviewers
 

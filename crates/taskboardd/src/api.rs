@@ -343,6 +343,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         (_, ["devices", rest @ ..]) => crate::devices::route(app, method, rest, body),
         (_, ["bits", rest @ ..]) => crate::bits::route(app, method, rest, query, body),
         (_, ["lessons", rest @ ..]) => crate::lessons::route(app, method, rest, query, body),
+        (_, ["ideas", rest @ ..]) => crate::ideas::route(app, method, rest, query, body),
         (_, ["releases", rest @ ..]) => crate::releases::route(app, method, rest, query, body),
         ("POST", ["areas", "backfill"]) => crate::areas::backfill(app, body),
         (_, ["reviewers", rest @ ..]) => crate::reviewers::route(app, method, rest, query, body),
@@ -2330,8 +2331,8 @@ fn search(app: &App, query: &Query) -> Result<Value> {
     let kind = match q(query, "kind", "all") {
         "all" => None,
         "backlog" | "issue" => Some("issue"),
-        k @ ("task" | "goal" | "note") => Some(k),
-        k => return err(400, format!("“{k}” isn't a kind to search: say task, backlog, goal or note.")),
+        k @ ("task" | "goal" | "note" | "idea") => Some(k),
+        k => return err(400, format!("“{k}” isn't a kind to search: say task, backlog, goal, note or idea.")),
     };
     let project = match q(query, "project", "") {
         "all" => None,
