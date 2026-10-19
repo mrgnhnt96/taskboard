@@ -77,6 +77,19 @@ END;
 CREATE TRIGGER IF NOT EXISTS search_issue_ad AFTER DELETE ON issues BEGIN
   DELETE FROM search WHERE rowid = old.id * 4;
 END;
+
+CREATE TRIGGER IF NOT EXISTS search_idea_ai AFTER INSERT ON ideas BEGIN
+  INSERT INTO search(rowid, text, kind, rid, goal, project)
+  VALUES (-new.id, COALESCE(new.title, '') || char(10) || COALESCE(new.detail, ''), 'idea', new.id, new.goal_id, new.project);
+END;
+CREATE TRIGGER IF NOT EXISTS search_idea_au AFTER UPDATE OF title, detail, project, goal_id ON ideas BEGIN
+  DELETE FROM search WHERE rowid = -old.id;
+  INSERT INTO search(rowid, text, kind, rid, goal, project)
+  VALUES (-new.id, COALESCE(new.title, '') || char(10) || COALESCE(new.detail, ''), 'idea', new.id, new.goal_id, new.project);
+END;
+CREATE TRIGGER IF NOT EXISTS search_idea_ad AFTER DELETE ON ideas BEGIN
+  DELETE FROM search WHERE rowid = -old.id;
+END;
 "#;
 
 /// Fills the index once, for a board made before it existed (the triggers keep it after that).
@@ -99,6 +112,14 @@ INSERT INTO search(rowid, text, kind, rid, goal, project)
   SELECT id * 4, COALESCE(title, '') || char(10) || COALESCE(detail, '') || char(10) || COALESCE(said, ''), 'issue', id, goal_id, project
   FROM issues WHERE (SELECT due FROM search_backfill);
 INSERT OR IGNORE INTO settings(key, value) VALUES ('search_issues_indexed', datetime('now'));
+DROP TABLE search_backfill;
+
+CREATE TEMP TABLE IF NOT EXISTS search_backfill AS SELECT NOT EXISTS (SELECT 1 FROM settings WHERE key = 'search_ideas_indexed') AS due;
+DELETE FROM search WHERE kind = 'idea' AND (SELECT due FROM search_backfill);
+INSERT INTO search(rowid, text, kind, rid, goal, project)
+  SELECT -id, COALESCE(title, '') || char(10) || COALESCE(detail, ''), 'idea', id, goal_id, project
+  FROM ideas WHERE (SELECT due FROM search_backfill);
+INSERT OR IGNORE INTO settings(key, value) VALUES ('search_ideas_indexed', datetime('now'));
 DROP TABLE search_backfill;
 "#;
 
@@ -235,7 +256,7 @@ fn hits(app: &App, project: Option<&str>, text: &str) -> Result<Vec<Hit>> {
     let Some(q) = fts_query(text) else { return Ok(vec![]) };
     let rows = app.db.q(
         "SELECT kind, rid, goal, bm25(search) AS rank FROM search
-         WHERE search MATCH ? AND kind != 'issue' AND (project IS ? OR project IS NULL)
+         WHERE search MATCH ? AND kind NOT IN ('issue', 'idea') AND (project IS ? OR project IS NULL)
          ORDER BY rank LIMIT 80",
         p![q, project],
     )?;
@@ -255,7 +276,7 @@ fn hits(app: &App, project: Option<&str>, text: &str) -> Result<Vec<Hit>> {
 // ---- board search ----
 
 /// What `GET /search` looks for: the words, in a project (None: every project), of one kind (task,
-/// issue, goal or note; None: all of them), and whether only what's still open counts.
+/// issue, goal, note or idea; None: all of them), and whether only what's still open counts.
 pub struct Find<'a> {
     pub text: &'a str,
     pub project: Option<&'a str>,
@@ -264,7 +285,7 @@ pub struct Find<'a> {
     pub limit: usize,
 }
 
-/// The tasks, backlog issues, goals and goal notes that match the words, best first, as cards with
+/// The tasks, backlog issues, goals, goal notes and ideas that match the words, best first, as cards with
 /// their state.
 pub fn find(app: &App, f: &Find) -> Result<Vec<Value>> {
     let Some(q) = fts_query(f.text) else { return Ok(vec![]) };
@@ -272,7 +293,7 @@ pub fn find(app: &App, f: &Find) -> Result<Vec<Value>> {
     if f.kind != Some("goal") {
         let rows = app.db.q(
             "SELECT kind, rid, bm25(search) AS rank FROM search
-             WHERE search MATCH ? AND kind IN ('task', 'issue', 'note') AND (? IS NULL OR kind = ?) AND (? IS NULL OR project IS ?)
+             WHERE search MATCH ? AND kind IN ('task', 'issue', 'note', 'idea') AND (? IS NULL OR kind = ?) AND (? IS NULL OR project IS ?)
              ORDER BY rank LIMIT 500",
             p![q, f.kind, f.kind, f.project, f.project],
         )?;
@@ -344,6 +365,14 @@ fn card(app: &App, kind: &str, id: i64) -> Result<Option<(Value, bool)>> {
             (json!({"kind": "note", "id": id, "ref": rf("goal", g.id()), "title": short(&n.st("text"), 120), "state": state,
                     "note_kind": n.v("kind"), "project": g.v("project"), "goal": crate::board::goal_ref(Some(&g))}),
              state == "open")
+        }
+        "idea" => {
+            let Some(i) = app.db.q1("SELECT * FROM ideas WHERE id = ?", p![id])? else { return Ok(None) };
+            let g = goal(i.i("goal_id"))?;
+            let state = i.st("state");
+            (json!({"kind": "idea", "id": id, "ref": rf("idea", id), "title": i.v("title"), "state": state,
+                    "project": i.v("project"), "goal": crate::board::goal_ref(g.as_ref())}),
+             crate::ideas::OPEN.contains(&state.as_str()))
         }
         _ => return Ok(None),
     };
@@ -602,6 +631,31 @@ mod tests {
         drop(db);
         let db = crate::db::Db::open(&path).unwrap();
         assert_eq!(db.count("SELECT COUNT(*) FROM search WHERE kind = 'issue'", p![]).unwrap(), 0, "only once");
+    }
+
+    #[test]
+    fn ideas_are_indexed_beside_the_rest_and_backfilled_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        let i = {
+            let db = crate::db::Db::open(&path).unwrap();
+            db.insert("issues", crate::fields!["project" => "webapp", "title" => "Same id as the idea", "state" => "open"]).unwrap();
+            for t in ["ai", "au", "ad"] {
+                db.x(&format!("DROP TRIGGER search_idea_{t}"), p![]).unwrap();
+            }
+            db.x("DELETE FROM settings WHERE key = 'search_ideas_indexed'", p![]).unwrap();
+            db.insert("ideas", crate::fields!["project" => "webapp", "title" => "Offline mode", "detail" => "Queue writes."]).unwrap()
+        };
+        let db = crate::db::Db::open(&path).unwrap();
+        let text = |db: &crate::db::Db| db.q1("SELECT text FROM search WHERE kind = 'idea' AND rid = ?", p![i]).unwrap().map(|r| r.st("text"));
+        assert_eq!(text(&db).as_deref(), Some("Offline mode\nQueue writes."));
+        assert_eq!(db.count("SELECT COUNT(*) FROM search WHERE kind = 'issue'", p![]).unwrap(), 1, "the issue with the same id keeps its row");
+        db.update("ideas", &json!(i), crate::fields!["title" => "Offline first"]).unwrap();
+        assert_eq!(text(&db).as_deref(), Some("Offline first\nQueue writes."));
+        db.x("DELETE FROM search WHERE kind = 'idea'", p![]).unwrap();
+        drop(db);
+        let db = crate::db::Db::open(&path).unwrap();
+        assert_eq!(text(&db), None, "only once");
     }
 
     #[test]

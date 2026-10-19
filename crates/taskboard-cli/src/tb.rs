@@ -244,7 +244,7 @@ enum Cmd {
         #[arg(long, value_parser = ["planning", "code", "process", "tooling"])]
         kind: Option<String>,
     },
-    /// Tasks, backlog items, goals and goal notes that match some words, best first
+    /// Tasks, backlog items, goals, goal notes and ideas that match some words, best first
     Search {
         query: String,
         /// The project (this terminal's when left out)
@@ -253,7 +253,7 @@ enum Cmd {
         /// Every project's
         #[arg(long)]
         all: bool,
-        #[arg(long, value_parser = ["task", "backlog", "goal", "note"])]
+        #[arg(long, value_parser = ["task", "backlog", "goal", "note", "idea"])]
         kind: Option<String>,
         /// Only what's still open
         #[arg(long)]
@@ -263,6 +263,11 @@ enum Cmd {
     Lesson {
         #[command(subcommand)]
         action: LessonCmd,
+    },
+    /// Keep ideas that aren't ready to plan yet: add, list, show, change, note, shelve, drop or reopen one
+    Idea {
+        #[command(subcommand)]
+        action: IdeaCmd,
     },
     /// A project's releases, newest first, with their task counts and how many done tasks wait in Unreleased
     Releases {
@@ -830,6 +835,58 @@ enum LessonCmd {
         #[arg(long, value_parser = ["suggested", "kept", "retired"])]
         state: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum IdeaCmd {
+    /// Keep an idea for later: a short title, and what it is in --detail
+    Add {
+        title: String,
+        #[arg(long)]
+        detail: Option<String>,
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// A project's ideas, newest change first: the open ones (new, digging, reported) unless --state says
+    List {
+        /// The project (this terminal's when left out)
+        #[arg(long, conflicts_with = "all")]
+        project: Option<String>,
+        /// Every project's
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_parser = ["open", "all", "new", "digging", "reported", "planned", "shelved", "dropped"])]
+        state: Option<String>,
+    },
+    /// Show an idea with its notes and report rounds
+    Show { idea: String },
+    /// Change an idea's title, detail or project
+    Set {
+        idea: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        detail: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Add a note to an idea
+    Note { idea: String, text: String },
+    /// Drop an idea: it won't be built
+    Drop {
+        idea: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Shelve an idea for later
+    Shelve {
+        idea: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Bring back a shelved or dropped idea
+    Reopen { idea: String },
 }
 
 #[derive(Subcommand)]
@@ -3127,6 +3184,122 @@ fn lesson_search(c: &Ctx, query: &str, project: Option<String>, all: bool, state
     Ok(0)
 }
 
+fn idea_ref(v: &str) -> Result<String, String> {
+    let s = v.trim();
+    let digits = s.trim_start_matches(['I', 'i']);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("expected I<number>, got {v:?}"));
+    }
+    Ok(format!("I{digits}"))
+}
+
+/// "I4 · reported · taskboard · 2 notes · 1 round · became G9", then the title, for `tb idea list`.
+fn idea_line(i: &Value) -> String {
+    let s = |k: &str| i[k].as_str().unwrap_or("").to_string();
+    let mut head = vec![s("ref"), s("state"), s("project")];
+    for (k, word) in [("notes", "note"), ("rounds", "round")] {
+        let n = i[k].as_array().map(|a| a.len() as i64).or_else(|| i[k].as_i64()).unwrap_or(0);
+        if n > 0 {
+            head.push(format!("{n} {word}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    if let Some(g) = i["goal"].as_str() {
+        head.push(format!("became {g}"));
+    }
+    format!("{}\n  {}", head.join(" · "), s("title"))
+}
+
+/// The idea's line, then its detail, notes and report rounds, for `tb idea show` and after a change.
+fn idea_show(i: &Value) {
+    out(&idea_line(i));
+    let detail = i["detail"].as_str().unwrap_or("").trim();
+    if !detail.is_empty() {
+        out("");
+        out(detail);
+    }
+    let notes = i["notes"].as_array().cloned().unwrap_or_default();
+    if !notes.is_empty() {
+        out("");
+        out("Notes:");
+        for n in &notes {
+            let s = |k: &str| n[k].as_str().unwrap_or("");
+            out(&format!("  {} ({}): {}", local_when(s("at")), s("source"), s("text")));
+        }
+    }
+    let rounds = i["rounds"].as_array().cloned().unwrap_or_default();
+    if !rounds.is_empty() {
+        out("");
+        out("Report rounds:");
+        for r in &rounds {
+            let focus = r["focus"].as_str().filter(|f| !f.is_empty()).unwrap_or("the whole idea");
+            let sha: String = r["sha"].as_str().unwrap_or("").chars().take(8).collect();
+            let at = |k: &str| r[k].as_str().map(local_when);
+            let state = match (r["error"].as_str(), at("finished_at"), at("started_at")) {
+                (Some(e), _, _) => format!("failed: {e}"),
+                (None, Some(f), _) => format!("reported {f}"),
+                (None, None, Some(s)) => format!("started {s}"),
+                _ => "not started".into(),
+            };
+            let sha = if sha.is_empty() { String::new() } else { format!(" at {sha}") };
+            let web = if r["web"].as_bool().unwrap_or(false) { ", with the web" } else { "" };
+            out(&format!("  {focus} · {state}{sha}{web}"));
+        }
+    }
+}
+
+fn idea_cmd(c: &Ctx, action: IdeaCmd) -> Result<i32, String> {
+    let post = |path: String, b: Value| c.call("POST", &format!("/ideas/{path}"), Some(b));
+    let (v, did) = match action {
+        IdeaCmd::List { project, all, state } => return ideas_cmd(c, project, all, state),
+        IdeaCmd::Add { title, detail, project } => {
+            let b = json!({"title": title, "detail": detail, "project": project, "cwd": c.cwd});
+            (c.call("POST", "/ideas", Some(b))?, "Kept")
+        }
+        IdeaCmd::Show { idea } => (c.call("GET", &format!("/ideas/{}", idea_ref(&idea)?), None)?, ""),
+        IdeaCmd::Set { idea, title, detail, project } => {
+            let mut b = json!({});
+            for (k, x) in [("title", title), ("detail", detail), ("project", project)] {
+                if let Some(x) = x {
+                    b[k] = json!(x);
+                }
+            }
+            if b.as_object().is_some_and(|o| o.is_empty()) {
+                return Err("say what to change, for example: tb idea set I4 --title \"…\" or --detail \"…\"".into());
+            }
+            (post(idea_ref(&idea)?, b)?, "Changed")
+        }
+        IdeaCmd::Note { idea, text } => (post(format!("{}/note", idea_ref(&idea)?), json!({"text": text}))?, "Noted on"),
+        IdeaCmd::Drop { idea, reason } => (post(format!("{}/drop", idea_ref(&idea)?), json!({"reason": reason}))?, "Dropped"),
+        IdeaCmd::Shelve { idea, reason } => (post(format!("{}/shelve", idea_ref(&idea)?), json!({"reason": reason}))?, "Shelved"),
+        IdeaCmd::Reopen { idea } => (post(format!("{}/reopen", idea_ref(&idea)?), json!({}))?, "Reopened"),
+    };
+    if !did.is_empty() {
+        out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));
+    }
+    idea_show(&v);
+    Ok(0)
+}
+
+fn ideas_cmd(c: &Ctx, project: Option<String>, all: bool, state: Option<String>) -> Result<i32, String> {
+    let mut q = vec![match (all, &project) {
+        (true, _) => "project=all".to_string(),
+        (_, Some(p)) => format!("project={}", qv(p)),
+        _ => format!("cwd={}", qv(&c.cwd)),
+    }];
+    if let Some(s) = state {
+        q.push(format!("state={}", qv(&s)));
+    }
+    let v = c.call("GET", &format!("/ideas?{}", q.join("&")), None)?;
+    let is = v["ideas"].as_array().cloned().unwrap_or_default();
+    if is.is_empty() {
+        out("No ideas here. Keep one with tb idea add \"<title>\" --detail \"…\".");
+    }
+    for i in is {
+        out(&idea_line(&i));
+    }
+    Ok(0)
+}
+
 fn search_cmd(c: &Ctx, query: &str, project: Option<String>, all: bool, kind: Option<String>, open: bool) -> Result<i32, String> {
     let mut q = vec![
         format!("q={}", qv(query)),
@@ -4795,6 +4968,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Lessons { project, all, state, kind } => lessons_cmd(c, project, all, state, kind),
         Cmd::Search { query, project, all, kind, open } => search_cmd(c, &query, project, all, kind, open),
         Cmd::Lesson { action } => lesson_cmd(c, action),
+        Cmd::Idea { action } => idea_cmd(c, action),
         Cmd::Releases { project } => releases_cmd(c, project),
         Cmd::Release { action } => release_cmd(c, action),
         Cmd::Areas { action } => areas_cmd(c, action),

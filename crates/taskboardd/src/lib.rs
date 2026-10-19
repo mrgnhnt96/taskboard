@@ -44,6 +44,7 @@ pub mod keep_awake;
 pub mod lanes;
 pub mod lens;
 pub mod lens_pr;
+pub mod ideas;
 pub mod lessons;
 pub mod limits;
 pub mod lines;

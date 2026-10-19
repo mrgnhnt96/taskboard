@@ -26,6 +26,7 @@ mod feed;
 mod flow;
 mod home;
 mod hooks;
+mod ideas;
 mod import;
 mod jira;
 mod keep_awake;

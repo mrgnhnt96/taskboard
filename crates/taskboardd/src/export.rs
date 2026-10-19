@@ -73,7 +73,7 @@ static SAFE: Lazy<Regex> = Lazy::new(|| {
         r"|[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?",
         r"|\d+(?:\.\d+)?\s?(?:ms|s|m|h|d|w|mins?|secs?|hours?|days?)",
         r"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        r"|[TGBMJQFWS]\d+(?:\s*[,;]\s*[TGBMJQFWS]\d+)*",
+        r"|[TGBIMJQFWS]\d+(?:\s*[,;]\s*[TGBIMJQFWS]\d+)*",
         r"|true|false|on|off|yes|no|null|none|default|auto",
         r"|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*(?:-(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*)?",
         r")$"

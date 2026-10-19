@@ -15,7 +15,7 @@ use crate::config::PrBodyConfig;
 use crate::util::*;
 use crate::{board, p, stack, steps};
 
-static BOARD_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[TGB]\d+\b").unwrap());
+static BOARD_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[TGBI]\d+\b").unwrap());
 static BOARD_WORD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\btask[ -]?board\b").unwrap());
 static HEADING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#{1,6}\s+(.+?)\s*#*\s*$").unwrap());
 static BULLET_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s+\S").unwrap());

@@ -169,6 +169,7 @@ pub fn prefix(kind: &str) -> &'static str {
         "break" => "M",
         "lesson" => "L",
         "release" => "R",
+        "idea" => "I",
         _ => "?",
     }
 }
@@ -181,7 +182,7 @@ pub fn rf_opt(kind: &str, id: Option<i64>) -> Value {
     id.map(|i| Value::String(rf(kind, i))).unwrap_or(Value::Null)
 }
 
-static REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([TtGgBbJjQqMmLlRr])?(\d+)$").unwrap());
+static REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([TtGgBbJjQqMmLlRrIi])?(\d+)$").unwrap());
 
 pub fn parse_ref(v: &Value, kind: &str) -> Result<Option<i64>> {
     match v {
