@@ -28,7 +28,7 @@ const RISK_KINDS: [&str; 4] = ["security", "privacy", "performance", "maintenanc
 const WEB_TOOLS: [&str; 2] = ["WebSearch", "WebFetch"];
 
 /// `git -C repo <args>`'s trimmed output, when it succeeds.
-fn git(repo: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(repo: &Path, args: &[&str]) -> Option<String> {
     let git = crate::proc::which("git")?;
     let mut all: Vec<String> = vec!["-C".into(), repo.to_string_lossy().to_string()];
     all.extend(args.iter().map(|a| a.to_string()));
@@ -36,7 +36,7 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
     Some(out.stdout.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-fn checkout(app: &App, project: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn checkout(app: &App, project: &str) -> Result<Option<PathBuf>> {
     Ok(projects::project_path(app, Some(project))?.map(PathBuf::from).filter(|p| p.is_dir()))
 }
 
@@ -110,8 +110,14 @@ pub fn start(app: &App, r: &str, body: &Value) -> Result<Value> {
     };
     let sha = git(&repo, &["rev-parse", "HEAD"]);
     let (prompt, known) = prompt(app, &i, &focus, sha.as_deref(), web)?;
-    if !app.shared.lock().digging.insert(i.id()) {
-        return err(409, format!("{me} is being dug into already; wait for that report."));
+    {
+        let mut s = app.shared.lock();
+        if s.idea_planning.contains(&i.id()) {
+            return err(409, format!("{me} is being planned into a goal; there's nothing left to dig into."));
+        }
+        if !s.digging.insert(i.id()) {
+            return err(409, format!("{me} is being dug into already; wait for that report."));
+        }
     }
     let round = app.db.tx(|| {
         // Shelved, dropped or planned while the prompt was put together: leave it.

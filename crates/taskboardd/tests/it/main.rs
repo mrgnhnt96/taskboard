@@ -28,6 +28,7 @@ mod home;
 mod hooks;
 mod human_tasks;
 mod idea_dig;
+mod idea_plan;
 mod ideas;
 mod import;
 mod jira;

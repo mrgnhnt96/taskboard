@@ -47,6 +47,7 @@ pub mod lanes;
 pub mod lens;
 pub mod lens_pr;
 pub mod ideas;
+pub mod idea_plan;
 pub mod lessons;
 pub mod limits;
 pub mod lines;
