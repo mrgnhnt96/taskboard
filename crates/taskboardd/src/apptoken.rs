@@ -513,7 +513,7 @@ pub fn tool_reaches(tool: &str, input: &serde_json::Value, dir: &Path, cwd: Opti
             return true;
         }
         if tool == "Bash" {
-            if walks_cwd(cmd) && at.as_deref().is_some_and(|c| real_dir.starts_with(c)) {
+            if walks && walks_cwd(cmd) && at.as_deref().is_some_and(|c| real_dir.starts_with(c)) {
                 return true;
             }
             if interprets(cmd) && cmd.iter().skip(1).any(|a| spells_folder(a, dir)) {
