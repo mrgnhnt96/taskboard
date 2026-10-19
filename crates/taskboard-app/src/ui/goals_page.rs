@@ -17,6 +17,8 @@ use std::collections::{HashMap, HashSet};
 
 const PAGE_X: f32 = 28.;
 const PROJECT_FILTER: &str = "goals-project";
+/// A roomy shelf's ref column, so each goal's second line starts under its name.
+const REF_W: f32 = 34.;
 /// The left edge of wave headers and task rows inside an open goal (under its name).
 const INSET: f32 = 60.;
 
@@ -315,6 +317,8 @@ pub struct Line {
     pub r: String,
     pub name: String,
     pub meta: String,
+    /// The goal's tl;dr, else its outcome: shown when the strip has the page to itself.
+    pub about: String,
 }
 
 /// A tile in the strip: "Up next", "Paused", "Set aside", "Finished this week".
@@ -343,8 +347,15 @@ pub fn shelves(goals: &[&Value], now: DateTime<Utc>) -> Vec<Shelf> {
         v
     };
     let progress = |g: &Value| format!("{} of {}", i(g, "done"), i(g, "total"));
-    let line = |g: &Value, meta: String| Line { r: fmt::ref_of(g, "G"), name: s(g, "name").into(), meta };
-    let next = of(GoalGroup::Next).into_iter().map(|g| line(g, after_ref(g).map(|r| format!("After {r}")).unwrap_or_else(|| fmt::plural(i(g, "total"), "task", "tasks")))).collect();
+    let line = |g: &Value, meta: String| {
+        let about = opt_s(g, "tldr").or_else(|| opt_s(g, "outcome")).unwrap_or_default().to_string();
+        Line { r: fmt::ref_of(g, "G"), name: s(g, "name").into(), meta, about }
+    };
+    let next_meta = |g: &Value| {
+        let tasks = fmt::plural(i(g, "total"), "task", "tasks");
+        after_ref(g).map(|r| format!("{tasks} · After {r}")).unwrap_or(tasks)
+    };
+    let next = of(GoalGroup::Next).into_iter().map(|g| line(g, next_meta(g))).collect();
     let paused = of(GoalGroup::Paused).into_iter().map(|g| line(g, format!("Paused · {}", progress(g)))).collect();
     let aside = of(GoalGroup::Deprioritized).into_iter().map(|g| line(g, progress(g))).collect();
     let mut fin = of(GoalGroup::Finished);
@@ -626,8 +637,9 @@ fn goal_card(t: &Theme, row: &GoalRow, d: Option<&Value>, open: bool, now: DateT
         .when(open, |c| c.child(goal_body(t, d, now, cx)))
 }
 
-fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, cx: &mut Context<MainWindow>) -> Div {
-    let mut tile = div().flex().flex_col().gap(px(8.)).p(px(14.)).rounded(px(12.)).border_1().bg(t.card);
+/// `roomy` when the strip has the page to itself: each goal gets a second line saying what it's for.
+fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, roomy: bool, cx: &mut Context<MainWindow>) -> Div {
+    let mut tile = div().flex().flex_col().gap(px(if roomy { 14. } else { 8. })).p(px(if roomy { 16. } else { 14. })).rounded(px(12.)).border_1().bg(t.card);
     tile = if sh.key == "next" { tile.border_dashed().border_color(t.border_2) } else { tile.border_color(t.border) };
     let mut lines: Vec<&Line> = sh.lines.iter().collect();
     if earlier {
@@ -637,18 +649,27 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, cx: &mut Context<MainWindow>
         let r = l.r.clone();
         let hover = t.text;
         let dot = (sh.key == "done").then(|| kit::dot(t.up, 7.));
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .children(dot)
+            .child(div().flex_none().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).when(roomy, |d| d.w(px(REF_W))).child(l.r.clone()))
+            .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
+            .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()));
+        let about = (roomy && !l.about.is_empty()).then(|| {
+            div().max_w(px(820.)).text_size(px(12.5)).line_height(relative(1.45)).text_color(t.muted).line_clamp(2).child(l.about.clone())
+        });
         tile = tile.child(
             div()
                 .id(SharedString::from(format!("goals-shelf-{}", l.r)))
                 .flex()
-                .items_center()
-                .gap(px(8.))
+                .flex_col()
+                .gap(px(3.))
                 .text_size(px(13.))
                 .cursor_pointer()
-                .children(dot)
-                .child(div().flex_none().text_size(px(12.)).font_family(t.mono_font.clone()).font_weight(FontWeight::SEMIBOLD).text_color(t.goal).child(l.r.clone()))
-                .child(div().min_w_0().flex_1().truncate().font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).hover(move |s| s.text_color(hover)).child(l.name.clone()))
-                .child(div().flex_none().text_size(px(12.)).text_color(t.muted).child(l.meta.clone()))
+                .child(head)
+                .children(about.map(|a| a.ml(px(REF_W + 8. + if sh.key == "done" { 15. } else { 0. }))))
                 .on_click(cx.listener(move |m, _, _, cx| goal::open(m, &r, false, cx))),
         );
     }
@@ -662,10 +683,10 @@ fn shelf_tile(t: &Theme, sh: &Shelf, earlier: bool, cx: &mut Context<MainWindow>
     tile
 }
 
-fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, cx: &mut Context<MainWindow>) -> Div {
+fn shelf_strip(t: &Theme, list: &[Shelf], earlier: bool, roomy: bool, cx: &mut Context<MainWindow>) -> Div {
     let mut strip = div().flex().items_start().gap(px(14.));
     for sh in list {
-        let col = div().flex().flex_col().gap(px(10.)).child(group_label(t, sh.title, sh.lines.len())).child(shelf_tile(t, sh, earlier, cx));
+        let col = div().flex().flex_col().gap(px(10.)).child(group_label(t, sh.title, sh.lines.len())).child(shelf_tile(t, sh, earlier, roomy, cx));
         strip = strip.child(fr(col, 1.));
     }
     strip
@@ -732,7 +753,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     }
     let strip = shelves(&shown, now);
     if !strip.is_empty() {
-        page = page.child(shelf_strip(&t, &strip, m.goals.earlier, cx));
+        page = page.child(shelf_strip(&t, &strip, m.goals.earlier, going.is_empty(), cx));
     }
     shell.child(page).into_any_element()
 }
@@ -793,13 +814,28 @@ mod tests {
         assert_eq!(
             got,
             [
-                ("Up next", vec![("G5", "After G1")], 0),
+                ("Up next", vec![("G5", "4 tasks · After G1")], 0),
                 ("Paused", vec![("G6", "Paused · 1 of 8")], 0),
                 ("Set aside", vec![("G2", "0 of 2")], 0),
                 ("Finished this week", vec![("G3", "2 PRs merged · yesterday")], 1),
             ]
         );
         assert_eq!(projects(&gs), [("api".to_string(), 1), ("web".to_string(), 3)]);
+    }
+
+    #[test]
+    fn a_shelf_line_says_what_its_goal_is_for() {
+        let gs = [
+            goal(1, "web", 0, 2, json!({"tldr": "Short", "outcome": "Long"})),
+            goal(2, "web", 0, 2, json!({"outcome": "Long"})),
+            goal(3, "web", 0, 2, json!({"tldr": "Short"})),
+            goal(4, "web", 0, 2, json!({})),
+        ];
+        let refs: Vec<&Value> = gs.iter().collect();
+        let sh = shelves(&refs, Utc::now());
+        let mut got: Vec<(&str, &str)> = sh[0].lines.iter().map(|l| (l.r.as_str(), l.about.as_str())).collect();
+        got.sort();
+        assert_eq!(got, [("G1", "Short"), ("G2", "Long"), ("G3", "Short"), ("G4", "")]);
     }
 
     #[test]
