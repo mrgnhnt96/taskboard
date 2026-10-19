@@ -2163,6 +2163,29 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn idea_links_open_the_ideas_pages_and_another_idea_starts_empty(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link("ideas", cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.page, Page::Ideas);
+            assert_eq!(arr(m.data.ideas.as_ref().unwrap(), "ideas").len(), 6);
+            m.open_link("idea/i1", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.page, Page::Idea("I1".into()));
+            assert_eq!(m.data.idea.as_ref().unwrap()["ref"], "I1");
+            m.open_link("ideas/I4", cx);
+            assert!(m.data.idea.is_none(), "I1 isn't shown as I4 while it loads");
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.data.idea.as_ref().unwrap()["ref"], "I4")).unwrap();
+    }
+
+    #[gpui_kit::test]
     fn releases_page_shows_only_while_a_project_has_releases_on(cx: &mut gpui_kit::TestAppContext) {
         use crate::backend::Backend as _;
         let (w, rec) = window(cx);

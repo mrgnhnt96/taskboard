@@ -186,7 +186,7 @@ pub fn note_byline(n: &Value, now: DateTime<Utc>) -> String {
 // ================================================================== requests
 
 /// Dig or Plan: a start signal, once at a time; the board's answer shows on the next refresh.
-fn start(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
+pub(crate) fn start(m: &mut MainWindow, act: &'static str, r: &str, cx: &mut Context<MainWindow>) {
     let key = format!("{act}::{r}");
     if !m.idea.busy.insert(key.clone()) {
         return;
@@ -551,5 +551,25 @@ mod tests {
         let now = at(2026, 10, 15, 16);
         assert_eq!(note_byline(&json!({"source": "T12", "at": at(2026, 10, 15, 14).to_rfc3339()}), now), "T12 · Today, 2:05 PM");
         assert_eq!(note_byline(&json!({"source": null, "at": at(2026, 10, 2, 8).to_rfc3339()}), now), "Oct 2, 8:05 AM");
+    }
+
+    #[gpui_kit::test]
+    fn dig_sends_once_and_a_refusal_frees_the_button(cx: &mut gpui_kit::TestAppContext) {
+        use crate::parity::{settle, window};
+        let (w, rec) = window(cx);
+        w.update(cx, |m, _, cx| {
+            start(m, "dig", "I5", cx);
+            assert!(m.idea.busy.contains("dig::I5"), "sending");
+            start(m, "dig", "I5", cx);
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(rec.posts().iter().filter(|(p, _)| p == "ideas/I5/dig").count(), 1);
+        assert_eq!(rec.last("ideas/I5/dig"), Some(json!({})));
+        w.update(cx, |m, _, _| {
+            assert!(m.idea.busy.is_empty(), "a refused dig doesn't stay on Sending…");
+            assert_eq!(m.toasts.iter().map(|t| (t.text.as_str(), t.err)).collect::<Vec<_>>(), [("I5 became a goal already; work on the goal instead.", true)]);
+        })
+        .unwrap();
     }
 }
