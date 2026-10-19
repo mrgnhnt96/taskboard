@@ -64,7 +64,7 @@ pub fn dict(app: &App, i: &Row) -> Result<Value> {
         "id": i.id(), "ref": rf("idea", i.id()), "project": i.v("project"), "title": i.v("title"),
         "detail": i.st("detail"), "state": i.v("state"), "goal": rf_opt("goal", i.i("goal_id")),
         "source": i.v("source"), "created_at": i.v("created_at"), "updated_at": i.v("updated_at"),
-        "notes": notes, "rounds": rounds,
+        "notes": notes, "rounds": rounds, "planning": app.shared.lock().idea_planning.contains(&i.id()),
     }))
 }
 
@@ -176,6 +176,9 @@ fn move_to(app: &App, r: &str, to: &str, body: &Value) -> Result<Value> {
     if at == "digging" {
         return err(409, format!("{me} is being dug into; wait for the report first."));
     }
+    if app.shared.lock().idea_planning.contains(&i.id()) {
+        return err(409, format!("{me} is being planned into a goal; wait for it."));
+    }
     let state = if to == "reopen" {
         if OPEN.contains(&at.as_str()) {
             return show(app, &i);
@@ -243,6 +246,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("POST", [r, "drop"]) => app.db.tx(|| move_to(app, r, "dropped", body)),
         ("POST", [r, "reopen"]) => app.db.tx(|| move_to(app, r, "reopen", body)),
         ("POST", [r, "dig"]) => crate::dig::start(app, r, body),
+        ("POST", [r, "plan"]) => crate::idea_plan::start(app, r, body),
         _ => err(404, "There's nothing at that address."),
     }
 }

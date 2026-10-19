@@ -896,6 +896,8 @@ enum IdeaCmd {
         #[arg(long)]
         web: bool,
     },
+    /// Have Claude plan an idea into a goal and its tasks, from its notes and reports; planned only, not started
+    Plan { idea: String },
 }
 
 #[derive(Subcommand)]
@@ -3221,6 +3223,9 @@ fn idea_line(i: &Value) -> String {
     if let Some(g) = i["goal"].as_str() {
         head.push(format!("became {g}"));
     }
+    if i["planning"] == true {
+        head.push("being planned".into());
+    }
     format!("{}\n  {}", head.join(" · "), s("title"))
 }
 
@@ -3337,9 +3342,16 @@ fn idea_cmd(c: &Ctx, action: IdeaCmd) -> Result<i32, String> {
         IdeaCmd::Dig { idea, focus, web } => {
             (post(format!("{}/dig", idea_ref(&idea)?), json!({"focus": focus, "web": web}))?, "Digging into")
         }
+        IdeaCmd::Plan { idea } => (post(format!("{}/plan", idea_ref(&idea)?), json!({}))?, "Planning"),
     };
     if !did.is_empty() {
         out(&format!("{did} {}.", v["ref"].as_str().unwrap_or("")));
+    }
+    if did == "Planning" {
+        out(&match v["goal"].as_str() {
+            Some(g) => format!("It became {g}, planned and not started: tb goal show {g}"),
+            None => format!("Claude drafts its goal and tasks on its own; the goal stays planned, not started. See it with tb idea show {}.", v["ref"].as_str().unwrap_or("")),
+        });
     }
     idea_show(&v);
     Ok(0)
