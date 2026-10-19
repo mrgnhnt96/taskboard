@@ -95,7 +95,7 @@ pub fn reaches(app: &App, start: i64, target: i64, seen: &mut Vec<i64>) -> Resul
 
 fn label(app: &App, other: &Row) -> Result<String> {
     let g = board::find_goal(app, other.i("goal_id"))?;
-    Ok(rf("task", other.id()) + &g.map(|g| format!(" ({})", rf("goal", g.id()))).unwrap_or_default())
+    Ok(crate::human::task_ref(other) + &g.map(|g| format!(" ({})", rf("goal", g.id()))).unwrap_or_default())
 }
 
 pub fn ready(other: Option<&Row>) -> bool {
@@ -215,6 +215,9 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
             continue;
         }
         let who = label(app, &other)?;
+        if crate::human::is(&other) && other.s("status") != Some("done") {
+            return Ok(Some(format!("Waits for you to do {who}")));
+        }
         let pr = other.i("pr_num").map(|p| format!("PR #{p}"));
         return Ok(Some(match other.s("status") {
             Some("done") if !other.b("failed") => match pr {
@@ -390,12 +393,14 @@ fn elsewhere(app: &App, other: &Row) -> Result<String> {
 }
 
 pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
-    let (mut lines, mut away) = (vec![], vec![]);
+    let (mut lines, mut away, mut owner) = (vec![], vec![], vec![]);
     for n in deps(t) {
         let other = board::find_task(app, Some(n))?;
         if ready_for(app, t, n, other.as_ref())? {
             let o = other.as_ref().unwrap();
-            if o.s("project") == t.s("project") {
+            if crate::human::is(o) {
+                owner.push(crate::human::done_line(app, o));
+            } else if o.s("project") == t.s("project") {
                 lines.push(format!("- {}", where_it_is(app, o)?));
             } else {
                 away.push(format!("- {}", elsewhere(app, o)?));
@@ -403,6 +408,10 @@ pub fn bring_in_text(app: &App, t: &Row) -> Result<String> {
         }
     }
     let mut out = vec![];
+    if !owner.is_empty() {
+        out.push(format!("This task waited for {} to do something only they can, and it's done:", app.cfg.owner));
+        out.extend(owner);
+    }
     if !away.is_empty() {
         out.push("This task needs work from another project, and it's ready:".to_string());
         out.extend(away);

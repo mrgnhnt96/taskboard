@@ -34,6 +34,7 @@ pub mod handoff;
 pub mod hooks;
 pub mod home;
 pub mod hours;
+pub mod human;
 pub mod import;
 pub mod cutover;
 pub mod jira;

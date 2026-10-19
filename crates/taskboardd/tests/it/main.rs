@@ -26,6 +26,7 @@ mod feed;
 mod flow;
 mod home;
 mod hooks;
+mod human_tasks;
 mod idea_dig;
 mod ideas;
 mod import;

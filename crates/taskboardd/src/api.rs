@@ -223,6 +223,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, query, body),
         ("POST", ["tasks", id, "answer"]) => answer(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
+        ("POST", ["tasks", id, "did"]) => owner_did(app, tid(id)?, query, body),
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
         ("POST", ["tasks", id, "close-terminal"]) => close_terminal(app, tid(id)?, body),
         ("POST", ["tasks", id, "focus"]) => focus_task(app, tid(id)?),
@@ -1498,6 +1499,15 @@ fn owner_step(app: &App, id: i64, body: &Value) -> Result<Value> {
     task_detail(app, id)
 }
 
+/// The owner pressed Done on a human task: only the app may say so.
+fn owner_did(app: &App, id: i64, query: &Query, body: &Value) -> Result<Value> {
+    if !from_app(query) {
+        return err(403, format!("Only {} marks a human task done, from the app.", app.cfg.owner));
+    }
+    crate::human::done(app, id, body)?;
+    task_detail(app, id)
+}
+
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
@@ -1679,6 +1689,7 @@ fn mark_done(app: &App, id: i64, body: &Value, failed: bool) -> Result<Value> {
         if t.s("status") == Some("done") {
             return err(409, "It's already done.");
         }
+        crate::human::refuse_agent_finish(app, &t)?;
         let text = body_str(body, if failed { "reason" } else { "summary" });
         let text = if text.is_empty() { if failed { "Stopped by you".to_string() } else { "Marked done by you".to_string() } } else { text };
         reports::finish_task(app, &t, OWNER, &text, failed, None)?;

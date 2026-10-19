@@ -1805,6 +1805,7 @@ fn on_done(r: &mut Report) -> Result<Value> {
     if board::handed_in(&t) {
         return Ok(ok(Some(&t), None));
     }
+    crate::human::refuse_agent_finish(r.app, &t)?;
     let summary = { let s = r.b("summary"); if s.is_empty() { r.b("text") } else { s } };
     let pr_arg = r.b("pr");
     let pr = find_pr(&pr_arg).or_else(|| find_pr(&summary));
@@ -2275,6 +2276,7 @@ fn on_fail(r: &mut Report) -> Result<Value> {
     if t.s("status") == Some("done") {
         return Ok(ok(Some(&t), None));
     }
+    crate::human::refuse_agent_finish(r.app, &t)?;
     let reason = { let s = r.b("reason"); if s.is_empty() { r.b("text") } else { s } };
     let at = r.at.clone();
     let held = t.s("session_id").map(|s| s.to_string());
@@ -2536,7 +2538,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
                     "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model,
-                    "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"),
+                    "from_issue_id": item.get("from_issue_id"), "latest": item.get("latest"), "kind": item.get("kind"),
                     "not_backlog": item.get("not_backlog").filter(|v| !v.is_null()).or(r.body.get("not_backlog")),
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
                         .unwrap_or_else(|| json!({"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}))}),
@@ -2605,6 +2607,9 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
         return err(400, "A task needs a title.");
     }
     if as_bool(r.body.get("here"), false) {
+        if crate::human::clean_kind(&r.body)?.is_some() {
+            return err(400, "A human task isn't done in a terminal; leave out --here.");
+        }
         return new_task_here(r, &title, issue.as_ref());
     }
     if body_has(&r.body, "goal") {
@@ -2620,7 +2625,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                            "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),
-                           "not_backlog": r.body.get("not_backlog")}]);
+                           "not_backlog": r.body.get("not_backlog"), "kind": r.body.get("kind")}]);
         if let Some(b) = &issue {
             item[0] = with_issue(r, b, item[0].take());
         }
@@ -2638,7 +2643,10 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     }
     let project = project_for(r, &r.b("project"))?;
     let planned_flag = as_bool(r.body.get("planned"), false);
-    let mut fields = json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": "manual"},
+    // A human task needs no Start: it goes to the owner once nothing holds it back.
+    let human = crate::human::clean_kind(&r.body)?.is_some();
+    let mut fields = json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": if human { "queue" } else { "manual" }},
+                "kind": r.body.get("kind"),
                 "status": if planned_flag { "planned" } else { "queued" },
                 "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
@@ -2648,7 +2656,8 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     if let Some(b) = &issue {
         fields = with_issue(r, b, fields);
     }
-    let c = ops::new_task(r.app, &fields, &r.name(), Some(&format!("Added by {}; waits for you to press Start", r.name())))?;
+    let log = if human { format!("Added by {} for you to do", r.name()) } else { format!("Added by {}; waits for you to press Start", r.name()) };
+    let c = ops::new_task(r.app, &fields, &r.name(), Some(&log))?;
     if let Some(b) = &issue {
         let text = format!("Made into {}, a queued task. Its handoff starts with this report and snapshot.", c["ref"].as_str().unwrap_or(""));
         crate::api::issue_tasked(r.app, b.id(), c["id"].as_i64().unwrap_or(0), &r.name(), &text)?;
@@ -2683,13 +2692,13 @@ fn with_issue(r: &Report, b: &Row, mut fields: Value) -> Value {
 }
 
 fn ref_id(r: &str) -> i64 {
-    r.trim_start_matches('T').parse().unwrap_or(0)
+    r.trim_start_matches(['T', 'H']).parse().unwrap_or(0)
 }
 
 /// Notes on this terminal that its conversation made these tasks, for `tb start` on an unnamed "queue it".
 fn note_made(r: &Report, refs: &[String]) -> Result<()> {
     let Some(sid) = r.sid() else { return Ok(()) };
-    for id in refs.iter().filter_map(|t| t.trim_start_matches('T').parse::<i64>().ok()) {
+    for id in refs.iter().filter_map(|t| t.trim_start_matches(['T', 'H']).parse::<i64>().ok()) {
         crate::startword::note_made(r.app, sid, id)?;
     }
     Ok(())
