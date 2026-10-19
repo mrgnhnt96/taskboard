@@ -110,11 +110,11 @@ fn a_fail_sets_the_tab() {
 }
 
 #[test]
-fn a_refused_submit_marks_the_tab_failed() {
+fn a_refused_submit_leaves_the_tab_alone() {
     let b = new_board(true);
     b.task_on("s1", "Login");
     assert!(b.report("tb.done", "s1", json!({"summary": "Login works"})).is_err());
-    assert_eq!(b.tabs(), tab("s1", "failed"));
+    assert_eq!(b.tabs(), vec![]);
 }
 
 #[test]
