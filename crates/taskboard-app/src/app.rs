@@ -49,6 +49,7 @@ struct Nav {
 pub enum TaskTab {
     #[default]
     Overview,
+    What,
     Context,
     Log,
 }

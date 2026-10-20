@@ -197,6 +197,32 @@ fn a_closed_terminal_requeues_the_task_then_waits_for_the_owner() {
     assert!(t.b("lost"));
 }
 
+#[test]
+fn a_tasks_terminals_say_when_their_session_ended() {
+    let b = new_board();
+    let id = new_task(&b, "Long job", json!({}));
+    b.add_session("s1", "working");
+    b.report("tb.take", "s1", json!({"task": "T1"}));
+    b.report("hook.session_end", "s1", json!({"reason": "other"}));
+    b.add_session("s2", "working");
+    b.report("tb.take", "s2", json!({"task": "T1"}));
+    let gone = b.app.db.q("SELECT gone_at FROM sessions WHERE id = 's1'", p![]).unwrap()[0].v("gone_at");
+    assert!(gone.is_string(), "{gone}");
+    let terms = board::terminals(&b.app, &b.task(id)).unwrap();
+    let by = |sid: &str| terms.iter().find(|x| x["id"] == sid).cloned().unwrap();
+    assert_eq!(by("s1")["gone_at"], gone);
+    assert!(by("s2")["gone_at"].is_null());
+    let detail = b.get("/tasks/T1");
+    let shown = detail["terminals"].as_array().unwrap_or_else(|| panic!("{detail}"));
+    assert!(shown.iter().any(|x| x["id"] == "s1" && x["gone_at"] == gone), "{detail}");
+
+    b.app.db.x("DELETE FROM task_terminals", p![]).unwrap();
+    b.app.db.x("UPDATE tasks SET session_id = 's1' WHERE id = ?", p![id]).unwrap();
+    let terms = board::terminals(&b.app, &b.task(id)).unwrap();
+    assert_eq!(terms.len(), 1);
+    assert_eq!(terms[0]["gone_at"], gone, "the task's own session, with no terminal row");
+}
+
 fn closed(b: &Board, seq: u64, sid: &str, by: &str) {
     let e = json!({"seq": seq, "at": taskboardd::util::now_iso(), "kind": "session.closed", "actor": {"kind": by}, "session_id": sid, "data": {"force": true}});
     midna::closed_events(&b.app, &[e]).unwrap();
