@@ -220,7 +220,8 @@ fn cut_for(app: &App, project: &str, repo: &str, tag: &str, sha: &str) -> Result
     let ids = held(repo, sha, &crate::releases::unreleased_rows(app, project)?);
     app.db.tx(|| {
         // A release script run by `tb release cut` pushes the tag after the board recorded the release.
-        if crate::releases::named(app, project, &name, 0)? {
+        // A pending cut's release script pushes the tag while the board waits to record the release.
+        if crate::releases::named(app, project, &name, 0)? || crate::pending_cut::holds_name(app, project, &name)? {
             app.info(format!("release tags: {project}: tag {tag} already has its release, so no second one"));
             return Ok(None);
         }

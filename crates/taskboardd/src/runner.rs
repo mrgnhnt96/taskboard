@@ -608,6 +608,7 @@ pub fn run(app: Arc<App>) {
         if due(last_tick, iv.runner) {
             last_tick = Some(Instant::now());
             safe("tick", tick(&app).map(|_| ()));
+            safe("pending cuts", crate::pending_cut::sweep(&app));
         }
         if due(Some(last_spool), iv.spool) {
             last_spool = Instant::now();

@@ -799,6 +799,16 @@ enum ReleaseCmd {
         /// Record the release without running the project's release script (for a release already out)
         #[arg(long = "no-script")]
         no_script: bool,
+        /// Leave the cut pending until this task or goal is through (T627: done with its PR merged; G12:
+        /// finished), then the board cuts it, release script included. Repeat for more. One per project
+        #[arg(long, value_name = "T<n>|G<n>")]
+        after: Vec<String>,
+    },
+    /// Drop the project's pending cut (tb release cut --after)
+    Cancel {
+        /// The project (this terminal's when left out)
+        #[arg(long)]
+        project: Option<String>,
     },
     /// A release's tasks (R<n>, or unreleased), grouped by goal
     Show {
@@ -3658,10 +3668,32 @@ fn releases_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     }
     let n = v["unreleased"].as_i64().unwrap_or(0);
     out(&format!("{name}: {n} done task{} in Unreleased", if n == 1 { "" } else { "s" }));
+    if v["pending"].is_object() {
+        out(&pending_line(&v["pending"]));
+    }
     for r in v["releases"].as_array().into_iter().flatten() {
         out(&release_line(r));
     }
     Ok(0)
+}
+
+/// A pending cut and where each task or goal it waits for stands: "v1.5 · pending · after T627 (met), G12".
+fn pending_line(p: &Value) -> String {
+    let after: Vec<String> = p["after"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| {
+            let r = a["ref"].as_str().unwrap_or("");
+            match a["state"].as_str() {
+                Some("met") => format!("{r} (done)"),
+                Some("dead") => format!("{r} ({})", a["why"].as_str().unwrap_or("can't finish")),
+                _ => r.to_string(),
+            }
+        })
+        .collect();
+    let state = if p["running"] == true { "cutting now" } else { "pending" };
+    format!("{} · {state} · after {}", p["name"].as_str().unwrap_or(""), after.join(", "))
 }
 
 /// A release's (or Unreleased's) tasks under their goals, for `tb release show` and `tb release cut`.
@@ -3767,7 +3799,17 @@ fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<
 
 fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
     match action {
-        ReleaseCmd::Cut { name, project, notes, no_script } => {
+        ReleaseCmd::Cut { name, project, notes, no_script, after } if !after.is_empty() => {
+            let body = json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd, "after": after, "no_script": no_script});
+            let v = c.call("POST", "/releases", Some(body))?;
+            out(&pending_line(&v));
+            out("The board cuts it once those are through and tells you if it drops it. Drop it with: tb release cancel");
+        }
+        ReleaseCmd::Cancel { project } => {
+            let v = c.call("POST", "/releases/pending/cancel", Some(json!({"project": project, "cwd": c.cwd})))?;
+            out(&format!("Cancelled the pending cut {}.", v["name"].as_str().unwrap_or("")));
+        }
+        ReleaseCmd::Cut { name, project, notes, no_script, .. } => {
             let body = json!({"name": name, "project": project, "notes": notes, "cwd": c.cwd});
             match cut_release(&mut |b| c.call("POST", "/releases", Some(b)), &mut run_release_script_on_a_release_branch, body, no_script)? {
                 ReleaseCut::Cut(v) => {
@@ -7956,6 +7998,15 @@ mod tests {
             no_script,
         );
         (r, posted, ran)
+    }
+
+    #[test]
+    fn a_pending_cut_line_says_what_it_waits_for() {
+        let p = json!({"name": "v1.5", "running": false, "after": [
+            {"ref": "T627", "state": "met"}, {"ref": "G12", "state": "waiting"}]});
+        assert_eq!(pending_line(&p), "v1.5 · pending · after T627 (done), G12");
+        let p = json!({"name": "v1.5", "running": true, "after": [{"ref": "T627", "state": "met"}]});
+        assert_eq!(pending_line(&p), "v1.5 · cutting now · after T627 (done)");
     }
 
     #[test]

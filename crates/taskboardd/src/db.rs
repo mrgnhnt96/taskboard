@@ -373,6 +373,7 @@ impl Db {
         conn.execute_batch(crate::releases::SCHEMA)?;
         add_columns(&conn, crate::releases::ADDED)?;
         conn.execute_batch(crate::releases::INDEXES)?;
+        conn.execute_batch(crate::pending_cut::SCHEMA)?;
         conn.execute_batch(crate::relevance::SCHEMA)?;
         conn.execute_batch(crate::relevance::BACKFILL)?;
         conn.execute_batch(crate::reviewers::SCHEMA)?;

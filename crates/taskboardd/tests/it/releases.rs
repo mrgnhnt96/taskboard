@@ -291,3 +291,139 @@ fn the_state_carries_each_projects_release_waits_and_backlog() {
     assert_eq!(api["waits_on"], json!([]), "waiting is one way");
     assert_eq!(api["unreleased"], Value::Null, "api's releases are still off");
 }
+
+fn goal(app: &App, project: &str) -> i64 {
+    call(app, "POST", "/goals", json!({"name": "Ship login", "project": project}))["id"].as_i64().unwrap()
+}
+
+fn pending(app: &App, project: &str) -> Value {
+    get(app, "/releases", project)["pending"].clone()
+}
+
+fn alert_texts(app: &App) -> Vec<String> {
+    taskboardd::dispatch::alerts(app).iter().filter_map(|a| a["text"].as_str().map(str::to_string)).collect()
+}
+
+#[test]
+fn a_pending_cut_waits_for_its_tasks_and_goals_then_cuts_itself() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    let shipped = task(&app, "webapp", "Shipped", None);
+    done(&app, shipped, None);
+    let t = task(&app, "webapp", "Login form", None);
+    let g = goal(&app, "webapp");
+    let gt = task(&app, "webapp", "Login API", Some(g));
+
+    let v = call(&app, "POST", "/releases", json!({"name": "v1.5", "project": "webapp", "after": [format!("T{t}"), format!("g{g}"), format!("T{t}")], "no_script": true}));
+    assert_eq!(v["name"], "v1.5");
+    let after: Vec<&str> = v["after"].as_array().unwrap().iter().map(|a| a["ref"].as_str().unwrap()).collect();
+    assert_eq!(after, vec![format!("T{t}"), format!("G{g}")]);
+    assert_eq!(v["after"][0]["state"], "waiting");
+    assert_eq!(pending(&app, "webapp")["name"], "v1.5");
+    assert_eq!(pending(&app, "api"), Value::Null);
+
+    // Nothing cuts while the work is open, or once the task is done but its PR isn't merged.
+    assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
+    done(&app, t, Some((7, "review")));
+    done(&app, gt, None);
+    assert_eq!(pending(&app, "webapp")["after"][1]["state"], "met");
+    assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
+
+    done(&app, t, Some((7, "merged")));
+    let ready = taskboardd::pending_cut::check(&app).unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(pending(&app, "webapp")["running"], true);
+    // Marked running, so the next look doesn't cut it twice, and it can't be cancelled mid-cut.
+    assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
+    assert_eq!(try_call(&app, "POST", "/releases/pending/cancel", &[], json!({"project": "webapp"})).unwrap_err().0, 409);
+
+    let rel = taskboardd::pending_cut::fire(&app, &ready[0]).unwrap().unwrap();
+    let v = get(&app, &format!("/releases/{rel}"), "webapp");
+    assert_eq!(v["name"], "v1.5");
+    let mut got = refs(&v);
+    got.sort();
+    let mut want = vec![format!("T{shipped}"), format!("T{t}"), format!("T{gt}")];
+    want.sort();
+    assert_eq!(got, want);
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+}
+
+#[test]
+fn a_project_holds_one_pending_cut_and_its_name_until_cancelled() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    let t = task(&app, "webapp", "Login form", None);
+    let shipped = task(&app, "webapp", "Shipped", None);
+    done(&app, shipped, None);
+    let other = task(&app, "api", "Elsewhere", None);
+    let make = |name: &str, after: Value| try_call(&app, "POST", "/releases", &[], json!({"name": name, "project": "webapp", "after": after}));
+
+    assert_eq!(make("v2", json!([])).unwrap_err().0, 400);
+    assert_eq!(make("v2", json!(["nope"])).unwrap_err().0, 400);
+    assert_eq!(make("v2", json!([format!("T{other}")])).unwrap_err().0, 409);
+    assert_eq!(make("v2", json!(["T9999"])).unwrap_err().0, 404);
+    make("v2", json!(format!("T{t}"))).unwrap();
+
+    let (code, msg) = make("v3", json!([format!("T{t}")])).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("tb release cancel"), "{msg}");
+    // The pending name is held from a cut by hand, in any case.
+    let (code, msg) = try_call(&app, "POST", "/releases", &[], json!({"name": "V2", "project": "webapp"})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("pending cut"), "{msg}");
+
+    assert_eq!(call(&app, "POST", "/releases/pending/cancel", json!({"project": "webapp"}))["cancelled"], true);
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+    assert_eq!(try_call(&app, "POST", "/releases/pending/cancel", &[], json!({"project": "webapp"})).unwrap_err().0, 404);
+    call(&app, "POST", "/releases", json!({"name": "v2", "project": "webapp"}));
+}
+
+#[test]
+fn a_pending_cut_drops_and_tells_the_owner_when_its_work_fails() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    let t = task(&app, "webapp", "Login form", None);
+    call(&app, "POST", "/releases", json!({"name": "v1.5", "project": "webapp", "after": [format!("T{t}")]}));
+    board::update_task(&app, t, vec![("failed", json!(1))]).unwrap();
+    assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+    assert!(alert_texts(&app).iter().any(|a| a.contains("v1.5") && a.contains(&format!("T{t} failed"))), "{:?}", alert_texts(&app));
+
+    // A failed task can't hold a new one, and a PR closed unmerged drops one.
+    assert_eq!(try_call(&app, "POST", "/releases", &[], json!({"name": "v1.5", "project": "webapp", "after": [format!("T{t}")]})).unwrap_err().0, 409);
+    let t2 = task(&app, "webapp", "Signup form", None);
+    call(&app, "POST", "/releases", json!({"name": "v1.6", "project": "webapp", "after": [format!("T{t2}")]}));
+    done(&app, t2, Some((8, "declined")));
+    taskboardd::pending_cut::check(&app).unwrap();
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+    assert!(alert_texts(&app).iter().any(|a| a.contains("v1.6") && a.contains("closed without merging")));
+}
+
+#[test]
+fn a_pending_cut_with_nothing_to_release_drops_instead_of_cutting() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    let t = task(&app, "webapp", "Login form", None);
+    call(&app, "POST", "/releases", json!({"name": "v1.5", "project": "webapp", "after": [format!("T{t}")], "no_script": true}));
+    done(&app, t, None);
+    // Someone cut by hand in the meantime.
+    call(&app, "POST", "/releases", json!({"name": "v1.4", "project": "webapp"}));
+    let ready = taskboardd::pending_cut::check(&app).unwrap();
+    assert_eq!(taskboardd::pending_cut::fire(&app, &ready[0]).unwrap(), None);
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+    assert!(alert_texts(&app).iter().any(|a| a.contains("v1.5") && a.contains("Unreleased")));
+}
+
+#[test]
+fn a_pending_cut_is_hidden_and_held_while_releases_are_off() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    let t = task(&app, "webapp", "Login form", None);
+    call(&app, "POST", "/releases", json!({"name": "v1.5", "project": "webapp", "after": [format!("T{t}")], "no_script": true}));
+    call(&app, "POST", "/projects/webapp", json!({"releases": "off"}));
+    done(&app, t, None);
+    assert_eq!(pending(&app, "webapp"), Value::Null);
+    assert!(taskboardd::pending_cut::check(&app).unwrap().is_empty());
+    releases_on(&app, "webapp");
+    assert_eq!(pending(&app, "webapp")["name"], "v1.5");
+}

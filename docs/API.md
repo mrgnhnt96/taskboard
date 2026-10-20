@@ -1165,14 +1165,28 @@ contains: one with a PR when a commit the tag reaches names that PR (`Merge pull
 after the tag stays in Unreleased. Tags already there when the pattern is set, or made while releases are off, are only
 noted; a tag whose name is already a release, or that holds no Unreleased work, cuts nothing.
 
+A project may hold one pending cut: a release that cuts itself once named work is through. `after` names 1 to 20 of
+the project's tasks (`T<n>`) and goals (`G<n>`); one already failed, or a goal already archived unfinished, is a 409, as
+is a second pending cut ("Cancel it first with: tb release cancel"). Its name counts as taken while it waits: a cut, a
+rename or a release tag with that name is refused or skipped. The board checks it each runner tick (`[intervals] runner`): once every task
+is done with its PR merged (or no PR) and every goal is finished, it runs the cut as `tb release cut` would, release
+script included (in the checkout it was set up from, else the project's folder, on `main` or a `release/*` branch,
+unless `no_script`), and records the release by whoever set it up. A named task that fails or whose PR is closed
+unmerged, a goal archived unfinished, a script that fails, or an empty Unreleased drops the pending cut and raises an
+alert saying why. While releases are off for the project it is hidden and waits.
+
+`pending`: `{project, name, notes, after: [{ref, state: "waiting"|"met"|"dead", why: str|null}], no_script, made_at,
+made_by, running: bool}` (`running` while its cut is under way).
+
 `release`: `{id, ref: "R3", project, name, notes, cut_at, cut_by, updated_at, tasks: int}`. A group:
 `{goal: "G2"|null, name: str|null, tasks: [{id, ref, title, summary, goal, pr_url, pr_num, finished_at}]}`, goals in
 the order their first task finished, tasks with no goal last.
 
 | Request | Body | What |
 |---|---|---|
-| `GET /releases` | query `project`, else `by_session` (that terminal's task's project) or `cwd` | `tb releases`. `{project, on: bool, unreleased: int, releases: [release]}`, newest first; with releases off, `on: false` and nothing else. |
-| `POST /releases` | `{name, project?, notes?, by_session?, cwd?, who?}` | `tb release cut`. Cut a release holding every task in Unreleased; each gets a "release" log line. The name (80 characters at most, not "unreleased") is unique in the project, any case (409). 409 when Unreleased is empty. **Response read:** as `GET /releases/:ref`. |
+| `GET /releases` | query `project`, else `by_session` (that terminal's task's project) or `cwd` | `tb releases`. `{project, on: bool, unreleased: int, pending: pending\|null, releases: [release]}`, newest first; with releases off, `on: false` and nothing else. |
+| `POST /releases` | `{name, project?, notes?, by_session?, cwd?, who?, after?: ["T4"\|"G2"]\|str, no_script?: bool}` | `tb release cut`. Cut a release holding every task in Unreleased; each gets a "release" log line. The name (80 characters at most, not "unreleased") is unique in the project, any case, and not held by its pending cut (409). 409 when Unreleased is empty. With `after` (`tb release cut <name> --after T4 --after G2`), nothing is cut now: the project gets a pending cut instead (see Pending cuts). **Response read:** as `GET /releases/:ref`; with `after`, the pending cut. |
+| `POST /releases/pending/cancel` | `{project?, by_session?, cwd?}` | `tb release cancel`. Drop the project's pending cut. 404 when there is none, 409 while it is cutting. `{project, name, cancelled: true}`. |
 | `GET /releases/:ref` | `R<n>`, or `unreleased` with the project query above | `tb release show`. The release (or `{ref: "unreleased", project, name: "Unreleased", tasks}`) with `groups: [group]` and `markdown`: a changelog ready to paste (`tb release show --markdown`): `## <name> (<date>)`, the notes, then `### <goal>` per group (`Other changes` for no goal) with `- <title> ([#<n>](<pr>))`. |
 | `POST /releases/:ref` | `{name?, notes?}` | `tb release set`. Rename it or change its notes (2000 characters at most; `""` or null clears them). At least one key. |
 | `POST /releases/move` | `{task: "T4", release: "R3"\|"unreleased", who?}` | `tb release move`. Put a done task in another of its project's releases, or back in Unreleased. 409 when the task isn't done, the release is another project's, or the task is already there. `{task, release: "R3"\|null, text}`. |

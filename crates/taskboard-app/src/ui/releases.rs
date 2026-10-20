@@ -1,5 +1,6 @@
 //! The Releases page (`GET /releases` per project): Unreleased first, then each release newest
-//! first, each a row that opens in place to its tasks by goal (`GET /releases/:id`). Only the
+//! first, each a row that opens in place to its tasks by goal (`GET /releases/:id`). A pending cut
+//! (`tb release cut --after`) sits above them with the tasks and goals it waits for. Only the
 //! projects with releases on (the state's `releases`) have one; with none the page is hidden.
 //! Read-only: cutting and editing releases stay in `tb`.
 use crate::app::{MainWindow, Page};
@@ -140,6 +141,24 @@ pub fn rows(project: &str, list: &Value, now: DateTime<Utc>) -> Vec<Row> {
         failed: opt_s(r, "failed_at").is_some(),
     }));
     v
+}
+
+/// The project's pending cut: its name, each task or goal it waits for (and whether that's through),
+/// and whether the board is cutting it now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pending {
+    pub name: String,
+    pub after: Vec<(String, bool)>,
+    pub running: bool,
+}
+
+pub fn pending(list: &Value) -> Option<Pending> {
+    let p = list.get("pending").filter(|p| p.is_object())?;
+    Some(Pending {
+        name: s(p, "name").to_string(),
+        after: arr(p, "after").iter().map(|a| (s(a, "ref").to_string(), s(a, "state") == "met")).collect(),
+        running: p["running"] == true,
+    })
 }
 
 /// "Today, 3:05 PM", "Oct 7, 3:05 PM", or "Oct 7, 2025, 3:05 PM" in another year.
@@ -298,6 +317,36 @@ fn body(t: &Theme, d: Option<&Value>, cx: &mut Context<MainWindow>) -> Div {
     body
 }
 
+fn pending_card(t: &Theme, project: &str, p: &Pending) -> Stateful<Div> {
+    let (tone, label) = if p.running { ("working", "Cutting") } else { ("planned", "Pending") };
+    div()
+        .id(SharedString::from(format!("releases-pending-{project}")))
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .px(px(20.))
+        .py(px(14.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.card)
+        .child(div().flex_none().w(px(20.)))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().min_w_0().text_size(px(16.)).font_weight(FontWeight::BOLD).truncate().child(p.name.clone()))
+                .child(kit::tone_pill(t, tone, label)),
+        )
+        .child(div().flex_none().flex().items_center().gap(px(8.)).text_size(px(12.)).font_family(t.mono_font.clone()).children(p.after.iter().map(|(r, met)| {
+            let text = if *met { format!("✓ {r}") } else { r.clone() };
+            div().text_color(if *met { t.up_fg } else { t.text_2 }).child(text)
+        })))
+}
+
 fn card(t: &Theme, row: &Row, d: Option<&Value>, open: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     div()
         .id(SharedString::from(format!("releases-card-{}", row.key)))
@@ -354,6 +403,9 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         match m.releases.lists.get(p) {
             None => list = list.child(kit::empty(&t, "Loading…")),
             Some(l) => {
+                if let Some(pc) = pending(l) {
+                    list = list.child(pending_card(&t, p, &pc));
+                }
                 for row in rows(p, l, now) {
                     let open = m.releases.open.contains(&row.key);
                     let mut c = card(&t, &row, m.releases.details.get(&row.key), open, cx);
@@ -427,6 +479,17 @@ mod tests {
         assert_eq!(project_showing(&st, "R5"), "");
         st.project = String::new();
         assert_eq!(project_showing(&st, "R2"), "");
+    }
+
+    #[test]
+    fn a_pending_cut_shows_what_it_waits_for() {
+        assert_eq!(pending(&json!({"on": true, "releases": [], "pending": null})), None);
+        let list = json!({"pending": {"name": "v1.5", "running": false, "after": [
+            {"ref": "T627", "state": "met"}, {"ref": "G12", "state": "waiting"}]}});
+        assert_eq!(
+            pending(&list),
+            Some(Pending { name: "v1.5".into(), after: vec![("T627".into(), true), ("G12".into(), false)], running: false })
+        );
     }
 
     #[test]

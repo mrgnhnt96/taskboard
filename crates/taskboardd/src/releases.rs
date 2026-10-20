@@ -156,13 +156,16 @@ pub(crate) fn named(app: &App, project: &str, name: &str, but: i64) -> Result<bo
 }
 
 /// Whether the project has a failed release with this name (any case): a cut by that name replaces it.
-fn failed_named(app: &App, project: &str, name: &str) -> Result<bool> {
+pub(crate) fn failed_named(app: &App, project: &str, name: &str) -> Result<bool> {
     Ok(app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND name = ? COLLATE NOCASE AND failed_at IS NOT NULL", p![project, name])? > 0)
 }
 
 fn name_taken(app: &App, project: &str, name: &str, but: i64) -> Result<()> {
     if named(app, project, name, but)? {
         return err(409, format!("{project} already has a release called {name}."));
+    }
+    if crate::pending_cut::holds_name(app, project, name)? {
+        return err(409, format!("{name} is held by {project}'s pending cut. Cancel it first with: tb release cancel"));
     }
     Ok(())
 }
@@ -320,32 +323,36 @@ fn show(app: &App, r: &str, query: &crate::api::Query) -> Result<Value> {
 fn list(app: &App, query: &crate::api::Query) -> Result<Value> {
     let project = query_project(app, query)?;
     if !on(app, &project) {
-        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": []}));
+        return Ok(json!({"project": project, "on": false, "unreleased": 0, "releases": [], "pending": null}));
     }
     let rows = app.db.q("SELECT * FROM releases WHERE project = ? ORDER BY id DESC", p![project])?;
     let releases = rows.iter().map(|r| dict(app, r)).collect::<Result<Vec<_>>>()?;
-    Ok(json!({"project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases}))
+    let pending = match crate::pending_cut::for_project(app, &project)? {
+        Some(r) => crate::pending_cut::dict(app, &r)?,
+        None => Value::Null,
+    };
+    Ok(json!({"project": project, "on": true, "unreleased": unreleased_rows(app, &project)?.len(), "releases": releases, "pending": pending}))
 }
 
 /// `POST /releases`: cut a release holding every task in Unreleased. With `check`, only says whether
 /// the cut would go through, and the project's release script and where to run it, without cutting:
-/// `tb release cut` asks first so a doomed cut doesn't run the script.
+/// `tb release cut` asks first so a doomed cut doesn't run the script. With `after` (tasks and goals),
+/// sets up the project's pending cut instead, which the board cuts once they're through.
 fn cut(app: &App, body: &Value) -> Result<Value> {
     let project = body_project(app, body)?;
     need_on(app, &project)?;
     let name = clean_name(&body_str(body, "name"))?;
     let notes = clean_notes(body)?;
     name_taken(app, &project, &name, 0)?;
+    if !body["after"].is_null() {
+        return crate::pending_cut::make(app, &project, &name, notes, body, script_dir(app, body, &project)?);
+    }
     let tasks = unreleased_rows(app, &project)?;
     if tasks.is_empty() {
         return err(409, format!("Nothing to release in {project}: no done task waits in Unreleased."));
     }
     if body["check"] == true {
-        // The script runs in the terminal's checkout, unless --project named another project.
-        let cwd = body["cwd"].as_str().filter(|c| !c.is_empty());
-        let here = body_str(body, "project").is_empty() || crate::projects::project_for_path(app, cwd)?.as_deref() == Some(project.as_str());
-        let path = crate::projects::list_projects(app)?.into_iter().find(|p| p["name"] == project.as_str()).and_then(|p| p["path"].as_str().map(str::to_string));
-        let dir = if here { cwd.map(str::to_string) } else { path };
+        let dir = script_dir(app, body, &project)?;
         // `replaces`: the script may move the failed release's tag instead of refusing it.
         let replaces = failed_named(app, &project, &name)?;
         return Ok(json!({"project": project, "name": name, "unreleased": tasks.len(), "script": script(app, &project)?, "dir": dir, "replaces": replaces}));
@@ -353,6 +360,14 @@ fn cut(app: &App, body: &Value) -> Result<Value> {
     let who = board::caller(app, body, board::OWNER);
     let id = put_in_release(app, &project, &name, notes, &tasks, &who)?;
     show(app, &rf("release", id), &crate::api::Query::new())
+}
+
+/// Where the release script runs: the terminal's checkout, unless --project named another project.
+fn script_dir(app: &App, body: &Value, project: &str) -> Result<Option<String>> {
+    let cwd = body["cwd"].as_str().filter(|c| !c.is_empty());
+    let here = body_str(body, "project").is_empty() || crate::projects::project_for_path(app, cwd)?.as_deref() == Some(project);
+    let path = crate::projects::list_projects(app)?.into_iter().find(|p| p["name"] == project).and_then(|p| p["path"].as_str().map(str::to_string));
+    Ok(if here { cwd.map(str::to_string) } else { path })
 }
 
 /// Makes the release and puts the tasks in it, each with a "release" log line. The caller has checked the name.
@@ -451,6 +466,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("GET", []) => list(app, query),
         ("POST", []) => app.db.tx(|| cut(app, body)),
         ("POST", ["move"]) => app.db.tx(|| move_task(app, body)),
+        ("POST", ["pending", "cancel"]) => app.db.tx(|| crate::pending_cut::cancel(app, &body_project(app, body)?)),
         ("POST", [r, "fail"]) => app.db.tx(|| fail(app, r, body)),
         ("GET", [r]) => show(app, r, query),
         ("POST", [r]) => app.db.tx(|| set(app, r, body)),
