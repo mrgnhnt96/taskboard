@@ -31,6 +31,8 @@ pub enum Page {
     /// The backlog: triage it by making goals from untriaged issues.
     Backlog,
     Sessions,
+    /// Every project and its goals (`ui::projects`).
+    Projects,
     Days,
     /// The weekly time review (`ui::review`): which week is in `MainWindow::review`.
     Review,
@@ -211,6 +213,7 @@ pub struct MainWindow {
     pub review: ui::review::State,
     pub tasks: ui::tasks::State,
     pub goals: ui::goals_page::State,
+    pub projects: ui::projects::State,
     pub releases: ui::releases::State,
     pub ideas: ui::ideas::State,
     pub idea: ui::idea::State,
@@ -258,6 +261,7 @@ impl MainWindow {
             review: Default::default(),
             tasks: Default::default(),
             goals: Default::default(),
+            projects: Default::default(),
             releases: Default::default(),
             ideas: Default::default(),
             idea: Default::default(),
@@ -277,6 +281,7 @@ impl MainWindow {
                 "review" => Page::Review,
                 "tasks" => Page::Tasks,
                 "goals" => Page::Goals,
+                "projects" => Page::Projects,
                 "releases" => Page::Releases,
                 "ideas" => Page::Ideas,
                 g if g.starts_with('G') => Page::Goal(g.into()),
@@ -297,6 +302,14 @@ impl MainWindow {
         // Dev: `TASKBOARD_GOALS_OPEN=G1,G2` opens those goals in place on the Goals page (screenshots).
         if let Ok(v) = std::env::var("TASKBOARD_GOALS_OPEN") {
             m.goals.open = v.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+        }
+        // Dev: `TASKBOARD_PROJECT=web` picks that project and `TASKBOARD_PROJECTS_OPEN=G1,G2` opens those
+        // goals in place on the Projects page (screenshots).
+        if let Ok(v) = std::env::var("TASKBOARD_PROJECT") {
+            m.projects.selected = Some(v);
+        }
+        if let Ok(v) = std::env::var("TASKBOARD_PROJECTS_OPEN") {
+            m.projects.open = v.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         }
         // Dev: `TASKBOARD_RELEASES_OPEN=R1,unreleased:web` opens those rows on the Releases page (screenshots).
         if let Ok(v) = std::env::var("TASKBOARD_RELEASES_OPEN") {
@@ -558,6 +571,12 @@ impl MainWindow {
             ("days", _) => self.go(Page::Days, cx),
             ("review" | "reviews", id) => ui::review::open(self, id.parse().ok(), cx),
             ("tasks", _) => self.go(Page::Tasks, cx),
+            ("projects", p) => {
+                if !p.is_empty() {
+                    self.projects.selected = Some(p.to_string());
+                }
+                self.go(Page::Projects, cx);
+            }
             ("releases", _) if !ui::releases::projects_on(self.state()).is_empty() => self.go(Page::Releases, cx),
             _ => self.go(Page::Board, cx),
         }
@@ -778,6 +797,10 @@ impl MainWindow {
                     if m.page == Page::Goals && ui::goals_page::in_progress(&m.data.goals, m.goals.project()).iter().any(|r| !asked.contains(r)) {
                         m.refresh(cx);
                     }
+                    // So does the Projects page, for the picked project's goals.
+                    if m.page == Page::Projects && ui::projects::wanted(&m.projects, m.state(), &m.data.goals).iter().any(|r| !asked.contains(r)) {
+                        m.refresh(cx);
+                    }
                     // Likewise the Releases page learns which projects have releases from the state.
                     if m.page == Page::Releases && releases_wanted(m).iter().any(|k| !asked_releases.contains(k)) {
                         m.refresh(cx);
@@ -918,7 +941,11 @@ impl Wants {
                 Page::Goal(g) => Some(g.clone()),
                 _ => None,
             },
-            goal_rows: if m.page == Page::Goals { ui::goals_page::in_progress(&m.data.goals, m.goals.project()) } else { vec![] },
+            goal_rows: match m.page {
+                Page::Goals => ui::goals_page::in_progress(&m.data.goals, m.goals.project()),
+                Page::Projects => ui::projects::wanted(&m.projects, m.state(), &m.data.goals),
+                _ => vec![],
+            },
             // The ⌘K palette searches the task, terminal and backlog lists too.
             sessions: m.page == Page::Sessions || ui::search::is_open(m),
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
@@ -1085,6 +1112,12 @@ impl Got {
                     m.goals.details.insert(r, merge_goal(v));
                 }
             }
+        } else if m.page == Page::Projects {
+            for (r, v) in self.goal_rows {
+                if let Ok(v) = v {
+                    m.projects.details.insert(r, merge_goal(v));
+                }
+            }
         }
         if let Some(v) = self.sessions {
             land(&mut d.sessions, &mut d.errs.sessions, v, |v| v);
@@ -1185,6 +1218,7 @@ impl Render for MainWindow {
             Page::Board => ui::home::render(self, window, cx),
             Page::Tasks => ui::tasks::render(self, window, cx),
             Page::Goals => ui::goals_page::render(self, window, cx),
+            Page::Projects => ui::projects::render(self, window, cx),
             Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
@@ -1273,6 +1307,7 @@ impl Render for MainWindow {
 pub fn page_title(page: &Page, needs: i64) -> String {
     let base = match page {
         Page::Goal(_) | Page::Goals => "Goals",
+        Page::Projects => "Projects",
         Page::Backlog => "Backlog",
         Page::Sessions => "Sessions",
         Page::Days => "Days",
