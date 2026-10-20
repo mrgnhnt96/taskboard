@@ -443,8 +443,12 @@ enum Cmd {
         end: Option<String>,
         #[arg(long)]
         days: Option<String>,
-        #[arg(long = "today-until")]
-        today_until: Option<String>,
+        /// Keep going until a time, then the usual hours: past midnight if it has passed today (6am, tomorrow 9am, off)
+        #[arg(long, visible_alias = "today-until", conflicts_with = "for_")]
+        until: Option<String>,
+        /// Keep going for a while from now, then the usual hours (8h, 90m, 1h30m, off)
+        #[arg(long = "for", value_name = "DURATION")]
+        for_: Option<String>,
         /// How often unanswered alerts repeat, in minutes (0 for never)
         #[arg(long = "alert-every", value_name = "MIN")]
         alert_every: Option<i64>,
@@ -5831,7 +5835,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
-        Cmd::Hours { on, off, start, end, days, today_until, alert_every } => {
+        Cmd::Hours { on, off, start, end, days, until, for_, alert_every } => {
             let mut b = json!({});
             if on {
                 b["on"] = json!(true);
@@ -5848,8 +5852,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = days {
                 b["days"] = json!(x);
             }
-            if let Some(x) = today_until {
-                b["today_until"] = json!(x);
+            if let Some(x) = until {
+                b["until"] = json!(x);
+            }
+            if let Some(x) = for_ {
+                b["for"] = json!(x);
             }
             if let Some(x) = alert_every {
                 b["alert_every_mins"] = json!(x);

@@ -154,39 +154,133 @@ pub fn now_local() -> NaiveDateTime {
     local_now().naive_local()
 }
 
-fn date_str(d: &NaiveDateTime) -> String {
-    d.format("%Y-%m-%d").to_string()
-}
-
 pub fn minutes_iso(d: &NaiveDateTime) -> String {
     d.format("%Y-%m-%dT%H:%M").to_string()
 }
 
-pub fn today_until(app: &App, now: &NaiveDateTime) -> Option<String> {
-    let t = jloads_obj(app.db.get_setting(TODAY_KEY).ok().flatten().as_deref());
-    if t.s("date") == Some(&date_str(now)) {
-        t.s("until").map(|s| s.to_string())
-    } else {
-        None
-    }
+fn parse_minute(s: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").ok()
 }
 
-pub fn set_today_until(app: &App, v: &str) -> Result<Option<String>> {
-    let now = now_local();
-    let s = v.trim().to_lowercase();
-    if matches!(s.as_str(), "" | "off" | "none" | "normal" | "clear") {
+/// Hours that run on past (or stop short of) the usual end, once: open from `from` until `until`,
+/// then the usual hours again. Set with `today_until`, `until` or `for`; 24 hours at most.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Extra {
+    pub from: NaiveDateTime,
+    pub until: NaiveDateTime,
+}
+
+/// The extra hours, while they haven't ended.
+pub fn extra(app: &App, now: &NaiveDateTime) -> Option<Extra> {
+    let t = jloads_obj(app.db.get_setting(TODAY_KEY).ok().flatten().as_deref());
+    let x = match (t.s("date"), t.s("from")) {
+        // Saved before the hours could run past midnight: today's start until a time today.
+        (Some(d), _) => Extra { from: parse_minute(&format!("{d}T{}", get(app).start))?, until: parse_minute(&format!("{d}T{}", t.s("until")?))? },
+        (None, Some(f)) => Extra { from: parse_minute(f)?, until: parse_minute(t.s("until")?)? },
+        _ => return None,
+    };
+    (*now < x.until).then_some(x)
+}
+
+/// The extra hours' end as `HH:MM` when it's today (the app's "until … today").
+pub fn today_until(app: &App, now: &NaiveDateTime) -> Option<String> {
+    extra(app, now).filter(|x| x.until.date() == now.date()).map(|x| x.until.format("%H:%M").to_string())
+}
+
+fn clears(v: &str) -> bool {
+    matches!(v.trim().to_lowercase().as_str(), "" | "off" | "none" | "normal" | "clear")
+}
+
+/// Saves extra hours ending at `until`. Before today's start they wait for it, as a later end
+/// today would; otherwise they start now.
+fn save_extra(app: &App, now: &NaiveDateTime, until: NaiveDateTime) -> Result<Extra> {
+    let h = get(app);
+    if !h.on {
+        return err(400, "Work hours are off, so agents already start any time.");
+    }
+    if until - *now > Duration::hours(24) {
+        return err(400, "Keep working 24 hours at most.");
+    }
+    let start = now.date().and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(mins(&h.start));
+    let from = if *now < start && !in_window(&h, now) && start < until { start } else { *now };
+    let x = Extra { from: from.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(from), until };
+    app.db.set_setting(TODAY_KEY, Some(&jdumps(&json!({"from": minutes_iso(&x.from), "until": minutes_iso(&x.until)}))))?;
+    Ok(x)
+}
+
+/// `today_until`: a time later today (the app's "until … today").
+pub fn set_today_until(app: &App, v: &str) -> Result<Option<Extra>> {
+    if clears(v) {
         app.db.set_setting(TODAY_KEY, None)?;
         return Ok(None);
     }
-    if !get(app).on {
-        return err(400, "Work hours are off, so agents already start any time.");
-    }
+    let now = now_local();
     let until = parse_time(v, "end")?;
-    if mins(&until) <= (now.hour() * 60 + now.minute()) as i64 {
+    if mins(&until) <= minute_of(&now) {
         return err(400, format!("{} has already passed today.", clock(&until)));
     }
-    app.db.set_setting(TODAY_KEY, Some(&jdumps(&json!({"date": date_str(&now), "until": until}))))?;
-    Ok(Some(until))
+    let at = now.date().and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(mins(&until));
+    save_extra(app, &now, at).map(Some)
+}
+
+/// `until`: the next time it's that time, so a time that has passed today is tomorrow's
+/// (`6am` at 4 PM runs overnight). `tomorrow 6am` says so outright.
+pub fn set_until(app: &App, v: &str) -> Result<Option<Extra>> {
+    if clears(v) {
+        app.db.set_setting(TODAY_KEY, None)?;
+        return Ok(None);
+    }
+    let now = now_local();
+    let s = v.trim().to_lowercase();
+    let (tomorrow, t) = match s.strip_prefix("tomorrow") {
+        Some(rest) => (true, rest.trim()),
+        None => (false, s.as_str()),
+    };
+    let until = parse_time(t, "end")?;
+    let mut at = now.date().and_hms_opt(0, 0, 0).unwrap() + Duration::minutes(mins(&until));
+    if tomorrow || at <= now {
+        at += Duration::days(1);
+    }
+    save_extra(app, &now, at).map(Some)
+}
+
+/// `for`: from now, for a while (`8h`, `90m`, `1h30m`).
+pub fn set_for(app: &App, v: &str) -> Result<Option<Extra>> {
+    if clears(v) {
+        app.db.set_setting(TODAY_KEY, None)?;
+        return Ok(None);
+    }
+    let now = now_local();
+    let d = parse_for(v)?;
+    let minute = now.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(now);
+    save_extra(app, &now, minute + d).map(Some)
+}
+
+/// How long, as `8h`, `90m`, `1h30m`, `1.5 hours` or a bare number of hours.
+pub fn parse_for(v: &str) -> Result<Duration> {
+    let bad = || ApiError::new(400, "Say how long like 8h, 90m or 1h30m.");
+    let s: String = v.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let mut total = 0.0;
+    let mut rest = s.as_str();
+    while !rest.is_empty() {
+        let n = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+        let num: f64 = rest[..n].parse().map_err(|_| bad())?;
+        rest = &rest[n..];
+        let u = rest.find(|c: char| c.is_ascii_digit()).unwrap_or(rest.len());
+        let per = match &rest[..u] {
+            "" if total == 0.0 && u == rest.len() => 60.0,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 60.0,
+            "m" | "min" | "mins" | "minute" | "minutes" => 1.0,
+            _ => return Err(bad()),
+        };
+        total += num * per;
+        rest = &rest[u..];
+    }
+    let m = total.round() as i64;
+    if m <= 0 {
+        return Err(bad());
+    }
+    Ok(Duration::minutes(m))
 }
 
 /// A weekday as the board's day key (`sun`, `mon` …).
@@ -221,15 +315,33 @@ fn in_window(h: &Hours, dt: &NaiveDateTime) -> bool {
     m < e && has(DAYS[(weekday(dt) + 6) % 7])
 }
 
-fn open_at(h: &Hours, until: Option<&str>, dt: &NaiveDateTime) -> bool {
+fn open_at(h: &Hours, extra: Option<&Extra>, dt: &NaiveDateTime) -> bool {
     if !h.on {
         return true;
     }
-    if let Some(u) = until {
-        let m = minute_of(dt);
-        return m < mins(u) && (in_window(h, dt) || m >= mins(&h.start));
+    match extra {
+        Some(x) if x.from <= *dt && *dt < x.until => true,
+        Some(x) if x.until <= *dt && cut_short(h, x, dt) => false,
+        _ => in_window(h, dt),
     }
-    in_window(h, dt)
+}
+
+/// Whether `dt` is still in the stretch of work hours that the extra hours ended early.
+fn cut_short(h: &Hours, x: &Extra, dt: &NaiveDateTime) -> bool {
+    in_window(h, &x.until) && in_window(h, dt) && !starts_between(h, &x.until, dt)
+}
+
+/// Whether the work hours start on a work day between `a` and `b`, both included.
+fn starts_between(h: &Hours, a: &NaiveDateTime, b: &NaiveDateTime) -> bool {
+    let mut day = a.date().and_hms_opt(0, 0, 0).unwrap();
+    while day.date() <= b.date() {
+        let at = day + Duration::minutes(mins(&h.start));
+        if *a <= at && at <= *b && h.days.iter().any(|d| d == DAYS[weekday(&at)]) {
+            return true;
+        }
+        day += Duration::days(1);
+    }
+    false
 }
 
 /// Whether a local time is inside these work hours (always, with the hours off).
@@ -239,7 +351,7 @@ pub fn within(h: &Hours, dt: &NaiveDateTime) -> bool {
 
 pub fn is_open(app: &App) -> bool {
     let now = now_local();
-    open_at(&get(app), today_until(app, &now).as_deref(), &now)
+    open_at(&get(app), extra(app, &now).as_ref(), &now)
 }
 
 pub fn may_start(app: &App) -> bool {
@@ -265,23 +377,17 @@ pub fn until_open(app: &App) -> Option<String> {
         return None;
     }
     let now = now_local();
-    let nxt = next_open(&get(app), &now, today_until(app, &now).as_deref()).unwrap_or(now + Duration::days(7));
+    let nxt = next_open(&get(app), &now, extra(app, &now).as_ref()).unwrap_or(now + Duration::days(7));
     Some(minutes_iso(&nxt))
 }
 
-pub fn next_open(h: &Hours, now: &NaiveDateTime, until: Option<&str>) -> Option<NaiveDateTime> {
+/// When the hours next open after `now`: a day's start, or the extra hours'.
+pub fn next_open(h: &Hours, now: &NaiveDateTime, extra: Option<&Extra>) -> Option<NaiveDateTime> {
     let midnight = now.date().and_hms_opt(0, 0, 0)?;
-    for n in 0..8 {
-        let at = midnight + Duration::days(n) + Duration::minutes(mins(&h.start));
-        if at <= *now {
-            continue;
-        }
-        let ok = if n == 0 && until.is_some() { open_at(h, until, &at) } else { h.days.iter().any(|d| d == DAYS[weekday(&at)]) };
-        if ok {
-            return Some(at);
-        }
-    }
-    None
+    let mut at: Vec<NaiveDateTime> = (0..8).map(|n| midnight + Duration::days(n) + Duration::minutes(mins(&h.start))).collect();
+    at.extend(extra.map(|x| x.from));
+    at.sort();
+    at.into_iter().find(|t| t > now && open_at(h, extra, t))
 }
 
 /// Whether an ISO minute (`2026-10-01T06:00`) has been reached.
@@ -358,18 +464,18 @@ fn capitalize(s: &str) -> String {
 pub fn state(app: &App) -> Value {
     let now = now_local();
     let h = get(app);
-    let until = if h.on { today_until(app, &now) } else { None };
-    let open = open_at(&h, until.as_deref(), &now);
-    let nxt = if open { None } else { next_open(&h, &now, until.as_deref()) };
+    let x = if h.on { extra(app, &now) } else { None };
+    let open = open_at(&h, x.as_ref(), &now);
+    let nxt = if open { None } else { next_open(&h, &now, x.as_ref()) };
     let mut line = if !h.on {
         "No work hours: agents start any time".to_string()
     } else if open {
-        format!(
-            "Work hours {}: agents start until {}{}",
-            span(&h, app.cfg.first_weekday),
-            clock(until.as_deref().unwrap_or(&h.end)),
-            if until.is_some() { " today" } else { "" }
-        )
+        let end = match x.as_ref().filter(|x| x.from <= now) {
+            Some(x) if x.until.date() == now.date() => format!("{} today", clock(&x.until.format("%H:%M").to_string())),
+            Some(x) => when(&x.until, &now),
+            None => clock(&h.end),
+        };
+        format!("Work hours {}: agents start until {end}", span(&h, app.cfg.first_weekday))
     } else if let Some(n) = nxt {
         format!("Outside work hours: agents start again {}", when(&n, &now))
     } else {
@@ -390,7 +496,8 @@ pub fn state(app: &App) -> Value {
     o.insert("line".into(), json!(line));
     o.insert("alerts_line".into(), json!(alerts_line));
     o.insert("span".into(), json!(span(&h, app.cfg.first_weekday)));
-    o.insert("today_until".into(), json!(until));
+    o.insert("today_until".into(), json!(x.as_ref().filter(|x| x.until.date() == now.date()).map(|x| x.until.format("%H:%M").to_string())));
+    o.insert("until".into(), json!(x.as_ref().map(|x| minutes_iso(&x.until))));
     o.insert("next_open".into(), json!(nxt.map(|n| minutes_iso(&n))));
     o.insert("week_days".into(), json!(week_days(app.cfg.first_weekday)));
     v
@@ -405,7 +512,7 @@ pub fn blocker(app: &App) -> Option<String> {
         return None;
     }
     let now = now_local();
-    Some(match next_open(&get(app), &now, today_until(app, &now).as_deref()) {
+    Some(match next_open(&get(app), &now, extra(app, &now).as_ref()) {
         Some(n) => format!("Waits for work hours ({})", when(&n, &now)),
         None => "Waits for work hours".into(),
     })
@@ -446,8 +553,53 @@ mod tests {
         assert!(open_at(&night, None, &at(2026, 10, 5, 23, 0)));
         assert!(open_at(&night, None, &at(2026, 10, 6, 1, 0)));
         assert!(!open_at(&night, None, &at(2026, 10, 7, 1, 0)));
-        assert!(open_at(&day, Some("19:00"), &at(2026, 10, 5, 18, 0)));
+        let late = Extra { from: at(2026, 10, 5, 9, 0), until: at(2026, 10, 5, 19, 0) };
+        assert!(open_at(&day, Some(&late), &at(2026, 10, 5, 18, 0)));
         assert_eq!(next_open(&day, &at(2026, 10, 9, 18, 0), None), Some(at(2026, 10, 12, 9, 0)));
+    }
+
+    #[test]
+    fn extra_hours_run_overnight_then_the_usual_hours_return() {
+        let day = h("09:00", "17:00", &["mon", "tue", "wed", "thu", "fri"]);
+        // Monday 4:25 PM, until Tuesday 6 AM.
+        let x = Extra { from: at(2026, 10, 5, 16, 25), until: at(2026, 10, 6, 6, 0) };
+        assert!(open_at(&day, Some(&x), &at(2026, 10, 5, 20, 0)));
+        assert!(open_at(&day, Some(&x), &at(2026, 10, 6, 0, 0)), "past midnight");
+        assert!(open_at(&day, Some(&x), &at(2026, 10, 6, 5, 59)));
+        assert!(!open_at(&day, Some(&x), &at(2026, 10, 6, 6, 0)), "ends at 6 AM");
+        assert!(open_at(&day, Some(&x), &at(2026, 10, 6, 9, 0)), "Tuesday's hours as usual");
+        assert_eq!(next_open(&day, &at(2026, 10, 6, 6, 0), Some(&x)), Some(at(2026, 10, 6, 9, 0)));
+        // Friday night into Saturday, not a work day.
+        let fri = Extra { from: at(2026, 10, 9, 17, 0), until: at(2026, 10, 10, 3, 0) };
+        assert!(open_at(&day, Some(&fri), &at(2026, 10, 10, 2, 0)));
+        assert_eq!(next_open(&day, &at(2026, 10, 10, 3, 0), Some(&fri)), Some(at(2026, 10, 12, 9, 0)));
+    }
+
+    #[test]
+    fn extra_hours_can_end_the_day_early_or_wait_for_its_start() {
+        let day = h("09:00", "17:00", &["mon", "tue", "wed", "thu", "fri"]);
+        let short = Extra { from: at(2026, 10, 5, 10, 0), until: at(2026, 10, 5, 15, 0) };
+        assert!(!open_at(&day, Some(&short), &at(2026, 10, 5, 16, 0)), "the day ends at 3 PM");
+        assert!(open_at(&day, Some(&short), &at(2026, 10, 6, 10, 0)), "the next day as usual");
+        // Set at 7 AM to run until 7 PM: from 9 AM, as the hours would.
+        let early = Extra { from: at(2026, 10, 5, 9, 0), until: at(2026, 10, 5, 19, 0) };
+        assert!(!open_at(&day, Some(&early), &at(2026, 10, 5, 8, 0)));
+        assert_eq!(next_open(&day, &at(2026, 10, 5, 7, 0), Some(&early)), Some(at(2026, 10, 5, 9, 0)));
+        // Extra hours ending right as the next day's start: open then.
+        let to_start = Extra { from: at(2026, 10, 5, 17, 0), until: at(2026, 10, 6, 9, 0) };
+        assert!(open_at(&day, Some(&to_start), &at(2026, 10, 6, 9, 0)));
+    }
+
+    #[test]
+    fn parses_how_long() {
+        assert_eq!(parse_for("8h").unwrap(), Duration::hours(8));
+        assert_eq!(parse_for("90m").unwrap(), Duration::minutes(90));
+        assert_eq!(parse_for("1h30m").unwrap(), Duration::minutes(90));
+        assert_eq!(parse_for("1.5 hours").unwrap(), Duration::minutes(90));
+        assert_eq!(parse_for("8").unwrap(), Duration::hours(8));
+        assert!(parse_for("soon").is_err());
+        assert!(parse_for("0h").is_err());
+        assert!(parse_for("8d").is_err());
     }
 
     #[test]

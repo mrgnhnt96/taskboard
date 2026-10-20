@@ -26,7 +26,7 @@ pub fn call(app: &App, set: Option<&Value>) -> Result<Value> {
         }
         let today = body_str(b, "today").trim().to_lowercase();
         if body_has(b, "today") && !matches!(today.as_str(), "off" | "clear") {
-            return err(400, "Today's keep-awake ends with today's work hours: use `tb hours --today-until`. Here, only off or clear.");
+            return err(400, "Today's keep-awake ends with today's work hours: use `tb hours --until` or `--for`. Here, only off or clear.");
         }
     }
     if set.is_some() && !app.cfg.runner {
@@ -75,8 +75,9 @@ fn push(app: &App, body: Value, want: Value) {
     }
 }
 
-/// The work hours just changed: give Midna the schedule now. `today` is the new "today until"
-/// when that changed too (`None` inside = back to the usual end).
+/// The work hours just changed: give Midna the schedule now. `today` is the extra hours' new end
+/// when that changed too (`None` inside = back to the usual end); Midna reads a time earlier than
+/// now as past midnight.
 pub fn follow_hours(app: &App, today: Option<Option<String>>) {
     if app.shared.lock().midna_keep_awake.is_none() {
         return;
