@@ -40,10 +40,10 @@ pub const BUILT_IN: &str = "\
 /// Where each task works while its wave mates run (`worklane.rs`): sent with whatever rules are in force,
 /// since an owner's planning file says how to slice work, not how the board places it.
 pub const LANE_RULES: &str = "\
-- shared: works in the project's shared checkout, beside the others; fits small tasks whose files no wave mate touches.
+- shared: works in the project's shared checkout; fits small tasks whose files no wave mate touches. One task of a wave has it at a time, since each task makes its own branch.
 - slot: works in a worktree slot from the board's pool, on its own branch; fits tasks whose files overlap a wave mate's.
 - alone: runs with nothing else in its goal beside it (--alone board: nothing else on the board).
-- auto (the default): a slot when a wave runs it beside others and either side plans no files or their files overlap; else shared. A goal's lane (tb goal set G<n> --lane, or --worktrees, which is slot) is what its tasks on auto take.
+- auto (the default): a slot when a wave runs it beside others and either side plans no files, their files overlap, or a wave mate has the shared checkout (the first task of the wave gets it); else shared. A goal's lane (tb goal set G<n> --lane, or --worktrees, which is slot) is what its tasks on auto take.
 - Give a task's files in its wave (\"title::detail::<wave>::::src/a.rs\") so auto can tell; set a lane with \"::lane=<lane>\" after a --task, tb task new|set --lane, or tb goal set --lane.";
 
 /// The built-in rule for each task's model, added to [`BUILT_IN`] while `[models]` is on.

@@ -1,7 +1,8 @@
 //! A task's lane: where it works while others run. `shared` works in the project's own checkout, `slot`
 //! borrows a worktree from the pool (`slots.rs`), `alone` runs with nothing else in its goal beside it
 //! (`locks.rs`), and `auto`, the default, leaves the pick to the board: a slot for a task in a wave whose
-//! mates' planned files overlap its own, or that plans no files; else the shared checkout. A goal's lane
+//! mates' planned files overlap its own, or that plans no files, or whose mate has the shared checkout
+//! already (one task's branch at a time); else the shared checkout. A goal's lane
 //! is what its tasks on `auto` take (a goal with a `worktree_base` is on `slot`). An auto pick is kept in
 //! the task's context once it starts, so the task never moves folders part way through.
 
@@ -83,7 +84,9 @@ fn plan_files(t: &Row) -> Vec<String> {
 }
 
 /// Auto's pick in a goal: a slot when its wave runs others beside it and either side plans no files or
-/// their files overlap. Only in a git checkout, where there's a pool to borrow from.
+/// their files overlap, or when a wave mate holds the shared checkout or comes before it there: each
+/// task makes its own branch, and a checkout has one branch out at a time. Only in a git checkout,
+/// where there's a pool to borrow from.
 fn auto_slot(app: &App, t: &Row, g: &Row) -> Result<bool> {
     let Some(n) = t.i("wave") else { return Ok(false) };
     if g.i("max_terminals").unwrap_or(2) <= 1 {
@@ -100,6 +103,17 @@ fn auto_slot(app: &App, t: &Row, g: &Row) -> Result<bool> {
         }
         let theirs = plan_files(&m);
         if own.is_empty() || theirs.is_empty() || theirs.iter().any(|f| own.contains(f)) {
+            return Ok(true);
+        }
+        let shared = match own_lane(&m) {
+            "shared" => true,
+            "auto" => match chosen(board::task_context(&m).s("lane")) {
+                Some(l) => l == "shared",
+                None => m.id() < t.id(),
+            },
+            _ => false,
+        };
+        if shared {
             return Ok(true);
         }
     }

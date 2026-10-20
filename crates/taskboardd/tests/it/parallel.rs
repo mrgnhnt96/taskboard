@@ -11,7 +11,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{PrLink, RowExt};
-use taskboardd::{board, midna, p, prflow, progress, reports, runner, slot_ageing, worktrees};
+use taskboardd::{board, midna, p, prflow, progress, reports, runner, slot_ageing, worklane, worktrees};
 
 struct Board {
     app: Arc<App>,
@@ -933,7 +933,7 @@ fn a_lane_on_the_task_or_its_goal_says_where_it_starts() {
 }
 
 #[test]
-fn auto_takes_a_slot_when_wave_mates_overlap_or_list_no_files() {
+fn auto_takes_a_slot_when_wave_mates_overlap_list_no_files_or_have_the_shared_checkout() {
     let b = new_board();
     git_repo(&b);
     let g = b.side_by_side();
@@ -945,14 +945,25 @@ fn auto_takes_a_slot_when_wave_mates_overlap_or_list_no_files() {
             "Over C::x::2::::src/c.rs", "Over D::x::2::::src/c.rs, src/d.rs",
             "Bare E::x::3", "Listed F::x::3::::src/f.rs",
             "Pinned G::x::4::lane=shared", "Pinned H::x::4::::src/h.rs::lane=slot",
+            "Held I::x::5::::src/i.rs::lane=shared", "Apart J::x::5::::src/j.rs",
+            "Apart K::x::6::::src/k.rs", "Started L::x::6::::src/l.rs",
         ]}),
     );
     let ids: Vec<i64> =
         r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().trim_start_matches('T').parse().unwrap()).collect();
+    // L started first and took the shared checkout, so K, though first in its wave, takes a slot.
+    worklane::pin(&b.app, &board::get_task(&b.app, ids[11]).unwrap(), "shared").unwrap();
     let picks: Vec<(String, String)> = ids.iter().map(|t| lane(&b, *t)).collect();
     let auto = |l: &str| (l.to_string(), "auto".to_string());
     let own = |l: &str| (l.to_string(), "task".to_string());
-    assert_eq!(picks, [auto("shared"), auto("shared"), auto("slot"), auto("slot"), auto("slot"), auto("slot"), own("shared"), own("slot")]);
+    assert_eq!(
+        picks,
+        [
+            auto("shared"), auto("slot"), auto("slot"), auto("slot"), auto("slot"), auto("slot"), own("shared"), own("slot"),
+            own("shared"), auto("slot"), auto("slot"), auto("shared"),
+        ],
+        "one task of a wave has the shared checkout: each makes its own branch"
+    );
     let warnings = r["warnings"].to_string();
     assert!(warnings.contains(&format!("Wave 3 runs tasks side by side, and T{} plans no files", ids[4])), "{warnings}");
     assert!(!warnings.contains("Wave 4") && !warnings.contains("Wave 1"), "{warnings}");
