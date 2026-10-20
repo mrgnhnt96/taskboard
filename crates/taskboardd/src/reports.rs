@@ -2501,7 +2501,9 @@ fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
     Ok(json!(out))
 }
 
-fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+/// Adds `items` to goal `g` with `status`: planned, or queued when they join a goal that's running.
+fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+    let log = if status == "planned" { format!("Planned by {}", r.name()) } else { format!("Added by {} and queued: {} is running", r.name(), rf("goal", g.id())) };
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
         let (item, files, model, project) = match &item {
@@ -2533,7 +2535,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
         let c = ops::new_task(
             r.app,
             &json!({"title": title, "detail": detail.trim(), "project": project, "goal_id": g.id(),
-                    "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
+                    "status": status, "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
@@ -2543,7 +2545,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
                         .unwrap_or_else(|| json!({"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}))}),
             &r.name(),
-            Some(&format!("Planned by {}", r.name())),
+            Some(&log),
         )?;
         created.push(c["ref"].as_str().unwrap_or("").to_string());
         let files = clean_files(Some(&files));
@@ -2568,12 +2570,13 @@ fn on_propose(r: &mut Report) -> Result<Value> {
     let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
     let mut warnings = vec![];
-    let created = planned(r, &g, &tasks, &mut warnings)?;
+    let (status, why) = board::joining_status(r.app, g.id(), as_bool(r.body.get("planned"), false))?;
+    let created = planned(r, &g, &tasks, status, &mut warnings)?;
     if created.is_empty() {
         return err(400, "Name at least one task with a title: --task \"title::what to do\".");
     }
     note_made(r, &created)?;
-    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "warnings": warnings})))
+    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})))
 }
 
 fn on_goal(r: &mut Report) -> Result<Value> {
@@ -2591,7 +2594,7 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     if let Some(sid) = r.sid() {
         crate::startword::note_made_goal(r.app, sid, gid)?;
     }
-    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, &mut warnings)?;
+    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, "planned", &mut warnings)?;
     note_made(r, &created)?;
     Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created, "warnings": warnings})))
 }
@@ -2630,13 +2633,14 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
             item[0] = with_issue(r, b, item[0].take());
         }
         let mut warnings = vec![];
-        let created = planned(r, &g, &item, &mut warnings)?;
+        let (status, why) = board::joining_status(r.app, g.id(), as_bool(r.body.get("planned"), false))?;
+        let created = planned(r, &g, &item, status, &mut warnings)?;
         if let (Some(b), Some(t)) = (&issue, created.first()) {
-            let text = format!("Made into {t}, a planned task in {}. Its handoff starts with this report and snapshot.", rf("goal", g.id()));
+            let text = format!("Made into {t}, a {status} task in {}. Its handoff starts with this report and snapshot.", rf("goal", g.id()));
             crate::api::issue_tasked(r.app, b.id(), ref_id(t), &r.name(), &text)?;
         }
         note_made(r, &created)?;
-        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
+        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
         return err(400, "Only a task in a goal can also finish other goals. Give it its home goal with --goal G<n>.");

@@ -246,6 +246,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "merged_note_posted", "TEXT"),
     // The goals this one runs after (`tb goal set --after`, `chain.rs`): a JSON list of goal ids.
     ("goals", "after_goals", "TEXT"),
+    // When the goal was last run (a Run or its chain queued its planned tasks, `chain::queue_planned`);
+    // cleared when it finishes. `board::goal_running` reads it.
+    ("goals", "ran_at", "TEXT"),
     // The project's area (`.taskboard.toml`, `areas.rs`) the task or goal belongs to; null when none.
     // Backlog issues keep theirs in `issues.area`.
     ("tasks", "area", "TEXT"),

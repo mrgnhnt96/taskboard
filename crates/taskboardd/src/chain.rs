@@ -89,6 +89,7 @@ pub fn finished(app: &App, g: &Row) -> Result<()> {
 /// Queues the goal's planned tasks, and those whose start failed again; returns how many were planned.
 pub fn queue_planned(app: &App, id: i64, who: &str, queued: &str, again: &str) -> Result<i64> {
     let mut n = 0;
+    app.db.update("goals", &json!(id), fields!["ran_at" => now_iso()])?;
     for t in board::goal_tasks(app, id)? {
         if t.s("status") == Some("planned") {
             board::update_task(app, t.id(), fields!["status" => "queued"])?;

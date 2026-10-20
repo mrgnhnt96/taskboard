@@ -56,6 +56,7 @@ pub fn update_task(app: &App, id: i64, mut f: Vec<(&str, Value)>) -> Result<()> 
 
 /// What runs once a goal finishes: its hook, the goals chained after it, its quality and retro.
 fn on_goal_finished(app: &App, goal_id: i64, task: Option<&Row>) -> Result<()> {
+    app.db.update("goals", &json!(goal_id), fields!["ran_at" => null])?;
     let goal = get_goal(app, goal_id)?;
     hooks::fire_goal(app, "goal.finished", &goal, task);
     crate::chain::finished(app, &goal)?;
@@ -76,6 +77,31 @@ pub fn miss_settled(app: &App, issue: &Row) -> Result<()> {
         Some(g) if goal_finished(app, g)? => on_goal_finished(app, g, None),
         _ => Ok(()),
     }
+}
+
+/// The goal was run (a Run or its chain queued it; `ran_at`) and isn't through yet: it isn't archived and one
+/// of its tasks is queued, working or needs the owner. One task Started on its own doesn't run the goal, and a
+/// task kept planned in a running goal doesn't stop it.
+pub fn goal_running(app: &App, goal_id: i64) -> Result<bool> {
+    Ok(app.db.count(
+        "SELECT COUNT(*) FROM tasks t JOIN goals g ON g.id = t.goal_id WHERE t.goal_id = ? AND COALESCE(g.archived, 0) = 0 \
+         AND g.ran_at IS NOT NULL AND t.status IN ('queued', 'working', 'needs')",
+        p![goal_id],
+    )? > 0)
+}
+
+/// The status a task joining the goal comes in with, and why, for the command's output: queued while the
+/// goal is running, so the run picks it up (it still waits for its wave, waits-for and stack parent);
+/// planned when `planned` asks for it or the goal isn't running.
+pub fn joining_status(app: &App, goal_id: i64, planned: bool) -> Result<(&'static str, String)> {
+    let g = rf("goal", goal_id);
+    Ok(if planned {
+        ("planned", "planned (asked)".into())
+    } else if goal_running(app, goal_id)? {
+        ("queued", format!("queued: {g} is running"))
+    } else {
+        ("planned", format!("planned: {g} isn't running"))
+    })
 }
 
 /// Every task in the goal is done, none failed, no PR of theirs is still open and no miss on its done-when is
