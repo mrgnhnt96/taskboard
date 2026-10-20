@@ -760,3 +760,23 @@ fn a_fetched_handoff_is_out_of_date_once_the_task_moves_on() {
         assert_ne!(handoff_stamp(&moved), same, "a new {k} fetches the handoff again");
     }
 }
+
+#[::core::prelude::v1::test]
+fn the_checks_step_says_being_fixed_only_while_a_terminal_is_on_it() {
+    // #489: a fix nobody is on reads Failed, one only the owner can fix reads Needs you.
+    let checks = |stage: Value| {
+        let p = json!({"num": 13, "state": "OPEN", "checks": "fail", "review": "pending", "stage": stage});
+        let [(_, st, sub), _, _] = view::pr_steps(&p);
+        (sub.unwrap_or_default(), st)
+    };
+    let fix = |extra: Value| {
+        let mut s = json!({"phase": "fix", "label": "Fixing checks"});
+        s.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        checks(s).0
+    };
+    assert_eq!(fix(json!({"session": "s1"})), "Being fixed");
+    assert_eq!(fix(json!({})), "Fix starting");
+    assert_eq!(fix(json!({"idle": true})), "Failed");
+    assert_eq!(fix(json!({"owner": {"reason": "Add the NPM_TOKEN secret"}})), "Needs you");
+    assert_eq!(fix(json!({"owner": {"reason": "Add the NPM_TOKEN secret"}, "session": "s1"})), "Needs you");
+}

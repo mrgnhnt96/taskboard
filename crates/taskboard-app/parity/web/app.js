@@ -1134,7 +1134,7 @@ function checksStep(p) {
   const phase = p.stage && p.stage.phase;
   if (c === 'none') return { ...s, st: 'done', sub: 'None' };
   if (c === 'pass') return { ...s, st: 'done', sub: 'Passed' };
-  if (c === 'fail' && phase === 'fix') return { ...s, st: 'fail', sub: p.stage.stopped ? 'Fix stopped' : p.stage.session ? 'Being fixed' : 'Fix starting' };
+  if (c === 'fail' && phase === 'fix') return { ...s, st: 'fail', sub: p.stage.owner ? 'Needs you' : p.stage.stopped ? 'Fix stopped' : p.stage.session ? 'Being fixed' : p.stage.idle ? 'Failed' : 'Fix starting' };
   if (c === 'fail') return { ...s, st: 'fail', sub: 'Failed' };
   if (c === 'pending') return { ...s, st: 'now', sub: 'Running' };
   return { ...s, st: prOpen(p) ? 'wait' : 'todo', sub: 'Waiting' };

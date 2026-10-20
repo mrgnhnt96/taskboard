@@ -1242,7 +1242,19 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
         "pass" => (StepSt::Done, Some("Passed".into())),
         "fail" if phase == "fix" => (
             StepSt::Fail,
-            Some(if obj(stage, "stopped").is_some() { "Fix stopped" } else if !stage["session"].is_null() && stage["session"] != "" { "Being fixed" } else { "Fix starting" }.into()),
+            // Being fixed only while a terminal is on it; `owner`: only the owner can fix it; `idle`: nobody is.
+            Some(if obj(stage, "owner").is_some() {
+                "Needs you"
+            } else if obj(stage, "stopped").is_some() {
+                "Fix stopped"
+            } else if !stage["session"].is_null() && stage["session"] != "" {
+                "Being fixed"
+            } else if b(stage, "idle") {
+                "Failed"
+            } else {
+                "Fix starting"
+            }
+            .into()),
         ),
         "fail" => (StepSt::Fail, Some("Failed".into())),
         "pending" => (StepSt::Now, Some("Running".into())),
