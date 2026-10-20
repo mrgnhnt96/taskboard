@@ -55,8 +55,9 @@ pub enum Look {
     Chip { on: bool },
     /// A footer view (`.foot-btn`); `on` while it's the one open.
     Foot { on: bool },
-    /// One of a question's options in the needs-you banner (`.opt`).
-    Opt,
+    /// One of a question's options in the needs-you banner (`.opt`); `on` while it's a picked
+    /// choice waiting for Send.
+    Opt { on: bool },
     /// "Write an answer": a link with an open-elsewhere icon, since it answers in a terminal.
     Out,
 }
@@ -785,17 +786,29 @@ fn answer_btns(c: &Ctx, r: &str) -> Vec<Node> {
 fn ask_options(c: &Ctx, ask: &Value, r: &str, grp: &str) -> Vec<Node> {
     let picker = b(ask, "picker");
     let qs = arr(ask, "questions");
+    // A picker with one single-select question answers in a click; otherwise each click toggles a
+    // choice (one per single-select question) and Send answers once every question has one.
+    let one_click = picker && qs.len() == 1 && !b(&qs[0], "multi");
+    let picked = picked_of(&c.draft(&format!("pick:{r}")));
     let mut out = Vec::new();
-    for q in qs {
+    for (qi, q) in qs.iter().enumerate() {
         if qs.len() > 1 {
             out.push(txt(or_empty(&q["question"]), St::Strong));
         }
         let opts = arr(q, "options");
         let described = opts.iter().any(|o| opt_s(o, "description").is_some_and(|d| !d.is_empty()));
         let mut row = Vec::new();
-        for o in opts {
+        for (oi, o) in opts.iter().enumerate() {
             let label = or_empty(&o["label"]);
-            let opt = if picker { txt(label, St::Strong) } else { c.btn(&label, Act::new("answer-opt", label.as_str(), r, grp), Look::Opt, false, None) };
+            let key = format!("{qi}:{oi}");
+            let opt = if !picker {
+                c.btn(&label, Act::new("answer-opt", label.as_str(), r, grp), Look::Opt { on: false }, false, None)
+            } else if one_click {
+                c.btn(&label, Act::new("pick", oi.to_string(), r, grp), Look::Opt { on: false }, false, None)
+            } else {
+                let on = picked.contains(&key);
+                c.btn(&label, Act::new("pick-opt", key, r, grp), Look::Opt { on }, false, None)
+            };
             if !described {
                 row.push(opt);
                 continue;
@@ -810,7 +823,44 @@ fn ask_options(c: &Ctx, ask: &Value, r: &str, grp: &str) -> Vec<Node> {
             out.push(el(K::Row, row));
         }
     }
+    if picker && !one_click {
+        let all = (0..qs.len()).all(|qi| picked.iter().any(|k| k.starts_with(&format!("{qi}:"))));
+        out.push(el(K::Row, vec![c.btn("Send", Act::new("pick", "", r, grp), Look::Primary, !all, None)]));
+    }
     out
+}
+
+/// The picker choices toggled so far ("question:option"), kept with the drafts until sent.
+pub fn picked_of(draft: &str) -> Vec<String> {
+    draft.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect()
+}
+
+/// Toggles `key` ("question:option"); a single-select question keeps one choice.
+pub fn toggle_pick(draft: &str, key: &str, ask: &Value) -> String {
+    let mut picked = picked_of(draft);
+    let qi = key.split(':').next().unwrap_or("");
+    let multi = qi.parse::<usize>().ok().and_then(|i| arr(ask, "questions").get(i)).is_some_and(|q| b(q, "multi"));
+    if let Some(i) = picked.iter().position(|k| k == key) {
+        picked.remove(i);
+    } else {
+        if !multi {
+            picked.retain(|k| !k.starts_with(&format!("{qi}:")));
+        }
+        picked.push(key.to_string());
+    }
+    picked.join(",")
+}
+
+/// What the pick endpoint takes: the chosen option indexes, question by question.
+pub fn pick_answers(draft: &str, ask: &Value) -> Vec<Vec<usize>> {
+    let picked: Vec<(usize, usize)> = picked_of(draft).iter().filter_map(|k| k.split_once(':')).filter_map(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).collect();
+    (0..arr(ask, "questions").len())
+        .map(|qi| {
+            let mut v: Vec<usize> = picked.iter().filter(|(a, _)| *a == qi).map(|(_, b)| *b).collect();
+            v.sort_unstable();
+            v
+        })
+        .collect()
 }
 
 fn answer_field(c: &Ctx, r: &str) -> Node {

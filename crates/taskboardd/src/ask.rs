@@ -2,8 +2,8 @@
 //! `{"picker": bool, "questions": [{"question", "header", "multi", "options": [{"label", "description"}]}]}`.
 //!
 //! Two places fill it: Claude's own question picker (`AskUserQuestion`, from the `PreToolUse` hook),
-//! which only the owner can answer in the terminal, and `tb question --option`, whose options the app
-//! offers as one-click answers. `board::update_task` drops it with the question it belongs to.
+//! which the owner answers in the terminal or with the app's buttons (Midna presses them, see
+//! [`picks`]), and `tb question --option`, whose options the app offers as one-click answers. `board::update_task` drops it with the question it belongs to.
 
 use serde_json::{json, Value};
 
@@ -61,6 +61,35 @@ pub fn from_picker(input: &Value) -> Option<(String, String)> {
 /// A waiting task's picker, which Claude shows in its terminal.
 pub fn is_picker(t: &Row) -> bool {
     t.s("status") == Some("needs") && parse(t)["picker"] == true
+}
+
+/// The owner's choices on a task's picker, one list of 0-based option indexes per question in its
+/// order: Midna's `session.answer_question` answers (each with its question, which Midna checks the
+/// picker shows) and the line that says them ("Apple; S, M"). A single-select question takes one.
+pub fn picks(t: &Row, chosen: &Value) -> Result<(Value, String)> {
+    let ask = parse(t);
+    let questions = ask["questions"].as_array().cloned().unwrap_or_default();
+    let chosen = chosen.as_array().filter(|c| c.len() == questions.len());
+    let Some(chosen) = chosen else {
+        return err(400, format!("Pick an answer for each of the picker's {} questions.", questions.len()));
+    };
+    let (mut answers, mut said) = (Vec::new(), Vec::new());
+    for (q, c) in questions.iter().zip(chosen) {
+        let opts = q["options"].as_array().cloned().unwrap_or_default();
+        let idx: Option<Vec<usize>> = c.as_array().map(|c| c.iter().map(|i| i.as_u64().map(|i| i as usize).filter(|i| *i < opts.len())).collect()).unwrap_or(None);
+        let Some(mut idx) = idx else {
+            return err(400, format!("“{}” has no such option.", q["question"].as_str().unwrap_or("")));
+        };
+        idx.sort_unstable();
+        idx.dedup();
+        if idx.is_empty() || (q["multi"] != true && idx.len() != 1) {
+            let n = if q["multi"] == true { "at least one option" } else { "one option" };
+            return err(400, format!("Pick {n} for “{}”.", q["question"].as_str().unwrap_or("")));
+        }
+        said.push(idx.iter().map(|i| opts[*i]["label"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(", "));
+        answers.push(json!({"options": idx, "question": q["question"]}));
+    }
+    Ok((json!(answers), said.join("; ")))
 }
 
 fn parse(t: &Row) -> Value {

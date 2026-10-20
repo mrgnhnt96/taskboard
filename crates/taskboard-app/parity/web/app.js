@@ -999,11 +999,41 @@ function answerBtns(r) {
     + (at ? btn(`Send at ${at}`, 'answer', { id: r, arg: 'morning', grp: 'ask:' + r, title: 'Hold the answer until work hours start; the task doesn’t start before then' }) : '');
 }
 // What the task asks, option by option: a `tb question`'s options answer it with one click; a
-// picker's are answered in its terminal.
+// picker's are pressed in its terminal through Midna.
 function askOptions(ask, r) {
   const qs = (ask && ask.questions) || [];
-  return qs.map(q => (qs.length > 1 ? `<p><strong>${esc(q.question)}</strong></p>` : '')
-    + optRows(q.options || [], o => ask.picker ? `<strong>${esc(o.label)}</strong>` : btn(o.label, 'answer-opt', { id: r, arg: o.label, cls: 'opt', grp: 'ask:' + r }))).join('');
+  const grp = 'ask:' + r;
+  // A picker with one single-select question answers in a click; otherwise each click toggles a
+  // choice (one per single-select question) and Send answers once every question has one.
+  const oneClick = ask && ask.picker && qs.length === 1 && !qs[0].multi;
+  const picked = pickedOf(r);
+  const opt = (q, qi) => (o, oi) => !ask.picker ? btn(o.label, 'answer-opt', { id: r, arg: o.label, cls: 'opt', grp })
+    : oneClick ? btn(o.label, 'pick', { id: r, arg: String(oi), cls: 'opt', grp })
+    : btn(o.label, 'pick-opt', { id: r, arg: `${qi}:${oi}`, cls: picked.has(`${qi}:${oi}`) ? 'opt on' : 'opt', grp });
+  const send = ask && ask.picker && !oneClick
+    ? `<div class="row">${btn('Send', 'pick', { id: r, cls: 'primary', grp, disabled: !qs.every((q, qi) => [...picked].some(k => k.startsWith(qi + ':'))) })}</div>` : '';
+  return qs.map((q, qi) => (qs.length > 1 ? `<p><strong>${esc(q.question)}</strong></p>` : '')
+    + optRows((q.options || []).map((o, oi) => ({ ...o, oi })), o => opt(q, qi)(o, o.oi))).join('') + send;
+}
+// The picker choices toggled so far ("question:option"), kept with the drafts until sent.
+function pickedOf(r) {
+  return new Set((S.drafts['pick:' + r] || '').split(',').filter(Boolean));
+}
+function togglePick(r, key, ask) {
+  const picked = pickedOf(r);
+  const [qi] = key.split(':');
+  const q = ((ask && ask.questions) || [])[+qi] || {};
+  if (picked.has(key)) picked.delete(key);
+  else {
+    if (!q.multi) [...picked].filter(k => k.startsWith(qi + ':')).forEach(k => picked.delete(k));
+    picked.add(key);
+  }
+  S.drafts['pick:' + r] = [...picked].join(',');
+}
+// What the pick endpoint takes: the chosen option indexes, question by question.
+function pickAnswers(r, ask) {
+  const picked = [...pickedOf(r)].map(k => k.split(':').map(Number));
+  return ((ask && ask.questions) || []).map((q, qi) => picked.filter(([a]) => a === qi).map(([, b]) => b).sort((a, b) => a - b));
 }
 // Options without descriptions share one row; described ones get a row each.
 function optRows(opts, one) {
@@ -1905,6 +1935,12 @@ const ACTIONS = {
   'close-term': el => { S.termMenu = false; run(el, () => post(tp(el, '/close-terminal'), { force: el.dataset.arg === 'force' })); },
   'focus': el => run(el, () => post(tp(el, '/focus'), {})),
   'answer-opt': el => run(el, () => post(tp(el, '/answer'), { text: el.dataset.arg, when: 'now' })),
+  'pick-opt': el => { togglePick(el.dataset.id, el.dataset.arg, S.task && S.task.ask); renderAll(); },
+  'pick': el => {
+    const r = el.dataset.id;
+    const answers = el.dataset.arg != null ? [[+el.dataset.arg]] : pickAnswers(r, S.task && S.task.ask);
+    run(el, async () => { const v = await post(tp(el, '/pick'), { answers }); delete S.drafts['pick:' + r]; return v; });
+  },
   'term-focus': el => run(el, () => post(`/sessions/${encodeURIComponent(el.dataset.id)}/focus`)),
   'resume': el => run(el, () => post(tp(el, '/resume'), { mode: el.dataset.arg })),
   'meta-del': el => {

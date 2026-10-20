@@ -245,6 +245,44 @@ fn an_option_answers_with_its_label(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(note("ask:T3").map(|n| n.0), Some(sent_note(cx, &w)));
 }
 
+/// T2's terminal shows Claude's picker with `questions`.
+fn ask_picker(cx: &mut gpui_kit::TestAppContext, w: &WindowHandle<MainWindow>, rec: &parity::Recording, questions: Value) {
+    let ask = json!({"event": "hook.ask", "session": "fake-s1", "claude_session": "c-s1", "cwd": "", "tool_input": {"questions": questions}});
+    rec.board().post("report", ask).unwrap();
+    w.update(cx, |m, _, cx| m.refresh(cx)).unwrap();
+    open(cx, w, "T2");
+}
+
+#[gpui_kit::test]
+fn a_one_question_picker_answers_in_a_click(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    ask_picker(cx, &w, &rec, json!([{"question": "Pick a fruit", "header": "Fruit", "multiSelect": false, "options": [{"label": "Apple", "description": ""}, {"label": "Pear", "description": ""}]}]));
+    press(cx, &w, "pick", Some("1"));
+    assert_eq!(rec.last("tasks/T2/pick"), Some(json!({"answers": [[1]]})));
+    // No Midna in the test board: the refusal says why, under the options.
+    let (msg, err) = note("ask:T2").expect("a note");
+    assert!(err && msg.contains("Midna"), "{msg}");
+}
+
+#[gpui_kit::test]
+fn a_picker_s_choices_toggle_and_send_once_each_question_has_one(cx: &mut gpui_kit::TestAppContext) {
+    let (w, rec) = parity::window(cx);
+    ask_picker(cx, &w, &rec, json!([
+        {"question": "Pick a fruit", "header": "Fruit", "multiSelect": false, "options": [{"label": "Apple", "description": ""}, {"label": "Pear", "description": ""}]},
+        {"question": "Pick sizes", "header": "Size", "multiSelect": true, "options": [{"label": "S", "description": ""}, {"label": "M", "description": ""}, {"label": "L", "description": ""}]}]));
+    let acts = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| view::acts(&build(m).unwrap())).unwrap();
+    assert!(acts(cx).contains(&"pick!".to_string()), "Send waits for a choice per question: {:?}", acts(cx));
+    // A single-select question keeps its last choice; a multi-select one keeps them all.
+    for k in ["0:0", "0:1", "1:2", "1:0", "1:1", "1:1"] {
+        press(cx, &w, "pick-opt", Some(k));
+    }
+    assert_eq!(ui(|u| u.drafts.get("pick:T2").cloned()), Some("0:1,1:2,1:0".into()));
+    assert!(acts(cx).contains(&"pick".to_string()), "{:?}", acts(cx));
+    press(cx, &w, "pick", Some(""));
+    assert_eq!(rec.last("tasks/T2/pick"), Some(json!({"answers": [[1], [0, 2]]})));
+    assert!(ui(|u| u.drafts.contains_key("pick:T2")), "a refused pick keeps the choices");
+}
+
 #[gpui_kit::test]
 fn a_busy_button_sends_once(cx: &mut gpui_kit::TestAppContext) {
     let (w, rec) = parity::window(cx);
