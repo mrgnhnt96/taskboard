@@ -2,6 +2,8 @@
 //! the project that's done and not in a release yet (its PR merged, or done with no PR); the rest
 //! of the done work waits in Unreleased for the next cut. Releases are a per-project setting, off
 //! unless the project (`tb project set --releases on`) or config.toml's `[releases] on` turns them on.
+//! A release whose build or publish failed is marked failed (`tb release fail R3`): its tasks go back
+//! in Unreleased and its name is free, so the next cut can take the same name.
 
 use std::collections::HashMap;
 
@@ -19,7 +21,12 @@ CREATE TABLE IF NOT EXISTS releases(
 CREATE INDEX IF NOT EXISTS releases_project ON releases(project, id);
 "#;
 
-pub const ADDED: &[(&str, &str, &str)] = &[("tasks", "release_id", "INT")];
+pub const ADDED: &[(&str, &str, &str)] = &[
+    ("tasks", "release_id", "INT"),
+    ("releases", "failed_at", "TEXT"),
+    ("releases", "failed_by", "TEXT"),
+    ("releases", "failed_reason", "TEXT"),
+];
 
 pub const INDEXES: &str = "CREATE INDEX IF NOT EXISTS tasks_release ON tasks(release_id);";
 
@@ -43,6 +50,7 @@ const RELEASABLE: &str = "status = 'done' AND COALESCE(failed, 0) = 0 AND releas
 
 const NAME_MAX: usize = 80;
 const NOTES_MAX: usize = 2000;
+const REASON_MAX: usize = 500;
 
 fn overrides(app: &App) -> Result<Row> {
     Ok(jloads_obj(app.db.get_setting(SETTING)?.as_deref()))
@@ -141,9 +149,15 @@ fn clean_notes(body: &Value) -> Result<Option<String>> {
     Ok(if n.is_empty() { None } else { Some(n) })
 }
 
-/// Whether the project has a release with this name (any case) besides release `but`.
+/// Whether the project has a release with this name (any case) besides release `but`. A failed release
+/// doesn't hold its name.
 pub(crate) fn named(app: &App, project: &str, name: &str, but: i64) -> Result<bool> {
-    Ok(app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND name = ? COLLATE NOCASE AND id != ?", p![project, name, but])? > 0)
+    Ok(app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND name = ? COLLATE NOCASE AND id != ? AND failed_at IS NULL", p![project, name, but])? > 0)
+}
+
+/// Whether the project has a failed release with this name (any case): a cut by that name replaces it.
+fn failed_named(app: &App, project: &str, name: &str) -> Result<bool> {
+    Ok(app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND name = ? COLLATE NOCASE AND failed_at IS NOT NULL", p![project, name])? > 0)
 }
 
 fn name_taken(app: &App, project: &str, name: &str, but: i64) -> Result<()> {
@@ -161,11 +175,11 @@ pub(crate) fn unreleased_rows(app: &App, project: &str) -> Result<Vec<Row>> {
     app.db.q(&format!("SELECT * FROM tasks WHERE project = ? AND {RELEASABLE} ORDER BY finished_at, id"), p![project])
 }
 
-/// Each project's newest release (`ref`, `name`, `cut_at`) and its count of done tasks waiting in
+/// Each project's newest release that didn't fail (`ref`, `name`, `cut_at`) and its count of done tasks waiting in
 /// Unreleased, in two queries for every project at once (`GET /state`'s projects).
 pub(crate) fn latest_and_unreleased(app: &App) -> Result<(HashMap<String, Value>, HashMap<String, i64>)> {
     let mut latest = HashMap::new();
-    for r in app.db.q("SELECT * FROM releases WHERE id IN (SELECT MAX(id) FROM releases GROUP BY project)", p![])? {
+    for r in app.db.q("SELECT * FROM releases WHERE id IN (SELECT MAX(id) FROM releases WHERE failed_at IS NULL GROUP BY project)", p![])? {
         latest.insert(r.st("project"), json!({"ref": rf("release", r.id()), "name": r.v("name"), "cut_at": r.v("cut_at")}));
     }
     let mut unreleased = HashMap::new();
@@ -179,6 +193,7 @@ pub fn dict(app: &App, r: &Row) -> Result<Value> {
     Ok(json!({
         "id": r.id(), "ref": rf("release", r.id()), "project": r.v("project"), "name": r.v("name"),
         "notes": r.v("notes"), "cut_at": r.v("cut_at"), "cut_by": r.v("cut_by"), "updated_at": r.v("updated_at"),
+        "failed_at": r.v("failed_at"), "failed_by": r.v("failed_by"), "failed_reason": r.v("failed_reason"),
         "tasks": task_count(app, r.id())?,
     }))
 }
@@ -331,7 +346,9 @@ fn cut(app: &App, body: &Value) -> Result<Value> {
         let here = body_str(body, "project").is_empty() || crate::projects::project_for_path(app, cwd)?.as_deref() == Some(project.as_str());
         let path = crate::projects::list_projects(app)?.into_iter().find(|p| p["name"] == project.as_str()).and_then(|p| p["path"].as_str().map(str::to_string));
         let dir = if here { cwd.map(str::to_string) } else { path };
-        return Ok(json!({"project": project, "name": name, "unreleased": tasks.len(), "script": script(app, &project)?, "dir": dir}));
+        // `replaces`: the script may move the failed release's tag instead of refusing it.
+        let replaces = failed_named(app, &project, &name)?;
+        return Ok(json!({"project": project, "name": name, "unreleased": tasks.len(), "script": script(app, &project)?, "dir": dir, "replaces": replaces}));
     }
     let who = board::caller(app, body, board::OWNER);
     let id = put_in_release(app, &project, &name, notes, &tasks, &who)?;
@@ -372,6 +389,32 @@ fn set(app: &App, r: &str, body: &Value) -> Result<Value> {
     dict(app, &get(app, r)?)
 }
 
+/// `POST /releases/R<n>/fail`: its build or publish failed. Its tasks go back in Unreleased, each with
+/// a "release" log line, and its name is free for the next cut.
+fn fail(app: &App, r: &str, body: &Value) -> Result<Value> {
+    let rel = get(app, r)?;
+    let project = rel.st("project");
+    need_on(app, &project)?;
+    let r = rf("release", rel.id());
+    if rel.s("failed_at").is_some() {
+        return err(409, format!("{r} is already marked failed."));
+    }
+    let reason = body_str(body, "reason").trim().to_string();
+    if reason.chars().count() > REASON_MAX {
+        return err(400, format!("A failed release's reason is {REASON_MAX} characters at most."));
+    }
+    let reason = if reason.is_empty() { None } else { Some(reason) };
+    let who = board::caller(app, body, board::OWNER);
+    let now = now_iso();
+    let name = rel.st("name");
+    for t in app.db.q("SELECT * FROM tasks WHERE release_id = ?", p![rel.id()])? {
+        board::update_task(app, t.id(), fields!["release_id" => Value::Null])?;
+        board::log_event(app, t.id(), &who, "release", &format!("Back in Unreleased: release {name} ({r}) failed"))?;
+    }
+    app.db.update("releases", &json!(rel.id()), fields!["failed_at" => now, "failed_by" => who, "failed_reason" => reason, "updated_at" => now])?;
+    dict(app, &get(app, &r)?)
+}
+
 /// `POST /releases/move`: put a done task in another release, or back in Unreleased.
 fn move_task(app: &App, body: &Value) -> Result<Value> {
     let tid = need_ref(&body["task"], "task")?;
@@ -387,6 +430,9 @@ fn move_task(app: &App, body: &Value) -> Result<Value> {
         (None, "Back in Unreleased".to_string())
     } else {
         let rel = get(app, &to)?;
+        if rel.s("failed_at").is_some() {
+            return err(409, format!("{} failed; put the task back in Unreleased, or in a release that went out.", rf("release", rel.id())));
+        }
         if rel.s("project") != Some(project.as_str()) {
             return err(409, format!("{} is {}'s release; {} is in {project}.", rf("release", rel.id()), rel.st("project"), rf("task", tid)));
         }
@@ -405,6 +451,7 @@ pub fn route(app: &App, method: &str, rest: &[&str], query: &crate::api::Query, 
         ("GET", []) => list(app, query),
         ("POST", []) => app.db.tx(|| cut(app, body)),
         ("POST", ["move"]) => app.db.tx(|| move_task(app, body)),
+        ("POST", [r, "fail"]) => app.db.tx(|| fail(app, r, body)),
         ("GET", [r]) => show(app, r, query),
         ("POST", [r]) => app.db.tx(|| set(app, r, body)),
         _ => err(404, "There's nothing at that address."),

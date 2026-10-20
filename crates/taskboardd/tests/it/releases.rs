@@ -207,6 +207,43 @@ fn a_release_script_is_a_project_setting_the_cut_check_hands_back() {
     assert_eq!(v["release_script"], Value::Null);
 }
 
+#[test]
+fn a_failed_release_hands_its_work_and_name_back_for_the_next_cut() {
+    let (_d, app) = new_board();
+    releases_on(&app, "webapp");
+    call(&app, "POST", "/projects/webapp", json!({"release_script": "scripts/release.sh"}));
+    let a = task(&app, "webapp", "Login form", None);
+    done(&app, a, None);
+    call(&app, "POST", "/releases", json!({"name": "v1.0", "project": "webapp"}));
+    let b = task(&app, "webapp", "Logout", None);
+    done(&app, b, None);
+    let r = call(&app, "POST", "/releases", json!({"name": "v1.1", "project": "webapp"}));
+    assert_eq!(state_project(&app, "webapp")["latest_release"]["name"], "v1.1");
+
+    let f = call(&app, "POST", &format!("/releases/{}/fail", r["ref"].as_str().unwrap()), json!({"reason": "Notarizing timed out."}));
+    assert!(f["failed_at"].is_string(), "{f}");
+    assert_eq!(f["failed_reason"], "Notarizing timed out.");
+    assert_eq!(f["tasks"], 0);
+    assert_eq!(refs(&get(&app, "/releases/unreleased", "webapp")), vec![format!("T{b}")], "its work waits again");
+    assert_eq!(state_project(&app, "webapp")["latest_release"]["name"], "v1.0", "a failed release isn't the newest");
+    let log = call(&app, "GET", &format!("/tasks/{b}/log"), json!({}));
+    assert!(log.to_string().contains("release v1.1 (R2) failed"), "{log}");
+    assert_eq!(try_call(&app, "POST", "/releases/R2/fail", &[], json!({})).unwrap_err().0, 409, "already failed");
+    assert_eq!(try_call(&app, "POST", "/releases/move", &[], json!({"task": format!("T{b}"), "release": "R2"})).unwrap_err().0, 409, "no work goes in a failed release");
+
+    // The check tells the script it replaces a failed release, and the name cuts again.
+    let v = call(&app, "POST", "/releases", json!({"name": "v1.1", "project": "webapp", "check": true}));
+    assert_eq!(v["replaces"], true);
+    assert_eq!(try_call(&app, "POST", "/releases", &[], json!({"name": "V1.0", "project": "webapp", "check": true})).unwrap_err().0, 409, "a release that went out keeps its name");
+    let again = call(&app, "POST", "/releases", json!({"name": "v1.1", "project": "webapp"}));
+    assert_eq!(again["ref"], "R3");
+    assert_eq!(refs(&again), vec![format!("T{b}")]);
+    assert_eq!(again["failed_at"], Value::Null);
+    let names: Vec<(String, bool)> = get(&app, "/releases", "webapp")["releases"].as_array().unwrap().iter()
+        .map(|r| (r["name"].as_str().unwrap().to_string(), r["failed_at"].is_string())).collect();
+    assert_eq!(names, vec![("v1.1".into(), false), ("v1.1".into(), true), ("v1.0".into(), false)]);
+}
+
 fn state_project(app: &App, name: &str) -> Value {
     call(app, "GET", "/state", json!({}))["projects"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone()
 }

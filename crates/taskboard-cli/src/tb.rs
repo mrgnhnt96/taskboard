@@ -775,6 +775,14 @@ enum ReleaseCmd {
     },
     /// Put a done task in another release, or back in Unreleased
     Move { task: String, release: String },
+    /// Mark a release failed (its build or publish didn't go out): its tasks go back in Unreleased and
+    /// its name is free, so tb release cut can take it again
+    Fail {
+        release: String,
+        /// What went wrong
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3490,11 +3498,15 @@ fn release_project_query(c: &Ctx, project: Option<String>) -> String {
     q.join("&")
 }
 
-/// "R3 · v1.4 · 2026-10-15 · 5 tasks", for `tb releases` and `tb release show`.
+/// "R3 · v1.4 · 2026-10-15 · 5 tasks", for `tb releases` and `tb release show`; "· failed" after a
+/// failed one's date.
 fn release_line(r: &Value) -> String {
     let mut head = vec![r["ref"].as_str().unwrap_or("").to_string(), r["name"].as_str().unwrap_or("").to_string()];
     if let Some(d) = r["cut_at"].as_str().and_then(|s| s.get(..10)) {
         head.push(d.to_string());
+    }
+    if r["failed_at"].is_string() {
+        head.push("failed".into());
     }
     let n = r["tasks"].as_i64().unwrap_or(0);
     head.push(format!("{n} task{}", if n == 1 { "" } else { "s" }));
@@ -3538,10 +3550,10 @@ enum ReleaseCut {
 /// `tb release cut`: unless `no_script`, asks the board whether the cut would go through (Unreleased
 /// isn't empty, the name is free) and for the project's release script, runs the script with the
 /// release name, and records the release only when it exits 0. `call` posts to /releases; `run` runs
-/// a script (command, release name, folder) and gives its exit status.
+/// a script (command, release name, folder, whether it replaces a failed release) and gives its exit status.
 fn cut_release(
     call: &mut dyn FnMut(Value) -> Result<Value, String>,
-    run: &mut dyn FnMut(&str, &str, Option<&str>) -> Result<i32, String>,
+    run: &mut dyn FnMut(&str, &str, Option<&str>, bool) -> Result<i32, String>,
     body: Value,
     no_script: bool,
 ) -> Result<ReleaseCut, String> {
@@ -3550,7 +3562,7 @@ fn cut_release(
         check["check"] = json!(true);
         let v = call(check)?;
         if let Some(script) = v["script"].as_str() {
-            let code = run(script, v["name"].as_str().unwrap_or(""), v["dir"].as_str())?;
+            let code = run(script, v["name"].as_str().unwrap_or(""), v["dir"].as_str(), v["replaces"] == true)?;
             if code != 0 {
                 return Ok(ReleaseCut::ScriptFailed(code));
             }
@@ -3592,17 +3604,17 @@ fn checkout_branch(top: &str) -> String {
 }
 
 /// Runs a project's release script in its checkout with the release name as its one argument and in
-/// TB_RELEASE (so the script can tell tb started it), its output going straight to this terminal.
-fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+/// TB_RELEASE (so the script can tell tb started it), its output going straight to this terminal. When
+/// the name's last release failed, TB_RELEASE_REPLACE=1 tells the script it may replace that one's tag.
+fn run_release_script(script: &str, name: &str, dir: Option<&str>, replaces: bool) -> Result<i32, String> {
     let top = release_checkout(dir);
     out(&format!("Running the release script in {top}: {script} {name}"));
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{script} \"$1\""))
-        .arg("sh")
-        .arg(name)
-        .current_dir(&top)
-        .env("TB_RELEASE", name)
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(format!("{script} \"$1\"")).arg("sh").arg(name).current_dir(&top).env("TB_RELEASE", name).env_remove("TB_RELEASE_REPLACE");
+    if replaces {
+        cmd.env("TB_RELEASE_REPLACE", "1");
+    }
+    let status = cmd
         .stdin(std::process::Stdio::null())
         .status()
         .map_err(|e| format!("couldn't start the release script: {e}"))?;
@@ -3611,9 +3623,9 @@ fn run_release_script(script: &str, name: &str, dir: Option<&str>) -> Result<i32
 }
 
 /// `tb release cut`'s runner: the release script, once the checkout is on main or a release/* branch.
-fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<&str>) -> Result<i32, String> {
+fn run_release_script_on_a_release_branch(script: &str, name: &str, dir: Option<&str>, replaces: bool) -> Result<i32, String> {
     need_release_branch(&checkout_branch(&release_checkout(dir)))?;
-    run_release_script(script, name, dir)
+    run_release_script(script, name, dir, replaces)
 }
 
 fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
@@ -3670,6 +3682,15 @@ fn release_cmd(c: &Ctx, action: ReleaseCmd) -> Result<i32, String> {
         ReleaseCmd::Move { task, release } => {
             let v = c.call("POST", "/releases/move", Some(json!({"task": task_ref(&task)?, "release": release_ref(&release)?})))?;
             out(&format!("{}: {}.", v["task"].as_str().unwrap_or(""), v["text"].as_str().unwrap_or("")));
+        }
+        ReleaseCmd::Fail { release, reason } => {
+            let r = release_ref(&release)?;
+            if r == "unreleased" {
+                return Err("Unreleased isn't a release; mark one failed with tb release fail R<n>".into());
+            }
+            let v = c.call("POST", &format!("/releases/{r}/fail"), Some(json!({"reason": reason})))?;
+            let name = v["name"].as_str().unwrap_or("");
+            out(&format!("Marked {} failed; its tasks are back in Unreleased. Cut it again with: tb release cut {name}", v["ref"].as_str().unwrap_or("")));
         }
     }
     Ok(0)
@@ -7677,7 +7698,7 @@ mod tests {
                     json!({"ref": "R1", "name": "v1.4"})
                 })
             },
-            &mut |s, n, d| {
+            &mut |s, n, d, _| {
                 ran.push((s.to_string(), n.to_string(), d.map(str::to_string)));
                 Ok(code)
             },
@@ -7720,6 +7741,17 @@ mod tests {
     }
 
     #[test]
+    fn release_cut_tells_the_script_when_it_replaces_a_failed_release() {
+        for replaces in [true, false] {
+            let mut told = None;
+            let check = json!({"name": "v1.4", "script": "scripts/release.sh", "replaces": replaces});
+            let r = cut_release(&mut |b| Ok(if b["check"] == true { check.clone() } else { json!({"ref": "R2"}) }), &mut |_, _, _, re| { told = Some(re); Ok(0) }, json!({"name": "v1.4"}), false);
+            assert!(r.is_ok());
+            assert_eq!(told, Some(replaces));
+        }
+    }
+
+    #[test]
     fn release_cut_runs_only_on_main_or_a_release_branch() {
         assert!(need_release_branch("main").is_ok());
         assert!(need_release_branch("release/1.4").is_ok());
@@ -7730,7 +7762,7 @@ mod tests {
     #[test]
     fn release_cut_stops_when_the_board_refuses_the_check() {
         let mut ran = false;
-        let r = cut_release(&mut |_| Err("Nothing to release".into()), &mut |_, _, _| { ran = true; Ok(0) }, json!({"name": "v1"}), false);
+        let r = cut_release(&mut |_| Err("Nothing to release".into()), &mut |_, _, _, _| { ran = true; Ok(0) }, json!({"name": "v1"}), false);
         assert_eq!(r.err().as_deref(), Some("Nothing to release"));
         assert!(!ran, "a doomed cut never runs the script");
     }
@@ -7741,8 +7773,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let d = dir.to_string_lossy().to_string();
         std::fs::write(dir.join("release.sh"), "test \"$#\" = 1 && test \"$1\" = 'v1 rc' && test \"$TB_RELEASE\" = 'v1 rc' && exit 7\nexit 1\n").unwrap();
-        assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d)).unwrap(), 7);
-        assert_eq!(run_release_script("true", "v1", Some(&d)).unwrap(), 0);
+        assert_eq!(run_release_script("sh release.sh", "v1 rc", Some(&d), false).unwrap(), 7);
+        assert_eq!(run_release_script("true", "v1", Some(&d), false).unwrap(), 0);
+        assert_eq!(run_release_script("test \"$TB_RELEASE_REPLACE\" = 1 #", "v1", Some(&d), true).unwrap(), 0);
+        assert_eq!(run_release_script("test -z \"$TB_RELEASE_REPLACE\" #", "v1", Some(&d), false).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -7760,7 +7794,7 @@ mod tests {
         let run = |branch: &str| {
             git(&["checkout", "-q", "-B", branch]);
             let _ = std::fs::remove_file(&ran);
-            let r = run_release_script_on_a_release_branch(&script, "v1", Some(&d));
+            let r = run_release_script_on_a_release_branch(&script, "v1", Some(&d), false);
             (r, ran.exists())
         };
 
