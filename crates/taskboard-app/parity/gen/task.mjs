@@ -80,7 +80,7 @@ const pr = (over = {}) => ({ repo: 'webapp', num: 42, url: 'https://github.com/a
 function reset(st, route) {
   w.set('S.state', st);
   w.set('S.route', route);
-  w.run(`S.drafts = {}; S.busy = new Set(); S.notes = {}; S.reveal = {}; S.metaEdit = {}; S.handoffs = {}; S.logFilter = 'all'; S.attMenu = null; S.attEdit = null; S.attDrop = false; S.taskErr = '';`);
+  w.run(`S.drafts = {}; S.busy = new Set(); S.notes = {}; S.reveal = {}; S.metaEdit = {}; S.handoffs = {}; S.logFilter = 'all'; S.attMenu = null; S.attEdit = null; S.attDrop = false; S.termMenu = false; S.taskErr = '';`);
 }
 
 const cases = [];
@@ -105,6 +105,7 @@ const ui = o => ({ ui: o, setup: [
   o.att_menu ? `S.attMenu = ${JSON.stringify(o.att_menu)};` : '',
   o.att_edit ? `S.attEdit = ${JSON.stringify(o.att_edit)};` : '',
   o.att_drop ? 'S.attDrop = true;' : '',
+  o.term_menu ? 'S.termMenu = true;' : '',
   o.handoffs ? `Object.assign(S.handoffs, ${JSON.stringify(o.handoffs)});` : '',
   o.meta_edit ? `Object.assign(S.metaEdit, ${JSON.stringify(o.meta_edit)});` : '',
   o.folds ? Object.entries(o.folds).map(([k, v]) => `localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)});`).join('') : '',
@@ -279,6 +280,13 @@ const log = [
 for (const f of ['all', 'status', 'turn', 'checkpoint', 'question', 'found', 'jira']) panel(`log: ${f}`, task({ log }), { ...withUi({ log_filter: f }), tab: 'log' });
 panel('log: empty', task({ log: [] }), { ...withUi({}), tab: 'log' });
 panel('log: none of kind', task({ log: [log[0]] }), { ...withUi({ log_filter: 'jira' }), tab: 'log' });
+
+// ---- timeline, terminal menu, footer tabs
+panel('working: terminal menu open', working, withUi({ term_menu: true }));
+panel('idle: terminal menu open', task({ ...live('idle') }), withUi({ term_menu: true }));
+panel('done, terminal gone: terminal menu open', done({ ...live('gone') }), withUi({ term_menu: true }));
+panel('what tab', working, { ...withUi({}), tab: 'what' });
+panel('what tab: no prompt', task({ ...live('working'), prompt: '' }), { ...withUi({}), tab: 'what' });
 
 // ---- trail
 panel('trail back button', working, { ...withUi({}), from: 'T2,T5' });
