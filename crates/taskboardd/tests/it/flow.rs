@@ -637,11 +637,11 @@ fn the_plan_page_turns_picked_issues_into_a_goal_in_waves() {
     assert_eq!(runner::goal_blocker(&b.app, &later, &goal).unwrap().as_deref(), Some("Waits for wave 1"));
     assert_eq!(runner::goal_blocker(&b.app, &b.task(tasks[0].id()), &goal).unwrap(), None);
 
-    // Into an existing goal, running now that all its tasks are queued: a queued task in its last wave. Then defer.
+    // Into an existing goal: a planned task in its last wave. Then defer.
     let more = issue(&b, "One more", "bug");
     b.post("backlog/bulk", json!({"ids": [more], "action": "goal", "goal_id": gid}));
     let t = b.app.db.q1("SELECT * FROM tasks WHERE goal_id = ? ORDER BY id DESC", p![gid]).unwrap().unwrap();
-    assert_eq!((t.s("status"), t.i("wave")), (Some("queued"), Some(2)));
+    assert_eq!((t.s("status"), t.i("wave")), (Some("planned"), Some(2)));
     b.post("backlog/bulk", json!({"ids": [left], "action": "defer"}));
     assert_eq!(b.get("backlog/triage")["untriaged"], 0);
     assert_eq!(b.get(&format!("backlog/{left}"))["state"], "defer");

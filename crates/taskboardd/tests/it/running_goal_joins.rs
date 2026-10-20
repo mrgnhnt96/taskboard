@@ -149,8 +149,28 @@ fn one_task_started_on_its_own_doesnt_make_the_goal_running() {
     let (g, t) = b.goal("Login", false);
     board::update_task(&b.app, t[0], fields!["status" => "working"]).unwrap();
     let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later"]}));
-    assert_eq!(r["why"], format!("planned: G{g} isn't running"), "the rest of the goal is still planned, so it wasn't run");
+    assert_eq!(r["why"], format!("planned: G{g} isn't running"), "the goal was never run");
     assert_eq!(b.status(ids(&r)[0]), "planned");
+
+    // Queuing every task by hand isn't a Run either.
+    for id in &t {
+        board::update_task(&b.app, *id, fields!["status" => "queued"]).unwrap();
+    }
+    let r = b.report("tb.new_task", json!({"goal": format!("G{g}"), "title": "Afterthought"}));
+    assert_eq!(r["status"], "planned");
+}
+
+#[test]
+fn a_task_kept_planned_doesnt_stop_the_run_taking_new_tasks() {
+    let b = new_board();
+    let (g, t) = b.goal("Login", true);
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Later::next run"], "planned": true}));
+    assert_eq!(b.status(ids(&r)[0]), "planned");
+    board::update_task(&b.app, t[1], fields!["status" => "planned"]).unwrap();
+
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Fix::found now"]}));
+    assert_eq!(r["why"], format!("queued: G{g} is running"));
+    assert_eq!(b.status(ids(&r)[0]), "queued");
 }
 
 #[test]
