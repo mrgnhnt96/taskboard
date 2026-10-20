@@ -1149,7 +1149,11 @@ function termActions(t) {
 // The PR's way to the main branch: opened, checks and review, merged.
 function prNodes(t) {
   const p = t.pr;
-  if (!p || p.num == null) return [tlNode('todo', tlHead('Pull request')), tlNode('todo', tlHead('Checks and review')), tlNode('todo', tlHead('Merged'))];
+  if (!p || p.num == null) {
+    // The whole way the PR will take, its steps still ahead.
+    const ahead = ['Checks', 'You', 'Review'].map(name => stepHtml({ name, st: 'todo' }));
+    return [tlNode('todo', tlHead('Pull request')), tlNode('todo', tlHead('Checks and review'), `<div class="pr-steps" aria-label="Checks and review">${ahead.join('<span class="pr-step-line" aria-hidden="true"></span>')}</div>`), tlNode('todo', tlHead('Merged'))];
+  }
   const key = t.jira && t.jira.key;
   const title = key && (p.title || '').startsWith(key) ? p.title.slice(key.length).replace(/^[\s:–-]+/, '') : p.title;
   const num = `<b>#${esc(p.num)}</b> ${esc(title || p.repo || '')}`;

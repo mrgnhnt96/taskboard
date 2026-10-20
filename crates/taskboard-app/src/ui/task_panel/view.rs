@@ -260,8 +260,6 @@ pub enum BoxTone {
 pub enum Fold {
     /// A step's findings (`step_results`), under its headline.
     Findings,
-    /// The rest of a long note for testers, after its first block.
-    Note,
     /// A stuck-looking terminal's last lines, under its check-in.
     Tail,
 }
@@ -271,7 +269,6 @@ impl Fold {
     pub fn key(self) -> &'static str {
         match self {
             Fold::Findings => "tb.fold.findings",
-            Fold::Note => "tb.fold.note",
             Fold::Tail => "tb.fold.tail",
         }
     }
@@ -985,11 +982,12 @@ fn started_detail(c: &Ctx, t: &Value) -> Vec<Node> {
     out
 }
 
-/// A terminal's state: what's running in its background, else its status.
+/// A terminal's state, as words beside its name (the row's dot is its one marker): what's running in
+/// its background, else its status.
 fn term_state(x: &Value) -> Node {
     let st = s(x, "status");
     if !x["background"].is_null() {
-        return pill(fmt::background_label(&x["background"]), Tone::Working);
+        return txt(fmt::background_label(&x["background"]), St::Time);
     }
     let label = match st {
         "working" => "Working",
@@ -998,7 +996,7 @@ fn term_state(x: &Value) -> Node {
         "offline" => "Offline",
         _ => "Idle",
     };
-    pill(label, st_tone(st))
+    txt(label, St::Time)
 }
 
 /// A step that ran a round (`step_results`): its headline, opening onto what came of it.
@@ -1322,32 +1320,67 @@ fn blocked_row(c: &Ctx, t: &Value) -> Option<Node> {
 }
 
 /// The note for testers the board posts on the ticket at merge (`[jira] merged_note`), or that it's waiting for one.
+/// It grows, so it stacks like Attached: the label on top, the note full width under it.
 fn merged_note_row(c: &Ctx, t: &Value) -> Option<Node> {
     let n = obj(t, "merged_note")?;
-    let mut body = Vec::new();
+    let mut body = vec![txt("Note for testers", St::LrowKey)];
     if b(n, "waiting") {
         let state = if opt_s(n, "text").is_some() { "Posting it, then moving the ticket" } else { "Merged without one; the ticket waits" };
         body.push(el(K::Line, vec![pill("Waiting", Tone::Needs), txt(state, St::Small)]));
     }
     if let Some(text) = opt_s(n, "text") {
-        body.push(folded_note(c, text));
+        let (preview, more) = note_preview(text);
+        body.push(preview);
+        if more {
+            body.push(c.btn("Show all", Act::new("note-all", "", s(t, "ref"), ""), Look::Link, false, None));
+        }
     }
-    Some(lrow("Note for testers", body))
+    Some(el(K::Stack, body))
 }
 
-/// Notes longer than this show their first block, the rest behind Show more.
-const NOTE_FOLD_CHARS: usize = 280;
+/// The lines of a note the panel shows; Show all opens the whole note in a dialog.
+const NOTE_PREVIEW_LINES: usize = 3;
 
-/// `note_body(text)`, folded after its first block when the note is long.
-fn folded_note(c: &Ctx, text: &str) -> Node {
-    let Node::El { k, tip, mut kids } = note_body(text) else { unreachable!("note_body is an El") };
-    if kids.len() < 2 || text.chars().count() <= NOTE_FOLD_CHARS {
-        return Node::El { k, tip, kids };
+/// `note_body` of the note's first lines, and whether more of it is behind Show all.
+pub fn note_preview(text: &str) -> (Node, bool) {
+    let text = join_labels(text);
+    let mut lines = text.split('\n');
+    let mut head = Vec::new();
+    let mut shown = 0;
+    for line in lines.by_ref() {
+        if shown == NOTE_PREVIEW_LINES {
+            if line.trim().is_empty() {
+                continue;
+            }
+            return (note_body(&head.join("\n")), true);
+        }
+        shown += usize::from(!line.trim().is_empty());
+        head.push(line);
     }
-    let rest = kids.split_off(1);
-    let open = c.fold_open(Fold::Note, true);
-    kids.push(fold(Fold::Note, open, txt(if open { "Show less" } else { "Show more" }, St::Small), vec![el(K::Md, rest)]));
-    Node::El { k, tip, kids }
+    (note_body(&text), false)
+}
+
+/// A line that's only a bold label (`**What to test:**`) takes the line under it as its value, so every
+/// label reads `**Label:** value` on one line; a list under a label stays a list.
+fn join_labels(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim_end();
+        let label = line.trim();
+        let is_label = label.len() > 4 && label.starts_with("**") && (label.ends_with(":**") || label.ends_with("**:")) && !label[2..label.len() - 3].contains("**");
+        let next = lines.get(i + 1).map(|l| l.trim()).unwrap_or("");
+        let is_item = next.starts_with("- ") || next.starts_with("* ") || next.starts_with("• ");
+        if is_label && !next.is_empty() && !is_item {
+            out.push(format!("{label} {next}"));
+            i += 2;
+        } else {
+            out.push(line.to_string());
+            i += 1;
+        }
+    }
+    out.join("\n")
 }
 
 /// One PR step: name, state, sub (`checksStep` / `reviewStep` / `mergeStep`).
@@ -1822,18 +1855,15 @@ fn no_pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     if opt_s(t, "no_pr").is_some() || t["ships_pr"] == false {
         return Vec::new();
     }
-    let mut body = Vec::new();
-    // The review step (WD) runs before the PR opens ("Not reviewed by WD yet" before its first round);
-    // a round it ran is its own node.
-    if let Some(wd) = obj(t, "wd").filter(|_| shown_bar(t).is_none()) {
-        body.push(step_nodes(vec![wd_step(wd)]));
-    }
-    if let Some(so) = obj(t, "stack_on") {
-        body.push(stacks_line(c, so));
-    }
+    let pr = obj(t, "stack_on").map(|so| stacks_line(c, so)).into_iter().collect();
+    // The whole way the PR will take, as it shows once the PR is open: the review step (WD) runs before
+    // the PR opens ("Not reviewed by WD yet" before its first round; a round it ran is its own node),
+    // then the steps still ahead.
+    let mut steps: Vec<PrStep> = obj(t, "wd").filter(|_| shown_bar(t).is_none()).map(wd_step).into_iter().collect();
+    steps.extend(["Checks", "You", "Review"].map(|name| step(name, StepSt::Todo, None, None)));
     vec![
-        tl_node(TlSt::Todo, tl_head(tl_name("Pull request"), "", ""), body, false),
-        tl_node(TlSt::Todo, tl_head(tl_name("Checks and review"), "", ""), vec![], false),
+        tl_node(TlSt::Todo, tl_head(tl_name("Pull request"), "", ""), pr, false),
+        tl_node(TlSt::Todo, tl_head(tl_name("Checks and review"), "", ""), vec![step_nodes(steps)], false),
         tl_node(TlSt::Todo, tl_head(tl_name("Merged"), "", ""), vec![], false),
     ]
 }
@@ -2323,6 +2353,7 @@ fn two_ws(line: &str) -> bool {
 
 /// `noteBody(text)`: paragraphs (lines joined by line breaks), `- ` lists and indented code.
 pub fn note_body(text: &str) -> Node {
+    let text = join_labels(text);
     let mut out = Vec::new();
     let mut kind: Option<&str> = None;
     let mut buf: Vec<String> = Vec::new();
