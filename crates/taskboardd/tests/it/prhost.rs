@@ -394,6 +394,44 @@ fn a_pr_with_no_checks_moves_on_to_review_once_the_grace_runs_out_without_anothe
     assert_eq!(b.flow(id)["checked_at"], read_at, "the last read's time stays");
 }
 
+fn bar_checks(b: &Board, id: i64) -> Value {
+    board::task_card(&b.app, &b.task(id)).unwrap()["pr"]["bar"]["checks"].clone()
+}
+
+#[test]
+fn expected_checks_that_haven_t_posted_aren_t_not_needed() {
+    // #556: the Checks step said "Not needed" while tb pr status waited on build and e2e.
+    let b = board_with(|c| {
+        c.pr.projects.insert("webapp".into(), PrProject { expected: Some(vec!["build".into(), "e2e".into()]), expected_wait_mins: Some(30.0), ..Default::default() });
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.clear();
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "checks");
+    assert_eq!(bar_checks(&b, id), "none_yet");
+    // They waited out and never posted: still not "not needed", the stage shows its own state.
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 31.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    assert_eq!(bar_checks(&b, id), Value::Null);
+}
+
+#[test]
+fn no_checks_are_not_needed_only_once_the_grace_runs_out() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.clear();
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(bar_checks(&b, id), "none_yet", "a check may still register within the grace");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 16.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(bar_checks(&b, id), "not_needed");
+}
+
 #[test]
 fn tb_pr_merge_waits_while_no_check_has_posted_within_the_grace() {
     // #491: with no expected checks set, an empty record held the stage but not the merge.
