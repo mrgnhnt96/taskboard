@@ -551,9 +551,15 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
     let pr_url = c["pr"]["url"].as_str().filter(|u| !u.is_empty()).map(str::to_string);
     let mut act = div().flex().flex_none().w(px(84.)).justify_end();
     if row.st == St::Needs {
-        act = act.child(kit::btn_small(t, SharedString::from(format!("goals-answer-{r}")), "Answer").on_click(cx.listener(move |m, _, _, cx| m.open_task(o1.clone(), cx))));
+        act = act.child(kit::btn_small(t, SharedString::from(format!("goals-answer-{r}")), "Answer").on_click(cx.listener(move |m, _, _, cx| {
+            cx.stop_propagation();
+            m.open_task(o1.clone(), cx);
+        })));
     } else if let (St::Review, Some(url)) = (row.st, pr_url) {
-        act = act.child(kit::btn_small(t, SharedString::from(format!("goals-pr-{r}")), "Open PR").on_click(move |_, _, cx| cx.open_url(&url)));
+        act = act.child(kit::btn_small(t, SharedString::from(format!("goals-pr-{r}")), "Open PR").on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            cx.open_url(&url);
+        }));
     }
     let hover = t.panel_2;
     let link = t.accent;
@@ -569,6 +575,8 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
         .border_color(t.divider)
         .text_size(px(13.))
         .hover(move |s| s.bg(hover))
+        .cursor_pointer()
+        .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx)))
         .child(div().flex_none().child(status::chip(t, row.st)))
         .child(div().flex_none().w(px(36.)).text_size(px(12.)).font_family(t.mono_font.clone()).text_color(t.muted).child(r.clone()))
         .child(fr(
@@ -577,10 +585,8 @@ fn task_row(t: &Theme, c: &Value, cx: &mut Context<MainWindow>) -> Stateful<Div>
                     .id(SharedString::from(format!("goals-task-title-{r}")))
                     .min_w_0()
                     .truncate()
-                    .cursor_pointer()
                     .hover(move |s| s.text_color(link).underline())
-                    .child(s(c, "title").to_string())
-                    .on_click(cx.listener(move |m, _, _, cx| m.open_task(o2.clone(), cx))),
+                    .child(s(c, "title").to_string()),
             ),
             1.,
         ))
