@@ -221,13 +221,15 @@ pub fn held(app: &App, t: &Row) -> Result<Option<String>> {
 /// no longer gates an ask.
 const PAST_ASKING: &[&str] = &["rereview", "merge", "waits", "stack", "merged", "declined"];
 
-/// Whether the owner's review gates this ask (the `ask` stage): it's on for the project, the owner
-/// hasn't reviewed the PR, the PR isn't past asking, and nobody has been asked on it yet (by the
-/// board, or on the host: anyone on the PR's reviewer list or who reviewed it, the board's own
-/// account aside). Whatever the task's status, so a reopened task waits too; a later swap or drop
-/// doesn't.
+/// Whether the owner's review gates this ask (the `ask` stage): it's on for the project, so is owner
+/// review (off, the owner is never asked, so nothing waits on them), the owner hasn't reviewed the
+/// PR, the PR isn't past asking, and nobody has been asked on it yet (by the board, or on the host:
+/// anyone on the PR's reviewer list or who reviewed it, the board's own account aside). Whatever
+/// the task's status, so a reopened task waits too; a later swap or drop doesn't.
 pub fn needs_owner_review(app: &App, t: &Row) -> Result<bool> {
-    if !reviewers::ask_stage_on(app, t.s("project")) || PAST_ASKING.contains(&t.s("pr_phase").unwrap_or("")) {
+    if !reviewers::ask_stage_on(app, t.s("project"))
+        || !crate::prflow::owner_review_on(app, t.s("project"))
+        || PAST_ASKING.contains(&t.s("pr_phase").unwrap_or("")) {
         return Ok(false);
     }
     let f = flow(t);

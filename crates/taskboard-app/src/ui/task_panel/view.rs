@@ -1666,6 +1666,7 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         "waiting" => step("You", StepSt::Ask, Some("Waiting on you"), None),
         "reviewed" => step("You", StepSt::Done, Some("Reviewed"), None),
         "skipped" => step("You", StepSt::Done, Some("Skipped"), None),
+        "off" => step("You", StepSt::Done, Some("Off"), None),
         _ => step("You", StepSt::Todo, None, None),
     });
     let url = opt_s(p, "url").filter(|u| is_web(u)).map(str::to_string);

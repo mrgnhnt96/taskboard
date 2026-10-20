@@ -1216,6 +1216,24 @@ fn one_reviewer_s_new_request_for_changes_doesn_t_answer_another_s_rereview() {
 }
 
 #[test]
+fn with_owner_review_off_the_ask_stage_doesn_t_wait_for_the_owner() {
+    let b = board_with(|c| {
+        c.reviewers.ask_stage = true;
+        c.pr.owner_review = Some(false);
+    });
+    let _h = fake(&b, green());
+    let id = b.pr_task(BB);
+    crew(&b);
+    // Not done yet, so the board doesn't mark it reviewed: nobody would ever ask the owner.
+    b.app.db.x("UPDATE tasks SET status = 'working' WHERE id = ?", vec![json!(id)]).unwrap();
+    poll(&b);
+    assert!(!b.flow(id).as_object().unwrap().contains_key("reviewed"));
+    assert!(!taskboardd::asks::needs_owner_review(&b.app, &b.task(id)).unwrap());
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana"]}));
+    assert_eq!(states(&b, id), vec![pair("Ana", "open")]);
+}
+
+#[test]
 fn the_owner_s_review_gates_a_first_ask_whatever_the_status_and_not_a_later_swap() {
     let b = board_with(|_| {});
     let _h = fake(&b, green());

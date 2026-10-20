@@ -67,6 +67,8 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "reviewed"
     } else if review_skipped {
         "skipped"
+    } else if !prflow::owner_review_on(app, t.s("project")) {
+        "off"
     } else if t.s("status") == Some("done") && prflow::awaiting_owner(t) {
         "waiting"
     } else {
