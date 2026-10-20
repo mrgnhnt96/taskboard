@@ -935,6 +935,8 @@ impl Draw<'_> {
             St::StepSub => d.text_size(px(11.5)).text_center(),
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             // No color of its own: a step still to come is muted.
+            St::TlHWarn => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn_fg),
+            St::BannerText => d.text_size(px(14.)).line_height(relative(1.5)).text_color(if boxed == Some(BoxTone::Lost) { t.text } else { t.warn_text }),
             St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD),
             St::TlS => d.text_size(px(12.)).text_color(t.muted),
             St::TlText => d.text_size(px(13.)).line_height(relative(1.5)).text_color(t.text),
@@ -954,6 +956,7 @@ impl Draw<'_> {
         match k {
             K::Fold(f, open) => self.c_fold(m, n, f, open, boxed, cx),
             K::Box(tone) => self.c_box(m, n, tone, cx),
+            K::Banner(tone) => self.c_banner(m, n, tone, cx),
             K::Top => self.c_top(m, n, boxed, cx),
             K::Head => self.c_head(m, n, boxed, cx),
             K::DropItem(kind) => self.c_drop_item(m, n, kind, boxed, cx),
@@ -1117,6 +1120,29 @@ impl Draw<'_> {
             .rounded(px(12.))
             .bg(bg)
             .when_some(line, |d, c| d.border_1().border_color(c))
+            .text_size(px(14.))
+            .children(kids)
+            .into_any_element()
+    }
+
+    /// `.needs-banner`: full width under the chips (bleeding past the sheet's 24px sides), 14px 24px,
+    /// a line above and below.
+    #[inline(never)]
+    fn c_banner(&mut self, m: &MainWindow, n: &Node, tone: BoxTone, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let (bg, line) = if tone == BoxTone::Lost { (t.down_soft, t.down_line) } else { (t.warn_soft, t.warn_line) };
+        let kids = self.kids(m, n, Some(tone), cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .mx(px(-24.))
+            .px(px(24.))
+            .py(px(14.))
+            .bg(bg)
+            .border_t_1()
+            .border_b_1()
+            .border_color(line)
             .text_size(px(14.))
             .children(kids)
             .into_any_element()
@@ -1838,6 +1864,13 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
         Look::Soft => soft(t, id, label),
         Look::SoftSmall => sm(soft(t, id, label)),
         Look::Danger => danger(t, id, label),
+        // `.opt`: 30px, the banner's line around a deeper tint.
+        Look::Opt => raw(t, id, label).h(px(30.)).px(px(12.)).rounded(px(7.)).border_color(t.warn_line).bg(t.card).text_color(t.warn_text).hover(|d| d.border_color(t.warn)),
+        // `.write`: a link with the open-elsewhere icon after it.
+        Look::Out => {
+            let c = t.warn;
+            div().id(id).flex().flex_none().items_center().gap(px(6.)).min_h(px(30.)).cursor_pointer().text_size(px(13.)).text_color(c).hover(|d| d.underline()).child(label).child(paint(Ic::Focus, 12., 2., c))
+        }
         // `.btn.link`: accent text, underlined.
         Look::Link => div().id(id).flex_none().self_start().cursor_pointer().min_h(px(28.)).flex().items_center().text_size(px(13.)).text_color(t.accent_fg).underline().child(label),
         // `.btn.link.inline`

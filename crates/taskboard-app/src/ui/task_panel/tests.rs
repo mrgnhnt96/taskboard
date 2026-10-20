@@ -130,18 +130,54 @@ fn a_card_shows_until_the_task_answers() {
 }
 
 #[::core::prelude::v1::test]
-fn a_needs_box_without_a_terminal_still_offers_an_action() {
+fn a_stuck_working_task_shows_the_stuck_banner() {
+    let text = |task: Value| json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    let stuck = json!({"why": "Waits on a y/n prompt", "tail": "Continue? (y/n)"});
+    let t = text(json!({"ref": "T5", "id": 5, "status": "working", "stuck": stuck}));
+    assert!(t.contains("may be stuck") && t.contains("Waits on a y/n prompt"), "{t}");
+    // A question outranks it: one banner per task.
+    let t = text(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "stuck": stuck}));
+    assert!(!t.contains("may be stuck") && t.contains("Q?"), "{t}");
+    let t = text(json!({"ref": "T5", "id": 5, "status": "working"}));
+    assert!(!t.contains("may be stuck"), "{t}");
+}
+
+#[::core::prelude::v1::test]
+fn write_an_answer_opens_its_terminal_or_a_new_one() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
-    let asked = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"});
-    let a = acts(asked.clone());
-    assert!(a.contains("\"answer\"") && !a.contains("\"focus\""), "{a}");
-    let fields = json!(view::values(&tree(&json!({"state": {}, "task": asked, "tab": "overview", "ui": {"drafts": {"answer:T5": "yes"}}}))));
-    assert_eq!(fields, json!(["yes"]), "the answer box shows its draft");
+    // No terminal but a question: focus reopens one that asks it again, keeping the question.
+    let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"}));
+    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+    // No terminal and nothing asked: a new one picks up from its handoff.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention"}));
-    assert!(a.contains("\"resume:fresh\""), "{a}");
+    assert!(a.contains("\"resume:fresh\"") && !a.contains("\"focus\""), "{a}");
     // With its terminal open, the terminal is the action.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
     assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+}
+
+#[::core::prelude::v1::test]
+fn a_question_shows_once_in_the_banner() {
+    // Asked just now, so its time reads as a clock time rather than a date.
+    let asked = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let iso = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let (started_at, updated_at) = (iso(asked - chrono::Duration::minutes(140)), iso(asked));
+    let task = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?",
+                      "started_at": started_at, "updated_at": updated_at,
+                      "ask": {"questions": [{"question": "Add the generated patterns?", "options": [{"label": "Yes, add them"}, {"label": "No"}]}]}});
+    let panel = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    let text = json!(view::text(&panel)).to_string();
+    assert_eq!(text.matches("Add the generated patterns?").count(), 1, "{text}");
+    assert!(!text.contains("Needs you"), "no Needs-you pill beside the banner: {text}");
+    let at = crate::fmt::hhmm(&updated_at);
+    assert!(text.contains("Waiting on you") && text.contains("after 2h 20m of work") && text.contains(&at), "{text}");
+    assert!(at.ends_with("AM") || at.ends_with("PM"), "{at}");
+    let a = json!(view::acts(&panel)).to_string();
+    assert!(a.contains("\"answer-opt:Yes, add them\"") && a.contains("\"answer-opt:No\""), "{a}");
+    // A lost terminal waits too, but nothing was asked.
+    let lost = json!({"ref": "T5", "id": 5, "status": "needs", "lost": true, "updated_at": "2026-10-09T11:34:00Z"});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": lost, "tab": "overview"})))).to_string();
+    assert!(text.contains("Waiting on you") && !text.contains("Asked"), "{text}");
 }
 
 // ------------------------------------------------------------------ actions
