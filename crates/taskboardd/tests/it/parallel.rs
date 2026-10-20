@@ -11,7 +11,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::{PrLink, RowExt};
-use taskboardd::{board, midna, p, prflow, progress, reports, runner, worktrees};
+use taskboardd::{board, midna, p, prflow, progress, reports, runner, slot_ageing, worktrees};
 
 struct Board {
     app: Arc<App>,
@@ -729,4 +729,38 @@ fn the_no_task_ask_names_no_pr_for_work_that_won_t_end_in_one() {
     let out = b.report("hook.stop", "s1", json!({"last_message": "Tweaked."}));
     let block = out["block"].as_str().expect("the stop is blocked");
     assert!(block.contains("--here (add --no-pr if it won't end in a PR)"), "{block}");
+}
+
+#[test]
+fn idle_slots_lose_their_build_output_then_the_checkout_but_never_below_min() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let ts: Vec<i64> = (1..=4).map(|i| b.task(&format!("T{i}"), json!({"goal_id": g}))).collect();
+    runner::start_queued(&b.app).unwrap();
+    for n in 1..=4 {
+        std::fs::create_dir_all(Path::new(&slot(&b, n)).join("target")).unwrap();
+        std::fs::write(Path::new(&slot(&b, n)).join("target/o"), "x").unwrap();
+    }
+    for t in &ts[..3] {
+        finish(&b, *t);
+    }
+    let day = 86_400.0;
+    let now = taskboardd::util::now_ts() + 10.0 * day;
+    std::fs::write(Path::new(&slot(&b, 3)).join("left"), "x\n").unwrap();
+    let removed = slot_ageing::sweep_at(&b.app, now, &|_| None).unwrap();
+    assert_eq!(removed, [slot(&b, 1), slot(&b, 2)], "slot-3 is dirty and slot-4 is claimed, so they stay");
+    assert!(!Path::new(&slot(&b, 1)).exists() && !Path::new(&slot(&b, 2)).exists());
+    assert!(Path::new(&slot(&b, 3)).join("target").exists(), "uncommitted changes: untouched");
+    assert!(Path::new(&slot(&b, 4)).join("target").exists(), "claimed: untouched");
+
+    let kept = slot_ageing::sweep_at(&b.app, now + 30.0 * day, &|_| None).unwrap();
+    assert!(kept.is_empty(), "the pool never drops below min_slots");
+    assert!(Path::new(&slot(&b, 3)).is_dir());
+    std::fs::remove_file(Path::new(&slot(&b, 3)).join("left")).unwrap();
+    std::fs::create_dir_all(Path::new(&slot(&b, 3)).join("target")).unwrap();
+    slot_ageing::sweep_at(&b.app, taskboardd::util::now_ts() + 1.0, &|_| Some(1.0)).unwrap();
+    assert!(!Path::new(&slot(&b, 3)).join("target").exists(), "low disk clears a free slot before its timer");
+    assert!(Path::new(&slot(&b, 4)).join("target").exists(), "still claimed");
 }
