@@ -830,7 +830,8 @@ doesn't show the break's urgent alert as a row of its own beside it).
 A red build on the branch opens a break, or keeps one open: a failed check on the head, or a posted build on any commit
 newer than its pipeline's last green. Builds are kept per pipeline (a check's name, a build's `pipeline`), so a red stays
 until that pipeline passes at or after its commit; another pipeline's green or a head still running doesn't close the
-break. `last_head` is the newest red commit. Suspects are the commits from it back to the last green head the board saw:
+break. A head whose checks all passed does clear the reds that came from head checks (one that didn't run again, like a
+path-filtered workflow), but not a posted pipeline's. `last_head` is the newest red commit. Suspects are the commits from it back to the last green head the board saw:
 the whole `green..red` range from the host (GitHub's compare, Bitbucket's
 `commits?exclude=`) when it's further back than the `commits` read, every commit read when the board never saw it
 green; each `ours` when its author's email is in `owner_emails`.

@@ -713,6 +713,16 @@ impl Board {
     fn open(&self) -> Vec<Value> {
         self.get("/master")["open"].as_array().unwrap().clone()
     }
+    /// The head is the first commit, with these checks (name, state); read now.
+    fn checks(&self, commits: Vec<Commit>, checks: &[(&str, &str)]) {
+        *self.ci.read.lock() = BranchRead {
+            head: commits[0].sha.clone(),
+            checks: checks.iter().map(|(n, s)| Check { name: n.to_string(), state: s.to_string(), url: None, at: None }).collect(),
+            commits,
+            queued_at: None,
+        };
+        breaks::check_project(&self.app, "webapp", &self.app.cfg.master.projects["webapp"]).unwrap();
+    }
 }
 
 fn history() -> Vec<Commit> {
@@ -787,4 +797,40 @@ fn an_open_break_is_checked_again_while_the_head_is_still_running() {
     let row = b.app.db.q1("SELECT verdict_at, checked_at FROM breaks WHERE id = 1", p![]).unwrap().unwrap();
     assert_ne!(row.st("checked_at"), old, "checked again");
     assert_ne!(row.st("verdict_at"), old, "an unsure break is decided again after recheck_mins");
+}
+
+#[test]
+fn a_break_with_two_red_pipelines_stays_open_until_both_pass() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    b.moved_on(history());
+    b.build("deploy", "c3", "failed");
+    b.build("lint", "c4", "failed");
+    let m = b.get("/master/M1");
+    assert_eq!(m["checks"], json!(["deploy", "lint"]));
+    assert_eq!(m["last_head"], "c4");
+    let lint = m["evidence"]["checks"].as_array().unwrap().iter().find(|c| c["name"] == "lint").cloned().unwrap();
+    assert_eq!((lint["sha"].as_str(), lint["url"].as_str()), (Some("c4"), Some("https://github.com/acme/webapp/actions/runs/4")), "{lint}");
+    b.build("deploy", "c5", "passed");
+    let m = b.get("/master/M1");
+    assert_eq!((m["state"].as_str(), m["checks"].clone()), (Some("open"), json!(["lint"])), "lint is still red");
+    b.build("lint", "c5", "passed");
+    assert!(b.open().is_empty());
+}
+
+#[test]
+fn a_head_whose_checks_all_pass_clears_a_check_that_did_not_run_again() {
+    let (b, _d) = board_with(|_, _| {});
+    b.branch("passed", vec![commit("c1", "bob@acme.dev")]);
+    let mut h = history();
+    h.drain(..2);
+    b.checks(h, &[("build", "passed"), ("docs", "failed")]);
+    assert_eq!(b.open().len(), 1);
+    b.checks(history(), &[("build", "running")]);
+    assert_eq!(b.open().len(), 1, "docs's red stands while the head runs");
+    b.checks(history(), &[("build", "passed")]);
+    let v = b.get("/master");
+    assert!(v["open"].as_array().unwrap().is_empty(), "docs only runs on its paths; a green head after it clears it: {v}");
+    let pipes: Value = serde_json::from_str(&b.app.db.get_setting("master_watch").unwrap().unwrap()).unwrap();
+    assert!(pipes["webapp"]["pipelines"].get("docs").is_none(), "a check that's off the head and not red is dropped: {pipes}");
 }

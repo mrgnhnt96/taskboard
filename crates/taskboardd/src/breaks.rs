@@ -10,7 +10,9 @@
 //!   `build`) reads the branch at once and counts too, whichever commit it built. Builds are kept per
 //!   pipeline (a check's name, a posted build's `pipeline`): a red one stays until that same pipeline
 //!   passes at or after its commit, so another pipeline's green, or a head still running, doesn't
-//!   clear it; a red older than its pipeline's last green is stale. Any pipeline red opens a break
+//!   clear it; a red older than its pipeline's last green is stale. A head whose checks all passed
+//!   clears the reds that came from head checks (a check that didn't run again, like a path-filtered
+//!   workflow, can't pass itself), but not a posted pipeline's. Any pipeline red opens a break
 //!   (one per project at a time) or keeps it open; it closes once none is.
 //! - **Investigate.** The suspects are the commits from the newest red one back to the last green head
 //!   the board saw: the whole range from the host (git's `green..red`) when it's further back than the commits read, every
@@ -76,7 +78,9 @@
 //! | `opened_at`, `closed_at`, `checked_at` | ISO times |
 //!
 //! The setting `master_watch` keeps, per project, `{checked_at, green_head, branch?, error?, build?,
-//! pipelines}`, `pipelines` being `{<name>: {red?: {sha, url, build_id?, queued_at}, green?: sha}}`.
+//! pipelines}`, `pipelines` being `{<name>: {red?: {sha, url, build_id?, queued_at, check?}, green?: sha,
+//! posted?}}` (`check`: the red came from a head check; `posted`: the pipeline came from a posted build).
+//! A check that isn't red, was never posted and isn't on the head is dropped.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -569,6 +573,28 @@ impl Pipelines<'_> {
             }
         }
     }
+    /// After the head's checks: a head whose checks all passed clears every red that came from a
+    /// head check at or before it (a check that didn't run again, like a path-filtered workflow or a
+    /// status named after its run, can't clear itself), while a posted pipeline's red waits for that
+    /// pipeline. A check that isn't red, was never posted and isn't on the head is dropped.
+    fn settle(&mut self, r: &BranchRead) {
+        let (ci, repo, commits) = (self.ci, self.repo, self.commits);
+        let green = r.green();
+        let mut cleared = self.cleared.take();
+        self.all.retain(|name, one| {
+            let from_check = one["red"]["check"].as_bool() == Some(true);
+            if green && from_check && at_or_after(ci, repo, commits, &r.head, one["red"]["sha"].as_str().unwrap_or("")) {
+                if let Some(o) = one.as_object_mut() {
+                    o.remove("red");
+                }
+                if cleared.as_deref().is_none_or(|c| at_or_after(ci, repo, commits, &r.head, c)) {
+                    cleared = Some(r.head.clone());
+                }
+            }
+            one["red"].is_object() || one["posted"].as_bool() == Some(true) || r.checks.iter().any(|c| &c.name == name)
+        });
+        self.cleared = cleared;
+    }
     /// The pipelines still red: (name, red build).
     fn reds(&self) -> Vec<(String, Value)> {
         self.all.iter().filter(|(_, v)| v["red"].is_object()).map(|(k, v)| (k.clone(), v["red"].clone())).collect()
@@ -626,13 +652,17 @@ fn check_with(app: &App, name: &str, p: &MasterProject, posted: Option<&Value>) 
         if let Some(red) = build_red(&body_str(b, "state")) {
             let build = json!({"url": b["url"], "build_id": b["build_id"], "queued_at": build_ts(&b["ts"])});
             pipes.note(&pipeline, &body_str(b, "sha"), red, build);
+            if let Some(one) = pipes.all.get_mut(&pipeline) {
+                one["posted"] = json!(true);
+            }
         }
     }
     for c in &r.checks {
         if let Some(red) = build_red(&c.state) {
-            pipes.note(&c.name, &r.head, red, json!({"url": c.url, "queued_at": r.queued_at}));
+            pipes.note(&c.name, &r.head, red, json!({"url": c.url, "queued_at": r.queued_at, "check": true}));
         }
     }
+    pipes.settle(&r);
     let reds = pipes.reds();
     let newest = pipes.newest_red();
     let cleared = pipes.cleared.clone();
