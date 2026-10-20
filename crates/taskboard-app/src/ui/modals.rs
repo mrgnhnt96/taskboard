@@ -1,6 +1,6 @@
 //! The dialog over the main window: the alerts list (read-only; esc or Close closes it, and it
-//! closes by itself once nothing needs you). The app has no forms: tasks, goals and issues are
-//! made and changed through Claude (`tb`), never typed in here.
+//! closes by itself once nothing needs you), and the New idea form (`ui::ideas`). Tasks, goals
+//! and issues are made and changed through Claude (`tb`), never typed in here.
 use crate::app::{CloseOverlay, MainWindow, alert_row};
 use crate::fmt::arr;
 use crate::theme::Theme;
@@ -15,6 +15,8 @@ pub enum Modal {
     Search,
     /// A task's whole note for testers (the panel's Show all).
     Note(String),
+    /// The Ideas page's New idea form (`ui::ideas::form`).
+    NewIdea,
 }
 
 /// JavaScript's `a.localeCompare(b)` (ICU root collation) for the names the board shows:
@@ -89,6 +91,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             let text = text.clone();
             note(m, &t, &text, window, cx)
         }
+        Some(Modal::NewIdea) => crate::ui::ideas::form(m, &t, window, cx),
         None => return div().into_any_element(),
     };
     deferred(

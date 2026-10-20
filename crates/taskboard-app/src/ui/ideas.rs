@@ -1,24 +1,41 @@
 //! The Ideas page (`GET /ideas?project=all&state=all`): each project's ideas as rows, the open
 //! ones first, each with its newest report's verdict and its state. A row opens the idea's page
-//! (`ui::idea`). Read-only: ideas are added, noted, shelved and dropped with `tb idea`.
+//! (`ui::idea`). New idea opens a dialog that adds one (`POST /ideas`); notes, shelving and
+//! dropping go through `tb idea`.
 use crate::app::MainWindow;
 use crate::fmt::{self, arr, s};
 use crate::theme::Theme;
 use crate::ui::issue_panel as ip;
 use crate::ui::releases::cut_at;
+use crate::ui::kit::KeyOutcome;
+use crate::ui::modals::{self, Modal};
 use crate::ui::{idea, kit};
 use chrono::{DateTime, Utc};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const PAGE_X: f32 = 28.;
 const PROJECT_FILTER: &str = "ideas-project";
+const FORM_PROJECT: &str = "new-idea-project";
 
 #[derive(Default)]
 pub struct State {
     /// "all" or one project.
     pub project: String,
+    /// The New idea dialog's fields while it's open.
+    pub form: Option<Form>,
+}
+
+pub struct Form {
+    pub title: kit::Input,
+    pub detail: kit::Input,
+    /// Empty until one is chosen.
+    pub project: String,
+    pub error: Option<String>,
+    pub busy: bool,
+    /// Give the title field focus on the next draw (after a failed add).
+    refocus: bool,
 }
 
 impl State {
@@ -126,6 +143,145 @@ pub fn tabs(list: &Value) -> Vec<(String, usize)> {
     v
 }
 
+// ================================================================== new idea
+
+/// Open the New idea dialog, on the project the page shows (none when it shows them all).
+pub fn open_form(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let project = match m.ideas.project() {
+        "all" => String::new(),
+        p => p.to_string(),
+    };
+    let title = kit::Input::new(cx, "Title", false);
+    let detail = kit::Input::new(cx, "Detail", true);
+    m.set_modal(Some(Modal::NewIdea), window, cx);
+    window.focus(&title.focus, cx);
+    m.ideas.form = Some(Form { title, detail, project, error: None, busy: false, refocus: false });
+}
+
+/// Add the idea, then open its page. A refusal shows in the dialog.
+fn submit(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(f) = m.ideas.form.as_mut() else { return };
+    if f.busy {
+        return;
+    }
+    let title = f.title.text(cx).trim().to_string();
+    let error = if title.is_empty() {
+        Some("Say what the idea is.")
+    } else if f.project.is_empty() {
+        Some("Choose the project it’s for.")
+    } else {
+        None
+    };
+    if let Some(e) = error {
+        f.error = Some(e.into());
+        cx.notify();
+        return;
+    }
+    let body = json!({"title": title, "detail": f.detail.text(cx).trim(), "project": f.project});
+    f.busy = true;
+    f.error = None;
+    window.focus(&m.focus, cx);
+    m.post_or(
+        "ideas",
+        body,
+        cx,
+        |m, v, cx| {
+            m.ideas.form = None;
+            m.modal = None;
+            m.toast(format!("Kept {}", s(&v, "ref")), false, cx);
+            idea::open(m, s(&v, "ref"), cx);
+        },
+        |m, e, cx| {
+            if let Some(f) = m.ideas.form.as_mut() {
+                f.busy = false;
+                f.error = Some(e.message);
+                f.refocus = true;
+            }
+            cx.notify();
+        },
+    );
+    cx.notify();
+}
+
+/// ↩ in the title (⌘↩ in the detail) adds it, esc closes the dialog, ⇥ moves between the two.
+fn on_key(m: &mut MainWindow, ev: &KeyDownEvent, in_detail: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(f) = m.ideas.form.as_ref() else { return };
+    let (here, other) = if in_detail { (&f.detail, &f.title) } else { (&f.title, &f.detail) };
+    match here.on_key(ev, cx) {
+        KeyOutcome::Submit => {
+            cx.stop_propagation();
+            submit(m, window, cx);
+        }
+        KeyOutcome::Cancel => {
+            cx.stop_propagation();
+            m.set_modal(None, window, cx);
+        }
+        KeyOutcome::Ignored if ev.keystroke.key == "tab" => {
+            cx.stop_propagation();
+            let to = other.focus.clone();
+            window.focus(&to, cx);
+        }
+        KeyOutcome::Ignored => {}
+    }
+}
+
+/// The New idea dialog: title, detail, and the project it's for.
+pub fn form(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let mut projects = crate::app::project_names(m.state(), &m.data.goals);
+    for (p, _) in m.data.ideas.as_ref().map(tabs).unwrap_or_default() {
+        if !projects.contains(&p) {
+            projects.push(p);
+        }
+    }
+    projects.sort_by(|a, b| modals::locale_cmp(a, b));
+    let Some(f) = m.ideas.form.as_mut() else { return div().into_any_element() };
+    if std::mem::take(&mut f.refocus) {
+        window.focus(&f.title.focus, cx);
+    }
+    let title = f.title.render(t, "new-idea-title", window).on_key_down(cx.listener(|m, ev: &KeyDownEvent, window, cx| on_key(m, ev, false, window, cx)));
+    let detail = f
+        .detail
+        .render(t, "new-idea-detail", window)
+        .items_start()
+        .flex_none()
+        .min_h(px(120.))
+        .on_key_down(cx.listener(|m, ev: &KeyDownEvent, window, cx| on_key(m, ev, true, window, cx)));
+    let cur = f.project.clone();
+    let label = if cur.is_empty() { "Choose a project".to_string() } else { cur.clone() };
+    let project = ip::picker_button(t, "new-idea-project-btn", label, cur.is_empty()).on_click(cx.listener(move |m, e: &ClickEvent, window, cx| {
+        let p = e.position();
+        ip::open_project_choice(m, FORM_PROJECT, &cur, &projects, point(p.x - px(10.), p.y + px(14.)), window, cx, |m, p, cx| {
+            if let Some(f) = m.ideas.form.as_mut() {
+                f.project = p;
+                f.error = None;
+            }
+            cx.notify();
+        });
+    }));
+    let add = if f.busy { kit::btn_primary(t, "new-idea-add", "Adding…").opacity(0.6) } else {
+        kit::btn_primary(t, "new-idea-add", "Add idea").on_click(cx.listener(|m, _, window, cx| submit(m, window, cx)))
+    };
+    let error = f.error.clone().map(|e| div().text_size(px(12.5)).text_color(t.down).child(e));
+    // Capped by the window: the box's own cap is a share of the dialog's height, which is its own.
+    kit::modal_box(t, 560.)
+        .max_h(window.viewport_size().height * 0.9)
+        .child(modals::head(t, "New idea", cx))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .flex_col()
+                .gap(px(10.))
+                .px(px(20.))
+                .pb(px(20.))
+                .child(title)
+                .child(detail)
+                .children(error)
+                .child(div().flex().flex_none().items_center().justify_between().gap(px(10.)).pt(px(4.)).child(project).child(add)),
+        )
+        .into_any_element()
+}
+
 // ================================================================== render
 
 fn row(t: &Theme, row: &Row, first: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
@@ -166,10 +322,14 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
                 m.ideas.project = p;
                 cx.notify();
             }))
-        });
+        })
+        .child(div().flex_1())
+        .child(kit::btn_primary(&t, "ideas-new", "New idea").on_click(cx.listener(|m, _, window, cx| open_form(m, window, cx))));
     let mut page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head);
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
-    let shell = div().id("ideas-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter);
+    // The dialog's project list: a popover, drawn over the dialog.
+    let form_project = ip::render_project_filter(m, &t, FORM_PROJECT, window, cx);
+    let shell = div().id("ideas-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter).children(form_project);
 
     let Some(list) = list else {
         let msg = m.data.errs.ideas.clone().unwrap_or_else(|| "Loading…".into());
@@ -199,8 +359,8 @@ mod tests {
     use super::*;
     // Beats the glob's `gpui_kit::test`.
     use ::core::prelude::v1::test;
+    use crate::app::Page;
     use chrono::TimeZone;
-    use serde_json::json;
 
     fn at(y: i32, mo: u32, d: u32, h: u32) -> DateTime<Utc> {
         fmt::local(Utc::now()).offset().with_ymd_and_hms(y, mo, d, h, 5, 0).unwrap().with_timezone(&Utc)
@@ -252,6 +412,47 @@ mod tests {
         // A project without ideas falls back to every one.
         assert_eq!(names("kass"), ["api", "web"]);
         assert_eq!(tabs(&list), [("api".to_string(), 1), ("web".to_string(), 1)]);
+    }
+
+    fn redraw(w: gpui_kit::WindowHandle<MainWindow>, cx: &mut gpui_kit::TestAppContext) {
+        cx.update_window(w.into(), |_, window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        crate::parity::settle(cx);
+    }
+
+    #[gpui_kit::test]
+    fn new_idea_needs_a_project_then_adds_it_and_opens_its_page(cx: &mut gpui_kit::TestAppContext) {
+        let (w, rec) = crate::parity::window(cx);
+        w.update(cx, |m: &mut MainWindow, window, cx| {
+            m.open_link("ideas", cx);
+            open_form(m, window, cx);
+            m.ideas.form.as_ref().unwrap().title.set_text("  Dark mode for the phone  ", cx);
+            m.ideas.form.as_ref().unwrap().detail.set_text("Follow the system setting.", cx);
+        })
+        .unwrap();
+        redraw(w, cx);
+        cx.simulate_keystrokes(w.into(), "enter");
+        crate::parity::settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            let f = m.ideas.form.as_mut().unwrap();
+            assert_eq!(f.error.as_deref(), Some("Choose the project it’s for."));
+            assert!(rec.last("ideas").is_none(), "nothing is sent without a project");
+            f.project = "webapp".into();
+        })
+        .unwrap();
+        redraw(w, cx);
+        cx.simulate_keystrokes(w.into(), "enter");
+        crate::parity::settle(cx);
+        assert_eq!(rec.last("ideas").unwrap(), json!({"title": "Dark mode for the phone", "detail": "Follow the system setting.", "project": "webapp"}));
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            assert!(m.modal.is_none() && m.ideas.form.is_none(), "the dialog closes");
+            let Page::Idea(r) = &m.page else { panic!("on {:?}", m.page) };
+            assert_eq!(m.data.idea.as_ref().unwrap()["title"], "Dark mode for the phone", "{r} opens");
+        })
+        .unwrap();
     }
 
     #[test]
