@@ -189,8 +189,6 @@ fn goal_status(g: &Value) -> Value {
         status(&format!("{} running", n("active")), "busy")
     } else if n("needs") > 0 {
         status("Needs you", "warn")
-    } else if n("failed") > 0 {
-        status("Failed", "err")
     } else if n("review") > 0 {
         status("In review", "busy")
     } else if total > 0 && done >= total {
@@ -201,6 +199,9 @@ fn goal_status(g: &Value) -> Value {
         status("Paused", "idle")
     } else if n("queued") > 0 || n("starting") > 0 {
         status("Queued", "idle")
+    } else if n("failed") > 0 {
+        // Failed tasks the goal moved past say so only once nothing else is live.
+        status("Failed", "err")
     } else {
         status("Idle", "idle")
     }
@@ -437,6 +438,7 @@ mod tests {
         assert_eq!(pill(with(json!({"failed": 1}))), json!({"label": "Failed", "tone": "err"}));
         assert_eq!(pill(with(json!({"done": 4}))), json!({"label": "Done", "tone": "ok"}));
         assert_eq!(pill(with(json!({"done": 3, "review": 1}))), json!({"label": "In review", "tone": "busy"}));
+        assert_eq!(pill(with(json!({"failed": 2, "review": 1}))), json!({"label": "In review", "tone": "busy"}));
         assert_eq!(pill(with(json!({"blocked": 1}))), json!({"label": "Blocked", "tone": "warn"}));
         assert_eq!(pill(with(json!({"paused": true}))), json!({"label": "Paused", "tone": "idle"}));
         assert_eq!(pill(with(json!({"queued": 2}))), json!({"label": "Queued", "tone": "idle"}));

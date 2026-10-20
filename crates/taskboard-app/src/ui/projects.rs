@@ -166,9 +166,12 @@ fn pill(g: &Value, t: &Tally) -> (St, &'static str) {
         GoalGroup::Deprioritized => (St::Queued, "Set aside"),
         _ if n(St::Needs) > 0 || opt_s(g, "stopped").is_some() => (St::Needs, St::Needs.label()),
         _ if n(St::Working) > 0 => (St::Working, St::Working.label()),
-        _ if n(St::Failed) > 0 => (St::Failed, St::Failed.label()),
+        _ if t.stuck() > 0 => (St::Failed, St::Failed.label()),
         _ if n(St::Review) > 0 => (St::Review, St::Review.label()),
         _ if n(St::Queued) > 0 || opt_s(g, "after_blocker").is_some() => (St::Queued, St::Queued.label()),
+        // A task that finished failed is history once the goal moves on; it says Failed only
+        // when nothing else is live. A failure the goal stops on already says Needs you.
+        _ if n(St::Failed) > 0 => (St::Failed, St::Failed.label()),
         _ => (St::Planned, St::Planned.label()),
     }
 }
@@ -670,6 +673,22 @@ mod tests {
         let details = HashMap::from([("G1".to_string(), d)]);
         let line = &active(std::slice::from_ref(&g), &details, "web")[0];
         assert_eq!((line.progress.as_str(), line.pill.1), ("1 of 3 · wave 2", "Working"));
+    }
+
+    #[test]
+    fn a_goal_past_its_failed_tasks_says_in_review() {
+        let pill = |tasks: Value| {
+            let d = json!({"tasks": tasks, "waves": [{"wave": 1, "state": "done"}, {"wave": 2, "state": "running"}]});
+            let details = HashMap::from([("G1".to_string(), d)]);
+            active(&[goal(1, "web", 1, 3, json!({}))], &details, "web")[0].pill.1
+        };
+        let failed = json!({"id": 1, "ref": "T1", "title": "a", "status": "done", "failed": true, "wave": 1});
+        let review = json!({"id": 2, "ref": "T2", "title": "b", "status": "done", "wave": 2, "pr": {"num": 9, "state": "open"}});
+        assert_eq!(pill(json!([failed, review])), "In review");
+        assert_eq!(pill(json!([failed, {"id": 2, "ref": "T2", "title": "b", "status": "queued", "wave": 2}])), "Queued");
+        assert_eq!(pill(json!([failed, {"id": 2, "ref": "T2", "title": "b", "status": "done", "wave": 2}])), "Failed");
+        // A lost terminal is live: it still says Failed over a PR in review.
+        assert_eq!(pill(json!([review, {"id": 3, "ref": "T3", "title": "c", "status": "needs", "lost": true, "wave": 2}])), "Failed");
     }
 
     #[test]
