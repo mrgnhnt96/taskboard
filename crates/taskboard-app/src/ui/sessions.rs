@@ -8,7 +8,8 @@
 //! picking idle terminals to close together, the Closed group) and the selected terminal on the
 //! right (status, path / branch / diff, Show in Midna, Close or press-and-hold Force close, rename by
 //! double-clicking its name, its task, the last prompt and reply, stats and the timeline). Right-click
-//! a row for its menu.
+//! a row for its menu. Under the project groups sits the worktree slot pool (`GET /slots`): each
+//! slot, the task holding it, the tasks waiting for one, when it was last used and its size.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
 use crate::theme::{Theme, ThemeMode};
@@ -34,6 +35,8 @@ const FLASH_BAD: Duration = Duration::from_millis(1800);
 const NOTE_OK: Duration = Duration::from_secs(5);
 const NOTE_ERR: Duration = Duration::from_secs(15);
 const DETAIL_HINT: &str = " · double-click to rename";
+/// `GET /slots` measures each slot on disk, so it's asked apart from the 3 s poll and less often.
+const SLOTS_EVERY: Duration = Duration::from_secs(30);
 
 /// A rename's result, shown briefly on the name (`renameFlash`).
 #[derive(Clone, Debug)]
@@ -99,6 +102,10 @@ pub struct State {
     pending: HashMap<String, Pending>,
     /// "Back to T12": the task the reader came from (the route's `back=`).
     back: Option<String>,
+    /// `GET /slots`, when it was last asked, and whether the reader folded the group.
+    slots: Option<Value>,
+    slots_at: Option<Instant>,
+    slots_shut: bool,
 }
 
 // ------------------------------------------------------------------ helpers (sessions.js)
@@ -528,6 +535,114 @@ pub struct GroupVm {
     pub open: bool,
     pub closed: bool,
     pub rows: Vec<RowVm>,
+}
+
+/// One row of the worktree slots group: a slot, or a task waiting for one.
+#[derive(Clone, Debug)]
+pub struct SlotRowVm {
+    pub key: String,
+    pub name: String,
+    /// "taskboard · 2.3 GB".
+    pub sub: String,
+    /// "T12" (the task holding it), "Free" or "Waiting".
+    pub state: String,
+    /// The holder's title, as its tooltip.
+    pub tip: Option<String>,
+    /// Last used: "3:05 PM" today, "Oct 7, 3:05 PM" another day.
+    pub when: String,
+    /// The task a click opens.
+    pub task: Option<String>,
+    /// "working" (held), "idle" (free) or "needs" (waiting), for the dot.
+    pub status: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub struct SlotsVm {
+    /// "3 slots", plus " · 1 waiting".
+    pub count: String,
+    pub open: bool,
+    pub rows: Vec<SlotRowVm>,
+}
+
+#[cfg(test)]
+impl SlotsVm {
+    pub fn text(&self) -> String {
+        let mut p = vec!["Worktree slots".to_string(), self.count.clone()];
+        p.extend(self.rows.iter().map(|r| squash(&[&r.name, &r.sub, &r.state, &r.when])));
+        squash(&p.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+}
+
+/// "512 KB", "840 MB", "2.3 GB".
+fn disk_size(kb: i64) -> String {
+    match kb {
+        k if k >= 1024 * 1024 => format!("{:.1} GB", k as f64 / (1024.0 * 1024.0)),
+        k if k >= 1024 => format!("{} MB", k / 1024),
+        k => format!("{k} KB"),
+    }
+}
+
+/// "3:05 PM" today, "Oct 7, 3:05 PM" another day.
+fn used_at(iso: &str) -> String {
+    let Some(t) = fmt::parse(iso) else { return String::new() };
+    let l = fmt::local(t);
+    if fmt::is_today(t) { l.format("%-I:%M %p").to_string() } else { l.format("%b %-d, %-I:%M %p").to_string() }
+}
+
+/// The worktree slots group: None while there's no slot (a project without the pool shows nothing)
+/// or none matches the search.
+pub fn slots_vm(slots: Option<&Value>, shut: bool, q: &str) -> Option<SlotsVm> {
+    let all = arr(slots?, "slots");
+    let q = q.trim().to_lowercase();
+    let hit = |r: &SlotRowVm| q.is_empty() || [Some(&r.name), Some(&r.sub), Some(&r.state), r.tip.as_ref()].into_iter().flatten().any(|v| v.to_lowercase().contains(&q));
+    let mut rows: Vec<SlotRowVm> = all
+        .iter()
+        .map(|x| {
+            let held = opt_s(x, "held_by");
+            let size = x["size_kb"].as_i64().map(disk_size).unwrap_or_default();
+            SlotRowVm {
+                key: s(x, "path").to_string(),
+                name: s(x, "name").to_string(),
+                sub: [s(x, "project"), &size].into_iter().filter(|v| !v.is_empty()).collect::<Vec<_>>().join(" · "),
+                state: held.unwrap_or("Free").to_string(),
+                tip: held.map(|_| s(x, "title").to_string()).filter(|t| !t.is_empty()),
+                when: used_at(s(x, "used_at")),
+                task: held.map(str::to_string),
+                status: if held.is_some() { "working" } else { "idle" },
+            }
+        })
+        .collect();
+    // Every slot of a repo lists the same waiting tasks; each shows once.
+    let mut waiting: Vec<(String, String)> = Vec::new();
+    for x in all {
+        for r in arr(x, "waiting").iter().filter_map(Value::as_str) {
+            if !waiting.iter().any(|(_, w)| w == r) {
+                waiting.push((s(x, "project").to_string(), r.to_string()));
+            }
+        }
+    }
+    rows.extend(waiting.iter().map(|(p, r)| SlotRowVm {
+        key: format!("wait:{r}"),
+        name: r.clone(),
+        sub: p.clone(),
+        state: "Waiting".into(),
+        tip: None,
+        when: String::new(),
+        task: Some(r.clone()),
+        status: "needs",
+    }));
+    rows.retain(|r| hit(r));
+    if rows.is_empty() {
+        return None;
+    }
+    let n = rows.iter().filter(|r| r.status != "needs").count();
+    let w = rows.len() - n;
+    let mut count = fmt::plural(n as i64, "slot", "slots");
+    if w > 0 {
+        count.push_str(&format!(" · {w} waiting"));
+    }
+    let open = !shut || !q.is_empty();
+    Some(SlotsVm { count, open, rows: if open { rows } else { Vec::new() } })
 }
 
 #[derive(Clone, Debug)]
@@ -1406,6 +1521,32 @@ pub fn open_from_task(m: &mut MainWindow, session_id: &str, task_ref: &str, cx: 
 /// The page was left (the web route lost its `back=`).
 pub fn left(m: &mut MainWindow) {
     m.sessions.back = None;
+    m.sessions.slots_at = None;
+}
+
+/// Ask for the slot pool when it's older than `SLOTS_EVERY`, on its own so measuring the slots
+/// never holds up the terminals.
+fn load_slots(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    if m.sessions.slots_at.is_some_and(|at| at.elapsed() < SLOTS_EVERY) {
+        return;
+    }
+    m.sessions.slots_at = Some(Instant::now());
+    let backend = m.backend.clone();
+    cx.spawn(async move |this, cx| {
+        let got = cx.background_executor().spawn(async move { backend.get("slots", &[]) }).await;
+        let _ = this.update(cx, |m, cx| {
+            if let Ok(v) = got {
+                m.sessions.slots = Some(v);
+                cx.notify();
+            }
+        });
+    })
+    .detach();
+}
+
+pub fn toggle_slots(m: &mut MainWindow, cx: &mut Context<MainWindow>) {
+    m.sessions.slots_shut = !m.sessions.slots_shut;
+    cx.notify();
 }
 
 /// Press-and-hold: after `HOLD` with the button still down (and the pointer still on it), force close.
@@ -1669,6 +1810,7 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     m.sessions.picked.retain(|id| live.iter().chain(closed.iter()).any(|x| s(x, "id") == id && bulkable(x)));
     tick_renames(m, cx);
     auto_select(m, cx);
+    load_slots(m, cx);
 
     // `.spage`: 24px 32px 28px, 18px between the header and the grid; body text 14px / 1.5.
     div()
@@ -1775,6 +1917,7 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         closed_open: st.closed_open,
         flash: &st.flash,
     });
+    let slots = if vm.loading.is_none() && st.filter.is_empty() { slots_vm(st.slots.as_ref(), st.slots_shut, &q) } else { None };
 
     // `.slist-search`: 12px 14px 8px, the 16px search icon, then `.input.sm` (34px, 13px, 6px 10px, radius 7).
     let search = m.sessions.search.as_ref().map(|i| i.render(t, "ss-search", window).flex_1().min_h(px(34.)).h(px(34.)).py(px(6.)).px(px(10.)).rounded(px(7.)).text_size(px(13.)));
@@ -1788,12 +1931,13 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     if let Some(l) = &vm.loading {
         body = body.child(div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(l.clone()));
     }
-    // Groups, then "None right now." (when no group shows), then Closed: the web's order.
+    // Groups, then "None right now." (when no group shows), the worktree slots, then Closed.
     let mut empty = vm.empty.clone().map(|e| div().p(px(16.)).text_size(px(13.)).text_color(t.muted).child(e));
+    let mut slots = slots.map(|sv| slots_group(t, &sv, cx));
     let mut placed_empty = false;
     for g in vm.groups.iter().chain(vm.closed.iter()) {
         if g.closed && !placed_empty {
-            body = body.children(empty.take());
+            body = body.children(empty.take()).children(slots.take());
             placed_empty = true;
         }
         let (key, open, is_closed) = (g.key.clone(), g.open, g.closed);
@@ -1813,7 +1957,7 @@ fn list(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
         body = body.child(group);
     }
     if !placed_empty {
-        body = body.children(empty);
+        body = body.children(empty).children(slots);
     }
 
     // `.spage-grid`: minmax(380px, 460px) next to the detail.
@@ -1911,6 +2055,56 @@ fn group_head(t: &Theme, id: &str, label: &str, count: &str, open: bool) -> Stat
                 .child(plain)
                 .children(hot.map(|h| div().flex().child(" · ").child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.warn).child(h)))),
         )
+}
+
+/// The worktree slots group: a head like a project's, then a row per slot and per waiting task.
+fn slots_group(t: &Theme, sv: &SlotsVm, cx: &mut Context<MainWindow>) -> Div {
+    let head = group_head(t, "ss-slots", "Worktree slots", &sv.count, sv.open).on_click(cx.listener(|m, _, _, cx| toggle_slots(m, cx)));
+    let mut group = div().flex().flex_col().flex_none().when(sv.open, |d| d.pb(px(4.))).child(head);
+    for r in &sv.rows {
+        group = group.child(slot_row(t, r, cx));
+    }
+    group
+}
+
+/// A slot (or a waiting task) drawn like a terminal row; one with a task opens it.
+fn slot_row(t: &Theme, r: &SlotRowVm, cx: &mut Context<MainWindow>) -> Stateful<Div> {
+    let hover = t.panel_2;
+    let (dot, ring) = dot_color(t, r.status);
+    let state_c = match r.status {
+        "working" => t.accent,
+        "needs" => t.warn,
+        _ => t.muted,
+    };
+    let state = div().font_weight(FontWeight::SEMIBOLD).text_color(state_c).child(r.state.clone());
+    let state = match &r.tip {
+        Some(tip) => state.id(SharedString::from(format!("ss-slot-tip-{}", r.key))).tooltip(kit::tip(tip.clone())).into_any_element(),
+        None => state.into_any_element(),
+    };
+    let row = div()
+        .id(SharedString::from(format!("ss-slot-{}", r.key)))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(10.))
+        .py(px(9.))
+        .pl(px(16.))
+        .pr(px(14.))
+        .child(ringed_dot(dot, ring))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(div().truncate().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(r.name.clone()))
+                .child(div().truncate().text_size(px(12.5)).text_color(t.muted).child(r.sub.clone())),
+        )
+        .child(div().flex().flex_col().flex_none().items_end().text_size(px(12.)).child(state).child(div().text_color(t.muted).child(r.when.clone())));
+    match r.task.clone() {
+        Some(task) => row.cursor_pointer().hover(move |s| s.bg(hover)).on_click(cx.listener(move |m, _, _, cx| m.open_task(task.clone(), cx))),
+        None => row,
+    }
 }
 
 /// The name, styled by its rename state.
@@ -2622,6 +2816,48 @@ mod tests {
         assert_eq!(name_vm(&json!({"id": "s1", "name": "old"}), "", Some(f)).text, "new");
     }
 
+    fn pool() -> Value {
+        let today = fmt::now().format("%Y-%m-%dT14:30:00Z").to_string();
+        let slot = |n: i64, held: Value, title: &str, used: &str, kb: Value| {
+            json!({"name": format!("slot-{n}"), "n": n, "project": "board", "repo": "/r", "path": format!("/r-slot-{n}"),
+                   "held_by": held, "title": title, "used_at": used, "size_kb": kb, "waiting": ["T13", "T14"]})
+        };
+        json!({"slots": [
+            slot(1, json!("T12"), "Slot pool view", &today, json!(2_411_725)),
+            slot(2, Value::Null, "", "2026-10-07T15:05:00Z", json!(860_160)),
+            slot(3, Value::Null, "", "", Value::Null),
+        ]})
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_slot_pool_lists_slots_then_waiting_tasks() {
+        let v = slots_vm(Some(&pool()), false, "").expect("slots show");
+        assert_eq!(v.count, "3 slots · 2 waiting");
+        assert_eq!(
+            v.text(),
+            "Worktree slots 3 slots · 2 waiting slot-1 board · 2.3 GB T12 2:30 PM slot-2 board · 840 MB Free Oct 7, 3:05 PM \
+             slot-3 board Free T13 board Waiting T14 board Waiting"
+        );
+        assert_eq!(v.rows[0].task.as_deref(), Some("T12"));
+        assert_eq!(v.rows[0].tip.as_deref(), Some("Slot pool view"));
+        assert_eq!(v.rows[1].task, None);
+        assert_eq!(v.rows[3].task.as_deref(), Some("T13"));
+        assert_eq!(v.rows.iter().map(|r| r.status).collect::<Vec<_>>(), ["working", "idle", "idle", "needs", "needs"]);
+    }
+
+    #[::core::prelude::v1::test]
+    fn the_slot_pool_hides_without_slots_and_folds() {
+        assert!(slots_vm(None, false, "").is_none());
+        assert!(slots_vm(Some(&json!({"slots": []})), false, "").is_none(), "no pool, nothing shown");
+        let shut = slots_vm(Some(&pool()), true, "").unwrap();
+        assert!(!shut.open && shut.rows.is_empty());
+        assert_eq!(shut.count, "3 slots · 2 waiting");
+        let found = slots_vm(Some(&pool()), true, "pool view").unwrap();
+        assert!(found.open, "a search opens it");
+        assert_eq!(found.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["slot-1"]);
+        assert!(slots_vm(Some(&pool()), false, "nothing like it").is_none());
+    }
+
     // ------------------------------------------------------------------ actions
 
     use gpui_kit::TestAppContext;
@@ -2633,6 +2869,16 @@ mod tests {
         parity::settle(cx);
         w.update(cx, |m, _, _| assert!(m.data.sessions.is_some(), "sessions loaded")).unwrap();
         (w, rec)
+    }
+
+    #[gpui_kit::test]
+    fn the_page_asks_for_the_slot_pool(cx: &mut TestAppContext) {
+        let (w, _) = page(cx);
+        w.update(cx, |m, _, _| {
+            assert!(m.sessions.slots.is_some(), "slots loaded");
+            assert!(slots_vm(m.sessions.slots.as_ref(), false, "").is_none(), "no slots on the board, no group");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
