@@ -28,6 +28,9 @@ pub struct State {
     pub lists: HashMap<String, Value>,
     /// `GET /releases/:id` (or `/releases/unreleased`) for each open row, by key.
     pub details: HashMap<String, Value>,
+    /// The row a link opened, scrolled to once it and the open rows above it have loaded.
+    pub focus: Option<String>,
+    pub scroll: ScrollHandle,
 }
 
 impl State {
@@ -60,10 +63,31 @@ pub fn project_showing(st: &State, r: &str) -> String {
 
 /// A `taskboard://release/R3` link (Midna links R refs): the Releases page with that row open.
 pub fn open(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
-    m.releases.project = project_showing(&m.releases, r);
+    let project = project_showing(&m.releases, r);
+    open_in(m, project, r, cx);
+}
+
+/// The Releases page filtered to `project`, scrolled to row `r` and open.
+pub fn open_in(m: &mut MainWindow, project: String, r: &str, cx: &mut Context<MainWindow>) {
+    m.releases.project = project;
     m.releases.open.insert(r.to_string());
+    m.releases.focus = Some(r.to_string());
     m.go(Page::Releases, cx);
     m.refresh(cx);
+}
+
+/// Whether to scroll to the focused row now: its list has it and every open row has loaded, so
+/// nothing above it will grow. `None` drops a focus no shown list has once they've all loaded.
+fn focus_ready(st: &State, shown: &[String]) -> Option<bool> {
+    let f = st.focus.as_deref()?;
+    let listed = match f.strip_prefix("unreleased:") {
+        Some(p) => shown.iter().any(|s| s == p && st.lists.contains_key(p)),
+        None => shown.iter().any(|p| st.lists.get(p).is_some_and(|l| arr(l, "releases").iter().any(|r| s(r, "ref") == f))),
+    };
+    if !listed {
+        return if shown.iter().all(|p| st.lists.contains_key(p)) { None } else { Some(false) };
+    }
+    Some(open_rows(st, shown).iter().all(|k| st.details.contains_key(k)))
 }
 
 /// What to fetch for an open row: the path and query.
@@ -274,8 +298,9 @@ fn body(t: &Theme, d: Option<&Value>, cx: &mut Context<MainWindow>) -> Div {
     body
 }
 
-fn card(t: &Theme, row: &Row, d: Option<&Value>, open: bool, cx: &mut Context<MainWindow>) -> Div {
+fn card(t: &Theme, row: &Row, d: Option<&Value>, open: bool, cx: &mut Context<MainWindow>) -> Stateful<Div> {
     div()
+        .id(SharedString::from(format!("releases-card-{}", row.key)))
         .flex()
         .flex_col()
         .rounded(px(12.))
@@ -307,7 +332,15 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         });
     let mut page = div().flex().flex_col().gap(px(20.)).px(px(PAGE_X)).pt(px(22.)).pb(px(32.)).line_height(relative(1.4)).child(head);
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
-    let shell = div().id("releases-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().children(filter);
+    let shell = div().id("releases-page").flex_1().min_w_0().h_full().overflow_y_scroll().restrict_scroll_to_axis().track_scroll(&m.releases.scroll).children(filter);
+    let focus = match focus_ready(&m.releases, &projects) {
+        Some(true) => m.releases.focus.take(),
+        None => {
+            m.releases.focus = None;
+            None
+        }
+        Some(false) => None,
+    };
 
     if projects.is_empty() {
         let msg = if m.down.is_some() { "Can’t load the board." } else { "Loading…" };
@@ -323,7 +356,13 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
             Some(l) => {
                 for row in rows(p, l, now) {
                     let open = m.releases.open.contains(&row.key);
-                    list = list.child(card(&t, &row, m.releases.details.get(&row.key), open, cx));
+                    let mut c = card(&t, &row, m.releases.details.get(&row.key), open, cx);
+                    if focus.as_deref() == Some(row.key.as_str()) {
+                        let anchor = ScrollAnchor::for_handle(m.releases.scroll.clone());
+                        anchor.scroll_to(window, cx);
+                        c = c.anchor_scroll(Some(anchor));
+                    }
+                    list = list.child(c);
                 }
             }
         }
@@ -399,6 +438,23 @@ mod tests {
         assert_eq!(open_rows(&st, &shown), ["R2", "unreleased:web"]);
         assert_eq!(detail_call("R2"), ("releases/R2".to_string(), vec![]));
         assert_eq!(detail_call("unreleased:web"), ("releases/unreleased".to_string(), vec![("project", "web".to_string())]));
+    }
+
+    #[test]
+    fn a_linked_row_scrolls_once_it_and_the_open_rows_have_loaded() {
+        let mut st = State::default();
+        let shown = vec!["web".to_string()];
+        assert_eq!(focus_ready(&st, &shown), None, "nothing to scroll to");
+        st.focus = Some("R2".into());
+        st.open.extend(["R2".to_string(), unreleased_key("web")]);
+        assert_eq!(focus_ready(&st, &shown), Some(false), "the list is loading");
+        st.lists.insert("web".into(), json!({"releases": [{"ref": "R2"}]}));
+        st.details.insert("R2".into(), json!({"groups": []}));
+        assert_eq!(focus_ready(&st, &shown), Some(false), "Unreleased above it is loading");
+        st.details.insert(unreleased_key("web"), json!({"groups": []}));
+        assert_eq!(focus_ready(&st, &shown), Some(true));
+        st.focus = Some("R9".into());
+        assert_eq!(focus_ready(&st, &shown), None, "a release no list has is dropped");
     }
 
     #[test]
