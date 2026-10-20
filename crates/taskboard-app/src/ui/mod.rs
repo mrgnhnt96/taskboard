@@ -13,6 +13,7 @@ pub mod issue_panel;
 pub mod kit;
 pub mod md;
 pub mod modals;
+pub mod projects;
 pub mod prwatch;
 pub mod releases;
 pub mod review;

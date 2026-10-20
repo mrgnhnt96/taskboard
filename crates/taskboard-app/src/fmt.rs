@@ -187,14 +187,19 @@ pub fn stuck(v: &Value) -> Option<String> {
 pub fn outside(v: &Value) -> Option<String> {
     let o = v.get("outside").filter(|o| o.is_object())?;
     let path = opt_s(o, "path")?;
-    let path = match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
-    };
+    let path = short_path(path);
     Some(match opt_s(o, "at") {
         Some(at) => format!("{path} since {}", hhmm(at)),
         None => path,
     })
+}
+
+/// A path under the user's folder with that part as "~".
+pub fn short_path(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&format!("{home}/")) => format!("~{}", &path[home.len()..]),
+        _ => path.to_string(),
+    }
 }
 
 pub fn plural(n: i64, one: &str, many: &str) -> String {
@@ -289,6 +294,14 @@ pub fn device_now() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn short_path_puts_a_tilde_for_the_home_folder() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(short_path(&format!("{home}/Development/web")), "~/Development/web");
+        assert_eq!(short_path("/srv/web"), "/srv/web");
+        assert_eq!(short_path(&format!("{home}x/web")), format!("{home}x/web"));
+    }
 
     #[test]
     fn stuck_says_why_and_since_when() {

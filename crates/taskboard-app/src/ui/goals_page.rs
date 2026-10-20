@@ -66,7 +66,7 @@ pub fn goal_group(g: &Value) -> GoalGroup {
 }
 
 /// The projects goal `g` holds work in: its own, then the others its tasks are in.
-fn goal_projects(g: &Value) -> Vec<&str> {
+pub(crate) fn goal_projects(g: &Value) -> Vec<&str> {
     let ps: Vec<&str> = fmt::arr(g, "projects").iter().filter_map(|p| p.as_str()).collect();
     if ps.is_empty() { vec![s(g, "project")] } else { ps }
 }
@@ -84,7 +84,7 @@ pub fn in_progress(goals: &[Value], project: &str) -> Vec<String> {
 
 /// How many of a goal's tasks are in each status.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Tally {
+pub(crate) struct Tally {
     needs: i64,
     working: i64,
     review: i64,
@@ -108,7 +108,7 @@ impl Tally {
     }
 
     /// From the goal's tasks, else from its summary's counts.
-    fn of(g: &Value, detail: Option<&Value>) -> Tally {
+    pub(crate) fn of(g: &Value, detail: Option<&Value>) -> Tally {
         let mut t = Tally::default();
         if let Some(d) = detail.filter(|d| d["tasks"].is_array()) {
             for c in arr(d, "tasks") {
@@ -129,7 +129,7 @@ impl Tally {
     }
 
     /// The bar's parts, finished work first.
-    fn parts(&self) -> Vec<(St, i64)> {
+    pub(crate) fn parts(&self) -> Vec<(St, i64)> {
         vec![(St::Done, self.done), (St::Review, self.review), (St::Working, self.working), (St::Needs, self.needs), (St::Failed, self.failed), (St::Queued, self.queued), (St::Planned, self.planned)]
     }
 }
@@ -163,12 +163,12 @@ pub struct GoalRow {
     pub action: Option<Action>,
 }
 
-fn waves(d: Option<&Value>) -> Vec<Value> {
+pub(crate) fn waves(d: Option<&Value>) -> Vec<Value> {
     d.map(|d| arr(d, "waves").to_vec()).unwrap_or_default()
 }
 
 /// The wave the goal is at: the first that isn't done.
-fn current_wave(ws: &[Value]) -> Option<usize> {
+pub(crate) fn current_wave(ws: &[Value]) -> Option<usize> {
     ws.iter().position(|w| s(w, "state") != "done")
 }
 
@@ -405,7 +405,7 @@ fn projects(goals: &[Value]) -> Vec<(String, usize)> {
 // ================================================================== render
 
 /// A flex column `grow` parts wide (the design's `fr`).
-fn fr(d: Div, grow: f32) -> Div {
+pub(crate) fn fr(d: Div, grow: f32) -> Div {
     let mut d = d.min_w_0();
     d.style().flex_grow = Some(grow);
     d.style().flex_shrink = Some(1.);
