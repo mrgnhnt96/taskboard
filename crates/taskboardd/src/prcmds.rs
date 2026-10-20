@@ -262,6 +262,11 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
     if let Some(h) = crate::stack::stack_hold(app, t)? {
         out.push(h);
     }
+    // Merge steps (`before = "merge"`) hold only the merge, judged on the PR's head.
+    let steps = prflow::merge_steps_left(app, t, rec);
+    if !steps.is_empty() {
+        out.push(format!("its merge steps haven't passed on its head: {}", crate::steps::names(&steps)));
+    }
     Ok(out)
 }
 

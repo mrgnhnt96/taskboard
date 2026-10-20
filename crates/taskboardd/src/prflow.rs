@@ -25,12 +25,12 @@ use crate::config::RebasePolicy;
 use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
-pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
+pub const WAKE: &[&str] = &["fix", "comments", "steps", "merge", "ask"];
 /// The visits that don't change code: they start fresh on `[models] pr_visit` (`fresh_visit`).
 const MECHANICAL: &[&str] = &["merge", "ask"];
-pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "merge", "waits", "stack"];
+pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
-pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits", "stack"];
+pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -48,6 +48,7 @@ pub fn label(phase: &str) -> &str {
         "review" => "Awaiting review",
         "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
+        "steps" => "Waits on steps",
         "merge" => "Ready to merge",
         "waits" => "Waits on base",
         "stack" => "Waits on stack",
@@ -520,6 +521,18 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
                 String::new()
             }
         ),
+        "steps" => {
+            let left = merge_steps_left(app, t, rec);
+            let v = crate::steps::vars_at(app, t, rec["head"].as_str());
+            let each: Vec<String> = left.iter().map(|s| s.filled(&v)).map(|s| format!("- {} ({}): {}", s.name, s.what(), s.how(&tb))).collect();
+            format!(
+                "It's approved and every check is green, but its merge waits on {} on its head ({}):\n{}\nOnce they've \
+                 passed, the board moves the PR on to its merge. Don't merge it in this visit.",
+                if left.len() == 1 { "this step" } else { "these steps" },
+                short(rec["head"].as_str().unwrap_or(""), 7),
+                each.join("\n")
+            )
+        }
         "merge" => format!(
             "It's approved and every check is green. Merge it with {tb} pr merge {r}: it checks the PR once more, then \
              merges it with the repository's default strategy and deletes its branch."
@@ -1084,7 +1097,11 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         if crate::stack::holds(app, t).unwrap_or(false) {
             return "waits".into();
         }
-        return if crate::stack::stack_hold(app, t).ok().flatten().is_some() { "stack" } else { "merge" }.into();
+        if crate::stack::stack_hold(app, t).ok().flatten().is_some() {
+            return "stack".into();
+        }
+        // The task's merge steps (`before = "merge"`) hold only the merge, judged on the PR's head.
+        return if merge_steps_left(app, t, rec).is_empty() { "merge" } else { "steps" }.into();
     }
     // Lens reviewing a new PR (`lens_pr.rs`) comes before asking anyone: only stages that wait on someone
     // else make way for it, so it never holds a merge.
@@ -1095,6 +1112,12 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         return "ask".into();
     }
     "review".into()
+}
+
+/// The task's merge steps that haven't passed on the PR's head (none when the PR goes into a branch they
+/// don't hold, or they can't be read).
+pub fn merge_steps_left(app: &App, t: &Row, rec: &Value) -> Vec<crate::steps::Step> {
+    crate::steps::merge_missing(app, t, rec["head"].as_str(), rec["base"].as_str()).unwrap_or_default()
 }
 
 /// The review doesn't hold the merge: skipped for this push (`tb pr skip-review`), or the project has no
@@ -1442,6 +1465,25 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             Some("pr"),
         )?;
         changes.push(("merge_gave_up", json!(now_iso())));
+    }
+    // Merge steps the board can't bring the agent back for, or that a visit ended without passing: tell the
+    // owner once per head.
+    let steps_visit_over = f.s("handled") == Some(key.as_str()) || (f.s("woke") == Some(key.as_str()) && f.contains_key("stopped"));
+    if phase == "steps"
+        && t.s("status") == Some("done")
+        && f.s("steps_alerted") != Some(head.as_str())
+        && (!may_wake || steps_visit_over)
+    {
+        let left = crate::steps::names(&merge_steps_left(app, t, rec));
+        dispatch::add_alert(
+            app,
+            &format!("PR #{} for {} is approved and green, but its merge waits on steps: {left}.", t.i0("pr_num"), rf("task", t.id())),
+            Some(t.id()),
+            t.i("goal_id"),
+            None,
+            Some("pr"),
+        )?;
+        changes.push(("steps_alerted", json!(head)));
     }
     if phase == "merge"
         && !agents_merge_on(app, t.s("project"))

@@ -109,6 +109,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
         "retarget_error": f.get("retarget_error").cloned().unwrap_or(Value::Null),
         "wd": crate::steps::bar_card(app, t)?,
+        "merge_steps": crate::steps::merge_cards(app, t, rec["head"].as_str(), rec["base"].as_str())?,
         "lens": crate::lens_pr::bar(app, &f),
         "reviewer_rows": rows,
     }))
