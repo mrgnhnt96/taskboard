@@ -214,12 +214,19 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         }
         // The same rule as the stage (`prflow::checks_waiting`): once the wait is over, an expected check
         // that never posted doesn't hold the merge; only failed ones do.
-        if let Some(missing) = prflow::expected_missing(app, t, rec).filter(|m| !m.is_empty() && !prflow::expected_wait_over(app, t, &f, rec)) {
-            out.push(format!(
-                "expected checks haven't posted: {} (it waits up to {} min for them)",
-                missing.join(", "),
-                prflow::expected_wait_mins(app, t)
-            ));
+        match prflow::expected_missing(app, t, rec) {
+            Some(missing) if !missing.is_empty() && !prflow::expected_wait_over(app, t, &f, rec) => {
+                let what = if prflow::expected_for(app, t, rec).source == Some("earlier") {
+                    "checks that posted on the last push haven't posted on this one"
+                } else {
+                    "expected checks haven't posted"
+                };
+                out.push(format!("{what}: {} (it waits up to {} min for them)", missing.join(", "), prflow::expected_wait_mins(app, t)));
+            }
+            None if checks.is_empty() && !prflow::no_checks_wait_over(app, &f, rec) => {
+                out.push(format!("no checks have posted on this push yet (waits up to {} min)", app.cfg.pr.no_checks_after_mins));
+            }
+            _ => {}
         }
     }
     if !prflow::review_skipped(app, t, &f, rec) {

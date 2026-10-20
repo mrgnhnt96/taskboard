@@ -770,7 +770,8 @@ pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
 }
 
 /// The checks a push is expected to post, and where that came from: `"command"` (the project's
-/// `expected_cmd`, its answer for this head) or `"list"` (`expected`). No checks: no word (the
+/// `expected_cmd`, its answer for this head), `"list"` (`expected`) or `"earlier"` (neither is set: the
+/// checks that posted on the PR's last push that posted any, `earlier_checks`). No checks: no word (the
 /// `no_checks_after_mins` grace), with the source still `"command"` when the command couldn't tell.
 pub struct Expected {
     pub checks: Option<Vec<String>>,
@@ -790,8 +791,26 @@ pub fn expected_for(app: &App, t: &Row, rec: &Value) -> Expected {
         let checks = e["checks"].as_array().map(|_| str_list(&e["checks"]));
         return Expected { checks, source: Some("command"), error: e["error"].as_str().map(|s| s.to_string()) };
     }
+    if rules.expected.is_none() && !has_cmd {
+        if let Some(checks) = earlier_checks(&f, rec) {
+            return Expected { checks: Some(checks), source: Some("earlier"), error: None };
+        }
+    }
     let source = rules.expected.is_some().then_some("list");
     Expected { checks: rules.expected, source, error: None }
+}
+
+/// The checks that posted on the PR's latest earlier push that posted any (`checks_by_head`): a new push
+/// with none yet isn't one that needs none, it waits for those same checks.
+fn earlier_checks(f: &Row, rec: &Value) -> Option<Vec<String>> {
+    let head = rec["head"].as_str().filter(|h| !h.is_empty())?;
+    let at = |h: &str| f.get("head_at").and_then(|m| m.get(h)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    f.get("checks_by_head")?
+        .as_object()?
+        .iter()
+        .filter(|(h, c)| h.as_str() != head && c.as_array().is_some_and(|a| !a.is_empty()))
+        .max_by(|a, b| at(a.0).total_cmp(&at(b.0)))
+        .map(|(_, c)| str_list(c))
 }
 
 /// Expected checks (`[pr.projects.<name>] expected`, or `expected_cmd`'s answer for this push) that
@@ -1050,8 +1069,14 @@ pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
     }
     match expected_missing(app, t, rec) {
         Some(missing) => !missing.is_empty() && !expected_wait_over(app, t, f, rec),
-        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && head_waited(f, rec) < app.cfg.pr.no_checks_after_mins * 60.0,
+        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && !no_checks_wait_over(app, f, rec),
     }
+}
+
+/// This push has waited out the `no_checks_after` grace: with no expected checks, a push that posted
+/// none by now needs none.
+pub fn no_checks_wait_over(app: &App, f: &Row, rec: &Value) -> bool {
+    head_waited(f, rec) >= app.cfg.pr.no_checks_after_mins * 60.0
 }
 
 /// `tb pr merge` was refused on this head while checks ran on the host (`checks_running`), and the record
@@ -1247,6 +1272,19 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     if !head.is_empty() {
         changes.push(("head", json!(head)));
+        // The checks this push posted, for a later push to wait on (`earlier_checks`).
+        let mut by = f.get("checks_by_head").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        let mut have = by.get(&head).map(str_list).unwrap_or_default();
+        let before = have.len();
+        for c in rec["checks"].as_array().cloned().unwrap_or_default() {
+            if let Some(n) = c["name"].as_str().filter(|n| !have.iter().any(|h| h.eq_ignore_ascii_case(n))) {
+                have.push(n.to_string());
+            }
+        }
+        if have.len() != before {
+            by.insert(head.clone(), json!(have));
+            changes.push(("checks_by_head", Value::Object(by)));
+        }
         let mut bases = f.get("head_base").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         if let Some(b) = rec["base_head"].as_str().filter(|b| !b.is_empty() && !bases.contains_key(&head)) {
             bases.insert(head.clone(), json!(b));
