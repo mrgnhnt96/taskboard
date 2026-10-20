@@ -702,15 +702,15 @@ fn the_pr_plan_shows_on_a_task_without_a_pr() {
 }
 
 #[::core::prelude::v1::test]
-fn a_steps_findings_fold_under_its_headline() {
+fn a_step_opens_to_its_findings_with_their_state() {
     let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
                       "step_results": [{"name": "Author review", "headline": "1 open finding", "open": 1, "stale": true, "at": "2026-01-05T12:00:00Z",
                                         "findings": [{"id": "F2", "title": "SQL injection", "severity": "high", "file": "api.rs", "line": 12},
                                                      {"id": "F1", "title": "Typo", "state": "fixed"}]}]});
     let shut = panel_text(task.clone(), json!({}));
-    assert!(shut.contains("1 open finding · Findings ›") && !shut.contains("SQL injection"), "{shut}");
-    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.findings": "open"}}})));
-    assert!(text.contains("Author review 1 open finding Jan 5 Moved since"), "{text}");
+    assert!(shut.contains("Author review 1 open finding") && !shut.contains("SQL injection"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["result:0"]}})));
+    assert!(text.contains("Author review 1 open finding Jan 5 F2") && text.contains("Typo Moved since"), "{text}");
     assert!(text.contains("F2 open high SQL injection api.rs:12") && text.contains("F1 fixed Typo"), "{text}");
 }
 
@@ -791,7 +791,8 @@ fn two_terminals() -> Value {
     json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp", "started_at": "2026-01-05T14:00:00Z",
            "session": {"id": "s2", "status": "working"},
            "terminals": [{"id": "s2", "name": "T7 Second go", "status": "working", "background": null, "at": "2026-01-05T15:14:00Z"},
-                         {"id": "s1", "name": "T7 First go", "status": "gone", "background": null, "at": "2026-01-05T14:02:00Z"}],
+                         {"id": "s1", "name": "T7 First go", "status": "gone", "background": null, "at": "2026-01-05T14:02:00Z",
+                          "gone_at": "2026-01-05T14:40:00Z"}],
            "context": {"where": {"branch": "feat/t7-progress", "uncommitted": 3}},
            "log": [{"kind": "commit", "at": "2026-01-05T15:52:00Z", "text": "wip"}]})
 }
@@ -802,7 +803,7 @@ fn the_started_step_shows_its_terminals_only_when_opened() {
     let shut = panel_text(task.clone(), json!({}));
     assert!(!shut.contains("First go") && !shut.contains("feat/t7-progress"), "{shut}");
     let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["started"]}})));
-    let closed = crate::fmt::hhmm("2026-01-05T15:14:00Z");
+    let closed = crate::fmt::hhmm("2026-01-05T14:40:00Z");
     assert!(text.contains("T7 Second go Working"), "{text}");
     assert!(text.contains(&format!("T7 First go Closed {closed}")), "{text}");
     let last = crate::fmt::hhmm("2026-01-05T15:52:00Z");

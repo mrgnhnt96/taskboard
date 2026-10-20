@@ -930,19 +930,16 @@ fn started_node(c: &Ctx, t: &Value) -> Node {
 fn started_detail(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let cur = field(&t["session"], "id");
-    let terms = arr(t, "terminals");
-    let mut out: Vec<Node> = terms
+    let mut out: Vec<Node> = arr(t, "terminals")
         .iter()
-        .enumerate()
-        .map(|(ix, x)| {
+        .map(|x| {
             let live = cur.is_some() && js_eq(field(x, "id"), cur) && session_live(t);
             let mut kids = vec![txt(s(x, "name"), St::Plain)];
             if live {
                 kids.push(term_state(x));
                 kids.push(c.btn("", Act::new("focus", "", &r, format!("manage:{r}")), Look::Icon(Icon::Focus), false, Some("Focus in Midna")));
             } else if opt_s(x, "status").is_none_or(|st| st == "gone") {
-                // Newest first: an earlier terminal closed when the next one took the task.
-                let closed = ix.checked_sub(1).and_then(|n| opt_s(&terms[n], "at")).map(fmt::hhmm).filter(|h| !h.is_empty());
+                let closed = opt_s(x, "gone_at").map(fmt::hhmm).filter(|h| !h.is_empty());
                 kids.push(txt(closed.map_or("Closed".to_string(), |h| format!("Closed {h}")), St::Time));
             } else {
                 kids.push(term_state(x));
@@ -986,27 +983,27 @@ fn term_state(x: &Value) -> Node {
     pill(label, st_tone(st))
 }
 
-/// A step that ran a round (`step_results`): its headline, and its findings in a fold.
+/// A step that ran a round (`step_results`): its headline, opening onto what came of it.
 fn result_node(c: &Ctx, t: &Value, ix: usize, x: &Value) -> Node {
     let open = x["open"].as_i64().unwrap_or(0);
     let mut body = Vec::new();
     if b(x, "stale") {
         body.push(el(K::Line, vec![pill("Moved since", Tone::Needs)]));
     }
-    let findings = arr(x, "findings");
-    if !findings.is_empty() {
-        let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
-        body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, findings.iter().map(finding_item).collect())]));
-    }
     let head = tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at")));
     tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_step(c, TlStep::Result(ix), head, result_detail(t, x)), body, false)
 }
 
-/// A step result, opened: what came of it and what it ran on (the task's devices, the commit).
+/// A step result, opened: what came of it, its findings with their state and what it ran on (the
+/// task's devices, the commit).
 fn result_detail(t: &Value, x: &Value) -> Vec<Node> {
     let mut out = Vec::new();
     if let Some(note) = opt_s(x, "note").filter(|n| *n != s(x, "headline")) {
         out.push(txt(note, St::DetText));
+    }
+    let findings = arr(x, "findings");
+    if !findings.is_empty() {
+        out.push(el(K::List, findings.iter().map(finding_item).collect()));
     }
     let mut on: Vec<String> = lent_devices(t).into_iter().map(str::to_string).collect();
     if let Some(h) = opt_s(x, "head") {
