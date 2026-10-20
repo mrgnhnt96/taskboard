@@ -1781,6 +1781,16 @@ enum PrCmd {
         #[arg(long)]
         check: Vec<String>,
     },
+    /// A failed check only the owner can fix (a missing secret or variable, a permissions error): tell them, and finish this visit
+    NeedsOwner {
+        task: Option<String>,
+        /// What the owner has to do (20-300 characters)
+        #[arg(long)]
+        reason: String,
+        /// The failed check it's about (repeat for more; all of this push's failures when left out)
+        #[arg(long)]
+        check: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -6024,6 +6034,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 out(&format!("Cleared {} for this push of {t}'s PR: they failed, but not because of it.", cleared.join(", ")));
                 Ok(0)
             }
+            PrCmd::NeedsOwner { task, reason, check } => {
+                let t = c.pr_task(task)?;
+                c.call_progress("POST", &format!("/tasks/{t}/pr/needs-owner"), Some(json!({"reason": reason, "checks": check})))?;
+                out(&format!("Told the owner {t}'s PR needs them. The board watches it and brings this conversation back when it needs you. You can stop here."));
+                Ok(0)
+            }
             PrCmd::Wait { task } => {
                 let t = c.pr_task(task)?;
                 c.call("POST", &format!("/tasks/{t}/pr/wait"), Some(json!({})))?;
@@ -6835,6 +6851,20 @@ mod tests {
             ["1:30 PM · T8 · Term", "  > make it", "  > and start it", "Oct 11, 9:05 AM · G2 · s2", "  (no prompt typed in this conversation)"]
         );
         assert_eq!(misses_lines(&json!([]), &now), ["No start has been refused."]);
+    }
+
+    #[test]
+    fn tb_pr_needs_owner_takes_a_reason_and_optional_checks() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
+            Cmd::Pr { action: PrCmd::NeedsOwner { task, reason, check } } => (task, reason, check),
+            _ => panic!("not needs-owner"),
+        };
+        assert_eq!(parse(&["tb", "pr", "needs-owner", "--reason", "Add the secret"]), (None, "Add the secret".into(), vec![]));
+        assert_eq!(
+            parse(&["tb", "pr", "needs-owner", "T5", "--reason", "Add the secret", "--check", "ci", "--check", "lint"]),
+            (Some("T5".into()), "Add the secret".into(), vec!["ci".to_string(), "lint".into()])
+        );
+        assert!(Cli::try_parse_from(["tb", "pr", "needs-owner"]).is_err(), "--reason is required");
     }
 
     #[test]

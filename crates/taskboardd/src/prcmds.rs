@@ -460,17 +460,7 @@ pub fn not_ours(app: &App, id: i64, body: &Value) -> Result<Value> {
     if failed.is_empty() || head.is_empty() {
         return err(409, format!("Nothing failed on PR #{}'s current push, so there's nothing to clear.", pr.num));
     }
-    let asked: Vec<String> = body["checks"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
-    let mut checks = vec![];
-    for c in &asked {
-        match failed.iter().find(|f| f.eq_ignore_ascii_case(c)) {
-            Some(f) => checks.push(f.clone()),
-            None => return err(409, format!("{c} didn't fail on this push. Failed: {}.", failed.join(", "))),
-        }
-    }
-    if checks.is_empty() {
-        checks = failed.clone();
-    }
+    let checks = named_checks(body, &failed)?;
     let who = who_of(app, body);
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
@@ -489,6 +479,54 @@ pub fn not_ours(app: &App, id: i64, body: &Value) -> Result<Value> {
     })?;
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "cleared": checks, "head": head, "pr": board::pr_card(app, &t)}))
+}
+
+/// The failed checks `--check` names (all of `failed` when it names none).
+fn named_checks(body: &Value, failed: &[String]) -> Result<Vec<String>> {
+    let mut checks = vec![];
+    for c in &names_of(&body["checks"]) {
+        match failed.iter().find(|f| f.eq_ignore_ascii_case(c)) {
+            Some(f) => checks.push(f.clone()),
+            None => return err(409, format!("{c} didn't fail on this push. Failed: {}.", failed.join(", "))),
+        }
+    }
+    Ok(if checks.is_empty() { failed.to_vec() } else { checks })
+}
+
+/// `tb pr needs-owner`: this push's failed checks are ones only the owner can fix (a missing secret
+/// or variable, a permissions error). Records what they have to do (`owner_act`), finishes the visit
+/// and tells them; the card says the PR needs them instead of being fixed.
+pub fn needs_owner(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let reason = one_line(&body_str(body, "reason"), 1000);
+    let n = reason.chars().count();
+    if !(REASON_MIN..=REASON_MAX).contains(&n) {
+        return err(400, format!("The reason is {n} characters: say what the owner has to do in {REASON_MIN} to {REASON_MAX}."));
+    }
+    let (t, rec) = fresh(app, id)?;
+    let pr = pr_of(&t)?;
+    let head = rec["head"].as_str().unwrap_or("").to_string();
+    let failed = prflow::failing(&flow(&t), &rec);
+    if failed.is_empty() || head.is_empty() {
+        return err(409, format!("Nothing fails on PR #{}'s current push, so there's nothing for the owner to fix.", pr.num));
+    }
+    let checks = named_checks(body, &failed)?;
+    let who = who_of(app, body);
+    app.db.tx(|| {
+        prflow::merge_flow(app, id, fields!["owner_act" => json!({"head": head, "checks": checks, "reason": reason, "who": who, "at": now_iso()})])?;
+        let t = board::get_task(app, id)?;
+        prflow::waited(app, &t)?;
+        board::log_event(app, id, &who, "status", &format!("PR #{}: {} failed, and only the owner can fix it: {reason}", pr.num, checks.join(", ")))?;
+        crate::dispatch::add_alert(
+            app,
+            &format!("PR #{} for {} needs you: {reason}", pr.num, rf("task", id)),
+            Some(id),
+            t.i("goal_id"),
+            None,
+            Some("pr"),
+        )
+    })?;
+    let t = board::get_task(app, id)?;
+    Ok(json!({"task": rf("task", id), "checks": checks, "head": head, "pr": board::pr_card(app, &t)}))
 }
 
 fn names_of(v: &Value) -> Vec<String> {

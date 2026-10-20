@@ -254,6 +254,46 @@ pub fn card(t: &Row) -> Value {
     })
 }
 
+/// The card's stage as it stands now (`card`): its terminal only while that terminal is still on the
+/// visit (the wake is live or it stopped to ask, the terminal is open and hasn't taken another task).
+/// A fix nobody is on or about to start reads "Checks failed"; one only the owner can fix (`tb pr
+/// needs-owner`, this push) says it needs them, with `owner` saying what to do.
+pub fn live_card(app: &App, t: &Row) -> Result<Value> {
+    let mut c = card(t);
+    if !c.is_object() {
+        return Ok(c);
+    }
+    let f = flow(t);
+    let on_it = waking(app, t)? || f.contains_key("stopped") || retry_later(&f);
+    let live = match c["session"].as_str().filter(|s| !s.is_empty()) {
+        Some(sid) if on_it => {
+            board::get_session(app, Some(sid))?.is_some_and(|s| s.s("status") != Some("gone"))
+                && board::task_for_session(app, Some(sid))?.is_none()
+        }
+        _ => false,
+    };
+    if !live {
+        c["session"] = Value::Null;
+    }
+    if c["phase"] == "fix" {
+        let rec = f.get("rec").cloned().unwrap_or(Value::Null);
+        if let Some(o) = owner_act(&f, &rec) {
+            c["label"] = json!("Needs you to fix checks");
+            c["owner"] = o;
+        } else if !on_it {
+            c["label"] = json!("Checks failed");
+            c["idle"] = json!(true);
+        }
+    }
+    Ok(c)
+}
+
+/// This push's `tb pr needs-owner`, if it has one.
+pub fn owner_act(f: &Row, rec: &Value) -> Option<Value> {
+    let head = rec["head"].as_str().filter(|h| !h.is_empty())?;
+    f.get("owner_act").filter(|o| o["head"] == head).cloned()
+}
+
 /// A green PR nobody has reviewed yet: the owner may want to look before peers do.
 pub fn awaiting_owner(t: &Row) -> bool {
     t.s("pr_phase") == Some("review") && !flow(t).contains_key("reviewed")
@@ -460,7 +500,9 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
              run again.{rebase} If the \
              failure isn't this PR's (the base branch fails it too), don't change unrelated code: clear it with {tb} pr \
              not-ours {r} --check \"<check>\" --title \"<what fails>\" --reason \"<why it isn't this PR>\" --proof <link to \
-             the same failure without this change>.",
+             the same failure without this change>. If only the owner can fix it (a missing secret or variable, a \
+             permissions error), don't work around it: run {tb} pr needs-owner {r} --reason \"<what the owner has to \
+             do>\"; it tells them and finishes this visit.",
             if failed.is_empty() { "see the PR".to_string() } else { failed.join(", ") },
             num = t.i0("pr_num"),
             rebase = rebase_advice(rebase_policy(app, t))
