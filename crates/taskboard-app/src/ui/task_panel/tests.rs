@@ -602,6 +602,24 @@ fn the_lens_step_shows_after_checks_only_when_lens_ran() {
 }
 
 #[::core::prelude::v1::test]
+fn merge_steps_sit_before_the_merge_and_a_skip_shows_why() {
+    // #477: steps that hold only the merge, judged on the PR's head.
+    let merge_steps = json!([
+        {"name": "Staging", "state": "skipped", "why": "docs only"},
+        {"name": "Notes", "state": "passed"},
+        {"name": "Smoke", "state": "todo"},
+    ]);
+    let bar = json!({"approvals": 1, "reviewers": 1, "new_comments": 0, "reviewer_rows": [], "merge_steps": merge_steps});
+    let p = with_bar(bar.clone(), json!({"phase": "steps", "label": "Waits on steps"}), "approved")["pr"].clone();
+    let got: Vec<_> = view::pr_steps_full(&p, &bar).into_iter().map(|s| (s.name, s.sub.unwrap_or_default(), s.st)).collect();
+    let tail = &got[got.len() - 4..];
+    assert_eq!(tail[0], ("Staging".into(), "Skipped: docs only".into(), view::StepSt::Done));
+    assert_eq!(tail[1], ("Notes".into(), "Passed".into(), view::StepSt::Done));
+    assert_eq!(tail[2], ("Smoke".into(), "To do".into(), view::StepSt::Ask));
+    assert_eq!(tail[3], ("Merge".into(), "Waits on steps".into(), view::StepSt::Wait));
+}
+
+#[::core::prelude::v1::test]
 fn with_no_count_the_host_s_approval_finishes_the_review_step() {
     // #150: no approvals count, the host decided APPROVED with 1 of 3 reviewers approving.
     let review = |rv: &str, need: Value| {
@@ -786,4 +804,24 @@ fn a_fetched_handoff_is_out_of_date_once_the_task_moves_on() {
         moved[k] = v;
         assert_ne!(handoff_stamp(&moved), same, "a new {k} fetches the handoff again");
     }
+}
+
+#[::core::prelude::v1::test]
+fn the_checks_step_says_being_fixed_only_while_a_terminal_is_on_it() {
+    // #489: a fix nobody is on reads Failed, one only the owner can fix reads Needs you.
+    let checks = |stage: Value| {
+        let p = json!({"num": 13, "state": "OPEN", "checks": "fail", "review": "pending", "stage": stage});
+        let [(_, st, sub), _, _] = view::pr_steps(&p);
+        (sub.unwrap_or_default(), st)
+    };
+    let fix = |extra: Value| {
+        let mut s = json!({"phase": "fix", "label": "Fixing checks"});
+        s.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        checks(s).0
+    };
+    assert_eq!(fix(json!({"session": "s1"})), "Being fixed");
+    assert_eq!(fix(json!({})), "Fix starting");
+    assert_eq!(fix(json!({"idle": true})), "Failed");
+    assert_eq!(fix(json!({"owner": {"reason": "Add the NPM_TOKEN secret"}})), "Needs you");
+    assert_eq!(fix(json!({"owner": {"reason": "Add the NPM_TOKEN secret"}, "session": "s1"})), "Needs you");
 }

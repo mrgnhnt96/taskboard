@@ -1304,7 +1304,19 @@ pub fn pr_steps(p: &Value) -> [(&'static str, StepSt, Option<String>); 3] {
         "pass" => (StepSt::Done, Some("Passed".into())),
         "fail" if phase == "fix" => (
             StepSt::Fail,
-            Some(if obj(stage, "stopped").is_some() { "Fix stopped" } else if !stage["session"].is_null() && stage["session"] != "" { "Being fixed" } else { "Fix starting" }.into()),
+            // Being fixed only while a terminal is on it; `owner`: only the owner can fix it; `idle`: nobody is.
+            Some(if obj(stage, "owner").is_some() {
+                "Needs you"
+            } else if obj(stage, "stopped").is_some() {
+                "Fix stopped"
+            } else if !stage["session"].is_null() && stage["session"] != "" {
+                "Being fixed"
+            } else if b(stage, "idle") {
+                "Failed"
+            } else {
+                "Fix starting"
+            }
+            .into()),
         ),
         "fail" => (StepSt::Fail, Some("Failed".into())),
         "pending" => (StepSt::Now, Some("Running".into())),
@@ -1461,8 +1473,21 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         // "Not asked" has nowhere to go.
         step(review.0, review.1, review.2.as_deref(), if review.1 == StepSt::Todo { None } else { url })
     });
+    // Merge steps (`before = "merge"`), judged on the PR's head; a skip shows its reason.
+    for m in arr(bar, "merge_steps") {
+        out.push(match s(m, "state") {
+            "passed" => step(s(m, "name"), StepSt::Done, Some("Passed"), None),
+            "skipped" => match opt_s(m, "why") {
+                Some(why) => step(s(m, "name"), StepSt::Done, Some(&format!("Skipped: {why}")), None),
+                None => step(s(m, "name"), StepSt::Done, Some("Skipped"), None),
+            },
+            _ if pr_open(p) && phase == "steps" => step(s(m, "name"), StepSt::Ask, Some("To do"), None),
+            _ => step(s(m, "name"), StepSt::Todo, None, None),
+        });
+    }
     out.push(match phase {
         "waits" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on base"), None),
+        "steps" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on steps"), None),
         // A head-merge child's PR has to merge into this one first.
         "stack" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on stack"), None),
         _ => step(merge.0, merge.1, merge.2.as_deref(), None),

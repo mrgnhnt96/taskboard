@@ -206,3 +206,51 @@ fn a_release_script_is_a_project_setting_the_cut_check_hands_back() {
     let v = call(&app, "POST", "/projects/webapp", json!({"release_script": "none"}));
     assert_eq!(v["release_script"], Value::Null);
 }
+
+fn state_project(app: &App, name: &str) -> Value {
+    call(app, "GET", "/state", json!({}))["projects"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone()
+}
+
+#[test]
+fn the_state_carries_each_projects_release_waits_and_backlog() {
+    let (_d, app) = new_board();
+    let web = state_project(&app, "webapp");
+    assert!(web["path"].as_str().unwrap().ends_with("webapp"));
+    assert_eq!(web["releases"], false);
+    assert_eq!(web["latest_release"], Value::Null, "nothing about releases while they're off");
+    assert_eq!(web["unreleased"], Value::Null);
+    assert_eq!(web["waits_on"], json!([]));
+    assert_eq!(web["backlog_open"], 0);
+
+    releases_on(&app, "webapp");
+    call(&app, "POST", "/projects/webapp", json!({"waits_on": ["api"]}));
+    let first = task(&app, "webapp", "Login form", None);
+    done(&app, first, None);
+    let web = state_project(&app, "webapp");
+    assert_eq!(web["releases"], true);
+    assert_eq!(web["latest_release"], Value::Null, "no cut yet");
+    assert_eq!(web["unreleased"], 1);
+    assert_eq!(web["waits_on"], json!(["api"]));
+
+    call(&app, "POST", "/releases", json!({"name": "v1.0", "project": "webapp"}));
+    done(&app, task(&app, "webapp", "Password reset", None), None);
+    let r = call(&app, "POST", "/releases", json!({"name": "v1.1", "project": "webapp"}));
+    done(&app, task(&app, "webapp", "Sign up", None), None);
+    done(&app, task(&app, "api", "Login endpoint", None), None);
+    let web = state_project(&app, "webapp");
+    assert_eq!(web["latest_release"]["name"], "v1.1", "the newest cut");
+    assert_eq!(web["latest_release"]["ref"], r["ref"]);
+    assert_eq!(web["latest_release"]["cut_at"], r["cut_at"]);
+    assert_eq!(web["unreleased"], 1, "only what came after the cut");
+
+    for (title, project) in [("Crash on login", "webapp"), ("Slow sync", "webapp"), ("Bad header", "api")] {
+        call(&app, "POST", "/backlog", json!({"title": title, "project": project, "kind": "bug"}));
+    }
+    let dropped = call(&app, "POST", "/backlog", json!({"title": "Old idea", "project": "webapp", "kind": "bug"}))["id"].as_i64().unwrap();
+    call(&app, "POST", &format!("/backlog/{dropped}/drop"), json!({"reason": "Not needed."}));
+    assert_eq!(state_project(&app, "webapp")["backlog_open"], 2, "open issues only");
+    let api = state_project(&app, "api");
+    assert_eq!(api["backlog_open"], 1);
+    assert_eq!(api["waits_on"], json!([]), "waiting is one way");
+    assert_eq!(api["unreleased"], Value::Null, "api's releases are still off");
+}

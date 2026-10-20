@@ -452,7 +452,8 @@ ask_stage = false
 ask_retry_waits = [60, 300, 900]      # seconds between the board's tries when it can't ask
 
 # Your own steps before a project's PR opens (before = "pr", the default) or before its task finishes
-# (before = "done"). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
+# (before = "done"), or before its PR merges (before = "merge": checked on the PR's head; default_branch_only
+# = true holds only PRs into the default branch; skippable = true allows tb step skip "<name>" --why). Agent work has a `prompt` (and optionally a `check` script that must exit 0); a
 # script step has `run`; your own has `owner = true` and maybe an `open` link, and the task waits in
 # Needs you. Placeholders: {task} {title} {project} {repo} {branch} {base} {base_ref} {pr_url} {pr} {jira};
 # {base} is the PR's real base (a stacked task's parent branch) and {base_ref} has the remote on it

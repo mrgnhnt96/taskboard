@@ -161,6 +161,20 @@ pub(crate) fn unreleased_rows(app: &App, project: &str) -> Result<Vec<Row>> {
     app.db.q(&format!("SELECT * FROM tasks WHERE project = ? AND {RELEASABLE} ORDER BY finished_at, id"), p![project])
 }
 
+/// Each project's newest release (`ref`, `name`, `cut_at`) and its count of done tasks waiting in
+/// Unreleased, in two queries for every project at once (`GET /state`'s projects).
+pub(crate) fn latest_and_unreleased(app: &App) -> Result<(HashMap<String, Value>, HashMap<String, i64>)> {
+    let mut latest = HashMap::new();
+    for r in app.db.q("SELECT * FROM releases WHERE id IN (SELECT MAX(id) FROM releases GROUP BY project)", p![])? {
+        latest.insert(r.st("project"), json!({"ref": rf("release", r.id()), "name": r.v("name"), "cut_at": r.v("cut_at")}));
+    }
+    let mut unreleased = HashMap::new();
+    for r in app.db.q(&format!("SELECT project, COUNT(*) AS n FROM tasks WHERE project IS NOT NULL AND {RELEASABLE} GROUP BY project"), p![])? {
+        unreleased.insert(r.st("project"), r.i("n").unwrap_or(0));
+    }
+    Ok((latest, unreleased))
+}
+
 pub fn dict(app: &App, r: &Row) -> Result<Value> {
     Ok(json!({
         "id": r.id(), "ref": rf("release", r.id()), "project": r.v("project"), "name": r.v("name"),

@@ -188,7 +188,7 @@ enum Cmd {
         #[command(flatten)]
         t: TaskArg,
     },
-    /// Propose planned tasks for a goal: --task "title::what to do"
+    /// Propose tasks for a goal: --task "title::what to do". Planned, or queued while the goal is running
     Propose {
         goal: String,
         /// A planned task: "title::detail", "title::detail::<wave>", "title::detail::<wave or nothing>::<T14 #1, the tasks it waits for>"
@@ -196,6 +196,9 @@ enum Cmd {
         /// end any of them with "::model=small" (small, large or a model name) for the model its terminal runs and/or "::project=api" to put it in another project than the goal's
         #[arg(long = "task", value_name = "TITLE::DETAIL[::WAVE][::WAITS][::FILES][::model=M][::project=P]")]
         tasks: Vec<String>,
+        /// Planned even while the goal is running, so they wait for its next run
+        #[arg(long)]
+        planned: bool,
         /// It's different work from the open backlog items whose titles look like it (the board refuses it otherwise)
         #[arg(long = "not-backlog")]
         not_backlog: bool,
@@ -440,8 +443,12 @@ enum Cmd {
         end: Option<String>,
         #[arg(long)]
         days: Option<String>,
-        #[arg(long = "today-until")]
-        today_until: Option<String>,
+        /// Keep going until a time, then the usual hours: past midnight if it has passed today (6am, tomorrow 9am, off)
+        #[arg(long, visible_alias = "today-until", conflicts_with = "for_")]
+        until: Option<String>,
+        /// Keep going for a while from now, then the usual hours (8h, 90m, 1h30m, off)
+        #[arg(long = "for", value_name = "DURATION")]
+        for_: Option<String>,
         /// How often unanswered alerts repeat, in minutes (0 for never)
         #[arg(long = "alert-every", value_name = "MIN")]
         alert_every: Option<i64>,
@@ -1076,6 +1083,14 @@ enum StepCmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Pass a skippable step without doing it, saying why: tb step skip "Verify numbers" --why "no number to prove"
+    Skip {
+        name: String,
+        #[arg(long)]
+        why: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// A step can't pass: the task waits for the owner's answer, so end your turn after
     Fail {
         name: String,
@@ -1270,7 +1285,7 @@ enum LineCmd {
 
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// Add a task: planned in a goal, or on its own
+    /// Add a task: in a goal (queued while it's running, else planned), or on its own
     New {
         /// Its title; with --issue, the item's title when left out
         #[arg(required_unless_present = "issue")]
@@ -1293,6 +1308,8 @@ enum TaskCmd {
         files: Vec<String>,
         #[arg(long)]
         project: Option<String>,
+        /// Planned, not queued: on its own it waits for the goal it joins later; with --goal it waits for the
+        /// goal's next run even while the goal is running
         #[arg(long)]
         planned: bool,
         /// A standalone task for the work this terminal is already doing with the owner; you're on it at once
@@ -1511,7 +1528,7 @@ enum BacklogCmd {
         #[arg(required = true, num_args = 2.., value_name = "ISSUE")]
         args: Vec<String>,
     },
-    /// Make backlog issues into tasks: planned in their goal, or with --board queued on the board,
+    /// Make backlog issues into tasks: in their goal (queued while it's running, else planned), or with --board queued on the board,
     /// or with --here (one issue) a task this terminal is on at once.
     /// Several issues (tb backlog task B4 B5) change together or not at all.
     Task {
@@ -1519,6 +1536,9 @@ enum BacklogCmd {
         issues: Vec<String>,
         #[arg(long, conflicts_with = "here")]
         board: bool,
+        /// Planned in their goal even while it's running, so they wait for its next run
+        #[arg(long, conflicts_with_all = ["board", "here"])]
+        planned: bool,
         /// Take the one issue as a task on this terminal, like tb task new --issue B<n> --here
         #[arg(long)]
         here: bool,
@@ -1769,6 +1789,16 @@ enum PrCmd {
         #[arg(long)]
         check: Vec<String>,
     },
+    /// A failed check only the owner can fix (a missing secret or variable, a permissions error): tell them, and finish this visit
+    NeedsOwner {
+        task: Option<String>,
+        /// What the owner has to do (20-300 characters)
+        #[arg(long)]
+        reason: String,
+        /// The failed check it's about (repeat for more; all of this push's failures when left out)
+        #[arg(long)]
+        check: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2002,6 +2032,7 @@ fn print_pr_status(t: &str, v: &Value) {
     let from = match e["source"].as_str() {
         Some("command") => " (from expected_cmd)",
         Some("list") => " (from the project's expected list)",
+        Some("earlier") => " (posted on an earlier push)",
         _ => "",
     };
     match e["checks"].as_array() {
@@ -4570,6 +4601,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             }
             s
         }),
+        StepCmd::Skip { name, why, t } => skip_step(c, &name, &why, t),
         StepCmd::Fail { name, why, t } => c.run_report("tb.step_fail", json!({"name": name, "why": why}), t.task, true, |v| {
             format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
         }),
@@ -4614,6 +4646,20 @@ fn done_step(c: &Ctx, name: &str, note: Option<String>, skip: bool, t: TaskArg, 
         f["output"] = json!(output);
         f["result"] = json!(result);
     }
+    step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
+}
+
+/// `tb step skip`: passes a skippable step on the aimed head (else this checkout's) without doing it.
+fn skip_step(c: &Ctx, name: &str, why: &str, t: TaskArg) -> Result<i32, String> {
+    let (v, step) = find_step(c, t.task.clone(), name)?;
+    if !step.skippable {
+        return Err(format!("“{}” isn't skippable: {}.", step.name, step.how("tb")));
+    }
+    if why.trim().is_empty() {
+        return Err(format!("Say why “{}” doesn't apply: tb step skip \"{}\" --why \"<reason>\".", step.name, step.name));
+    }
+    let head = aim(c, &v, &Aim::default()).ok().and_then(|at| at.head).or_else(|| local_head(&c.cwd));
+    let f = json!({"name": step.name, "via": "skip", "skip": true, "why": why, "head": head});
     step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
 }
 
@@ -4693,7 +4739,7 @@ fn has_pr(v: &Value) -> bool {
 fn publish_round(v: &Value, step: &Step, head: Option<&str>) -> Option<Value> {
     let r = v["passed_rounds"].as_object()?.iter().find(|(k, _)| steps::key(k) == steps::key(&step.name))?.1;
     let on_head = match (head, r["head"].as_str()) {
-        _ if !step.per_head => true,
+        _ if !step.counts_per_head() => true,
         (Some(h), Some(rh)) => steps::same_head(h, rh),
         (Some(_), None) => false,
         (None, _) => true,
@@ -4705,6 +4751,7 @@ fn publish_round(v: &Value, step: &Step, head: Option<&str>) -> Option<Value> {
 fn step_report(c: &Ctx, f: Value, task: Option<String>) -> Result<i32, String> {
     let task = task.map(|t| task_ref(&t)).transpose()?;
     let passed = f["ok"] != false;
+    let did = if f["skip"] == true { "skipped" } else { "done" };
     match c.report("tb.step", f, task.as_deref(), TB_TIMEOUT)? {
         None => out(SAVED),
         Some(v) if !v["task"].is_string() => out(NO_TASK),
@@ -4715,7 +4762,7 @@ fn step_report(c: &Ctx, f: Value, task: Option<String>) -> Result<i32, String> {
                 out(&format!("{step} didn't pass (output above). Fix what it reports and try again, or tb step fail \"{step}\" --why \"…\" if it can't pass."));
                 return Ok(1);
             }
-            out(&if left.is_empty() { format!("{step} is done. No steps left.") } else { format!("{step} is done. Still to do: {}.", left.join(", ")) });
+            out(&if left.is_empty() { format!("{step} is {did}. No steps left.") } else { format!("{step} is {did}. Still to do: {}.", left.join(", ")) });
         }
     }
     Ok(if passed { 0 } else { 1 })
@@ -4750,7 +4797,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let at = aim(c, &v, &Aim::default()).unwrap_or(Aimed { dir: None, head: None, branch: None, pinned: false });
             let vars = step_vars(c, &v, "", &at);
             for (st, done) in all {
-                let when = if st.before == steps::Before::Done { "before tb submit" } else { "before the PR" };
+                let when = match st.before {
+                    steps::Before::Done => "before tb submit",
+                    steps::Before::Merge => "before the merge",
+                    steps::Before::Pr => "before the PR",
+                };
                 let st = st.filled(&vars);
                 let gap = st.gap_text().filter(|_| st.gap_secs().is_some()).map(|g| format!("; {g}")).unwrap_or_default();
                 out(&format!("[{}] {} ({when}{gap}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
@@ -5019,14 +5070,15 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
             })
         }
-        Cmd::Propose { goal, tasks, not_backlog } => {
+        Cmd::Propose { goal, tasks, planned, not_backlog } => {
             let g = goal_ref(&goal)?;
             propose_tasks(&tasks)?;
             short_task_titles(&tasks)?;
-            match c.report("tb.propose", json!({"goal": g, "tasks": tasks, "not_backlog": not_backlog}), None, TB_TIMEOUT)? {
+            match c.report("tb.propose", json!({"goal": g, "tasks": tasks, "planned": planned, "not_backlog": not_backlog}), None, TB_TIMEOUT)? {
                 None => out(SAVED),
                 Some(v) => {
-                    out(&format!("Added {} to {g} as planned.", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()));
+                    out(&format!("Added {} to {g} ({}).", v["created"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+                                 v["why"].as_str().unwrap_or("planned")));
                     print_warnings(&v);
                     for (r, t) in v["created"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).zip(&tasks) {
                         midna_pin(r, t.split_once("::").map_or(t.as_str(), |(t, _)| t));
@@ -5489,7 +5541,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                     Some(v) => {
                         let r = v["created"][0].as_str().unwrap_or("").to_string();
                         let where_ = match v["goal"].as_str() {
-                            Some(g) => format!(" in {g} as planned"),
+                            Some(g) => format!(" in {g} ({})", v["why"].as_str().unwrap_or("planned")),
                             None if human => " on the board; it goes to the owner as soon as nothing holds it back, and anything waiting for it goes on once they press Done".to_string(),
                             None => format!(" on the board; it waits for the owner to press Start (or `tb start {r}`, only if they told you to start it)"),
                         };
@@ -5592,6 +5644,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if v["ships_pr_set"].is_boolean() {
                     bits += if v["ships_pr"] == true { " · ends in a PR" } else { " · no PR" };
+                }
+                if let Some(why) = v["why"].as_str() {
+                    bits += &format!(" · {why}");
                 }
                 out(&format!("Changed {t} “{}”{bits}.", v["title"].as_str().unwrap_or("")));
                 print_warnings(&v);
@@ -5739,12 +5794,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Backlog { action: BacklogCmd::Task { issues, board, .. } } => {
-            let v = backlog_bulk(c, "task", &issues, json!({"where": if board { "board" } else { "goal" }}))?;
+        Cmd::Backlog { action: BacklogCmd::Task { issues, board, planned, .. } } => {
+            let v = backlog_bulk(c, "task", &issues, json!({"where": if board { "board" } else { "goal" }, "planned": planned}))?;
             let refs = issue_refs(&issues)?;
             for (r, t) in refs.iter().zip(v["tasks"].as_array().cloned().unwrap_or_default()) {
                 let where_ = match (t["status"].as_str(), t["goal"]["ref"].as_str()) {
-                    (Some("planned"), Some(g)) => format!("a planned task in {g}"),
+                    (Some(s), Some(g)) => format!("a {s} task in {g} ({})", t["why"].as_str().unwrap_or(s)),
                     _ => "a queued task".to_string(),
                 };
                 out(&format!("Made {r} into {}, {where_}.", t["ref"].as_str().unwrap_or("a task")));
@@ -5819,7 +5874,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
-        Cmd::Hours { on, off, start, end, days, today_until, alert_every } => {
+        Cmd::Hours { on, off, start, end, days, until, for_, alert_every } => {
             let mut b = json!({});
             if on {
                 b["on"] = json!(true);
@@ -5836,8 +5891,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             if let Some(x) = days {
                 b["days"] = json!(x);
             }
-            if let Some(x) = today_until {
-                b["today_until"] = json!(x);
+            if let Some(x) = until {
+                b["until"] = json!(x);
+            }
+            if let Some(x) = for_ {
+                b["for"] = json!(x);
             }
             if let Some(x) = alert_every {
                 b["alert_every_mins"] = json!(x);
@@ -6003,6 +6061,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let v = c.call_progress("POST", &format!("/tasks/{t}/pr/not-ours"), Some(json!({"reason": reason, "title": title, "proof": proof, "checks": check})))?;
                 let cleared: Vec<&str> = v["cleared"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
                 out(&format!("Cleared {} for this push of {t}'s PR: they failed, but not because of it.", cleared.join(", ")));
+                Ok(0)
+            }
+            PrCmd::NeedsOwner { task, reason, check } => {
+                let t = c.pr_task(task)?;
+                c.call_progress("POST", &format!("/tasks/{t}/pr/needs-owner"), Some(json!({"reason": reason, "checks": check})))?;
+                out(&format!("Told the owner {t}'s PR needs them. The board watches it and brings this conversation back when it needs you. You can stop here."));
                 Ok(0)
             }
             PrCmd::Wait { task } => {
@@ -6819,6 +6883,20 @@ mod tests {
     }
 
     #[test]
+    fn tb_pr_needs_owner_takes_a_reason_and_optional_checks() {
+        let parse = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
+            Cmd::Pr { action: PrCmd::NeedsOwner { task, reason, check } } => (task, reason, check),
+            _ => panic!("not needs-owner"),
+        };
+        assert_eq!(parse(&["tb", "pr", "needs-owner", "--reason", "Add the secret"]), (None, "Add the secret".into(), vec![]));
+        assert_eq!(
+            parse(&["tb", "pr", "needs-owner", "T5", "--reason", "Add the secret", "--check", "ci", "--check", "lint"]),
+            (Some("T5".into()), "Add the secret".into(), vec!["ci".to_string(), "lint".into()])
+        );
+        assert!(Cli::try_parse_from(["tb", "pr", "needs-owner"]).is_err(), "--reason is required");
+    }
+
+    #[test]
     fn model_flags_parse_and_show() {
         let model = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
             Cmd::Task { action: TaskCmd::New { model, .. } | TaskCmd::Set { model, .. } } => model,
@@ -7287,6 +7365,13 @@ mod tests {
     }
 
     #[test]
+    fn step_skip_needs_a_reason() {
+        assert!(Cli::try_parse_from(["tb", "step", "skip", "Staging", "--why", "docs only"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "skip", "Staging", "--why", "docs only", "--task", "T3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "skip", "Staging"]).is_err());
+    }
+
+    #[test]
     fn refs() {
         assert_eq!(task_ref("t12").unwrap(), "T12");
         assert_eq!(task_ref("12").unwrap(), "T12");
@@ -7315,6 +7400,15 @@ mod tests {
         assert_eq!(c.credited_here("GET", None), None, "a read sends nothing");
         let outside = Ctx { session: String::new(), ..c };
         assert_eq!(outside.credited_here("POST", Some(json!({"wave": 2}))), Some(json!({"wave": 2})), "outside Midna it stays the owner's");
+    }
+
+    #[test]
+    fn joining_a_running_goal_planned_is_asked_for() {
+        let Cmd::Propose { planned, .. } = Cli::try_parse_from(["tb", "propose", "G5", "--task", "A::b", "--planned"]).unwrap().cmd else { panic!("not tb propose") };
+        assert!(planned);
+        let Cmd::Backlog { action: BacklogCmd::Task { planned, .. } } = Cli::try_parse_from(["tb", "backlog", "task", "B3", "--planned"]).unwrap().cmd else { panic!("not tb backlog task") };
+        assert!(planned);
+        assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--planned", "--board"]).is_err(), "planned is for its goal");
     }
 
     #[test]

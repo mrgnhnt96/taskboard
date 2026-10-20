@@ -56,15 +56,22 @@ pub fn get(app: &App, r: &str) -> Result<Row> {
         .ok_or_else(|| ApiError::new(404, format!("There's no idea {}.", rf("idea", id))))
 }
 
-/// The idea as `list` shows it: its fields, the goal it became, and how many notes and rounds it has.
+/// The idea as `list` shows it: its fields, the goal it became, how many notes and rounds it has,
+/// and the verdict of its newest report.
 pub fn dict(app: &App, i: &Row) -> Result<Value> {
     let notes = app.db.count("SELECT COUNT(*) FROM idea_notes WHERE idea_id = ?", p![i.id()])?;
     let rounds = app.db.count("SELECT COUNT(*) FROM idea_rounds WHERE idea_id = ?", p![i.id()])?;
+    let verdict = app
+        .db
+        .q1("SELECT report FROM idea_rounds WHERE idea_id = ? AND report IS NOT NULL ORDER BY id DESC LIMIT 1", p![i.id()])?
+        .and_then(|r| r.s("report").and_then(|s| serde_json::from_str::<Value>(s).ok()))
+        .map(|rep| rep["verdict"].clone())
+        .unwrap_or(Value::Null);
     Ok(json!({
         "id": i.id(), "ref": rf("idea", i.id()), "project": i.v("project"), "title": i.v("title"),
         "detail": i.st("detail"), "state": i.v("state"), "goal": rf_opt("goal", i.i("goal_id")),
         "source": i.v("source"), "created_at": i.v("created_at"), "updated_at": i.v("updated_at"),
-        "notes": notes, "rounds": rounds, "planning": app.shared.lock().idea_planning.contains(&i.id()),
+        "notes": notes, "rounds": rounds, "verdict": verdict, "planning": app.shared.lock().idea_planning.contains(&i.id()),
     }))
 }
 

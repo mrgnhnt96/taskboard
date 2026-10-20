@@ -25,12 +25,12 @@ use crate::config::RebasePolicy;
 use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
-pub const WAKE: &[&str] = &["fix", "comments", "merge", "ask"];
+pub const WAKE: &[&str] = &["fix", "comments", "steps", "merge", "ask"];
 /// The visits that don't change code: they start fresh on `[models] pr_visit` (`fresh_visit`).
 const MECHANICAL: &[&str] = &["merge", "ask"];
-pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "merge", "waits", "stack"];
+pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 /// The stages that move the ticket to In Code Review: reviewers have been asked (`ask` hasn't asked anyone yet).
-pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "merge", "waits", "stack"];
+pub const IN_CODE_REVIEW: &[&str] = &["review", "rereview", "comments", "steps", "merge", "waits", "stack"];
 const FINISHED: &[&str] = &["merged", "declined"];
 const WAKE_RETRY_WAITS: [i64; 3] = [60, 300, 900];
 /// A merge the agent said it finished (`tb pr wait`) that's still open is brought back after each of these.
@@ -48,6 +48,7 @@ pub fn label(phase: &str) -> &str {
         "review" => "Awaiting review",
         "rereview" => "Awaiting re-review",
         "comments" => "Addressing comments",
+        "steps" => "Waits on steps",
         "merge" => "Ready to merge",
         "waits" => "Waits on base",
         "stack" => "Waits on stack",
@@ -252,6 +253,46 @@ pub fn card(t: &Row) -> Value {
         "awaiting_you": t.s("status") == Some("done") && awaiting_owner(t),
         "asked": f.v("asked"),
     })
+}
+
+/// The card's stage as it stands now (`card`): its terminal only while that terminal is still on the
+/// visit (the wake is live or it stopped to ask, the terminal is open and hasn't taken another task).
+/// A fix nobody is on or about to start reads "Checks failed"; one only the owner can fix (`tb pr
+/// needs-owner`, this push) says it needs them, with `owner` saying what to do.
+pub fn live_card(app: &App, t: &Row) -> Result<Value> {
+    let mut c = card(t);
+    if !c.is_object() {
+        return Ok(c);
+    }
+    let f = flow(t);
+    let on_it = waking(app, t)? || f.contains_key("stopped") || retry_later(&f);
+    let live = match c["session"].as_str().filter(|s| !s.is_empty()) {
+        Some(sid) if on_it => {
+            board::get_session(app, Some(sid))?.is_some_and(|s| s.s("status") != Some("gone"))
+                && board::task_for_session(app, Some(sid))?.is_none()
+        }
+        _ => false,
+    };
+    if !live {
+        c["session"] = Value::Null;
+    }
+    if c["phase"] == "fix" {
+        let rec = f.get("rec").cloned().unwrap_or(Value::Null);
+        if let Some(o) = owner_act(&f, &rec) {
+            c["label"] = json!("Needs you to fix checks");
+            c["owner"] = o;
+        } else if !on_it {
+            c["label"] = json!("Checks failed");
+            c["idle"] = json!(true);
+        }
+    }
+    Ok(c)
+}
+
+/// This push's `tb pr needs-owner`, if it has one.
+pub fn owner_act(f: &Row, rec: &Value) -> Option<Value> {
+    let head = rec["head"].as_str().filter(|h| !h.is_empty())?;
+    f.get("owner_act").filter(|o| o["head"] == head).cloned()
 }
 
 /// A green PR nobody has reviewed yet: the owner may want to look before peers do.
@@ -460,7 +501,9 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
              run again.{rebase} If the \
              failure isn't this PR's (the base branch fails it too), don't change unrelated code: clear it with {tb} pr \
              not-ours {r} --check \"<check>\" --title \"<what fails>\" --reason \"<why it isn't this PR>\" --proof <link to \
-             the same failure without this change>.",
+             the same failure without this change>. If only the owner can fix it (a missing secret or variable, a \
+             permissions error), don't work around it: run {tb} pr needs-owner {r} --reason \"<what the owner has to \
+             do>\"; it tells them and finishes this visit.",
             if failed.is_empty() { "see the PR".to_string() } else { failed.join(", ") },
             num = t.i0("pr_num"),
             rebase = rebase_advice(rebase_policy(app, t))
@@ -478,6 +521,18 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
                 String::new()
             }
         ),
+        "steps" => {
+            let left = merge_steps_left(app, t, rec);
+            let v = crate::steps::vars_at(app, t, rec["head"].as_str());
+            let each: Vec<String> = left.iter().map(|s| s.filled(&v)).map(|s| format!("- {} ({}): {}", s.name, s.what(), s.how(&tb))).collect();
+            format!(
+                "It's approved and every check is green, but its merge waits on {} on its head ({}):\n{}\nOnce they've \
+                 passed, the board moves the PR on to its merge. Don't merge it in this visit.",
+                if left.len() == 1 { "this step" } else { "these steps" },
+                short(rec["head"].as_str().unwrap_or(""), 7),
+                each.join("\n")
+            )
+        }
         "merge" => format!(
             "It's approved and every check is green. Merge it with {tb} pr merge {r}: it checks the PR once more, then \
              merges it with the repository's default strategy and deletes its branch."
@@ -770,7 +825,8 @@ pub fn failing(f: &Row, rec: &Value) -> Vec<String> {
 }
 
 /// The checks a push is expected to post, and where that came from: `"command"` (the project's
-/// `expected_cmd`, its answer for this head) or `"list"` (`expected`). No checks: no word (the
+/// `expected_cmd`, its answer for this head), `"list"` (`expected`) or `"earlier"` (neither is set: the
+/// checks that posted on the PR's last push that posted any, `earlier_checks`). No checks: no word (the
 /// `no_checks_after_mins` grace), with the source still `"command"` when the command couldn't tell.
 pub struct Expected {
     pub checks: Option<Vec<String>>,
@@ -790,8 +846,26 @@ pub fn expected_for(app: &App, t: &Row, rec: &Value) -> Expected {
         let checks = e["checks"].as_array().map(|_| str_list(&e["checks"]));
         return Expected { checks, source: Some("command"), error: e["error"].as_str().map(|s| s.to_string()) };
     }
+    if rules.expected.is_none() && !has_cmd {
+        if let Some(checks) = earlier_checks(&f, rec) {
+            return Expected { checks: Some(checks), source: Some("earlier"), error: None };
+        }
+    }
     let source = rules.expected.is_some().then_some("list");
     Expected { checks: rules.expected, source, error: None }
+}
+
+/// The checks that posted on the PR's latest earlier push that posted any (`checks_by_head`): a new push
+/// with none yet isn't one that needs none, it waits for those same checks.
+fn earlier_checks(f: &Row, rec: &Value) -> Option<Vec<String>> {
+    let head = rec["head"].as_str().filter(|h| !h.is_empty())?;
+    let at = |h: &str| f.get("head_at").and_then(|m| m.get(h)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    f.get("checks_by_head")?
+        .as_object()?
+        .iter()
+        .filter(|(h, c)| h.as_str() != head && c.as_array().is_some_and(|a| !a.is_empty()))
+        .max_by(|a, b| at(a.0).total_cmp(&at(b.0)))
+        .map(|(_, c)| str_list(c))
 }
 
 /// Expected checks (`[pr.projects.<name>] expected`, or `expected_cmd`'s answer for this push) that
@@ -1023,7 +1097,11 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         if crate::stack::holds(app, t).unwrap_or(false) {
             return "waits".into();
         }
-        return if crate::stack::stack_hold(app, t).ok().flatten().is_some() { "stack" } else { "merge" }.into();
+        if crate::stack::stack_hold(app, t).ok().flatten().is_some() {
+            return "stack".into();
+        }
+        // The task's merge steps (`before = "merge"`) hold only the merge, judged on the PR's head.
+        return if merge_steps_left(app, t, rec).is_empty() { "merge" } else { "steps" }.into();
     }
     // Lens reviewing a new PR (`lens_pr.rs`) comes before asking anyone: only stages that wait on someone
     // else make way for it, so it never holds a merge.
@@ -1034,6 +1112,12 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
         return "ask".into();
     }
     "review".into()
+}
+
+/// The task's merge steps that haven't passed on the PR's head (none when the PR goes into a branch they
+/// don't hold, or they can't be read).
+pub fn merge_steps_left(app: &App, t: &Row, rec: &Value) -> Vec<crate::steps::Step> {
+    crate::steps::merge_missing(app, t, rec["head"].as_str(), rec["base"].as_str()).unwrap_or_default()
 }
 
 /// The review doesn't hold the merge: skipped for this push (`tb pr skip-review`), or the project has no
@@ -1050,8 +1134,14 @@ pub fn checks_waiting(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
     }
     match expected_missing(app, t, rec) {
         Some(missing) => !missing.is_empty() && !expected_wait_over(app, t, f, rec),
-        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && head_waited(f, rec) < app.cfg.pr.no_checks_after_mins * 60.0,
+        None => rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(true) && !no_checks_wait_over(app, f, rec),
     }
+}
+
+/// This push has waited out the `no_checks_after` grace: with no expected checks, a push that posted
+/// none by now needs none.
+pub fn no_checks_wait_over(app: &App, f: &Row, rec: &Value) -> bool {
+    head_waited(f, rec) >= app.cfg.pr.no_checks_after_mins * 60.0
 }
 
 /// `tb pr merge` was refused on this head while checks ran on the host (`checks_running`), and the record
@@ -1247,6 +1337,19 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
     }
     if !head.is_empty() {
         changes.push(("head", json!(head)));
+        // The checks this push posted, for a later push to wait on (`earlier_checks`).
+        let mut by = f.get("checks_by_head").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        let mut have = by.get(&head).map(str_list).unwrap_or_default();
+        let before = have.len();
+        for c in rec["checks"].as_array().cloned().unwrap_or_default() {
+            if let Some(n) = c["name"].as_str().filter(|n| !have.iter().any(|h| h.eq_ignore_ascii_case(n))) {
+                have.push(n.to_string());
+            }
+        }
+        if have.len() != before {
+            by.insert(head.clone(), json!(have));
+            changes.push(("checks_by_head", Value::Object(by)));
+        }
         let mut bases = f.get("head_base").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         if let Some(b) = rec["base_head"].as_str().filter(|b| !b.is_empty() && !bases.contains_key(&head)) {
             bases.insert(head.clone(), json!(b));
@@ -1362,6 +1465,25 @@ pub fn step(app: &App, t: &Row, rec: &Value) -> Result<bool> {
             Some("pr"),
         )?;
         changes.push(("merge_gave_up", json!(now_iso())));
+    }
+    // Merge steps the board can't bring the agent back for, or that a visit ended without passing: tell the
+    // owner once per head.
+    let steps_visit_over = f.s("handled") == Some(key.as_str()) || (f.s("woke") == Some(key.as_str()) && f.contains_key("stopped"));
+    if phase == "steps"
+        && t.s("status") == Some("done")
+        && f.s("steps_alerted") != Some(head.as_str())
+        && (!may_wake || steps_visit_over)
+    {
+        let left = crate::steps::names(&merge_steps_left(app, t, rec));
+        dispatch::add_alert(
+            app,
+            &format!("PR #{} for {} is approved and green, but its merge waits on steps: {left}.", t.i0("pr_num"), rf("task", t.id())),
+            Some(t.id()),
+            t.i("goal_id"),
+            None,
+            Some("pr"),
+        )?;
+        changes.push(("steps_alerted", json!(head)));
     }
     if phase == "merge"
         && !agents_merge_on(app, t.s("project"))

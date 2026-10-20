@@ -31,11 +31,17 @@ pub enum Page {
     /// The backlog: triage it by making goals from untriaged issues.
     Backlog,
     Sessions,
+    /// Every project and its goals (`ui::projects`).
+    Projects,
     Days,
     /// The weekly time review (`ui::review`): which week is in `MainWindow::review`.
     Review,
     /// Each project's releases, for the projects with releases on (`ui::releases`).
     Releases,
+    /// Each project's ideas (`ui::ideas`).
+    Ideas,
+    /// An idea ref, `I3` (`ui::idea`).
+    Idea(String),
 }
 
 /// A place in the ⌘← / ⌘→ history: a page, and the task open over it.
@@ -88,6 +94,9 @@ pub struct Data {
     /// `GET /reviews` and the one shown, `GET /reviews/:id`, for the Review page.
     pub reviews: Option<Value>,
     pub review: Option<Value>,
+    /// `GET /ideas` for the Ideas page and `GET /ideas/:id` for an idea's page.
+    pub ideas: Option<Value>,
+    pub idea: Option<Value>,
     /// Why the last fetch of each failed (the web board's `taskErr`, `issueErr`, `goalErr`,
     /// `SS.listErr`, `SS.detailErr`): shown in place of "Loading…" while there's
     /// nothing to show, cleared by the next good answer.
@@ -103,6 +112,8 @@ pub struct Errs {
     pub session: Option<String>,
     pub days: Option<String>,
     pub review: Option<String>,
+    pub ideas: Option<String>,
+    pub idea: Option<String>,
 }
 
 /// The board's filters (sent with `GET /state`).
@@ -202,7 +213,10 @@ pub struct MainWindow {
     pub review: ui::review::State,
     pub tasks: ui::tasks::State,
     pub goals: ui::goals_page::State,
+    pub projects: ui::projects::State,
     pub releases: ui::releases::State,
+    pub ideas: ui::ideas::State,
+    pub idea: ui::idea::State,
     pub search: ui::search::State,
     /// The goal list answered at least once (before that the state's goals stand in).
     goals_loaded: bool,
@@ -247,7 +261,10 @@ impl MainWindow {
             review: Default::default(),
             tasks: Default::default(),
             goals: Default::default(),
+            projects: Default::default(),
             releases: Default::default(),
+            ideas: Default::default(),
+            idea: Default::default(),
             search: Default::default(),
             goals_loaded: false,
             generation: 0,
@@ -264,8 +281,11 @@ impl MainWindow {
                 "review" => Page::Review,
                 "tasks" => Page::Tasks,
                 "goals" => Page::Goals,
+                "projects" => Page::Projects,
                 "releases" => Page::Releases,
+                "ideas" => Page::Ideas,
                 g if g.starts_with('G') => Page::Goal(g.into()),
+                i if i.starts_with('I') => Page::Idea(i.into()),
                 _ => Page::Board,
             };
         }
@@ -282,6 +302,14 @@ impl MainWindow {
         // Dev: `TASKBOARD_GOALS_OPEN=G1,G2` opens those goals in place on the Goals page (screenshots).
         if let Ok(v) = std::env::var("TASKBOARD_GOALS_OPEN") {
             m.goals.open = v.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+        }
+        // Dev: `TASKBOARD_PROJECT=web` picks that project and `TASKBOARD_PROJECTS_OPEN=G1,G2` opens those
+        // goals in place on the Projects page (screenshots).
+        if let Ok(v) = std::env::var("TASKBOARD_PROJECT") {
+            m.projects.selected = Some(v);
+        }
+        if let Ok(v) = std::env::var("TASKBOARD_PROJECTS_OPEN") {
+            m.projects.open = v.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         }
         // Dev: `TASKBOARD_RELEASES_OPEN=R1,unreleased:web` opens those rows on the Releases page (screenshots).
         if let Ok(v) = std::env::var("TASKBOARD_RELEASES_OPEN") {
@@ -432,6 +460,12 @@ impl MainWindow {
                     self.data.errs.goal = None;
                 }
             }
+            if let Page::Idea(r) = &page {
+                if self.data.idea.as_ref().and_then(|i| i["ref"].as_str()) != Some(r.as_str()) {
+                    self.data.idea = None;
+                    self.data.errs.idea = None;
+                }
+            }
             let entering_backlog = page == Page::Backlog;
             self.page = page;
             if entering_backlog {
@@ -525,6 +559,8 @@ impl MainWindow {
             ("issue", r) if !r.is_empty() => self.open_issue(r.to_uppercase(), cx),
             ("goal" | "goals", r) if !r.is_empty() => ui::goal::open(self, &r.to_uppercase(), param("view") == Some("backlog"), cx),
             ("goals", _) => self.open_goals(cx),
+            ("idea" | "ideas", r) if !r.is_empty() => ui::idea::open(self, &r.to_uppercase(), cx),
+            ("ideas", _) => self.go(Page::Ideas, cx),
             ("session", id) if !id.is_empty() => {
                 self.sessions.selected = Some(id.to_string());
                 self.go(Page::Sessions, cx);
@@ -535,6 +571,12 @@ impl MainWindow {
             ("days", _) => self.go(Page::Days, cx),
             ("review" | "reviews", id) => ui::review::open(self, id.parse().ok(), cx),
             ("tasks", _) => self.go(Page::Tasks, cx),
+            ("projects", p) => {
+                if !p.is_empty() {
+                    self.projects.selected = Some(p.to_string());
+                }
+                self.go(Page::Projects, cx);
+            }
             ("releases", _) if !ui::releases::projects_on(self.state()).is_empty() => self.go(Page::Releases, cx),
             _ => self.go(Page::Board, cx),
         }
@@ -755,6 +797,10 @@ impl MainWindow {
                     if m.page == Page::Goals && ui::goals_page::in_progress(&m.data.goals, m.goals.project()).iter().any(|r| !asked.contains(r)) {
                         m.refresh(cx);
                     }
+                    // So does the Projects page, for the picked project's goals.
+                    if m.page == Page::Projects && ui::projects::wanted(&m.projects, m.state(), &m.data.goals).iter().any(|r| !asked.contains(r)) {
+                        m.refresh(cx);
+                    }
                     // Likewise the Releases page learns which projects have releases from the state.
                     if m.page == Page::Releases && releases_wanted(m).iter().any(|k| !asked_releases.contains(k)) {
                         m.refresh(cx);
@@ -844,6 +890,10 @@ struct Wants {
     /// The Releases page: the projects it lists, and its open rows.
     releases: Vec<String>,
     release_rows: Vec<String>,
+    /// The Ideas page, for `GET /ideas`.
+    ideas: bool,
+    /// An idea's page, for `GET /ideas/:id`.
+    idea: Option<String>,
 }
 
 /// One fetch's answer: the value, or the board's sentence for why it failed.
@@ -869,6 +919,8 @@ struct Got {
     review: Option<(i64, Answer)>,
     releases: Vec<(String, Answer)>,
     release_rows: Vec<(String, Answer)>,
+    ideas: Option<Answer>,
+    idea: Option<(String, Answer)>,
 }
 
 impl Wants {
@@ -889,7 +941,11 @@ impl Wants {
                 Page::Goal(g) => Some(g.clone()),
                 _ => None,
             },
-            goal_rows: if m.page == Page::Goals { ui::goals_page::in_progress(&m.data.goals, m.goals.project()) } else { vec![] },
+            goal_rows: match m.page {
+                Page::Goals => ui::goals_page::in_progress(&m.data.goals, m.goals.project()),
+                Page::Projects => ui::projects::wanted(&m.projects, m.state(), &m.data.goals),
+                _ => vec![],
+            },
             // The ⌘K palette searches the task, terminal and backlog lists too.
             sessions: m.page == Page::Sessions || ui::search::is_open(m),
             session: if m.page == Page::Sessions { m.sessions.selected.clone() } else { None },
@@ -900,6 +956,11 @@ impl Wants {
             review: (m.page == Page::Review).then_some(m.review.id),
             releases: releases_shown(m),
             release_rows: ui::releases::open_rows(&m.releases, &releases_shown(m)),
+            ideas: m.page == Page::Ideas,
+            idea: match &m.page {
+                Page::Idea(r) => Some(r.clone()),
+                _ => None,
+            },
         }
     }
 
@@ -943,6 +1004,8 @@ impl Wants {
                     })
                 })
                 .collect();
+            let ideas = self.ideas.then(|| s.spawn(move || get("ideas", &[("project", "all".into()), ("state", "all".into())])));
+            let idea = self.idea.as_ref().map(|r| s.spawn(move || (r.clone(), get(&format!("ideas/{r}"), &[]))));
             let (reviews, review) = reviews.map(join).map_or((None, None), |(l, one)| (Some(l), one));
             Got {
                 state: Some(join(state)),
@@ -963,6 +1026,8 @@ impl Wants {
                 review,
                 releases: releases.into_iter().map(join).collect(),
                 release_rows: release_rows.into_iter().map(join).collect(),
+                ideas: ideas.map(join),
+                idea: idea.map(join),
             }
         });
         // While the board is down only the banner speaks (`S.stateErr`); the rest waits.
@@ -1033,10 +1098,24 @@ impl Got {
                 land(&mut d.goal, &mut d.errs.goal, v, merge_goal);
             }
         }
+        if let Some(v) = self.ideas {
+            land(&mut d.ideas, &mut d.errs.ideas, v, |v| v);
+        }
+        if let Some((r, v)) = self.idea {
+            if m.page == Page::Idea(r) {
+                land(&mut d.idea, &mut d.errs.idea, v, |v| v);
+            }
+        }
         if m.page == Page::Goals {
             for (r, v) in self.goal_rows {
                 if let Ok(v) = v {
                     m.goals.details.insert(r, merge_goal(v));
+                }
+            }
+        } else if m.page == Page::Projects {
+            for (r, v) in self.goal_rows {
+                if let Ok(v) = v {
+                    m.projects.details.insert(r, merge_goal(v));
                 }
             }
         }
@@ -1139,12 +1218,15 @@ impl Render for MainWindow {
             Page::Board => ui::home::render(self, window, cx),
             Page::Tasks => ui::tasks::render(self, window, cx),
             Page::Goals => ui::goals_page::render(self, window, cx),
+            Page::Projects => ui::projects::render(self, window, cx),
             Page::Goal(_) => ui::goal::render(self, cx),
             Page::Backlog => ui::backlog::render(self, window, cx),
             Page::Sessions => ui::sessions::render(self, window, cx),
             Page::Days => ui::days::render(self, window, cx),
             Page::Review => ui::review::render(self, window, cx),
             Page::Releases => ui::releases::render(self, window, cx),
+            Page::Ideas => ui::ideas::render(self, window, cx),
+            Page::Idea(_) => ui::idea::render(self, cx),
         };
         let (task_panel, panel) = match self.panel.clone() {
             Some(Panel::Task { .. }) => (Some(ui::task_panel::render(self, window, cx)), None),
@@ -1225,11 +1307,13 @@ impl Render for MainWindow {
 pub fn page_title(page: &Page, needs: i64) -> String {
     let base = match page {
         Page::Goal(_) | Page::Goals => "Goals",
+        Page::Projects => "Projects",
         Page::Backlog => "Backlog",
         Page::Sessions => "Sessions",
         Page::Days => "Days",
         Page::Review => "Review",
         Page::Releases => "Releases",
+        Page::Ideas | Page::Idea(_) => "Ideas",
         Page::Tasks => "Tasks",
         Page::Board => "Task board",
     };
@@ -1865,6 +1949,22 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_projects_page_loads_its_goals_details(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Projects, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            let wanted = ui::projects::wanted(&m.projects, m.state(), &m.data.goals);
+            assert!(!wanted.is_empty(), "the picked project has open goals");
+            for r in &wanted {
+                assert!(m.projects.details.contains_key(r), "{r} landed for the Projects page");
+                assert!(!m.goals.details.contains_key(r), "{r} stays out of the Goals page's details");
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn cmd_left_leaves_a_task_for_the_page_it_was_opened_from(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
@@ -2111,6 +2211,29 @@ mod tests {
             assert_eq!(m.page, Page::Goals);
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn idea_links_open_the_ideas_pages_and_another_idea_starts_empty(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| m.open_link("ideas", cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.page, Page::Ideas);
+            assert_eq!(arr(m.data.ideas.as_ref().unwrap(), "ideas").len(), 6);
+            m.open_link("idea/i1", cx);
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| {
+            assert_eq!(m.page, Page::Idea("I1".into()));
+            assert_eq!(m.data.idea.as_ref().unwrap()["ref"], "I1");
+            m.open_link("ideas/I4", cx);
+            assert!(m.data.idea.is_none(), "I1 isn't shown as I4 while it loads");
+        })
+        .unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| assert_eq!(m.data.idea.as_ref().unwrap()["ref"], "I4")).unwrap();
     }
 
     #[gpui_kit::test]

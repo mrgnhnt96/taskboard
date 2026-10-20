@@ -238,6 +238,7 @@ fn a_drop_the_host_does_not_make_is_not_reported_as_done() {
     let id = b.pr_task(BB);
     b.add("Ana", json!({"user": "{ana}"}));
     b.add("Bo", json!({"user": "{bo}"}));
+    b.add("Cy", json!({"user": "{cy}"}));
     b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"ask": ["Ana", "Bo"]}));
     h.keeps.lock().push("{ana}".into());
 
@@ -1439,4 +1440,52 @@ fn the_board_s_own_short_ask_alerts_once_until_the_pr_has_enough() {
     poll(&b);
     dispatch::prune_alerts(&b.app).unwrap();
     assert_eq!(short(&b), 0, "enough reviewers clear it");
+}
+
+#[test]
+fn an_ask_for_someone_unknown_is_refused_before_the_host_and_in_a_dry_run() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    b.add("Ben Delaporte", json!({"user": "{ben}"}));
+    b.add("Bea Fox", json!({"user": "{bea}"}));
+    b.add("Bo Park", json!({"user": "{bo}"}));
+    let path = format!("/tasks/{id}/pr/reviewers");
+    let before = h.calls().len();
+
+    let e = b.try_post(&path, json!({"ask": ["Zed"]})).unwrap_err();
+    assert!(e.contains("no reviewer “Zed”"), "{e}");
+    let e = b.try_post(&path, json!({"ask": ["Ben2"], "dry_run": true})).unwrap_err();
+    assert!(e.contains("no reviewer “Ben2”"), "{e}");
+    let e = b.try_post(&path, json!({"ask": ["Be"], "dry_run": true})).unwrap_err();
+    assert!(e.contains("Did you mean Bea Fox or Ben Delaporte?"), "{e}");
+    assert!(b.try_post(&path, json!({"replace": "Zed", "dry_run": true})).is_err());
+    assert!(b.try_post(&path, json!({"drop": "Zed"})).is_err());
+    assert_eq!(h.calls().len(), before, "a refused name never reaches the host");
+
+    // A unique first name or prefix is accepted; a raw host id only when it looks like one.
+    let v = b.post(&path, json!({"ask": ["Ben"], "dry_run": true}));
+    assert_eq!(v["picks"][0]["name"], "Ben Delaporte");
+    let v = b.post(&path, json!({"ask": ["{raw-uuid}"], "dry_run": true}));
+    assert_eq!(v["picks"][0]["name"], "{raw-uuid}");
+    let v = b.post(&path, json!({"ask": ["557058:abc-123"], "dry_run": true}));
+    assert_eq!(v["picks"][0]["name"], "557058:abc-123");
+}
+
+#[test]
+fn someone_on_the_pr_but_not_the_roster_is_found_by_name_or_prefix_and_a_login_is_not_a_prefix() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    b.add("Daniel Ortiz", json!({"user": "{dortiz}"}));
+    h.rec.lock().reviewers = vec![Reviewer { user: "{guest}".into(), name: "Gwen Guest".into(), state: "pending".into(), requested: true, changes_at: None }];
+    let path = format!("/tasks/{id}/pr/reviewers");
+
+    for who in ["Gwen Guest", "gwen", "{guest}"] {
+        let v = b.post(&path, json!({"drop": who, "dry_run": true}));
+        assert_eq!(v["drop"]["name"], "Gwen Guest", "{who}");
+    }
+    // `@dan` names the host login `dan`, not Daniel Ortiz.
+    let v = b.post(&path, json!({"ask": ["@dan"], "dry_run": true}));
+    assert_eq!(v["picks"][0]["name"], "dan");
 }

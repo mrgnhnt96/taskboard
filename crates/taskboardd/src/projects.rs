@@ -463,6 +463,33 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     Ok(d)
 }
 
+/// The projects with what the Projects page shows of each: `releases` (on or off), and while on its
+/// `latest_release` (`ref`, `name`, `cut_at`; null before the first cut) and `unreleased` count (both
+/// null while off), the projects it `waits_on`, and how many backlog issues it has open (`backlog_open`).
+pub fn facts(app: &App, list: &[Value]) -> Result<Vec<Value>> {
+    let (latest, unreleased) = crate::releases::latest_and_unreleased(app)?;
+    let mut backlog: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in app.db.q("SELECT project, COUNT(*) AS n FROM issues WHERE state = 'open' AND project IS NOT NULL GROUP BY project", p![])? {
+        backlog.insert(r.st("project"), r.i("n").unwrap_or(0));
+    }
+    let waits = waits_on_overrides(app)?;
+    Ok(list
+        .iter()
+        .map(|p| {
+            let name = p["name"].as_str().unwrap_or("");
+            let on = crate::releases::on(app, name);
+            let mut d = p.clone();
+            let o = d.as_object_mut().unwrap();
+            o.insert("releases".into(), json!(on));
+            o.insert("latest_release".into(), if on { latest.get(name).cloned().unwrap_or(Value::Null) } else { Value::Null });
+            o.insert("unreleased".into(), if on { json!(unreleased.get(name).copied().unwrap_or(0)) } else { Value::Null });
+            o.insert("waits_on".into(), waits.get(name).cloned().filter(|v| v.is_array()).unwrap_or(json!([])));
+            o.insert("backlog_open".into(), json!(backlog.get(name).copied().unwrap_or(0)));
+            d
+        })
+        .collect())
+}
+
 pub fn project_for_path(app: &App, path: Option<&str>) -> Result<Option<String>> {
     let Some(path) = path.filter(|p| !p.is_empty()) else { return Ok(None) };
     Ok(deepest(&list_projects(app)?, path).or_else(|| base_name(path.trim_end_matches('/'))))

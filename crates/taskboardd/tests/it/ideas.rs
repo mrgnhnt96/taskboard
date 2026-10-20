@@ -128,6 +128,22 @@ fn shelve_drop_and_reopen() {
 }
 
 #[test]
+fn the_list_shows_the_newest_reports_verdict() {
+    let (_d, app) = new_board();
+    let r = idea(&app, "webapp", "Offline mode", "");
+    let id: i64 = r[1..].parse().unwrap();
+    let verdict = |app: &App| try_call(app, "GET", "/ideas", &[("project", "webapp")], json!({})).unwrap()["ideas"][0]["verdict"].clone();
+    assert_eq!(verdict(&app), Value::Null, "no report yet");
+    let round = |report: Option<&str>| {
+        app.db.insert("idea_rounds", taskboardd::fields!["idea_id" => id, "focus" => "", "report" => report, "sha" => "abc1234"]).unwrap();
+    };
+    round(Some(r#"{"verdict":"partly"}"#));
+    round(Some(r#"{"verdict":"fits"}"#));
+    round(None);
+    assert_eq!(verdict(&app), "fits", "the newest round with a report, not a failed one after it");
+}
+
+#[test]
 fn search_finds_ideas_by_their_words() {
     let (_d, app) = new_board();
     let r = idea(&app, "webapp", "Offline mode", "Queue writes while the network is down.");
@@ -135,4 +151,18 @@ fn search_finds_ideas_by_their_words() {
     let hits = api::dispatch(&app, "GET", "/search", &q, &json!({})).unwrap()["hits"].as_array().unwrap().clone();
     assert_eq!(hits.len(), 1);
     assert_eq!((hits[0]["kind"].as_str(), hits[0]["ref"].as_str(), hits[0]["state"].as_str()), (Some("idea"), Some(r.as_str()), Some("new")));
+}
+
+#[test]
+fn the_sample_board_has_ideas_in_every_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    taskboardd::seed::seed(&app).unwrap();
+    let list = try_call(&app, "GET", "/ideas", &[("project", "all"), ("state", "all")], json!({})).unwrap();
+    let mut states: Vec<&str> = list["ideas"].as_array().unwrap().iter().map(|i| i["state"].as_str().unwrap()).collect();
+    states.sort();
+    assert_eq!(states, ["digging", "new", "planned", "reported", "reported", "shelved"], "the digging one isn't settled as lost");
+    let i1 = call(&app, "GET", "/ideas/I1", json!({}));
+    assert_eq!((i1["verdict"].as_str(), i1["rounds"].as_array().unwrap().len(), i1["notes"].as_array().unwrap().len()), (Some("fits"), 3, 2));
+    assert_eq!(i1["rounds"][0]["report"]["related"][0], "G1");
 }

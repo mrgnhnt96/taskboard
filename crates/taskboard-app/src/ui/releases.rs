@@ -102,7 +102,7 @@ pub fn rows(project: &str, list: &Value, now: DateTime<Utc>) -> Vec<Row> {
 }
 
 /// "Today, 3:05 PM", "Oct 7, 3:05 PM", or "Oct 7, 2025, 3:05 PM" in another year.
-fn cut_at(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
+pub(crate) fn cut_at(t: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let (l, today) = (fmt::local(t), fmt::local(now).date_naive());
     let clock = l.format("%-I:%M %p");
     match l.date_naive() {

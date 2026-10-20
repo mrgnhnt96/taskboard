@@ -2043,21 +2043,35 @@ fn on_step(r: &mut Report) -> Result<Value> {
     drop_stale_pin(r, &t)?;
     let t = board::get_task(app, t.id())?;
     let tb = board::tb_cmd(app);
-    if step.owner && from_agent(r, &t) {
+    // `tb step skip`: a skippable step passes on this head without being done, with the reason on the task.
+    let skip = as_bool(r.body.get("skip"), false);
+    let why = one_line(&r.b("why"), 2000);
+    if skip && !step.skippable {
+        return err(409, format!("“{}” isn't skippable: {}.", step.name, step.how(&tb)));
+    }
+    if skip && why.is_empty() {
+        return err(400, format!("Say why “{}” doesn't apply: {tb} step skip \"{}\" --why \"<reason>\".", step.name, step.name));
+    }
+    if step.owner && from_agent(r, &t) && !skip {
         return err(409, format!("“{}” is {} step: {}.", step.name, app.cfg.owners(), step.how(&tb)));
     }
-    if !step.run.is_empty() && r.b("via") != "run" {
+    if !step.run.is_empty() && r.b("via") != "run" && !skip {
         return err(400, format!("“{}” is a script: {}.", step.name, step.how(&tb)));
     }
-    let passed = as_bool(r.body.get("ok"), true);
+    let passed = skip || as_bool(r.body.get("ok"), true);
     let note = one_line(&r.b("note"), 2000);
     let output = clip(r.b("output").trim(), 4000);
     let text = match (passed, note.is_empty()) {
+        _ if skip => format!("Step skipped: {}: {why}", step.name),
         (true, true) => format!("Step done: {}", step.name),
         (true, false) => format!("Step done: {}: {note}", step.name),
         (false, _) => format!("Step didn't pass: {}{}", step.name, if note.is_empty() { String::new() } else { format!(": {note}") }),
     };
     let mut data = json!({"name": step.name, "before": step.before.as_str(), "ok": passed, "note": note, "output": output});
+    if skip {
+        data["skipped"] = json!(true);
+        data["why"] = json!(why);
+    }
     let head = { let h = r.b("head"); if h.is_empty() { r.git.st("sha") } else { h } };
     if !head.is_empty() {
         data["head"] = json!(head);
@@ -2501,7 +2515,9 @@ fn earlier_refs(value: &Value, created: &[String]) -> Result<Value> {
     Ok(json!(out))
 }
 
-fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+/// Adds `items` to goal `g` with `status`: planned, or queued when they join a goal that's running.
+fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+    let log = if status == "planned" { format!("Planned by {}", r.name()) } else { format!("Added by {} and queued: {} is running", r.name(), rf("goal", g.id())) };
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
         let (item, files, model, project) = match &item {
@@ -2533,7 +2549,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
         let c = ops::new_task(
             r.app,
             &json!({"title": title, "detail": detail.trim(), "project": project, "goal_id": g.id(),
-                    "status": "planned", "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
+                    "status": status, "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
                     "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
@@ -2543,7 +2559,7 @@ fn planned(r: &Report, g: &Row, items: &Value, warnings: &mut Vec<String>) -> Re
                     "origin": item.get("origin").filter(|o| !o.is_null()).cloned()
                         .unwrap_or_else(|| json!({"from": format!("Planned in {}", rf("goal", g.id())), "by": r.name()}))}),
             &r.name(),
-            Some(&format!("Planned by {}", r.name())),
+            Some(&log),
         )?;
         created.push(c["ref"].as_str().unwrap_or("").to_string());
         let files = clean_files(Some(&files));
@@ -2568,12 +2584,13 @@ fn on_propose(r: &mut Report) -> Result<Value> {
     let g = board::get_goal(r.app, need_ref(&r.body["goal"], "goal")?)?;
     let tasks = r.body.get("tasks").cloned().unwrap_or(json!([]));
     let mut warnings = vec![];
-    let created = planned(r, &g, &tasks, &mut warnings)?;
+    let (status, why) = board::joining_status(r.app, g.id(), as_bool(r.body.get("planned"), false))?;
+    let created = planned(r, &g, &tasks, status, &mut warnings)?;
     if created.is_empty() {
         return err(400, "Name at least one task with a title: --task \"title::what to do\".");
     }
     note_made(r, &created)?;
-    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "warnings": warnings})))
+    Ok(with(ok(None, None), json!({"created": created, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})))
 }
 
 fn on_goal(r: &mut Report) -> Result<Value> {
@@ -2591,7 +2608,7 @@ fn on_goal(r: &mut Report) -> Result<Value> {
     if let Some(sid) = r.sid() {
         crate::startword::note_made_goal(r.app, sid, gid)?;
     }
-    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, &mut warnings)?;
+    let created = planned(r, &board::get_goal(r.app, gid)?, &tasks, "planned", &mut warnings)?;
     note_made(r, &created)?;
     Ok(with(ok(None, None), json!({"goal": g["ref"], "name": g["name"], "project": g["project"], "created": created, "warnings": warnings})))
 }
@@ -2630,13 +2647,14 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
             item[0] = with_issue(r, b, item[0].take());
         }
         let mut warnings = vec![];
-        let created = planned(r, &g, &item, &mut warnings)?;
+        let (status, why) = board::joining_status(r.app, g.id(), as_bool(r.body.get("planned"), false))?;
+        let created = planned(r, &g, &item, status, &mut warnings)?;
         if let (Some(b), Some(t)) = (&issue, created.first()) {
-            let text = format!("Made into {t}, a planned task in {}. Its handoff starts with this report and snapshot.", rf("goal", g.id()));
+            let text = format!("Made into {t}, a {status} task in {}. Its handoff starts with this report and snapshot.", rf("goal", g.id()));
             crate::api::issue_tasked(r.app, b.id(), ref_id(t), &r.name(), &text)?;
         }
         note_made(r, &created)?;
-        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": "planned", "warnings": warnings})));
+        return Ok(with(ok(None, None), json!({"created": created, "title": title, "goal": rf("goal", g.id()), "status": status, "why": why, "warnings": warnings})));
     }
     if r.body.get("also").map(|a| !a.is_null() && a != &json!([])).unwrap_or(false) {
         return err(400, "Only a task in a goal can also finish other goals. Give it its home goal with --goal G<n>.");
@@ -2958,6 +2976,9 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
         "tb.withdraw" => Some(("ask", format!("Withdrew its question: {}", r.b("why")))),
         "tb.done" => Some(("done", format!("Finished {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("summary")))),
         "tb.step" if out["passed"] == false => out["step"].as_str().map(|s| ("step", format!("The step {s} didn't pass"))),
+        "tb.step" if as_bool(r.body.get("skip"), false) => {
+            out["step"].as_str().map(|s| ("step", format!("Skipped the step {s}: {}", r.b("why"))))
+        }
         "tb.step" => out["step"].as_str().map(|s| ("step", format!("Did the step {s}"))),
         "tb.step_ask" => out["step"].as_str().map(|s| ("ask", format!("Asked you to do the step {s}"))),
         "tb.step_fail" => out["step"].as_str().map(|s| ("ask", format!("The step {s} can't pass: {}", r.b("why")))),

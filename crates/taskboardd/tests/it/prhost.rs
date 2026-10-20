@@ -394,6 +394,70 @@ fn a_pr_with_no_checks_moves_on_to_review_once_the_grace_runs_out_without_anothe
     assert_eq!(b.flow(id)["checked_at"], read_at, "the last read's time stays");
 }
 
+#[test]
+fn tb_pr_merge_waits_while_no_check_has_posted_within_the_grace() {
+    // #491: with no expected checks set, an empty record held the stage but not the merge.
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.clear();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "checks");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("no checks have posted on this push yet (waits up to 15 min)"), "{e}");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 16.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn a_new_push_waits_for_the_checks_its_last_push_posted() {
+    // #491: a push with no checks yet isn't one that needs none when the last push posted some.
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.push(check("e2e", "passed"));
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    {
+        let mut r = h.rec.lock();
+        r.head = "h2".into();
+        r.checks.clear();
+    }
+    poll(&b);
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 3600.0, "h2": now_ts() - 20.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "past the no-checks grace, still within the expected wait");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!(live["expected"]["source"], "earlier");
+    assert_eq!(live["expected_missing"], json!(["build", "e2e"]));
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("checks that posted on the last push haven't posted on this one: build, e2e (it waits up to 90 min for them)"), "{e}");
+    h.rec.lock().checks.push(check("build", "passed"));
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "e2e still to post on h2");
+    // A third push: h2 is now the last push that posted, so only build is waited on.
+    {
+        let mut r = h.rec.lock();
+        r.head = "h3".into();
+        r.checks.clear();
+    }
+    poll(&b);
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!(live["expected_missing"], json!(["build"]));
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 3.0 * 3600.0, "h2": now_ts() - 2.0 * 3600.0, "h3": now_ts() - 91.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge", "the expected wait ran out");
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}
+
 /// An `expected_cmd` that answers by head (h1: build and E2E; h2: none; h3: can't tell; h4: fails) and
 /// counts its runs in `runs`.
 fn expected_cmd_board() -> (Board, tempfile::TempDir) {
@@ -783,4 +847,70 @@ fn merging_moves_the_prs_stacked_on_it_onto_its_base_first() {
     assert_eq!(b.phase(parent), "merged");
     let said: Vec<String> = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", taskboardd::p![child]).unwrap().iter().map(|r| r.st("text")).collect();
     assert!(said.iter().any(|l| l.contains("now goes into main")), "{said:?}");
+}
+
+const MERGE_STEPS: &str = r#"
+[[steps]]
+name = "Staging check"
+before = "merge"
+prompt = "Check it on staging."
+skippable = true
+
+[[steps]]
+name = "Release note"
+before = "merge"
+prompt = "Write the release note."
+default_branch_only = true
+"#;
+
+fn step_report(b: &Board, id: i64, extra: Value) -> Result<Value, (u16, String)> {
+    let mut body = json!({"event": "tb.step", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "task": format!("T{id}")});
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    reports::handle(&b.app, body, false).map_err(|e| (e.status, e.message))
+}
+
+#[test]
+fn a_merge_step_holds_only_the_merge_until_it_passes_on_the_head() {
+    // #477: tb submit and the review go on; the merge waits for the steps on the PR's head.
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    std::fs::write(&b.app.cfg.config_path, MERGE_STEPS).unwrap();
+    let id = b.pr_task(BB);
+    assert_eq!(b.task(id).st("status"), "done", "merge steps don't hold tb submit");
+    let mut rec = green();
+    rec.head = "abc1234".into();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "steps");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("its merge steps haven't passed on its head: “Staging check”, “Release note”"), "{e}");
+    let bar = taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap();
+    assert_eq!(bar["merge_steps"].as_array().unwrap().iter().map(|s| s["state"].as_str().unwrap()).collect::<Vec<_>>(), vec!["todo", "todo"]);
+
+    // Release note isn't skippable; a skip needs a reason.
+    let (code, why) = step_report(&b, id, json!({"name": "Release note", "skip": true, "why": "none", "head": "abc1234"})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.contains("isn't skippable"), "{why}");
+    let (code, _) = step_report(&b, id, json!({"name": "Staging check", "skip": true, "why": "", "head": "abc1234"})).unwrap_err();
+    assert_eq!(code, 400);
+
+    step_report(&b, id, json!({"name": "Staging check", "skip": true, "why": "docs only", "head": "abc1234"})).unwrap();
+    step_report(&b, id, json!({"name": "Release note", "head": "abc1234"})).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    let bar = taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap();
+    assert_eq!(bar["merge_steps"][0]["state"], "skipped");
+    assert_eq!(bar["merge_steps"][0]["why"], "docs only");
+    assert_eq!(bar["merge_steps"][1]["state"], "passed");
+
+    // A new push needs them again: they count per head.
+    h.rec.lock().head = "def5678".into();
+    poll(&b);
+    assert!(b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err().contains("merge steps"));
+    step_report(&b, id, json!({"name": "Staging check", "skip": true, "why": "docs only", "head": "def5678"})).unwrap();
+    step_report(&b, id, json!({"name": "Release note", "head": "def5678"})).unwrap();
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
 }
