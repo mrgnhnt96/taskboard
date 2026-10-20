@@ -607,7 +607,7 @@ pub fn terminal_status(s: Option<&Row>) -> &str {
 pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
     let rows = app.db.q(
         "SELECT tt.session_id, tt.why, tt.at, s.name, s.status, s.background, s.background_agents, s.background_at, \
-         s.live_background, s.live_background_agents FROM task_terminals tt \
+         s.live_background, s.live_background_agents, s.gone_at FROM task_terminals tt \
          LEFT JOIN sessions s ON s.id = tt.session_id WHERE tt.task_id = ? ORDER BY tt.rowid DESC",
         p![t.id()],
     )?;
@@ -616,7 +616,8 @@ pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
         .map(|r| {
             let sid = r.st("session_id");
             json!({"id": sid, "name": r.s("name").map(|s| s.to_string()).unwrap_or_else(|| session_name(app, Some(&sid), t.s("session_name"))),
-                   "status": terminal_status(Some(r)), "background": background_view(r), "why": r.v("why"), "at": r.v("at")})
+                   "status": terminal_status(Some(r)), "background": background_view(r), "why": r.v("why"), "at": r.v("at"),
+                   "gone_at": r.v("gone_at")})
         })
         .collect();
     if let Some(sid) = t.s("session_id").filter(|s| !s.is_empty()) {
@@ -624,7 +625,8 @@ pub fn terminals(app: &App, t: &Row) -> Result<Vec<Value>> {
             let s = get_session(app, Some(sid))?;
             out.push(json!({"id": sid, "name": session_name(app, Some(sid), t.s("session_name")),
                             "status": terminal_status(s.as_ref()), "background": s.as_ref().map_or(Value::Null, background_view),
-                            "why": "Worked on the task", "at": t.v("started_at")}));
+                            "why": "Worked on the task", "at": t.v("started_at"),
+                            "gone_at": s.as_ref().map_or(Value::Null, |s| s.v("gone_at"))}));
         }
     }
     out.sort_by(|a, b| b["at"].as_str().unwrap_or("").cmp(a["at"].as_str().unwrap_or("")));

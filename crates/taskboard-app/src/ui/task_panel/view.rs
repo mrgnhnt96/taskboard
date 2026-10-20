@@ -55,6 +55,10 @@ pub enum Look {
     Chip { on: bool },
     /// A footer view (`.foot-btn`); `on` while it's the one open.
     Foot { on: bool },
+    /// One of a question's options in the needs-you banner (`.opt`).
+    Opt,
+    /// "Write an answer": a link with an open-elsewhere icon, since it answers in a terminal.
+    Out,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +67,8 @@ pub enum Icon {
     Back,
     More,
     Remove,
+    /// Focus the terminal in Midna (a box with an arrow out of it).
+    Focus,
 }
 
 /// How a plain link looks (`.goal-name`, `.jkey`, `.term-link`, `.att-name`, `.att-src.g`…).
@@ -89,7 +95,7 @@ pub enum Go {
     Issue(String),
     /// A web URL, or a file path opened with `open` (an attachment).
     Url(String),
-    /// The task's step findings (the Steps row's fold), opened: the PR bar's review step links here.
+    /// The task's step results that hold findings, opened: the PR bar's review step links here.
     Findings,
 }
 
@@ -148,6 +154,12 @@ pub enum St {
     TlS,
     /// What a timeline stop says (`.tl-text`): its summary, or the latest line.
     TlText,
+    /// What an opened stop says (`.det p`): a step's result.
+    DetText,
+    /// The now stop's name while it waits on you (`.tl-h.warn`).
+    TlHWarn,
+    /// What the needs-you banner says (`.nb-q`): the question, or what went wrong.
+    BannerText,
 }
 
 /// Containers (the web's layout elements).
@@ -168,6 +180,8 @@ pub enum K {
     Body,
     /// `.box` in a tone: ask (warn), lost / failed (down), done (up), info.
     Box(BoxTone),
+    /// The full-width needs-you banner under the chips (`.nb`): ask (warn) or lost / failed (down).
+    Banner(BoxTone),
     Row,
     Stack,
     /// A `<details>` fold: first kid is the summary, the rest show when open.
@@ -198,6 +212,14 @@ pub enum K {
     TlNode { st: TlSt, card: bool },
     /// A stop's name, subline and time.
     TlHead,
+    /// A finished stop that opens in place: its head, then what it shows once open.
+    TlStep { step: TlStep, open: bool },
+    /// What an opened stop shows (`.det`).
+    Det,
+    /// One of the task's terminals in Started's detail (`.dr`): its name, then its state; `live` for the one it's in.
+    DetTerm { live: bool },
+    /// A row of an opened stop (`.kv`): its label, then its value.
+    DetRow,
     /// Focus in Midna and the ⋯ menu.
     TlActs,
     /// The terminal's ⋯ menu.
@@ -206,6 +228,14 @@ pub enum K {
     MenuItem { danger: bool },
     /// The views at the panel's foot: What to do, Context, Full log.
     Foot,
+}
+
+/// A finished timeline stop that opens in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TlStep {
+    Started,
+    /// The nth of the task's `step_results`.
+    Result(usize),
 }
 
 /// A timeline stop's dot (`.n-*`).
@@ -318,6 +348,8 @@ pub struct Ui {
     pub att_drop: bool,
     /// The now stop's ⋯ terminal menu is open.
     pub term_menu: bool,
+    /// The finished timeline stops opened in place.
+    pub tl_open: HashSet<TlStep>,
 }
 
 impl Ui {
@@ -698,9 +730,7 @@ pub fn panel(c: &Ctx) -> Node {
     }
     kids.push(txt(or_empty(&t["title"]), St::Title));
     kids.extend(head_chips(c, t));
-    if let Some(a) = alert {
-        kids.push(el(K::Box(BoxTone::Ask), vec![txt("Needs you", St::BoxLabel), txt(or_empty(&a["text"]), St::Plain)]));
-    }
+    kids.extend(banner(c, t, alert));
     let body = match tab {
         "what" => vec![what_view(t)],
         "context" => context_tab(c, t),
@@ -763,14 +793,24 @@ fn ask_options(c: &Ctx, ask: &Value, r: &str, grp: &str) -> Vec<Node> {
         if qs.len() > 1 {
             out.push(txt(or_empty(&q["question"]), St::Strong));
         }
-        for o in arr(q, "options") {
+        let opts = arr(q, "options");
+        let described = opts.iter().any(|o| opt_s(o, "description").is_some_and(|d| !d.is_empty()));
+        let mut row = Vec::new();
+        for o in opts {
             let label = or_empty(&o["label"]);
-            let mut kids =
-                vec![if picker { txt(label, St::Strong) } else { c.btn(&label, Act::new("answer-opt", label.as_str(), r, grp), Look::Soft, false, None) }];
+            let opt = if picker { txt(label, St::Strong) } else { c.btn(&label, Act::new("answer-opt", label.as_str(), r, grp), Look::Opt, false, None) };
+            if !described {
+                row.push(opt);
+                continue;
+            }
+            let mut kids = vec![opt];
             if let Some(d) = opt_s(o, "description").filter(|d| !d.is_empty()) {
                 kids.push(txt(d, St::Small));
             }
             out.push(el(K::Row, kids));
+        }
+        if !row.is_empty() {
+            out.push(el(K::Row, row));
         }
     }
     out
@@ -864,9 +904,9 @@ fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
     let status = s(t, "status");
     let mut nodes = Vec::new();
     if opt_s(t, "started_at").is_some() && !matches!(status, "queued" | "planned") {
-        nodes.push(started_node(t));
+        nodes.push(started_node(c, t));
     }
-    nodes.extend(arr(t, "step_results").iter().map(|x| result_node(c, x)));
+    nodes.extend(arr(t, "step_results").iter().enumerate().map(|(ix, x)| result_node(c, t, ix, x)));
     if status == "done" {
         nodes.push(done_node(c, t));
     }
@@ -877,8 +917,20 @@ fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
     vec![el(K::Tline, nodes)]
 }
 
+/// A finished stop's head, opening in place onto `detail`; just the head when there's nothing to show.
+fn tl_step(c: &Ctx, step: TlStep, head: Node, detail: Vec<Node>) -> Node {
+    if detail.is_empty() {
+        return head;
+    }
+    el(K::TlStep { step, open: c.ui.tl_open.contains(&step) }, vec![head, el(K::Det, detail)])
+}
+
+fn det_row(label: &str, value: Node) -> Node {
+    el(K::DetRow, vec![txt(label, St::LrowKey), value])
+}
+
 /// `startedNode(t)`: "In Midna 3 · 2 closed earlier".
-fn started_node(t: &Value) -> Node {
+fn started_node(c: &Ctx, t: &Value) -> Node {
     let name = obj(t, "session").and_then(|x| opt_s(x, "name")).or(opt_s(t, "who"));
     let cur = field(&t["session"], "id");
     let closed = arr(t, "terminals").iter().filter(|x| !js_eq(field(x, "id"), cur) && opt_s(x, "status").is_none_or(|st| st == "gone")).count();
@@ -887,22 +939,103 @@ fn started_node(t: &Value) -> Node {
     if closed > 0 {
         sub.push(format!("{closed} closed earlier"));
     }
-    tl_node(TlSt::Done, tl_head(tl_name("Started"), &sub.join(" · "), &fmt::hhmm(s(t, "started_at"))), vec![], false)
+    let head = tl_head(tl_name("Started"), &sub.join(" · "), &fmt::hhmm(s(t, "started_at")));
+    tl_node(TlSt::Done, tl_step(c, TlStep::Started, head, started_detail(c, t)), vec![], false)
 }
 
-/// A step that ran a round (`step_results`): its headline, and its findings in a fold.
-fn result_node(c: &Ctx, x: &Value) -> Node {
+/// Started, opened: the task's terminals (the one it's in with its state and Focus, earlier ones
+/// when they closed), its branch and what isn't committed.
+fn started_detail(c: &Ctx, t: &Value) -> Vec<Node> {
+    let r = rf(t, "T");
+    let cur = field(&t["session"], "id");
+    let mut out: Vec<Node> = arr(t, "terminals")
+        .iter()
+        .map(|x| {
+            let live = cur.is_some() && js_eq(field(x, "id"), cur) && session_live(t);
+            let mut kids = vec![txt(s(x, "name"), St::Plain)];
+            if live {
+                kids.push(term_state(x));
+                kids.push(c.btn("", Act::new("focus", "", &r, format!("manage:{r}")), Look::Icon(Icon::Focus), false, Some("Focus in Midna")));
+            } else if opt_s(x, "status").is_none_or(|st| st == "gone") {
+                let closed = opt_s(x, "gone_at").map(fmt::hhmm).filter(|h| !h.is_empty());
+                kids.push(txt(closed.map_or("Closed".to_string(), |h| format!("Closed {h}")), St::Time));
+            } else {
+                kids.push(term_state(x));
+            }
+            el(K::DetTerm { live }, kids)
+        })
+        .collect();
+    let w = &t["context"]["where"];
+    if let Some(br) = opt_s(w, "branch") {
+        out.push(det_row("Branch", txt(br, St::Mono)));
+    }
+    let mut changes = Vec::new();
+    match &w["uncommitted"] {
+        Value::Null => {}
+        Value::Number(n) if n.as_f64() == Some(0.) => changes.push("Nothing uncommitted".to_string()),
+        v => changes.push(format!("{} not committed", uncommitted(v))),
+    }
+    let last = arr(t, "log").iter().filter(|e| s(e, "kind") == "commit").map(|e| s(e, "at")).max().map(fmt::hhmm).filter(|h| !h.is_empty());
+    if let Some(h) = last {
+        changes.push(format!("{} {h}", if changes.is_empty() { "Last commit" } else { "last commit" }));
+    }
+    if !changes.is_empty() {
+        out.push(det_row("Changes", txt(changes.join(" · "), St::Plain)));
+    }
+    out
+}
+
+/// A terminal's state: what's running in its background, else its status.
+fn term_state(x: &Value) -> Node {
+    let st = s(x, "status");
+    if !x["background"].is_null() {
+        return pill(fmt::background_label(&x["background"]), Tone::Working);
+    }
+    let label = match st {
+        "working" => "Working",
+        "waiting" => "Waiting",
+        "needs" => "Needs you",
+        "offline" => "Offline",
+        _ => "Idle",
+    };
+    pill(label, st_tone(st))
+}
+
+/// A step that ran a round (`step_results`): its headline, opening onto what came of it.
+fn result_node(c: &Ctx, t: &Value, ix: usize, x: &Value) -> Node {
     let open = x["open"].as_i64().unwrap_or(0);
     let mut body = Vec::new();
     if b(x, "stale") {
         body.push(el(K::Line, vec![pill("Moved since", Tone::Needs)]));
     }
+    let head = tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at")));
+    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_step(c, TlStep::Result(ix), head, result_detail(t, x)), body, false)
+}
+
+/// The step results a findings link opens: the ones holding findings.
+pub fn findings_steps(t: &Value) -> Vec<TlStep> {
+    arr(t, "step_results").iter().enumerate().filter(|(_, x)| !arr(x, "findings").is_empty()).map(|(ix, _)| TlStep::Result(ix)).collect()
+}
+
+/// A step result, opened: what came of it, its findings with their state and what it ran on (the
+/// task's devices, the commit).
+fn result_detail(t: &Value, x: &Value) -> Vec<Node> {
+    let mut out = Vec::new();
+    if let Some(note) = opt_s(x, "note").filter(|n| *n != s(x, "headline")) {
+        out.push(txt(note, St::DetText));
+    }
     let findings = arr(x, "findings");
     if !findings.is_empty() {
-        let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
-        body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, findings.iter().map(finding_item).collect())]));
+        out.push(el(K::List, findings.iter().map(finding_item).collect()));
     }
-    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at"))), body, false)
+    let mut on: Vec<String> = lent_devices(t).into_iter().map(str::to_string).collect();
+    if let Some(h) = opt_s(x, "head") {
+        on.push(format!("commit {}", h.chars().take(7).collect::<String>()));
+    }
+    if !on.is_empty() {
+        out.push(det_row("Ran on", txt(on.join(" · "), St::Plain)));
+    }
+    out
 }
 
 /// `doneNode(t)`: Done or Failed, with its summary.
@@ -943,111 +1076,27 @@ fn now_node(c: &Ctx, t: &Value) -> Node {
     } else {
         String::new()
     };
+    // What it needs shows in the banner up top; here it just waits, with when it asked.
+    if warn {
+        // Lost or a failed start isn't a question: nothing was asked.
+        let asked = status == "needs" && !b(t, "lost") && !matches!(s(t, "needs_reason"), "start_failed" | "compact_failed");
+        let (sub, at) = match opt_s(t, "updated_at").filter(|_| asked) {
+            Some(at) => {
+                let mut sub = vec![format!("Asked {}", fmt::ago(at))];
+                sub.extend(Some(fmt::span_between(s(t, "started_at"), at)).filter(|x| !x.is_empty()).map(|x| format!("after {x} of work")));
+                (sub.join(", "), fmt::hhmm(at))
+            }
+            None => (String::new(), String::new()),
+        };
+        let mut out: Vec<Node> = blocked_row(c, t).into_iter().collect();
+        if status != "done" {
+            out.extend(term_actions(c, t));
+        }
+        return tl_node(TlSt::Warn, tl_head(txt("Waiting on you", St::TlHWarn), &sub, &at), out, true);
+    }
     let mut out = Vec::new();
     if let Some(latest) = opt_s(t, "latest").filter(|_| working) {
         out.push(txt(latest, St::TlText));
-    }
-
-    if b(t, "lost") {
-        let saved = saved_line(t);
-        let claude = opt_s(t, "claude_session_id").is_some();
-        let grp = format!("lost:{r}");
-        // Signs its work shipped from another terminal after this one closed (`lost_done.rs`).
-        let found = arr(t, "looks_finished");
-        let label = if found.is_empty() { "Terminal lost" } else { "Looks finished" };
-        let mut bx = vec![txt(label, St::BoxLabel), txt(opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."), St::Plain)];
-        for f in found {
-            let line = format!("{} · {}", s(f, "what"), fmt::hhmm(s(f, "at")));
-            bx.push(match opt_s(f, "url").filter(|u| is_web(u)) {
-                Some(u) => Node::Link { s: line, go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small },
-                None => txt(line, St::Small),
-            });
-        }
-        if !saved.is_empty() {
-            bx.push(txt(saved, St::Small));
-        }
-        bx.push(el(
-            K::Row,
-            vec![
-                c.btn("Resume in a new terminal", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
-                c.btn(
-                    "Reopen the old conversation",
-                    Act::new("resume", "reopen", &r, &grp),
-                    Look::Plain,
-                    !claude,
-                    (!claude).then_some("No conversation was saved for this task"),
-                ),
-                // A new terminal checks the work shipped and hands it in with `tb submit`.
-                c.btn("Mark done", Act::new("resume", "finish", &r, &grp), Look::Plain, false, None),
-            ],
-        ));
-        bx.extend(c.note(&grp));
-        bx.push(c.btn("See what the new terminal gets", Act::new("tab", "context", "", ""), Look::Link, false, None));
-        out.push(el(K::Box(BoxTone::Lost), bx));
-    } else if status == "needs" && s(t, "needs_reason") == "start_failed" {
-        let mut bx = vec![
-            txt("Couldn’t start in Midna", St::BoxLabel),
-            txt(opt_s(t, "latest").unwrap_or("Midna didn’t start a terminal for this task."), St::Plain),
-            el(
-                K::Row,
-                vec![
-                    c.btn("New Midna terminal", Act::new("start", "new", &r, &act), Look::Primary, false, None),
-                    c.btn("Queue in Midna", Act::new("start", "queue", &r, &act), Look::Plain, false, None),
-                ],
-            ),
-        ];
-        bx.extend(c.note(&act));
-        out.push(el(K::Box(BoxTone::Lost), bx));
-    } else if status == "needs" && s(t, "needs_reason") == "compact_failed" {
-        let grp = format!("compact:{r}");
-        let mut bx = vec![
-            txt("Couldn’t compact its conversation", St::BoxLabel),
-            txt(opt_s(t, "latest").unwrap_or("The board couldn’t compact its cold conversation before resuming it."), St::Plain),
-            el(
-                K::Row,
-                vec![
-                    c.btn("Start fresh with the handoff", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
-                    c.btn("Reopen the old conversation", Act::new("resume", "reopen", &r, &grp), Look::Plain, false, None),
-                ],
-            ),
-        ];
-        bx.extend(c.note(&grp));
-        out.push(el(K::Box(BoxTone::Lost), bx));
-    } else if status == "needs" {
-        let q = opt_s(t, "question");
-        let asking = q.is_some() && (s(t, "needs_reason") == "question" || b(&t["ask"], "picker"));
-        let grp = format!("ask:{r}");
-        let mut bx = vec![
-            txt(format!("{who} {}", if asking { "is asking" } else { "needs you" }), St::BoxLabel),
-            txt(q.or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::Plain),
-        ];
-        let opts = ask_options(c, &t["ask"], &r, &grp);
-        let clickable = !opts.is_empty() && !b(&t["ask"], "picker");
-        bx.extend(opts);
-        let mut row = step_btns(c, t, &r, &grp);
-        if session_live(t) {
-            row.push(c.btn("Open terminal", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
-        } else if row.is_empty() && !clickable {
-            // No terminal to open and nothing to click: an answer queues it again with the answer in its
-            // handoff (`api::answer`); anything else starts it again from its handoff.
-            if q.is_some() && s(t, "needs_reason") == "question" {
-                bx.push(answer_field(c, &r));
-                row.extend(answer_btns(c, &r));
-            } else {
-                row.push(c.btn("Resume in a new terminal", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None));
-            }
-        }
-        row.extend(c.note(&grp));
-        bx.push(el(K::Row, row));
-        out.push(el(K::Box(BoxTone::Ask), bx));
-    }
-
-    if let Some(why) = fmt::stuck(t).filter(|_| working) {
-        let mut bx = vec![txt(format!("{who} may be stuck"), St::BoxLabel), txt(why, St::Plain)];
-        if let Some(tail) = opt_s(&t["stuck"], "tail").filter(|x| !x.is_empty()) {
-            bx.push(fold(Fold::Tail, c.fold_open(Fold::Tail, false), txt("Its terminal’s last lines", St::Small), vec![txt(tail, St::Code)]));
-        }
-        out.push(el(K::Box(BoxTone::Ask), bx));
     }
 
     if let Some(at) = fmt::outside(t) {
@@ -1094,29 +1143,122 @@ fn now_node(c: &Ctx, t: &Value) -> Node {
         out.push(el(K::Stack, st));
     }
 
-    if let Some(stopped) = pr_stopped(t) {
+    out.extend(blocked_row(c, t));
+    if status != "done" {
+        out.extend(term_actions(c, t));
+    }
+    tl_node(TlSt::Now, tl_head(status_pill(t), &sub, ""), out, true)
+}
+
+/// `banner(t, alert)`: what the task needs from you, full width under the chips: a question with its
+/// options and Write an answer, a lost or failed start with its ways back, a stuck check-in, or the
+/// PR's terminal stopping. A board alert about the task shows in it too.
+fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
+    let r = rf(t, "T");
+    let who = who(t);
+    let act = format!("act:{r}");
+    let status = s(t, "status");
+    let (tone, mut bx) = if b(t, "lost") {
+        let saved = saved_line(t);
+        let claude = opt_s(t, "claude_session_id").is_some();
+        let grp = format!("lost:{r}");
+        // Signs its work shipped from another terminal after this one closed (`lost_done.rs`).
+        let found = arr(t, "looks_finished");
+        let label = if found.is_empty() { "Terminal lost" } else { "Looks finished" };
+        let mut bx = vec![txt(label, St::BoxLabel), txt(opt_s(t, "latest").unwrap_or("The terminal closed before the task was done."), St::BannerText)];
+        for f in found {
+            let line = format!("{} · {}", s(f, "what"), fmt::hhmm(s(f, "at")));
+            bx.push(match opt_s(f, "url").filter(|u| is_web(u)) {
+                Some(u) => Node::Link { s: line, go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small },
+                None => txt(line, St::Small),
+            });
+        }
+        if !saved.is_empty() {
+            bx.push(txt(saved, St::Small));
+        }
+        let mut row = vec![
+            c.btn("Resume in a new terminal", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
+            c.btn(
+                "Reopen the old conversation",
+                Act::new("resume", "reopen", &r, &grp),
+                Look::Plain,
+                !claude,
+                (!claude).then_some("No conversation was saved for this task"),
+            ),
+            // A new terminal checks the work shipped and hands it in with `tb submit`.
+            c.btn("Mark done", Act::new("resume", "finish", &r, &grp), Look::Plain, false, None),
+        ];
+        row.extend(c.note(&grp));
+        bx.push(el(K::Row, row));
+        bx.push(c.btn("See what the new terminal gets", Act::new("tab", "context", "", ""), Look::Link, false, None));
+        (BoxTone::Lost, bx)
+    } else if status == "needs" && s(t, "needs_reason") == "start_failed" {
+        let mut row = vec![
+            c.btn("New Midna terminal", Act::new("start", "new", &r, &act), Look::Primary, false, None),
+            c.btn("Queue in Midna", Act::new("start", "queue", &r, &act), Look::Plain, false, None),
+        ];
+        row.extend(c.note(&act));
+        let bx = vec![
+            txt("Couldn’t start in Midna", St::BoxLabel),
+            txt(opt_s(t, "latest").unwrap_or("Midna didn’t start a terminal for this task."), St::BannerText),
+            el(K::Row, row),
+        ];
+        (BoxTone::Lost, bx)
+    } else if status == "needs" && s(t, "needs_reason") == "compact_failed" {
+        let grp = format!("compact:{r}");
+        let mut row = vec![
+            c.btn("Start fresh with the handoff", Act::new("resume", "fresh", &r, &grp), Look::Primary, false, None),
+            c.btn("Reopen the old conversation", Act::new("resume", "reopen", &r, &grp), Look::Plain, false, None),
+        ];
+        row.extend(c.note(&grp));
+        let bx = vec![
+            txt("Couldn’t compact its conversation", St::BoxLabel),
+            txt(opt_s(t, "latest").unwrap_or("The board couldn’t compact its cold conversation before resuming it."), St::BannerText),
+            el(K::Row, row),
+        ];
+        (BoxTone::Lost, bx)
+    } else if status == "needs" {
+        let grp = format!("ask:{r}");
+        let mut bx = vec![txt(opt_s(t, "question").or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::BannerText)];
+        bx.extend(ask_options(c, &t["ask"], &r, &grp));
+        let mut row = step_btns(c, t, &r, &grp);
+        // Its terminal when it has one; a question with none reopens one that asks it again; otherwise a new one, picking up from its handoff.
+        let write = if session_live(t) || opt_s(t, "question").is_some_and(|q| !q.is_empty()) {
+            Act::new("focus", "", &r, &grp)
+        } else {
+            Act::new("resume", "fresh", &r, &grp)
+        };
+        row.push(c.btn("Write an answer", write, Look::Out, false, None));
+        row.extend(c.note(&grp));
+        bx.push(el(K::Row, row));
+        (BoxTone::Ask, bx)
+    } else if let Some(why) = fmt::stuck(t).filter(|_| status == "working") {
+        let mut bx = vec![txt(format!("{who} may be stuck"), St::BoxLabel), txt(why, St::BannerText)];
+        if let Some(tail) = opt_s(&t["stuck"], "tail").filter(|x| !x.is_empty()) {
+            bx.push(fold(Fold::Tail, c.fold_open(Fold::Tail, false), txt("Its terminal’s last lines", St::Small), vec![txt(tail, St::Code)]));
+        }
+        (BoxTone::Ask, bx)
+    } else if let Some(stopped) = pr_stopped(t) {
         let p = pr_of(t).unwrap_or(&Value::Null);
         let term = arr(t, "terminals").iter().find(|x| js_eq(field(x, "id"), field(&p["stage"], "session"))).and_then(|x| opt_s(x, "name")).unwrap_or("Its terminal");
         let grp = format!("ask:{r}");
         let mut row = answer_btns(c, &r);
         row.push(c.btn("Focus in Midna", Act::new("focus", "", &r, &grp), Look::Plain, false, None));
         row.extend(c.note(&grp));
-        out.push(el(
-            K::Box(BoxTone::Ask),
-            vec![
-                txt(format!("{term} {}", if b(stopped, "asked") { "asks you about the PR" } else { "stopped on the PR" }), St::BoxLabel),
-                txt(or_empty(&stopped["message"]), St::Plain),
-                answer_field(c, &r),
-                el(K::Row, row),
-            ],
-        ));
+        let bx = vec![
+            txt(format!("{term} {}", if b(stopped, "asked") { "asks you about the PR" } else { "stopped on the PR" }), St::BoxLabel),
+            txt(or_empty(&stopped["message"]), St::BannerText),
+            answer_field(c, &r),
+            el(K::Row, row),
+        ];
+        (BoxTone::Ask, bx)
+    } else {
+        (BoxTone::Ask, Vec::new())
+    };
+    if let Some(a) = alert {
+        bx.push(txt(or_empty(&a["text"]), if bx.is_empty() { St::BannerText } else { St::Small }));
     }
-
-    out.extend(blocked_row(c, t));
-    if status != "done" {
-        out.extend(term_actions(c, t));
-    }
-    tl_node(if warn { TlSt::Warn } else { TlSt::Now }, tl_head(status_pill(t), &sub, ""), out, true)
+    (!bx.is_empty()).then(|| el(K::Banner(tone), bx))
 }
 
 /// A fold (`<details>`): its summary, then what shows when it's open.
@@ -1609,9 +1751,8 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     // `prBar`
     if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge" | "ask")) {
         let stopped = obj(stage, "stopped").is_some();
-        let label = or_empty(&stage["label"]);
-        let text = if stopped { format!("Needs you · {label}") } else { label };
-        let mut kids = vec![Node::Dot(if stopped { Dot::Warn } else { Dot::Accent }), txt(text, St::Plain)];
+        // The banner up top says it stopped; the warn dot marks the stage.
+        let mut kids = vec![Node::Dot(if stopped { Dot::Warn } else { Dot::Accent }), txt(or_empty(&stage["label"]), St::Plain)];
         let tip = match opt_s(stage, "session") {
             Some(sid) => {
                 kids.push(Node::Link { s: "Terminal ›".into(), go: Go::Session(sid.to_string()), tip: None, look: LinkLook::Plain });
@@ -1776,17 +1917,24 @@ fn origin_row(t: &Value) -> Option<Node> {
     Some(el(K::KvRow, vec![txt("From", St::LrowKey), value]))
 }
 
+/// The devices lent to it, each with its kind and target ("dev-a (Android emulator, emulator-5554)")
+/// when the board gives them.
+fn lent_devices(t: &Value) -> Vec<&str> {
+    let d = &t["devices"];
+    let lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
+    if !lent.is_empty() {
+        return lent;
+    }
+    arr(d, "lent").iter().filter_map(|x| x.as_str()).collect()
+}
+
 /// The devices it has (or asks for) and its bits, as Context rows. A backend bit not made yet has
 /// "Mark created" (the owner's word that it's made in the flag tool, as on the goal page).
 fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let mut out = vec![];
     let d = &t["devices"];
-    // Each with its kind and target ("dev-a (Android emulator, emulator-5554)") when the board gives them.
-    let mut lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
-    if lent.is_empty() {
-        lent = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
-    }
+    let lent = lent_devices(t);
     let devices = if !lent.is_empty() { Some(lent.join(", ")) } else { opt_s(d, "needs_text").map(|n| format!("Needs {n}")) };
     if let Some(v) = devices {
         out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));
@@ -2252,7 +2400,7 @@ fn walk_acts(n: &Node, out: &mut Vec<String>) {
 /// The kids the reader sees: a closed fold shows only its summary.
 pub fn shown(n: &Node) -> impl Iterator<Item = &Node> {
     let (kids, closed): (&[Node], bool) = match n {
-        Node::El { k: K::Fold(_, open), kids, .. } => (kids, !open),
+        Node::El { k: K::Fold(_, open) | K::TlStep { open, .. }, kids, .. } => (kids, !open),
         Node::El { kids, .. } => (kids, false),
         _ => (&[], false),
     };

@@ -468,6 +468,17 @@ a.pr-bar, button.pr-bar { cursor: pointer; }
 .box.lost { background: var(--down-soft); gap: 10px; }
 .box.lost .box-label { color: var(--down); }
 .box.ask { background: var(--warn-soft); }
+/* Under the chips, full width: what the task needs from you. */
+.needs-banner { margin: 0 -24px; padding: 14px 24px; display: flex; flex-direction: column; gap: 12px; background: var(--warn-soft); border-block: 1px solid var(--warn-line); }
+.needs-banner.lost { background: var(--down-soft); border-color: var(--down-line); }
+.needs-banner .box-label { color: var(--warn-fg); }
+.needs-banner.lost .box-label { color: var(--down); }
+.banner-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--warn-text); }
+.needs-banner.lost .banner-text { color: var(--text); }
+.btn.opt { height: 30px; padding: 0 12px; border-radius: 7px; border-color: var(--warn-line); color: var(--warn-text); }
+.write { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; background: none; border: 0; padding: 0; font-size: 13px; color: var(--warn); cursor: pointer; }
+.write:hover { text-decoration: underline; }
+.tl-h-warn { color: var(--warn-fg); }
 .box.ask .box-label { color: var(--warn-fg); }
 .box.ask textarea { border-color: var(--warn-input); }
 .pill.repo { font-family: var(--mono); font-weight: 500; color: var(--text-2); background: var(--panel-2); }

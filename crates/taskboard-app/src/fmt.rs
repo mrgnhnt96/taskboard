@@ -133,6 +133,13 @@ pub fn run_span(t: &Value) -> String {
     }
 }
 
+/// How long from `from` to `to`: "2h 20m"; "" when either is missing or they're out of order.
+pub fn span_between(from: &str, to: &str) -> String {
+    let (Some(a), Some(b)) = (parse(from), parse(to)) else { return String::new() };
+    let m = ((b - a).num_seconds() as f64 / 60.).round() as i64;
+    if m < 0 { String::new() } else { span(m) }
+}
+
 /// "Took 1h" on a done task.
 pub fn took_line(t: &Value) -> String {
     let (Some(a), Some(b)) = (parse(s(t, "started_at")), parse(s(t, "finished_at"))) else { return String::new() };
