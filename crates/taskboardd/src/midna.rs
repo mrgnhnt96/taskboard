@@ -289,6 +289,12 @@ fn run_agent(app: &App, j: &Row, a: &Row) -> MResult<String> {
             return Ok(format!("Opened {sid}, but couldn't type its request in: {e}"));
         }
     }
+    // Midna opens a terminal without switching to it; one the owner asked for is shown.
+    if as_bool(a.get("focus"), false) {
+        if let Err(e) = call(app, "session.focus", json!({"id": sid})) {
+            return Ok(format!("Opened {sid}, but couldn't show it: {e}"));
+        }
+    }
     Ok(format!("Opened {sid}"))
 }
 

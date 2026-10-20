@@ -56,8 +56,38 @@ fn focus_on_a_question_with_no_terminal_opens_one_that_asks_again() {
     assert!(prompt.starts_with(&format!("[task-board:T{t}] ")), "{prompt}");
     assert!(prompt.contains("Sum up") && prompt.contains("Which option do you want?\n- Allow the agent\n- Drop it"), "{prompt}");
     assert!(prompt.contains("Save the sign-in token"), "the handoff follows: {prompt}");
+    assert_eq!(args["focus"], true, "the owner asked for it, so it's shown once open");
     let log: Vec<String> = b.app.db.q("SELECT text FROM events WHERE task_id = ?", p![t]).unwrap().iter().map(|r| r.st("text")).collect();
     assert!(log.iter().any(|l| l == "Opened a new terminal to answer the question"), "{log:?}");
+}
+
+#[test]
+fn the_terminal_opened_to_ask_again_is_focused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_tests(dir.path());
+    let repo = dir.path().join("webapp");
+    std::fs::create_dir_all(&repo).unwrap();
+    let midna_exe = dir.path().join("fake-midna");
+    std::fs::write(
+        &midna_exe,
+        "#!/bin/sh\nprintf '%s %s\\n' \"$2\" \"$3\" >> \"$(dirname \"$0\")/calls\"\nif [ \"$2\" = session.open ]; then echo '{\"id\": \"S9\"}'; exit 0; fi\necho '{}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&midna_exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    cfg.midna = midna_exe;
+    let app = App::for_tests(cfg);
+    let path = repo.to_string_lossy().to_string();
+    app.db.set_setting("midna_projects", Some(&json!([{"name": "webapp", "path": path}]).to_string())).unwrap();
+    let job = |args: Value| {
+        let jid = board::create_job(&app, "agent", args, None, "start", None).unwrap();
+        taskboardd::midna::run_job(&app, &app.db.q1("SELECT * FROM jobs WHERE id = ?", p![jid]).unwrap().unwrap());
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap_or_default();
+        std::fs::remove_file(dir.path().join("calls")).ok();
+        calls.lines().map(|l| l.split_once(' ').unwrap().0.to_string()).collect::<Vec<_>>()
+    };
+
+    assert_eq!(job(json!({"cwd": path, "prompt": "hi", "focus": true})), ["session.open", "session.focus"]);
+    assert_eq!(job(json!({"cwd": path, "prompt": "hi"})), ["session.open"], "other terminals open where they are");
 }
 
 #[test]
