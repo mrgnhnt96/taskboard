@@ -1,10 +1,12 @@
-//! Updates: checks GitHub for a newer release, downloads its DMG, checks it and swaps it in, like
+//! Updates: checks GitHub for a newer release, downloads the app, checks it and swaps it in, like
 //! Midna's updater.
 //!
 //! - **Feed**: the repo's releases (`RELEASES`), the same list the website's Download button reads.
 //!   A beta build follows every release, prereleases included; a public one only public releases.
-//!   The newest one newer than this build, with a DMG attached, is the update.
-//! - **Checked**: the DMG's sha256 against the digest GitHub keeps for the asset, then the app inside:
+//!   The newest one newer than this build, with a `Taskboard-<version>.app.tar.gz` attached, is the
+//!   update. That's the notarized app the release's DMG holds, packed so it unpacks in a moment; a DMG
+//!   takes seconds to mount and unmount.
+//! - **Checked**: the archive's sha256 against the digest GitHub keeps for the asset, then the app inside:
 //!   same bundle id, the version the release says, a valid code signature, notarized, and signed by
 //!   the same Developer ID team as the app running now. Anything else is refused.
 //! - **Applied**: the staged copy is exchanged with the installed bundle by `renamex_np(RENAME_SWAP)`,
@@ -72,7 +74,7 @@ fn now() -> String {
 pub struct Release {
     pub version: String,
     pub page: String,
-    pub dmg: String,
+    pub archive: String,
     pub size: u64,
     /// The asset's sha256 as GitHub reports it, when it does.
     pub sha256: Option<String>,
@@ -107,10 +109,10 @@ pub fn pick(releases: &Value, current: &str) -> Option<Release> {
         .filter(|r| r["draft"] != true && (beta || r["prerelease"] != true))
         .filter_map(|r| {
             let version = r["tag_name"].as_str()?.trim_start_matches('v').to_string();
-            let asset = r["assets"].as_array()?.iter().find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(".dmg")))?;
+            let asset = r["assets"].as_array()?.iter().find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(".app.tar.gz")))?;
             Some(Release {
                 page: r["html_url"].as_str().unwrap_or(RELEASES_PAGE).to_string(),
-                dmg: asset["browser_download_url"].as_str()?.to_string(),
+                archive: asset["browser_download_url"].as_str()?.to_string(),
                 size: asset["size"].as_u64().unwrap_or(0),
                 sha256: asset["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_ascii_lowercase),
                 version,
@@ -136,12 +138,12 @@ fn fetch_releases() -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|e| format!("GitHub's release list didn't parse: {e}"))
 }
 
-/// Download the DMG to `dir`, hashing as it goes; refused unless it matches GitHub's digest.
+/// Download the archive to `dir`, hashing as it goes; refused unless it matches GitHub's digest.
 fn download(r: &Release, dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let dest = dir.join(format!("Taskboard-{}.dmg", r.version));
-    let part = dir.join(format!("Taskboard-{}.dmg.part", r.version));
-    let resp = agent().get(&r.dmg).call().map_err(|e| format!("Download failed: {e}"))?;
+    let dest = dir.join(format!("Taskboard-{}.app.tar.gz", r.version));
+    let part = dir.join(format!("Taskboard-{}.app.tar.gz.part", r.version));
+    let resp = agent().get(&r.archive).call().map_err(|e| format!("Download failed: {e}"))?;
     let mut reader = resp.into_reader();
     let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
     let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
@@ -182,23 +184,17 @@ pub fn team_id(app: &Path) -> Option<String> {
     String::from_utf8_lossy(&o.stderr).lines().find_map(|l| l.strip_prefix("TeamIdentifier=")).filter(|t| *t != "not set").map(str::to_string)
 }
 
-/// Copy the app out of the DMG into `dir` and check it (see the module docs).
-fn stage(dmg: &Path, dir: &Path, version: &str, installed: &Path) -> Result<PathBuf, String> {
+/// Unpack the app from the archive into `dir` and check it (see the module docs).
+fn stage(archive: &Path, dir: &Path, version: &str, installed: &Path) -> Result<PathBuf, String> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mnt = dir.join("mnt");
-    let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"]).arg(&mnt).arg(dmg).output().map_err(|e| e.to_string())?;
-    if !attached.status.success() {
-        return Err(format!("Couldn't open the DMG: {}", String::from_utf8_lossy(&attached.stderr).trim()));
+    let unpacked = Command::new("/usr/bin/tar").arg("-xzf").arg(archive).arg("-C").arg(dir).output().map_err(|e| e.to_string())?;
+    if !unpacked.status.success() {
+        return Err(format!("Couldn't unpack the update: {}", String::from_utf8_lossy(&unpacked.stderr).trim()));
     }
-    let found = std::fs::read_dir(&mnt).ok().into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app"));
     let app = dir.join("Taskboard.app");
-    let copied = found.as_ref().map(|src| Command::new("/usr/bin/ditto").arg(src).arg(&app).status().is_ok_and(|s| s.success()));
-    let _ = Command::new("/usr/bin/hdiutil").args(["detach", "-force"]).arg(&mnt).output();
-    match copied {
-        None => return Err("The DMG has no app in it.".into()),
-        Some(false) => return Err("Couldn't copy the app out of the DMG.".into()),
-        Some(true) => {}
+    if !app.is_dir() {
+        return Err("The update has no Taskboard.app in it.".into());
     }
     let info = read_plist(&app.join("Contents/Info.plist")).ok_or("The new app has no Info.plist.")?;
     let id = info["CFBundleIdentifier"].as_str().unwrap_or("");
@@ -268,9 +264,9 @@ fn check(bundle: &Path) {
     }
     set(State::Downloading { version: r.version.clone() });
     let dir = cache_dir();
-    let staged = download(&r, &dir).and_then(|dmg| {
-        let app = stage(&dmg, &dir.join("staged"), &r.version, bundle);
-        let _ = std::fs::remove_file(&dmg);
+    let staged = download(&r, &dir).and_then(|archive| {
+        let app = stage(&archive, &dir.join("staged"), &r.version, bundle);
+        let _ = std::fs::remove_file(&archive);
         app
     });
     match staged {
@@ -401,8 +397,10 @@ mod tests {
         assert!(!is_newer("garbage", "0.1.0"));
     }
 
-    fn release(tag: &str, prerelease: bool, dmg: bool) -> Value {
-        let assets = if dmg { json!([{"name": format!("Taskboard-{tag}.dmg"), "browser_download_url": format!("https://x/{tag}.dmg"), "size": 5, "digest": "sha256:AB"}]) } else { json!([]) };
+    fn release(tag: &str, prerelease: bool, archive: bool) -> Value {
+        let dmg = json!({"name": format!("Taskboard-{tag}.dmg"), "browser_download_url": format!("https://x/{tag}.dmg"), "size": 9, "digest": "sha256:CD"});
+        let tgz = json!({"name": format!("Taskboard-{tag}.app.tar.gz"), "browser_download_url": format!("https://x/{tag}.app.tar.gz"), "size": 5, "digest": "sha256:AB"});
+        let assets = if archive { json!([dmg, tgz]) } else { json!([dmg]) };
         json!({"tag_name": tag, "draft": false, "prerelease": prerelease, "html_url": format!("https://x/{tag}"), "assets": assets})
     }
 
@@ -410,10 +408,10 @@ mod tests {
     fn picks_the_newest_release_for_the_channel() {
         let list = json!([release("v0.2.0-beta.2", true, true), release("v0.1.1", false, true), release("v0.2.0-beta.3", true, false), release("v0.1.0", false, true)]);
         let beta = pick(&list, "0.1.0-beta.44").unwrap();
-        assert_eq!((beta.version.as_str(), beta.sha256.as_deref()), ("0.2.0-beta.2", Some("ab")));
+        assert_eq!((beta.version.as_str(), beta.archive.as_str(), beta.sha256.as_deref()), ("0.2.0-beta.2", "https://x/v0.2.0-beta.2.app.tar.gz", Some("ab")));
         assert_eq!(pick(&list, "0.1.0").unwrap().version, "0.1.1");
         assert_eq!(pick(&list, "0.1.1"), None);
-        let draft = json!([{"tag_name": "v9.0.0", "draft": true, "prerelease": false, "assets": [{"name": "a.dmg", "browser_download_url": "u"}]}]);
+        let draft = json!([{"tag_name": "v9.0.0", "draft": true, "prerelease": false, "assets": [{"name": "a.app.tar.gz", "browser_download_url": "u"}]}]);
         assert_eq!(pick(&draft, "0.1.0"), None);
     }
 

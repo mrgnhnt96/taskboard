@@ -19,12 +19,16 @@ The tag runs `.github/workflows/release.yml` on a `macos-15` runner, which:
 2. imports the Developer ID certificate into a throwaway keychain
 3. `packaging/build-app.sh` (Developer ID signed, hardened runtime)
 4. `packaging/notarize.sh` (App Store Connect API key), staples
-5. `scripts/build-dmg.sh` (branded window, `packaging/assets/dmg`), signs, notarizes and staples
+5. packs the stapled app as `Taskboard-<version>.app.tar.gz`, for the app's updater
+6. `scripts/build-dmg.sh` (branded window, `packaging/assets/dmg`), signs, notarizes and staples
    the DMG
-6. publishes the GitHub release with `Taskboard-<version>-macos-arm64.dmg` and generated notes
-   (betas as prereleases)
+7. publishes the GitHub release with `Taskboard-<version>-macos-arm64.dmg`, the `.app.tar.gz`
+   and generated notes (betas as prereleases)
 
-There's no auto-update yet: people download a new DMG and replace the app.
+The app updates itself from the release's `.app.tar.gz` (`crates/taskboard-app/src/updater.rs`):
+it checks the archive against GitHub's sha256 for it, unpacks it, checks the app's signature,
+notarization and team, and swaps it in. A release without the archive isn't offered as an update.
+It used to install from the DMG, but mounting and unmounting a fresh DMG took about 14 seconds.
 
 ## Repository secrets and variables
 

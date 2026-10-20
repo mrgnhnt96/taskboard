@@ -81,6 +81,17 @@ jobs:
           packaging/notarize.sh dist/release/Taskboard.app
           packaging/retry.sh xcrun stapler validate dist/release/Taskboard.app
 
+      # What the app's updater downloads: the same notarized app, as a tarball
+      # it unpacks in a moment (a DMG takes seconds to mount and unmount).
+      # COPYFILE_DISABLE: no AppleDouble ._ files, which break the signature.
+      - name: Make update archive
+        id: archive
+        run: |
+          name="Taskboard-${GITHUB_REF_NAME#v}.app.tar.gz"
+          (cd dist/release && COPYFILE_DISABLE=1 tar -czf "../../$name" Taskboard.app)
+          tar -tzf "$name" | grep -q '^Taskboard.app/Contents/Info.plist$'
+          echo "file=$name" >> "$GITHUB_OUTPUT"
+
       # The branded window: background, icon positions and size come from
       # scripts/dmg-settings.py and packaging/assets/dmg.
       - name: Make DMG
@@ -119,5 +130,5 @@ jobs:
           else
             flags=(--latest)
           fi
-          gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.file }}" \
+          gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.file }}" "${{ steps.archive.outputs.file }}" \
             --title "Taskboard ${GITHUB_REF_NAME#v}" --generate-notes "${flags[@]}"
