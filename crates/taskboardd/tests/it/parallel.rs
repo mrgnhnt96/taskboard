@@ -764,3 +764,136 @@ fn idle_slots_lose_their_build_output_then_the_checkout_but_never_below_min() {
     assert!(!Path::new(&slot(&b, 3)).join("target").exists(), "low disk clears a free slot before its timer");
     assert!(Path::new(&slot(&b, 4)).join("target").exists(), "still claimed");
 }
+
+/// A commit on a new branch in the slot, pushed or not.
+fn commit_in(folder: &str, branch: &str, push: bool) {
+    let dir = Path::new(folder);
+    git(dir, &["switch", "-q", "-c", branch]);
+    std::fs::write(dir.join("change"), "x\n").unwrap();
+    git(dir, &["add", "change"]);
+    git(dir, &["commit", "-q", "-m", "Change"]);
+    if push {
+        git(dir, &["push", "-q", "-u", "origin", branch]);
+    }
+}
+
+fn slot_row(b: &Board, n: i64) -> taskboardd::util::Row {
+    b.app.db.q1("SELECT * FROM worktree_slots WHERE n = ?", p![n]).unwrap().unwrap()
+}
+
+#[test]
+fn submitting_gives_the_slot_back_detached_with_its_branch_kept() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 1}));
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![one]);
+    let slots = b.get("slots")["slots"].clone();
+    assert_eq!(slots[0]["name"], "slot-1");
+    assert_eq!(slots[0]["held_by"], format!("T{one}"));
+    assert_eq!(slots[0]["waiting"], json!([format!("T{two}")]), "{slots}");
+    assert!(slots[0]["size_kb"].as_i64().is_some(), "{slots}");
+    let used = slot_row(&b, 1).s("used_at").map(|s| s.to_string());
+
+    commit_in(&slot(&b, 1), "feature/one", true);
+    b.run_to_done(one, "s1");
+    let row = slot_row(&b, 1);
+    assert!(row.i("task_id").is_none());
+    assert_ne!(row.s("used_at").map(|s| s.to_string()), used, "its last use is recorded");
+    assert!(git(Path::new(&slot(&b, 1)), &["status", "--short", "--branch"]).starts_with("## HEAD (no branch)"), "detached at the base again");
+    let card = b.card(one);
+    assert!(card["log"].to_string().contains("Gave back worktree slot-1; its branch feature/one is kept for review fixes"), "{}", card["log"]);
+    let ctx = board::task_context(&board::get_task(&b.app, one).unwrap());
+    assert_eq!(ctx.s("worktree_branch"), Some("feature/one"));
+    assert!(b.get("slots")["slots"][0]["held_by"].is_null(), "free while its terminal is still open");
+
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1), "the next task takes it at once");
+}
+
+#[test]
+fn a_slot_with_uncommitted_or_unpushed_work_is_not_given_back() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    b.add_session("s1");
+    b.open_for("s1", one);
+    b.report("hook.prompt", "s1", json!({"prompt": b.start_job(one).st("prompt")}));
+
+    std::fs::write(Path::new(&slot(&b, 1)).join("loose"), "x\n").unwrap();
+    let (code, msg) = b.try_report("tb.done", "s1", json!({"summary": "Done."})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("slot-1") && msg.contains("uncommitted changes. Commit and push them, or discard them, then run this again."), "{msg}");
+    let (code, msg) = b.post_err(&format!("tasks/T{one}/slot/release"), json!({}));
+    assert_eq!(code, 409, "{msg}");
+
+    std::fs::remove_file(Path::new(&slot(&b, 1)).join("loose")).unwrap();
+    commit_in(&slot(&b, 1), "feature/one", false);
+    let (code, msg) = b.try_report("tb.done", "s1", json!({"summary": "Done."})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(msg.contains("1 commit on feature/one isn't pushed. Push it (git push), then run this again."), "{msg}");
+    assert_eq!(board::get_task(&b.app, one).unwrap().s("status"), Some("working"), "nothing finished");
+
+    git(Path::new(&slot(&b, 1)), &["push", "-q", "-u", "origin", "feature/one"]);
+    b.report("tb.done", "s1", json!({"summary": "Done."}));
+    assert!(slot_row(&b, 1).i("task_id").is_none());
+}
+
+#[test]
+fn failing_or_parking_gives_the_slot_back_when_it_is_clean() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    let other = b.task("Needed", json!({}));
+    for (t, sid) in [(one, "s1"), (two, "s2")] {
+        b.add_session(sid);
+        b.open_for(sid, t);
+        b.report("hook.prompt", sid, json!({"prompt": b.start_job(t).st("prompt")}));
+    }
+
+    b.report("tb.wait_for", "s1", json!({"tasks": [format!("T{other}")], "why": "Needs it."}));
+    assert!(slot_row(&b, 1).i("task_id").is_none(), "a parked task waits without a slot");
+
+    std::fs::write(Path::new(&slot(&b, 2)).join("loose"), "x\n").unwrap();
+    b.report("tb.fail", "s2", json!({"reason": "Can't."}));
+    assert_eq!(slot_row(&b, 2).i("task_id"), Some(two), "failing keeps a slot with work only there");
+    assert!(b.card(two)["log"].to_string().contains("Kept its worktree slot"), "{}", b.card(two)["log"]);
+}
+
+#[test]
+fn review_fixes_reclaim_a_slot_on_the_pushed_branch() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let one = b.task("One", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    commit_in(&slot(&b, 1), "feature/one", true);
+    let head = git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]);
+    b.run_to_done(one, "s1");
+
+    let out = b.post(&format!("tasks/T{one}/slot/claim"), json!({}));
+    assert_eq!((out["slot"].clone(), out["path"].clone()), (json!("slot-1"), json!(slot(&b, 1))), "its own slot while it's free");
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/one");
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]), head);
+    assert_eq!(b.post(&format!("tasks/T{one}/slot/claim"), json!({}))["slot"], "slot-1", "claiming again keeps it");
+    assert_eq!(b.post(&format!("tasks/T{one}/slot/release"), json!({}))["released"], true);
+    assert_eq!(b.post(&format!("tasks/T{one}/slot/release"), json!({}))["released"], false);
+
+    let next = b.task("Next", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(next).st("cwd"), slot(&b, 1));
+    let out = b.post(&format!("tasks/T{one}/slot/claim"), json!({}));
+    assert_eq!(out["slot"], "slot-2", "another slot while its own is taken");
+    assert_eq!(git(Path::new(&slot(&b, 2)), &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/one");
+    assert!(b.card(one)["log"].to_string().contains(&format!("Made worktree slot-2 at {}, on its branch feature/one", slot(&b, 2))), "{}", b.card(one)["log"]);
+}

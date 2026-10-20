@@ -2,8 +2,10 @@
 //! worktree at `<repo>/.claude/worktrees/slot-<n>` that keeps its build output between tasks. A task
 //! takes the free slot used last (the warmest build), else the pool grows by one up to `max_slots`;
 //! at the max it waits, the way a lock wait shows. A task holds its slot (the lock `wt:slot-<n>`) until
-//! it's done and its terminal is gone. `[worktrees]` in config.toml sizes the pool and ages idle slots,
-//! and `tb project set` changes that for one project.
+//! it submits, fails or parks (or, failing that, is done with its terminal gone); giving it back needs a
+//! clean, pushed checkout. Review fixes later claim a slot again, its own if free, on the pushed branch.
+//! `[worktrees]` in config.toml sizes the pool and ages idle slots, and `tb project set` changes that for
+//! one project.
 
 use std::path::Path;
 
@@ -133,11 +135,11 @@ fn rows(app: &App, repo: &str) -> Result<Vec<Row>> {
     app.db.q("SELECT * FROM worktree_slots WHERE repo = ? ORDER BY seq DESC, n", p![repo])
 }
 
-/// The task holding a slot, or None when it's free: never taken, its task gone, or done with its
-/// terminal closed.
+/// The task holding a slot, or None when it's free: never taken, given back, its task gone, or done
+/// with its terminal closed and no PR visit running.
 fn holder(app: &App, s: &Row) -> Result<Option<Row>> {
     let Some(t) = board::find_task(app, s.i("task_id"))? else { return Ok(None) };
-    if t.s("status") == Some("done") && !crate::worktrees::terminal_open(app, &t)? {
+    if t.s("status") == Some("done") && !crate::worktrees::terminal_open(app, &t)? && !crate::prflow::visit_live(app, &t)? {
         return Ok(None);
     }
     Ok(Some(t))
@@ -190,10 +192,21 @@ pub fn held_locks(app: &App) -> Result<Vec<Value>> {
     Ok(out)
 }
 
-/// Gives `t` a slot of `repo`, detached at `start`: the last used free one that's clean, else a new
-/// one while the pool is under its max. Its folder.
+/// Gives `t` a slot of `repo`: its own from before when that's free, else the last used free one
+/// that's clean, else a new one while the pool is under its max. Detached at `start`, or on the branch
+/// it gave its slot back with. Its folder.
 pub fn claim(app: &App, t: &Row, repo: &str, start: &str) -> Result<String> {
-    for s in rows(app, repo)? {
+    let ctx = board::task_context(t);
+    claim_on(app, t, repo, start, ctx.s("worktree_branch"))
+}
+
+fn claim_on(app: &App, t: &Row, repo: &str, start: &str, branch: Option<&str>) -> Result<String> {
+    let mut slots = rows(app, repo)?;
+    // A conversation resumes only in the folder it ran in.
+    if let Some(before) = board::task_context(t).s("worktree_slot") {
+        slots.sort_by_key(|s| s.s("path") != Some(before));
+    }
+    for s in slots {
         if s.i("task_id") != Some(t.id()) && holder(app, &s)?.is_some() {
             continue;
         }
@@ -207,13 +220,10 @@ pub fn claim(app: &App, t: &Row, repo: &str, start: &str) -> Result<String> {
             app.info(format!("worktrees: passed over {path}: it has uncommitted changes"));
             continue;
         }
-        let r = crate::progress::waiting("git switch", crate::progress::WAITING_EVERY, || git(&path, &["switch", "--detach", start], GIT_SECS));
-        if r.code != 0 {
-            return err(409, format!("Couldn't switch its worktree {path} to {start}: {}", last_line(&r.err)));
-        }
         let n = s.i("n").unwrap_or(0);
-        crate::progress::stage(&format!("Switched slot-{n} to {start}"));
-        take(app, t, s.id(), &path, &format!("Took worktree slot-{n} at {path}, detached at {start}"), start)?;
+        let at = check_out(&path, start, branch)?;
+        crate::progress::stage(&format!("Switched slot-{n} to {at}"));
+        take(app, t, s.id(), &path, &format!("Took worktree slot-{n} at {path}, {}", at_text(&at, start)), start)?;
         return Ok(path);
     }
     let have = rows(app, repo)?;
@@ -233,8 +243,176 @@ pub fn claim(app: &App, t: &Row, repo: &str, start: &str) -> Result<String> {
         "worktree_slots",
         vec![("repo", json!(repo)), ("n", json!(n)), ("path", json!(path)), ("project", t.v("project")), ("made_at", json!(now))],
     )?;
-    take(app, t, id, &path, &format!("Made worktree slot-{n} from {start} at {path}"), start)?;
+    let at = match branch {
+        Some(_) => check_out(&path, start, branch)?,
+        None => start.to_string(),
+    };
+    let text = if at == start { format!("Made worktree slot-{n} from {start} at {path}") } else { format!("Made worktree slot-{n} at {path}, on its branch {at}") };
+    take(app, t, id, &path, &text, start)?;
     Ok(path)
+}
+
+fn at_text(at: &str, start: &str) -> String {
+    if at == start {
+        format!("detached at {start}")
+    } else {
+        format!("on its branch {at}")
+    }
+}
+
+/// Puts a slot on `branch` (a task's pushed branch, which every worktree of the repo shares), else
+/// detached at `start`. Where it is.
+fn check_out(path: &str, start: &str, branch: Option<&str>) -> Result<String> {
+    if let Some(b) = branch.filter(|b| !b.is_empty()) {
+        let local = git(path, &["switch", b], GIT_SECS);
+        if local.code == 0 || git(path, &["switch", "-c", b, "--track", &format!("origin/{b}")], GIT_SECS).code == 0 {
+            return Ok(b.to_string());
+        }
+    }
+    let r = crate::progress::waiting("git switch", crate::progress::WAITING_EVERY, || git(path, &["switch", "--detach", start], GIT_SECS));
+    if r.code != 0 {
+        return err(409, format!("Couldn't switch its worktree {path} to {start}: {}", last_line(&r.err)));
+    }
+    Ok(start.to_string())
+}
+
+/// Review fixes, a rebase or a failing check on a task that gave its slot back: claims a slot again
+/// (its own when free) on its pushed branch. The slot it holds already; None when it never worked in
+/// a slot; a 409 `WAIT` while the pool is full.
+pub fn reclaim(app: &App, t: &Row) -> Result<Option<String>> {
+    let ctx = board::task_context(t);
+    let Some(before) = ctx.s("worktree_slot").filter(|p| is_slot(p)) else { return Ok(None) };
+    if let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])?.filter(|s| Path::new(s.st("path").as_str()).is_dir()) {
+        return Ok(Some(s.st("path")));
+    }
+    let Some((repo, _)) = before.rsplit_once("/.claude/worktrees/") else { return Ok(None) };
+    if !Path::new(repo).is_dir() {
+        return Ok(None);
+    }
+    let start = ctx.s("worktree_base").unwrap_or("HEAD").to_string();
+    let branch = ctx.s("worktree_branch").or_else(|| ctx.get("where").and_then(|w| w.get("branch")).and_then(|b| b.as_str())).map(|b| b.to_string());
+    claim_on(app, t, repo, &start, branch.as_deref()).map(Some)
+}
+
+/// Why `t` can't give its slot back yet: uncommitted changes, or commits that aren't pushed. None
+/// when it can, or holds none.
+pub fn release_refusal(app: &App, t: &Row) -> Result<Option<String>> {
+    let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])? else { return Ok(None) };
+    let path = s.st("path");
+    if !Path::new(&path).is_dir() {
+        return Ok(None);
+    }
+    let me = rf("task", t.id());
+    let n = s.i("n").unwrap_or(0);
+    let status = git(&path, &["status", "--porcelain"], GIT_SECS);
+    if status.code != 0 || !status.out.trim().is_empty() {
+        return Ok(Some(format!(
+            "{me} can't give back its worktree slot-{n} ({path}): it has uncommitted changes. Commit and push them, or discard them, then run this again."
+        )));
+    }
+    let k = unpushed(&path);
+    if k > 0 {
+        let on = branch_of(&path).map(|b| format!(" on {b}")).unwrap_or_default();
+        return Ok(Some(format!(
+            "{me} can't give back its worktree slot-{n} ({path}): {k} commit{}{on} {} pushed. Push {} (git push), then run this again.",
+            if k == 1 { "" } else { "s" },
+            if k == 1 { "isn't" } else { "aren't" },
+            if k == 1 { "it" } else { "them" }
+        )));
+    }
+    Ok(None)
+}
+
+fn branch_of(path: &str) -> Option<String> {
+    let r = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"], GIT_SECS);
+    (r.code == 0).then(|| r.out.trim().to_string()).filter(|b| !b.is_empty())
+}
+
+/// Commits in a slot that only it has. Without a remote, a branch keeps its commits after the slot
+/// lets go of it; only a detached HEAD's would be lost.
+fn unpushed(path: &str) -> i64 {
+    let remote = !git(path, &["remote"], GIT_SECS).out.trim().is_empty();
+    if !remote && branch_of(path).is_some() {
+        return 0;
+    }
+    let r = git(path, &["rev-list", "--count", "HEAD", "--not", if remote { "--remotes" } else { "--branches" }], GIT_SECS);
+    r.out.trim().parse().unwrap_or(0)
+}
+
+/// Gives back the slot `t` holds: detached at its base again and free for the next task, its branch
+/// kept for review fixes. Refuses (409) while it has uncommitted changes or unpushed commits. False
+/// when it held none.
+pub fn release(app: &App, t: &Row) -> Result<bool> {
+    if let Some(why) = release_refusal(app, t)? {
+        return err(409, why);
+    }
+    give_back(app, t)
+}
+
+/// `release` that keeps the slot, and says why in the task's log, when it can't be given back.
+pub fn release_if_clean(app: &App, t: &Row) -> Result<bool> {
+    if let Some(why) = release_refusal(app, t)? {
+        board::log_event(app, t.id(), board::BOARD, "midna", &format!("Kept its worktree slot: {}", why.split(": ").nth(1).unwrap_or(&why)))?;
+        return Ok(false);
+    }
+    give_back(app, t)
+}
+
+fn give_back(app: &App, t: &Row) -> Result<bool> {
+    let Some(s) = app.db.q1("SELECT * FROM worktree_slots WHERE task_id = ?", p![t.id()])? else { return Ok(false) };
+    let (path, n) = (s.st("path"), s.i("n").unwrap_or(0));
+    let ctx = board::task_context(&board::get_task(app, t.id())?);
+    let mut branch = None;
+    if Path::new(&path).is_dir() {
+        branch = branch_of(&path);
+        let base = ctx.s("worktree_base").unwrap_or("HEAD");
+        // Off its branch either way, so a reclaimed slot elsewhere can check it out.
+        if git(&path, &["switch", "--detach", base], GIT_SECS).code != 0 {
+            git(&path, &["switch", "--detach"], GIT_SECS);
+        }
+    }
+    app.db.tx(|| {
+        app.db.x("UPDATE worktree_slots SET task_id = NULL, used_at = ? WHERE id = ?", p![now_iso(), s.id()])?;
+        let mut ctx = board::task_context(&board::get_task(app, t.id())?);
+        if let Some(b) = &branch {
+            ctx.insert("worktree_branch".into(), json!(b));
+        }
+        board::save_context(app, t.id(), &ctx, false)?;
+        let kept = branch.as_ref().map(|b| format!("; its branch {b} is kept for review fixes")).unwrap_or_default();
+        board::log_event(app, t.id(), board::BOARD, "midna", &format!("Gave back worktree slot-{n}{kept}"))?;
+        Ok(true)
+    })
+}
+
+/// Every slot for `GET /slots`: who holds it, who waits for one, when it was last used and its size.
+pub fn overview(app: &App, project: Option<&str>) -> Result<Value> {
+    let project = project.filter(|p| !p.is_empty());
+    let all = app.db.q("SELECT * FROM worktree_slots ORDER BY project, repo, n", p![])?;
+    let mut waiting: Vec<(String, String)> = vec![];
+    for t in app.db.q("SELECT * FROM tasks WHERE status = 'queued' ORDER BY id", p![])? {
+        if blocker(app, &t)?.is_some() {
+            if let Some(repo) = crate::worktrees::slot_repo(app, &t)? {
+                waiting.push((repo, rf("task", t.id())));
+            }
+        }
+    }
+    let mut out = vec![];
+    for s in all.iter().filter(|s| project.is_none() || s.s("project") == project) {
+        let repo = s.st("repo");
+        let held = holder(app, s)?;
+        out.push(json!({
+            "name": format!("slot-{}", s.i0("n")), "n": s.v("n"), "project": s.v("project"), "repo": repo, "path": s.v("path"),
+            "held_by": held.as_ref().map(|t| rf("task", t.id())), "title": held.as_ref().map(|t| t.v("title")),
+            "used_at": s.v("used_at"), "made_at": s.v("made_at"), "size_kb": size_kb(&s.st("path")),
+            "waiting": waiting.iter().filter(|(r, _)| *r == repo).map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(json!({"slots": out}))
+}
+
+fn size_kb(path: &str) -> Option<i64> {
+    let o = crate::proc::run(Path::new("/usr/bin/du"), &["-sk".to_string(), path.to_string()], None, 20.0).ok()?;
+    o.stdout.split_whitespace().next()?.parse().ok()
 }
 
 fn take(app: &App, t: &Row, id: i64, path: &str, text: &str, start: &str) -> Result<()> {
