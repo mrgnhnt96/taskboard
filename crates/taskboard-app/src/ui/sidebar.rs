@@ -1,11 +1,11 @@
 //! The sidebar on every page: search, the pages with their counts, the goals in flight with a
-//! progress ring each, and the board's health (Midna, work hours, usage, hooks, accounts, updates,
-//! settings) at the foot. Its top is the window's title bar, clear of the traffic lights.
+//! status bar and last update each, and the board's health (Midna, work hours, usage, hooks,
+//! accounts, updates, settings) at the foot. Its top is the window's title bar, clear of the traffic lights.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, s};
 use crate::theme::{Theme, ThemeMode};
-use crate::ui::goals_page::{GoalGroup, goal_group};
-use crate::ui::kit;
+use crate::ui::goals_page::{GoalGroup, Tally, goal_group};
+use crate::ui::{kit, status};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
@@ -19,12 +19,27 @@ pub fn pinned_goals(goals: &[Value]) -> Vec<&Value> {
     v
 }
 
-/// The goals in the sidebar: only those with a task running now, newest first. The rest are on
-/// the Goals page.
-pub fn running_goals(goals: &[Value]) -> Vec<&Value> {
-    let mut v: Vec<&Value> = goals.iter().filter(|g| goal_group(g) == GoalGroup::Active && i(g, "active") - i(g, "needs") > 0).collect();
+/// The goals in the sidebar: every one in progress, running or not, newest first. Up next, paused
+/// and finished ones are on the Goals page.
+pub fn active_goals(goals: &[Value]) -> Vec<&Value> {
+    let mut v: Vec<&Value> = goals.iter().filter(|g| goal_group(g) == GoalGroup::Active).collect();
     v.sort_by_key(|g| std::cmp::Reverse(i(g, "id")));
     v
+}
+
+/// Minutes a goal can go without an update before it looks stuck: a running task should show
+/// signs of life often, work in review or between waves less so.
+const STALE_RUNNING_MINS: i64 = 30;
+const STALE_WAITING_MINS: i64 = 120;
+
+/// The goal hasn't moved for longer than its work should take to show something. A goal waiting
+/// on you is never stale: it's yours to move.
+pub fn stale(g: &Value) -> bool {
+    let Some(mins) = fmt::opt_s(g, "last_update").and_then(fmt::minutes_since) else { return false };
+    if i(g, "needs") > 0 {
+        return false;
+    }
+    mins > if i(g, "active") > 0 { STALE_RUNNING_MINS } else { STALE_WAITING_MINS }
 }
 
 /// The goal's line under its name: "2 of 7 · 1 needs you", "Paused", "After G22".
@@ -43,37 +58,6 @@ pub fn goal_sub(g: &Value) -> String {
         return format!("{count} · stopped for you");
     }
     count
-}
-
-/// The goal's progress ring: the done share on the divider color.
-pub fn ring(share: f32, size: f32, track: Hsla, fill: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let w = bounds.size.width.as_f32();
-            let (cx0, cy0) = (bounds.origin.x.as_f32() + w / 2., bounds.origin.y.as_f32() + w / 2.);
-            let stroke = (w / 7.).max(2.5);
-            let r = w / 2. - stroke / 2. - 0.5;
-            let arc = |from: f32, to: f32, color: Hsla, window: &mut Window| {
-                let steps = ((to - from) / 0.1).ceil().max(1.) as usize;
-                let mut p = PathBuilder::stroke(px(stroke));
-                for k in 0..=steps {
-                    let a = from + (to - from) * k as f32 / steps as f32 - std::f32::consts::FRAC_PI_2;
-                    let pt = point(px(cx0 + r * a.cos()), px(cy0 + r * a.sin()));
-                    if k == 0 { p.move_to(pt) } else { p.line_to(pt) }
-                }
-                if let Ok(p) = p.build() {
-                    window.paint_path(p, color);
-                }
-            };
-            arc(0., std::f32::consts::TAU, track, window);
-            if share > 0. {
-                arc(0., std::f32::consts::TAU * share.min(1.), fill, window);
-            }
-        },
-    )
-    .size(px(size))
-    .flex_none()
 }
 
 /// The sidebar's background: a step darker than the page in light, a step lighter in dark.
@@ -115,8 +99,8 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
     let projects = arr(&st, "projects").len();
     let counts = &st["counts"];
     let open_tasks = i(counts, "queued") + i(counts, "working") + i(counts, "needs");
-    let goals = running_goals(&m.data.goals).into_iter().cloned().collect::<Vec<_>>();
-    let active_goals = m.data.goals.iter().filter(|g| goal_group(g) == GoalGroup::Active).count();
+    let goals = active_goals(&m.data.goals).into_iter().cloned().collect::<Vec<_>>();
+    let active_goals = goals.len();
     let untriaged = i(counts, "untriaged");
 
     let nav = |id: &'static str, label: &'static str, mark: Div, count: Option<(String, bool)>, to: Page, on: bool, cx: &mut Context<MainWindow>| {
@@ -163,35 +147,51 @@ pub fn render(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> An
         };
         for g in &goals {
             let r = fmt::ref_of(g, "G");
-            let (total, done) = (i(g, "total"), i(g, "done"));
-            let share = if total > 0 { done as f32 / total as f32 } else { 0. };
             let sel = open_goal.as_deref() == Some(r.as_str());
             let text = t.text;
             let open = r.clone();
+            let stale = stale(g);
+            let updated = fmt::opt_s(g, "last_update").map(|at| {
+                div()
+                    .id(SharedString::from(format!("side-goal-at-{r}")))
+                    .flex_none()
+                    .text_color(if stale { t.warn_fg } else { t.muted })
+                    .when(stale, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .tooltip(kit::tip(format!("Last update {}", fmt::full_time(at))))
+                    .child(fmt::ago(at))
+            });
             list = list.child(
                 div()
                     .id(SharedString::from(format!("side-goal-{r}")))
                     .flex()
-                    .items_center()
-                    .gap(px(10.))
+                    .flex_col()
+                    .gap(px(6.))
                     .px(px(10.))
-                    .py(px(6.))
+                    .pt(px(7.))
+                    .pb(px(8.))
                     .rounded(px(7.))
                     .cursor_pointer()
                     .when(sel, |d| d.bg(t.card))
                     .hover(move |s| s.bg(hsla(0., 0., 0.5, 0.08)))
                     .on_click(cx.listener(move |m, _, _, cx| crate::ui::goal::open(m, &open, false, cx)))
-                    .child(ring(share, 22., t.border, t.goal))
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_size(px(13.)).text_color(text).truncate().child(s(g, "name").to_string()))
-                            .child(div().text_size(px(11.)).text_color(t.muted).truncate().child(goal_sub(g))),
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(text).truncate().child(s(g, "name").to_string()))
+                            .when(i(g, "needs") > 0, |d| d.child(kit::dot(t.warn, 7.))),
                     )
-                    .when(i(g, "needs") > 0, |d| d.child(kit::dot(t.warn, 7.))),
+                    .child(status::bar(t, &Tally::of(g, None).parts(), 4.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(11.))
+                            .child(div().flex_1().min_w_0().text_color(t.muted).truncate().child(goal_sub(g)))
+                            .children(updated),
+                    ),
             );
         }
         col = col.child(list);
@@ -273,20 +273,40 @@ fn footer(m: &mut MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::running_goals;
+    use super::{active_goals, stale};
     use crate::fmt::i;
-    use serde_json::json;
+    use serde_json::{Value, json};
+
+    fn ago(mins: i64) -> String {
+        (crate::fmt::now() - chrono::Duration::minutes(mins)).to_rfc3339()
+    }
 
     #[test]
-    fn only_goals_with_a_task_running_are_listed() {
+    fn every_goal_in_progress_is_listed_running_or_not() {
         let goals = vec![
             json!({"id": 1, "done": 2, "total": 6, "active": 1, "needs": 0}),
             json!({"id": 2, "done": 0, "total": 2, "active": 0, "needs": 0}),
             json!({"id": 3, "done": 0, "total": 4, "active": 1, "needs": 1}),
             json!({"id": 4, "done": 4, "total": 9, "active": 2, "needs": 0}),
             json!({"id": 5, "done": 1, "total": 3, "active": 1, "needs": 0, "paused": true}),
+            json!({"id": 6, "done": 3, "total": 8, "active": 0, "needs": 0, "prs_open": [12]}),
         ];
-        let ids: Vec<i64> = running_goals(&goals).iter().map(|g| i(g, "id")).collect();
-        assert_eq!(ids, vec![4, 1]);
+        let ids: Vec<i64> = active_goals(&goals).iter().map(|g| i(g, "id")).collect();
+        assert_eq!(ids, vec![6, 4, 3, 1]);
+    }
+
+    #[test]
+    fn a_running_goal_goes_stale_sooner_than_one_in_review() {
+        let goal = |active: i64, mins: i64| -> Value { json!({"active": active, "needs": 0, "last_update": ago(mins)}) };
+        assert!(!stale(&goal(1, 20)));
+        assert!(stale(&goal(1, 45)));
+        assert!(!stale(&goal(0, 45)));
+        assert!(stale(&goal(0, 180)));
+    }
+
+    #[test]
+    fn a_goal_waiting_on_you_or_with_no_update_is_never_stale() {
+        assert!(!stale(&json!({"active": 1, "needs": 1, "last_update": ago(600)})));
+        assert!(!stale(&json!({"active": 1, "needs": 0})));
     }
 }
