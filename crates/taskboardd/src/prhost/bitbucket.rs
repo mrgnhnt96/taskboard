@@ -113,6 +113,12 @@ fn uid(u: &Value) -> String {
     u["uuid"].as_str().or(u["account_id"].as_str()).unwrap_or("").to_string()
 }
 
+/// Both of a user's ids, when Bitbucket gives both: the roster may name them by either.
+fn ids(u: &Value) -> Vec<String> {
+    let all: Vec<String> = [&u["uuid"], &u["account_id"]].iter().filter_map(|v| v.as_str()).filter(|v| !v.is_empty()).map(|v| v.to_string()).collect();
+    if all.len() > 1 { all } else { vec![] }
+}
+
 fn same_user(u: &Value, id: &str) -> bool {
     u["uuid"].as_str() == Some(id) || u["account_id"].as_str() == Some(id)
 }
@@ -468,7 +474,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
         if user.is_empty() || user == author {
             continue;
         }
-        reviewers.push(Reviewer { user, name: r["display_name"].as_str().unwrap_or("").to_string(), state: "pending".into(), requested: true, changes_at: None });
+        reviewers.push(Reviewer { user, name: r["display_name"].as_str().unwrap_or("").to_string(), state: "pending".into(), requested: true, changes_at: None, ids: ids(&r) });
     }
     let mut changes_at: Option<String> = None;
     for part in p["participants"].as_array().cloned().unwrap_or_default() {
@@ -500,6 +506,7 @@ pub fn summarize(p: &Value, comments: &[Value], tasks: &[Value], statuses: &[Val
                 state: state.into(),
                 requested: false,
                 changes_at: mine,
+                ids: ids(&part["user"]),
             }),
             None => {}
         }

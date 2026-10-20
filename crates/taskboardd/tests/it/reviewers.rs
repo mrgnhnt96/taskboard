@@ -128,7 +128,7 @@ pub fn set_state(h: &FakeHost, user: &str, state: &str) {
     let mut r = h.rec.lock();
     match r.reviewers.iter_mut().find(|x| x.user == user) {
         Some(x) => x.state = state.into(),
-        None => r.reviewers.push(Reviewer { user: user.into(), name: user.into(), state: state.into(), requested: false, changes_at: None }),
+        None => r.reviewers.push(Reviewer { user: user.into(), name: user.into(), state: state.into(), requested: false, changes_at: None, ..Default::default() }),
     }
 }
 
@@ -248,6 +248,34 @@ fn a_drop_the_host_does_not_make_is_not_reported_as_done() {
 
     let e = b.try_post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Cy"})).unwrap_err();
     assert!(e.contains("isn't on PR"), "{e}");
+}
+
+/// Bitbucket reads a reviewer by `{uuid}` while the roster holds the `account_id` the board asks
+/// with: both ids come with the record, and the board goes by the roster's.
+fn bitbucket_lists(h: &FakeHost, users: &[(&str, &str, &str)]) {
+    h.rec.lock().reviewers = users
+        .iter()
+        .map(|(uuid, account, name)| Reviewer { user: uuid.to_string(), name: name.to_string(), state: "pending".into(), requested: true, ids: vec![uuid.to_string(), account.to_string()], ..Default::default() })
+        .collect();
+}
+
+#[test]
+fn a_bitbucket_reviewer_the_roster_names_by_account_id_can_be_dropped() {
+    let b = board_with(|_| {});
+    let h = fake(&b, green());
+    let id = b.pr_task(BB);
+    b.add("Ben Smith", json!({"user": "557058:ben"}));
+    b.add("Cy", json!({"user": "557058:cy"}));
+    bitbucket_lists(&h, &[("{ben}", "557058:ben", "Benjamin Smith"), ("{cy}", "557058:cy", "Cy Young")]);
+
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"drop": "Ben Smith"}));
+    assert!(h.calls().iter().any(|c| c == "remove 557058:ben"), "{:?}", h.calls());
+    let users: Vec<String> = h.rec.lock().reviewers.iter().map(|r| r.user.clone()).collect();
+    assert_eq!(users, vec!["{cy}".to_string()]);
+
+    b.add("Di", json!({"user": "557058:di"}));
+    b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"replace": "Cy Young", "with": "Di"}));
+    assert!(h.calls().iter().any(|c| c == "remove 557058:cy"), "by their name on the PR too: {:?}", h.calls());
 }
 
 #[test]
@@ -876,7 +904,7 @@ fn a_main_contributor_already_on_the_pr_means_no_second_one() {
     let h = fake(&b, rec_on(&base, &head));
     members(&h);
     let id = b.pr_task(BB);
-    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true, changes_at: None }];
+    h.rec.lock().reviewers = vec![Reviewer { user: "{ana}".into(), name: "Ana Lima".into(), state: "pending".into(), requested: true, changes_at: None, ..Default::default() }];
     poll(&b);
     let v = b.post(&format!("/tasks/{id}/pr/reviewers"), json!({"dry_run": true}));
     // Bo is a main contributor too, but he's picked in turn (a tie broken by his commits), not as a second main.
@@ -1026,7 +1054,7 @@ fn tb_pr_addressed_records_an_ask_so_a_slow_rereview_is_swapped() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("t1".into());
-    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None }];
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None, ..Default::default() }];
     rec.threads = vec![prhost::Thread {
         id: "1".into(),
         kind: "review".into(),
@@ -1108,7 +1136,7 @@ fn a_read_from_before_tb_pr_addressed_does_not_answer_the_rereview() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("2026-10-01T09:00:00Z".into());
-    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None }];
+    rec.reviewers = vec![Reviewer { user: "ana".into(), name: "Ana".into(), state: "changes".into(), requested: false, changes_at: None, ..Default::default() }];
     rec.threads = vec![prhost::Thread {
         id: "1".into(),
         kind: "review".into(),
@@ -1155,7 +1183,7 @@ fn one_reviewer_s_new_request_for_changes_doesn_t_answer_another_s_rereview() {
     let mut rec = green();
     rec.review_decision = "CHANGES_REQUESTED".into();
     rec.changes_at = Some("2026-10-01T10:00:00Z".into());
-    let changes = |user: &str, at: &str| Reviewer { user: user.into(), name: user.into(), state: "changes".into(), requested: false, changes_at: Some(at.into()) };
+    let changes = |user: &str, at: &str| Reviewer { user: user.into(), name: user.into(), state: "changes".into(), requested: false, changes_at: Some(at.into()), ..Default::default() };
     rec.reviewers = vec![changes("{ana}", "2026-10-01T09:00:00Z"), changes("{bo}", "2026-10-01T10:00:00Z")];
     let thread = |id: &str, who: &str| prhost::Thread {
         id: id.into(),
@@ -1330,7 +1358,7 @@ fn only_people_who_could_be_asked_take_a_main_contributor_place() {
 
 /// Puts `users` on the PR (requested, pending) and reads it.
 fn on_the_pr(b: &Board, h: &FakeHost, users: &[(&str, &str)]) {
-    h.rec.lock().reviewers = users.iter().map(|(u, n)| Reviewer { user: u.to_string(), name: n.to_string(), state: "pending".into(), requested: true, changes_at: None }).collect();
+    h.rec.lock().reviewers = users.iter().map(|(u, n)| Reviewer { user: u.to_string(), name: n.to_string(), state: "pending".into(), requested: true, changes_at: None, ..Default::default() }).collect();
     poll(b);
 }
 
@@ -1478,7 +1506,7 @@ fn someone_on_the_pr_but_not_the_roster_is_found_by_name_or_prefix_and_a_login_i
     let h = fake(&b, green());
     let id = b.pr_task(BB);
     b.add("Daniel Ortiz", json!({"user": "{dortiz}"}));
-    h.rec.lock().reviewers = vec![Reviewer { user: "{guest}".into(), name: "Gwen Guest".into(), state: "pending".into(), requested: true, changes_at: None }];
+    h.rec.lock().reviewers = vec![Reviewer { user: "{guest}".into(), name: "Gwen Guest".into(), state: "pending".into(), requested: true, changes_at: None, ..Default::default() }];
     let path = format!("/tasks/{id}/pr/reviewers");
 
     for who in ["Gwen Guest", "gwen", "{guest}"] {

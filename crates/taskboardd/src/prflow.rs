@@ -745,7 +745,25 @@ pub fn pr_tabs_to_close(app: &App) -> Result<Vec<(Row, Row, bool)>> {
 pub fn read(app: &App, t: &Row) -> std::result::Result<Value, String> {
     let pr = crate::prhost::PrRef::of(t).ok_or_else(|| "the task has no PR".to_string())?;
     let host = crate::prhost::host_for(app, &pr.host)?;
-    Ok(host.read(&pr)?.to_value())
+    let mut rec = host.read(&pr)?;
+    roster_ids(app, &t.st("project"), &mut rec).map_err(|e| e.message)?;
+    Ok(rec.to_value())
+}
+
+/// Names each reviewer by the id the project's roster has for them, when the host knows them by
+/// more than one (Bitbucket reads a `{uuid}`; the roster may hold the `account_id` the board asks
+/// with), so asks, swaps and removals match them. The board's own account and the author keep theirs.
+fn roster_ids(app: &App, project: &str, rec: &mut crate::prhost::Record) -> Result<()> {
+    for r in rec.reviewers.iter_mut().filter(|r| !r.ids.is_empty() && r.user != rec.viewer && r.user != rec.author) {
+        for id in r.ids.clone() {
+            let user = crate::reviewers::by_host_user(app, project, &id)?.and_then(|row| row.s("host_user").map(|u| u.to_string()));
+            if let Some(user) = user.filter(|u| r.ids.iter().any(|i| i.eq_ignore_ascii_case(u))) {
+                r.user = user;
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reads one task's PR now and steps it, as the poll does. The record, or why the host couldn't be read.
