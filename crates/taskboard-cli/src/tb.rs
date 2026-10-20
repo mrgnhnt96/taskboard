@@ -6227,8 +6227,12 @@ fn project_line(p: &Value) -> String {
         .as_array()
         .map(|a| a.iter().map(|g| format!("\n  Needs setup: {}. To fix it: {}", g["text"].as_str().unwrap_or(""), g["fix"].as_str().unwrap_or(""))).collect())
         .unwrap_or_default();
+    let stray: String = p["stray_worktrees"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|w| w.as_str()).map(|w| format!("\n  Worktree no task claims (left for you): {w}")).collect())
+        .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}",
+        "{} · PR flow {} · {} · {remote}{terminals}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
