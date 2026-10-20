@@ -729,6 +729,7 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
     }
     let prs_canceled = n(&|r| has(r.s("no_pr")));
     let total = rows.len() as i64;
+    let last_update = last_update(app, &rows)?;
     let finished_at = if total > 0 && done == total && bits_waiting == 0 && misses == 0 {
         rows.iter().filter_map(|r| r.s("finished_at")).max().map(|s| json!(s)).unwrap_or(Value::Null)
     } else {
@@ -752,9 +753,27 @@ pub fn goal_counts(app: &App, goal_id: i64) -> Result<Value> {
         "prs_planned": prs_planned,
         "prs_canceled": prs_canceled,
         "finished_at": finished_at,
+        "last_update": last_update,
         "open_issues": app.db.count("SELECT COUNT(*) FROM issues WHERE goal_id = ? AND state = 'open'", p![goal_id])?,
         "closed_count": app.db.count("SELECT COUNT(*) FROM issues WHERE goal_id = ? AND state = 'drop'", p![goal_id])?,
     }))
+}
+
+/// When the goal's started work last moved: a change or event on a task past queued, or the
+/// terminal of one running now. Planned and queued tasks don't count: editing them isn't progress.
+fn last_update(app: &App, rows: &[Row]) -> Result<Value> {
+    let mut latest: Option<f64> = None;
+    for r in rows.iter().filter(|r| !matches!(r.s("status"), Some("planned") | Some("queued"))) {
+        let mut at = vec![r.s("updated_at").and_then(parse_iso)];
+        if matches!(r.s("status"), Some("working") | Some("needs")) {
+            if let Some(sid) = r.s("session_id") {
+                let s = app.db.q1("SELECT last_activity FROM sessions WHERE id = ?", p![sid])?;
+                at.push(s.as_ref().and_then(|s| s.s("last_activity")).and_then(parse_iso));
+            }
+        }
+        latest = at.into_iter().flatten().chain(latest).reduce(f64::max);
+    }
+    Ok(latest.map(|t| json!(iso(t))).unwrap_or(Value::Null))
 }
 
 pub fn goal_state_line(c: &Value) -> String {

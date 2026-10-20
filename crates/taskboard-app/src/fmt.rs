@@ -60,7 +60,7 @@ pub fn parse(iso: &str) -> Option<DateTime<Utc>> {
     None
 }
 
-fn minutes_since(iso: &str) -> Option<i64> {
+pub fn minutes_since(iso: &str) -> Option<i64> {
     parse(iso).map(|t| ((now() - t).num_seconds() as f64 / 60.).round() as i64)
 }
 

@@ -24,6 +24,7 @@ mod done_leftovers;
 mod duplicate_visits;
 mod feed;
 mod flow;
+mod goal_last_update;
 mod home;
 mod hooks;
 mod human_tasks;
