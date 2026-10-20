@@ -25,7 +25,7 @@ use crate::config::RebasePolicy;
 use crate::util::*;
 use crate::{board, dispatch, fields, handoff, hooks, hours, limits, p, runner, transcript};
 
-pub const WAKE: &[&str] = &["fix", "comments", "steps", "merge", "ask"];
+pub const WAKE: &[&str] = &["fix", "rebase", "comments", "steps", "merge", "ask"];
 /// The visits that don't change code: they start fresh on `[models] pr_visit` (`fresh_visit`).
 const MECHANICAL: &[&str] = &["merge", "ask"];
 pub const IN_REVIEW: &[&str] = &["lens", "ask", "review", "rereview", "comments", "steps", "merge", "waits", "stack"];
@@ -43,6 +43,7 @@ pub fn label(phase: &str) -> &str {
     match phase {
         "checks" => "Watching checks",
         "fix" => "Fixing checks",
+        "rebase" => "Rebasing",
         "lens" => "Lens review",
         "ask" => "Asking for reviews",
         "review" => "Awaiting review",
@@ -438,6 +439,10 @@ pub fn wake_failed(app: &App, t: &Row, text: &str) -> Result<bool> {
 }
 
 fn wake_key(phase: &str, rec: &Value) -> String {
+    if phase == "rebase" {
+        // One conflict wakes once; a base that moves on after the rebase can conflict (and wake) again.
+        return format!("rebase:{}:{}", rec["head"].as_str().unwrap_or(""), rec["base_head"].as_str().unwrap_or(""));
+    }
     let key = format!("{phase}:{}:{}", rec["head"].as_str().unwrap_or(""), rec["comments"].as_i64().unwrap_or(0));
     if phase != "merge" {
         return key;
@@ -507,6 +512,12 @@ fn prompt(app: &App, t: &Row, phase: &str, rec: &Value) -> String {
             if failed.is_empty() { "see the PR".to_string() } else { failed.join(", ") },
             num = t.i0("pr_num"),
             rebase = rebase_advice(rebase_policy(app, t))
+        ),
+        "rebase" => format!(
+            "It conflicts with its base branch {base}, so it can't merge. In this task's worktree, rebase onto {base} \
+             ({tb} pr status {r} lists the commands), resolve the conflicts, run the tests covering the files you \
+             resolved (not the whole suite), and push with git push --force-with-lease. The checks run again.",
+            base = rec["base"].as_str().filter(|b| !b.is_empty()).unwrap_or("the base branch")
         ),
         "comments" => format!(
             "There are open review threads{}. {tb} pr status {r} lists them with their ids. Address each in the worktree; \
@@ -968,6 +979,24 @@ pub fn base_moved(f: &Row, rec: &Value) -> bool {
     !now.is_empty() && !then.is_empty() && now != then
 }
 
+/// The PR conflicts with its base: the host says so, or refused a merge for it on this head and base
+/// (`merge_conflict`, noted by `tb pr merge`).
+pub fn conflicting(f: &Row, rec: &Value) -> bool {
+    let refused = f.get("merge_conflict").is_some_and(|m| {
+        let head = rec["head"].as_str().unwrap_or("");
+        !head.is_empty() && m["head"].as_str() == Some(head) && m["base_head"] == rec["base_head"]
+    });
+    conflicts(rec) == Some(true) || refused
+}
+
+/// A merge the host refused because the PR conflicts with its base: noted for this head and base, so the
+/// stage moves to `rebase` instead of retrying the merge.
+pub fn note_merge_conflict(app: &App, t: &Row, rec: &Value, who: &str) -> Result<()> {
+    merge_flow(app, t.id(), fields!["merge_conflict" => json!({"head": rec["head"], "base_head": rec["base_head"], "at": now_iso()})])?;
+    board::log_event(app, t.id(), who, "status", &format!("PR #{} can't merge: it conflicts with its base branch, so it needs a rebase", t.i0("pr_num")))?;
+    Ok(())
+}
+
 /// Whether the PR conflicts with its base, as the host last said: GitHub's `mergeable`
 /// ("CONFLICTING", "MERGEABLE") or a stream's bool. None: the host can't tell (yet).
 pub fn conflicts(rec: &Value) -> Option<bool> {
@@ -1106,6 +1135,11 @@ pub fn phase_of(app: &App, t: &Row, rec: &Value) -> String {
     if !skipped && (checks_waiting(app, t, &f, rec) || running_on_host(&f, rec)) {
         return "checks".into();
     }
+    // A conflict holds everything after the checks (a failed check's wake already says to rebase): the
+    // agent rebases before anyone reviews or merges it.
+    if rebase_policy(app, t) != RebasePolicy::Never && conflicting(&f, rec) {
+        return "rebase".into();
+    }
     let seen = f.i0("comments_seen");
     let review = review_of(&f, rec);
     let answered = f.get("answered_changes").map(|a| *a == rec["changes_at"]).unwrap_or(false);
@@ -1216,10 +1250,24 @@ pub fn expected_wait_mins(app: &App, t: &Row) -> f64 {
     crate::projects::pr_rules(app, t.s("project")).expected_wait_mins.unwrap_or(crate::config::EXPECTED_WAIT_MINS)
 }
 
+/// How long this push waits for expected checks that haven't posted: `expected_wait_mins`, or only the
+/// `no_checks_after` grace when they were learned from an earlier push (`earlier_checks`) and every check
+/// this push posted has finished, as a check that no longer runs on the PR never posts.
+pub fn missing_wait_mins(app: &App, t: &Row, rec: &Value) -> f64 {
+    let full = expected_wait_mins(app, t);
+    let checks = rec["checks"].as_array().cloned().unwrap_or_default();
+    let finished = !checks.is_empty() && rec["running"].as_i64().unwrap_or(0) == 0 && checks.iter().all(|c| c["state"] != "running");
+    if finished && expected_for(app, t, rec).source == Some("earlier") {
+        app.cfg.pr.no_checks_after_mins.min(full)
+    } else {
+        full
+    }
+}
+
 /// This push has waited out its expected checks: one that hasn't posted by now no longer holds the PR
 /// (the stage moves on, and `tb pr merge` doesn't wait on it).
 pub fn expected_wait_over(app: &App, t: &Row, f: &Row, rec: &Value) -> bool {
-    head_waited(f, rec) >= expected_wait_mins(app, t) * 60.0
+    head_waited(f, rec) >= missing_wait_mins(app, t, rec) * 60.0
 }
 
 /// The task's flow with this record's head noted (when it was first seen), as `step` will save it.

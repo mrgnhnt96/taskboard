@@ -197,6 +197,9 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
         out.push(format!("it's {}", state.to_lowercase()));
         return Ok(out);
     }
+    if prflow::conflicting(&f, rec) {
+        out.push(format!("it conflicts with its base branch {}: rebase onto it and push first", rec["base"].as_str().unwrap_or("main")));
+    }
     // A failure holds the merge unless the owner's hook skipped it; `tb pr skip-checks` doesn't cover one.
     let failing = prflow::failing(&f, rec);
     if !failing.is_empty() && !prflow::skip_hides_failures(&f, rec) {
@@ -221,7 +224,7 @@ pub fn merge_blockers(app: &App, t: &Row, rec: &Value, owner_approved: bool) -> 
                 } else {
                     "expected checks haven't posted"
                 };
-                out.push(format!("{what}: {} (it waits up to {} min for them)", missing.join(", "), prflow::expected_wait_mins(app, t)));
+                out.push(format!("{what}: {} (it waits up to {} min for them)", missing.join(", "), prflow::missing_wait_mins(app, t, rec)));
             }
             None if checks.is_empty() && !prflow::no_checks_wait_over(app, &f, rec) => {
                 out.push(format!("no checks have posted on this push yet (waits up to {} min)", app.cfg.pr.no_checks_after_mins));
@@ -354,8 +357,18 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     let rules = crate::projects::pr_rules(app, t.s("project"));
     let opts = MergeOpts { strategy: rules.merge_strategy.clone().filter(|s| !s.trim().is_empty()), close_source_branch: true };
     let h = host(app, &pr)?;
-    on_host(&pr, "merging", || h.merge(&pr, &opts))
-        .map_err(|e| ApiError::new(502, format!("Couldn't merge PR #{}: {e}.", pr.num)))?;
+    if let Err(e) = on_host(&pr, "merging", || h.merge(&pr, &opts)) {
+        // The host found a conflict the record didn't show yet: send the PR to the rebase stage, not to
+        // merge retries.
+        if merge_conflict_error(&e.to_string()) {
+            app.db.tx(|| {
+                prflow::note_merge_conflict(app, &t, &rec, board::BOARD)?;
+                prflow::step(app, &board::get_task(app, id)?, &rec).map(|_| ())
+            })?;
+            return err(409, format!("PR #{} can't merge: it conflicts with its base branch {}. Rebase onto it, resolve the conflicts, push with git push --force-with-lease, then run tb pr wait.", pr.num, rec["base"].as_str().unwrap_or("main")));
+        }
+        return err(502, format!("Couldn't merge PR #{}: {e}.", pr.num));
+    }
     progress::stage(&format!("Merged PR #{} on {site}", pr.num));
     let who = match &word {
         Some(_) => format!("{} via {}", app.cfg.owner, board::session_name(app, Some(&via), None)),
@@ -364,6 +377,13 @@ pub fn merge(app: &App, id: i64, body: &Value) -> Result<Value> {
     app.db.tx(|| prflow::mark_merged(app, &board::get_task(app, id)?, &who))?;
     let t = board::get_task(app, id)?;
     Ok(json!({"task": rf("task", id), "merged": true, "pr": board::pr_card(app, &t)}))
+}
+
+/// The host refused a merge because the PR conflicts with its base (GitHub: "the merge commit cannot be
+/// cleanly created"; Bitbucket: "resolve all merge conflicts").
+fn merge_conflict_error(e: &str) -> bool {
+    let e = e.to_lowercase();
+    e.contains("cleanly created") || e.contains("merge conflict")
 }
 
 /// Open PRs that go into this PR's branch: other tasks' PRs in its repo whose base is that branch, and

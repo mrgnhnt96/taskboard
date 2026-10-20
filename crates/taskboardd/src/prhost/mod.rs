@@ -499,13 +499,15 @@ pub struct FakeHost {
     pub stops: Mutex<Vec<String>>,
     /// What `request_reviews` answers instead of asking, while set.
     pub review_error: Mutex<Option<String>>,
+    /// What `merge` answers instead of merging, while set.
+    pub merge_error: Mutex<Option<String>>,
     /// Reviewers `remove_reviewers` answers for without taking them off.
     pub keeps: Mutex<Vec<String>>,
 }
 
 impl FakeHost {
     pub fn new(host: &'static str, rec: Record) -> Arc<FakeHost> {
-        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), keeps: Mutex::new(vec![]) })
+        Arc::new(FakeHost { host, rec: Mutex::new(rec), calls: Mutex::new(vec![]), base_failing: Mutex::new(vec![]), members: Mutex::new(vec![]), base_checks: Mutex::new(vec![]), comments: Mutex::new(vec![]), open_prs: Mutex::new(vec![]), stops: Mutex::new(vec![]), review_error: Mutex::new(None), merge_error: Mutex::new(None), keeps: Mutex::new(vec![]) })
     }
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
@@ -571,6 +573,9 @@ impl PrHost for FakeHost {
     }
     fn merge(&self, _pr: &PrRef, opts: &MergeOpts) -> HostResult<()> {
         self.log(format!("merge close={} strategy={}", opts.close_source_branch, opts.strategy.as_deref().unwrap_or("default")));
+        if let Some(e) = self.merge_error.lock().clone() {
+            return Err(e);
+        }
         self.rec.lock().state = "MERGED".into();
         Ok(())
     }

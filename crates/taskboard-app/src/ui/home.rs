@@ -458,6 +458,7 @@ pub fn tile_vm(c: &Value) -> Tile {
                 match stage.map(|st| s(st, "phase")).unwrap_or("") {
                     "checks" => ("Checks running", "goal", with(label)),
                     "fix" => ("Checks failed", "down", with(label)),
+                    "rebase" => ("Conflicts", "down", with(label)),
                     "comments" => ("Comments", "goal", num.clone()),
                     "merge" => ("Ready to merge", "up", num.clone()),
                     // Partly approved: "PR #119 · 1 of 2 approved", out of the approvals it needs.
