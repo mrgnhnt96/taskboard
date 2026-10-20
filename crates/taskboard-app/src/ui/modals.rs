@@ -13,6 +13,8 @@ pub enum Modal {
     Alerts,
     /// The ⌘K palette (`ui::search`).
     Search,
+    /// A task's whole note for testers (the panel's Show all).
+    Note(String),
 }
 
 /// JavaScript's `a.localeCompare(b)` (ICU root collation) for the names the board shows:
@@ -83,6 +85,10 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
     let body = match &m.modal {
         Some(Modal::Alerts) => alerts(m, &t, cx),
         Some(Modal::Search) => return crate::ui::search::render(m, window, cx),
+        Some(Modal::Note(text)) => {
+            let text = text.clone();
+            note(m, &t, &text, window, cx)
+        }
         None => return div().into_any_element(),
     };
     deferred(
@@ -138,6 +144,24 @@ fn alerts(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> AnyElement
                 ),
             )
         })
+        .into_any_element()
+}
+
+/// The whole note for testers, scrolling when it's taller than the window.
+fn note(m: &MainWindow, t: &Theme, text: &str, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    kit::modal_box(t, 640.)
+        .child(head(t, "Note for testers", cx))
+        .child(
+            div()
+                .id("note-all")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(20.))
+                .pb(px(20.))
+                .line_height(relative(1.5))
+                .child(crate::ui::task_panel::draw_note(m, text, window, cx)),
+        )
         .into_any_element()
 }
 

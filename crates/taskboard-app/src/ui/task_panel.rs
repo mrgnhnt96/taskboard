@@ -68,7 +68,7 @@ fn tab_name(tab: TaskTab) -> &'static str {
 }
 
 fn folds() -> HashMap<String, String> {
-    [Fold::Findings, Fold::Note, Fold::Tail]
+    [Fold::Findings, Fold::Tail]
         .iter()
         .filter_map(|f| crate::prefs::get_str(f.key()).map(|v| (f.key().to_string(), v)))
         .collect()
@@ -423,6 +423,12 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
             ui(|u| u.att_menu = None);
             run(m, a, format!("attachments/{id}/remove"), json!({}), |_, _| "Removed".into(), cx);
         }
+        // Show all: the whole note for testers in a dialog.
+        "note-all" => {
+            let text = m.data.task.as_ref().and_then(|t| t["merged_note"]["text"].as_str()).unwrap_or_default().to_string();
+            m.modal = Some(crate::ui::modals::Modal::Note(text));
+            cx.notify();
+        }
         _ => {}
     }
 }
@@ -673,6 +679,14 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     Some(d.panel(m, &tree, cx))
 }
 
+/// The whole note for testers, drawn as the panel draws notes (the Show all dialog).
+pub fn draw_note(m: &MainWindow, text: &str, window: &mut Window, cx: &mut Context<MainWindow>) -> AnyElement {
+    let t = cx.global::<Theme>().clone();
+    // Its own id space, apart from the panel's under the dialog.
+    let mut d = Draw { t: &t, window, path: vec![usize::MAX], within: Vec::new() };
+    d.node(m, &view::note_body(text), None, cx)
+}
+
 /// `--accent-tint` (not in the shared theme).
 fn accent_tint(t: &Theme) -> Hsla {
     if t.mode == ThemeMode::Dark { rgb(0x172036).into() } else { rgb(0xf5f8ff).into() }
@@ -825,7 +839,14 @@ impl Draw<'_> {
             kit::disabled(b)
         } else {
             let a = a.clone();
-            b.on_click(cx.listener(move |m, _, _, cx| act(m, &a, cx)))
+            b.on_click(cx.listener(move |m, _, window, cx| {
+                let had = m.modal.is_some();
+                act(m, &a, cx);
+                // A control that opened a dialog hands it the keys, so esc closes it.
+                if !had && m.modal.is_some() {
+                    window.focus(&m.focus, cx);
+                }
+            }))
         };
         match tip {
             Some(tip) => b.tooltip(kit::tip(tip.clone())).into_any_element(),
@@ -838,8 +859,9 @@ impl Draw<'_> {
         let g = g.clone();
         let t = self.t;
         let l = if self.parent() == Some(K::PrHead) {
-            // `.pr-link`: the PR's number and title in the text colour, underlined on hover.
-            div().id(self.id("link")).flex_none().cursor_pointer().text_size(px(13.)).text_color(t.text).hover(|d| d.underline()).child(pr_label(s))
+            // `.pr-link`: the PR's number as a link, its title wrapping beside it, and the open-elsewhere
+            // icon at the end; underlined on hover.
+            div().id(self.id("link")).min_w_0().cursor_pointer().text_size(px(13.)).text_color(t.text).hover(|d| d.underline()).child(pr_label(t, s))
         } else if self.parent() == Some(K::PrBar { warn: false }) || self.parent() == Some(K::PrBar { warn: true }) {
             // `.pr-bar .go`.
             let fg = if self.parent() == Some(K::PrBar { warn: true }) { t.warn_fg } else { t.accent_fg };
@@ -1065,32 +1087,11 @@ impl Draw<'_> {
                 .hover(move |d| d.text_color(hover))
                 .child(div().text_size(px(9.)).child(if open { "▼" } else { "▶" }))
                 .child(label),
-            // A long note's Show more / Show less, under what it shows.
-            Fold::Note => div()
-                .id(self.id("fold"))
-                .self_start()
-                .cursor_pointer()
-                .text_size(px(12.5))
-                .text_color(t.accent)
-                .hover(move |d| d.text_color(hover))
-                .child(label),
         };
         let head = head.on_click(toggle);
-        if f == Fold::Note {
-            let mut col = div().flex().flex_col().gap(px(10.)).min_w_0();
-            if open {
-                for i in 1..kids.len() {
-                    col = col.children(self.kid(m, n, i, boxed, cx));
-                }
-            }
-            return col.child(head).into_any_element();
-        }
         let mut col = div().flex().flex_col().min_w_0().child(head);
         if open {
-            let gap = match f {
-                Fold::Findings | Fold::Tail => 6.,
-                Fold::Note => 10.,
-            };
+            let gap = 6.;
             for i in 1..kids.len() {
                 if let Some(e) = self.kid(m, n, i, boxed, cx) {
                     col = col.child(div().mt(px(gap)).min_w_0().child(e));
@@ -1637,10 +1638,17 @@ impl Draw<'_> {
     }
 }
 
-/// "#101 Store sessions…" with the number in bold (`<b>#101</b> title`).
-fn pr_label(s: &str) -> Div {
+/// "#101 Store sessions… ↗": the number bold in the link colour, the title wrapping, then the open-elsewhere icon.
+fn pr_label(t: &Theme, s: &str) -> Div {
     let (num, rest) = s.split_once(' ').unwrap_or((s, ""));
-    div().flex().flex_wrap().gap(px(4.)).child(div().font_weight(FontWeight::BOLD).child(num.to_string())).child(rest.to_string())
+    div()
+        .flex()
+        .items_start()
+        .gap(px(4.))
+        .min_w_0()
+        .child(div().flex_none().font_weight(FontWeight::BOLD).text_color(t.accent_fg).child(num.to_string()))
+        .child(div().flex_1().min_w_0().child(rest.to_string()))
+        .child(div().flex_none().pt(px(3.)).child(paint(Ic::Focus, 12., 2., t.accent_fg)))
 }
 
 fn on_key(m: &mut MainWindow, key: &str, ev: &KeyDownEvent, cx: &mut Context<MainWindow>) {

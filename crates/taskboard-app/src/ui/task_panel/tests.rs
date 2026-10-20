@@ -379,17 +379,17 @@ fn tabs_and_log_filter(cx: &mut gpui_kit::TestAppContext) {
 #[gpui_kit::test]
 fn folds_are_saved(cx: &mut gpui_kit::TestAppContext) {
     let (w, _rec) = parity::window(cx);
-    let note = format!("**What changed:** the login page.\n\n{}", "- Sign in again; the session stays.\n".repeat(12));
-    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": {"text": note, "waiting": false}});
+    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "working", "project": "webapp", "stuck": {"why": "Waits on a y/n prompt", "tail": "Continue? (y/n)"}});
     w.update(cx, |m, _, _| {
         m.panel = Some(Panel::Task { r: "T9".into(), tab: TaskTab::Overview });
         m.data.task = Some(task);
     })
     .unwrap();
     let text = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| view::text(&build(m).unwrap())).unwrap();
-    assert!(text(cx).contains("Show more"));
-    crate::prefs::set("tb.fold.note", json!("open"));
-    assert!(text(cx).contains("Show less"), "the fold reads its saved state");
+    crate::prefs::set("tb.fold.tail", json!("closed"));
+    assert!(!text(cx).contains("Continue? (y/n)"));
+    crate::prefs::set("tb.fold.tail", json!("open"));
+    assert!(text(cx).contains("Continue? (y/n)"), "the fold reads its saved state");
 }
 
 #[gpui_kit::test]
@@ -729,7 +729,7 @@ fn the_review_step_shows_before_the_pr_opens() {
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
                       "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});
     let text = panel_text(task, json!({}));
-    assert!(text.contains("Pull request WD 2 open findings Checks and review Merged"), "{text}");
+    assert!(text.contains("Pull request Checks and review WD 2 open findings Checks You Review Merged"), "{text}");
     // From the detail's step results too.
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp",
                       "step_results": [{"name": "Author review", "bar": "WD", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
@@ -751,7 +751,8 @@ fn a_canceled_pr_shows_why_with_its_refs_linked() {
 #[::core::prelude::v1::test]
 fn the_pr_plan_shows_on_a_task_without_a_pr() {
     let t = |ships: bool| json!({"ref": "T6", "id": 6, "title": "x", "status": "queued", "project": "webapp", "ships_pr": ships});
-    assert!(panel_text(t(true), json!({})).contains("Pull request Checks and review Merged"));
+    // The whole way ahead, its steps in place as once the PR is open.
+    assert!(panel_text(t(true), json!({})).contains("Pull request Checks and review Checks You Review Merged"));
     assert!(!panel_text(t(false), json!({})).contains("Pull request"), "a task that doesn't end in a PR stops at Done");
 }
 
@@ -811,15 +812,47 @@ fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
 }
 
 #[::core::prelude::v1::test]
-fn a_long_note_for_testers_shows_bold_and_folds_after_its_first_block() {
+fn a_long_note_for_testers_shows_its_first_three_lines_then_show_all() {
     let checks = (1..=4).map(|k| format!("- Reconnect to the Core {k} times; the library, queue and zones stay right.")).collect::<Vec<_>>().join("\n");
     let note = format!("**What changed:** the app no longer grows in memory on reconnect.\n\n**Please check:**\n\n{checks}");
     let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": {"text": note, "waiting": false}});
     let text = panel_text(task.clone(), json!({}));
-    assert!(text.contains("What changed: the app no longer") && !text.contains("**"), "{text}");
-    assert!(text.contains("Show more") && !text.contains("Please check"), "{text}");
-    let open = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.note": "open"}}})));
-    assert!(open.contains("Please check: Reconnect to the Core 1 times") && open.contains("Show less") && !open.contains("Show more"), "{open}");
+    assert!(text.contains("Note for testers What changed: the app no longer") && !text.contains("**"), "{text}");
+    assert!(text.contains("Please check: Reconnect to the Core 1 times") && !text.contains("Core 2 times"), "{text}");
+    assert!(text.contains("Show all"), "{text}");
+    let tr = tree(&json!({"task": task, "state": {}}));
+    assert!(view::acts(&tr).iter().any(|a| a == "note-all"), "{:?}", view::acts(&tr));
+    let short = panel_text(json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": {"text": "One\n\nTwo\nThree", "waiting": false}}), json!({}));
+    assert!(short.contains("One Two Three") && !short.contains("Show all"), "{short}");
+}
+
+#[::core::prelude::v1::test]
+fn a_note_label_on_its_own_line_takes_the_value_under_it() {
+    let one = view::text(&view::note_body("**What to test:**\n Sign in twice.\n**Branch:** fix/x"));
+    let two = view::text(&view::note_body("**What to test:** Sign in twice.\n**Branch:** fix/x"));
+    assert_eq!(one, two);
+    // An indented value is still the label's, not a code block.
+    assert_eq!(view::text(&view::note_body("**Affected areas:**\n  Sign-in")), view::text(&view::note_body("**Affected areas:** Sign-in")));
+    let view::Node::El { kids, .. } = view::note_body("**Please check:**\n- One\n- Two") else { unreachable!() };
+    assert_eq!(kids.len(), 2, "a list under a label stays a list");
+}
+
+#[gpui_kit::test]
+fn show_all_opens_the_whole_note_in_a_dialog(cx: &mut gpui_kit::TestAppContext) {
+    let (w, _rec) = parity::window(cx);
+    let note = (1..=6).map(|k| format!("Line {k}")).collect::<Vec<_>>().join("\n");
+    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": {"text": note.clone(), "waiting": false}});
+    w.update(cx, |m, _, cx| {
+        m.panel = Some(Panel::Task { r: "T9".into(), tab: TaskTab::Overview });
+        m.data.task = Some(task);
+        act(m, &Act::new("note-all", "", "T9", ""), cx);
+        assert!(matches!(&m.modal, Some(crate::ui::modals::Modal::Note(t)) if *t == note));
+    })
+    .unwrap();
+    let _ = cx.update_window(w.into(), |_, window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
 }
 
 #[test]
@@ -889,6 +922,21 @@ fn the_started_step_shows_its_terminals_only_when_opened() {
     assert!(text.contains(&format!("T7 First go Closed {closed}")), "{text}");
     let last = crate::fmt::hhmm("2026-01-05T15:52:00Z");
     assert!(text.contains(&format!("Branch feat/t7-progress Changes 3 files not committed · last commit {last}")), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_terminal_row_has_one_status_marker() {
+    let tree = tree(&json!({"task": two_terminals(), "state": {}, "ui": {"tl_open": ["started"]}}));
+    fn pills(n: &view::Node, out: &mut usize, in_term: bool) {
+        match n {
+            view::Node::Pill { .. } if in_term => *out += 1,
+            view::Node::El { k, kids, .. } => kids.iter().for_each(|k2| pills(k2, out, in_term || matches!(k, view::K::DetTerm { .. }))),
+            _ => {}
+        }
+    }
+    let mut n = 0;
+    pills(&tree, &mut n, false);
+    assert_eq!(n, 0, "the row's dot is its marker; the state is words beside the name");
 }
 
 #[::core::prelude::v1::test]
