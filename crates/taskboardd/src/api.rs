@@ -128,6 +128,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["info"]) => Ok(info()),
         ("GET", ["summary"]) => get_summary(app),
         ("GET", ["locks"]) => crate::locks::overview(app),
+        ("GET", ["slots"]) => crate::slots::overview(app, query.get("project").map(|s| s.as_str())),
         ("GET", ["start-misses"]) => start_misses(app, q(query, "limit", "20").parse().unwrap_or(20)),
         ("GET", ["hooks", "payload"]) => hook_payload(app, query),
         ("GET", ["projects"]) => Ok(json!({"projects": projects::list_projects(app)?.iter().map(|p| projects::describe(app, p)).collect::<Result<Vec<_>>>()?})),
@@ -251,6 +252,8 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         }
         ("POST", ["tasks", id, "delete"]) => delete_task(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "wait"]) => pr_wait(app, tid(id)?),
+        ("POST", ["tasks", id, "slot", "claim"]) => slot_claim(app, tid(id)?),
+        ("POST", ["tasks", id, "slot", "release"]) => slot_release(app, tid(id)?),
         ("POST", ["tasks", id, "pr", "skip-checks"]) => pr_skip_checks(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merged"]) => pr_merged(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "reply"]) => crate::prcmds::reply(app, tid(id)?, body),
@@ -2784,6 +2787,9 @@ fn pr_wait(app: &App, id: i64) -> Result<Value> {
             return err(409, why);
         }
     }
+    if let Some(why) = crate::slots::release_refusal(app, &t)? {
+        return err(409, why);
+    }
     app.db.tx(|| {
         let t = board::get_task(app, id)?;
         if t.i("pr_num").is_none() {
@@ -2793,7 +2799,29 @@ fn pr_wait(app: &App, id: i64) -> Result<Value> {
         board::log_event(app, id, board::BOARD, "status", &format!("The agent finished its visit to PR #{}; the board watches it again", t.i0("pr_num")))?;
         Ok(())
     })?;
+    crate::slots::release(app, &board::get_task(app, id)?)?;
     get_pr(app, id)
+}
+
+/// `tb slot claim`: a slot for the task's work, its own again when free, on its pushed branch.
+fn slot_claim(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let path = match crate::slots::reclaim(app, &t)? {
+        Some(p) => p,
+        None => match crate::worktrees::ensure(app, &t)? {
+            Some(p) => p,
+            None => return err(409, format!("{} doesn't work in a worktree, so it has no slot to claim.", rf("task", id))),
+        },
+    };
+    let slot = path.rsplit('/').next().unwrap_or_default().to_string();
+    Ok(json!({"ok": true, "task": rf("task", id), "path": path, "slot": slot}))
+}
+
+/// `tb slot release`: gives the task's slot back, refused while something there isn't pushed.
+fn slot_release(app: &App, id: i64) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    let released = crate::slots::release(app, &t)?;
+    Ok(json!({"ok": true, "task": rf("task", id), "released": released}))
 }
 
 fn pr_merged(app: &App, id: i64, body: &Value) -> Result<Value> {

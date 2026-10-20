@@ -637,7 +637,17 @@ fn resume_or_fresh(app: &App, t: &Row, mut args: Value) -> Result<Value> {
     Ok(args)
 }
 
+/// Where PR follow-up work runs. A task that worked in a slot claims one again, on its pushed
+/// branch; while the pool is full there's nowhere yet, and the next wake tries again.
 pub(crate) fn pr_cwd(app: &App, t: &Row) -> Result<Option<String>> {
+    match crate::slots::reclaim(app, t) {
+        Ok(Some(path)) => return Ok(Some(path)),
+        Ok(None) => {}
+        Err(e) => {
+            app.info(format!("worktrees: {} has no slot for its PR work yet: {}", rf("task", t.id()), e.message));
+            return Ok(None);
+        }
+    }
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).filter(|w| Path::new(w).is_dir()).map(|s| s.to_string());
     Ok(match wt {

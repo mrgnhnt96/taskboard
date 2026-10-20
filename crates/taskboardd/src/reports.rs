@@ -3164,6 +3164,12 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
     if r.event == "tb.done" {
         let t = r.task().ok().flatten();
         done_refusals(&r, t.as_ref())?;
+        if let (Some(t), false) = (&t, spooled) {
+            // Its slot goes back once it's done: nothing may be left only there.
+            if let Some(why) = crate::slots::release_refusal(app, t)? {
+                return err(409, why);
+            }
+        }
         crate::propen::before_done(app, &mut r.body, t.as_ref())?;
         finishing(&r)?;
     }
@@ -3175,7 +3181,8 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             }
         }
     }
-    app.db.tx(|| {
+    let gives_back = matches!(r.event.as_str(), "tb.done" | "tb.fail" | "tb.wait_for").then(|| r.task().ok().flatten()).flatten();
+    let out = app.db.tx(|| {
         if API_RETRY_EVENTS.contains(&r.event.as_str()) {
             app.db.x("UPDATE sessions SET api_error = NULL, api_error_kind = NULL WHERE id = ?", p![r.sid()])?;
         }
@@ -3222,7 +3229,23 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             }
         }
         Ok(out)
-    })
+    })?;
+    if let Some(t) = gives_back {
+        give_back_slot(app, t.id());
+    }
+    Ok(out)
+}
+
+/// A task that's done, failed or parked gives its worktree slot back, unless something there isn't
+/// pushed yet (the log says what).
+fn give_back_slot(app: &App, id: i64) {
+    let Ok(t) = board::get_task(app, id) else { return };
+    if t.s("status") != Some("done") && waitsfor::parked(&t).is_none() {
+        return;
+    }
+    if let Err(e) = crate::slots::release_if_clean(app, &t) {
+        app.info(format!("worktrees: {} couldn't give back its slot: {}", rf("task", id), e.message));
+    }
 }
 
 pub fn ingest_spool(app: &App) -> Result<usize> {

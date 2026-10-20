@@ -205,6 +205,17 @@ enum Cmd {
     },
     /// Named locks, who holds each, and tasks that run alone
     Locks,
+    /// Worktree slots: who holds each, who waits for one, when each was last used and its size
+    Slots {
+        /// Only this project's slots
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Claim or give back this task's worktree slot
+    Slot {
+        #[command(subcommand)]
+        action: SlotCmd,
+    },
     /// Close the terminals of finished tasks (on the owner's word): tb close --done
     Close {
         /// The terminals of done tasks; terminals still working are left open
@@ -618,6 +629,20 @@ enum Cmd {
         /// Print the input unchanged (to chain into your own status line command)
         #[arg(long)]
         pass: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SlotCmd {
+    /// Claim a slot for review fixes, a rebase or a failing check: its own again when free, on its pushed branch
+    Claim {
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Give the slot back; refused while it has uncommitted changes or unpushed commits
+    Release {
+        #[arg(long)]
+        task: Option<String>,
     },
 }
 
@@ -2971,6 +2996,30 @@ fn bit_line(b: &Value, tool: &str) -> String {
     line
 }
 
+fn slot_cmd(c: &Ctx, action: SlotCmd) -> Result<i32, String> {
+    match action {
+        SlotCmd::Claim { task } => {
+            let t = c.pr_task(task)?;
+            let v = c.call("POST", &format!("/tasks/{t}/slot/claim"), Some(json!({})))?;
+            out(&format!("{t} works in {} ({}).", v["slot"].as_str().unwrap_or(""), v["path"].as_str().unwrap_or("")));
+        }
+        SlotCmd::Release { task } => {
+            let t = c.pr_task(task)?;
+            let v = c.call("POST", &format!("/tasks/{t}/slot/release"), Some(json!({})))?;
+            out(&if v["released"] == true { format!("{t} gave back its worktree slot.") } else { format!("{t} holds no worktree slot.") });
+        }
+    }
+    Ok(0)
+}
+
+fn disk_size(kb: i64) -> String {
+    match kb {
+        k if k >= 1024 * 1024 => format!("{:.1} GB", k as f64 / (1024.0 * 1024.0)),
+        k if k >= 1024 => format!("{} MB", k / 1024),
+        k => format!("{k} KB"),
+    }
+}
+
 fn device_cmd(c: &Ctx, action: DeviceCmd) -> Result<i32, String> {
     match action {
         DeviceCmd::Add { name, tags, focus, note, kind, target, start, stop } => {
@@ -5168,6 +5217,26 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Cmd::Slots { project } => {
+            let path = match project {
+                Some(p) => format!("/slots?project={}", qv(&p)),
+                None => "/slots".to_string(),
+            };
+            let v = c.call("GET", &path, None)?;
+            let slots = v["slots"].as_array().cloned().unwrap_or_default();
+            if slots.is_empty() {
+                out("No worktree slots yet.");
+            }
+            for s in slots {
+                let holder = s["held_by"].as_str().map(|h| format!("held by {h}")).unwrap_or_else(|| "free".into());
+                let used = s["used_at"].as_str().map(|u| format!(" · last used {}", local_when(u))).unwrap_or_default();
+                let size = s["size_kb"].as_i64().map(|k| format!(" · {}", disk_size(k))).unwrap_or_default();
+                let waiting = s["waiting"].as_array().filter(|a| !a.is_empty()).map(|a| format!(" · waiting: {}", a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
+                out(&format!("{} · {} · {holder}{used}{size}{waiting}", s["name"].as_str().unwrap_or(""), s["project"].as_str().unwrap_or("")));
+            }
+            Ok(0)
+        }
+        Cmd::Slot { action } => slot_cmd(c, action),
         Cmd::Devices => {
             let v = c.call("GET", "/devices", None)?;
             let devices = v["devices"].as_array().cloned().unwrap_or_default();
