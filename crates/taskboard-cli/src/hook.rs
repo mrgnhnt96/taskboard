@@ -59,17 +59,8 @@ static CD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:^|&&|;|\|\||\()\s*(?:cd
 /// one (`GIT_WORK_RE`) or a PR opening, the folder it runs in (`git -C <dir>`, else the last `cd <dir>`
 /// or `pushd <dir>` before it, else the cwd). None for any other call.
 fn work_place(tool: &str, input: &Value, cwd: &str) -> Option<PathBuf> {
-    let at = |p: &str| {
-        let p = p.trim_matches(['"', '\'']);
-        let p = match (p.strip_prefix("~/"), std::env::var("HOME")) {
-            (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-            _ => p.to_string(),
-        };
-        let p = Path::new(&p);
-        if p.is_absolute() { p.to_path_buf() } else { Path::new(cwd).join(p) }
-    };
     if EDIT_TOOLS.contains(&tool) {
-        return input["file_path"].as_str().or(input["notebook_path"].as_str()).filter(|f| !f.is_empty()).map(at);
+        return input["file_path"].as_str().or(input["notebook_path"].as_str()).filter(|f| !f.is_empty()).map(|f| path_at(f, cwd));
     }
     if tool != "Bash" {
         return None;
@@ -79,11 +70,28 @@ fn work_place(tool: &str, input: &Value, cwd: &str) -> Option<PathBuf> {
     if git.is_none() && !opens_pr(tool, input) {
         return None;
     }
-    if let Some(dir) = git.and_then(|m| GIT_DIR_RE.captures(m.as_str())) {
-        return Some(at(&dir[1]));
+    Some(runs_in(cmd, git.or_else(|| PR_CLI_RE.find(cmd)), cwd))
+}
+
+/// A path as a command or tool names it (quoted, `~/…`, relative to `cwd`), made absolute.
+fn path_at(p: &str, cwd: &str) -> PathBuf {
+    let p = p.trim_matches(['"', '\'']);
+    let p = match (p.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => p.to_string(),
+    };
+    let p = Path::new(&p);
+    if p.is_absolute() { p.to_path_buf() } else { Path::new(cwd).join(p) }
+}
+
+/// The folder the part of `cmd` at `part` runs in: its `git -C <dir>`, else the last `cd <dir>` or
+/// `pushd <dir>` before it, else the cwd.
+fn runs_in(cmd: &str, part: Option<regex::Match>, cwd: &str) -> PathBuf {
+    if let Some(dir) = part.and_then(|m| GIT_DIR_RE.captures(m.as_str())) {
+        return path_at(&dir[1], cwd);
     }
-    let before = &cmd[..git.or_else(|| PR_CLI_RE.find(cmd)).map_or(cmd.len(), |m| m.start())];
-    Some(CD_RE.captures_iter(before).last().map_or_else(|| PathBuf::from(cwd), |c| at(&c[1])))
+    let before = &cmd[..part.map_or(cmd.len(), |m| m.start())];
+    CD_RE.captures_iter(before).last().map_or_else(|| PathBuf::from(cwd), |c| path_at(&c[1], cwd))
 }
 
 /// A folder's repository: its shared git folder (one for all of the repository's worktrees) and its
@@ -134,10 +142,247 @@ fn elsewhere_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) ->
     let vars = &v["vars"];
     let Some(home) = ["repo", "worktree"].iter().filter_map(|k| vars[*k].as_str()).find(|p| !p.is_empty()) else { return false };
     let project = vars["project"].as_str().unwrap_or("its project");
-    let Some((why, top)) = elsewhere(&place, Path::new(home), task, project) else { return false };
+    let Some((why, top)) = elsewhere(&place, Path::new(home), task, project) else {
+        if EDIT_TOOLS.contains(&tool) {
+            note_edit(&cfg.data, task, session, &place);
+        }
+        return false;
+    };
     deny(&why);
     let text = format!("{task} tried to work in {}, a repository it doesn't own ({task} is {project}'s). The board refused it.", top.display());
     let _ = client::request(cfg, "POST", "/alerts", Some(&json!({"text": text, "key": format!("elsewhere:{task}"), "task": task})), hook_timeout());
+    true
+}
+
+/// A git command that commits, or that moves or rewrites a checkout under everyone working in it:
+/// `switch`, `checkout`, `rebase`, `stash` (its `list` and `show` only read) and `reset`.
+static SHARED_GIT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(commit|switch|checkout|rebase|stash|reset)\b(\s+(?:list|show)\b)?").unwrap()
+});
+static GIT_ADD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+add\b([^;&|]*)").unwrap());
+static COMMIT_ALL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:-[A-Za-z]*a[A-Za-z]*|--all)$").unwrap());
+
+/// Where the hook keeps each task's edits: `edits/<task>`, one `<terminal>\t<file>` line per file it
+/// edited. The board hears of them only at the turn's end; a commit in the same turn needs them now.
+fn ledger_dir(data: &Path) -> PathBuf {
+    data.join("edits")
+}
+
+fn note_edit(data: &Path, task: &str, session: &str, file: &Path) {
+    if task.is_empty() || task.contains(['/', '.']) {
+        return;
+    }
+    let (dir, line) = (ledger_dir(data), format!("{session}\t{}", file.display()));
+    let path = dir.join(task);
+    if std::fs::read_to_string(&path).is_ok_and(|t| t.lines().any(|l| l == line)) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+/// One edit from the ledger.
+#[derive(Debug, Clone, PartialEq)]
+struct Edit {
+    task: String,
+    session: String,
+    file: PathBuf,
+}
+
+fn ledger(data: &Path) -> Vec<Edit> {
+    let Ok(dir) = std::fs::read_dir(ledger_dir(data)) else { return vec![] };
+    let mut out = vec![];
+    for e in dir.flatten() {
+        let task = e.file_name().to_string_lossy().to_string();
+        for l in std::fs::read_to_string(e.path()).unwrap_or_default().lines() {
+            if let Some((session, file)) = l.split_once('\t') {
+                out.push(Edit { task: task.clone(), session: session.to_string(), file: PathBuf::from(file) });
+            }
+        }
+    }
+    out
+}
+
+/// A file's path from the checkout's top folder, through the real path of the folder it's in.
+fn rel_to(file: &Path, top: &Path) -> Option<String> {
+    let real = file.parent()?.canonicalize().ok()?.join(file.file_name()?);
+    real.strip_prefix(top).ok().map(|r| r.to_string_lossy().to_string()).filter(|r| !r.is_empty())
+}
+
+/// One uncommitted file in a checkout: whether it's staged, and whether git tracks it.
+#[derive(Debug, Clone, PartialEq)]
+struct Change {
+    path: String,
+    staged: bool,
+    tracked: bool,
+}
+
+fn changes(top: &Path) -> Option<Vec<Change>> {
+    let o = std::process::Command::new("git").arg("-C").arg(top).args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]).output().ok().filter(|o| o.status.success())?;
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    let mut parts = out.split('\0');
+    let mut list = vec![];
+    while let Some(e) = parts.next() {
+        if e.len() < 4 {
+            continue;
+        }
+        let (x, y) = (e.as_bytes()[0], e.as_bytes()[1]);
+        if matches!(x, b'R' | b'C') {
+            parts.next();
+        }
+        list.push(Change { path: e[3..].to_string(), staged: !matches!(x, b' ' | b'?'), tracked: x != b'?' && y != b'?' });
+    }
+    Some(list)
+}
+
+/// A path from the checkout's top folder with `.` and `..` resolved by name.
+fn tidy(p: &Path) -> String {
+    let mut out: Vec<String> = vec![];
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::Normal(s) => out.push(s.to_string_lossy().to_string()),
+            _ => {}
+        }
+    }
+    out.join("/")
+}
+
+/// The files the commit at `at` in `cmd` (run in `dir`) takes: what's staged, what its own `git add`s
+/// before it add, and with `-a` every tracked change.
+fn committed(cmd: &str, at: usize, dir: &Path, top: &Path, list: &[Change]) -> Vec<String> {
+    let rest = &cmd[at..];
+    let args = &rest[..rest.find([';', '&', '|']).unwrap_or(rest.len())];
+    let all_tracked = args.split_whitespace().any(|a| COMMIT_ALL_RE.is_match(a));
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let mut covers: Vec<String> = vec![];
+    let mut everything = false;
+    let mut tracked = all_tracked;
+    for c in GIT_ADD_RE.captures_iter(&cmd[..at]) {
+        for a in c[1].split_whitespace().map(|a| a.trim_matches(['"', '\''])) {
+            match a {
+                "-A" | "--all" => everything = true,
+                "-u" | "--update" => tracked = true,
+                "--" => {}
+                a if a.starts_with('-') => {}
+                a => covers.push(from_top(a, &dir, top)),
+            }
+        }
+    }
+    list.iter().filter(|c| c.staged || everything || (tracked && c.tracked) || covered(&covers, &c.path)).map(|c| c.path.clone()).collect()
+}
+
+/// A path a git command names, from the checkout's top folder.
+fn from_top(a: &str, dir: &Path, top: &Path) -> String {
+    dir.join(a).strip_prefix(top).map(tidy).unwrap_or_else(|_| tidy(Path::new(a)))
+}
+
+/// Whether `path` is one of `covers` or in one of its folders (`""` is the whole checkout).
+fn covered(covers: &[String], path: &str) -> bool {
+    covers.iter().any(|c| c.is_empty() || path == c || path.starts_with(&format!("{c}/")))
+}
+
+/// The files a switch, checkout, rebase, stash or reset at `at` in `cmd` carries off: only the paths it
+/// names after `--` when it names some, every uncommitted file otherwise.
+fn carried(cmd: &str, at: usize, dir: &Path, top: &Path, list: &[Change]) -> Vec<String> {
+    let rest = &cmd[at..];
+    let args: Vec<&str> = rest[..rest.find([';', '&', '|']).unwrap_or(rest.len())].split_whitespace().collect();
+    let all = list.iter().map(|c| c.path.clone());
+    let Some(i) = args.iter().position(|a| *a == "--") else { return all.collect() };
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let covers: Vec<String> = args[i + 1..].iter().map(|a| from_top(a.trim_matches(['"', '\'']), &dir, top)).collect();
+    if covers.is_empty() {
+        return all.collect();
+    }
+    all.filter(|p| covered(&covers, p)).collect()
+}
+
+/// What a git command in a checkout would do to other tasks' uncommitted edits there: its verb, the
+/// checkout's top folder and, by the task that made them (and its terminal), the files it would take
+/// (a commit) or carry off (a switch, checkout, rebase, stash or reset). None for any other command, or
+/// when it touches no one else's edits. Edits `own` (this terminal's task) made too are its own to commit.
+fn shared_conflicts(cmd: &str, cwd: &str, data: &Path, own: Option<&str>) -> Option<(String, PathBuf, Vec<(String, String, Vec<String>)>)> {
+    let c = SHARED_GIT_RE.captures(cmd)?;
+    if c.get(2).is_some() {
+        return None;
+    }
+    let (m, verb) = (c.get(0)?, c[1].to_string());
+    let dir = runs_in(cmd, Some(m), cwd);
+    let (_, top) = repo_of(&dir)?;
+    let edits = ledger(data);
+    if edits.is_empty() {
+        return None;
+    }
+    let list = changes(&top)?;
+    let mine: Vec<String> = edits.iter().filter(|e| Some(e.task.as_str()) == own).filter_map(|e| rel_to(&e.file, &top)).collect();
+    let taken = if verb == "commit" { committed(cmd, m.end(), &dir, &top, &list) } else { carried(cmd, m.end(), &dir, &top, &list) };
+    let mut by: Vec<(String, String, Vec<String>)> = vec![];
+    for e in edits.iter().filter(|e| Some(e.task.as_str()) != own) {
+        let Some(rel) = rel_to(&e.file, &top) else { continue };
+        if !taken.contains(&rel) || (verb == "commit" && mine.contains(&rel)) {
+            continue;
+        }
+        match by.iter_mut().find(|(t, _, _)| *t == e.task) {
+            Some((_, _, files)) if !files.contains(&rel) => files.push(rel),
+            Some(_) => {}
+            None => by.push((e.task.clone(), e.session.clone(), vec![rel])),
+        }
+    }
+    by.sort();
+    (!by.is_empty()).then_some((verb, top, by))
+}
+
+/// The refusal for a git command that would take or carry off other tasks' uncommitted edits.
+fn shared_refusal(own: Option<&str>, verb: &str, top: &Path, theirs: &[(String, String, Vec<String>)]) -> String {
+    let who = own.unwrap_or("This terminal");
+    let named = theirs.iter().map(|(t, _, files)| format!("{t} ({})", files.join(", "))).collect::<Vec<_>>().join("; ");
+    let tasks = theirs.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>().join(" and ");
+    if verb == "commit" {
+        return format!(
+            "{who} can't commit files another task edited in {} and hasn't committed: {named}. They're {tasks}'s work, not {who}'s. \
+             Unstage them (git restore --staged <file>) and commit only the files {who} edited, by name (git add <file> … && git commit), \
+             or work in a worktree of {who}'s own.",
+            top.display()
+        );
+    }
+    format!(
+        "{who} can't git {verb} in {}: {tasks} works in this checkout too and hasn't committed its edits there yet: {named}. A git {verb} \
+         would carry them to another branch or throw them away. Leave the checkout's branch alone: commit {who}'s own files by name \
+         (git add <file> … && git commit), or work in a worktree of {who}'s own.",
+        top.display()
+    )
+}
+
+/// `PreToolUse`: in a checkout tasks share, refuses a commit that takes files another task still on its
+/// terminal edited (and this one didn't), and a switch, checkout, rebase, stash or reset while such a
+/// task has uncommitted edits there. No other task's edits, no board: carry on.
+fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
+    if payload["tool_name"] != "Bash" {
+        return false;
+    }
+    let cmd = payload["tool_input"]["command"].as_str().unwrap_or("");
+    if !SHARED_GIT_RE.is_match(cmd) || ledger(&cfg.data).is_empty() {
+        return false;
+    }
+    let Ok(v) = client::request(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let own = v["task"].as_str();
+    let Some((verb, top, mut theirs)) = shared_conflicts(cmd, cwd, &cfg.data, own) else { return false };
+    // Only a task still on its terminal is working there; a finished one's ledger is done with.
+    theirs.retain(|(task, terminal, _)| {
+        let on = client::request(cfg, "GET", &format!("/steps?session={terminal}"), None, hook_timeout()).is_ok_and(|v| v["task"].as_str() == Some(task.as_str()));
+        if !on {
+            let _ = std::fs::remove_file(ledger_dir(&cfg.data).join(task));
+        }
+        on
+    });
+    if theirs.is_empty() {
+        return false;
+    }
+    deny(&shared_refusal(own, &verb, &top, &theirs));
     true
 }
 
@@ -184,7 +429,7 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
         }
         return elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or(""));
     }
-    if elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or("")) {
+    if elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or("")) || shared_checkout_refused(payload, session, &cfg, cwd.as_deref().unwrap_or("")) {
         return true;
     }
     let opening = opens_pr(tool, &payload["tool_input"]);
@@ -745,6 +990,136 @@ mod tests {
         // A repository that holds the task's (a dotfiles one in the home folder) isn't another project's.
         git_repo(&root);
         assert!(elsewhere(&root.join(".zshrc"), &a, "T115", "a").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A shared checkout with one commit, and a board data folder beside it.
+    fn shared_checkout(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("tb-shared-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (repo, data) = (root.join("repo"), root.join("data"));
+        git_repo(&repo);
+        for f in ["a.rs", "b.rs", "src/c.rs"] {
+            std::fs::create_dir_all(repo.join(f).parent().unwrap()).unwrap();
+            std::fs::write(repo.join(f), "one\n").unwrap();
+        }
+        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one"]);
+        (root, repo, data)
+    }
+
+    #[test]
+    fn the_hook_remembers_each_tasks_edits_once() {
+        let (root, repo, data) = shared_checkout("ledger");
+        note_edit(&data, "T1", "s1", &repo.join("a.rs"));
+        note_edit(&data, "T1", "s1", &repo.join("a.rs"));
+        note_edit(&data, "T2", "s2", &repo.join("b.rs"));
+        note_edit(&data, "../x", "s3", &repo.join("b.rs"));
+        let mut edits = ledger(&data);
+        edits.sort_by(|a, b| a.task.cmp(&b.task));
+        assert_eq!(edits.len(), 2, "{edits:?}");
+        assert_eq!(edits[0], Edit { task: "T1".into(), session: "s1".into(), file: repo.join("a.rs") });
+        assert_eq!(edits[1].task, "T2");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_checkouts_changes_say_whats_staged_and_tracked() {
+        let (root, repo, _) = shared_checkout("changes");
+        std::fs::write(repo.join("a.rs"), "two\n").unwrap();
+        std::fs::write(repo.join("b.rs"), "two\n").unwrap();
+        std::fs::write(repo.join("new.rs"), "new\n").unwrap();
+        std::process::Command::new("git").arg("-C").arg(&repo).args(["add", "b.rs"]).output().unwrap();
+        let mut list = changes(&repo).unwrap();
+        list.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            list,
+            vec![
+                Change { path: "a.rs".into(), staged: false, tracked: true },
+                Change { path: "b.rs".into(), staged: true, tracked: true },
+                Change { path: "new.rs".into(), staged: false, tracked: false },
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_commit_takes_whats_staged_its_own_adds_and_with_a_every_tracked_change() {
+        let top = Path::new("/r");
+        let list = vec![
+            Change { path: "a.rs".into(), staged: true, tracked: true },
+            Change { path: "b.rs".into(), staged: false, tracked: true },
+            Change { path: "src/c.rs".into(), staged: false, tracked: true },
+            Change { path: "new.rs".into(), staged: false, tracked: false },
+        ];
+        let take = |cmd: &str, dir: &str| {
+            let at = SHARED_GIT_RE.find(cmd).unwrap().end();
+            let mut t = committed(cmd, at, Path::new(dir), top, &list);
+            t.sort();
+            t
+        };
+        assert_eq!(take("git commit -m x", "/r"), vec!["a.rs"]);
+        assert_eq!(take("git add b.rs && git commit -m x", "/r"), vec!["a.rs", "b.rs"]);
+        assert_eq!(take("git add c.rs && git commit -m x", "/r/src"), vec!["a.rs", "src/c.rs"], "an add from a subfolder");
+        assert_eq!(take("git add src && git commit -m x", "/r"), vec!["a.rs", "src/c.rs"], "a folder adds what's in it");
+        assert_eq!(take("git commit -am x", "/r"), vec!["a.rs", "b.rs", "src/c.rs"]);
+        assert_eq!(take("git add -u && git commit -m x", "/r"), vec!["a.rs", "b.rs", "src/c.rs"]);
+        assert_eq!(take("git add -A && git commit -m x", "/r"), vec!["a.rs", "b.rs", "new.rs", "src/c.rs"]);
+        assert_eq!(take("git add . && git commit -m x", "/r"), vec!["a.rs", "b.rs", "new.rs", "src/c.rs"]);
+        assert_eq!(take("git commit -m x && git add b.rs", "/r"), vec!["a.rs"], "an add after the commit isn't in it");
+    }
+
+    #[test]
+    fn a_commit_of_another_tasks_edits_in_a_shared_checkout_is_refused() {
+        let (root, repo, data) = shared_checkout("commit");
+        let cwd = repo.to_string_lossy().to_string();
+        std::fs::write(repo.join("a.rs"), "mine\n").unwrap();
+        std::fs::write(repo.join("b.rs"), "theirs\n").unwrap();
+        note_edit(&data, "T1", "s1", &repo.join("a.rs"));
+        note_edit(&data, "T2", "s2", &repo.join("b.rs"));
+
+        assert!(shared_conflicts("git add a.rs && git commit -m x", &cwd, &data, Some("T1")).is_none(), "its own files");
+        assert!(shared_conflicts("git status && git diff b.rs && git log", &cwd, &data, Some("T1")).is_none(), "read-only git");
+        let (verb, top, theirs) = shared_conflicts("git add -A && git commit -m x", &cwd, &data, Some("T1")).expect("T2's file");
+        assert_eq!((verb.as_str(), top.clone()), ("commit", repo.canonicalize().unwrap()));
+        assert_eq!(theirs, vec![("T2".to_string(), "s2".to_string(), vec!["b.rs".to_string()])]);
+        let why = shared_refusal(Some("T1"), &verb, &top, &theirs);
+        assert!(why.contains("T2 (b.rs)") && why.contains("git restore --staged") && why.contains("worktree"), "{why}");
+
+        // A file both tasks edited is this one's to commit too; a file no task edited isn't the hook's call.
+        note_edit(&data, "T1", "s1", &repo.join("b.rs"));
+        std::fs::write(repo.join("src/c.rs"), "sed\n").unwrap();
+        assert!(shared_conflicts("git commit -am x", &cwd, &data, Some("T1")).is_none());
+        // Committed edits are no one's any more.
+        std::fs::remove_dir_all(ledger_dir(&data)).unwrap();
+        note_edit(&data, "T2", "s2", &repo.join("b.rs"));
+        std::process::Command::new("git").arg("-C").arg(&repo).args(["checkout", "-q", "--", "b.rs"]).output().unwrap();
+        assert!(shared_conflicts("git commit -am x", &cwd, &data, Some("T1")).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn moving_a_shared_checkout_under_another_tasks_edits_is_refused() {
+        let (root, repo, data) = shared_checkout("move");
+        let cwd = repo.to_string_lossy().to_string();
+        std::fs::write(repo.join("b.rs"), "theirs\n").unwrap();
+        note_edit(&data, "T2", "s2", &repo.join("b.rs"));
+        for cmd in ["git switch -c fix/x", "git checkout main", "git rebase origin/main", "git stash", "git reset --hard", &format!("cd /tmp && git -C {cwd} switch main")] {
+            let (verb, _, theirs) = shared_conflicts(cmd, "/tmp", &data, Some("T1")).or_else(|| shared_conflicts(cmd, &cwd, &data, Some("T1"))).unwrap_or_else(|| panic!("{cmd}"));
+            assert_eq!(theirs[0].0, "T2", "{cmd}");
+            let why = shared_refusal(Some("T1"), &verb, &repo, &theirs);
+            assert!(why.contains(&format!("can't git {verb}")) && why.contains("T2 (b.rs)") && why.contains("by name") && why.contains("worktree"), "{why}");
+        }
+        for cmd in ["git stash list", "git stash show -p", "git log --oneline", "git branch -a"] {
+            assert!(shared_conflicts(cmd, &cwd, &data, Some("T1")).is_none(), "{cmd}");
+        }
+        assert!(shared_conflicts("git switch main", &cwd, &data, Some("T2")).is_none(), "its own edits");
+        std::fs::write(repo.join("a.rs"), "mine\n").unwrap();
+        for cmd in ["git checkout -- a.rs", "git stash push -- a.rs", "git reset -q -- a.rs"] {
+            assert!(shared_conflicts(cmd, &cwd, &data, Some("T1")).is_none(), "only the files it names: {cmd}");
+        }
+        assert!(shared_conflicts("git checkout -- b.rs", &cwd, &data, Some("T1")).is_some(), "another task's file");
         let _ = std::fs::remove_dir_all(&root);
     }
 
