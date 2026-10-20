@@ -345,14 +345,14 @@ fn shared_refusal(own: Option<&str>, verb: &str, top: &Path, theirs: &[(String, 
         return format!(
             "{who} can't commit files another task edited in {} and hasn't committed: {named}. They're {tasks}'s work, not {who}'s. \
              Unstage them (git restore --staged <file>) and commit only the files {who} edited, by name (git add <file> … && git commit), \
-             or work in a worktree of {who}'s own.",
+             or claim a worktree slot for {who} (tb slot claim) and work there.",
             top.display()
         );
     }
     format!(
         "{who} can't git {verb} in {}: {tasks} works in this checkout too and hasn't committed its edits there yet: {named}. A git {verb} \
          would carry them to another branch or throw them away. Leave the checkout's branch alone: commit {who}'s own files by name \
-         (git add <file> … && git commit), or work in a worktree of {who}'s own.",
+         (git add <file> … && git commit), or claim a worktree slot for {who} (tb slot claim) and work there.",
         top.display()
     )
 }
@@ -383,6 +383,98 @@ fn shared_checkout_refused(payload: &Value, session: &str, cfg: &Config, cwd: &s
         return false;
     }
     deny(&shared_refusal(own, &verb, &top, &theirs));
+    true
+}
+
+/// `git worktree add` and the rest of its command, up to the next `;`, `&` or `|`.
+static WORKTREE_ADD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+worktree\s+add\b([^;&|]*)").unwrap());
+
+/// The folder a `git worktree add` makes, as its arguments name it: the first that isn't an option or
+/// an option's value.
+fn worktree_target(args: &str) -> Option<&str> {
+    let mut words = args.split_whitespace();
+    while let Some(w) = words.next() {
+        match w {
+            "-b" | "-B" | "--reason" => {
+                words.next();
+            }
+            _ if w.starts_with('-') => {}
+            _ => return Some(w),
+        }
+    }
+    None
+}
+
+/// A path with its links resolved, or for one that doesn't exist yet its `.` and `..` worked out.
+fn resolved(p: &Path) -> PathBuf {
+    if let Ok(real) = p.canonicalize() {
+        return real;
+    }
+    let mut out = PathBuf::new();
+    for part in p.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// What a tool call does that makes or enters a worktree outside the board's slot pool: a `git worktree
+/// add`, an `EnterWorktree`, or a subagent with `isolation: worktree`. A pool slot
+/// (`…/.claude/worktrees/slot-<n>`) and the task's own worktree (`own`, one from before the pool) are fine.
+/// None for any other call.
+fn stray_worktree(tool: &str, input: &Value, cwd: &str, own: Option<&str>) -> Option<String> {
+    let allowed = |p: &Path| {
+        let p = resolved(p);
+        taskboardd::slots::is_slot(&p.to_string_lossy()) || own.filter(|o| !o.is_empty()).is_some_and(|o| p.starts_with(resolved(Path::new(o))))
+    };
+    match tool {
+        "Bash" => {
+            let cmd = input["command"].as_str().unwrap_or("");
+            WORKTREE_ADD_RE.captures_iter(cmd).find_map(|c| {
+                let m = c.get(0)?;
+                let Some(target) = worktree_target(&c[1]) else { return Some("git worktree add".to_string()) };
+                let at = path_at(target, &runs_in(cmd, Some(m), cwd).to_string_lossy());
+                (!allowed(&at)).then(|| format!("git worktree add {}", resolved(&at).display()))
+            })
+        }
+        "EnterWorktree" => match input["path"].as_str().filter(|p| !p.is_empty()) {
+            Some(p) => (!allowed(&path_at(p, cwd))).then(|| format!("EnterWorktree into {p}")),
+            None => Some("EnterWorktree making a new worktree".to_string()),
+        },
+        _ if SUBAGENT_TOOLS.contains(&tool) && input["isolation"] == "worktree" => Some("a subagent with isolation: worktree".to_string()),
+        _ => None,
+    }
+}
+
+/// The refusal for `task` making or entering a worktree outside the slot pool (`what`).
+fn stray_refusal(task: &str, what: &str, tb: &str) -> String {
+    format!(
+        "{task} can't make or enter a worktree of its own ({what}): every worktree a task uses comes from the board's slot pool, \
+         so they're reused and cleaned up instead of piling up on the disk. Claim one with {tb} slot claim: it gives {task} a free slot \
+         (its own again when it had one) and prints its path; work there (cd <path>, or EnterWorktree with that path). If it says \
+         {task} doesn't work in a worktree, work in this checkout and commit only your own files, by name. Subagents run without \
+         isolation: worktree; give each its own files instead."
+    )
+}
+
+/// `PreToolUse`: refuses a board task's `git worktree add`, `EnterWorktree` or worktree subagent when
+/// the worktree isn't a pool slot (or the task's own), and points to `tb slot claim`. No task, no board:
+/// carry on.
+fn stray_worktree_refused(payload: &Value, session: &str, cfg: &Config, cwd: &str) -> bool {
+    let tool = payload["tool_name"].as_str().unwrap_or("");
+    let input = &payload["tool_input"];
+    if stray_worktree(tool, input, cwd, None).is_none() {
+        return false;
+    }
+    let Ok(v) = client::request(cfg, "GET", &format!("/steps?session={session}"), None, hook_timeout()) else { return false };
+    let Some(task) = v["task"].as_str() else { return false };
+    let Some(what) = stray_worktree(tool, input, cwd, v["vars"]["worktree"].as_str()) else { return false };
+    deny(&stray_refusal(task, &what, &tb_path()));
     true
 }
 
@@ -429,7 +521,8 @@ fn pre_tool_use(payload: &Value, session: &str) -> bool {
         }
         return elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or(""));
     }
-    if elsewhere_refused(payload, session, &cfg, cwd.as_deref().unwrap_or("")) || shared_checkout_refused(payload, session, &cfg, cwd.as_deref().unwrap_or("")) {
+    let here = cwd.as_deref().unwrap_or("");
+    if elsewhere_refused(payload, session, &cfg, here) || stray_worktree_refused(payload, session, &cfg, here) || shared_checkout_refused(payload, session, &cfg, here) {
         return true;
     }
     let opening = opens_pr(tool, &payload["tool_input"]);
@@ -1153,6 +1246,37 @@ mod tests {
         assert_eq!(bg["tool_use_id"], call("Agent", json!({"prompt": "x", "run_in_background": true}), None).unwrap()["tool_use_id"], "the same call, the same id");
         assert!(call("Read", json!({"file_path": "/a"}), Some("toolu_2")).is_none());
         assert_eq!(bg["tool_use_id"].as_str(), Some(taskboardd::transcript::call_key("Agent", &json!({"prompt": "x", "run_in_background": true})).as_str()), "the board can find it in the transcript");
+    }
+
+    #[test]
+    fn worktrees_outside_the_slot_pool_are_caught() {
+        let bash = |c: &str| stray_worktree("Bash", &json!({"command": c}), "/w/b", None);
+        assert_eq!(bash("git worktree add ../b-fix -b fix").as_deref(), Some("git worktree add /w/b-fix"));
+        assert_eq!(bash("cd /w/a && git worktree add -b fix --lock --reason why /w/a-fix main").as_deref(), Some("git worktree add /w/a-fix"));
+        assert!(bash("git -C /w/b worktree add .claude/worktrees/t9").is_some());
+        assert!(bash("git worktree add").is_some(), "no folder named: still a new worktree");
+        assert_eq!(bash("git worktree add .claude/worktrees/slot-3 --detach"), None, "a pool slot");
+        assert_eq!(bash("git -C /w/b worktree add /w/b/.claude/worktrees/slot-12"), None);
+        assert_eq!(bash("git worktree list && git worktree remove ../b-fix"), None);
+        assert_eq!(bash("git status; echo worktree add"), None);
+        assert!(stray_worktree("Bash", &json!({"command": "git worktree add ../b-t9"}), "/w/b", Some("/w/b-t9")).is_none(), "the task's own worktree");
+
+        let enter = |i: Value| stray_worktree("EnterWorktree", &i, "/w/b", Some("/w/b/.claude/worktrees/t9"));
+        assert!(enter(json!({})).is_some(), "a new worktree");
+        assert!(enter(json!({"name": "fix"})).is_some());
+        assert!(enter(json!({"name": "slot-2"})).is_some(), "a new one named like a slot isn't a slot");
+        assert_eq!(enter(json!({"path": ".claude/worktrees/slot-2"})), None);
+        assert_eq!(enter(json!({"path": "/w/b/.claude/worktrees/t9"})), None);
+        assert!(enter(json!({"path": "/w/b/.claude/worktrees/t10"})).is_some());
+
+        for tool in SUBAGENT_TOOLS {
+            assert!(stray_worktree(tool, &json!({"prompt": "x", "isolation": "worktree"}), "/w/b", None).is_some());
+            assert_eq!(stray_worktree(tool, &json!({"prompt": "x"}), "/w/b", None), None);
+        }
+        assert_eq!(stray_worktree("Read", &json!({"file_path": "/w/b/.claude/worktrees/x"}), "/w/b", None), None);
+
+        let why = stray_refusal("T5", "a subagent with isolation: worktree", "tb");
+        assert!(why.contains("T5") && why.contains("tb slot claim") && why.contains("isolation: worktree"), "{why}");
     }
 
     #[test]
