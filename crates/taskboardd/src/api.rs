@@ -654,7 +654,7 @@ fn get_state(app: &App, query: &Query) -> Result<Value> {
         "rate_limits": crate::prhost::limit::status(),
         "pr_builds": crate::prbuilds::status(app),
         "master": crate::breaks::banner(app)?,
-        "projects": projects, "releases": releases, "sessions": sessions, "session_projects": sp, "goals": goals,
+        "projects": projects::facts(app, &projects)?, "releases": releases, "sessions": sessions, "session_projects": sp, "goals": goals,
         "columns": Value::Object(out_cols), "counts": Value::Object(counts), "planned": planned,
     });
     if let Some(sid) = query.get("session") {
