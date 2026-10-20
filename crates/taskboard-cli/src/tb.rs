@@ -107,7 +107,7 @@ enum Cmd {
         /// It finishes without evidence (screenshots, results), and why
         #[arg(long = "no-evidence", value_name = "WHY")]
         no_evidence: Option<String>,
-        /// It finishes without the lens review, when the owner said to skip it, and why
+        /// It finishes without the lens review ([lens] submit on), when the owner said to skip it, and why
         #[arg(long = "no-lens", value_name = "WHY")]
         no_lens: Option<String>,
         /// The note for testers the board posts on the ticket at merge, in markdown (`[jira] merged_note`; see tb jira)
@@ -1748,7 +1748,7 @@ enum ProjectCmd {
         /// Releases (tb release cut) for this project (default: config.toml's [releases] on)
         #[arg(long, value_parser = ["on", "off", "default"])]
         releases: Option<String>,
-        /// tb submit needs a lens review of its tasks (default: config.toml's [lens.projects], else tb project lens)
+        /// lens sweeps what's pushed to it on its schedule (default: config.toml's [lens.projects], else tb project lens)
         #[arg(long, value_parser = ["on", "off", "default"])]
         lens: Option<String>,
         /// A tag pattern (v*): a new matching tag on the default branch cuts a release named after it, holding the work it contains (none: no tags)
@@ -1768,7 +1768,7 @@ enum ProjectCmd {
         #[arg(value_parser = ["on", "off", "default"])]
         value: Option<String>,
     },
-    /// Whether tb submit needs a lens review on every project that doesn't say (default: config.toml's [lens] on)
+    /// Whether lens sweeps every project that doesn't say (default: config.toml's [lens] on)
     Lens {
         #[arg(value_parser = ["on", "off", "default"])]
         value: Option<String>,
@@ -6389,7 +6389,19 @@ fn project_line(p: &Value) -> String {
         Some(on) => format!(" · releases {}{}", if on { "on" } else { "off" }, if on { tags.as_str() } else { "" }),
         None => String::new(),
     };
-    let lens = p["lens"].as_bool().map(|on| format!(" · lens review {}", if on { "on" } else { "off" })).unwrap_or_default();
+    let lens = p["lens"].as_bool().map(|on| format!(" · lens sweeps {}", if on { "on" } else { "off" })).unwrap_or_default();
+    let sweep = &p["lens_sweep"];
+    let sweep = match sweep["state"].as_str() {
+        Some(state) => {
+            let said = sweep["error"].as_str().or(sweep["said"].as_str()).map(|s| format!(": {s}")).unwrap_or_default();
+            let links: String = [("PR", "pr"), ("digest", "digest")]
+                .iter()
+                .filter_map(|(label, k)| sweep[*k].as_str().map(|v| format!("\n    Last sweep {label}: {v}")))
+                .collect();
+            format!("\n  lens sweep {state}{said}{links}")
+        }
+        None => String::new(),
+    };
     let waits_on: Vec<&str> = p["waits_on"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let waits_on = if waits_on.is_empty() { String::new() } else { format!(" · its tasks may wait for {}'s", waits_on.join(", ")) };
     let gaps: String = p["setup_gaps"]
@@ -6401,7 +6413,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().filter_map(|w| w.as_str()).map(|w| format!("\n  Worktree no task claims (left for you): {w}")).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
+        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}{sweep}{stray}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -6554,10 +6566,11 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
                     c.call("POST", "/projects/lens", Some(Value::Object(body)))?
                 }
             };
-            let on = if v["lens"] == true { "on" } else { "off: tb submit doesn't look for a lens review" };
+            let on = if v["lens"] == true { "on" } else { "off: the board doesn't run lens sweep" };
             let from = if v["set"].is_boolean() { "set on the board" } else { "config.toml's [lens] on" };
             let installed = if v["installed"] == true { "" } else { " lens isn't installed, so it doesn't run anywhere yet." };
-            out(&format!("Lens review: {on} for projects that don't say ({from}).{installed}"));
+            let gate = if v["submit"] == true { " tb submit also needs a lens review ([lens] submit)." } else { "" };
+            out(&format!("Lens sweeps: {on} for projects that don't say ({from}).{installed}{gate}"));
             Ok(0)
         }
     }

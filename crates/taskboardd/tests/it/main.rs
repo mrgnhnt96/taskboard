@@ -36,6 +36,7 @@ mod keep_awake;
 mod lanes;
 mod lens_done;
 mod lens_pr;
+mod lens_sweep;
 mod lessons;
 mod limits;
 mod lines;

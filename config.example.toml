@@ -121,14 +121,19 @@ azure_token_env = "AZURE_DEVOPS_EXT_PAT"  # env var with an Azure DevOps token, 
 # rebase = "conflicts"               # when tb pr status asks for a rebase onto the base: "conflicts" (only when the PR conflicts with it), "moved" (whenever the base moved since the push) or "never"
 approvals = 2                        # approvals a PR needs before it's ready to merge, when its project doesn't say (0: the host's decision, or any approval)
 
-# lens at tb submit: with lens installed, a task finishes only on a fresh `lens review` of its checkout.
+# lens sweeps: with lens installed, the board runs `lens sweep` for each project with a remote; lens's own
+# [sweep] every / max_lines decide when one is due. The sweep's PR and digest show on the project, and a
+# blocker its fixer escalates becomes a new task.
 # [lens]
 # on = true                          # on by default
 # bin = "lens"                       # the lens binary (looked up on the PATH), for [pr.lens] too
+# sweep_mins = 15                    # how often the board asks lens whether a sweep is due (0: never)
+# sweep_timeout_mins = 120           # the longest one sweep may run
+# submit = false                     # true: tb submit also needs a fresh `lens review` of the task's checkout
+#                                    # (one submit skips it with tb submit "<summary>" --no-lens "<why>")
 # [lens.projects]
 # webapp = false                     # turn it off (or on) for one project
 # The board's word beats these: tb project lens on|off|default, tb project set <name> --lens on|off|default.
-# One submit skips it with tb submit "<summary>" --no-lens "<why>" (the reason goes on the task).
 
 # The lens review stage: the board runs lens's PR pass (`lens review --pr <n>`) on each new PR, which
 # posts its verified findings inline (needs lens installed, see [lens], and gh logged in). Never holds a merge.
