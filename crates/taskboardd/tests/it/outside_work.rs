@@ -112,3 +112,30 @@ fn a_worktree_of_the_projects_repo_is_home() {
     assert!(b.outside(id).is_null());
     assert_eq!(b.alerts(id), 0);
 }
+
+#[test]
+fn a_commit_in_its_own_worktree_says_where_the_task_works_until_it_commits_elsewhere() {
+    let b = board();
+    let id = b.taken();
+    git(&b.dir.path().join("webapp"), &["worktree", "add", "-q", "-b", "feat/mine", &b.path("webapp-t1")]);
+    let place = |key: &str| board::task_context(&board::get_task(&b.app, id).unwrap())["where"][key].clone();
+    let shared = json!({"branch": "fix/someone-elses"});
+
+    b.report("hook.stop", json!({"cwd": b.path("webapp"), "git": shared}));
+    assert_eq!(place("branch"), json!("fix/someone-elses"), "before it commits, the terminal's folder is all the board knows");
+
+    let cmd = format!("cd {} && git commit -m x", b.path("webapp-t1"));
+    b.report("hook.commit", json!({"cwd": b.path("webapp"), "git": shared, "command": cmd, "work_git": {"branch": "feat/mine", "sha": "abc1234"}}));
+    assert_eq!(place("branch"), json!("feat/mine"));
+    assert_eq!(place("sha"), json!("abc1234"));
+    assert_eq!(place("worktree"), json!(b.path("webapp-t1")));
+
+    b.report("hook.stop", json!({"cwd": b.path("webapp"), "git": shared}));
+    assert_eq!(place("branch"), json!("feat/mine"), "the shared checkout's branch isn't the task's");
+    assert_eq!(place("worktree"), json!(b.path("webapp-t1")));
+
+    b.report("hook.commit", json!({"cwd": b.path("webapp"), "git": {"branch": "feat/back-home"}, "command": "git commit -m y"}));
+    assert_eq!(place("branch"), json!("feat/back-home"), "a commit in the terminal's folder moves it back");
+    b.report("hook.stop", json!({"cwd": b.path("webapp"), "git": {"branch": "feat/back-home-2"}}));
+    assert_eq!(place("branch"), json!("feat/back-home-2"));
+}

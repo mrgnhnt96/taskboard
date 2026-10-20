@@ -33,6 +33,8 @@ pub struct Report<'a> {
     pub claude: Option<String>,
     pub cwd: Option<String>,
     pub git: Row,
+    /// For a commit or push run in another checkout (`cd <dir> &&`, `git -C <dir>`): that checkout's git.
+    pub work_git: Row,
     pub spooled: bool,
     pub at: String,
     pub waiting_on_background: bool,
@@ -66,6 +68,7 @@ impl<'a> Report<'a> {
             claude: s_of(&body, "claude_session"),
             cwd: s_of(&body, "cwd"),
             git: body.get("git").and_then(|g| g.as_object()).cloned().unwrap_or_default(),
+            work_git: body.get("work_git").and_then(|g| g.as_object()).cloned().unwrap_or_default(),
             body,
             spooled,
             at,
@@ -243,26 +246,53 @@ impl<'a> Report<'a> {
         Ok(self.elsewhere(t)? || self.in_other_task(t)?)
     }
 
+    /// The checkout a commit or push ran in when it isn't the terminal's own.
+    fn commit_elsewhere(&self) -> Option<String> {
+        if self.event != "hook.commit" {
+            return None;
+        }
+        let cwd = self.cwd.as_deref()?;
+        let dir = git_place(&self.b("command"), cwd)?;
+        let top = |d: &str| repo_of(d).map(|(_, top)| top);
+        (top(&dir)? != top(cwd)?).then_some(dir)
+    }
+
+    /// The task last committed in another checkout that's still there: the terminal's folder (a shared
+    /// checkout, maybe on another task's branch) doesn't say where its work is.
+    fn works_elsewhere(&self, w: &serde_json::Map<String, Value>) -> bool {
+        let Some(home) = w.get("committed_in").and_then(|v| v.as_str()).filter(|d| std::path::Path::new(d).is_dir()) else { return false };
+        self.cwd.as_deref().and_then(repo_of).is_some_and(|(_, top)| top != home)
+    }
+
     fn update_where(&self, t: &Row, turn: bool) -> Result<Row> {
         let mut ctx = board::task_context(t);
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         let away = self.away(t)?;
         self.track_outside(t, &mut ctx)?;
-        if !away {
-            if let Some(b) = self.git.s("branch").filter(|s| !s.is_empty()) {
+        let elsewhere = self.commit_elsewhere();
+        let commit = self.event == "hook.commit";
+        if !away && (commit || !self.works_elsewhere(&w)) {
+            let (git, dir) = match &elsewhere {
+                Some(d) => (&self.work_git, Some(d)),
+                None => (&self.git, self.cwd.as_ref()),
+            };
+            if let Some(b) = git.s("branch").filter(|s| !s.is_empty()) {
                 w.insert("branch".into(), json!(b));
             }
-            if let Some(c) = self.git.s("commit").filter(|s| !s.is_empty()) {
+            if let Some(c) = git.s("commit").filter(|s| !s.is_empty()) {
                 w.insert("last_commit".into(), json!(c));
             }
-            if let Some(c) = self.git.s("sha").filter(|s| !s.is_empty()) {
+            if let Some(c) = git.s("sha").filter(|s| !s.is_empty()) {
                 w.insert("sha".into(), json!(c));
             }
-            if let Some(u) = self.git.i("uncommitted") {
+            if let Some(u) = git.i("uncommitted") {
                 w.insert("uncommitted".into(), json!(u));
             }
-            if let Some(cwd) = &self.cwd {
-                w.insert("worktree".into(), json!(cwd));
+            if let Some(d) = dir {
+                w.insert("worktree".into(), json!(d));
+                if let Some((_, top)) = repo_of(d).filter(|_| commit) {
+                    w.insert("committed_in".into(), json!(top));
+                }
             }
         }
         if let Some(c) = &self.claude {
@@ -310,7 +340,7 @@ fn outside_key(task: i64) -> String {
 
 /// The folder a git commit or push in `cmd` runs in: from `cwd`, through each `cd <dir>` before it,
 /// then its `git -C <dir>`. None when it names no folder, or `cmd` has no commit or push.
-fn git_place(cmd: &str, cwd: &str) -> Option<String> {
+pub fn git_place(cmd: &str, cwd: &str) -> Option<String> {
     let git = GIT_WORK_RE.find(cmd)?;
     let cds: Vec<_> = CD_RE.captures_iter(&cmd[..git.start()]).collect();
     let at = cds.iter().fold(cwd.to_string(), |at, c| resolve(&at, &c[1]));

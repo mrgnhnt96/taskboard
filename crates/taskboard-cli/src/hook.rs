@@ -783,6 +783,9 @@ pub fn run(event_arg: Option<&str>) -> i32 {
         // This hook stamps each Bash and subagent call (`tool_window`), so the board needn't guess.
         extra.insert("tool_windows".into(), json!(true));
     }
+    if let Some(dir) = extra.get("command").and_then(|c| c.as_str()).and_then(|c| taskboardd::reports::git_place(c, &cwd)) {
+        extra.insert("work_git".into(), client::git_info(&dir, GIT_TIMEOUT));
+    }
     let git = client::git_info(&cwd, GIT_TIMEOUT);
     let base = client::base_body(event, &session, &s("session_id"), &cwd, git);
     let mut body = base.clone();
