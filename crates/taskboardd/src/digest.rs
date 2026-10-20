@@ -41,14 +41,9 @@ fn save(app: &App, s: &Value) -> Result<()> {
     app.db.set_setting("alert_digest", Some(&jdumps(s)))
 }
 
-fn snoozed(a: &Value, now: f64) -> bool {
-    a["snoozed_until"].as_str().and_then(parse_iso).is_some_and(|s| s > now)
-}
-
 /// The alerts the digest lists now, in the app's order.
 pub fn members(app: &App) -> Vec<Value> {
-    let now = now_ts();
-    dispatch::listing(app).into_iter().filter(|a| holds(app, a) && !snoozed(a, now)).collect()
+    dispatch::listing(app).into_iter().filter(|a| holds(app, a) && !dispatch::snoozed(a)).collect()
 }
 
 fn ids(rows: &[Value]) -> Vec<String> {

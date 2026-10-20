@@ -107,6 +107,8 @@ pub struct Ask {
     pub answer: bool,
     /// Review and urgent alerts stay until what raised them clears.
     pub dismiss: bool,
+    /// An alert, which Snooze takes off the list for a while.
+    pub snooze: bool,
     /// The alert's fixes as (label, command), a button each beside Dismiss.
     pub actions: Vec<(String, String)>,
     /// Open, under what the alert said: what it wants from you and what Dismiss leaves.
@@ -288,6 +290,7 @@ pub fn ask_vm(a: &Value) -> Ask {
         answer,
         // The board keeps these until they're handled (`dispatch::stays`).
         dismiss: !s(a, "id").is_empty() && a["review"] != true && a["urgent"] != true && a["quiet"] != true,
+        snooze: !s(a, "id").is_empty(),
         help,
         asks,
         picker,
@@ -325,6 +328,7 @@ fn stop_vm(e: &Value) -> Option<Ask> {
         also: None,
         answer: false,
         dismiss: false,
+        snooze: false,
         actions: Vec::new(),
         help: vec![],
         asks: Vec::new(),
@@ -524,6 +528,51 @@ pub fn dismiss(m: &mut MainWindow, id: &str, cx: &mut Context<MainWindow>) {
     cx.notify();
 }
 
+/// The Snooze menu: (label, `POST /alerts/:id/snooze` body).
+pub fn snooze_choices() -> [(&'static str, Value); 6] {
+    [
+        ("15 minutes", json!({"mins": 15})),
+        ("30 minutes", json!({"mins": 30})),
+        ("1 hour", json!({"mins": 60})),
+        ("3 hours", json!({"mins": 180})),
+        ("Tomorrow", json!({"until": "tomorrow"})),
+        ("Until I’m back", json!({"until": "back"})),
+    ]
+}
+
+/// The toast once alert `a` is snoozed: "Snoozed until 3:45 PM".
+pub fn snoozed_note(a: &Value) -> String {
+    match opt_s(a, "snoozed_until") {
+        Some(at) if fmt::hhmm(at).contains(':') => format!("Snoozed until {}", fmt::hhmm(at)),
+        Some(_) => "Snoozed until tomorrow".into(),
+        None => "Snoozed until you’re back".into(),
+    }
+}
+
+/// Snooze on a Needs you item: `POST /alerts/:id/snooze`, gone from the list until it's up.
+fn snooze(m: &mut MainWindow, id: &str, body: Value, cx: &mut Context<MainWindow>) {
+    m.menu = None;
+    if let Some(needs) = m.data.home.as_mut().and_then(|h| h.get_mut("needs")).and_then(Value::as_array_mut) {
+        needs.retain(|a| s(a, "id") != id);
+    }
+    m.post(format!("alerts/{id}/snooze"), body, cx, |m, v, cx| sent(m, snoozed_note(&v["alert"]), cx));
+    cx.notify();
+}
+
+const SNOOZE_MENU: &str = "home-snooze:";
+
+/// The open Snooze menu, under the item it's for.
+fn snooze_menu(m: &MainWindow, t: &Theme, cx: &mut Context<MainWindow>) -> Option<AnyElement> {
+    let (key, at) = m.menu.as_ref().filter(|(k, _)| k.starts_with(SNOOZE_MENU))?;
+    let id = key[SNOOZE_MENU.len()..].to_string();
+    let mut menu = kit::menu_box(t, 170.).id("home-snooze-menu").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    for (n, (label, body)) in snooze_choices().into_iter().enumerate() {
+        let id = id.clone();
+        menu = menu.child(kit::menu_item(t, ("home-snooze-choice", n), label, false).on_click(cx.listener(move |m, _, _, cx| snooze(m, &id, body.clone(), cx))));
+    }
+    Some(kit::popover(*at, menu))
+}
+
 fn sent_note(state: &Value) -> &'static str {
     if state["midna"]["up"] == Value::Bool(false) { "Saved. It runs once Midna is back." } else { "Sent to Midna" }
 }
@@ -677,7 +726,8 @@ pub fn render(m: &mut MainWindow, window: &mut Window, cx: &mut Context<MainWind
         }
     }
     let filter = ip::render_project_filter(m, &t, PROJECT_FILTER, window, cx);
-    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().bg(t.bg).child(page).children(filter).into_any_element()
+    let menu = snooze_menu(m, &t, cx);
+    div().id("home-page").flex_1().min_w_0().h_full().overflow_y_scroll().bg(t.bg).child(page).children(filter).children(menu).into_any_element()
 }
 
 fn group_label(t: &Theme, text: &str, n: usize) -> Div {
@@ -772,7 +822,18 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
 
     // Open, the buttons sit at the bottom right (a question's signals under its field).
     let acts = |open: bool| [("act", a.act.clone()), ("also", a.also.clone())].into_iter().filter(move |_| !open).filter_map(|(part, act)| act.map(|act| (part, act)));
-    let buttons: Vec<_> = acts(open).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
+    let mut buttons: Vec<_> = acts(open).map(|(part, act)| act_btn(t, id(part), act, cx)).collect();
+    if a.snooze {
+        let menu = format!("{SNOOZE_MENU}{}", a.id);
+        buttons.insert(
+            0,
+            small_btn(t, id("snooze"), "Snooze ▾").on_click(cx.listener(move |m, e: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                let p = e.position();
+                m.toggle_menu(&menu, point(p.x - px(120.), p.y + px(14.)), cx);
+            })),
+        );
+    }
 
     let head = div()
         .id(id("head"))
@@ -894,8 +955,12 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
     card
 }
 
+fn small_btn(t: &Theme, id: SharedString, label: &'static str) -> Stateful<Div> {
+    kit::btn(t, id, label).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.))
+}
+
 fn act_btn(t: &Theme, id: SharedString, act: Act, cx: &mut Context<MainWindow>) -> Stateful<Div> {
-    kit::btn(t, id, act.label()).h(px(30.)).px(px(12.)).rounded(px(7.)).text_size(px(12.)).on_click(cx.listener(move |m, _, _, cx| {
+    small_btn(t, id, act.label()).on_click(cx.listener(move |m, _, _, cx| {
         cx.stop_propagation();
         run_act(m, &act, cx);
     }))
@@ -1052,6 +1117,22 @@ mod tests {
         let t = tile_vm(&card(json!({"status": "done", "pr": {"num": 2, "url": "https://x/pr/2", "state": "OPEN",
             "stage": {"phase": "review", "label": "Stuck: no reviewers", "setup": true}}})));
         assert_eq!((t.status.as_str(), t.tone, t.line.as_str()), ("Needs setup", "needs", "PR #2 · Stuck: no reviewers"));
+    }
+
+    #[test]
+    fn an_alert_snoozes_and_says_until_when() {
+        let home = json!({"needs": [
+            {"id": "a1", "at": "2026-10-09T10:00:00Z", "text": "T5: Keep the old form?", "task": "T5", "urgent": true, "card": card(json!({"ref": "T5", "status": "needs"}))},
+            {"id": null, "at": "2026-10-09T09:00:00Z", "text": "Which icon?", "task": "T6", "card": card(json!({"ref": "T6", "status": "needs"}))}
+        ]});
+        let asks = asks_vm(&home);
+        assert!(asks[0].snooze && !asks[0].dismiss, "an urgent alert can't be dismissed but snoozes");
+        assert!(!asks[1].snooze, "a task with no alert up has nothing to snooze");
+        assert_eq!(snooze_choices().map(|c| c.0), ["15 minutes", "30 minutes", "1 hour", "3 hours", "Tomorrow", "Until I’m back"]);
+        assert_eq!(snoozed_note(&json!({"snoozed_until": null, "snoozed_back": "2026-10-09T10:00:00Z"})), "Snoozed until you’re back");
+        assert_eq!(snoozed_note(&json!({"snoozed_until": "2020-01-02T09:00:00Z"})), "Snoozed until tomorrow");
+        let soon = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        assert_eq!(snoozed_note(&json!({"snoozed_until": soon})), format!("Snoozed until {}", fmt::hhmm(&soon)));
     }
 
     #[test]

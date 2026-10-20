@@ -469,14 +469,28 @@ fn take_responses(app: &App) -> Result<()> {
 }
 
 pub fn snooze_alert(app: &App, alert_id: &str, mins: i64) -> Result<Option<Value>> {
+    snooze_to(app, alert_id, Some(now_ts() + mins as f64 * 60.0))
+}
+
+/// Snoozes alert `alert_id` to a clock time, or (`None`) until the owner is back from their next
+/// stretch away: `snoozed_back` is when it was snoozed. Snoozed, it's out of Needs you and quiet.
+pub fn snooze_to(app: &App, alert_id: &str, until: Option<f64>) -> Result<Option<Value>> {
     let mut rows = alerts(app);
-    for a in rows.iter_mut() {
-        if a["id"] == alert_id {
-            a["snoozed_until"] = json!(iso(now_ts() + mins as f64 * 60.0));
-        }
+    for a in rows.iter_mut().filter(|a| a["id"] == alert_id) {
+        a["snoozed_until"] = until.map(|t| json!(iso(t))).unwrap_or(Value::Null);
+        a["snoozed_back"] = if until.is_none() { json!(now_iso()) } else { Value::Null };
     }
     keep(app, &rows)?;
     Ok(rows.into_iter().find(|a| a["id"] == alert_id))
+}
+
+/// Whether alert `a` is snoozed now: its time hasn't come, or the owner hasn't been away and back.
+pub fn snoozed(a: &Value) -> bool {
+    match (a["snoozed_until"].as_str().and_then(parse_iso), a["snoozed_back"].as_str().and_then(parse_iso)) {
+        (Some(until), _) => until > now_ts(),
+        (None, Some(since)) => !crate::clock::back_since(since),
+        _ => false,
+    }
 }
 
 fn repeat_alerts(app: &App) -> Result<()> {
@@ -496,11 +510,13 @@ fn repeat_alerts(app: &App) -> Result<()> {
         // A snooze runs to a clock time; a repeat waits for `every` of the time the Mac was awake.
         let due = match a["snoozed_until"].as_str().and_then(parse_iso) {
             Some(s) => now >= s,
+            None if a["snoozed_back"].is_string() => !snoozed(a),
             None => age_secs(a["notified_at"].as_str().or(a["at"].as_str())).unwrap_or(0.0) >= every,
         };
         if due {
             a["notified_at"] = json!(now_iso());
             a["snoozed_until"] = Value::Null;
+            a["snoozed_back"] = Value::Null;
             sent = true;
             notify_alert(app, a);
         }
@@ -716,7 +732,7 @@ fn tend_waiters(app: &App) {
 }
 
 /// Takes a cleared alert's notification away (Notification Center, Midna's card and badge).
-fn withdraw(app: &App, alert_id: &str) {
+pub fn withdraw(app: &App, alert_id: &str) {
     withdraw_id(app, &notification_id(alert_id));
 }
 
