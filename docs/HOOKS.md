@@ -290,6 +290,13 @@ prompt = "Sign off the screens this task changes."
   `TASKBOARD_DATA` unexpanded (a script reading it from the environment). It errs on the side of refusing; an agent
   has no reason to look in that folder. It reads what a call says, so it can't be complete: a program that builds
   the path at run time gets past it. The signed app doesn't use the file at all.
+- **Closed input for Bash.** The plugin's `PreToolUse` hook (in every terminal, Midna's or not) runs each Bash
+  command it lets through as `{ <command>\n} < /dev/null`, through `updatedInput`, so a stray `cat > file`, a
+  `read` or an interactive prompt meets the end of its input and fails at once instead of waiting forever and
+  holding its task open. Heredocs and pipes in the command still feed what they name; the call is still asked for
+  as it would have been. A turn that hangs some other way is the check-in's: once Haiku calls it stuck
+  (checkin.rs), the board raises a `stuck:<session>` alert for the owner, taken down when a later check-in finds
+  it working or the turn ends.
 - **The gates.** The plugin's `PreToolUse` hook refuses a command that opens a PR (`gh pr create`, `glab mr
   create`, a POST to `…/pulls` or `…/pullrequests` through `gh api`, `tb api` or curl, an MCP tool like
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do
