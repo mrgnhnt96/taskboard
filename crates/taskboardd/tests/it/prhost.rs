@@ -244,6 +244,43 @@ fn the_owners_word_in_the_terminal_merges_one_pr_and_its_approved_counts() {
 }
 
 #[test]
+fn the_owner_closes_a_pr_and_an_agent_only_on_their_word() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    let said = |p: &str| b.report("hook.prompt", "s1", json!({"prompt": p}));
+    let close = || b.try_post(&format!("/tasks/T{id}/pr/close"), json!({"agent": true, "via_session": "s1", "reason": "Went another way"}));
+    assert!(close().unwrap_err().contains("haven't told you to close this one"), "no word");
+    said("close PR #12");
+    assert!(close().unwrap_err().contains("haven't told you to close this one"), "another PR's word");
+    assert!(!h.calls().iter().any(|c| c.starts_with("close")), "{:?}", h.calls());
+    said("decline PR #9");
+    close().unwrap();
+    assert!(h.calls().contains(&"close: Went another way".to_string()), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "declined");
+    assert!(b.try_post(&format!("/tasks/T{id}/pr/close"), json!({})).unwrap_err().contains("already closed"));
+}
+
+#[test]
+fn the_owner_closes_a_pr_from_their_own_shell_but_not_a_merged_one() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    b.post(&format!("/tasks/T{id}/pr/close"), json!({}));
+    assert!(h.calls().contains(&"close".to_string()), "{:?}", h.calls());
+    assert_eq!(b.phase(id), "declined");
+
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.state = "MERGED".into();
+    let h = fake(&b, rec);
+    assert!(b.try_post(&format!("/tasks/T{id}/pr/close"), json!({})).unwrap_err().contains("already merged"));
+    assert!(!h.calls().iter().any(|c| c.starts_with("close")));
+}
+
+#[test]
 fn a_project_with_no_review_step_and_agents_merge_on_merges_without_anyone() {
     let b = board_with(|_| {});
     let id = b.pr_task(BB);

@@ -261,6 +261,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "pr", "ack"]) => crate::prcmds::ack(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "addressed"]) => crate::prcmds::addressed(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "merge"]) => crate::prcmds::merge(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pr", "close"]) => crate::prcmds::close(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "checks-running"]) => crate::prcmds::checks_running(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "not-ours"]) => crate::prcmds::not_ours(app, tid(id)?, body),
         ("POST", ["tasks", id, "pr", "needs-owner"]) => crate::prcmds::needs_owner(app, tid(id)?, body),

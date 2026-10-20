@@ -1544,6 +1544,17 @@ pub static MERGES: Lazy<Kind> = Lazy::new(|| {
     );
     Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
 });
+/// The words for closing a PR without merging it ("close", "decline", "abandon").
+const CLOSE_VERB: &str = r"(?:close|decline|abandon)";
+/// The PR a close ask doesn't name: only the PR itself ("the PR", "this pull request"), never a bare
+/// "it", which as often means a terminal or a task.
+const UNNAMED_CLOSE: &str = r"(?:(?:the|this|that|your|its)\s+(?:pr|pull\s+request))";
+/// Closes of a task's PR without a merge (`tb pr close`), read with its PR named as the task
+/// ([`as_task_refs`]): "close PR #194", "decline the PR", "abandon T8".
+pub static CLOSES: Lazy<Kind> = Lazy::new(|| {
+    let on = format!(r"(?:\b{CLOSE_VERB}\s+(?:{LISTED}(?P<named>{NAMED})|(?P<unnamed>{UNNAMED_CLOSE})))");
+    Kind { mention: Regex::new(&format!(r"(?i){on}\b")).unwrap(), ids: Regex::new(r"\b[Tt](\d+)\b").unwrap(), goal: false }
+});
 /// A PR named by its number: "PR #194", "the PR 194", "pull request 194", "#194".
 static PR_REF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)(?:\b(?:the|this|that)\s+)?\b(?:pr|pull\s+request)\s*#?\s*(\d+)\b|\B#(\d+)\b").unwrap());
@@ -1594,11 +1605,21 @@ pub struct MergeWord {
 /// agent's message just before it names this PR and no other, or, in the latest prompt, when the
 /// terminal's task is `id` (`own`) and that message names no PR.
 pub fn merge_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
+    pr_word_in(&MERGES, prompts, id, num, own)
+}
+
+/// Which prompt, newest first, is the word to close task `id`'s PR #`num` without merging it, read as
+/// [`merge_word_in`] reads a merge.
+pub fn close_word_in(prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
+    pr_word_in(&CLOSES, prompts, id, num, own)
+}
+
+fn pr_word_in(k: &Kind, prompts: &[Prompt], id: i64, num: i64, own: bool) -> Option<usize> {
     for (i, p) in prompts.iter().enumerate() {
         if p.boards() {
             continue;
         }
-        let r = read_of(&MERGES, &as_task_refs(&p.text, id, num));
+        let r = read_of(k, &as_task_refs(&p.text, id, num));
         let named = p.reply.as_deref().map(prs_in).unwrap_or_default();
         let unnamed = |a: &Ask| *a == Ask::Unnamed && if named.is_empty() { i == 0 && own } else { named.iter().all(|n| *n == num) };
         match r.word_for(id, unnamed) {
@@ -1619,6 +1640,16 @@ pub fn owners_merge_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Opti
     let prompts = prompts_of(app, sid, None)?;
     let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
     Ok(merge_word_in(&prompts, id, num, own).map(|i| MergeWord { text: prompts[i].text.clone(), approved: approves(&prompts[i].text) }))
+}
+
+/// The owner's word in terminal `sid` to close task `id`'s PR #`num` ([`close_word_in`]): the prompt.
+pub fn owners_close_word(app: &App, sid: &str, id: i64, num: i64) -> Result<Option<String>> {
+    if sid.is_empty() {
+        return Ok(None);
+    }
+    let prompts = prompts_of(app, sid, None)?;
+    let own = crate::board::task_for_session(app, Some(sid))?.is_some_and(|t| t.id() == id);
+    Ok(close_word_in(&prompts, id, num, own).map(|i| prompts[i].text.clone()))
 }
 
 /// Notes on terminal `sid` that its conversation made goal `id` (`tb goal new`): the goal "run it" and
@@ -3816,6 +3847,24 @@ mod tests {
         assert!(!approves("merge it, it isn't approved yet"));
         assert!(!approves("is it approved?"));
         assert!(approves("lgtm, merge it"));
+    }
+
+    #[test]
+    fn the_owners_word_closes_one_pr() {
+        let after = |reply: &str, text: &str| vec![Prompt { reply: Some(reply.into()), ..Prompt::new(text) }];
+        for yes in ["close PR #194", "decline #194", "abandon T95", "go ahead and close pr 194, we went another way"] {
+            assert_eq!(close_word_in(&prompts(&[yes], None), 95, 194, false), Some(0), "{yes}");
+        }
+        for no in ["don't close PR #194", "should I close PR #194?", "close PR #196", "merge PR #194", "close the terminals"] {
+            assert_eq!(close_word_in(&prompts(&[no], None), 95, 194, false), None, "{no}");
+        }
+        // Unnamed, only "the PR" counts, and only when it can mean this one.
+        assert_eq!(close_word_in(&after("PR #194 is still open.", "close the PR"), 95, 194, false), Some(0));
+        assert_eq!(close_word_in(&after("PR #194 is still open.", "close it"), 95, 194, false), None, "a bare it may be a terminal");
+        assert_eq!(close_word_in(&prompts(&["close the PR"], None), 95, 194, true), Some(0));
+        assert_eq!(close_word_in(&prompts(&["close the PR"], None), 95, 194, false), None);
+        assert_eq!(close_word_in(&prompts(&["[task-board:T95] close PR #194"], None), 95, 194, false), None);
+        assert_eq!(merge_word_in(&prompts(&["close PR #194"], None), 95, 194, false), None, "a close is no merge");
     }
 }
 

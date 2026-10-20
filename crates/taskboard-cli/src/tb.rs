@@ -1846,6 +1846,13 @@ enum PrCmd {
     },
     /// Merge it once it's approved, green and every thread is answered (the board checks first)
     Merge { task: Option<String> },
+    /// Close it without merging (Bitbucket: decline), keeping its branch: only on the owner's word
+    Close {
+        task: Option<String>,
+        /// Why, posted on the PR as a comment
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// A failed check isn't this PR's fault: clear it for this push, with proof
     NotOurs {
         task: Option<String>,
@@ -6245,6 +6252,12 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 let t = c.pr_task(task)?;
                 c.call_progress("POST", &format!("/tasks/{t}/pr/merge"), Some(json!({"agent": !c.session.is_empty(), "via_session": c.session})))?;
                 out(&format!("Merged {t}'s PR and deleted its branch. You can stop here."));
+                Ok(0)
+            }
+            PrCmd::Close { task, reason } => {
+                let t = c.pr_task(task)?;
+                c.call_progress("POST", &format!("/tasks/{t}/pr/close"), Some(json!({"reason": reason.unwrap_or_default(), "agent": !c.session.is_empty(), "via_session": c.session})))?;
+                out(&format!("Closed {t}'s PR without merging it; its branch stays. You can stop here."));
                 Ok(0)
             }
             PrCmd::NotOurs { task, reason, title, proof, check } => {

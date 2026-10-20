@@ -1734,6 +1734,21 @@ pub fn mark_merged(app: &App, t: &Row, who: &str) -> Result<()> {
     Ok(())
 }
 
+/// Records the task's PR as closed without merging (`tb pr close`), as the board reads a PR closed on
+/// its host.
+pub fn mark_declined(app: &App, t: &Row, who: &str, reason: &str) -> Result<()> {
+    if t.s("pr_phase") == Some("declined") {
+        return Ok(());
+    }
+    let state = if t.s("pr_host") == Some("bitbucket") { "DECLINED" } else { "CLOSED" };
+    board::update_task(app, t.id(), fields!["pr_state" => state, "pr_phase" => "declined"])?;
+    merge_flow(app, t.id(), fields!["woke" => null, "stopped" => null])?;
+    let why = if reason.is_empty() { String::new() } else { format!(": {reason}") };
+    board::log_event(app, t.id(), who, "status", &format!("Closed PR #{} without merging{why}", t.i0("pr_num")))?;
+    dispatch::clear_alerts(app, Some(t.id()), None)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
