@@ -92,6 +92,9 @@ pub(crate) struct Tally {
     planned: i64,
     done: i64,
     failed: i64,
+    /// Failed but still open (a lost terminal, a start that didn't take): live, unlike a task
+    /// that finished failed.
+    stuck: i64,
 }
 
 impl Tally {
@@ -112,7 +115,11 @@ impl Tally {
         let mut t = Tally::default();
         if let Some(d) = detail.filter(|d| d["tasks"].is_array()) {
             for c in arr(d, "tasks") {
-                t.add(status::row(c).st);
+                let st = status::row(c).st;
+                t.add(st);
+                if st == St::Failed && s(c, "status") != "done" {
+                    t.stuck += 1;
+                }
             }
             return t;
         }
@@ -125,7 +132,13 @@ impl Tally {
             planned: i(g, "planned"),
             done: i(g, "done"),
             failed: 0,
+            stuck: 0,
         }
+    }
+
+    /// Failed tasks still open, not ones that finished failed.
+    pub(crate) fn stuck(&self) -> i64 {
+        self.stuck
     }
 
     /// The bar's parts, finished work first.
