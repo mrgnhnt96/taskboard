@@ -2,7 +2,7 @@
 //! first, each a row that opens in place to its tasks by goal (`GET /releases/:id`). Only the
 //! projects with releases on (the state's `releases`) have one; with none the page is hidden.
 //! Read-only: cutting and editing releases stay in `tb`.
-use crate::app::MainWindow;
+use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, i, opt_s, s};
 use crate::theme::Theme;
 use crate::ui::issue_panel as ip;
@@ -50,6 +50,20 @@ pub fn shown(state: &Value, picked: &str) -> Vec<String> {
 /// The key of a project's Unreleased row.
 pub fn unreleased_key(project: &str) -> String {
     format!("unreleased:{project}")
+}
+
+/// The project filter that shows release `r`: the picked one when its list has it, else every one.
+pub fn project_showing(st: &State, r: &str) -> String {
+    let has = |l: &Value| arr(l, "releases").iter().any(|x| s(x, "ref") == r);
+    if st.lists.get(st.project()).is_some_and(has) { st.project.clone() } else { String::new() }
+}
+
+/// A `taskboard://release/R3` link (Midna links R refs): the Releases page with that row open.
+pub fn open(m: &mut MainWindow, r: &str, cx: &mut Context<MainWindow>) {
+    m.releases.project = project_showing(&m.releases, r);
+    m.releases.open.insert(r.to_string());
+    m.go(Page::Releases, cx);
+    m.refresh(cx);
 }
 
 /// What to fetch for an open row: the path and query.
@@ -362,6 +376,18 @@ mod tests {
         assert_eq!(shown(&state, "midna"), ["midna"]);
         // A project whose releases were turned off falls back to every one still on.
         assert_eq!(shown(&state, "web"), ["kass", "midna"]);
+    }
+
+    #[test]
+    fn a_release_link_keeps_the_filter_only_when_it_shows_the_release() {
+        let mut st = State::default();
+        st.lists.insert("web".into(), json!({"releases": [{"ref": "R2"}]}));
+        st.lists.insert("api".into(), json!({"releases": [{"ref": "R5"}]}));
+        st.project = "web".into();
+        assert_eq!(project_showing(&st, "R2"), "web");
+        assert_eq!(project_showing(&st, "R5"), "");
+        st.project = String::new();
+        assert_eq!(project_showing(&st, "R2"), "");
     }
 
     #[test]
