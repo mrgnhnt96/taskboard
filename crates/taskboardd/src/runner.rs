@@ -407,6 +407,8 @@ fn close_job(app: &App, s: &Row, t: &Row, purpose: &str, why: &str, force: bool)
 /// A task terminal that has compacted `max_compactions` times carries on in a fresh one from its
 /// handoff (the checkpoint saved before each compaction) instead of compacting again: closed once
 /// its turn is over, or at once when it starts one more compaction (nothing runs while it compacts).
+/// Only terminals the board opened: one the owner opened that took a task (`--here`, `tb take`)
+/// holds their conversation, so it stays open.
 pub fn close_compacted(app: &App) -> Result<()> {
     let max = limits::get(app).max_compactions;
     if max <= 0 {
@@ -419,6 +421,9 @@ pub fn close_compacted(app: &App) -> Result<()> {
         }
         let compacting = board::compacting_since(&s).is_string() && n > max && !board::waiting_on_background(&s);
         if !compacting && (!settled(&s) || board::limited(&s)) {
+            continue;
+        }
+        if !board::opened_by_board(app, s.s("id"))? {
             continue;
         }
         let why = format!("It has compacted its conversation {}", plural(n, "time"));

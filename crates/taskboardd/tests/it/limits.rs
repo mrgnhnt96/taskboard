@@ -452,6 +452,10 @@ impl Board {
         self.report("hook.pre_compact", json!({"trigger": "auto"})).unwrap();
         self.report("hook.session_start", json!({"source": "compact"})).unwrap();
     }
+    /// Marks `s1` as a terminal the board opened for `id` (an agent job's terminal).
+    fn opened_by_board(&self, id: i64) {
+        board::create_job(&self.app, "agent", json!({}), Some(id), "start", Some(json!({"session": "s1"}))).unwrap();
+    }
     fn settle(&self) {
         self.add_session("idle");
         self.app.db.x("UPDATE sessions SET status = 'idle', status_at = '2000-01-01T00:00:00Z' WHERE id = 's1'", p![]).unwrap();
@@ -462,6 +466,7 @@ impl Board {
 fn a_task_terminal_that_compacted_three_times_carries_on_in_a_fresh_one() {
     let b = board_with(|_| {});
     let id = b.new_task();
+    b.opened_by_board(id);
     b.compact();
     b.compact();
     b.settle();
@@ -492,7 +497,8 @@ fn a_task_terminal_that_compacted_three_times_carries_on_in_a_fresh_one() {
 fn one_more_compaction_past_the_limit_closes_the_terminal_at_once() {
     let b = board_with(|_| {});
     b.post("/limits", json!({"max_compactions": 1})).unwrap();
-    b.new_task();
+    let id = b.new_task();
+    b.opened_by_board(id);
     b.compact();
     b.report("hook.pre_compact", json!({"trigger": "auto"})).unwrap();
     taskboardd::runner::close_compacted(&b.app).unwrap();
@@ -502,9 +508,26 @@ fn one_more_compaction_past_the_limit_closes_the_terminal_at_once() {
 }
 
 #[test]
+fn a_terminal_the_owner_opened_stays_open_past_the_compaction_limit() {
+    let b = board_with(|_| {});
+    b.post("/limits", json!({"max_compactions": 1})).unwrap();
+    let id = b.new_task();
+    for _ in 0..2 {
+        b.compact();
+    }
+    b.settle();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    b.report("hook.pre_compact", json!({"trigger": "auto"})).unwrap();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert!(b.close_jobs().is_empty(), "a terminal that took the task with tb take isn't the board's to close");
+    assert_eq!(b.task(id).s("status"), Some("working"));
+}
+
+#[test]
 fn compactions_count_per_conversation_and_the_limit_can_be_off() {
     let b = board_with(|_| {});
-    b.new_task();
+    let id = b.new_task();
+    b.opened_by_board(id);
     for _ in 0..3 {
         b.compact();
     }

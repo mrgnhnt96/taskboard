@@ -939,7 +939,8 @@ by the board's, and once after an upgrade every repo the board has known is swep
 - `max_compactions` (default 3): a task terminal counts its compactions (each PreCompact; a new conversation in it starts
   over). Once it has compacted this many times, the board closes it when its turn is over (idle, no background work), or
   force-closes it as it starts one more compaction, and the task is queued to start again from its handoff in a fresh
-  terminal ("Closed after compacting its conversation too many times"). PR visits aren't counted.
+  terminal ("Closed after compacting its conversation too many times"). PR visits aren't counted. Only terminals the
+  board opened are closed: one the owner opened that took a task (`tb task new --here`, `tb take`) stays open.
 
 ### History
 | Path | Body | Notes |
