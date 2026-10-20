@@ -916,7 +916,8 @@ impl Draw<'_> {
             St::StepName => d.text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap(),
             St::StepSub => d.text_size(px(11.5)).text_center(),
             St::LrowKey => d.text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
-            St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text),
+            // No color of its own: a step still to come is muted.
+            St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD),
             St::TlS => d.text_size(px(12.)).text_color(t.muted),
             St::TlText => d.text_size(px(13.)).line_height(relative(1.5)).text_color(t.text),
             St::Count => d.flex_none().px(px(7.)).rounded_full().bg(t.col).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
@@ -1257,7 +1258,7 @@ impl Draw<'_> {
             Some(c) => div().mt(px(-4.)).ml(px(-4.)).size(px(18.)).rounded_full().bg(c).flex().items_center().justify_center().child(dot),
             None => dot,
         });
-        let main = div().flex().flex_col().gap(px(8.)).flex_1().min_w_0().when(card, |d| d.bg(t.panel_2).rounded(px(10.)).px(px(14.)).py(px(12.)));
+        let main = div().flex().flex_col().gap(px(8.)).flex_1().min_w_0().when(st == TlSt::Todo, |d| d.text_color(t.muted)).when(card, |d| d.bg(t.panel_2).rounded(px(10.)).px(px(14.)).py(px(12.)));
         div()
             .relative()
             .flex()

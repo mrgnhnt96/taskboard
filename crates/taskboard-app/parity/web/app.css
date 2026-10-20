@@ -445,6 +445,7 @@ a.pr-bar, button.pr-bar { cursor: pointer; }
 .tl-card { background: #232932; border-radius: 10px; padding: 12px 14px; }
 .tl-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .tl-h { font-size: 13px; font-weight: 600; }
+.n-todo .tl-h { color: #a1abb8; }
 .tl-s { font-size: 12px; color: #a1abb8; }
 .tl-t { font-size: 12px; color: #6f7a88; margin-left: auto; }
 .tl-text { font-size: 13px; margin: 0; overflow-wrap: anywhere; }
