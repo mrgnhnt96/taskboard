@@ -212,6 +212,9 @@ fn a_tasks_terminals_say_when_their_session_ended() {
     let by = |sid: &str| terms.iter().find(|x| x["id"] == sid).cloned().unwrap();
     assert_eq!(by("s1")["gone_at"], gone);
     assert!(by("s2")["gone_at"].is_null());
+    let detail = b.get("/tasks/T1");
+    let shown = detail["terminals"].as_array().unwrap_or_else(|| panic!("{detail}"));
+    assert!(shown.iter().any(|x| x["id"] == "s1" && x["gone_at"] == gone), "{detail}");
 
     b.app.db.x("DELETE FROM task_terminals", p![]).unwrap();
     b.app.db.x("UPDATE tasks SET session_id = 's1' WHERE id = ?", p![id]).unwrap();
