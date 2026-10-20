@@ -402,7 +402,7 @@ fn lane_line(app: &App, t: &Row) -> Result<Option<String>> {
     let by = match from {
         "task" => "it's set on the task",
         "goal" => "its goal's lane",
-        _ => "the board picked it: a wave mate plans files that overlap its own, or one of them plans none",
+        _ => "the board picked it: a wave mate plans files that overlap its own, one of them plans none, or a wave mate has the shared checkout",
     };
     Ok(match lane.as_str() {
         "slot" => Some(format!("Lane: slot ({by}). The task works in a worktree slot from the board's pool, apart from the shared checkout.")),

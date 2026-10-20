@@ -2292,7 +2292,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
             format!("  {tb} propose {gref} --task \"title::what to do\" --task \"title::what to do\""),
             "A task that needs another one's work first lists it after a fourth ::, by ref or as #k for the k-th --task in the same command: \"title::what to do::2::#1\" or \"title::what to do::::T14\". It starts only once those are done.".to_string(),
             format!("Tasks that must not run together name the same lock: {tb} task set T<n> --lock <name> (like a device or a shared service). A task that needs the goal to itself gets --alone; --alone board stops everything else on the board while it runs."),
-            format!("Each task has a lane: shared (the shared checkout), slot (a worktree from the pool), alone, or auto, which takes a slot for a task whose wave mates plan overlapping files or no files, else shared. Set it with ::lane=<lane> after a --task, or {tb} task set T<n> --lane <lane>; {tb} planning lists the rules."),
+            format!("Each task has a lane: shared (the shared checkout), slot (a worktree from the pool), alone, or auto, which takes a slot for a task whose wave mates plan overlapping files or no files or have the shared checkout, else shared. Set it with ::lane=<lane> after a --task, or {tb} task set T<n> --lane <lane>; {tb} planning lists the rules."),
             format!("They arrive as planned tasks for {owner} to edit, reorder and queue. Nothing runs until {owner} queues it."),
         ]);
     } else {
