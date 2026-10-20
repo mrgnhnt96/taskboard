@@ -48,8 +48,17 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     } else if skipped.is_some() && (!failing || prflow::skip_hides_failures(&f, &rec)) {
         "skipped"
     } else if rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(false) && rec.get("state").is_some() {
-        // A PR into its base's branch may only get builds once it moves to the main branch.
-        if waits { "none_yet" } else { "not_needed" }
+        // A PR into its base's branch may only get builds once it moves to the main branch, and checks
+        // still awaited (expected ones, or the no-checks grace) aren't "not needed". Expected checks that
+        // waited out and never posted show the stage's own state.
+        let expected = prflow::expected_missing(app, t, &rec).is_some_and(|m| !m.is_empty());
+        if waits || prflow::checks_waiting(app, t, &f, &rec) {
+            "none_yet"
+        } else if expected {
+            ""
+        } else {
+            "not_needed"
+        }
     } else {
         ""
     };

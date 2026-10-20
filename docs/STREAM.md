@@ -66,6 +66,9 @@ incomplete pr event is still accepted, but it's kept with `complete: false`, and
 host instead of trusting the event. In board mode (see Modes) every pr event is only a hint: the board reads the PR
 from its host either way.
 
+An empty `checks` on the head the board already has keeps the checks it read before: Bitbucket's PR webhooks
+carry no commit statuses, so the list being empty there doesn't mean the checks went away. A new head starts over.
+
 ### `review`
 
 `pr`, `who`, `state` (`approved`, `changes`, `commented`, `dismissed`), and `body?`. The event's `at` is the

@@ -336,6 +336,31 @@ fn in_stream_mode_a_complete_pr_event_is_the_pr_s_state() {
 }
 
 #[test]
+fn a_pr_event_with_no_checks_keeps_the_saved_checks_for_the_same_head() {
+    let b = board_with(stream_mode("prs"));
+    let id = b.pr_task(BB);
+    let mut rec = host_rec("h1");
+    rec.checks.push(Check { name: "lint".into(), state: "failed".into(), url: None, at: None });
+    prhost::install(&b.app, FakeHost::new("bitbucket", rec));
+    prflow::refresh_task(&b.app, id).unwrap().unwrap();
+
+    let mut e = full_pr("pr1");
+    e["checks"] = json!([]);
+    let r = b.send(batch(vec![e]));
+    assert_eq!(r["results"][0]["result"]["applied"], true, "{r}");
+    let rec = b.rec(id);
+    assert_eq!(rec["checks"].as_array().map(Vec::len), Some(2), "same head h1, the host's checks stay: {rec}");
+    assert_eq!(rec["failed"], json!(["lint"]));
+
+    let mut e = full_pr("pr2");
+    e["head"] = json!("h2");
+    e["checks"] = json!([]);
+    b.send(batch(vec![e]));
+    let rec = b.rec(id);
+    assert_eq!(rec["checks"], json!([]), "a new head's checks start over: {rec}");
+}
+
+#[test]
 fn a_pr_with_no_read_yet_or_in_board_mode_is_read_from_its_host() {
     let b = board_with(stream_mode("prs"));
     let id = b.pr_task(BB);
