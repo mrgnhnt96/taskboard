@@ -875,7 +875,12 @@ pub fn start_params(app: &App, group: &str, rows: &[Value]) -> Value {
     let prompt = first["prompt"].as_str().unwrap_or("");
     lines.push(if prompt.is_empty() { format!("Asked in {who}") } else { format!("{who}: “{}”", one_line(prompt, 160)) });
     if let Some(at) = hours::until_open(app) {
-        lines.push(format!("Outside work hours: Start queues it for {}.", hours::say_when(&at)));
+        let now = mine.iter().all(|a| a["kind"] == "goal" && a["run"]["now"] == true);
+        lines.push(if now {
+            format!("Outside work hours: Start runs it now, until they open ({}).", hours::say_when(&at))
+        } else {
+            format!("Outside work hours: Start queues it for {}.", hours::say_when(&at))
+        });
     }
     let (task, goal) = if first["kind"] == "goal" { (None, first["id"].as_i64()) } else { (first["id"].as_i64(), None) };
     json!({"title": format!("Start {}?", say_refs(&refs)), "body": lines.join("\n"), "category": "board", "sound": true,
@@ -946,7 +951,7 @@ pub fn answer_start(app: &App, group: &str, response: &Value) -> Result<()> {
     for a in &mine {
         let Some(id) = a["id"].as_i64() else { continue };
         let out = if a["kind"] == "goal" {
-            crate::api::run_goal_from_notification(app, id)
+            crate::api::run_goal_from_notification(app, id, a["run"]["now"].as_bool().unwrap_or(false))
         } else {
             crate::api::start_from_notification(app, id, a["run"]["mode"].as_str().unwrap_or("new"), a["run"]["session_id"].as_str())
         };
