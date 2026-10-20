@@ -684,10 +684,40 @@ pub fn open_project_filter(
     cx: &mut Context<MainWindow>,
     on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + 'static,
 ) {
+    open_fixed(m, key, value, filter_items(projects), at, window, cx, on_pick);
+}
+
+/// Opens a searchable list of `projects` to choose one (no "All projects"), like
+/// [`open_project_filter`]; `on_pick` gets the name.
+#[allow(clippy::too_many_arguments)]
+pub fn open_project_choice(
+    m: &mut MainWindow,
+    key: &str,
+    value: &str,
+    projects: &[String],
+    at: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+    on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + 'static,
+) {
+    let items = projects.iter().map(|p| PickItem { v: p.clone(), name: p.clone(), sub: String::new(), special: false }).collect();
+    open_fixed(m, key, value, items, at, window, cx, on_pick);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_fixed(
+    m: &mut MainWindow,
+    key: &str,
+    value: &str,
+    items: Vec<PickItem>,
+    at: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+    on_pick: impl Fn(&mut MainWindow, String, &mut Context<MainWindow>) + 'static,
+) {
     let restore = window.focused(cx);
     let q = kit::Input::new(cx, "Search projects", false);
     window.focus(&q.focus, cx);
-    let items = filter_items(projects);
     let active = items.iter().position(|it| it.v == value).unwrap_or(0);
     m.issue_panel.picker = Some(Picker {
         key: key.to_string(),
@@ -746,9 +776,12 @@ pub fn render_picker(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mu
     let q = p.q.text(cx);
     let items = p.items(&q, m.state(), &m.data.goals);
     let active = p.active.min(items.len().saturating_sub(1));
-    let (title, none) = if p.fixed.is_some() {
-        ("Filter by project", "No project matches")
-    } else if p.goal { ("Choose a goal", "No goal matches") } else { ("Choose a project", "No project matches") };
+    // A filter's list starts with "All projects".
+    let (title, none) = match &p.fixed {
+        Some(f) if f.first().is_some_and(|it| it.special) => ("Filter by project", "No project matches"),
+        _ if p.goal => ("Choose a goal", "No goal matches"),
+        _ => ("Choose a project", "No project matches"),
+    };
     let mut list = div().id("picker-list").flex().flex_col().max_h(px(320.)).overflow_y_scroll().p(px(4.));
     if items.is_empty() {
         list = list.child(div().p(px(10.)).text_size(px(13.)).text_color(t.muted).child(format!("{none} “{}”.", q.trim())));
