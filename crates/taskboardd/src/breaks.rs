@@ -6,10 +6,14 @@
 //!
 //! - **Intake.** Every `[master] every_mins` (5) the board reads each project in `[master.projects]`:
 //!   the branch's head commit, its checks and its last `commits` commits ([`BranchCi`]: GitHub
-//!   through `gh api`, Bitbucket through REST 2.0). A failed check on the head opens a break (one per
-//!   project at a time); a head whose checks all passed closes it.
-//! - **Investigate.** The suspects are the commits since the last green head the board saw: the whole
-//!   range from the host (git's `green..head`) when it's further back than the commits read, every
+//!   through `gh api`, Bitbucket through REST 2.0). A posted build (`POST /master-builds`, a stream
+//!   `build`) reads the branch at once and counts too, whichever commit it built. Builds are kept per
+//!   pipeline (a check's name, a posted build's `pipeline`): a red one stays until that same pipeline
+//!   passes at or after its commit, so another pipeline's green, or a head still running, doesn't
+//!   clear it; a red older than its pipeline's last green is stale. Any pipeline red opens a break
+//!   (one per project at a time) or keeps it open; it closes once none is.
+//! - **Investigate.** The suspects are the commits from the newest red one back to the last green head
+//!   the board saw: the whole range from the host (git's `green..red`) when it's further back than the commits read, every
 //!   commit read when the board never saw it green. Each is the owner's when its author's email is in
 //!   `owner_emails`.
 //!   The evidence is the failing checks (with their failed steps and tests where the CI can be read)
@@ -30,7 +34,7 @@
 //!   alerts wait behind the urgent one, so this is how its question reaches the owner.
 //! - **Override.** `tb master M<n> ours|not-ours|unsure` is the owner's word: it acts the same way and
 //!   is never re-decided. `not-ours` takes at least one proof link (`--proof`: a build, an issue).
-//! - **Re-check.** While a break is open, a new head brings new suspects and decides again (unless a
+//! - **Re-check.** While a break is open, a newer red commit brings new suspects and decides again (unless a
 //!   person set the verdict); an `unsure` one is decided again after `recheck_mins`; an `ours` one
 //!   whose fix task has finished while the branch is still red raises the urgent alert again.
 //! - **Cover.** Before a break of the owner's gets a new fix task, the board looks for a fix already
@@ -54,10 +58,10 @@
 //! | `id` | the break's number: `M<id>` |
 //! | `project`, `host`, `repo`, `branch` | what went red: the board's project, `github` or `bitbucket`, `owner/name`, the branch |
 //! | `state` | `open` or `closed` |
-//! | `head` | the first red head seen; `last_head` the latest one read while it's red |
+//! | `head` | the first red commit seen; `last_head` the newest red commit (of any pipeline still red) |
 //! | `green_head` | the last green head before it broke (NULL when the board never saw one); `fixed_head` the green head that closed it |
-//! | `checks` | JSON list of the failing checks' names (on `last_head`) |
-//! | `evidence` | JSON `{checks: [{name, url, steps, tests}], read_at}` |
+//! | `checks` | JSON list of the pipelines still red |
+//! | `evidence` | JSON `{checks: [{name, url, sha?, steps, tests}], read_at}`: the head's failed checks, then each other red pipeline with its commit |
 //! | `suspects` | JSON `[{sha, name, email, message, ours}]`, newest first |
 //! | `verdict` | `ours`, `not_ours`, `unsure`, or NULL before it's decided |
 //! | `verdict_by` | `commits` (no suspect is the owner's), `claude`, `fallback`, or the person who overrode it |
@@ -71,7 +75,8 @@
 //! | `queued_at` | when the failing build on `last_head` was queued (NULL when the host doesn't say); `seen_at` when the board first saw `last_head` red |
 //! | `opened_at`, `closed_at`, `checked_at` | ISO times |
 //!
-//! The setting `master_watch` keeps, per project, `{checked_at, green_head, branch?, error?}`.
+//! The setting `master_watch` keeps, per project, `{checked_at, green_head, branch?, error?, build?,
+//! pipelines}`, `pipelines` being `{<name>: {red?: {sha, url, build_id?, queued_at}, green?: sha}}`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -489,6 +494,109 @@ pub fn tick(app: &App) -> Result<()> {
 
 /// Reads one project's branch now and opens, updates or closes its break.
 pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
+    check_with(app, name, p, None)
+}
+
+/// One sha names the other (a build may post a short one).
+fn same_sha(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// `a` is the same commit as `b` or newer on the branch: by their places in the commits read
+/// (newest first; one that isn't among them is older than one that is), else by the host's range.
+fn at_or_after(ci: &dyn BranchCi, repo: &str, commits: &[Commit], a: &str, b: &str) -> bool {
+    if same_sha(a, b) {
+        return true;
+    }
+    let at = |sha: &str| commits.iter().position(|c| same_sha(&c.sha, sha));
+    match (at(a), at(b)) {
+        (Some(x), Some(y)) => x <= y,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => ci.since(repo, b, a).is_ok_and(|l| !l.is_empty()),
+    }
+}
+
+/// A build's state as red (true) or green (false); None while it runs, or for one the board can't read.
+fn build_red(state: &str) -> Option<bool> {
+    match state.to_lowercase().as_str() {
+        "failed" | "failure" | "error" | "broken" => Some(true),
+        "passed" | "success" | "successful" => Some(false),
+        _ => None,
+    }
+}
+
+/// Each pipeline's builds on the branch (`master_watch.<project>.pipelines`): `{red?: {sha, url,
+/// build_id, queued_at}, green?}`. A red stays until the same pipeline passes at or after its
+/// commit; a red older than the pipeline's last green is stale; a newer red takes an older one's place.
+struct Pipelines<'a> {
+    ci: &'a dyn BranchCi,
+    repo: &'a str,
+    commits: &'a [Commit],
+    all: serde_json::Map<String, Value>,
+    /// The newest commit a green cleared a red at, in this read.
+    cleared: Option<String>,
+}
+
+impl Pipelines<'_> {
+    fn note(&mut self, pipeline: &str, sha: &str, red: bool, build: Value) {
+        if pipeline.is_empty() || sha.is_empty() {
+            return;
+        }
+        let (ci, repo, commits) = (self.ci, self.repo, self.commits);
+        let after = |a: &str, b: &str| at_or_after(ci, repo, commits, a, b);
+        let one = self.all.entry(pipeline.to_string()).or_insert_with(|| json!({}));
+        let red_sha = one["red"]["sha"].as_str().map(|s| s.to_string());
+        let green_sha = one["green"].as_str().map(|s| s.to_string());
+        if red {
+            let stale = green_sha.as_deref().is_some_and(|g| !same_sha(g, sha) && after(g, sha));
+            if !stale && red_sha.as_deref().is_none_or(|r| after(sha, r)) {
+                let mut b = build;
+                b["sha"] = json!(sha);
+                one["red"] = b;
+            }
+            return;
+        }
+        if green_sha.as_deref().is_none_or(|g| after(sha, g)) {
+            one["green"] = json!(sha);
+        }
+        if red_sha.as_deref().is_some_and(|r| after(sha, r)) {
+            if let Some(o) = one.as_object_mut() {
+                o.remove("red");
+            }
+            if self.cleared.as_deref().is_none_or(|c| after(sha, c)) {
+                self.cleared = Some(sha.to_string());
+            }
+        }
+    }
+    /// The pipelines still red: (name, red build).
+    fn reds(&self) -> Vec<(String, Value)> {
+        self.all.iter().filter(|(_, v)| v["red"].is_object()).map(|(k, v)| (k.clone(), v["red"].clone())).collect()
+    }
+    /// The newest red build.
+    fn newest_red(&self) -> Option<Value> {
+        let mut out: Option<Value> = None;
+        for (_, r) in self.reds() {
+            if out.as_ref().is_none_or(|o| at_or_after(self.ci, self.repo, self.commits, r["sha"].as_str().unwrap_or(""), o["sha"].as_str().unwrap_or(""))) {
+                out = Some(r);
+            }
+        }
+        out
+    }
+}
+
+/// A build's time (an ISO string or epoch seconds) as the board's ISO time.
+fn build_ts(v: &Value) -> Option<String> {
+    match v {
+        Value::Number(n) => n.as_f64().map(iso),
+        Value::String(s) => parse_iso(s).map(iso),
+        _ => None,
+    }
+}
+
+/// [`check_project`], with a build that was just posted: its pipeline's red or green counts as
+/// the head's checks do.
+fn check_with(app: &App, name: &str, p: &MasterProject, posted: Option<&Value>) -> Result<()> {
     let found = target(app, name, p).and_then(|(host, repo)| Ok((ci_for(app, &host)?, host, repo)));
     let read = match found {
         Ok((ci, host, repo)) => {
@@ -506,35 +614,64 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
     };
     note_watch(app, name, fields!["checked_at" => now_iso(), "error" => null])?;
     let open = open_break(app, name)?;
-    let failed = r.failed();
-    if r.green() {
-        note_watch(app, name, fields!["green_head" => r.head.clone()])?;
-        if let Some(b) = open {
-            close(app, &b, &r.head)?;
+    let mut pipes = Pipelines {
+        ci: ci.as_ref(),
+        repo: &repo,
+        commits: &r.commits,
+        all: watch_state(app).get(name).and_then(|v| v["pipelines"].as_object()).cloned().unwrap_or_default(),
+        cleared: None,
+    };
+    if let Some(b) = posted {
+        let pipeline = Some(body_str(b, "pipeline")).filter(|s| !s.is_empty()).unwrap_or_else(|| "build".into());
+        if let Some(red) = build_red(&body_str(b, "state")) {
+            let build = json!({"url": b["url"], "build_id": b["build_id"], "queued_at": build_ts(&b["ts"])});
+            pipes.note(&pipeline, &body_str(b, "sha"), red, build);
+        }
+    }
+    for c in &r.checks {
+        if let Some(red) = build_red(&c.state) {
+            pipes.note(&c.name, &r.head, red, json!({"url": c.url, "queued_at": r.queued_at}));
+        }
+    }
+    let reds = pipes.reds();
+    let newest = pipes.newest_red();
+    let cleared = pipes.cleared.clone();
+    note_watch(app, name, fields!["pipelines" => Value::Object(pipes.all)])?;
+    let Some(newest) = newest else {
+        if r.green() {
+            note_watch(app, name, fields!["green_head" => r.head.clone()])?;
+        }
+        // Closes once every pipeline that failed has passed again; a head still running with
+        // nothing cleared waits for its checks.
+        if let (Some(b), Some(at)) = (open, cleared.or_else(|| r.green().then(|| r.head.clone()))) {
+            close(app, &b, &at)?;
         }
         return Ok(());
-    }
-    if failed.is_empty() {
-        // Still running (or stopped): wait for the verdict of its checks.
-        return Ok(());
-    }
+    };
+    let red_head = newest["sha"].as_str().unwrap_or(&r.head).to_string();
+    let mut failed: Vec<String> = reds.iter().map(|(n, _)| n.clone()).collect();
+    failed.sort();
+    let queued_at = match &r.queued_at {
+        Some(q) if same_sha(&red_head, &r.head) => Some(q.clone()),
+        _ => newest["queued_at"].as_str().map(|s| s.to_string()),
+    };
     let green = watch_state(app).get(name).and_then(|v| v["green_head"].as_str()).map(|s| s.to_string());
-    let suspects = suspects(app, name, ci.as_ref(), &repo, &r, green.as_deref());
-    let evidence = evidence(app, name, &host, &repo, &r);
+    let suspects = suspects(app, name, ci.as_ref(), &repo, &r, &red_head, green.as_deref());
+    let evidence = evidence(app, name, &host, &repo, &r, &red_head, &reds);
     match open {
         None => {
             let id = app.db.insert(
                 "breaks",
-                fields!["project" => name, "host" => host, "repo" => repo, "branch" => branch, "state" => "open", "head" => r.head.clone(),
-                        "last_head" => r.head.clone(), "green_head" => green, "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
-                        "suspects" => jdumps(&suspects), "queued_at" => r.queued_at.clone(), "seen_at" => now_iso(),
+                fields!["project" => name, "host" => host, "repo" => repo, "branch" => branch, "state" => "open", "head" => red_head.clone(),
+                        "last_head" => red_head.clone(), "green_head" => green, "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
+                        "suspects" => jdumps(&suspects), "queued_at" => queued_at, "seen_at" => now_iso(),
                         "opened_at" => now_iso(), "checked_at" => now_iso()],
             )?;
             app.info(format!("master: {} opened: {branch} on {name} fails {}", bref(id), failed.join(", ")));
             decide_and_act(app, &get(app, id)?)?;
         }
         Some(b) => {
-            let moved = b.s("last_head") != Some(r.head.as_str());
+            let moved = b.s("last_head") != Some(red_head.as_str());
             let before = jloads_arr(b.s("suspects"));
             let mut merged = suspects.as_array().cloned().unwrap_or_default();
             for s in &before {
@@ -543,10 +680,10 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
                 }
             }
             let new_suspects = merged.len() != before.len();
-            let mut changes = fields!["last_head" => r.head.clone(), "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
+            let mut changes = fields!["last_head" => red_head.clone(), "checks" => jdumps(&json!(failed)), "evidence" => jdumps(&evidence),
                                       "suspects" => jdumps(&Value::Array(merged)), "checked_at" => now_iso()];
-            if moved || r.queued_at.is_some() {
-                changes.push(("queued_at", json!(r.queued_at.clone())));
+            if moved || queued_at.is_some() {
+                changes.push(("queued_at", json!(queued_at)));
             }
             if moved {
                 changes.push(("seen_at", json!(now_iso())));
@@ -567,26 +704,30 @@ pub fn check_project(app: &App, name: &str, p: &MasterProject) -> Result<()> {
     Ok(())
 }
 
-/// The commits since the last green head, each marked ours or not: from the commits read when it's
-/// among them, else the whole range from the host; every commit read when there's no green head (or
-/// the host can't give the range).
-fn suspect_commits(ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<&str>) -> Vec<Commit> {
+/// The commits from the newest red one back to the last green head, each marked ours or not: from
+/// the commits read when both are among them, else the whole range from the host; every commit read
+/// from the red one on when there's no green head (or the host can't give the range).
+fn suspect_commits(ci: &dyn BranchCi, repo: &str, r: &BranchRead, red: &str, green: Option<&str>) -> Vec<Commit> {
+    let read: Vec<Commit> = match r.commits.iter().position(|c| same_sha(&c.sha, red)) {
+        Some(j) => r.commits[j..].to_vec(),
+        None => vec![],
+    };
     let mut list = match green {
-        Some(g) => match r.commits.iter().position(|c| c.sha == g) {
-            Some(i) => r.commits[..i.max(1)].to_vec(),
-            None => ci.since(repo, g, &r.head).ok().filter(|l| !l.is_empty()).unwrap_or_else(|| r.commits.clone()),
+        Some(g) => match read.iter().position(|c| same_sha(&c.sha, g)) {
+            Some(i) => read[..i.max(1)].to_vec(),
+            None => ci.since(repo, g, red).ok().filter(|l| !l.is_empty()).unwrap_or_else(|| read.clone()),
         },
-        None => r.commits.clone(),
+        None => read.clone(),
     };
     if list.is_empty() {
-        list = r.commits.iter().take(1).cloned().collect();
+        list = vec![Commit { sha: red.to_string(), ..Default::default() }];
     }
     list.truncate(SUSPECTS_MAX);
     list
 }
 
-fn suspects(app: &App, project: &str, ci: &dyn BranchCi, repo: &str, r: &BranchRead, green: Option<&str>) -> Value {
-    json!(suspect_commits(ci, repo, r, green)
+fn suspects(app: &App, project: &str, ci: &dyn BranchCi, repo: &str, r: &BranchRead, red: &str, green: Option<&str>) -> Value {
+    json!(suspect_commits(ci, repo, r, red, green)
         .iter()
         .map(|c| json!({"sha": c.sha, "name": c.name, "email": c.email, "message": c.message, "ours": is_owners(app, project, &c.email)}))
         .collect::<Vec<_>>())
@@ -615,11 +756,12 @@ fn git_email(app: &App, project: &str) -> Option<String> {
     (out.code == Some(0) && !email.is_empty()).then_some(email)
 }
 
-/// The failing checks, with their failed steps and tests where the CI can be read.
-fn evidence(app: &App, project: &str, host: &str, repo: &str, r: &BranchRead) -> Value {
+/// The failing checks, with their failed steps and tests where the CI can be read: the head's, then
+/// each other pipeline still red on an older commit (with that commit and its build's link).
+fn evidence(app: &App, project: &str, host: &str, repo: &str, r: &BranchRead, red: &str, reds: &[(String, Value)]) -> Value {
     let rules = app.cfg.pr.project(Some(project));
     let pr = PrRef { host: host.to_string(), repo: repo.to_string(), num: 0, url: String::new() };
-    let checks: Vec<Value> = r
+    let mut checks: Vec<Value> = r
         .checks
         .iter()
         .filter(|c| c.state == "failed")
@@ -629,8 +771,13 @@ fn evidence(app: &App, project: &str, host: &str, repo: &str, r: &BranchRead) ->
                    "tests": f.as_ref().map(|f| f.tests.clone()).unwrap_or_default()})
         })
         .collect();
+    for (name, b) in reds {
+        if !checks.iter().any(|c| c["name"] == json!(name)) {
+            checks.push(json!({"name": name, "url": b["url"], "sha": b["sha"], "steps": [], "tests": []}));
+        }
+    }
     let mut out = json!({"checks": checks, "read_at": now_iso()});
-    if let Some(b) = posted_build(app, project, &r.head) {
+    if let Some(b) = posted_build(app, project, red) {
         if let Some(url) = b["url"].as_str() {
             for c in out["checks"].as_array_mut().into_iter().flatten().filter(|c| c["url"].as_str().is_none_or(|u| u.is_empty())) {
                 c["url"] = json!(url);
@@ -641,12 +788,12 @@ fn evidence(app: &App, project: &str, host: &str, repo: &str, r: &BranchRead) ->
     out
 }
 
-/// The last build the old listener posted for this project (`POST /master-builds`), when it's of
-/// this head (or doesn't say which commit it built).
-fn posted_build(app: &App, project: &str, head: &str) -> Option<Value> {
+/// The last build posted for this project (`POST /master-builds` or a stream `build`), when it's of
+/// this commit (or doesn't say which commit it built).
+fn posted_build(app: &App, project: &str, sha: &str) -> Option<Value> {
     let b = watch_state(app).get(project)?.get("build")?.clone();
-    let sha = b["sha"].as_str().unwrap_or("");
-    (sha.is_empty() || head.is_empty() || head.starts_with(sha) || sha.starts_with(head)).then_some(b)
+    let built = b["sha"].as_str().unwrap_or("");
+    (built.is_empty() || sha.is_empty() || same_sha(built, sha)).then_some(b)
 }
 
 /// The watched project a posted build is of: `project` by name, else the repo in its `url` (or
@@ -725,7 +872,7 @@ fn record_build(app: &App, name: &str, p: &MasterProject, body: &Value) -> Resul
     }
     build.insert("at".into(), json!(now_iso()));
     note_watch(app, &name, fields!["build" => Value::Object(build)])?;
-    check_project(app, &name, p)?;
+    check_with(app, &name, p, Some(body))?;
     let open = match open_break(app, &name)? {
         Some(b) => dict(app, &b)?,
         None => Value::Null,
