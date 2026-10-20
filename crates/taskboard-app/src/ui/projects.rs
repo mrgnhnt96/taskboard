@@ -357,11 +357,7 @@ fn head(t: &Theme, project: &str, h: &Header, cx: &mut Context<MainWindow>) -> D
         let mut rel = div().flex().gap(px(6.));
         if let Some((r, name)) = h.release.clone() {
             let p = project.to_string();
-            rel = rel.child(kit::link(t, "projects-release", name).on_click(cx.listener(move |m, _, _, cx| {
-                m.releases.project = p.clone();
-                m.releases.open.insert(r.clone());
-                m.go(Page::Releases, cx);
-            })));
+            rel = rel.child(kit::link(t, "projects-release", name).on_click(cx.listener(move |m, _, _, cx| crate::ui::releases::open_in(m, p.clone(), &r, cx))));
         }
         meta = meta.child(rel.when(!h.release_meta.is_empty(), |d| d.child(div().child(h.release_meta.clone()))));
     }
