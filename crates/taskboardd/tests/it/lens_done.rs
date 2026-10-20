@@ -1,5 +1,5 @@
-//! lens at `tb submit`: with `[lens]` on and the lens binary installed, a task finishes only on a fresh
-//! review of its checkout; findings become notes, an open blocker holds it and an escalated one asks the owner.
+//! lens at `tb submit`: with `[lens] submit` and `on` set and the lens binary installed, a task finishes
+//! only on a fresh review of its checkout; findings become notes, an open blocker holds it and an escalated one asks the owner.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,6 +49,7 @@ fn board_with(lens: bool, f: impl FnOnce(&mut Config)) -> Board {
         let bin = dir.path().join("lens");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
         cfg.lens.bin = bin.to_string_lossy().to_string();
+        cfg.lens.submit = true;
     }
     f(&mut cfg);
     let app = App::for_tests(cfg);
@@ -138,6 +139,17 @@ fn without_lens_tb_done_is_as_before() {
     b.done().unwrap();
     assert_eq!(b.row(id).st("status"), "done");
     assert!(!b.repo.join(".review").exists());
+}
+
+#[test]
+fn the_submit_gate_is_off_by_default_so_sessions_take_no_turns_for_review() {
+    let b = board_with(true, |c| c.lens.submit = taskboardd::lens::SubmitConfig::default().submit);
+    let id = b.task();
+    b.done().unwrap();
+    assert_eq!(b.row(id).st("status"), "done");
+    assert!(!b.repo.join(".review").exists(), "no review intent written");
+    let board = api::dispatch(&b.app, "GET", "/projects/lens", &Query::new(), &json!({})).unwrap();
+    assert_eq!((board["lens"].clone(), board["submit"].clone()), (json!(true), json!(false)), "{board}");
 }
 
 #[test]

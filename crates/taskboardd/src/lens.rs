@@ -1,7 +1,8 @@
-//! lens at `tb submit`: with `[lens]` on for the task's project and the `lens` binary installed, a task
-//! finishes only on a fresh local review (`lens review`) of what's in its checkout. Verified findings
-//! become task notes; a blocker holds `tb submit` while lens's fix loop runs, and only a blocker the
-//! loop escalates is asked of the owner.
+//! lens on the board's projects. With `[lens]` on for a project and the `lens` binary installed, the
+//! board sweeps what's pushed to it (`lens_sweep.rs`). The old gate at `tb submit` stays behind
+//! `[lens] submit` (off by default): a task finishes only on a fresh local review (`lens review`) of
+//! what's in its checkout. Verified findings become task notes; a blocker holds `tb submit` while lens's
+//! fix loop runs, and only a blocker the loop escalates is asked of the owner.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,21 +38,27 @@ impl Review {
 const NOTED: &str = "lens_noted";
 const ASKED: &str = "lens_asked";
 
-/// `[lens]` in config.toml: the review at `tb submit`, and the binary both it and `[pr.lens]` run.
+/// `[lens]` in config.toml: which projects lens reviews, how, and the binary the board runs (for `[pr.lens]` too).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SubmitConfig {
-    /// Review every project's tasks at `tb submit` (`projects` says otherwise for one). On by default.
+    /// lens reviews every project (`projects` says otherwise for one). On by default.
     pub on: bool,
-    /// Per project, by name: `false` turns the review off for it, `true` on.
+    /// Per project, by name: `false` turns lens off for it, `true` on.
     pub projects: std::collections::BTreeMap<String, bool>,
     /// The lens binary: a name looked up on the PATH, or a path.
     pub bin: String,
+    /// The old gate: `tb submit` also needs a fresh `lens review` of the task's checkout. Off by default.
+    pub submit: bool,
+    /// How often the board asks lens whether a project's sweep is due (lens's `[sweep]` decides). 0: never.
+    pub sweep_mins: f64,
+    /// A sweep that runs longer than this is stopped.
+    pub sweep_timeout_mins: f64,
 }
 
 impl Default for SubmitConfig {
     fn default() -> Self {
-        SubmitConfig { on: true, projects: Default::default(), bin: "lens".into() }
+        SubmitConfig { on: true, projects: Default::default(), bin: "lens".into(), submit: false, sweep_mins: 15.0, sweep_timeout_mins: 120.0 }
     }
 }
 
@@ -60,8 +67,8 @@ const BOARD_SETTING: &str = "lens_on";
 /// `tb project set --lens`: name → the board's word on `[lens.projects]`, over config.toml's.
 const PROJECT_SETTING: &str = "project_lens";
 
-/// Whether `tb submit` reviews this project's tasks: the project's word on the board, else
-/// `[lens.projects]`, else the board's (`tb project lens`), else `[lens] on`.
+/// Whether lens reviews this project: the project's word on the board, else `[lens.projects]`, else
+/// the board's (`tb project lens`), else `[lens] on`.
 pub fn on(app: &App, project: Option<&str>) -> bool {
     let l = &app.cfg.lens;
     project
@@ -69,7 +76,7 @@ pub fn on(app: &App, project: Option<&str>) -> bool {
         .unwrap_or_else(|| board_default(app))
 }
 
-/// Whether `tb submit` reviews tasks on projects that don't say: the board's word, else `[lens] on`.
+/// Whether lens reviews projects that don't say: the board's word, else `[lens] on`.
 pub fn board_default(app: &App) -> bool {
     board_set(app).unwrap_or(app.cfg.lens.on)
 }
@@ -88,9 +95,10 @@ pub fn set_board(app: &App, on: Option<bool>) -> Result<()> {
     app.db.set_setting(BOARD_SETTING, on.map(|b| if b { "true" } else { "false" }))
 }
 
-/// `GET /projects/lens`: the board-wide switch, what the board set, config.toml's, and whether lens is installed.
+/// `GET /projects/lens`: the board-wide switch, what the board set, config.toml's, whether lens is
+/// installed and whether `tb submit` gates on it (`[lens] submit`).
 pub fn describe_board(app: &App) -> Value {
-    json!({"lens": board_default(app), "set": board_set(app), "config": app.cfg.lens.on, "installed": bin(app).is_some()})
+    json!({"lens": board_default(app), "set": board_set(app), "config": app.cfg.lens.on, "installed": bin(app).is_some(), "submit": app.cfg.lens.submit})
 }
 
 fn project_overrides(app: &App) -> Result<Row> {
@@ -126,9 +134,10 @@ pub fn set_project(app: &App, project: &str, body: &Value) -> Result<bool> {
     Ok(true)
 }
 
-/// Whether `tb submit` would look for a lens review of this task: lens is on for its project and installed.
+/// Whether `tb submit` would look for a lens review of this task: the gate is on (`[lens] submit`),
+/// lens is on for its project and installed.
 pub fn applies(app: &App, project: Option<&str>) -> bool {
-    on(app, project) && bin(app).is_some()
+    app.cfg.lens.submit && on(app, project) && bin(app).is_some()
 }
 
 /// The lens binary, when it's installed.
@@ -136,8 +145,8 @@ pub fn bin(app: &App) -> Option<PathBuf> {
     crate::proc::which(&app.cfg.lens.bin)
 }
 
-/// Looks at the lens review of the checkout at `cwd` for task `t`. `None` when lens is off for its
-/// project or isn't installed, or `cwd` isn't a git checkout: `tb submit` goes on as it would without lens.
+/// Looks at the lens review of the checkout at `cwd` for task `t`. `None` when the gate is off, lens is
+/// off for its project or isn't installed, or `cwd` isn't a git checkout: `tb submit` goes on as it would without lens.
 pub fn review(app: &App, t: &Row, cwd: &str) -> Result<Option<Review>> {
     if !applies(app, t.s("project")) {
         return Ok(None);
@@ -244,7 +253,7 @@ fn note(f: &Value) -> String {
     )
 }
 
-fn read_ledger(f: &Value) -> Value {
+pub(crate) fn read_ledger(f: &Value) -> Value {
     f["fix"]["ledger"]
         .as_str()
         .and_then(|p| std::fs::read_to_string(p).ok())

@@ -46,6 +46,7 @@ pub mod keep_awake;
 pub mod lanes;
 pub mod lens;
 pub mod lens_pr;
+pub mod lens_sweep;
 pub mod ideas;
 pub mod idea_plan;
 pub mod lessons;
@@ -181,6 +182,8 @@ pub fn start_threads(app: &Arc<App>) {
         std::thread::Builder::new().name("spans".into()).spawn(move || spans::run(a)).ok();
         let a = app.clone();
         std::thread::Builder::new().name("review".into()).spawn(move || review::run(a)).ok();
+        let a = app.clone();
+        std::thread::Builder::new().name("lens-sweep".into()).spawn(move || lens_sweep::run(a)).ok();
     } else {
         let a = app.clone();
         std::thread::Builder::new()
