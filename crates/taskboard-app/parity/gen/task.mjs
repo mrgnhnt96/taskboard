@@ -61,7 +61,7 @@ const STATE = {
   counts: { needs: 0, open_issues: 0, done_hidden: 0 },
 };
 
-const GOAL = { id: 1, ref: 'G1', name: 'Sign-in with passkeys', position: 2, total: 4, next_title: 'Docs: passkey support', open_issues: 1 };
+const GOAL = { id: 1, ref: 'G1', name: 'Sign-in with passkeys', position: 2, total: 4, next_title: 'Docs: passkey support', next_ref: 'T8', open_issues: 1 };
 function task(over = {}) {
   return {
     id: 7, ref: 'T7', title: 'Sign in with a passkey', project: 'webapp', status: 'working', priority: 'normal',
@@ -80,7 +80,7 @@ const pr = (over = {}) => ({ repo: 'webapp', num: 42, url: 'https://github.com/a
 function reset(st, route) {
   w.set('S.state', st);
   w.set('S.route', route);
-  w.run(`S.drafts = {}; S.busy = new Set(); S.notes = {}; S.reveal = {}; S.metaEdit = {}; S.handoffs = {}; S.logFilter = 'all'; S.attMenu = null; S.attEdit = null; S.taskErr = '';`);
+  w.run(`S.drafts = {}; S.busy = new Set(); S.notes = {}; S.reveal = {}; S.metaEdit = {}; S.handoffs = {}; S.logFilter = 'all'; S.attMenu = null; S.attEdit = null; S.attDrop = false; S.termMenu = false; S.taskErr = '';`);
 }
 
 const cases = [];
@@ -104,6 +104,8 @@ const ui = o => ({ ui: o, setup: [
   o.log_filter ? `S.logFilter = ${JSON.stringify(o.log_filter)};` : '',
   o.att_menu ? `S.attMenu = ${JSON.stringify(o.att_menu)};` : '',
   o.att_edit ? `S.attEdit = ${JSON.stringify(o.att_edit)};` : '',
+  o.att_drop ? 'S.attDrop = true;' : '',
+  o.term_menu ? 'S.termMenu = true;' : '',
   o.handoffs ? `Object.assign(S.handoffs, ${JSON.stringify(o.handoffs)});` : '',
   o.meta_edit ? `Object.assign(S.metaEdit, ${JSON.stringify(o.meta_edit)});` : '',
   o.folds ? Object.entries(o.folds).map(([k, v]) => `localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)});`).join('') : '',
@@ -228,6 +230,9 @@ const atts = {
   goal_attachments: [{ id: 21, kind: 'proposal', title: 'Plan', url: 'https://docs.example.com/plan', at: at(600), task: null, goal: 'G1' }],
 };
 panel('attachments', task({ ...atts, goal: GOAL }), withUi({}));
+panel('attachments: dropdown open', task({ ...atts, goal: GOAL, wave: 2 }), withUi({ att_drop: true }));
+panel('header: goal without wave or position', task({ goal: { ...GOAL, position: null } }), withUi({}));
+panel('header: wave, last in goal', task({ goal: { ...GOAL, position: 4, next_ref: null }, wave: 3 }), withUi({}));
 panel('attachments: menu open (web)', task({ ...atts, goal: GOAL }), withUi({ att_menu: '11' }));
 panel('attachments: menu open (path)', task({ ...atts, goal: GOAL }), withUi({ att_menu: '12' }));
 panel('attachments: menu open (no link)', task({ ...atts, goal: GOAL }), withUi({ att_menu: '13' }));
@@ -275,6 +280,13 @@ const log = [
 for (const f of ['all', 'status', 'turn', 'checkpoint', 'question', 'found', 'jira']) panel(`log: ${f}`, task({ log }), { ...withUi({ log_filter: f }), tab: 'log' });
 panel('log: empty', task({ log: [] }), { ...withUi({}), tab: 'log' });
 panel('log: none of kind', task({ log: [log[0]] }), { ...withUi({ log_filter: 'jira' }), tab: 'log' });
+
+// ---- timeline, terminal menu, footer tabs
+panel('working: terminal menu open', working, withUi({ term_menu: true }));
+panel('idle: terminal menu open', task({ ...live('idle') }), withUi({ term_menu: true }));
+panel('done, terminal gone: terminal menu open', done({ ...live('gone') }), withUi({ term_menu: true }));
+panel('what tab', working, { ...withUi({}), tab: 'what' });
+panel('what tab: no prompt', task({ ...live('working'), prompt: '' }), { ...withUi({}), tab: 'what' });
 
 // ---- trail
 panel('trail back button', working, { ...withUi({}), from: 'T2,T5' });

@@ -35,6 +35,9 @@ fn ui_from(v: &Value) -> Ui {
         log_filter: v["log_filter"].as_str().unwrap_or("").to_string(),
         att_menu: v["att_menu"].as_str().map(str::to_string),
         att_edit: v["att_edit"].as_str().map(str::to_string),
+        att_drop: v["att_drop"].as_bool().unwrap_or(false),
+        term_menu: v["term_menu"].as_bool().unwrap_or(false),
+        tl_open: v["tl_open"].as_array().map(|a| a.iter().filter_map(tl_step).collect()).unwrap_or_default(),
     }
 }
 
@@ -44,7 +47,6 @@ fn tree(i: &Value) -> view::Node {
     let folds: HashMap<String, String> = i["ui"]["folds"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default();
     let trail: Vec<String> = i["from"].as_str().map(|f| f.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
     let r = i["task"]["ref"].as_str().or(i["ref"].as_str()).unwrap_or("").to_string();
-    let goal_page = (i["page"] == "goal").then(|| i["page_id"].as_str()).flatten();
     let c = Ctx {
         state: &i["state"],
         task: i["task"].is_object().then_some(&i["task"]),
@@ -52,7 +54,6 @@ fn tree(i: &Value) -> view::Node {
         r: &r,
         tab: i["tab"].as_str().unwrap_or("overview"),
         trail: &trail,
-        goal_page,
         err: i["err"].as_str(),
         ui: &ui,
         folds: &folds,
@@ -129,18 +130,54 @@ fn a_card_shows_until_the_task_answers() {
 }
 
 #[::core::prelude::v1::test]
-fn a_needs_box_without_a_terminal_still_offers_an_action() {
+fn a_stuck_working_task_shows_the_stuck_banner() {
+    let text = |task: Value| json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    let stuck = json!({"why": "Waits on a y/n prompt", "tail": "Continue? (y/n)"});
+    let t = text(json!({"ref": "T5", "id": 5, "status": "working", "stuck": stuck}));
+    assert!(t.contains("may be stuck") && t.contains("Waits on a y/n prompt"), "{t}");
+    // A question outranks it: one banner per task.
+    let t = text(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "stuck": stuck}));
+    assert!(!t.contains("may be stuck") && t.contains("Q?"), "{t}");
+    let t = text(json!({"ref": "T5", "id": 5, "status": "working"}));
+    assert!(!t.contains("may be stuck"), "{t}");
+}
+
+#[::core::prelude::v1::test]
+fn write_an_answer_opens_its_terminal_or_a_new_one() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
-    let asked = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"});
-    let a = acts(asked.clone());
-    assert!(a.contains("\"answer\"") && !a.contains("\"focus\""), "{a}");
-    let fields = json!(view::values(&tree(&json!({"state": {}, "task": asked, "tab": "overview", "ui": {"drafts": {"answer:T5": "yes"}}}))));
-    assert_eq!(fields, json!(["yes"]), "the answer box shows its draft");
+    // No terminal but a question: focus reopens one that asks it again, keeping the question.
+    let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"}));
+    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+    // No terminal and nothing asked: a new one picks up from its handoff.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention"}));
-    assert!(a.contains("\"resume:fresh\""), "{a}");
+    assert!(a.contains("\"resume:fresh\"") && !a.contains("\"focus\""), "{a}");
     // With its terminal open, the terminal is the action.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
     assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+}
+
+#[::core::prelude::v1::test]
+fn a_question_shows_once_in_the_banner() {
+    // Asked just now, so its time reads as a clock time rather than a date.
+    let asked = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let iso = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let (started_at, updated_at) = (iso(asked - chrono::Duration::minutes(140)), iso(asked));
+    let task = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?",
+                      "started_at": started_at, "updated_at": updated_at,
+                      "ask": {"questions": [{"question": "Add the generated patterns?", "options": [{"label": "Yes, add them"}, {"label": "No"}]}]}});
+    let panel = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    let text = json!(view::text(&panel)).to_string();
+    assert_eq!(text.matches("Add the generated patterns?").count(), 1, "{text}");
+    assert!(!text.contains("Needs you"), "no Needs-you pill beside the banner: {text}");
+    let at = crate::fmt::hhmm(&updated_at);
+    assert!(text.contains("Waiting on you") && text.contains("after 2h 20m of work") && text.contains(&at), "{text}");
+    assert!(at.ends_with("AM") || at.ends_with("PM"), "{at}");
+    let a = json!(view::acts(&panel)).to_string();
+    assert!(a.contains("\"answer-opt:Yes, add them\"") && a.contains("\"answer-opt:No\""), "{a}");
+    // A lost terminal waits too, but nothing was asked.
+    let lost = json!({"ref": "T5", "id": 5, "status": "needs", "lost": true, "updated_at": "2026-10-09T11:34:00Z"});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": lost, "tab": "overview"})))).to_string();
+    assert!(text.contains("Waiting on you") && !text.contains("Asked"), "{text}");
 }
 
 // ------------------------------------------------------------------ actions
@@ -191,7 +228,7 @@ fn a_task_opens_from_its_row_and_loads_on_its_own(cx: &mut gpui_kit::TestAppCont
     rec.fail("state", 500, "down");
     settle(cx);
     let after = w.update(cx, |m, _, _| view::text(&build(m).expect("panel open"))).unwrap();
-    assert!(after.contains("Overview") && !after.contains("Loading…"), "{after}");
+    assert!(after.contains("Full log") && !after.contains("Loading…"), "{after}");
 }
 
 #[gpui_kit::test]
@@ -259,10 +296,13 @@ fn manage_box_actions(cx: &mut gpui_kit::TestAppContext) {
     open(cx, &w, "T2");
     press(cx, &w, "focus", None);
     assert_eq!(rec.last("tasks/T2/focus"), Some(json!({})));
+    // Detach and Close terminal wait behind the ⋯ menu, which closes once one is picked.
+    assert!(w.update(cx, |m, _, _| view::find_act(&build(m).unwrap(), "detach", None).is_none()).unwrap(), "hidden while the menu is shut");
+    press(cx, &w, "term-menu", None);
     press(cx, &w, "close-term", Some("force"));
     assert_eq!(rec.last("tasks/T2/close-terminal"), Some(json!({"force": true})));
-    press(cx, &w, "term-focus", None);
-    assert_eq!(rec.last("sessions/fake-s1/focus"), Some(json!({})));
+    assert!(!ui(|u| u.term_menu), "picking an item closes the menu");
+    press(cx, &w, "term-menu", None);
     press(cx, &w, "detach", None);
     assert_eq!(rec.last("tasks/T2/detach"), Some(json!({})));
     assert_eq!(note("manage:T2"), Some(("Detached. It’s back in the queue.".into(), false)));
@@ -296,26 +336,6 @@ fn details_fields_edit_in_place(cx: &mut gpui_kit::TestAppContext) {
     press(cx, &w, "meta-del", Some("0"));
     assert_eq!(rec.last("tasks/T2/meta"), Some(json!({"meta": [["Owner", "Alex"]]})));
     assert_eq!(note("meta:T2"), Some(("Removed".into(), false)));
-}
-
-#[gpui_kit::test]
-fn attachments_edit_and_remove(cx: &mut gpui_kit::TestAppContext) {
-    let (w, rec) = parity::window(cx);
-    let added = rec.board().post("tasks/T2/attachments", json!({"kind": "design", "title": "Mock", "url": "https://figma.com/x"})).unwrap();
-    let id = added["attachments"].as_array().and_then(|a| a.last()).map(|a| a["id"].to_string()).or_else(|| added["id"].as_i64().map(|x| x.to_string())).expect("attachment id");
-    open(cx, &w, "T2");
-    press(cx, &w, "att-menu", None);
-    assert!(control(cx, &w, "att-edit", None).id == id);
-    press(cx, &w, "att-edit", None);
-    press(cx, &w, "att-ekind", Some("doc"));
-    typed(cx, &w, &format!("attedit:{id}:title"), "Login mock");
-    press(cx, &w, "att-esave", None);
-    // Only the fields you changed are sent (the web's drafts).
-    assert_eq!(rec.last(&format!("attachments/{id}")), Some(json!({"kind": "doc", "title": "Login mock"})));
-    assert_eq!(ui(|u| u.att_edit.clone()), None, "the edit form closes");
-    press(cx, &w, "att-menu", None);
-    press(cx, &w, "att-remove", None);
-    assert_eq!(rec.last(&format!("attachments/{id}/remove")), Some(json!({})));
 }
 
 #[gpui_kit::test]
@@ -359,15 +379,17 @@ fn tabs_and_log_filter(cx: &mut gpui_kit::TestAppContext) {
 #[gpui_kit::test]
 fn folds_are_saved(cx: &mut gpui_kit::TestAppContext) {
     let (w, _rec) = parity::window(cx);
-    open(cx, &w, "T1");
-    // "What to do" starts closed (foldOpen('what', true)); Details starts open.
-    let text = w.update(cx, |m, _, _| view::text(&build(m).unwrap())).unwrap();
-    assert!(text.ends_with("What to do"), "{text}");
-    crate::prefs::set("tb.fold.what", json!("open"));
-    crate::prefs::set("tb.linked", json!("closed"));
-    let text = w.update(cx, |m, _, _| view::text(&build(m).unwrap())).unwrap();
-    assert!(!text.contains("Pull request"), "Details closed: {text}");
-    assert!(!text.ends_with("What to do"), "What to do open: {text}");
+    let note = format!("**What changed:** the login page.\n\n{}", "- Sign in again; the session stays.\n".repeat(12));
+    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": {"text": note, "waiting": false}});
+    w.update(cx, |m, _, _| {
+        m.panel = Some(Panel::Task { r: "T9".into(), tab: TaskTab::Overview });
+        m.data.task = Some(task);
+    })
+    .unwrap();
+    let text = |cx: &mut gpui_kit::TestAppContext| w.update(cx, |m, _, _| view::text(&build(m).unwrap())).unwrap();
+    assert!(text(cx).contains("Show more"));
+    crate::prefs::set("tb.fold.note", json!("open"));
+    assert!(text(cx).contains("Show less"), "the fold reads its saved state");
 }
 
 #[gpui_kit::test]
@@ -375,7 +397,7 @@ fn renders_every_tab(cx: &mut gpui_kit::TestAppContext) {
     let (w, _rec) = parity::window(cx);
     for r in ["T1", "T2", "T3", "T4", "T5"] {
         open(cx, &w, r);
-        for tab in ["overview", "context", "log"] {
+        for tab in ["what", "context", "log", "overview"] {
             press(cx, &w, "tab", Some(tab));
             let _ = cx.update_window(w.into(), |_, window, cx| {
                 window.refresh();
@@ -419,6 +441,32 @@ fn page_links_keep_the_panel_beside_them(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn header_chips_drop_the_attachments_and_open_the_project(cx: &mut gpui_kit::TestAppContext) {
+    use crate::app::Page;
+    let (w, rec) = parity::window(cx);
+    rec.board().post("tasks/T2/attachments", json!({"kind": "design", "title": "Mock", "url": "https://figma.com/x"})).unwrap();
+    open(cx, &w, "T2");
+    // "Attached N" opens its list and a second tap closes it.
+    press(cx, &w, "att-drop", None);
+    assert!(ui(|u| u.att_drop));
+    press(cx, &w, "att-drop", None);
+    assert!(!ui(|u| u.att_drop));
+    // Picking a row closes the list.
+    press(cx, &w, "att-drop", None);
+    w.update(cx, |m, _, cx| super::go(m, &view::Go::Url(String::new()), cx)).unwrap();
+    assert!(!ui(|u| u.att_drop));
+    // The project chip: the Tasks page filtered to that project.
+    let project = control(cx, &w, "open-project", None).arg;
+    assert!(!project.is_empty());
+    press(cx, &w, "open-project", Some(&project));
+    w.update(cx, |m, _, _| {
+        assert_eq!(m.page, Page::Tasks);
+        assert_eq!(m.tasks.project.as_deref(), Some(project.as_str()));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;
     let (w, _rec) = parity::window(cx);
@@ -428,8 +476,8 @@ fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     });
     let g1 = || Page::Goal("G1".into());
     w.update(cx, |m, _, cx| m.go(g1(), cx)).unwrap();
-    // A goal, goal-backlog or terminal link keeps the task open: one ⌘← comes back to the page it was opened on, the next closes it.
-    for link in [view::Go::Goal("G2".into()), view::Go::GoalBacklog("G2".into()), view::Go::Session("fake-s1".into())] {
+    // A goal or terminal link keeps the task open: one ⌘← comes back to the page it was opened on, the next closes it.
+    for link in [view::Go::Goal("G2".into()), view::Go::Session("fake-s1".into())] {
         open(cx, &w, "T1");
         w.update(cx, |m, _, cx| super::go(m, &link, cx)).unwrap();
         settle(cx);
@@ -524,7 +572,7 @@ fn the_pr_bar_has_every_step_once_the_board_sends_it() {
     let task = with_bar(bar, json!({"phase": "waits", "label": "Waits on base"}), "pending");
     let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
     let text = view::text(&tree);
-    for want in ["WD 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Merge Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
+    for want in ["WD 2 open findings", "Checks Passed", "You Waiting on you", "Review 1 of 2", "Merged Waits on base", "Stacks on T3 PR #12", "Waiting on your review Mark reviewed ›"] {
         assert!(text.contains(want), "{want:?} in {text}");
     }
     let acts = view::acts(&tree);
@@ -536,12 +584,12 @@ fn the_pr_bar_has_every_step_once_the_board_sends_it() {
 fn the_stack_card_says_how_it_merges_and_the_parent_waits_on_its_stack() {
     let so = |merge: &str| json!({"ref": "T3", "num": 12, "url": "https://github.com/acme/webapp/pull/12", "merged": false, "merge": merge});
     let tail = panel_text(with_bar(json!({"stacks_on": so("tail")}), json!({"phase": "waits", "label": "Waits on base"}), "approved"), json!({}));
-    assert!(tail.contains("Stacks on T3 PR #12 Tail merge") && tail.contains("Merge Waits on base"), "{tail}");
+    assert!(tail.contains("Stacks on T3 PR #12 Tail merge") && tail.contains("Merged Waits on base"), "{tail}");
     let head = panel_text(with_bar(json!({"stacks_on": so("head")}), json!({"phase": "merge", "label": "Merging"}), "approved"), json!({}));
     assert!(head.contains("Stacks on T3 PR #12 Head merge") && !head.contains("Waits on base"), "{head}");
     let why = "T5's PR #14 head-merges into it and has to merge first";
     let parent = panel_text(with_bar(json!({"waits_on_stack": why}), json!({"phase": "stack", "label": "Waits on stack"}), "approved"), json!({}));
-    assert!(parent.contains("Merge Waits on stack") && parent.contains(why), "{parent}");
+    assert!(parent.contains("Merged Waits on stack") && parent.contains(why), "{parent}");
 }
 
 #[::core::prelude::v1::test]
@@ -681,11 +729,11 @@ fn the_review_step_shows_before_the_pr_opens() {
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp", "ships_pr": true,
                       "wd": {"bar": "WD", "headline": "2 open findings", "open": 2, "passed": false}});
     let text = panel_text(task, json!({}));
-    assert!(text.contains("Ends in a PR No PR yet.") && text.contains("WD 2 open findings"), "{text}");
+    assert!(text.contains("Pull request WD 2 open findings Checks and review Merged"), "{text}");
     // From the detail's step results too.
     let task = json!({"ref": "T8", "id": 8, "title": "x", "status": "working", "project": "webapp",
                       "step_results": [{"name": "Author review", "bar": "WD", "headline": "No findings", "open": 0, "passed": true, "findings": []}]});
-    assert!(panel_text(task, json!({})).contains("WD No findings"));
+    assert!(panel_text(task, json!({})).contains("Author review No findings"));
 }
 
 #[::core::prelude::v1::test]
@@ -703,21 +751,28 @@ fn a_canceled_pr_shows_why_with_its_refs_linked() {
 #[::core::prelude::v1::test]
 fn the_pr_plan_shows_on_a_task_without_a_pr() {
     let t = |ships: bool| json!({"ref": "T6", "id": 6, "title": "x", "status": "queued", "project": "webapp", "ships_pr": ships});
-    assert!(panel_text(t(true), json!({})).contains("Ends in a PR No PR yet."));
-    assert!(panel_text(t(false), json!({})).contains("Pull request No PR"));
+    assert!(panel_text(t(true), json!({})).contains("Pull request Checks and review Merged"));
+    assert!(!panel_text(t(false), json!({})).contains("Pull request"), "a task that doesn't end in a PR stops at Done");
 }
 
 #[::core::prelude::v1::test]
-fn a_steps_findings_fold_under_its_headline() {
+fn a_step_opens_to_its_findings_with_their_state() {
     let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
-                      "step_results": [{"name": "Author review", "headline": "1 open finding", "open": 1, "stale": true,
+                      "step_results": [{"name": "Author review", "headline": "1 open finding", "open": 1, "stale": true, "at": "2026-01-05T12:00:00Z",
                                         "findings": [{"id": "F2", "title": "SQL injection", "severity": "high", "file": "api.rs", "line": 12},
                                                      {"id": "F1", "title": "Typo", "state": "fixed"}]}]});
     let shut = panel_text(task.clone(), json!({}));
-    assert!(shut.contains("1 open finding · Findings ›") && !shut.contains("SQL injection"), "{shut}");
-    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.findings": "open"}}})));
-    assert!(text.contains("Author review 1 open finding Moved since"), "{text}");
+    assert!(shut.contains("Author review 1 open finding") && !shut.contains("SQL injection"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["result:0"]}})));
+    assert!(text.contains("Author review 1 open finding Jan 5 F2") && text.contains("Typo Moved since"), "{text}");
     assert!(text.contains("F2 open high SQL injection api.rs:12") && text.contains("F1 fixed Typo"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_findings_link_opens_the_step_results_holding_findings() {
+    let task = json!({"step_results": [{"name": "QA", "findings": []},
+                                       {"name": "Author review", "findings": [{"id": "F1", "title": "Typo"}]}]});
+    assert_eq!(view::findings_steps(&task), vec![view::TlStep::Result(1)]);
 }
 
 #[::core::prelude::v1::test]
@@ -747,7 +802,7 @@ fn reviewer_pills_say_when_each_was_asked_and_the_ask_stage_shows_its_bar() {
 
 #[::core::prelude::v1::test]
 fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
-    let t = |note: Value| json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "merged_note": note});
+    let t = |note: Value| json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": note});
     let text = panel_text(t(json!({"text": "What changed: the login page", "waiting": false})), json!({}));
     assert!(text.contains("Note for testers") && text.contains("What changed: the login page") && !text.contains("Waiting"), "{text}");
     let text = panel_text(t(json!({"text": null, "waiting": true})), json!({}));
@@ -759,7 +814,7 @@ fn the_note_for_testers_shows_and_says_when_the_ticket_waits_for_it() {
 fn a_long_note_for_testers_shows_bold_and_folds_after_its_first_block() {
     let checks = (1..=4).map(|k| format!("- Reconnect to the Core {k} times; the library, queue and zones stay right.")).collect::<Vec<_>>().join("\n");
     let note = format!("**What changed:** the app no longer grows in memory on reconnect.\n\n**Please check:**\n\n{checks}");
-    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "merged_note": {"text": note, "waiting": false}});
+    let task = json!({"ref": "T9", "id": 9, "title": "x", "status": "done", "project": "webapp", "pr": {"num": 13, "repo": "webapp", "state": "MERGED", "checks": "pass", "review": "approved"}, "merged_note": {"text": note, "waiting": false}});
     let text = panel_text(task.clone(), json!({}));
     assert!(text.contains("What changed: the app no longer") && !text.contains("**"), "{text}");
     assert!(text.contains("Show more") && !text.contains("Please check"), "{text}");
@@ -797,4 +852,79 @@ fn the_checks_step_says_being_fixed_only_while_a_terminal_is_on_it() {
     assert_eq!(fix(json!({"idle": true})), "Failed");
     assert_eq!(fix(json!({"owner": {"reason": "Add the NPM_TOKEN secret"}})), "Needs you");
     assert_eq!(fix(json!({"owner": {"reason": "Add the NPM_TOKEN secret"}, "session": "s1"})), "Needs you");
+}
+
+fn tl_step(v: &Value) -> Option<view::TlStep> {
+    match v.as_str()? {
+        "started" => Some(view::TlStep::Started),
+        s => s.strip_prefix("result:")?.parse().ok().map(view::TlStep::Result),
+    }
+}
+
+fn every(n: &view::Node, f: &mut impl FnMut(&view::Node)) {
+    f(n);
+    if let view::Node::El { kids, .. } = n {
+        kids.iter().for_each(|k| every(k, f));
+    }
+}
+
+fn two_terminals() -> Value {
+    json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp", "started_at": "2026-01-05T14:00:00Z",
+           "session": {"id": "s2", "status": "working"},
+           "terminals": [{"id": "s2", "name": "T7 Second go", "status": "working", "background": null, "at": "2026-01-05T15:14:00Z"},
+                         {"id": "s1", "name": "T7 First go", "status": "gone", "background": null, "at": "2026-01-05T14:02:00Z",
+                          "gone_at": "2026-01-05T14:40:00Z"}],
+           "context": {"where": {"branch": "feat/t7-progress", "uncommitted": 3}},
+           "log": [{"kind": "commit", "at": "2026-01-05T15:52:00Z", "text": "wip"}]})
+}
+
+#[::core::prelude::v1::test]
+fn the_started_step_shows_its_terminals_only_when_opened() {
+    let task = two_terminals();
+    let shut = panel_text(task.clone(), json!({}));
+    assert!(!shut.contains("First go") && !shut.contains("feat/t7-progress"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["started"]}})));
+    let closed = crate::fmt::hhmm("2026-01-05T14:40:00Z");
+    assert!(text.contains("T7 Second go Working"), "{text}");
+    assert!(text.contains(&format!("T7 First go Closed {closed}")), "{text}");
+    let last = crate::fmt::hhmm("2026-01-05T15:52:00Z");
+    assert!(text.contains(&format!("Branch feat/t7-progress Changes 3 files not committed · last commit {last}")), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn the_live_terminal_has_a_focus_button() {
+    let tree = tree(&json!({"task": two_terminals(), "state": {}, "ui": {"tl_open": ["started"]}}));
+    let mut tips = Vec::new();
+    every(&tree, &mut |n| {
+        if let view::Node::Btn { act, tip: Some(tip), .. } = n {
+            tips.push(format!("{} {tip}", act.act));
+        }
+    });
+    assert_eq!(tips.iter().filter(|t| *t == "focus Focus in Midna").count(), 1, "{tips:?}");
+}
+
+#[::core::prelude::v1::test]
+fn a_step_result_opens_to_its_full_note_and_what_it_ran_on() {
+    let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
+                      "devices": {"lent_labels": ["Android emulator"]},
+                      "step_results": [{"name": "Verify numbers", "headline": "No findings", "note": "Checked the totals after teardown.", "open": 0,
+                                        "head": "4e1a9c2f00", "at": "2026-01-05T12:00:00Z", "findings": []}]});
+    let shut = panel_text(task.clone(), json!({}));
+    assert!(shut.contains("Verify numbers No findings") && !shut.contains("Checked the totals"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["result:0"]}})));
+    assert!(text.contains("Checked the totals after teardown. Ran on Android emulator · commit 4e1a9c2"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_step_with_nothing_more_to_show_does_not_open() {
+    let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
+                      "step_results": [{"name": "Lint", "headline": "Passed", "open": 0, "at": "2026-01-05T12:00:00Z", "findings": []}]});
+    let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
+    let mut steps = 0;
+    every(&tree, &mut |n| {
+        if let view::Node::El { k: view::K::TlStep { step: view::TlStep::Result(_), .. }, .. } = n {
+            steps += 1;
+        }
+    });
+    assert_eq!(steps, 0);
 }
