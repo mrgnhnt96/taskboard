@@ -344,9 +344,14 @@ fn open_at(h: &Hours, extra: Option<&Extra>, dt: &NaiveDateTime) -> bool {
     }
 }
 
-/// Whether `dt` is still in the stretch of work hours that the extra hours ended early.
+/// Whether `dt` is still in the stretch of work hours that the extra hours ended early: they
+/// began and ended in that one stretch (no start after `from` up to `until`), and it's still on.
 fn cut_short(h: &Hours, x: &Extra, dt: &NaiveDateTime) -> bool {
-    in_window(h, &x.until) && in_window(h, dt) && !starts_between(h, &x.until, dt)
+    in_window(h, &x.from)
+        && in_window(h, &x.until)
+        && in_window(h, dt)
+        && !starts_between(h, &(x.from + Duration::minutes(1)), &x.until)
+        && !starts_between(h, &x.until, dt)
 }
 
 /// Whether the work hours start on a work day between `a` and `b`, both included.
@@ -605,6 +610,15 @@ mod tests {
         assert!(!live(&day, &short, &at(2026, 10, 6, 10, 0)));
         let late = Extra { from: at(2026, 10, 5, 16, 0), until: at(2026, 10, 5, 19, 0) };
         assert!(!live(&day, &late, &at(2026, 10, 5, 20, 0)), "a late end cuts nothing short");
+        // Ending inside the next day's hours, or running from before the start, cuts nothing short.
+        let overnight = Extra { from: at(2026, 10, 5, 16, 0), until: at(2026, 10, 6, 10, 0) };
+        assert!(open_at(&day, Some(&overnight), &at(2026, 10, 6, 10, 30)), "Tuesday stays open after 10 AM");
+        assert!(!live(&day, &overnight, &at(2026, 10, 6, 10, 30)));
+        let dawn = Extra { from: at(2026, 10, 5, 7, 0), until: at(2026, 10, 5, 10, 0) };
+        assert!(open_at(&day, Some(&dawn), &at(2026, 10, 5, 11, 0)), "Monday stays open after 10 AM");
+        // Set before the start to end early: from the start, so that day still ends early.
+        let waited = Extra { from: at(2026, 10, 5, 9, 0), until: at(2026, 10, 5, 15, 0) };
+        assert!(!open_at(&day, Some(&waited), &at(2026, 10, 5, 16, 0)));
         // Set at 7 AM to run until 7 PM: from 9 AM, as the hours would.
         let early = Extra { from: at(2026, 10, 5, 9, 0), until: at(2026, 10, 5, 19, 0) };
         assert!(!open_at(&day, Some(&early), &at(2026, 10, 5, 8, 0)));
