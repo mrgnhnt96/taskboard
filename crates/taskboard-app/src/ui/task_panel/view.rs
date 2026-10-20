@@ -902,7 +902,7 @@ fn result_node(c: &Ctx, x: &Value) -> Node {
         let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
         body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, findings.iter().map(finding_item).collect())]));
     }
-    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_head(tl_name(s(x, "name")), s(x, "headline"), ""), body, false)
+    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at"))), body, false)
 }
 
 /// `doneNode(t)`: Done or Failed, with its summary.

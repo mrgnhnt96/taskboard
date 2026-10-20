@@ -703,13 +703,13 @@ fn the_pr_plan_shows_on_a_task_without_a_pr() {
 #[::core::prelude::v1::test]
 fn a_steps_findings_fold_under_its_headline() {
     let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
-                      "step_results": [{"name": "Author review", "headline": "1 open finding", "open": 1, "stale": true,
+                      "step_results": [{"name": "Author review", "headline": "1 open finding", "open": 1, "stale": true, "at": "2026-01-05T12:00:00Z",
                                         "findings": [{"id": "F2", "title": "SQL injection", "severity": "high", "file": "api.rs", "line": 12},
                                                      {"id": "F1", "title": "Typo", "state": "fixed"}]}]});
     let shut = panel_text(task.clone(), json!({}));
     assert!(shut.contains("1 open finding · Findings ›") && !shut.contains("SQL injection"), "{shut}");
     let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"folds": {"tb.fold.findings": "open"}}})));
-    assert!(text.contains("Author review 1 open finding Moved since"), "{text}");
+    assert!(text.contains("Author review 1 open finding Jan 5 Moved since"), "{text}");
     assert!(text.contains("F2 open high SQL injection api.rs:12") && text.contains("F1 fixed Typo"), "{text}");
 }
 
