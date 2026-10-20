@@ -1,6 +1,8 @@
 //! Builds in the board's terminals: a Rust repo's terminals, and the worktree subagents they start,
 //! share the main checkout's `target/` and a cap on rustc jobs, so a goal running many worktree agents
-//! doesn't cold-build the same project once per worktree with every core at once.
+//! doesn't cold-build the same project once per worktree with every core at once. A slot from the
+//! worktree pool (`slots.rs`) keeps its own `target/` instead: it lives on between tasks, so its build
+//! stays warm, and two slots building at once never wait on each other's cargo lock.
 //!
 //! Both go in the `env` of the `--settings` the board passes to Claude, which reaches its Bash tools
 //! and every subagent. `[builds]` in config.toml turns them off.
@@ -15,7 +17,8 @@ use crate::app::App;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct BuildsConfig {
-    /// Point CARGO_TARGET_DIR at the main checkout's `target/`, shared by all its worktrees.
+    /// Point CARGO_TARGET_DIR at the main checkout's `target/`, shared by all its worktrees (a pool
+    /// slot's own `target/` for a slot).
     pub shared_target: bool,
     /// CARGO_BUILD_JOBS for a board terminal's cargo builds; 0 leaves cargo's default (every core).
     pub jobs: i64,
@@ -53,7 +56,8 @@ pub fn env_for(cfg: &BuildsConfig, cwd: &str) -> Map<String, Value> {
     }
     let Some(main) = cargo_repo(cwd) else { return env };
     if cfg.shared_target {
-        env.insert("CARGO_TARGET_DIR".into(), json!(main.join("target").to_string_lossy()));
+        let root = crate::worktrees::root_of(Some(cwd)).filter(|r| crate::slots::is_slot(r)).map(PathBuf::from).unwrap_or(main);
+        env.insert("CARGO_TARGET_DIR".into(), json!(root.join("target").to_string_lossy()));
     }
     if cfg.jobs > 0 {
         env.insert("CARGO_BUILD_JOBS".into(), json!(cfg.jobs.to_string()));
@@ -108,6 +112,12 @@ mod tests {
         assert!(env_for(&off, wt.to_str().unwrap()).is_empty());
         let jobs_only = BuildsConfig { shared_target: false, jobs: 2 };
         assert_eq!(Value::Object(env_for(&jobs_only, wt.to_str().unwrap())), json!({"CARGO_BUILD_JOBS": "2"}));
+
+        let slot = repo.join(".claude/worktrees/slot-2");
+        run(&repo, &["worktree", "add", "-q", "--detach", slot.to_str().unwrap()]);
+        std::fs::create_dir_all(slot.join("crates/app")).unwrap();
+        let env = env_for(&BuildsConfig::default(), slot.join("crates/app").to_str().unwrap());
+        assert_eq!(env["CARGO_TARGET_DIR"], json!(slot.join("target").to_string_lossy()), "a slot builds in its own target");
 
         std::fs::remove_file(repo.join("Cargo.toml")).unwrap();
         assert!(env_for(&BuildsConfig::default(), repo.to_str().unwrap()).is_empty(), "not a Cargo project");

@@ -245,7 +245,7 @@ fn git_repo(b: &Board) -> String {
 }
 
 #[test]
-fn each_task_starts_in_its_own_worktree_off_the_base() {
+fn each_task_starts_in_a_worktree_slot_off_the_base() {
     let b = new_board();
     let head = git_repo(&b);
     let g = b.side_by_side();
@@ -257,17 +257,18 @@ fn each_task_starts_in_its_own_worktree_off_the_base() {
     assert_eq!(b.get(&format!("goals/G{g}"))["worktree_base"], "origin/main");
     let (one, two) = (b.task("Fix one", json!({"goal_id": g})), b.task("Fix two", json!({"goal_id": g})));
     runner::start_queued(&b.app).unwrap();
-    for t in [one, two] {
-        let folder = format!("{}/.claude/worktrees/T{t}", b.repo());
+    for (n, t) in [(1, one), (2, two)] {
+        let folder = slot(&b, n);
         let job = b.start_job(t);
         assert_eq!(job.st("cwd"), folder);
         assert_eq!(git(Path::new(&folder), &["rev-parse", "HEAD"]), head);
-        assert!(job.st("prompt").contains(&format!("The board made this worktree for the task: {folder}, detached at origin/main")), "{}", job.st("prompt"));
+        assert!(job.st("prompt").contains(&format!("The board gave the task the worktree slot-{n} from its pool: {folder}, detached at origin/main")), "{}", job.st("prompt"));
+        assert!(job.st("prompt").contains(&format!("Its builds go in {folder}/target")), "{}", job.st("prompt"));
         let log = b.get(&format!("tasks/T{t}"))["log"].to_string();
-        assert!(log.contains(&format!("Made its worktree from origin/main at {folder}")), "{log}");
+        assert!(log.contains(&format!("Made worktree slot-{n} from origin/main at {folder}")), "{log}");
     }
     let again = worktrees::ensure(&b.app, &board::get_task(&b.app, one).unwrap()).unwrap();
-    assert_eq!(again, Some(format!("{}/.claude/worktrees/T{one}", b.repo())), "it reuses the worktree");
+    assert_eq!(again, Some(slot(&b, 1)), "it keeps its slot");
 }
 
 #[test]
@@ -281,7 +282,7 @@ fn making_a_worktree_says_each_stage_on_the_progress_stream() {
     let l = lines.clone();
     let sink: progress::Sink = Arc::new(move |s: &str| l.lock().push(s.to_string()));
     progress::with(sink, || worktrees::ensure(&b.app, &board::get_task(&b.app, t).unwrap())).unwrap();
-    assert_eq!(*lines.lock(), ["Fetched origin", "Made its worktree from origin/main"]);
+    assert_eq!(*lines.lock(), ["Fetched origin", "Made slot-1 from origin/main"]);
 }
 
 #[test]
@@ -307,6 +308,92 @@ fn a_worktree_base_is_checked_and_a_missing_one_fails_the_start_with_retries() {
     assert!(b.started().is_empty(), "it waits for the retry");
 }
 
+fn slot(b: &Board, n: i64) -> String {
+    format!("{}/.claude/worktrees/slot-{n}", b.repo())
+}
+
+/// A worktree of the task's own, as the board made them before the slot pool.
+fn own_worktree(b: &Board, t: i64) {
+    let folder = format!("{}/.claude/worktrees/T{t}", b.repo());
+    git(Path::new(&b.repo()), &["worktree", "add", "-q", "--detach", &folder, "origin/main"]);
+}
+
+/// Marks a task done with its terminal gone, which frees its slot.
+fn finish(b: &Board, t: i64) {
+    b.app.db.x("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?", p![t]).unwrap();
+}
+
+#[test]
+fn a_task_takes_the_free_slot_used_last_and_passes_over_a_dirty_one() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!((b.start_job(one).st("cwd"), b.start_job(two).st("cwd")), (slot(&b, 1), slot(&b, 2)));
+    let third = b.task("Third", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(third).st("cwd"), slot(&b, 3), "a held slot isn't shared");
+
+    git(Path::new(&slot(&b, 2)), &["switch", "-q", "-c", "feature/two"]);
+    for t in [one, two] {
+        finish(&b, t);
+    }
+    assert!(worktrees::clean_up(&b.app).unwrap().is_empty(), "a slot stays for the next task");
+    let next = b.task("Next", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(next).st("cwd"), slot(&b, 2), "the warmest free slot");
+    assert!(git(Path::new(&slot(&b, 2)), &["status", "--short", "--branch"]).starts_with("## HEAD (no branch)"), "detached at the base again");
+    assert!(b.card(next)["log"].to_string().contains(&format!("Took worktree slot-2 at {}, detached at origin/main", slot(&b, 2))));
+
+    finish(&b, next);
+    std::fs::write(Path::new(&slot(&b, 2)).join("left"), "x\n").unwrap();
+    let after = b.task("After", json!({"goal_id": g}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(after).st("cwd"), slot(&b, 1), "a slot with uncommitted changes is passed over");
+    assert!(Path::new(&slot(&b, 2)).join("left").exists());
+}
+
+#[test]
+fn at_max_slots_a_task_waits_for_a_slot_like_a_lock() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    let out = b.post("projects/webapp", json!({"min_slots": 1, "max_slots": 1}));
+    assert_eq!(out["worktrees"]["max_slots"], 1);
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), vec![one]);
+    assert_eq!(b.card(two)["waiting"], "Waits for a worktree slot");
+    let locks = b.get("locks")["locks"].clone();
+    assert_eq!((locks[0]["name"].clone(), locks[0]["held_by"].clone()), (json!("wt:slot-1"), json!(format!("T{one}"))), "{locks}");
+
+    finish(&b, one);
+    runner::start_queued(&b.app).unwrap();
+    assert!(b.started().contains(&two));
+    assert_eq!(b.start_job(two).st("cwd"), slot(&b, 1));
+}
+
+#[test]
+fn a_project_s_slot_settings_are_checked_and_go_back_to_config() {
+    let b = new_board();
+    let w = |out: &Value| out["worktrees"].clone();
+    let out = b.get("projects")["projects"][0].clone();
+    assert_eq!(w(&out), json!({"min_slots": 2, "max_slots": 10, "idle_trim_days": 2, "idle_remove_days": 7, "low_disk_gb": 50, "set": {}}));
+    let out = b.post("projects/webapp", json!({"min_slots": "1", "idle_trim_days": 3, "low_disk_gb": 20}));
+    assert_eq!(w(&out)["set"], json!({"min_slots": 1, "idle_trim_days": 3, "low_disk_gb": 20}));
+    let (code, msg) = b.post_err("projects/webapp", json!({"max_slots": 0}));
+    assert_eq!(code, 400);
+    assert!(msg.contains("max_slots is a count from 1 to 50"), "{msg}");
+    let (_, msg) = b.post_err("projects/webapp", json!({"idle_remove_days": 2}));
+    assert!(msg.contains("idle_trim_days (3) can't be more than idle_remove_days (2)"), "{msg}");
+    assert_eq!(b.get("projects")["projects"][0]["worktrees"]["idle_remove_days"], 7, "a refused change isn't kept");
+    let out = b.post("projects/webapp", json!({"min_slots": "default", "idle_trim_days": null, "low_disk_gb": null}));
+    assert_eq!(w(&out)["set"], json!({}));
+}
+
 #[test]
 fn a_finished_clean_worktree_is_removed_and_a_dirty_one_kept() {
     let b = new_board();
@@ -314,6 +401,9 @@ fn a_finished_clean_worktree_is_removed_and_a_dirty_one_kept() {
     let g = b.side_by_side();
     b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
     let (clean, dirty, working) = (b.task("Clean", json!({"goal_id": g})), b.task("Dirty", json!({"goal_id": g})), b.task("Working", json!({"goal_id": g})));
+    for t in [clean, dirty, working] {
+        own_worktree(&b, t);
+    }
     runner::start_queued(&b.app).unwrap();
     let folder = |t: i64| format!("{}/.claude/worktrees/T{t}", b.repo());
     std::fs::write(Path::new(&folder(dirty)).join("left"), "x\n").unwrap();
@@ -337,6 +427,9 @@ fn a_pr_task_keeps_its_worktree_until_its_pr_is_linked_and_finished() {
     b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
     let (waiting, canceled, merged) =
         (b.task("No PR yet", json!({"goal_id": g, "ships_pr": true})), b.task("Canceled", json!({"goal_id": g, "ships_pr": true})), b.task("Merged", json!({"goal_id": g, "ships_pr": true})));
+    for t in [waiting, canceled, merged] {
+        own_worktree(&b, t);
+    }
     runner::start_queued(&b.app).unwrap();
     for t in [waiting, canceled, merged] {
         b.app.db.x("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?", p![t]).unwrap();
