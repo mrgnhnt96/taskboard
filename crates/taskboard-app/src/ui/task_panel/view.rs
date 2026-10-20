@@ -1573,6 +1573,8 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         "not_ours" => step("Checks", StepSt::Done, Some("Not this PR's"), None),
         "skipped" => step("Checks", StepSt::Done, Some("Skipped"), None),
         "not_needed" => step("Checks", StepSt::Done, Some("Not needed"), None),
+        // Its PR into the base's branch has no builds; they may start once it moves to the main branch.
+        "none_yet" => step("Checks", StepSt::Todo, Some("None yet"), None),
         _ => step(checks.0, checks.1, checks.2.as_deref(), if checks.1 == StepSt::Todo { None } else { build }),
     });
     if let Some(l) = obj(bar, "lens") {
@@ -1625,7 +1627,11 @@ pub fn pr_steps_full(p: &Value, bar: &Value) -> Vec<PrStep> {
         });
     }
     out.push(match phase {
-        "waits" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on base"), None),
+        "waits" if pr_open(p) => match obj(bar, "waits_on_base") {
+            // "Waits on T3", to the base's running build or its PR.
+            Some(wb) => step("Merge", StepSt::Wait, Some(&format!("Waits on {}", s(wb, "ref"))), opt_s(wb, "url").filter(|u| is_web(u)).map(str::to_string)),
+            None => step("Merge", StepSt::Wait, Some("Waits on base"), None),
+        },
         "steps" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on steps"), None),
         // A head-merge child's PR has to merge into this one first.
         "stack" if pr_open(p) => step("Merge", StepSt::Wait, Some("Waits on stack"), None),
@@ -1849,6 +1855,10 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     }
     if let Some(line) = bar.and_then(|bar| obj(bar, "stacks_on")).map(|so| stacks_line(c, so)) {
         body.push(line);
+    }
+    // Phase `waits`: what the base is at ("T3's checks running, 2 of 5 passed").
+    if let Some(line) = bar.and_then(|bar| obj(bar, "waits_on_base")).and_then(|wb| opt_s(wb, "line")).filter(|_| pr_open(p)) {
+        body.push(el(K::Line, vec![txt(line, St::Small)]));
     }
     // Phase `stack`: which head-merge PR has to merge into this one first.
     if let Some(why) = bar.and_then(|bar| opt_s(bar, "waits_on_stack")).filter(|_| pr_open(p)) {

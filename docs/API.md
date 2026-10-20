@@ -581,7 +581,7 @@ The card is draggable to Working when it's queued/planned, not starting, and not
   } | null,
   "bar": {                       // on cards from this board (absent in the frozen web fixtures)
     "build_url": str|null,       // the link of the newest check by its updated/created time (failed, else running, else any), else the PR's checks page
-    "checks": "not_needed"|"skipped"|"not_ours"|null,   // no checks at all / this push's checks skipped (a hook, tb pr skip-checks) / its failures cleared (`tb pr not-ours`)
+    "checks": "not_needed"|"none_yet"|"skipped"|"not_ours"|null,   // no checks at all / none yet while it waits on its base / this push's checks skipped (a hook, tb pr skip-checks) / its failures cleared (`tb pr not-ours`)
     "checks_why": str|null,      // why they were skipped
     "you": "waiting"|"reviewed"|"skipped"|null,   // the owner's own look: a green PR waits for them / they marked it / review skipped
     "approvals": int, "reviewers": int,           // approvals; reviewers = approvals + reviewers still asked
@@ -589,7 +589,8 @@ The card is draggable to Working when it's queued/planned, not starting, and not
                                  // home tile show "1 of 2" against it, Done at approvals >= need; null: the host's verdict decides ("x of reviewers")
     "new_comments": int,         // open threads waiting on the author (older reads: comments since the agent last handled them)
     "comments_url": str|null,   // where "N new comments" goes: the unread thread waiting longest, else the PR
-    "waits_on_base": bool,       // phase `waits`: a stacked PR waits for the PR it builds on to merge
+    "waits_on_base": {"ref": str, "line": str, "url": str|null}|null,   // phase `waits`: a stacked PR waits for the PR it builds on to merge;
+                                 // line says what that PR is at ("T3's checks running, 2 of 5 passed"), url its newest build while checks run, else the PR
     "waits_on_stack": str|null,  // phase `stack` ("Waits on stack"): which head-merge PR has to merge into this one first
     "stacks_on": stack_on|null,
     "retargeted": str|null,      // the base the board pointed it at once its parent merged
