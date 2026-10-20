@@ -645,6 +645,77 @@ fn a_failed_task_handed_in_with_a_pr_body_opens_its_pr() {
     assert_eq!(t.i("pr_num"), Some(77));
 }
 
+/// Two tasks with terminals in one shared checkout: A works in its own worktree, B switches the shared
+/// checkout to its branch. Each PR opens from its own task's branch, a task with no commits can't take
+/// B's, and a second PR for B's branch names B's PR instead of a bare 422.
+#[test]
+fn tasks_sharing_a_checkout_open_prs_from_their_own_branches() {
+    let b = new_board();
+    let repo = git_repo(&b);
+    let cwd = repo.to_string_lossy().to_string();
+    let terms: Vec<Value> = ["s1", "s2", "s3", "s4"].iter().map(|s| json!({"id": s, "name": s, "agent": "claude", "cwd": cwd, "status": {"state": "working"}})).collect();
+    midna::sync(&b.app, &terms, &[]).unwrap();
+    let report = |sid: &str, event: &str, extra: Value| {
+        let mut body = extra;
+        body["session"] = json!(sid);
+        body["claude_session"] = json!(format!("c-{sid}"));
+        b.report(event, body)
+    };
+    let commit = |dir: &Path, file: &str| {
+        std::fs::write(dir.join(file), "x\n").unwrap();
+        git(dir, &["add", file]);
+        git(dir, &["commit", "-q", "-m", file]);
+        git(dir, &["rev-parse", "HEAD"])
+    };
+    let opened = || std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap_or_default();
+    let a = b.task("Accent contrast", json!({}));
+    let bb = b.task("Axe findings", json!({}));
+    report("s1", "tb.take", json!({"task": format!("T{a}")})).unwrap();
+    report("s2", "tb.take", json!({"task": format!("T{bb}")})).unwrap();
+
+    // A commits in its worktree from the shared checkout's terminal.
+    let wt = b.dir.path().join("webapp-a");
+    git(&repo, &["worktree", "add", "-q", "-b", "fix/accent", &wt.to_string_lossy()]);
+    let sha = commit(&wt, "accent.txt");
+    git(&wt, &["push", "-q", "-u", "origin", "fix/accent"]);
+    let cmd = format!("git -C {} commit -m accent", wt.display());
+    report("s1", "hook.commit", json!({"cwd": cwd, "command": cmd, "git": {"branch": "main"}, "work_git": {"branch": "fix/accent", "sha": sha}})).unwrap();
+
+    // B switches the shared checkout to its branch and pushes it.
+    git(&repo, &["switch", "-q", "-c", "fix/axe"]);
+    let sha = commit(&repo, "axe.txt");
+    git(&repo, &["push", "-q", "-u", "origin", "fix/axe"]);
+    report("s2", "hook.commit", json!({"cwd": cwd, "command": "git commit -m axe", "git": {"branch": "fix/axe", "sha": sha}})).unwrap();
+
+    // A's terminal sits on B's branch, but A's PR comes from A's.
+    report("s1", "tb.done", json!({"summary": "Accent", "pr_body": BODY, "cwd": cwd, "git": {"branch": "fix/axe"}})).unwrap();
+    assert!(opened().contains("--head fix/accent"), "{}", opened());
+    assert!(!opened().contains("--head fix/axe"), "{}", opened());
+    let gh = std::fs::read_to_string(&b.app.cfg.pr.gh).unwrap().replace("pull/77", "pull/78");
+    std::fs::write(&b.app.cfg.pr.gh, gh).unwrap();
+    report("s2", "tb.done", json!({"summary": "Axe", "pr_body": BODY, "cwd": cwd, "git": {"branch": "fix/axe"}})).unwrap();
+    assert!(opened().contains("--head fix/axe"), "{}", opened());
+    assert_eq!((b.row(a).i("pr_num"), b.row(bb).i("pr_num")), (Some(77), Some(78)));
+
+    // A task that committed nothing can't open a PR from B's branch.
+    let c = b.task("Stray", json!({}));
+    report("s3", "tb.take", json!({"task": format!("T{c}")})).unwrap();
+    let (code, why) = report("s3", "tb.done", json!({"summary": "Stray", "pr_body": BODY, "cwd": cwd})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.contains(&format!("fix/axe is T{bb}'s branch")), "{why}");
+
+    // The host refuses a second PR for B's branch: the refusal names B's PR.
+    std::fs::write(&b.app.cfg.pr.gh, "#!/bin/sh\necho 'a pull request for branch \"fix/axe\" into branch \"main\" already exists:' >&2\nexit 1\n").unwrap();
+    let d = b.task("Also axe", json!({}));
+    report("s4", "tb.take", json!({"task": format!("T{d}")})).unwrap();
+    let sha = commit(&repo, "axe2.txt");
+    git(&repo, &["push", "-q", "origin", "fix/axe"]);
+    report("s4", "hook.commit", json!({"cwd": cwd, "command": "git commit -m axe2", "git": {"branch": "fix/axe", "sha": sha}})).unwrap();
+    let (code, why) = report("s4", "tb.done", json!({"summary": "Also", "pr_body": BODY, "cwd": cwd})).unwrap_err();
+    assert_eq!(code, 502);
+    assert!(why.contains(&format!("fix/axe already has an open PR #78 (https://github.com/acme/webapp/pull/78), T{bb}'s")), "{why}");
+}
+
 #[test]
 fn a_change_from_a_terminal_is_credited_to_that_terminal() {
     let b = new_board();

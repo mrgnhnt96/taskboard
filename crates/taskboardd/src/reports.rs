@@ -292,6 +292,10 @@ impl<'a> Report<'a> {
                 w.insert("worktree".into(), json!(d));
                 if let Some((_, top)) = repo_of(d).filter(|_| commit) {
                     w.insert("committed_in".into(), json!(top));
+                    // The branch its work is on: the PR's head, whatever the terminal's checkout is on later.
+                    if let Some(b) = git.s("branch").filter(|s| !s.is_empty()) {
+                        w.insert("committed_branch".into(), json!(b));
+                    }
                 }
             }
         }
