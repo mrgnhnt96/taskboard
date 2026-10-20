@@ -496,13 +496,15 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
                 let a = alerts::raise(app, &text, task, goal, (!key.is_empty()).then_some(key.as_str()), as_bool(body.get("urgent"), false))?;
                 alerts::want_suggestions(app, a["id"].as_str().unwrap_or(""))?;
                 // The terminal that raised it, else the task's, shows it on its tab.
-                let sid = match (body_str(body, "session"), task) {
+                let t = task.map(|t| board::get_task(app, t)).transpose()?;
+                let sid = match (body_str(body, "session"), &t) {
                     (s, _) if !s.is_empty() => Some(s),
-                    (_, Some(t)) => crate::midna::tab_terminal(app, &board::get_task(app, t)?)?,
+                    (_, Some(t)) => crate::midna::tab_terminal(app, t)?,
                     _ => None,
                 };
                 if let Some(sid) = sid {
-                    crate::midna::set_tab(app, &sid, "alert");
+                    let detail = t.as_ref().map(|t| crate::midna::task_detail(t, &text)).unwrap_or_else(|| text.clone());
+                    crate::midna::set_tab(app, &sid, "alert", Some(detail));
                 }
                 Ok(a)
             })?;

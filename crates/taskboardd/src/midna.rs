@@ -603,13 +603,42 @@ pub fn tab_field(field: &str) -> bool {
 }
 
 /// The Midna call that puts a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) on terminal `sid`.
-pub fn tab_call(sid: &str, tab: &str) -> (&'static str, Value) {
+/// `detail` says what it's waiting on; Midna shows it on the needs-you card a needs_you status raises.
+pub fn tab_call(sid: &str, tab: &str, detail: Option<&str>) -> (&'static str, Value) {
     match TAB_STATUSES.iter().find(|(t, ..)| *t == tab) {
         Some((_, label, color, base)) => {
-            ("session.set_status", json!({"id": sid, "label": label, "color": color, "base": base, "clear_on": "prompt"}))
+            let mut params = json!({"id": sid, "label": label, "color": color, "base": base, "clear_on": "prompt"});
+            if let Some(d) = detail.filter(|d| !d.is_empty()) {
+                params["detail"] = json!(d);
+            }
+            ("session.set_status", params)
         }
         None => ("session.clear_status", json!({"id": sid})),
     }
+}
+
+/// The most of a tab's detail sent; Midna's card shows the start of it.
+const TAB_DETAIL_CHARS: usize = 300;
+
+/// What a task's tab status `tab` (from `task_tab`) is waiting on, for a needs_you one: the task and
+/// its question, or the question its PR visit stopped to ask.
+pub fn task_tab_detail(t: &Row, tab: &str) -> Option<String> {
+    if tab != "question" {
+        return None;
+    }
+    let ask = match t.s("status") {
+        Some("done") => {
+            let msg = jloads_obj(t.s("pr_flow")).get("stopped").and_then(|s| s["message"].as_str().map(|m| m.to_string()));
+            format!("asked on PR #{}: {}", t.i0("pr_num"), msg.unwrap_or_default())
+        }
+        _ => t.s("question").filter(|q| !q.trim().is_empty()).unwrap_or("waiting for your answer").to_string(),
+    };
+    Some(task_detail(t, &ask))
+}
+
+/// `T<n> · <title>: <what>`, on one line.
+pub fn task_detail(t: &Row, what: &str) -> String {
+    one_line(&format!("{} · {}: {}", rf("task", t.id()), t.st("title"), what.trim()), TAB_DETAIL_CHARS)
 }
 
 /// Takes out the local triggers older boards kept in Midna for tab statuses (hook events the board
@@ -691,13 +720,14 @@ pub fn task_changed(app: &App, before: &Row, after: &Row) -> Result<()> {
         return Ok(());
     }
     if let Some(sid) = tab_terminal(app, after)? {
-        set_tab(app, &sid, now.unwrap_or(TAB_CLEAR));
+        set_tab(app, &sid, now.unwrap_or(TAB_CLEAR), now.and_then(|n| task_tab_detail(after, n)));
     }
     Ok(())
 }
 
-/// Queues a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) for a terminal; the jobs thread sends it.
-pub fn set_tab(app: &App, sid: &str, tab: &'static str) {
+/// Queues a tab status (one of `TAB_STATUSES`, or `TAB_CLEAR`) for a terminal, with what it's waiting
+/// on (`tab_call`); the jobs thread sends it.
+pub fn set_tab(app: &App, sid: &str, tab: &'static str, detail: Option<String>) {
     if !app.cfg.runner || sid.is_empty() {
         return;
     }
@@ -705,7 +735,7 @@ pub fn set_tab(app: &App, sid: &str, tab: &'static str) {
     if s.midna_tabs.len() >= TABS_KEPT {
         s.midna_tabs.pop_front();
     }
-    s.midna_tabs.push_back((sid.to_string(), tab));
+    s.midna_tabs.push_back((sid.to_string(), tab, detail));
     drop(s);
     app.notify_jobs();
 }
@@ -715,12 +745,12 @@ pub fn set_tab(app: &App, sid: &str, tab: &'static str) {
 pub fn send_tabs(app: &App) {
     static TOO_OLD: AtomicBool = AtomicBool::new(false);
     loop {
-        let Some((sid, tab)) = app.shared.lock().midna_tabs.pop_front() else { return };
-        let (method, params) = tab_call(&sid, tab);
+        let Some((sid, tab, detail)) = app.shared.lock().midna_tabs.pop_front() else { return };
+        let (method, params) = tab_call(&sid, tab, detail.as_deref());
         match call_timeout(app, method, params, 5.0) {
             Ok(_) => {}
             Err(MidnaError::Down(_)) => {
-                app.shared.lock().midna_tabs.push_front((sid, tab));
+                app.shared.lock().midna_tabs.push_front((sid, tab, detail));
                 return;
             }
             Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
