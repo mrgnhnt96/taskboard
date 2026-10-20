@@ -146,3 +146,19 @@ fn needs_owner_refuses_when_nothing_fails() {
     let e = b.post(&format!("/tasks/T{id}/pr/needs-owner"), json!({"reason": "Add the NPM_TOKEN repository secret."})).unwrap_err();
     assert!(e.contains("Nothing fails"), "{e}");
 }
+
+#[test]
+fn a_fix_waiting_to_retry_its_wake_isn_t_idle() {
+    let b = board();
+    let id = b.failing();
+    // The terminal couldn't be reopened: the board tries again in a minute, so the fix isn't dropped.
+    assert!(prflow::wake_failed(&b.app, &b.task(id), "no window").unwrap());
+    let s = b.stage(id);
+    assert!(s["idle"].is_null(), "{s}");
+    assert_ne!(s["label"], "Checks failed", "{s}");
+    // Once the retry is due and nothing picked it up, nobody is on the checks.
+    b.app.db.x("UPDATE tasks SET pr_flow = json_set(pr_flow, '$.retry_at', '2000-01-01T00:00:00Z') WHERE id = ?", p![id]).unwrap();
+    let s = b.stage(id);
+    assert_eq!(s["label"], "Checks failed", "{s}");
+    assert_eq!(s["idle"], true);
+}
