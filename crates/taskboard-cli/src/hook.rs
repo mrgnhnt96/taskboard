@@ -645,6 +645,36 @@ fn deny(reason: &str) {
     let _ = so.flush();
 }
 
+/// `PreToolUse` on Bash: runs the command with its input from /dev/null, so a stray `cat > file`, a
+/// `read` or an interactive prompt meets the end of its input and fails at once instead of waiting
+/// for typing that never comes, which holds the turn (and its task) open for good. Heredocs and pipes
+/// in the command still feed what they name. Only the input changes: Claude Code still asks for the
+/// call as it would have.
+fn close_stdin(payload: &Value) {
+    if payload["tool_name"] != "Bash" {
+        return;
+    }
+    let Some(command) = payload["tool_input"]["command"].as_str().and_then(stdin_closed) else { return };
+    let mut input = payload["tool_input"].clone();
+    input["command"] = json!(command);
+    let o = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": input}});
+    let mut so = std::io::stdout();
+    let _ = so.write_all(o.to_string().as_bytes());
+    let _ = so.flush();
+}
+
+const STDIN_CLOSED_END: &str = "\n} < /dev/null";
+
+/// `command` in a group reading from /dev/null, or None when it's empty or grouped already. The
+/// closing brace goes on its own line, after a heredoc's end word or a trailing comment.
+fn stdin_closed(command: &str) -> Option<String> {
+    let command = command.trim_end();
+    if command.trim().is_empty() || (command.starts_with("{ ") && command.ends_with(STDIN_CLOSED_END)) {
+        return None;
+    }
+    Some(format!("{{ {command}{STDIN_CLOSED_END}"))
+}
+
 static GIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bgit\b(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+(commit|push)\b").unwrap());
 
 fn board_event(hook: &str) -> Option<&'static str> {
@@ -783,9 +813,11 @@ pub fn run(event_arg: Option<&str>) -> i32 {
             return 0;
         }
         if session.is_empty() {
+            close_stdin(&payload);
             return 0;
         }
         if !pre_tool_use(&payload, &session) {
+            close_stdin(&payload);
             tool_window(&payload, &session, "hook.tool_start");
         }
         return 0;
@@ -1000,6 +1032,27 @@ fn save_private(dir: &std::path::Path, name: &str, raw: &str) -> std::io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bash_commands_read_from_dev_null() {
+        // stdin is a pipe held open, as Claude Code's is: without the group, the bare `cat` would wait on it forever.
+        let sh = |c: &str| {
+            use std::process::{Command, Stdio};
+            let mut child = Command::new("sh").arg("-c").arg(stdin_closed(c).unwrap()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+            let _held = child.stdin.take();
+            let mut out = String::new();
+            child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+            child.wait().unwrap();
+            out
+        };
+        assert_eq!(sh("cat > /dev/null; echo after # a comment"), "after\n");
+        assert_eq!(sh("cat <<'EOF'\nheredoc\nEOF"), "heredoc\n");
+        assert_eq!(sh("printf 'piped' | cat"), "piped");
+        let once = stdin_closed("echo hi\n").unwrap();
+        assert_eq!(once, "{ echo hi\n} < /dev/null");
+        assert_eq!(stdin_closed(&once), None, "grouped already");
+        assert_eq!(stdin_closed("  "), None);
+    }
 
     #[test]
     fn pr_openings_are_recognised() {

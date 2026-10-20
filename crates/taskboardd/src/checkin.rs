@@ -1,15 +1,16 @@
 //! Check-ins on long turns: once a task's terminal has been working `after_mins`, and every
 //! `every_mins` after that, the board reads the terminal's last lines and the processes under it and
 //! asks a headless `claude -p` (Haiku) whether the agent is still getting somewhere or stuck. A stuck
-//! verdict shows on the task's card until the turn ends or a later check-in says it's working again.
-//! The agent isn't interrupted and nobody is notified.
+//! verdict shows on the task's card, and raises an alert for the owner (a hung command holds the task
+//! open until someone looks), until the turn ends or a later check-in says it's working again. The
+//! agent isn't interrupted.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::App;
 use crate::util::*;
-use crate::{board, midna, p, proc};
+use crate::{board, dispatch, midna, p, proc};
 
 /// `[checkin]` in config.toml.
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +90,7 @@ fn tick(app: &App) -> Result<()> {
          WHERE s.status = 'working' AND t.status = 'working'",
         p![],
     )?;
+    clear_ended(app, &rows);
     for s in rows {
         if app.stopping() {
             break;
@@ -103,6 +105,28 @@ fn tick(app: &App) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The key of the alert a stuck turn on session `sid` raises.
+fn alert_key(sid: &str) -> String {
+    format!("stuck:{sid}")
+}
+
+/// Whether a session's stuck alert stays up: its turn is still going and no check-in on it has found
+/// it working since (an unsure one leaves it up).
+fn still_stuck(s: &Row) -> bool {
+    current(s).is_some_and(|c| c["verdict"] != "working")
+}
+
+/// Takes down the stuck alerts of turns that have ended, or that a later check-in found working:
+/// `working` is every session working on a task right now.
+fn clear_ended(app: &App, working: &[Row]) {
+    for a in dispatch::alerts(app) {
+        let Some(sid) = a["key"].as_str().and_then(|k| k.strip_prefix("stuck:")) else { continue };
+        if !working.iter().any(|s| s.s("id") == Some(sid) && still_stuck(s)) {
+            let _ = dispatch::clear_alert_key(app, &alert_key(sid));
+        }
+    }
 }
 
 /// The end of `text`, at most `limit` characters.
@@ -197,13 +221,26 @@ fn check(app: &App, s: &Row, working: f64) {
     // The turn may have ended while Haiku read it: the check-in belongs to the turn it read.
     let _ = app.db.x("UPDATE sessions SET stuck_check = ? WHERE id = ? AND status_at = ?", p![jdumps(&check), sid, s.s("status_at")]);
     let Some(task) = s.i("task_id") else { return };
+    let mins = (working / 60.0).round() as i64;
     let log = match verdict {
-        "stuck" if !was_stuck => Some(format!("Looks stuck after {} minutes: {why}", (working / 60.0).round() as i64)),
+        "stuck" if !was_stuck => Some(format!("Looks stuck after {mins} minutes: {why}")),
         "working" if was_stuck => Some(format!("Getting somewhere again: {why}")),
         _ => None,
     };
     if let Some(text) = log {
         let _ = board::log_event(app, task, "", "checkin", &text);
+    }
+    match verdict {
+        "stuck" if !was_stuck => {
+            let goal = board::find_task(app, Some(task)).ok().flatten().and_then(|t| t.i("goal_id"));
+            let text = format!("{} looks stuck after {mins} minutes: {why}", rf("task", task));
+            let fields = json!({"title": format!("Stuck for {mins} minutes"), "detail": why});
+            let _ = dispatch::add_alert_keyed_with(app, &text, Some(task), goal, &alert_key(&sid), fields);
+        }
+        "working" => {
+            let _ = dispatch::clear_alert_key(app, &alert_key(&sid));
+        }
+        _ => {}
     }
 }
 
@@ -226,6 +263,16 @@ mod tests {
         assert!(due(&c, 20.0 * 60.0, None));
         assert!(!due(&c, 45.0 * 60.0, Some(5.0 * 60.0)));
         assert!(due(&c, 45.0 * 60.0, Some(20.0 * 60.0)));
+    }
+
+    #[test]
+    fn a_stuck_alert_stays_until_the_turn_ends_or_works_again() {
+        let check = |verdict: &str| json!({"turn": "2026-10-14T20:00:00Z", "at": "2026-10-14T20:25:00Z", "verdict": verdict});
+        assert!(still_stuck(&row("working", "2026-10-14T20:00:00Z", check("stuck"))));
+        assert!(still_stuck(&row("working", "2026-10-14T20:00:00Z", check("unsure"))), "unsure leaves it up");
+        assert!(!still_stuck(&row("working", "2026-10-14T20:00:00Z", check("working"))));
+        assert!(!still_stuck(&row("working", "2026-10-14T21:00:00Z", check("stuck"))), "a later turn");
+        assert!(!still_stuck(&row("idle", "2026-10-14T20:00:00Z", check("stuck"))), "the turn ended");
     }
 
     #[test]
