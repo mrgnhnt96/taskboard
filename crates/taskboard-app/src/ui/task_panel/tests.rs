@@ -715,6 +715,13 @@ fn a_step_opens_to_its_findings_with_their_state() {
 }
 
 #[::core::prelude::v1::test]
+fn a_findings_link_opens_the_step_results_holding_findings() {
+    let task = json!({"step_results": [{"name": "QA", "findings": []},
+                                       {"name": "Author review", "findings": [{"id": "F1", "title": "Typo"}]}]});
+    assert_eq!(view::findings_steps(&task), vec![view::TlStep::Result(1)]);
+}
+
+#[::core::prelude::v1::test]
 fn reviewer_pills_show_each_reviewers_state() {
     let rows = json!([{"name": "Ana", "user": "ana", "state": "approved", "swaps": 0},
                       {"name": "Bo", "user": "bo", "state": "changes", "swaps": 0},

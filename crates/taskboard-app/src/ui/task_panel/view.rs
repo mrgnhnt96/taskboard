@@ -91,7 +91,7 @@ pub enum Go {
     Issue(String),
     /// A web URL, or a file path opened with `open` (an attachment).
     Url(String),
-    /// The task's step findings (the Steps row's fold), opened: the PR bar's review step links here.
+    /// The task's step results that hold findings, opened: the PR bar's review step links here.
     Findings,
 }
 
@@ -992,6 +992,11 @@ fn result_node(c: &Ctx, t: &Value, ix: usize, x: &Value) -> Node {
     }
     let head = tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at")));
     tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_step(c, TlStep::Result(ix), head, result_detail(t, x)), body, false)
+}
+
+/// The step results a findings link opens: the ones holding findings.
+pub fn findings_steps(t: &Value) -> Vec<TlStep> {
+    arr(t, "step_results").iter().enumerate().filter(|(_, x)| !arr(x, "findings").is_empty()).map(|(ix, _)| TlStep::Result(ix)).collect()
 }
 
 /// A step result, opened: what came of it, its findings with their state and what it ran on (the

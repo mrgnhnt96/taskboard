@@ -448,9 +448,10 @@ fn go(m: &mut MainWindow, g: &Go, cx: &mut Context<MainWindow>) {
             }
             return;
         }
-        // The PR bar's review step: the Overview tab, with the Steps row's findings open.
+        // The PR bar's review step: the Overview tab, with the step results holding findings open.
         Go::Findings => {
-            crate::prefs::set(view::Fold::Findings.key(), json!("open"));
+            let steps = m.data.task.as_ref().map(view::findings_steps).unwrap_or_default();
+            ui(|u| u.tl_open.extend(steps));
             if let Some(Panel::Task { tab, .. }) = m.panel.as_mut() {
                 *tab = TaskTab::Overview;
             }
