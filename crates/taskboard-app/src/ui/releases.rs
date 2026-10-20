@@ -85,11 +85,13 @@ pub struct Row {
     /// When it was cut; empty for Unreleased.
     pub when: String,
     pub count: String,
+    /// Marked failed (`tb release fail`): its work went back to Unreleased.
+    pub failed: bool,
 }
 
 /// A project's rows: Unreleased first, then its releases newest first.
 pub fn rows(project: &str, list: &Value, now: DateTime<Utc>) -> Vec<Row> {
-    let mut v = vec![Row { key: unreleased_key(project), name: "Unreleased".into(), when: String::new(), count: fmt::plural(i(list, "unreleased"), "task", "tasks") }];
+    let mut v = vec![Row { key: unreleased_key(project), name: "Unreleased".into(), when: String::new(), count: fmt::plural(i(list, "unreleased"), "task", "tasks"), failed: false }];
     let mut rels: Vec<&Value> = arr(list, "releases").iter().collect();
     rels.sort_by_key(|r| std::cmp::Reverse(i(r, "id")));
     v.extend(rels.into_iter().map(|r| Row {
@@ -97,6 +99,7 @@ pub fn rows(project: &str, list: &Value, now: DateTime<Utc>) -> Vec<Row> {
         name: s(r, "name").to_string(),
         when: fmt::parse(s(r, "cut_at")).map(|t| cut_at(t, now)).unwrap_or_default(),
         count: fmt::plural(i(r, "tasks"), "task", "tasks"),
+        failed: opt_s(r, "failed_at").is_some(),
     }));
     v
 }
@@ -144,7 +147,16 @@ fn row_head(t: &Theme, row: &Row, open: bool, cx: &mut Context<MainWindow>) -> S
         .py(px(14.))
         .cursor_pointer()
         .child(div().flex_none().w(px(20.)).text_size(px(12.)).text_color(t.muted).child(if open { "▾" } else { "▸" }))
-        .child(div().min_w_0().flex_1().text_size(px(16.)).font_weight(FontWeight::BOLD).truncate().child(row.name.clone()))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().min_w_0().text_size(px(16.)).font_weight(FontWeight::BOLD).truncate().child(row.name.clone()))
+                .when(row.failed, |d| d.child(kit::tone_pill(t, "failed", "Failed"))),
+        )
         .when(!row.when.is_empty(), |d| d.child(div().flex_none().text_size(px(13.)).text_color(t.muted).child(row.when.clone())))
         .child(div().flex_none().w(px(80.)).text_right().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(row.count.clone()))
         .on_click(cx.listener(move |m, _, _, cx| {
@@ -325,8 +337,11 @@ mod tests {
             {"id": 1, "ref": "R1", "name": "v1.0", "cut_at": at(2025, 12, 1, 9).to_rfc3339(), "tasks": 4},
             {"id": 3, "ref": "R3", "name": "v1.2", "cut_at": at(2026, 10, 15, 15).to_rfc3339(), "tasks": 2},
             {"id": 2, "ref": "R2", "name": "v1.1", "cut_at": at(2026, 10, 7, 9).to_rfc3339(), "tasks": 1},
+            {"id": 4, "ref": "R4", "name": "v1.3", "cut_at": at(2026, 10, 15, 15).to_rfc3339(), "tasks": 0, "failed_at": at(2026, 10, 15, 16).to_rfc3339()},
         ]});
-        let got: Vec<(String, String, String, String)> = rows("web", &list, now).into_iter().map(|r| (r.key, r.name, r.when, r.count)).collect();
+        let all = rows("web", &list, now);
+        assert_eq!(all.iter().map(|r| r.failed).collect::<Vec<_>>(), [false, true, false, false, false], "only R4 failed");
+        let got: Vec<(String, String, String, String)> = all.into_iter().filter(|r| !r.failed).map(|r| (r.key, r.name, r.when, r.count)).collect();
         let row = |k: &str, n: &str, w: &str, c: &str| (k.to_string(), n.to_string(), w.to_string(), c.to_string());
         assert_eq!(
             got,
