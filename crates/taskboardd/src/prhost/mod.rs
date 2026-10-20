@@ -252,14 +252,19 @@ impl Record {
 
     /// A complete stream pr event (`docs/STREAM.md`) as a read. What the event doesn't carry (the
     /// board's account, the base branch's head, the PR's tasks) comes from `prior`, the last record.
+    /// An event with no checks on the same head keeps the prior checks: Bitbucket's PR webhooks
+    /// carry no commit statuses, so an empty list there doesn't mean the checks went away.
     pub fn from_event(ev: &Value, prior: &Value) -> Record {
         let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
         let opt = |v: &Value, k: &str| v[k].as_str().map(str::to_string);
         let list = |v: &Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
-        let checks = list(ev, "checks")
+        let mut checks: Vec<Check> = list(ev, "checks")
             .iter()
             .map(|c| Check { name: s(c, "name"), state: s(c, "state"), url: opt(c, "url"), at: opt(c, "finished_at").or(opt(c, "started_at")) })
             .collect();
+        if checks.is_empty() && !s(ev, "head").is_empty() && s(ev, "head") == s(prior, "head") {
+            checks = serde_json::from_value(prior["checks"].clone()).unwrap_or_default();
+        }
         let reviewers: Vec<Reviewer> = list(ev, "reviewers")
             .iter()
             .map(|r| {
