@@ -469,7 +469,7 @@ pub fn announce(app: &App, id: i64) -> Result<()> {
         let params = json!({"title": text, "body": "Task board", "category": "board", "sound": true, "open": url, "id": notification_id(id)});
         let m = app.cfg.midna.clone();
         std::thread::spawn(move || {
-            let _ = midna::call_exe(&m, "notify.send", &params, 30.0);
+            let _ = midna::notify_send(&m, &params);
         });
     }
     Ok(())

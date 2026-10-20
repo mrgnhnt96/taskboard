@@ -572,7 +572,7 @@ fn notify_alert(app: &App, a: &Value) {
     let alert_id = a["id"].as_str().unwrap_or("").to_string();
     let sent_at = a["notified_at"].as_str().or(a["at"].as_str()).unwrap_or("").to_string();
     std::thread::spawn(move || {
-        if midna::call_exe(&midna, "notify.send", &params, 30.0).is_err() || !wait {
+        if midna::notify_send(&midna, &params).is_err() || !wait {
             return;
         }
         if let Some(w) = Waiter::start(waiters, &alert_id, &sent_at, &notification_id(&alert_id)) {
@@ -687,7 +687,7 @@ pub fn notify(app: &App, text: &str, url: &str) {
     let params = json!({"title": text, "body": "Task board","category": "board", "sound": true, "open": url});
     let midna = app.cfg.midna.clone();
     std::thread::spawn(move || {
-        let _ = midna::call_exe(&midna, "notify.send", &params, 30.0);
+        let _ = midna::notify_send(&midna, &params);
     });
 }
 
@@ -826,7 +826,7 @@ fn notify_start(app: &App, group: &str, rows: &[Value]) {
     };
     let (key, nid) = (start_key(group), start_notification_id(group));
     std::thread::spawn(move || {
-        if midna::call_exe(&midna, "notify.send", &params, 30.0).is_err() {
+        if midna::notify_send(&midna, &params).is_err() {
             return;
         }
         if let Some(w) = Waiter::start(waiters, &key, &sent_at, &nid) {
