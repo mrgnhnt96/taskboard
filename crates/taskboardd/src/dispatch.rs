@@ -49,24 +49,82 @@ fn root_for(app: &App, cwd: &str) -> String {
     project_roots(app).into_iter().filter(|r| under(&cwd, r)).max_by_key(|r| r.len()).unwrap_or(cwd)
 }
 
-/// Busy terminals under `root`, or across every project when `root` is None.
-fn busy_terminals(app: &App, root: Option<&str>) -> Result<i64> {
+/// Busy terminals under `root`.
+fn busy_terminals(app: &App, root: &str) -> Result<i64> {
     let rows = app.db.q("SELECT project_path, status, background, background_at, live_background FROM sessions WHERE status IN ('working','needs','idle')", p![])?;
     Ok(rows
         .iter()
         .filter(|r| r.s("status") != Some("idle") || board::waiting_on_background(r))
-        .filter(|r| root.is_none_or(|root| under(&real(&r.st("project_path")), root)))
+        .filter(|r| under(&real(&r.st("project_path")), root))
         .count() as i64)
 }
 
-/// Why a queued agent job (pickup "queue") can't open its terminal yet: its project already has
-/// as many busy terminals as it may (`[terminals] project_max`, or the project's own `max_terminals`),
-/// or the whole board does (`[terminals] global_max`).
+/// Task terminals running across the board: a task's own terminal while the task works or the terminal is
+/// busy, and a start the board is opening right now (so starts taken back to back don't overshoot the cap).
+pub fn running_task_terminals(app: &App) -> Result<i64> {
+    let rows = app.db.q(
+        "SELECT s.status, s.background, s.background_at, s.live_background, MAX(t.status = 'working') AS working
+         FROM sessions s JOIN tasks t ON t.session_id = s.id
+         WHERE s.status IN ('working','needs','idle') GROUP BY s.id",
+        p![],
+    )?;
+    let open = rows.iter().filter(|r| r.i("working") == Some(1) || r.s("status") != Some("idle") || board::waiting_on_background(r)).count();
+    let launching = app.db.q(
+        "SELECT j.id FROM jobs j JOIN tasks t ON t.start_job = j.id WHERE j.state = 'running' AND j.purpose = 'start' AND t.status = 'queued'",
+        p![],
+    )?;
+    Ok((open + launching.len()) as i64)
+}
+
+/// How many task terminals may run at once across the board: `tb terminals --max`, else `[terminals] global_max`.
+pub fn board_max(app: &App) -> i64 {
+    board_max_set(app).unwrap_or(app.cfg.terminals.global_max).max(1)
+}
+
+/// What `tb terminals --max` put on the board, if anything.
+pub fn board_max_set(app: &App) -> Option<i64> {
+    app.db.get_setting(BOARD_MAX_SETTING).ok().flatten().and_then(|s| s.trim().parse().ok())
+}
+
+const BOARD_MAX_SETTING: &str = "board_max_terminals";
+
+/// Sets the board's task terminal cap from a body's `max_terminals` (null or "default": back to config.toml's).
+pub fn set_board_max(app: &App, body: &Value) -> Result<()> {
+    let Some(v) = body.get("max_terminals") else { return err(400, "Say what to change: max_terminals.") };
+    let n = match v {
+        Value::Null => None,
+        Value::String(s) if s.trim().eq_ignore_ascii_case("default") => None,
+        _ => match v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) {
+            Some(n) if (1..=50).contains(&n) => Some(n),
+            _ => return err(400, "max_terminals is a count from 1 to 50, or default."),
+        },
+    };
+    app.db.set_setting(BOARD_MAX_SETTING, n.map(|n| n.to_string()).as_deref())
+}
+
+/// The board's task terminal cap for `GET /terminals`: the cap, what set it, and how many run now.
+pub fn terminals_state(app: &App) -> Result<Value> {
+    let (max, running) = (board_max(app), running_task_terminals(app)?);
+    let from = if board_max_set(app).is_some() { "tb terminals --max" } else { "config.toml" };
+    Ok(json!({"max_terminals": max, "max_terminals_set": board_max_set(app), "running": running,
+              "line": format!("{running} of {max} task terminals running (cap from {from})")}))
+}
+
+/// Why a task's start job can't open its terminal yet: the board already runs as many task terminals as it
+/// may (`tb terminals --max`, or `[terminals] global_max`), or, for a queued start (pickup "queue"), its
+/// project already has as many busy terminals as it may (`[terminals] project_max`, or the project's own
+/// `max_terminals`). A goal's own limit holds its tasks back before they get a start job.
 pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
     if !new_terminal(app, j) {
         return Ok(None);
     }
     let a = board::job_args(j);
+    if j.s("purpose") == Some("start") && j.i("task_id").is_some() {
+        let (cap, running) = (board_max(app), running_task_terminals(app)?);
+        if running >= cap {
+            return Ok(Some(format!("Waits for a free slot: {running} of {cap} task terminals running across the board")));
+        }
+    }
     if !as_bool(a.get("queue"), false) {
         return Ok(None);
     }
@@ -76,15 +134,10 @@ pub fn start_hold(app: &App, j: &Row) -> Result<Option<String>> {
         None => crate::projects::project_for_path(app, Some(&root))?,
     };
     let cap = crate::projects::max_terminals(app, name.as_deref());
-    let busy = busy_terminals(app, Some(&root))?;
+    let busy = busy_terminals(app, &root)?;
     if busy >= cap {
         let name = name.unwrap_or_else(|| "its project".into());
         return Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy in {name}")));
-    }
-    let cap = app.cfg.terminals.global_max.max(1);
-    let busy = busy_terminals(app, None)?;
-    if busy >= cap {
-        return Ok(Some(format!("Waits for a free terminal: {busy} of {cap} busy across the board")));
     }
     Ok(None)
 }
