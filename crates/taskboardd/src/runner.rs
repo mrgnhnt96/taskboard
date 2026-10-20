@@ -380,6 +380,10 @@ fn task_terminals(app: &App) -> Result<Vec<(Row, Row)>> {
 }
 
 fn close_for(app: &App, s: &Row, t: &Row, purpose: &str, why: &str) -> Result<i64> {
+    close_job(app, s, t, purpose, why, false)
+}
+
+fn close_job(app: &App, s: &Row, t: &Row, purpose: &str, why: &str, force: bool) -> Result<i64> {
     board::log_event(
         app,
         t.id(),
@@ -393,11 +397,34 @@ fn close_for(app: &App, s: &Row, t: &Row, purpose: &str, why: &str) -> Result<i6
     board::create_job(
         app,
         "close",
-        json!({"session": s.v("id"), "reason": format!("Task board: {}", why.to_lowercase())}),
+        json!({"session": s.v("id"), "reason": format!("Task board: {}", why.to_lowercase()), "force": force}),
         Some(t.id()),
         purpose,
         None,
     )
+}
+
+/// A task terminal that has compacted `max_compactions` times carries on in a fresh one from its
+/// handoff (the checkpoint saved before each compaction) instead of compacting again: closed once
+/// its turn is over, or at once when it starts one more compaction (nothing runs while it compacts).
+pub fn close_compacted(app: &App) -> Result<()> {
+    let max = limits::get(app).max_compactions;
+    if max <= 0 {
+        return Ok(());
+    }
+    for (s, t) in task_terminals(app)? {
+        let n = s.i0("compactions");
+        if n < max || t.s("status") != Some("working") || t.b("lost") || t.s("session_id") != s.s("id") {
+            continue;
+        }
+        let compacting = board::compacting_since(&s).is_string() && n > max && !board::waiting_on_background(&s);
+        if !compacting && (!settled(&s) || board::limited(&s)) {
+            continue;
+        }
+        let why = format!("It has compacted its conversation {}", plural(n, "time"));
+        app.db.tx(|| close_job(app, &s, &t, board::COMPACT_CLOSE, &why, compacting))?;
+    }
+    Ok(())
 }
 
 pub fn close_for_usage(app: &App) -> Result<()> {
@@ -514,6 +541,7 @@ pub fn tick(app: &App) -> Result<Vec<i64>> {
     app.db.tx(|| crate::devices::release_idle(app).map(|_| ()))?;
     close_for_usage(app)?;
     close_idle_after_hours(app)?;
+    close_compacted(app)?;
     close_pr_tabs(app)?;
     // Outside a transaction: a restart command may take a while.
     crate::feed::check(app)?;

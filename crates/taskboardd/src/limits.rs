@@ -1,6 +1,7 @@
 //! Context limits: how big a board agent's conversation may get before Claude compacts it, when a
 //! conversation is too cold to resume without compacting first, and when a task or PR conversation is
-//! too big or too old to resume at all (it starts fresh from the handoff instead). Also the
+//! too big or too old to resume at all (it starts fresh from the handoff instead), and how many times
+//! a task terminal may compact before it carries on in a fresh one. Also the
 //! generated-file globs kept in each project's `.git/info/attributes` (`gitattrs.rs`).
 //!
 //! `[limits]` in config.toml is where they start; `tb limits` changes them on the board.
@@ -16,7 +17,7 @@ use crate::transcript;
 const KEY: &str = "limits";
 /// The longest gap `tb limits --review-gap` sets between a step's rounds, in minutes.
 pub const MAX_REVIEW_GAP: i64 = 240;
-pub const NUMBERS: [&str; 4] = ["compact_window", "cold_idle_mins", "warm_tokens", "warm_idle_mins"];
+pub const NUMBERS: [&str; 5] = ["compact_window", "cold_idle_mins", "warm_tokens", "warm_idle_mins", "max_compactions"];
 /// Claude Code doesn't compact below about this many tokens; a smaller window is someone thinking in thousands.
 const MIN_COMPACT_WINDOW: i64 = 50_000;
 
@@ -38,6 +39,7 @@ pub struct Limits {
     pub cold_idle_mins: i64,
     pub warm_tokens: i64,
     pub warm_idle_mins: i64,
+    pub max_compactions: i64,
     pub generated: Vec<String>,
     pub project_generated: BTreeMap<String, Vec<String>>,
 }
@@ -48,7 +50,8 @@ impl Limits {
             "compact_window" => self.compact_window = v,
             "cold_idle_mins" => self.cold_idle_mins = v,
             "warm_tokens" => self.warm_tokens = v,
-            _ => self.warm_idle_mins = v,
+            "warm_idle_mins" => self.warm_idle_mins = v,
+            _ => self.max_compactions = v,
         }
     }
     /// The globs for one project: everyone's, then its own.
@@ -63,7 +66,7 @@ impl Limits {
     }
     pub fn to_json(&self) -> Value {
         json!({"compact_window": self.compact_window, "cold_idle_mins": self.cold_idle_mins,
-               "warm_tokens": self.warm_tokens, "warm_idle_mins": self.warm_idle_mins,
+               "warm_tokens": self.warm_tokens, "warm_idle_mins": self.warm_idle_mins, "max_compactions": self.max_compactions,
                "generated": self.generated, "project_generated": self.project_generated})
     }
 }
@@ -75,6 +78,7 @@ fn defaults(app: &App) -> Limits {
         cold_idle_mins: c.cold_idle_mins.max(0),
         warm_tokens: c.warm_tokens.max(0),
         warm_idle_mins: c.warm_idle_mins.max(0),
+        max_compactions: c.max_compactions.max(0),
         generated: clean_globs(&c.generated),
         project_generated: c.project_generated.iter().map(|(k, v)| (k.clone(), clean_globs(v))).filter(|(_, v)| !v.is_empty()).collect(),
     }
@@ -237,6 +241,7 @@ pub fn line(l: &Limits) -> String {
         format!("Compact before resuming after: {}", off(l.cold_idle_mins, &|n| format!("{} idle", mins_text(n)))),
         format!("Resume only under: {}", off(l.warm_tokens, &|n| format!("{} tokens", tokens_text(n)))),
         format!("Resume only when idle under: {}", off(l.warm_idle_mins, &mins_text)),
+        format!("Fresh terminal after: {}", off(l.max_compactions, &|n| plural(n, "compaction"))),
     ];
     parts.push(format!("Generated files: {}", if l.generated.is_empty() { "none".into() } else { l.generated.join(", ") }));
     for (p, g) in &l.project_generated {
@@ -319,7 +324,7 @@ mod tests {
 
     #[test]
     fn globs_merge_per_project() {
-        let mut l = Limits { compact_window: 0, cold_idle_mins: 0, warm_tokens: 0, warm_idle_mins: 0, generated: vec!["*.lock".into()], project_generated: BTreeMap::new() };
+        let mut l = Limits { compact_window: 0, cold_idle_mins: 0, warm_tokens: 0, warm_idle_mins: 0, max_compactions: 0, generated: vec!["*.lock".into()], project_generated: BTreeMap::new() };
         l.project_generated.insert("web".into(), vec!["*.g.dart".into(), "*.lock".into()]);
         assert_eq!(l.globs_for(Some("web")), vec!["*.lock", "*.g.dart"]);
         assert_eq!(l.globs_for(Some("api")), vec!["*.lock"]);

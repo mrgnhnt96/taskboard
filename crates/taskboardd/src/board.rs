@@ -1103,19 +1103,21 @@ pub fn live_start_job(app: &App, t: &Row) -> Result<Option<Row>> {
 
 pub const USAGE_CLOSE: &str = "usage_close";
 pub const HOURS_CLOSE: &str = "hours_close";
+/// Closed after compacting `max_compactions` times, to carry on in a fresh terminal.
+pub const COMPACT_CLOSE: &str = "compact_close";
 
 fn requeue_reason(purpose: &str) -> (&'static str, &'static str) {
-    if purpose == USAGE_CLOSE {
-        ("when the usage ran out", "when the usage resets")
-    } else {
-        ("idle after work hours", "when the work hours open")
+    match purpose {
+        USAGE_CLOSE => ("when the usage ran out", "when the usage resets"),
+        COMPACT_CLOSE => ("after compacting its conversation too many times", "in a fresh terminal"),
+        _ => ("idle after work hours", "when the work hours open"),
     }
 }
 
 pub fn requeue_close(app: &App, sid: &str) -> Result<Option<String>> {
     for j in app.db.q(
-        "SELECT args, purpose FROM jobs WHERE kind = 'close' AND purpose IN (?, ?) ORDER BY id DESC LIMIT 50",
-        p![USAGE_CLOSE, HOURS_CLOSE],
+        "SELECT args, purpose FROM jobs WHERE kind = 'close' AND purpose IN (?, ?, ?) ORDER BY id DESC LIMIT 50",
+        p![USAGE_CLOSE, HOURS_CLOSE, COMPACT_CLOSE],
     )? {
         if job_args(&j).get("session").and_then(|v| v.as_str()) == Some(sid) {
             return Ok(j.s("purpose").map(|s| s.to_string()));

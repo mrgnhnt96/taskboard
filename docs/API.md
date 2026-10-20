@@ -909,7 +909,7 @@ Pipelines steps and tests with; `POST /ci-token/clear` forgets it. Without one, 
 | `POST /alerts/:id/snooze` | `{mins}` | One of `[alerts] snooze_mins` (or 15, 30, 60). |
 
 ### Context limits (`tb limits`)
-`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, review_gaps: [{step, mins}], line: str}`.
+`GET /limits` → `{compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, max_compactions, generated: [glob], project_generated: {project: [glob]}, defaults: {…the same, from config.toml}, review_gaps: [{step, mins}], line: str}`.
 `review_gaps` lists each step that keeps its rounds apart (its `min_gap_mins`, or the board's change), and `line` adds
 "Review rounds, <step>: one round per branch every N min" for each.
 `POST /limits` takes any of those numbers (0 turns one off, null puts config.toml's back), `generated` (a list, a
@@ -932,6 +932,10 @@ by the board's, and once after an upgrade every repo the board has known is swep
   both; otherwise it starts fresh from the handoff and the history says why. A live terminal is always typed into.
   Size and idle time come from the conversation's transcript (its last reply's context, or the last compact
   boundary's `postTokens` when that's newer; its last line's time).
+- `max_compactions` (default 3): a task terminal counts its compactions (each PreCompact; a new conversation in it starts
+  over). Once it has compacted this many times, the board closes it when its turn is over (idle, no background work), or
+  force-closes it as it starts one more compaction, and the task is queued to start again from its handoff in a fresh
+  terminal ("Closed after compacting its conversation too many times"). PR visits aren't counted.
 
 ### History
 | Path | Body | Notes |

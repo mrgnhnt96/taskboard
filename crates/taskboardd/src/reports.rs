@@ -442,6 +442,10 @@ fn on_session_start(r: &mut Report) -> Result<Value> {
             app.db.x("UPDATE sessions SET tool_ends = 0 WHERE id = ?", p![sid])?;
         }
     }
+    if matches!(r.b("source").as_str(), "startup" | "clear") {
+        // A new conversation in this terminal starts its count of compactions over.
+        app.db.x("UPDATE sessions SET compactions = 0 WHERE id = ? AND compactions > 0", p![r.sid()])?;
+    }
     let Some(t) = r.task()? else {
         if crate::jira_desk::is_desk(app, r.sid())? {
             return Ok(ok(None, Some(crate::jira_desk::intro(app))));
@@ -1003,7 +1007,7 @@ fn stalled(r: &Report, t: &Row) -> Result<bool> {
 fn on_pre_compact(r: &mut Report) -> Result<Value> {
     r.touch_session(true)?;
     if let Some(sid) = r.sid() {
-        r.app.db.x("UPDATE sessions SET compacting_at = ? WHERE id = ?", p![r.at, sid])?;
+        r.app.db.x("UPDATE sessions SET compacting_at = ?, compactions = COALESCE(compactions, 0) + 1 WHERE id = ?", p![r.at, sid])?;
     }
     let Some(t) = r.task()? else { return Ok(ok(None, None)) };
     let ctx = r.update_where(&t, false)?;

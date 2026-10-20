@@ -505,7 +505,8 @@ enum Cmd {
         reset: bool,
     },
     /// Show or change the context limits: the compact window, when a cold conversation is compacted,
-    /// how big and how fresh a conversation must be to resume, and the generated-file globs
+    /// how big and how fresh a conversation must be to resume, how many compactions a task terminal
+    /// takes before it carries on in a fresh one, and the generated-file globs
     Limits {
         /// Tokens at which Claude compacts a board terminal's conversation, e.g. 150000 or 150k (0 = off; at least 50k)
         #[arg(long = "compact-window")]
@@ -519,6 +520,9 @@ enum Cmd {
         /// …and only when idle under this many minutes (0 = off)
         #[arg(long = "warm-idle-mins")]
         warm_idle_mins: Option<i64>,
+        /// A task terminal that has compacted this many times carries on in a fresh terminal from its handoff (0 = off)
+        #[arg(long = "max-compactions")]
+        max_compactions: Option<i64>,
         /// Generated-file globs kept as `-diff` in .git/info/attributes, comma-separated (none clears them)
         #[arg(long)]
         generated: Option<String>,
@@ -6139,14 +6143,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
-        Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, generated, project, review_gap, step, reset } => {
+        Cmd::Limits { compact_window, cold_idle_mins, warm_tokens, warm_idle_mins, max_compactions, generated, project, review_gap, step, reset } => {
             let mut b = json!({});
             for (k, v) in [("compact_window", compact_window), ("warm_tokens", warm_tokens)] {
                 if let Some(n) = v {
                     b[k] = json!(n);
                 }
             }
-            for (k, v) in [("cold_idle_mins", cold_idle_mins), ("warm_idle_mins", warm_idle_mins)] {
+            for (k, v) in [("cold_idle_mins", cold_idle_mins), ("warm_idle_mins", warm_idle_mins), ("max_compactions", max_compactions)] {
                 if let Some(n) = v {
                     b[k] = json!(n);
                 }

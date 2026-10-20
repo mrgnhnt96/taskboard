@@ -533,6 +533,8 @@ pub struct LimitsConfig {
     pub warm_tokens: i64,
     /// …and only when it's been idle under this many minutes.
     pub warm_idle_mins: i64,
+    /// A task terminal that has compacted this many times carries on in a fresh terminal from its handoff.
+    pub max_compactions: i64,
     /// Generated-file globs marked `-diff` in every active project's `.git/info/attributes`.
     pub generated: Vec<String>,
     /// More globs for one project, by its name.
@@ -546,6 +548,7 @@ impl Default for LimitsConfig {
             cold_idle_mins: 60,
             warm_tokens: 60_000,
             warm_idle_mins: 60,
+            max_compactions: 3,
             generated: vec![],
             project_generated: BTreeMap::new(),
         }

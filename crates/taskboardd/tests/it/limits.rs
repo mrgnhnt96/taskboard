@@ -443,3 +443,84 @@ fn compacting_an_open_terminal_says_how_cold_it_was() {
     let c = taskboardd::limits::Conversation { tokens: None, idle_mins: Some(61.0) };
     assert_eq!(midna::compact_open_text(&c), "Its conversation has been idle 61 min, so the board compacts it before sending it anything.");
 }
+
+impl Board {
+    fn close_jobs(&self) -> Vec<Row> {
+        self.app.db.q("SELECT * FROM jobs WHERE kind = 'close' AND purpose = ?", p![board::COMPACT_CLOSE]).unwrap()
+    }
+    fn compact(&self) {
+        self.report("hook.pre_compact", json!({"trigger": "auto"})).unwrap();
+        self.report("hook.session_start", json!({"source": "compact"})).unwrap();
+    }
+    fn settle(&self) {
+        self.add_session("idle");
+        self.app.db.x("UPDATE sessions SET status = 'idle', status_at = '2000-01-01T00:00:00Z' WHERE id = 's1'", p![]).unwrap();
+    }
+}
+
+#[test]
+fn a_task_terminal_that_compacted_three_times_carries_on_in_a_fresh_one() {
+    let b = board_with(|_| {});
+    let id = b.new_task();
+    b.compact();
+    b.compact();
+    b.settle();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert!(b.close_jobs().is_empty(), "two compactions are under the limit");
+
+    b.compact();
+    b.add_session("working");
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert!(b.close_jobs().is_empty(), "its turn isn't over");
+    b.settle();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    let jobs = b.close_jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(board::job_args(&jobs[0])["force"], false, "an idle terminal closes gently");
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert_eq!(b.close_jobs().len(), 1, "once");
+
+    board::session_gone(&b.app, "s1", "other").unwrap();
+    let t = b.task(id);
+    assert_eq!((t.s("status"), t.s("pickup"), t.b("lost")), (Some("queued"), Some("queue"), false), "queued to start again by itself");
+    assert_eq!(t.st("latest"), "Closed after compacting its conversation too many times. It starts again from its handoff in a fresh terminal.");
+    let events = b.app.db.q("SELECT text FROM events WHERE task_id = ? AND text LIKE '%compacted its conversation 3 times%'", p![id]).unwrap();
+    assert_eq!(events.len(), 1, "the history says why");
+}
+
+#[test]
+fn one_more_compaction_past_the_limit_closes_the_terminal_at_once() {
+    let b = board_with(|_| {});
+    b.post("/limits", json!({"max_compactions": 1})).unwrap();
+    b.new_task();
+    b.compact();
+    b.report("hook.pre_compact", json!({"trigger": "auto"})).unwrap();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    let jobs = b.close_jobs();
+    assert_eq!(jobs.len(), 1, "it doesn't wait for a turn that's compacting again");
+    assert_eq!(board::job_args(&jobs[0])["force"], true);
+}
+
+#[test]
+fn compactions_count_per_conversation_and_the_limit_can_be_off() {
+    let b = board_with(|_| {});
+    b.new_task();
+    for _ in 0..3 {
+        b.compact();
+    }
+    b.report("hook.session_start", json!({"source": "clear"})).unwrap();
+    b.settle();
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert!(b.close_jobs().is_empty(), "a new conversation starts the count over");
+
+    for _ in 0..3 {
+        b.compact();
+    }
+    b.settle();
+    let v = b.post("/limits", json!({"max_compactions": 0})).unwrap();
+    assert!(v["line"].as_str().unwrap().contains("Fresh terminal after: off"), "{}", v["line"]);
+    taskboardd::runner::close_compacted(&b.app).unwrap();
+    assert!(b.close_jobs().is_empty(), "0 turns it off");
+    let v = b.post("/limits", json!({"max_compactions": null})).unwrap();
+    assert!(v["line"].as_str().unwrap().contains("Fresh terminal after: 3 compactions"));
+}
