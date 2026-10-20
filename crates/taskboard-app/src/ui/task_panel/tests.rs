@@ -771,6 +771,12 @@ fn review_says_when_it_needs_setup_or_is_off_and_not_asked_links_nowhere() {
 }
 
 #[::core::prelude::v1::test]
+fn you_reads_off_when_owner_review_is_off() {
+    let text = panel_text(with_bar(json!({"you": "off"}), Value::Null, "none"), json!({}));
+    assert!(text.contains("You Off") && !text.contains("Waiting on you"), "{text}");
+}
+
+#[::core::prelude::v1::test]
 fn new_comments_link_to_the_first_unread_thread() {
     let thread = "https://github.com/acme/webapp/pull/13#discussion_r9";
     let tree = tree(&json!({"task": with_bar(json!({"new_comments": 1, "comments_url": thread}), json!({"phase": "comments"}), "none"), "state": {}, "ui": {}}));

@@ -82,6 +82,19 @@ fn with_owner_review_off_the_board_marks_it_reviewed() {
 }
 
 #[test]
+fn with_owner_review_off_the_you_step_reads_off_until_someone_reviews() {
+    let b = board_with(|c| c.pr.owner_review = Some(false));
+    let id = b.pr_task();
+    let you = |b: &Board| b.call("GET", &format!("/tasks/T{id}"), json!({}))["pr"]["bar"]["you"].clone();
+    assert_eq!(you(&b), "off");
+    b.call("POST", "/projects/webapp", json!({"owner_review": true}));
+    assert_eq!(you(&b), Value::Null, "on, it's the owner's step again");
+    b.call("POST", "/projects/webapp", json!({"owner_review": false}));
+    b.green(id);
+    assert_eq!(you(&b), "reviewed", "a review on record still says so");
+}
+
+#[test]
 fn the_board_wide_and_project_switches_override_config() {
     let b = board_with(|_| {});
     assert_eq!(b.call("POST", "/projects/owner-review", json!({"owner_review": "off"}))["owner_review"], false);
