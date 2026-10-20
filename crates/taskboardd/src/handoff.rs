@@ -395,9 +395,27 @@ fn other_tasks(app: &App, t: &Row) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The worktree slot or worktree the board gave the task, the locks it holds, and whether it runs alone.
-fn worktree_and_lock_lines(t: &Row, ctx: &Row) -> Vec<String> {
+/// The task's lane, when it or its goal names one or the board picked a slot.
+fn lane_line(app: &App, t: &Row) -> Result<Option<String>> {
+    let (lane, from) = crate::worklane::picked(app, t)?;
+    let by = match from {
+        "task" => "it's set on the task",
+        "goal" => "its goal's lane",
+        _ => "the board picked it: a wave mate plans files that overlap its own, or one of them plans none",
+    };
+    Ok(match lane.as_str() {
+        "slot" => Some(format!("Lane: slot ({by}). The task works in a worktree slot from the board's pool, apart from the shared checkout.")),
+        "shared" if from != "auto" => Some(format!("Lane: shared ({by}). The task works in the project's shared checkout; don't move to a worktree.")),
+        "alone" => Some(format!("Lane: alone ({by}).")),
+        _ => None,
+    })
+}
+
+/// The worktree slot or worktree the board gave the task, its lane, the locks it holds, and whether it
+/// runs alone.
+fn worktree_and_lock_lines(app: &App, t: &Row, ctx: &Row) -> Result<Vec<String>> {
     let mut lines = vec![];
+    lines.extend(lane_line(app, t)?);
     if let Some(slot) = ctx.s("worktree_slot").filter(|s| !s.is_empty()) {
         let name = slot.rsplit('/').next().unwrap_or(slot);
         let base = ctx.s("worktree_base").map(|b| format!(", detached at {b}")).unwrap_or_default();
@@ -421,12 +439,12 @@ fn worktree_and_lock_lines(t: &Row, ctx: &Row) -> Vec<String> {
     if !held.is_empty() {
         lines.push(format!("This task holds {}: no other task that names the same lock runs while it does.", held.join(", ")));
     }
-    match t.s("alone") {
+    match crate::worklane::alone_scope(app, t)?.as_deref() {
         Some("board") => lines.push("This task runs alone on the board: no other task starts until it's done.".into()),
         Some(_) => lines.push("This task runs alone in its goal: no other task in the goal starts until it's done.".into()),
         None => {}
     }
-    lines
+    Ok(lines)
 }
 
 /// A task title as a branch slug: lowercase words joined by dashes, at most 40 characters.
@@ -629,7 +647,7 @@ fn build_with(app: &App, task_id: i64, starting: bool) -> Result<String> {
         parts.push(format!("What to do:\n{}", d.trim()));
     }
     parts.extend(other_tasks(app, &t)?);
-    parts.extend(worktree_and_lock_lines(&t, &ctx));
+    parts.extend(worktree_and_lock_lines(app, &t, &ctx)?);
     parts.extend(crate::comments::rule_line(&app.cfg));
     parts.extend(crate::bits::handoff_lines(app, &t)?);
     let mut tail = vec![pr_block(app, &t, &tb)?];

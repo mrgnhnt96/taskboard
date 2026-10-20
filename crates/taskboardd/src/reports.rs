@@ -2448,17 +2448,7 @@ static PLANNED_WITH_FILES: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s
 static PLANNED_WITH_REFS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d*)\s*::\s*([#Tt0-9,\s]*)$").unwrap());
 static PLANNED_WITH_WAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(\d+)\s*$").unwrap());
 static EARLIER_REF: Lazy<Regex> = Lazy::new(|| Regex::new(r"^#(\d+)$").unwrap());
-static PLANNED_MODEL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*model\s*=\s*([^:\s]*)\s*$").unwrap());
-static PLANNED_PROJECT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*project\s*=\s*([^:\s]*)\s*$").unwrap());
-
-/// A `--task` item's project part ("::project=api" at the very end, before or after the model), taken off
-/// before the rest is read.
-fn planned_project(item: &str) -> (String, Value) {
-    match PLANNED_PROJECT.captures(item) {
-        Some(c) if !c[1].trim().is_empty() => (c[1].to_string(), json!(&c[2])),
-        _ => (item.to_string(), Value::Null),
-    }
-}
+static PLANNED_PART: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)^(.*)::\s*(model|project|lane)\s*=\s*([^:\s]*)\s*$").unwrap());
 
 /// The project a planned task goes in: the one it names, in the board's spelling, or its goal's.
 fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
@@ -2468,12 +2458,19 @@ fn planned_in(r: &Report, g: &Row, named: &Value) -> Result<Value> {
     }
 }
 
-/// A `--task` item's model part ("::model=small" at the very end), taken off before the rest is read.
-fn planned_model(item: &str) -> (String, Value) {
-    match PLANNED_MODEL.captures(item) {
-        Some(c) if !c[1].trim().is_empty() => (c[1].to_string(), json!(&c[2])),
-        _ => (item.to_string(), Value::Null),
+/// A `--task` item's named parts at the very end ("::model=small", "::project=api", "::lane=slot", in any
+/// order), taken off before the rest is read: the rest, then the model, project and lane.
+fn planned_parts(item: &str) -> (String, Value, Value, Value) {
+    let (mut rest, mut parts) = (item.to_string(), [Value::Null, Value::Null, Value::Null]);
+    while let Some(c) = PLANNED_PART.captures(&rest).filter(|c| !c[1].trim().is_empty()) {
+        let k = ["model", "project", "lane"].iter().position(|k| *k == &c[2]).unwrap_or(0);
+        if parts[k].is_null() {
+            parts[k] = json!(&c[3]);
+        }
+        rest = c[1].to_string();
     }
+    let [model, project, lane] = parts;
+    (rest, model, project, lane)
 }
 
 /// "title::detail", "title::detail::2" (its wave) or "title::detail::<wave or nothing>::T14 #1" (what it
@@ -2550,16 +2547,14 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
     let log = if status == "planned" { format!("Planned by {}", r.name()) } else { format!("Added by {} and queued: {} is running", r.name(), rf("goal", g.id())) };
     let mut created: Vec<String> = vec![];
     for item in items.as_array().cloned().unwrap_or_default() {
-        let (item, files, model, project) = match &item {
+        let (item, files, model, project, lane) = match &item {
             Value::String(s) => {
-                let (s, project) = planned_project(s);
-                let (s, model) = planned_model(&s);
-                let (s, project) = if project.is_null() { planned_project(&s) } else { (s, project) };
+                let (s, model, project, lane) = planned_parts(s);
                 let (rest, files) = planned_files(&s);
-                (Value::String(rest), files, model, project)
+                (Value::String(rest), files, model, project, lane)
             }
             v => (v.clone(), v.get("files").cloned().unwrap_or(Value::Null), v.get("model").cloned().unwrap_or(Value::Null),
-                  v.get("project").cloned().unwrap_or(Value::Null)),
+                  v.get("project").cloned().unwrap_or(Value::Null), v.get("lane").cloned().unwrap_or(Value::Null)),
         };
         let project = planned_in(r, g, &project)?;
         let (title, detail, wave, waits) = match &item {
@@ -2580,7 +2575,7 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
             r.app,
             &json!({"title": title, "detail": detail.trim(), "project": project, "goal_id": g.id(),
                     "status": status, "pickup": {"mode": "queue"}, "also": item.get("also"), "wave": wave,
-                    "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"),
+                    "waits_for": earlier_refs(&waits, &created)?, "locks": item.get("locks"), "alone": item.get("alone"), "lane": lane,
                     "jira": item.get("jira"), "ticket_summary": item.get("ticket_summary"), "ticket_text": item.get("ticket_text"),
                     "stack_on": item.get("stack_on"), "stack_merge": item.get("stack_merge"), "ships_pr": item.get("ships_pr"),
                     "devices": item.get("devices"), "bits": item.get("bits"), "area": item.get("area"), "model": model,
@@ -2603,6 +2598,13 @@ fn planned(r: &Report, g: &Row, items: &Value, status: &str, warnings: &mut Vec<
                 if !warnings.contains(&w) {
                     warnings.push(w);
                 }
+            }
+        }
+    }
+    if !created.is_empty() {
+        for w in crate::worklane::plan_warnings(r.app, &board::get_goal(r.app, g.id())?)? {
+            if !warnings.contains(&w) {
+                warnings.push(w);
             }
         }
     }
@@ -2667,7 +2669,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
                                     in_project.as_str().unwrap_or(""), b.st("project")));
         }
         let mut item = json!([{"title": title, "detail": r.b("detail"), "project": in_project, "also": r.body.get("also"), "wave": r.body.get("wave"),
-                           "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
+                           "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"), "lane": r.body.get("lane"),
                            "jira": r.body.get("jira"), "files": r.body.get("files"),
                            "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                            "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
@@ -2696,7 +2698,7 @@ fn on_new_task(r: &mut Report) -> Result<Value> {
     let mut fields = json!({"title": title, "detail": r.b("detail"), "project": project, "pickup": {"mode": if human { "queue" } else { "manual" }},
                 "kind": r.body.get("kind"),
                 "status": if planned_flag { "planned" } else { "queued" },
-                "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"),
+                "waits_for": r.body.get("waits_for"), "locks": r.body.get("locks"), "alone": r.body.get("alone"), "lane": r.body.get("lane"),
                 "jira": r.body.get("jira"), "ticket_summary": r.body.get("ticket_summary"), "ticket_text": r.body.get("ticket_text"),
                 "stack_on": r.body.get("stack_on"), "stack_merge": r.body.get("stack_merge"), "ships_pr": r.body.get("ships_pr"),
                 "devices": r.body.get("devices"), "bits": r.body.get("bits"), "area": r.body.get("area"),

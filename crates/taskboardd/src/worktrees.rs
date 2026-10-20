@@ -1,5 +1,6 @@
-//! A git worktree per task. A goal with a `worktree_base` (like `origin/main`) starts each task in a
-//! slot from the pool (`slots.rs`), detached at that base (a stacked task: at its parent's branch).
+//! A git worktree per task. A task on the `slot` lane (`worklane.rs`; a goal with a `worktree_base` like
+//! `origin/main` is on it) starts in a slot from the pool (`slots.rs`), detached at that base, else at
+//! the remote's default branch (a stacked task: at its parent's branch).
 //! The slot is claimed before the start, outside any transaction; one that can't be had fails the
 //! start with the usual retries. A task started before the pool keeps its `<repo>/.claude/worktrees/T<n>`:
 //! once the task is finished (failed, no open PR) and its terminal is gone, the board removes that
@@ -63,7 +64,7 @@ pub(crate) fn last_line(text: &str) -> String {
     text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("no output").to_string()
 }
 
-fn repo_of(app: &App, t: &Row) -> Result<Option<String>> {
+pub(crate) fn repo_of(app: &App, t: &Row) -> Result<Option<String>> {
     match t.s("repo_path").filter(|r| !r.is_empty()) {
         Some(r) => Ok(Some(r.to_string())),
         None => projects::project_path(app, t.s("project")),
@@ -76,6 +77,25 @@ fn folder(repo: &str, t: &Row) -> String {
 
 fn goal_base(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(board::find_goal(app, t.i("goal_id"))?.and_then(|g| g.s("worktree_base").filter(|b| !b.is_empty()).map(|b| b.to_string())))
+}
+
+/// Whether the task works in a slot.
+fn in_slot(app: &App, t: &Row) -> Result<bool> {
+    Ok(crate::worklane::pick(app, t)? == "slot")
+}
+
+/// What a slot starts from when its goal names no base: the remote's default branch, else main or
+/// master, else the checkout's head.
+fn default_base(repo: &str, remote: bool) -> String {
+    let has = |r: &str| git(repo, &["rev-parse", "--verify", "--quiet", r], GIT_SECS).code == 0;
+    if remote {
+        let head = git(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], GIT_SECS);
+        if head.code == 0 && !head.out.trim().is_empty() {
+            return head.out.trim().to_string();
+        }
+    }
+    let names: &[&str] = if remote { &["origin/main", "origin/master", "main", "master"] } else { &["main", "master"] };
+    names.iter().find(|b| has(b)).copied().unwrap_or("HEAD").to_string()
 }
 
 /// The task's recorded worktree that's there; a slot only while the task still holds it.
@@ -91,25 +111,32 @@ fn existing(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// The task's worktree when its goal makes them and it's already there (no git).
+/// The task's worktree when it works in a slot and it's already there (no git).
 pub fn made(app: &App, t: &Row) -> Result<Option<String>> {
-    if goal_base(app, t)?.is_none() {
+    if !in_slot(app, t)? {
         return Ok(None);
     }
     existing(app, t)
 }
 
-/// The repo a task would take a slot of: when its goal makes worktrees and the folder is known.
+/// The repo a task would take a slot of: when it works in a slot and the folder is known.
 pub fn slot_repo(app: &App, t: &Row) -> Result<Option<String>> {
-    if goal_base(app, t)?.is_none() {
+    if !in_slot(app, t)? {
         return Ok(None);
     }
     Ok(repo_of(app, t)?.filter(|r| Path::new(r).is_dir()))
 }
 
-/// Makes the task's worktree if its goal asks for one; its folder, or None for the shared folder.
+/// Makes the task's worktree if it works in a slot; its folder, or None for the shared folder. Auto's
+/// pick is kept as the task starts.
 pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
-    let Some(base) = goal_base(app, t)? else { return Ok(None) };
+    let (lane, from) = crate::worklane::picked(app, t)?;
+    if from == "auto" && t.i("goal_id").is_some() {
+        crate::worklane::pin(app, t, &lane)?;
+    }
+    if lane != "slot" {
+        return Ok(None);
+    }
     if let Some(have) = existing(app, t)? {
         return Ok(Some(have));
     }
@@ -130,6 +157,7 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
         }
         crate::progress::stage("Fetched origin");
     }
+    let base = goal_base(app, t)?.unwrap_or_else(|| default_base(&repo, remote));
     // A stacked task starts from its parent's branch while the parent's PR is unmerged.
     let start = match crate::stack::base_branch(app, t)? {
         Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),

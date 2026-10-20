@@ -102,6 +102,7 @@ pub mod usage;
 pub mod util;
 pub mod waitsfor;
 pub mod waves;
+pub mod worklane;
 pub mod worktrees;
 
 

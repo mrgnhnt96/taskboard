@@ -393,6 +393,7 @@ pub fn task_card(app: &App, t: &Row) -> Result<Value> {
         // `human` for a task only the owner does (`human.rs`), with the note they left on Done.
         o.insert("kind".into(), json!(t.s("kind").unwrap_or("agent")));
         o.insert("owner_note".into(), json!(crate::human::note(t)));
+        o.insert("lane".into(), crate::worklane::card(app, t)?);
         // The PR bar's review step (`bar = "WD"`) before the PR opens, from its first round.
         o.insert("wd".into(), if t.i("pr_num").is_none() { crate::steps::bar_card(app, t)? } else { Value::Null });
     }
@@ -802,6 +803,7 @@ pub fn goal_dict(app: &App, g: &Row) -> Result<Value> {
         "run_in_order": g.b("run_in_order"), "max_terminals": g.v("max_terminals"),
         "auto_close": g.b("auto_close"), "archived": g.b("archived"), "paused": g.b("paused"),
         "deprioritized": g.b("deprioritized"), "worktree_base": g.v("worktree_base"), "setup": g.v("setup"),
+        "lane": crate::worklane::goal_lane(g),
         "after": crate::chain::ids(g).iter().map(|n| rf("goal", *n)).collect::<Vec<_>>(),
         "after_blocker": crate::chain::blocker(app, g)?,
         "created_at": g.v("created_at"), "updated_at": g.v("updated_at"),

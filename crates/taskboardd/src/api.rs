@@ -1068,11 +1068,17 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
         }
         let mut alone_changed = None;
-        if has_key("alone") {
-            let al = crate::locks::clean_alone(body.get("alone"))?;
+        let mut lane_changed = None;
+        if has_key("alone") || has_key("lane") {
+            let (ln, al) = crate::worklane::with_alone(body, Some(&t))?;
             if al.as_deref() != t.s("alone") {
                 alone_changed = Some(al.clone());
                 f.push(("alone", json!(al)));
+                bump = true;
+            }
+            if ln.as_deref() != t.s("lane") {
+                lane_changed = Some(ln.clone());
+                f.push(("lane", json!(ln)));
                 bump = true;
             }
         }
@@ -1213,6 +1219,10 @@ fn patch_task(app: &App, id: i64, body: &Value) -> Result<Value> {
         }
         if let Some(al) = alone_changed {
             board::log_event(app, id, &who, "note", crate::locks::alone_text(al.as_deref().unwrap_or("")))?;
+        }
+        if let Some(ln) = lane_changed {
+            crate::worklane::unpin(app, id)?;
+            board::log_event(app, id, &who, "note", crate::worklane::text(ln.as_deref().unwrap_or("auto")))?;
         }
         if note_changed {
             let t = board::get_task(app, id)?;
@@ -1907,7 +1917,19 @@ fn patch_goal(app: &App, id: i64, body: &Value) -> Result<Value> {
             f.push(("product", json!(jira::clean_product(app, &body_str(body, "product"))?)));
         }
         if hk("worktree_base") {
-            f.push(("worktree_base", json!(crate::worktrees::clean_base(body.get("worktree_base"))?)));
+            let base = crate::worktrees::clean_base(body.get("worktree_base"))?;
+            // Worktrees on puts the goal on the slot lane, and off takes it off it.
+            if !hk("lane") {
+                match &base {
+                    Some(_) => f.push(("lane", json!("slot"))),
+                    None if crate::worklane::goal_lane(&g) == "slot" => f.push(("lane", json!("auto"))),
+                    None => {}
+                }
+            }
+            f.push(("worktree_base", json!(base)));
+        }
+        if hk("lane") {
+            f.push(("lane", json!(crate::worklane::clean(body.get("lane"))?.unwrap_or_else(|| "auto".into()))));
         }
         if hk("after") {
             f.push(("after_goals", json!(crate::chain::clean(app, &body["after"], Some(&g))?)));
@@ -2137,8 +2159,14 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
     if let Some(e) = g.s("epic_key").filter(|t| !t.is_empty()) {
         lines.push(format!("Jira epic: {e}"));
     }
-    if let Some(b) = g.s("worktree_base").filter(|b| !b.is_empty()) {
-        lines.push(format!("Each task starts in its own git worktree, detached at {b}."));
+    match crate::worklane::goal_lane(g) {
+        "slot" => lines.push(match g.s("worktree_base").filter(|b| !b.is_empty()) {
+            Some(b) => format!("Lane: slot. Each task starts in a worktree slot, detached at {b}."),
+            None => "Lane: slot. Each task starts in a worktree slot, detached at the default branch.".into(),
+        }),
+        "shared" => lines.push("Lane: shared. Its tasks work in the shared checkout.".into()),
+        "alone" => lines.push("Lane: alone. Each task runs with nothing else in the goal beside it.".into()),
+        _ => {}
     }
     let notes = board::goal_notes(app, g.id())?;
     if !notes.is_empty() {
@@ -2167,6 +2195,8 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
             }
             if let Some(a) = t.s("alone") {
                 extra.push(crate::locks::alone_text(a).to_lowercase());
+            } else if let l @ ("shared" | "slot") = crate::worklane::own_lane(t) {
+                extra.push(format!("lane {l}"));
             }
             lines.push(format!(
                 "  {}. {} [{}] {}{}",
@@ -2198,6 +2228,7 @@ pub fn goal_context(app: &App, g: &Row, for_planner: bool) -> Result<String> {
             format!("  {tb} propose {gref} --task \"title::what to do\" --task \"title::what to do\""),
             "A task that needs another one's work first lists it after a fourth ::, by ref or as #k for the k-th --task in the same command: \"title::what to do::2::#1\" or \"title::what to do::::T14\". It starts only once those are done.".to_string(),
             format!("Tasks that must not run together name the same lock: {tb} task set T<n> --lock <name> (like a device or a shared service). A task that needs the goal to itself gets --alone; --alone board stops everything else on the board while it runs."),
+            format!("Each task has a lane: shared (the shared checkout), slot (a worktree from the pool), alone, or auto, which takes a slot for a task whose wave mates plan overlapping files or no files, else shared. Set it with ::lane=<lane> after a --task, or {tb} task set T<n> --lane <lane>; {tb} planning lists the rules."),
             format!("They arrive as planned tasks for {owner} to edit, reorder and queue. Nothing runs until {owner} queues it."),
         ]);
     } else {
