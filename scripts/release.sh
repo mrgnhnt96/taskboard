@@ -86,6 +86,8 @@ git add Cargo.toml Cargo.lock plugin/task-board/.claude-plugin/plugin.json
 # A replaced release usually has its version commit already.
 git diff --cached --quiet || git commit -m "chore: release $tag"
 git tag -a "$tag" -m "Taskboard $version"
+# Runs created from here on are this push's, so a failed run on the same commit isn't picked up.
+pushed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if [ -n "$replace" ]; then
   # The failed run may have published before it failed; the new run creates the release again.
   if gh release view "$tag" >/dev/null 2>&1; then
@@ -97,6 +99,24 @@ else
   git push origin "$branch" "$tag"
 fi
 
+# The release job's own page, which shows when it's done; the workflow page if it doesn't show up
+# within a minute (GitHub can take a few seconds to start the run).
+job_url=
+for _ in $(seq 20); do
+  run=$(gh run list --workflow release.yml --branch "$tag" --event push --json databaseId,createdAt \
+    --jq "[.[] | select(.createdAt >= \"$pushed_at\")][0].databaseId // empty" 2>/dev/null || true)
+  if [ -n "$run" ]; then
+    job_url=$(gh run view "$run" --json jobs --jq '.jobs[0].url // empty' 2>/dev/null || true)
+    [ -n "$job_url" ] && break
+  fi
+  sleep 3
+done
+
 echo
-echo "Pushed $tag. The release workflow builds the app and publishes the release:"
-echo "  https://github.com/mrgnhnt96/taskboard/actions/workflows/release.yml"
+if [ -n "$job_url" ]; then
+  echo "Pushed $tag. The release job builds the app and publishes the release:"
+  echo "  $job_url"
+else
+  echo "Pushed $tag. The release workflow builds the app and publishes the release:"
+  echo "  https://github.com/mrgnhnt96/taskboard/actions/workflows/release.yml"
+fi
