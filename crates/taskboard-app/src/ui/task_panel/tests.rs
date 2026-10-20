@@ -130,18 +130,40 @@ fn a_card_shows_until_the_task_answers() {
 }
 
 #[::core::prelude::v1::test]
-fn a_needs_box_without_a_terminal_still_offers_an_action() {
+fn write_an_answer_opens_its_terminal_or_a_new_one() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
-    let asked = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"});
-    let a = acts(asked.clone());
-    assert!(a.contains("\"answer\"") && !a.contains("\"focus\""), "{a}");
-    let fields = json!(view::values(&tree(&json!({"state": {}, "task": asked, "tab": "overview", "ui": {"drafts": {"answer:T5": "yes"}}}))));
-    assert_eq!(fields, json!(["yes"]), "the answer box shows its draft");
+    // No terminal: a new one picks up from its handoff.
+    let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"}));
+    assert!(a.contains("\"resume:fresh\"") && !a.contains("\"focus\"") && !a.contains("\"answer\""), "{a}");
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention"}));
     assert!(a.contains("\"resume:fresh\""), "{a}");
     // With its terminal open, the terminal is the action.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
     assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+}
+
+#[::core::prelude::v1::test]
+fn a_question_shows_once_in_the_banner() {
+    // Asked just now, so its time reads as a clock time rather than a date.
+    let asked = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let iso = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let (started_at, updated_at) = (iso(asked - chrono::Duration::minutes(140)), iso(asked));
+    let task = json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?",
+                      "started_at": started_at, "updated_at": updated_at,
+                      "ask": {"questions": [{"question": "Add the generated patterns?", "options": [{"label": "Yes, add them"}, {"label": "No"}]}]}});
+    let panel = tree(&json!({"state": {}, "task": task, "tab": "overview"}));
+    let text = json!(view::text(&panel)).to_string();
+    assert_eq!(text.matches("Add the generated patterns?").count(), 1, "{text}");
+    assert!(!text.contains("Needs you"), "no Needs-you pill beside the banner: {text}");
+    let at = crate::fmt::hhmm(&updated_at);
+    assert!(text.contains("Waiting on you") && text.contains("after 2h 20m of work") && text.contains(&at), "{text}");
+    assert!(at.ends_with("AM") || at.ends_with("PM"), "{at}");
+    let a = json!(view::acts(&panel)).to_string();
+    assert!(a.contains("\"answer-opt:Yes, add them\"") && a.contains("\"answer-opt:No\""), "{a}");
+    // A lost terminal waits too, but nothing was asked.
+    let lost = json!({"ref": "T5", "id": 5, "status": "needs", "lost": true, "updated_at": "2026-10-09T11:34:00Z"});
+    let text = json!(view::text(&tree(&json!({"state": {}, "task": lost, "tab": "overview"})))).to_string();
+    assert!(text.contains("Waiting on you") && !text.contains("Asked"), "{text}");
 }
 
 // ------------------------------------------------------------------ actions

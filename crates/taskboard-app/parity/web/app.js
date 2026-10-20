@@ -963,7 +963,7 @@ function taskPanel() {
     ${S.taskErr ? `<p class="note err">${esc(S.taskErr)}</p>` : ''}
     <h2 class="title">${esc(t.title)}</h2>
     ${headChips(t)}
-    ${alert ? `<div class="box ask" role="alert"><span class="box-label">Needs you</span><p>${esc(alert.text)}</p></div>` : ''}
+    ${banner(t, alert)}
     <div class="tabbody">${body}</div>
     ${panelFoot(t, tab)}
   </aside>`;
@@ -1003,7 +1003,52 @@ function answerBtns(r) {
 function askOptions(ask, r) {
   const qs = (ask && ask.questions) || [];
   return qs.map(q => (qs.length > 1 ? `<p><strong>${esc(q.question)}</strong></p>` : '')
-    + (q.options || []).map(o => `<div class="row">${ask.picker ? `<strong>${esc(o.label)}</strong>` : btn(o.label, 'answer-opt', { id: r, arg: o.label, cls: 'soft', grp: 'ask:' + r })}${o.description ? `<span class="sub2">${esc(o.description)}</span>` : ''}</div>`).join('')).join('');
+    + optRows(q.options || [], o => ask.picker ? `<strong>${esc(o.label)}</strong>` : btn(o.label, 'answer-opt', { id: r, arg: o.label, cls: 'opt', grp: 'ask:' + r }))).join('');
+}
+// Options without descriptions share one row; described ones get a row each.
+function optRows(opts, one) {
+  if (!opts.some(o => o.description)) return opts.length ? `<div class="row">${opts.map(one).join('')}</div>` : '';
+  return opts.map(o => `<div class="row">${one(o)}${o.description ? `<span class="sub2">${esc(o.description)}</span>` : ''}</div>`).join('');
+}
+
+// What the task needs from you, full width under the chips: a question with its options and Write
+// an answer, a lost or failed start with its ways back, or the PR's terminal stopping. A board
+// alert about the task shows in it too.
+function banner(t, alert) {
+  const r = ref(t, 'T');
+  const act = 'act:' + r;
+  let tone = 'ask';
+  let inner = '';
+  if (t.lost) {
+    tone = 'lost';
+    inner = `<span class="box-label">Terminal lost</span>
+      <p class="banner-text">${esc(t.latest || 'The terminal closed before the task was done.')}</p>
+      ${savedLine(t) ? `<p class="sub2">${esc(savedLine(t))}</p>` : ''}
+      <div class="row">${btn('Resume in a new terminal', 'resume', { id: r, arg: 'fresh', cls: 'primary', grp: 'lost:' + r })}${btn('Reopen the old conversation', 'resume', { id: r, arg: 'reopen', grp: 'lost:' + r, disabled: !t.claude_session_id, title: t.claude_session_id ? '' : 'No conversation was saved for this task' })}${btn('Mark done', 'resume', { id: r, arg: 'finish', grp: 'lost:' + r })}${note('lost:' + r)}</div>
+      <button type="button" class="btn link" data-act="tab" data-arg="context">See what the new terminal gets</button>`;
+  } else if (t.status === 'needs' && t.needs_reason === 'start_failed') {
+    tone = 'lost';
+    inner = `<span class="box-label">Couldn’t start in Midna</span>
+      <p class="banner-text">${esc(t.latest || 'Midna didn’t start a terminal for this task.')}</p>
+      <div class="row">${btn('New Midna terminal', 'start', { id: r, arg: 'new', cls: 'primary', grp: act })}${btn('Queue in Midna', 'start', { id: r, arg: 'queue', grp: act })}${note(act)}</div>`;
+  } else if (t.status === 'needs') {
+    const grp = 'ask:' + r;
+    // Its terminal when it has one; otherwise a new one, picking up from its handoff.
+    const write = sessionLive(t) ? { id: r, grp } : { id: r, arg: 'fresh', grp };
+    inner = `<p class="banner-text">${esc(t.question || t.latest || 'It’s waiting for you in Midna.')}</p>
+      ${askOptions(t.ask, r)}
+      <div class="row"><button type="button" class="write" data-act="${sessionLive(t) ? 'focus' : 'resume'}" data-id="${esc(r)}"${write.arg ? ` data-arg="${write.arg}"` : ''} data-grp="${esc(grp)}">Write an answer${ICON.ext}</button>${note(grp)}</div>`;
+  } else if (prStopped(t)) {
+    const st = t.pr.stage;
+    const k = 'answer:' + r;
+    const term = (t.terminals || []).find(x => x.id === st.session);
+    inner = `<span class="box-label">${esc((term && term.name) || 'Its terminal')} ${st.stopped.asked ? 'asks you about the PR' : 'stopped on the PR'}</span>
+      <p class="banner-text">${esc(st.stopped.message)}</p>
+      <textarea class="input" id="ans-${esc(r)}" data-k="${esc(k)}" rows="2" aria-label="Your answer">${esc(S.drafts[k] || '')}</textarea>
+      <div class="row">${answerBtns(r)}${btn('Focus in Midna', 'focus', { id: r, grp: 'ask:' + r })}${note('ask:' + r)}</div>`;
+  }
+  if (alert) inner += `<p class="${inner ? 'sub2' : 'banner-text'}">${esc(alert.text)}</p>`;
+  return inner ? `<div class="needs-banner ${tone}" role="alert">${inner}</div>` : '';
 }
 function statusPill(t, k) {
   if (awaitingMerge(t)) { const [label, cls, tip] = prStatus(t); return `<span class="pill ${cls}" title="${esc(tip)}">${esc(label)}</span>`; }
@@ -1054,7 +1099,6 @@ function doneNode(t) {
 // What the task is doing now, with what it needs from you and its terminal's controls.
 function nowNode(t) {
   const r = ref(t, 'T');
-  const who = t.who || (t.session && t.session.name) || 'The terminal';
   const act = 'act:' + r;
   const out = [];
   const working = t.status === 'working';
@@ -1063,29 +1107,14 @@ function nowNode(t) {
   const sub = working ? [isNaN(m) || m < 0 ? '' : span(m), t.updated_at ? `updated ${ago(t.updated_at)}` : ''].filter(Boolean).join(' · ') : '';
   if (working && t.latest) out.push(`<p class="tl-text">${esc(t.latest)}</p>`);
 
-  if (t.lost) {
-    out.push(`<div class="box lost"><span class="box-label">Terminal lost</span>
-      <p>${esc(t.latest || 'The terminal closed before the task was done.')}</p>
-      ${savedLine(t) ? `<p class="sub2">${esc(savedLine(t))}</p>` : ''}
-      <div class="row">${btn('Resume in a new terminal', 'resume', { id: r, arg: 'fresh', cls: 'primary', grp: 'lost:' + r })}${btn('Reopen the old conversation', 'resume', { id: r, arg: 'reopen', grp: 'lost:' + r, disabled: !t.claude_session_id, title: t.claude_session_id ? '' : 'No conversation was saved for this task' })}${btn('Mark done', 'resume', { id: r, arg: 'finish', grp: 'lost:' + r })}</div>
-      ${note('lost:' + r)}
-      <button type="button" class="btn link" data-act="tab" data-arg="context">See what the new terminal gets</button></div>`);
-  } else if (t.status === 'needs' && t.needs_reason === 'start_failed') {
-    out.push(`<div class="box lost"><span class="box-label">Couldn’t start in Midna</span>
-      <p>${esc(t.latest || 'Midna didn’t start a terminal for this task.')}</p>
-      <div class="row">${btn('New Midna terminal', 'start', { id: r, arg: 'new', cls: 'primary', grp: act })}${btn('Queue in Midna', 'start', { id: r, arg: 'queue', grp: act })}</div>${note(act)}</div>`);
-  } else if (t.status === 'needs') {
-    const asking = t.question && (t.needs_reason === 'question' || (t.ask && t.ask.picker));
-    const opts = askOptions(t.ask, r);
-    // No terminal to open and nothing to click: answer a question, otherwise resume it.
-    const bare = !sessionLive(t) && !(opts && !(t.ask && t.ask.picker));
-    const answers = bare && t.question && t.needs_reason === 'question';
-    const fallback = !bare ? '' : answers ? answerBtns(r) : btn('Resume in a new terminal', 'resume', { id: r, arg: 'fresh', cls: 'primary', grp: 'ask:' + r });
-    out.push(`<div class="box ask"><span class="box-label">${esc(who)} ${asking ? 'is asking' : 'needs you'}</span>
-      <p>${esc(t.question || t.latest || 'It’s waiting for you in Midna.')}</p>
-      ${opts}
-      ${answers ? `<textarea class="input" id="ans-${esc(r)}" data-k="answer:${esc(r)}" rows="2" aria-label="Your answer">${esc(S.drafts['answer:' + r] || '')}</textarea>` : ''}
-      <div class="row">${sessionLive(t) ? btn('Open terminal', 'focus', { id: r, grp: 'ask:' + r }) : fallback}${note('ask:' + r)}</div></div>`);
+  // What it needs shows in the banner up top; here it just waits, with when it asked.
+  if (warn) {
+    // Lost or a failed start isn't a question: nothing was asked.
+    const asked = t.status === 'needs' && !t.lost && t.needs_reason !== 'start_failed' && t.updated_at;
+    const w = asked ? Math.round((Date.parse(t.updated_at) - Date.parse(t.started_at)) / 60000) : NaN;
+    const wsub = asked ? [`Asked ${ago(t.updated_at)}`, isNaN(w) || w < 0 ? '' : `after ${span(w)} of work`].filter(Boolean).join(', ') : '';
+    const acts = blockedRow(t) + (t.status !== 'done' ? termActions(t) : '');
+    return tlNode('warn', tlHead('<span class="tl-h-warn">Waiting on you</span>', wsub, asked ? hhmm(t.updated_at) : ''), acts, true);
   }
 
   if (startsByHand(t)) {
@@ -1095,19 +1124,9 @@ function nowNode(t) {
     out.push(`<div class="stack"><div class="row">${btn('Queue it now', 'queue-planned', { id: r, cls: 'soft', grp: act, title: 'Take it out of the plan and queue it; the goal’s rules decide when it starts' })}</div>${note(act)}</div>`);
   }
 
-  if (prStopped(t)) {
-    const st = t.pr.stage;
-    const k = 'answer:' + r;
-    const term = (t.terminals || []).find(x => x.id === st.session);
-    out.push(`<div class="box ask"><span class="box-label">${esc((term && term.name) || 'Its terminal')} ${st.stopped.asked ? 'asks you about the PR' : 'stopped on the PR'}</span>
-      <p>${esc(st.stopped.message)}</p>
-      <textarea class="input" id="ans-${esc(r)}" data-k="${esc(k)}" rows="2" aria-label="Your answer">${esc(S.drafts[k] || '')}</textarea>
-      <div class="row">${answerBtns(r)}${btn('Focus in Midna', 'focus', { id: r, grp: 'ask:' + r })}${note('ask:' + r)}</div></div>`);
-  }
-
   out.push(blockedRow(t));
   if (t.status !== 'done') out.push(termActions(t));
-  return tlNode(warn ? 'warn' : 'now', tlHead(statusPill(t, stKey(t)), sub), out.join(''), true);
+  return tlNode('now', tlHead(statusPill(t, stKey(t)), sub), out.join(''), true);
 }
 
 // Focus in Midna, and Detach and Close terminal behind the ⋯ menu.
@@ -1274,7 +1293,7 @@ function stepHtml(x) {
 function prBar(t, p) {
   const stage = p.stage;
   if (!prOpen(p) || !stage || !PR_AGENT_PHASES.has(stage.phase)) return '';
-  const body = `<span class="dot"></span><span class="grow">${esc(stage.stopped ? `Needs you · ${stage.label}` : stage.label)}</span>`;
+  const body = `<span class="dot"></span><span class="grow">${esc(stage.label)}</span>`;
   return stage.session
     ? `<a class="pr-bar${stage.stopped ? ' warn' : ''}" href="${esc(termHref(stage.session))}" title="${stage.stopped ? 'Its terminal stopped before it was finished' : 'Open the terminal doing this'}">${body}<span class="go">Terminal ›</span></a>`
     : `<div class="pr-bar" title="Waiting for its terminal to open">${body}</div>`;
