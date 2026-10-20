@@ -201,3 +201,42 @@ fn a_task_that_needs_you_without_an_alert_still_shows() {
     assert_eq!(n["text"], "Which icon?");
     assert_eq!(n["goal_name"], "Login");
 }
+
+#[test]
+fn a_snoozed_need_leaves_home_until_its_snooze_ends() {
+    let b = new_board();
+    let (g, t) = goal(&b);
+    b.set(t[0], vec![("status", json!("needs")), ("question", json!("Keep the old form?"))]);
+    dispatch::add_alert(&b.app, &format!("T{}: Keep the old form?", t[0]), Some(t[0]), Some(g), None, None).unwrap();
+    let id = b.home()["needs"][0]["id"].as_str().unwrap().to_string();
+
+    let a = b.post(&format!("alerts/{id}/snooze"), json!({"mins": 180}))["alert"].clone();
+    let until = taskboardd::util::parse_iso(a["snoozed_until"].as_str().unwrap()).unwrap();
+    assert!((until - taskboardd::util::now_ts() - 3.0 * 3600.0).abs() < 5.0);
+    assert_eq!(b.home()["needs"], json!([]), "its task doesn't show in its place");
+
+    b.post(&format!("alerts/{id}/snooze"), json!({"until": "back"}));
+    let a = &dispatch::alerts(&b.app)[0];
+    assert!(a["snoozed_until"].is_null() && a["snoozed_back"].is_string());
+    assert_eq!(b.home()["needs"], json!([]), "until the owner is away and back");
+
+    let a = b.post(&format!("alerts/{id}/snooze"), json!({"until": "tomorrow"}))["alert"].clone();
+    assert!(a["snoozed_back"].is_null());
+    let until = taskboardd::util::parse_iso(a["snoozed_until"].as_str().unwrap()).unwrap();
+    assert!(until > taskboardd::util::now_ts() && until < taskboardd::util::now_ts() + 2.0 * 86400.0);
+
+    dispatch::snooze_alert(&b.app, &id, -1).unwrap();
+    assert_eq!(b.home()["needs"][0]["id"], id, "back once its time comes");
+}
+
+#[test]
+fn a_snooze_takes_minutes_tomorrow_or_back() {
+    let b = new_board();
+    let (g, t) = goal(&b);
+    dispatch::add_alert(&b.app, "Look at this", Some(t[0]), Some(g), None, None).unwrap();
+    let id = dispatch::alerts(&b.app)[0]["id"].as_str().unwrap().to_string();
+    for body in [json!({}), json!({"mins": 0}), json!({"until": "later"})] {
+        assert!(api::dispatch(&b.app, "POST", &format!("alerts/{id}/snooze"), &Query::new(), &body).is_err(), "{body}");
+    }
+    assert_eq!(api::dispatch(&b.app, "POST", "alerts/nope/snooze", &Query::new(), &json!({"mins": 15})).unwrap_err().status, 404);
+}

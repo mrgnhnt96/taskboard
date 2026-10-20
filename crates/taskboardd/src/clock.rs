@@ -73,6 +73,11 @@ pub fn forget_aways() {
     *AWAY_NOW.lock() = None;
 }
 
+/// Whether the owner came back since `ts`: a stretch away, or a sleep, ended after it.
+pub fn back_since(ts: f64) -> bool {
+    SLEEPS.lock().iter().chain(AWAYS.lock().iter()).any(|&(_, b)| b > ts)
+}
+
 /// The stretches in `[from, to)` the owner was away or the Mac slept, clipped, merged and in order.
 pub fn away_spans(from: f64, to: f64) -> Vec<(f64, f64)> {
     let mut all: Vec<(f64, f64)> = SLEEPS.lock().iter().chain(AWAYS.lock().iter()).copied().collect();
@@ -202,6 +207,9 @@ mod tests {
         set_away_now(Some(900.0));
         assert_eq!(away_spans(800.0, 1000.0), vec![(900.0, 1000.0)], "a stretch still going on runs to the end of the range");
         assert_eq!(away_spans(0.0, 850.0), vec![(100.0, 250.0), (300.0, 350.0)]);
+        assert!(back_since(320.0), "a sleep ended after it");
+        assert!(back_since(240.0), "an away ended after it");
+        assert!(!back_since(400.0), "a stretch still going on isn't back yet");
         forget_sleeps();
         forget_aways();
     }

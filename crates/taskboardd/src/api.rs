@@ -538,13 +538,20 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
             Ok(json!({"alerts": alerts::listing(app)}))
         }
         ("POST", ["alerts", id, "act"]) => alerts::act(app, id, body["n"].as_u64().unwrap_or(0) as usize),
+        // `{mins}`, `{until: "tomorrow"}` (when the work hours start) or `{until: "back"}` (after the
+        // owner's next stretch away).
         ("POST", ["alerts", id, "snooze"]) => {
-            let mins = body["mins"].as_i64().unwrap_or(0);
-            let allowed: Vec<i64> = app.cfg.alerts.snooze_mins.iter().copied().filter(|m| *m > 0).collect();
-            if !allowed.contains(&mins) && ![15, 30, 60].contains(&mins) {
-                return err(400, format!("Snooze for {} minutes.", allowed.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")));
+            if !alerts::alerts(app).iter().any(|a| a["id"] == *id) {
+                return err(404, "There's no alert with that id.");
             }
-            let a = app.db.tx(|| alerts::snooze_alert(app, id, mins))?;
+            let until = match (body["until"].as_str(), body["mins"].as_i64()) {
+                (Some("tomorrow"), _) => Some(hours::tomorrow_start(app)),
+                (Some("back"), _) => None,
+                (None, Some(mins)) if (1..=7 * 24 * 60).contains(&mins) => Some(now_ts() + mins as f64 * 60.0),
+                _ => return err(400, "Snooze for a number of minutes (up to a week), until \"tomorrow\" or until \"back\"."),
+            };
+            let a = app.db.tx(|| alerts::snooze_to(app, id, until))?;
+            alerts::withdraw(app, id);
             Ok(json!({"alert": a}))
         }
         _ => {

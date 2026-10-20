@@ -98,10 +98,12 @@ fn rank(e: &Value) -> u8 {
     }
 }
 
-/// The alerts, each with its task's card (or null) and its goal's name.
+/// The alerts, each with its task's card (or null) and its goal's name. A snoozed alert is left out,
+/// and so is its task until the snooze ends.
 fn needs(app: &App) -> Result<Vec<Value>> {
     let mut out = vec![];
-    for mut a in crate::dispatch::listing(app) {
+    let (snoozed, up): (Vec<Value>, Vec<Value>) = crate::dispatch::listing(app).into_iter().partition(crate::dispatch::snoozed);
+    for mut a in up {
         let task = a["task"].as_str().and_then(|r| r.trim_start_matches('T').parse::<i64>().ok());
         let card = match task.map(|id| board::get_task(app, id)) {
             Some(Ok(t)) => board::task_card(app, &t)?,
@@ -118,7 +120,7 @@ fn needs(app: &App) -> Result<Vec<Value>> {
     // A task that needs you with no alert up (dismissed, or never raised) still does.
     for t in app.db.q("SELECT * FROM tasks WHERE status = 'needs' ORDER BY updated_at DESC", p![])? {
         let r = rf("task", t.id());
-        if out.iter().any(|a| a["task"].as_str() == Some(r.as_str())) {
+        if out.iter().chain(&snoozed).any(|a| a["task"].as_str() == Some(r.as_str())) {
             continue;
         }
         let card = board::task_card(app, &t)?;
