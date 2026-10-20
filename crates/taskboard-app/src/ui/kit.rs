@@ -362,6 +362,46 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
     move |_, cx| cx.new(|_| Tip { text: text.clone() }).into()
 }
 
+struct CardTip {
+    title: SharedString,
+    rows: Vec<(String, String)>,
+}
+
+impl Render for CardTip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.global::<Theme>();
+        let rows = self.rows.iter().map(|(k, v)| {
+            div()
+                .flex()
+                .gap(px(10.))
+                .child(div().flex_none().w(px(52.)).text_color(t.muted).child(k.clone()))
+                .child(div().flex_1().min_w_0().text_color(t.text).child(v.clone()))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .w(px(340.))
+            .px(px(12.))
+            .py(px(10.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(t.border_2)
+            .bg(t.card)
+            .shadow_lg()
+            .text_size(px(12.))
+            .font_family(t.ui_font.clone())
+            .child(div().pb(px(4.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone()))
+            .children(rows)
+    }
+}
+
+/// A hover card: a title over label · value rows (`.tooltip(card_tip(…))`).
+pub fn card_tip(title: impl Into<SharedString>, rows: Vec<(String, String)>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let title = title.into();
+    move |_, cx| cx.new(|_| CardTip { title: title.clone(), rows: rows.clone() }).into()
+}
+
 // ------------------------------------------------------------------ line icons
 
 /// The web board's inline SVG icons (`ICON.*` in `app.js`), drawn on a 24-unit grid.
