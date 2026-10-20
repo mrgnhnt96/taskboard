@@ -916,6 +916,10 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
     if files.is_empty() && commit.is_none() {
         return Ok(None);
     }
+    // A release cut this turn is board work already: its commit (version bump, changelog) isn't a task.
+    if files.is_empty() && cut_release_this_turn(r, &s)? {
+        return Ok(None);
+    }
     let tb = board::tb_cmd(r.app);
     let shown = match commit {
         Some(subject) if files.is_empty() => format!("a commit: {subject}"),
@@ -952,6 +956,12 @@ fn changed_with_no_task(r: &Report) -> Result<Option<String>> {
          To check the board for this work first: {tb} search \"<words>\".{switch} Then end your turn without repeating your answer. \
          If {owner} said not to track it, just end your turn."
     )))
+}
+
+/// The terminal's project got a release since the turn started.
+fn cut_release_this_turn(r: &Report, s: &Row) -> Result<bool> {
+    let (Some(project), Some(at)) = (s.s("project").filter(|p| !p.is_empty()), r.turn_at.as_deref()) else { return Ok(false) };
+    Ok(r.app.db.count("SELECT COUNT(*) FROM releases WHERE project = ? AND cut_at >= ?", p![project, at])? > 0)
 }
 
 const BACKLOG_SHOWN: usize = 5;

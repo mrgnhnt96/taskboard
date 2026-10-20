@@ -316,6 +316,29 @@ fn a_turn_that_only_committed_is_asked_to_track_it() {
 }
 
 #[test]
+fn a_release_cut_this_turn_isnt_asked_to_track_its_commit() {
+    let b = new_board();
+    b.add_session("s1");
+    b.post("/projects/webapp", json!({"releases": "on"}));
+    let cut = |name: &str| {
+        let t = b.task(&format!("Work for {name}"), json!({}));
+        board::update_task(&b.app, t, vec![("status", json!("done"))]).unwrap();
+        b.post("/releases", json!({"name": name, "project": "webapp"}))["id"].as_i64().unwrap()
+    };
+    let release = |b: &Board, files: &[(&str, &str)]| {
+        let after = tree_with(b, "bbb", files, &[("bbb", "commit: chore: release v1"), ("aaa", "commit (initial): start")]);
+        stop_after(b, &[bash("tb release cut v1")], tree(b, "aaa", &[]), after)
+    };
+    let old = cut("v0");
+    b.app.db.x("UPDATE releases SET cut_at = '2026-10-07T10:00:00Z' WHERE id = ?", p![old]).unwrap();
+    assert!(release(&b, &[]).is_some_and(|x| x.contains("a commit: chore: release v1")), "a release cut before the turn");
+
+    cut("v1");
+    assert_eq!(release(&b, &[]), None, "the release's own commit");
+    assert!(release(&b, &[("src/a.rs", "h1:5")]).is_some_and(|x| x.contains("a.rs")), "code changed alongside the release");
+}
+
+#[test]
 fn a_turn_that_ran_no_shell_or_subagent_isnt_blamed_for_the_tree() {
     let b = new_board();
     b.add_session("s1");
