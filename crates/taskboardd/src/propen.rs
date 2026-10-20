@@ -408,11 +408,79 @@ pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::R
     Ok(branch)
 }
 
-/// The folder the PR is opened from: the report's checkout, else the task's worktree or repo.
+fn where_str(t: &Row, key: &str) -> Option<String> {
+    board::task_context(t).get("where").and_then(|w| w.get(key)).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
+}
+
+/// The folder the PR is opened from: where the task committed, else its worktree, else the report's
+/// checkout or the task's repo. The terminal's folder comes after the task's own: a terminal in a
+/// shared checkout may be sitting on another task's branch.
 fn dir_for(t: &Row, cwd: &str) -> Option<String> {
-    let ctx = board::task_context(t);
-    let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).map(|s| s.to_string());
-    [Some(cwd.to_string()), wt, t.s("repo_path").map(|s| s.to_string())].into_iter().flatten().find(|d| !d.is_empty() && Path::new(d).is_dir())
+    [where_str(t, "committed_in"), where_str(t, "worktree"), Some(cwd.to_string()), t.s("repo_path").map(|s| s.to_string())]
+        .into_iter()
+        .flatten()
+        .find(|d| !d.is_empty() && Path::new(d).is_dir())
+}
+
+/// Why `branch` (in `dir`, going into `base`) isn't this task's to open a PR from: it has nothing on
+/// top of the base, this task committed on another branch, or another live task committed on it.
+fn not_ours(app: &App, t: &Row, dir: &str, base: &str, branch: &str) -> Result<Option<String>> {
+    let remote = &app.cfg.pr_body.remote;
+    let (_, ahead, _) = git(dir, &["rev-list", "--count", &format!("{remote}/{base}..HEAD")], 10.0).map_err(|e| ApiError::new(409, e))?;
+    if ahead.trim() == "0" {
+        return Ok(Some(format!("{branch} has no commits on top of {remote}/{base}: commit the task's work on its branch, push it, then run tb submit again.")));
+    }
+    let mine = where_str(t, "committed_branch");
+    if let Some(b) = mine.as_deref().filter(|b| *b != branch) {
+        return Ok(Some(format!(
+            "T{} committed its work on {b}, but {dir} is on {branch}: switch that checkout back to {b} (or run tb submit from the worktree that has it), then run tb submit again.",
+            t.id()
+        )));
+    }
+    if mine.is_some() {
+        return Ok(None);
+    }
+    let rows = app.db.q(
+        "SELECT * FROM tasks WHERE id != ? AND project IS ? AND COALESCE(failed, 0) = 0 \
+         AND (status != 'done' OR (pr_num IS NOT NULL AND (pr_phase IS NULL OR pr_phase NOT IN ('merged', 'declined'))))",
+        p![t.id(), t.s("project")],
+    )?;
+    Ok(rows.iter().find(|o| where_str(o, "committed_branch").as_deref() == Some(branch)).map(|o| {
+        format!(
+            "{branch} is T{}'s branch (“{}”), not this task's: this checkout was switched to it. Run tb submit from the checkout that has this task's work, on its own branch.",
+            o.id(),
+            o.st("title")
+        )
+    }))
+}
+
+/// A host refusing a second PR for the same head (GitHub's “Validation Failed (HTTP 422)”, gh's “already
+/// exists”), said with the PR that's there and the task that owns it.
+fn already_open(app: &App, t: &Row, dir: &str, branch: &str, e: &str) -> Option<String> {
+    let lower = e.to_lowercase();
+    if !(lower.contains("422") || lower.contains("already exists") || lower.contains("validation failed")) {
+        return None;
+    }
+    let rows = app.db.q("SELECT * FROM tasks WHERE id != ? AND project IS ? AND pr_num IS NOT NULL", p![t.id(), t.s("project")]).ok()?;
+    let owner = rows.iter().rev().find(|o| {
+        let rec = jloads_obj(o.s("pr_flow")).get("rec").and_then(|r| r.get("branch")).and_then(|b| b.as_str()).map(|b| b.to_string());
+        rec.or_else(|| crate::waitsfor::branch_of(o)).as_deref() == Some(branch)
+    });
+    let pr = match owner {
+        Some(o) => format!("PR #{} ({}), T{}'s (“{}”)", o.i0("pr_num"), o.st("pr_url"), o.id(), o.st("title")),
+        None => {
+            let (h, repo) = host::remote(app, dir).ok()?;
+            let open = crate::prhost::host_for(app, &h).and_then(|h| h.my_open_prs(&repo)).ok().unwrap_or_default();
+            match open.iter().find(|p| p.branch == branch) {
+                Some(p) => format!("PR #{} ({}), which no task on the board has", p.num, p.url),
+                None => "a PR".to_string(),
+            }
+        }
+    };
+    Some(format!(
+        "{branch} already has an open {pr}, so the host won't open another from it. If this task's work is on another branch, \
+         run tb submit from the checkout that has it; if that PR is this task's, link it with tb submit --pr <link>."
+    ))
 }
 
 /// Opens the task's PR from `--pr-body`: the description checked, the branch checked, the PR opened on
@@ -430,6 +498,9 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     let base = steps::real_base(app, t)?;
     crate::progress::stage("Checked the PR description");
     let branch = check_branch(cfg, &dir, &base).map_err(|e| ApiError::new(409, e))?;
+    if let Some(why) = not_ours(app, t, &dir, &base, &branch)? {
+        return err(409, why);
+    }
     crate::progress::stage(&format!("{branch} is pushed and up to date with {base}"));
     let (main, footer) = split_footer(body);
     let mut text = main.trim_end().to_string();
@@ -442,7 +513,7 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     let text = with_footer(text, footer);
     let title = title(cfg, t, given_title);
     let pr = crate::progress::waiting("the PR host to open the PR", crate::progress::WAITING_EVERY, || host::open(app, &dir, &base, &branch, &title, &text))
-        .map_err(|e| ApiError::new(502, format!("Couldn't open the PR: {e}")))?;
+        .map_err(|e| ApiError::new(502, format!("Couldn't open the PR: {}", already_open(app, t, &dir, &branch, &e).unwrap_or(e))))?;
     crate::progress::stage(&format!("Opened PR #{}", pr.num));
     Ok(pr)
 }
@@ -482,7 +553,7 @@ pub mod host {
     use super::*;
 
     /// The host and repo of the checkout's remote (`[pr_body] remote`).
-    fn remote(app: &App, dir: &str) -> std::result::Result<(String, String), String> {
+    pub(super) fn remote(app: &App, dir: &str) -> std::result::Result<(String, String), String> {
         let r = &app.cfg.pr_body.remote;
         let (ok, url, _) = git(dir, &["remote", "get-url", r], 10.0)?;
         if !ok {
