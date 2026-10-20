@@ -540,7 +540,7 @@ impl MainWindow {
         self.refresh(cx);
     }
 
-    /// A `taskboard://task/T12` / `goal/G3` / `session/<id>` link (a clicked notification), or
+    /// A `taskboard://task/T12` / `goal/G3` / `release/R2` / `session/<id>` link (a clicked notification), or
     /// a web-board route after a `#` (`tasks#/goals/G3`, `#/?task=T6`), as `tb` prints them.
     pub fn open_link(&mut self, url: &str, cx: &mut Context<Self>) {
         let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
@@ -578,6 +578,7 @@ impl MainWindow {
                 }
                 self.go(Page::Projects, cx);
             }
+            ("release" | "releases", r) if !r.is_empty() && !ui::releases::projects_on(self.state()).is_empty() => ui::releases::open(self, &r.to_uppercase(), cx),
             ("releases", _) if !ui::releases::projects_on(self.state()).is_empty() => self.go(Page::Releases, cx),
             _ => self.go(Page::Board, cx),
         }
