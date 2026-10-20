@@ -18,6 +18,7 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
+mod attached;
 mod pool;
 mod waves;
 
@@ -34,7 +35,11 @@ pub struct State {
     /// The Notes section is expanded, and the one kind it lists (`None`: every kind).
     notes_open: bool,
     note_filter: Option<&'static str>,
-    // Kept across goals: a request's result by group, and the requests running.
+    /// The kind of file the Attached card narrows to.
+    att_filter: attached::Filter,
+    // Kept across goals: the Attached card's folded waves and tasks (`w2`, `T5`) by goal, a
+    // request's result by group, and the requests running.
+    att_closed: HashMap<String, HashSet<String>>,
     notes: HashMap<String, (String, bool)>,
     busy: HashSet<String>,
 }
@@ -47,6 +52,11 @@ impl State {
         let notes = std::env::var("TASKBOARD_GOAL_NOTES").unwrap_or_default();
         self.notes_open = !notes.is_empty();
         self.note_filter = ["Decision", "Finding", "Reference"].into_iter().find(|k| *k == notes);
+        self.att_filter = attached::Filter::All;
+        // Dev: `TASKBOARD_GOAL_ATT_CLOSED=w1,T5` folds those waves and tasks in Attached (screenshots).
+        if let Ok(keys) = std::env::var("TASKBOARD_GOAL_ATT_CLOSED") {
+            self.att_closed.insert(goal.to_string(), keys.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect());
+        }
     }
 }
 
@@ -980,27 +990,6 @@ fn notes_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) 
     Some(out.child(list))
 }
 
-fn attachments_el(t: &Theme, g: &Value) -> Option<Div> {
-    let list = arr(g, "attachments");
-    if list.is_empty() {
-        return None;
-    }
-    let mut out = div().flex().flex_col().gap(px(6.)).text_size(px(13.));
-    for (ix, a) in list.iter().enumerate() {
-        let title = s(a, "title").to_string();
-        let url = s(a, "url").to_string();
-        let tip = if att_web(a) { url.clone() } else { format!("{title}\n{url}") };
-        let row = if att_has_href(a) {
-            kit::link(t, SharedString::from(format!("goal-att-{ix}")), title).truncate().tooltip(kit::tip(tip)).on_click(move |_, _, cx| open_attachment(&url, cx))
-        } else {
-            div().id(SharedString::from(format!("goal-att-{ix}"))).truncate().child(title).tooltip(kit::tip(url))
-        };
-        let summary = fmt::opt_s(a, "summary").map(|x| div().text_size(px(12.)).text_color(t.muted).truncate().child(x.to_string()));
-        out = out.child(div().flex().flex_col().min_w_0().child(row).children(summary));
-    }
-    Some(side(t, "Attached", Some(list.len().to_string()), out))
-}
-
 fn backlog_el(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> Option<Div> {
     let open = open_issues(g);
     if open.is_empty() {
@@ -1046,7 +1035,7 @@ fn aside(m: &MainWindow, t: &Theme, g: &Value, cx: &mut Context<MainWindow>) -> 
         .overflow_hidden()
         .child(how_runs_el(t, g))
         .children(notes_el(m, t, g, cx))
-        .children(attachments_el(t, g))
+        .children(attached::attachments_el(m, t, g, cx))
         .children(pool::devices_aside(m, t, g, cx))
         .children(pool::bits_aside(t, g))
         .children(backlog_el(m, t, g, cx))

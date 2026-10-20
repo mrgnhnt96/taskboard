@@ -166,6 +166,7 @@ impl Fake {
             eprintln!("taskboard-app: seeding the fake board failed: {}", e.message);
         }
         seed_sessions(&board);
+        seed_attachments(&board, &dir);
         Fake { board, dir }
     }
 }
@@ -190,6 +191,49 @@ impl Backend for Fake {
     fn post(&self, path: &str, body: Value) -> CallResult {
         let q: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
         api::dispatch(&self.board, "POST", path, &q, &body).map_err(|e| CallError { status: e.status, message: e.message })
+    }
+}
+
+/// The sign-in goal's files: its own design and doc, and screenshots, a video and results on its
+/// tasks (the images are drawn into the board's folder so their previews show).
+fn seed_attachments(board: &Board, dir: &std::path::Path) {
+    use taskboardd::board::{OWNER, add_attachment};
+    let shot = |name: &str, tone: [u8; 3]| -> String {
+        let path = dir.join(name);
+        let img = image::RgbImage::from_fn(720, 450, |x, y| {
+            let band = if y < 54 { 0.55 } else if x < 160 { 0.85 } else { 1.0 };
+            image::Rgb(tone.map(|c| (c as f32 * band) as u8))
+        });
+        let _ = img.save(&path);
+        path.to_string_lossy().into_owned()
+    };
+    let task = |title: &str| -> Option<i64> {
+        let row = board.db.q1("SELECT id FROM tasks WHERE title = ?", taskboardd::p![title]).ok()??;
+        row["id"].as_i64()
+    };
+    let Some(goal) = board.db.q1("SELECT id FROM goals WHERE name = 'Faster sign-in'", vec![]).ok().flatten().and_then(|r| r["id"].as_i64()) else {
+        return;
+    };
+    let on_goal: [(&str, &str, &str, &str); 2] = [
+        ("https://claude.ai/artifact/sign-in-concepts", "Sign-in concepts", "design", ""),
+        ("https://example.com/docs/sign-in-budget", "Latency budget", "doc", "Where each of the 900 ms goes."),
+    ];
+    for (url, title, kind, summary) in on_goal {
+        let _ = add_attachment(board, OWNER, url, title, kind, summary, None, Some(goal));
+    }
+    let before = shot("sign-in-before.png", [214, 222, 236]);
+    let after = shot("sign-in-after.png", [206, 232, 220]);
+    let on_tasks = [
+        ("Measure the sign-in path", before.as_str(), "Sign-in before", "evidence", "2.4 s from tap to home."),
+        ("Measure the sign-in path", "https://example.com/traces/sign-in.csv", "Trace timings", "results", ""),
+        ("Batch the session writes", after.as_str(), "Sign-in after", "evidence", "0.8 s with the writes batched."),
+        ("Batch the session writes", "~/Movies/sign-in-walkthrough.mov", "Walkthrough", "evidence", ""),
+        ("Write up the numbers", "https://example.com/docs/sign-in-numbers", "The numbers", "doc", ""),
+    ];
+    for (t, url, title, kind, summary) in on_tasks {
+        if let Some(id) = task(t) {
+            let _ = add_attachment(board, OWNER, url, title, kind, summary, Some(id), None);
+        }
     }
 }
 

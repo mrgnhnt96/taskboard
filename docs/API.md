@@ -249,6 +249,7 @@ A goal with `finished_at` (or all tasks done and no open PRs) shows as finished;
   "backlog": [issue],               // the goal's issues that are NOT dropped, newest first (full issue shape, see GET /backlog/:id, history optional)
   "closed_count": int,              // the goal's dropped ("won't do") issues
   "attachments": [attachment],      // attached to the goal itself
+  "task_attachments": [attachment], // on its tasks, in task order (each has "task")
   "bits": {"list": [bit], "backend": int, "made": int, "waiting": int, "tool": str},
                                     // its bits (linked to it or to a task counted in it); "N of M created" counts backend ones
   "devices": {"needs": [{"tag", "n"}], "needs_text": "2 android", "devices": [device], "lent_here": int, "pool": int, "empty_why": str | null} | null

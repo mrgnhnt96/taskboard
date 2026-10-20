@@ -11,7 +11,8 @@
 //!   daemon's notifications link there.
 //! - `TASKBOARD_DEV=1` — dev mode even inside a bundle: no install / login item. See `install.rs`.
 //! - `TASKBOARD_PICK=B2,B3` — check these issues on the Backlog page.
-//! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit.
+//! - `TASKBOARD_SNAPSHOT=out.png` (feature `snapshot`) — draw the window offscreen, save, quit;
+//!   `TASKBOARD_SNAPSHOT_MOUSE=x,y` moves the mouse there first (hover cards and tooltips).
 mod app;
 mod backend;
 mod fmt;
@@ -190,6 +191,27 @@ fn snapshot(any: AnyWindowHandle, cx: &mut App) {
     let delay: u64 = std::env::var("TASKBOARD_SNAPSHOT_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
     cx.spawn(async move |cx| {
         cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
+        let mouse = std::env::var("TASKBOARD_SNAPSHOT_MOUSE").ok().and_then(|v| {
+            let (x, y) = v.split_once(',')?;
+            Some(point(px(x.trim().parse().ok()?), px(y.trim().parse().ok()?)))
+        });
+        if let Some(position) = mouse {
+            for _ in 0..2 {
+                let _ = cx.update_window(any, |_, window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
+                });
+                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+            }
+            for _ in 0..5 {
+                cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+                let _ = cx.update_window(any, |_, window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                });
+            }
+        }
         for _ in 0..2 {
             let _ = cx.update_window(any, |_, window, cx| {
                 window.refresh();
