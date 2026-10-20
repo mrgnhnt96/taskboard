@@ -142,3 +142,29 @@ fn moving_a_task_into_a_running_goal_queues_it() {
     assert_eq!(d["why"], format!("planned: G{idle} isn't running"));
     assert_eq!(b.status(t[0]), "planned");
 }
+
+#[test]
+fn one_task_started_on_its_own_doesnt_make_the_goal_running() {
+    let b = new_board();
+    let (g, t) = b.goal("Login", false);
+    board::update_task(&b.app, t[0], fields!["status" => "working"]).unwrap();
+    let r = b.report("tb.propose", json!({"goal": format!("G{g}"), "tasks": ["Late::found later"]}));
+    assert_eq!(r["why"], format!("planned: G{g} isn't running"), "the rest of the goal is still planned, so it wasn't run");
+    assert_eq!(b.status(ids(&r)[0]), "planned");
+}
+
+#[test]
+fn a_task_waiting_for_a_start_moved_into_a_running_goal_is_picked_up_by_the_run() {
+    let b = new_board();
+    let (g, _) = b.goal("Login", true);
+    let lone = |title: &str| ids(&b.report("tb.new_task", json!({"title": title, "project": "webapp"})))[0];
+
+    let t = lone("Loose end");
+    assert_eq!((b.status(t), b.task(t).st("pickup")), ("queued".to_string(), "manual".to_string()));
+    b.post(&format!("tasks/T{t}"), json!({"goal_id": format!("G{g}")}));
+    assert_eq!((b.status(t), b.task(t).st("pickup")), ("queued".to_string(), "queue".to_string()));
+
+    let t = lone("Hands on");
+    b.post(&format!("tasks/T{t}"), json!({"goal_id": format!("G{g}"), "pickup": "manual"}));
+    assert_eq!(b.task(t).st("pickup"), "manual", "a pickup asked for with the move is kept");
+}

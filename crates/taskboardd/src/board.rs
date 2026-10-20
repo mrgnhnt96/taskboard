@@ -78,13 +78,19 @@ pub fn miss_settled(app: &App, issue: &Row) -> Result<()> {
     }
 }
 
-/// The goal was run and isn't through yet: one of its own tasks is queued, working or needs the owner.
+/// The goal was run and isn't through yet: one of its own tasks is queued, working or needs the owner, and
+/// none is still planned (a Run queues them all; one task Started on its own leaves the rest planned).
 pub fn goal_running(app: &App, goal_id: i64) -> Result<bool> {
-    Ok(app.db.count(
-        "SELECT COUNT(*) FROM tasks t JOIN goals g ON g.id = t.goal_id WHERE t.goal_id = ? AND COALESCE(g.archived, 0) = 0 \
-         AND t.status IN ('queued', 'working', 'needs')",
-        p![goal_id],
-    )? > 0)
+    let n = |statuses: &str| {
+        app.db.count(
+            &format!(
+                "SELECT COUNT(*) FROM tasks t JOIN goals g ON g.id = t.goal_id WHERE t.goal_id = ? AND COALESCE(g.archived, 0) = 0 \
+                 AND t.status IN ({statuses})"
+            ),
+            p![goal_id],
+        )
+    };
+    Ok(n("'queued', 'working', 'needs'")? > 0 && n("'planned'")? == 0)
 }
 
 /// The status a task joining the goal comes in with, and why, for the command's output: queued while the
