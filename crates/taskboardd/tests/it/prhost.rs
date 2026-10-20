@@ -848,3 +848,69 @@ fn merging_moves_the_prs_stacked_on_it_onto_its_base_first() {
     let said: Vec<String> = b.app.db.q("SELECT text FROM events WHERE task_id = ? ORDER BY id", taskboardd::p![child]).unwrap().iter().map(|r| r.st("text")).collect();
     assert!(said.iter().any(|l| l.contains("now goes into main")), "{said:?}");
 }
+
+const MERGE_STEPS: &str = r#"
+[[steps]]
+name = "Staging check"
+before = "merge"
+prompt = "Check it on staging."
+skippable = true
+
+[[steps]]
+name = "Release note"
+before = "merge"
+prompt = "Write the release note."
+default_branch_only = true
+"#;
+
+fn step_report(b: &Board, id: i64, extra: Value) -> Result<Value, (u16, String)> {
+    let mut body = json!({"event": "tb.step", "session": "s1", "claude_session": "c-s1", "cwd": "", "git": {}, "task": format!("T{id}")});
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    reports::handle(&b.app, body, false).map_err(|e| (e.status, e.message))
+}
+
+#[test]
+fn a_merge_step_holds_only_the_merge_until_it_passes_on_the_head() {
+    // #477: tb submit and the review go on; the merge waits for the steps on the PR's head.
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    std::fs::write(&b.app.cfg.config_path, MERGE_STEPS).unwrap();
+    let id = b.pr_task(BB);
+    assert_eq!(b.task(id).st("status"), "done", "merge steps don't hold tb submit");
+    let mut rec = green();
+    rec.head = "abc1234".into();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "steps");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("its merge steps haven't passed on its head: “Staging check”, “Release note”"), "{e}");
+    let bar = taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap();
+    assert_eq!(bar["merge_steps"].as_array().unwrap().iter().map(|s| s["state"].as_str().unwrap()).collect::<Vec<_>>(), vec!["todo", "todo"]);
+
+    // Release note isn't skippable; a skip needs a reason.
+    let (code, why) = step_report(&b, id, json!({"name": "Release note", "skip": true, "why": "none", "head": "abc1234"})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.contains("isn't skippable"), "{why}");
+    let (code, _) = step_report(&b, id, json!({"name": "Staging check", "skip": true, "why": "", "head": "abc1234"})).unwrap_err();
+    assert_eq!(code, 400);
+
+    step_report(&b, id, json!({"name": "Staging check", "skip": true, "why": "docs only", "head": "abc1234"})).unwrap();
+    step_report(&b, id, json!({"name": "Release note", "head": "abc1234"})).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    let bar = taskboardd::prbar::bar(&b.app, &b.task(id)).unwrap();
+    assert_eq!(bar["merge_steps"][0]["state"], "skipped");
+    assert_eq!(bar["merge_steps"][0]["why"], "docs only");
+    assert_eq!(bar["merge_steps"][1]["state"], "passed");
+
+    // A new push needs them again: they count per head.
+    h.rec.lock().head = "def5678".into();
+    poll(&b);
+    assert!(b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err().contains("merge steps"));
+    step_report(&b, id, json!({"name": "Staging check", "skip": true, "why": "docs only", "head": "def5678"})).unwrap();
+    step_report(&b, id, json!({"name": "Release note", "head": "def5678"})).unwrap();
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}

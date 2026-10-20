@@ -39,6 +39,8 @@ pub enum Before {
     Pr,
     /// Before the agent runs `tb submit`.
     Done,
+    /// Before the PR merges: it holds only `tb pr merge` (and the board's merge visit), on the PR's head.
+    Merge,
 }
 
 impl Before {
@@ -46,6 +48,7 @@ impl Before {
         match self {
             Before::Pr => "pr",
             Before::Done => "done",
+            Before::Merge => "merge",
         }
     }
 }
@@ -91,6 +94,18 @@ pub struct Step {
     /// empty, so an older `tb` still reads them.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publish: String,
+    /// The agent may pass the step without doing it, with a reason (`tb step skip "<name>" --why "…"`):
+    /// the skip counts as a pass on the head it was made on. Left out of listings when off, as `publish`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skippable: bool,
+    /// The step is only for PRs into the repo's default branch: a PR into another branch (a goal's
+    /// head-merge branch) goes without it. Left out of listings when off, as `publish`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub default_branch_only: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Step {
@@ -102,6 +117,18 @@ impl Step {
         } else {
             "agent"
         }
+    }
+
+    /// A pass counts only on the commit it was made on: a `per_head` step's, and a merge step's (it's
+    /// judged on the PR's head as it merges).
+    pub fn counts_per_head(&self) -> bool {
+        self.per_head || self.before == Before::Merge
+    }
+
+    /// The step holds a PR into `base`: every PR, else (`default_branch_only`) only one into the repo's
+    /// default branch (`default`, when git knows it).
+    pub fn applies_to_base(&self, base: Option<&str>, default: Option<&str>) -> bool {
+        !self.default_branch_only || matches!((base, default), (Some(b), Some(d)) if b == d) || base.is_none() || default.is_none()
     }
 
     pub fn timeout_secs(&self) -> u64 {
@@ -160,11 +187,16 @@ impl Step {
     /// How the agent gets past the step.
     pub fn how(&self, tb: &str) -> String {
         let n = &self.name;
-        match self.kind() {
+        let how = match self.kind() {
             "owner" => format!("{tb} step ask \"{n}\", then end your turn; the board brings you back once it's done"),
             "script" => format!("{tb} step run \"{n}\"; fix what it reports and run it again"),
             _ if !self.check.is_empty() => format!("{tb} step done \"{n}\" --note \"…\" (it runs the check first)"),
             _ => format!("{tb} step done \"{n}\" --note \"<what came of it>\""),
+        };
+        if self.skippable {
+            format!("{how}; or, when it doesn't apply, {tb} step skip \"{n}\" --why \"<reason>\"")
+        } else {
+            how
         }
     }
 }
@@ -585,7 +617,7 @@ pub fn same_head(a: &str, b: &str) -> bool {
 pub fn passed_on(step: &Step, rounds: &[Round], head: Option<&str>) -> bool {
     let k = key(&step.name);
     rounds.iter().filter(|r| r.key == k && r.passed).any(|r| {
-        if !step.per_head {
+        if !step.counts_per_head() {
             return true;
         }
         match (head, r.head.as_deref()) {
@@ -728,6 +760,53 @@ pub fn missing_at(app: &App, t: &Row, before: &[Before], head: Option<&str>) -> 
     Ok(for_task(app, t).into_iter().filter(|s| before.contains(&s.before) && !passed_on(s, &rounds, known.as_deref())).collect())
 }
 
+/// The task's merge steps a PR into `base` waits on: those that haven't passed on its head `head`. A
+/// `default_branch_only` step holds only a PR into the repo's default branch.
+pub fn merge_missing(app: &App, t: &Row, head: Option<&str>, base: Option<&str>) -> Result<Vec<Step>> {
+    let all: Vec<Step> = for_task(app, t).into_iter().filter(|s| s.before == Before::Merge).collect();
+    if all.is_empty() {
+        return Ok(all);
+    }
+    let rounds = rounds(app, t.id())?;
+    let default = if all.iter().any(|s| s.default_branch_only) { default_base(&t.st("repo_path")) } else { None };
+    let base = base.filter(|b| !b.is_empty());
+    let head = head.filter(|h| !h.is_empty());
+    Ok(all.into_iter().filter(|s| s.applies_to_base(base, default.as_deref()) && !passed_on(s, &rounds, head)).collect())
+}
+
+/// The PR bar's merge steps (`pr.bar.merge_steps`): each one that holds a PR into `base`, and whether it
+/// passed (or was skipped, with why) on the PR's head `head`.
+pub fn merge_cards(app: &App, t: &Row, head: Option<&str>, base: Option<&str>) -> Result<Vec<Value>> {
+    let all: Vec<Step> = for_task(app, t).into_iter().filter(|s| s.before == Before::Merge).collect();
+    if all.is_empty() {
+        return Ok(vec![]);
+    }
+    let rounds = rounds(app, t.id())?;
+    let default = if all.iter().any(|s| s.default_branch_only) { default_base(&t.st("repo_path")) } else { None };
+    let base = base.filter(|b| !b.is_empty());
+    let head = head.filter(|h| !h.is_empty());
+    Ok(all
+        .into_iter()
+        .filter(|s| s.applies_to_base(base, default.as_deref()))
+        .map(|s| {
+            let k = key(&s.name);
+            let on_head = |r: &&Round| match (head, r.head.as_deref()) {
+                (Some(h), Some(rh)) => same_head(h, rh),
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            let last = rounds.iter().rev().filter(|r| r.key == k && r.passed).find(on_head);
+            let why = last.and_then(skipped_why);
+            let state = match (last, &why) {
+                (None, _) => "todo",
+                (Some(_), Some(_)) => "skipped",
+                (Some(_), None) => "passed",
+            };
+            json!({"name": s.name, "state": state, "why": why})
+        })
+        .collect())
+}
+
 /// The task's step by name (any case), or a 400 naming the ones it has.
 pub fn find(app: &App, t: &Row, name: &str) -> Result<Step> {
     let all = for_task(app, t);
@@ -793,7 +872,7 @@ fn passed_rounds(app: &App, t: &Row, all: &[Round], head: Option<&str>) -> Resul
     for st in for_task(app, t) {
         let k = key(&st.name);
         let on_head = |r: &&Round| match (head, r.head.as_deref()) {
-            _ if !st.per_head => true,
+            _ if !st.counts_per_head() => true,
             (Some(h), Some(rh)) => same_head(h, rh),
             (Some(_), None) => false,
             (None, _) => true,
@@ -849,7 +928,7 @@ pub fn handoff_block(app: &App, t: &Row, tb: &str, ships_prs: bool) -> String {
     let v = vars_for(app, t);
     let all: Vec<Step> = for_task(app, t).iter().map(|s| s.filled(&v)).collect();
     let mut s = String::new();
-    for (before, when) in [(Before::Pr, "Before you open the PR"), (Before::Done, "Before you run tb submit")] {
+    for (before, when) in [(Before::Pr, "Before you open the PR"), (Before::Done, "Before you run tb submit"), (Before::Merge, "Before the PR merges")] {
         let these: Vec<&Step> = all.iter().filter(|s| s.before == before && (ships_prs || before == Before::Done)).collect();
         if these.is_empty() {
             continue;
@@ -978,6 +1057,9 @@ pub fn findings(round: &Round, triage: &[Value]) -> Vec<Value> {
 
 /// The headline for a round: what its result says, else what came of it.
 pub fn headline(round: &Round, findings: &[Value]) -> String {
+    if let Some(why) = skipped_why(round) {
+        return if why.is_empty() { "Skipped".into() } else { one_line(&format!("Skipped: {why}"), 200) };
+    }
     if let Some(h) = round.data["result"]["headline"].as_str().map(str::trim).filter(|h| !h.is_empty()) {
         return one_line(h, 200);
     }
@@ -999,6 +1081,11 @@ pub fn headline(round: &Round, findings: &[Value]) -> String {
     } else {
         format!("{}, all answered", plural(findings.len() as i64, "finding"))
     }
+}
+
+/// Why the agent skipped the step (`tb step skip`), when the round is a skip.
+pub fn skipped_why(round: &Round) -> Option<String> {
+    (round.data["skipped"] == true).then(|| round.data["why"].as_str().or(round.data["note"].as_str()).unwrap_or("").trim().to_string())
 }
 
 /// What the app shows for each of the task's steps that has run: its latest round's headline and
@@ -1039,11 +1126,12 @@ fn round_card(st: &Step, round: &Round, all: &[Round], triage: &[Value], head: O
     let k = key(&st.name);
     let mine: Vec<Value> = triage.iter().filter(|x| x["name"].as_str().map(key).as_deref() == Some(k.as_str())).cloned().collect();
     let fs = findings(round, &mine);
-    let stale = st.per_head && matches!((head, &round.head), (Some(h), Some(rh)) if !same_head(h, rh));
+    let stale = st.counts_per_head() && matches!((head, &round.head), (Some(h), Some(rh)) if !same_head(h, rh));
     json!({
         "name": st.name, "bar": if st.bar.is_empty() { Value::Null } else { json!(st.bar) },
         "at": round.at, "head": round.head, "passed": round.passed, "stale": stale,
         "verdict": round.data["result"]["verdict"], "headline": headline(round, &fs),
+        "skipped": skipped_why(round).is_some(), "why": skipped_why(round),
         "open": fs.iter().filter(|f| finding_open(f)).count(), "findings": fs,
         "rounds": all.iter().filter(|r| r.key == k).count(),
     })
@@ -1109,6 +1197,28 @@ mod tests {
         assert_eq!(s[0].timeout_secs(), DEFAULT_TIMEOUT_SECS);
         assert!(hooks::matches(&s[0].projects, "work-app"));
         assert!(!hooks::matches(&s[0].projects, "home"));
+    }
+
+    #[test]
+    fn a_merge_step_counts_per_head_and_may_hold_only_the_default_branch() {
+        let s = parse(
+            "[[steps]]\nname = \"Staging\"\nbefore = \"merge\"\nprompt = \"x\"\nskippable = true\ndefault_branch_only = true\n\
+             [[steps]]\nname = \"Notes\"\nprompt = \"y\"\n",
+        )
+        .unwrap();
+        assert_eq!(s[0].before, Before::Merge);
+        assert!(s[0].counts_per_head() && !s[1].counts_per_head());
+        assert!(s[0].applies_to_base(Some("main"), Some("main")));
+        assert!(!s[0].applies_to_base(Some("goal/g4"), Some("main")), "a fix PR into a goal's branch merges without it");
+        assert!(s[0].applies_to_base(Some("goal/g4"), None), "an unknown default holds it");
+        assert!(s[1].applies_to_base(Some("goal/g4"), Some("main")));
+        assert!(s[0].how("tb").ends_with("; or, when it doesn't apply, tb step skip \"Staging\" --why \"<reason>\""), "{}", s[0].how("tb"));
+        assert!(!s[1].how("tb").contains("skip"));
+        let round = |data: Value| Round { key: "staging".into(), passed: true, head: Some("abc1234".into()), at: String::new(), data };
+        assert_eq!(skipped_why(&round(json!({"skipped": true, "why": "docs only"}))).as_deref(), Some("docs only"));
+        assert_eq!(skipped_why(&round(json!({"note": "ran it"}))), None);
+        assert!(passed_on(&s[0], &[round(json!({}))], Some("abc1234")));
+        assert!(!passed_on(&s[0], &[round(json!({}))], Some("def5678")), "a new push needs it again");
     }
 
     #[test]

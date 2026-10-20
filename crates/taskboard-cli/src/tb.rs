@@ -1083,6 +1083,14 @@ enum StepCmd {
         #[command(flatten)]
         t: TaskArg,
     },
+    /// Pass a skippable step without doing it, saying why: tb step skip "Verify numbers" --why "no number to prove"
+    Skip {
+        name: String,
+        #[arg(long)]
+        why: String,
+        #[command(flatten)]
+        t: TaskArg,
+    },
     /// A step can't pass: the task waits for the owner's answer, so end your turn after
     Fail {
         name: String,
@@ -4593,6 +4601,7 @@ fn step_cmd(c: &Ctx, action: StepCmd) -> Result<i32, String> {
             }
             s
         }),
+        StepCmd::Skip { name, why, t } => skip_step(c, &name, &why, t),
         StepCmd::Fail { name, why, t } => c.run_report("tb.step_fail", json!({"name": name, "why": why}), t.task, true, |v| {
             format!("Told {} that {} can't pass; the task waits for their answer. End your turn now.", c.cfg.owner, v["step"].as_str().unwrap_or("the step"))
         }),
@@ -4637,6 +4646,20 @@ fn done_step(c: &Ctx, name: &str, note: Option<String>, skip: bool, t: TaskArg, 
         f["output"] = json!(output);
         f["result"] = json!(result);
     }
+    step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
+}
+
+/// `tb step skip`: passes a skippable step on the aimed head (else this checkout's) without doing it.
+fn skip_step(c: &Ctx, name: &str, why: &str, t: TaskArg) -> Result<i32, String> {
+    let (v, step) = find_step(c, t.task.clone(), name)?;
+    if !step.skippable {
+        return Err(format!("“{}” isn't skippable: {}.", step.name, step.how("tb")));
+    }
+    if why.trim().is_empty() {
+        return Err(format!("Say why “{}” doesn't apply: tb step skip \"{}\" --why \"<reason>\".", step.name, step.name));
+    }
+    let head = aim(c, &v, &Aim::default()).ok().and_then(|at| at.head).or_else(|| local_head(&c.cwd));
+    let f = json!({"name": step.name, "via": "skip", "skip": true, "why": why, "head": head});
     step_report(c, f, t.task.or_else(|| v["task"].as_str().map(|s| s.to_string())))
 }
 
@@ -4716,7 +4739,7 @@ fn has_pr(v: &Value) -> bool {
 fn publish_round(v: &Value, step: &Step, head: Option<&str>) -> Option<Value> {
     let r = v["passed_rounds"].as_object()?.iter().find(|(k, _)| steps::key(k) == steps::key(&step.name))?.1;
     let on_head = match (head, r["head"].as_str()) {
-        _ if !step.per_head => true,
+        _ if !step.counts_per_head() => true,
         (Some(h), Some(rh)) => steps::same_head(h, rh),
         (Some(_), None) => false,
         (None, _) => true,
@@ -4728,6 +4751,7 @@ fn publish_round(v: &Value, step: &Step, head: Option<&str>) -> Option<Value> {
 fn step_report(c: &Ctx, f: Value, task: Option<String>) -> Result<i32, String> {
     let task = task.map(|t| task_ref(&t)).transpose()?;
     let passed = f["ok"] != false;
+    let did = if f["skip"] == true { "skipped" } else { "done" };
     match c.report("tb.step", f, task.as_deref(), TB_TIMEOUT)? {
         None => out(SAVED),
         Some(v) if !v["task"].is_string() => out(NO_TASK),
@@ -4738,7 +4762,7 @@ fn step_report(c: &Ctx, f: Value, task: Option<String>) -> Result<i32, String> {
                 out(&format!("{step} didn't pass (output above). Fix what it reports and try again, or tb step fail \"{step}\" --why \"…\" if it can't pass."));
                 return Ok(1);
             }
-            out(&if left.is_empty() { format!("{step} is done. No steps left.") } else { format!("{step} is done. Still to do: {}.", left.join(", ")) });
+            out(&if left.is_empty() { format!("{step} is {did}. No steps left.") } else { format!("{step} is {did}. Still to do: {}.", left.join(", ")) });
         }
     }
     Ok(if passed { 0 } else { 1 })
@@ -4773,7 +4797,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             let at = aim(c, &v, &Aim::default()).unwrap_or(Aimed { dir: None, head: None, branch: None, pinned: false });
             let vars = step_vars(c, &v, "", &at);
             for (st, done) in all {
-                let when = if st.before == steps::Before::Done { "before tb submit" } else { "before the PR" };
+                let when = match st.before {
+                    steps::Before::Done => "before tb submit",
+                    steps::Before::Merge => "before the merge",
+                    steps::Before::Pr => "before the PR",
+                };
                 let st = st.filled(&vars);
                 let gap = st.gap_text().filter(|_| st.gap_secs().is_some()).map(|g| format!("; {g}")).unwrap_or_default();
                 out(&format!("[{}] {} ({when}{gap}): {}. {}", if done { "done" } else { "to do" }, st.name, st.what(), st.how("tb")));
@@ -7334,6 +7362,13 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "step", "aim", "--clear", "--branch", "x"]).is_err());
         assert!(Cli::try_parse_from(["tb", "step", "run", "Review", "--branch", "x", "--worktree", "/tmp"]).is_ok(), "a detached checkout takes its branch with it");
+    }
+
+    #[test]
+    fn step_skip_needs_a_reason() {
+        assert!(Cli::try_parse_from(["tb", "step", "skip", "Staging", "--why", "docs only"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "skip", "Staging", "--why", "docs only", "--task", "T3"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "step", "skip", "Staging"]).is_err());
     }
 
     #[test]

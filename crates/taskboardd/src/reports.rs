@@ -2043,21 +2043,35 @@ fn on_step(r: &mut Report) -> Result<Value> {
     drop_stale_pin(r, &t)?;
     let t = board::get_task(app, t.id())?;
     let tb = board::tb_cmd(app);
-    if step.owner && from_agent(r, &t) {
+    // `tb step skip`: a skippable step passes on this head without being done, with the reason on the task.
+    let skip = as_bool(r.body.get("skip"), false);
+    let why = one_line(&r.b("why"), 2000);
+    if skip && !step.skippable {
+        return err(409, format!("“{}” isn't skippable: {}.", step.name, step.how(&tb)));
+    }
+    if skip && why.is_empty() {
+        return err(400, format!("Say why “{}” doesn't apply: {tb} step skip \"{}\" --why \"<reason>\".", step.name, step.name));
+    }
+    if step.owner && from_agent(r, &t) && !skip {
         return err(409, format!("“{}” is {} step: {}.", step.name, app.cfg.owners(), step.how(&tb)));
     }
-    if !step.run.is_empty() && r.b("via") != "run" {
+    if !step.run.is_empty() && r.b("via") != "run" && !skip {
         return err(400, format!("“{}” is a script: {}.", step.name, step.how(&tb)));
     }
-    let passed = as_bool(r.body.get("ok"), true);
+    let passed = skip || as_bool(r.body.get("ok"), true);
     let note = one_line(&r.b("note"), 2000);
     let output = clip(r.b("output").trim(), 4000);
     let text = match (passed, note.is_empty()) {
+        _ if skip => format!("Step skipped: {}: {why}", step.name),
         (true, true) => format!("Step done: {}", step.name),
         (true, false) => format!("Step done: {}: {note}", step.name),
         (false, _) => format!("Step didn't pass: {}{}", step.name, if note.is_empty() { String::new() } else { format!(": {note}") }),
     };
     let mut data = json!({"name": step.name, "before": step.before.as_str(), "ok": passed, "note": note, "output": output});
+    if skip {
+        data["skipped"] = json!(true);
+        data["why"] = json!(why);
+    }
     let head = { let h = r.b("head"); if h.is_empty() { r.git.st("sha") } else { h } };
     if !head.is_empty() {
         data["head"] = json!(head);
@@ -2962,6 +2976,9 @@ fn session_history(r: &Report, out: &Value) -> Option<(&'static str, String)> {
         "tb.withdraw" => Some(("ask", format!("Withdrew its question: {}", r.b("why")))),
         "tb.done" => Some(("done", format!("Finished {}: {}", out["task"].as_str().unwrap_or("its task"), r.b("summary")))),
         "tb.step" if out["passed"] == false => out["step"].as_str().map(|s| ("step", format!("The step {s} didn't pass"))),
+        "tb.step" if as_bool(r.body.get("skip"), false) => {
+            out["step"].as_str().map(|s| ("step", format!("Skipped the step {s}: {}", r.b("why"))))
+        }
         "tb.step" => out["step"].as_str().map(|s| ("step", format!("Did the step {s}"))),
         "tb.step_ask" => out["step"].as_str().map(|s| ("ask", format!("Asked you to do the step {s}"))),
         "tb.step_fail" => out["step"].as_str().map(|s| ("ask", format!("The step {s} can't pass: {}", r.b("why")))),

@@ -201,7 +201,7 @@ A hook runs a command on the board's side. To have work done on every task in a 
 [[steps]]                        # agent work, with a check that decides whether it passed
 name = "Author-side review"
 projects = "work-app|work-api"   # a regex on the whole project name, as a hook's matcher; empty for every project
-before = "pr"                    # "pr" (the default): before the PR opens. "done": before tb submit
+before = "pr"                    # "pr" (the default): before the PR opens. "done": before tb submit. "merge": before it merges
 prompt = "Run /author-review on {branch} against {base}, and fix what it finds."
 check = "test -f .review/{branch}.passed"
 
@@ -295,6 +295,14 @@ prompt = "Sign off the screens this task changes."
   `create_pull_request`) while a `before = "pr"` step hasn't passed, and the agent reads what's left and how to do
   each. `tb submit` is refused while a `before = "done"` step hasn't passed, and also a `before = "pr"` step when the
   task has a PR. Done in the app isn't held: that's your call.
+- **Merge steps.** A `before = "merge"` step holds only the merge: the PR opens, reviewers are asked and `tb submit`
+  goes through, but once the PR is approved and green it waits on its steps ("Waits on steps") instead of the merge,
+  and `tb pr merge` is refused until each passed on the PR's head (every push needs them again). The board brings
+  the agent back to do them, and alerts you once per head when it can't, or the visit ends with one not passed.
+  `default_branch_only = true` holds only a PR into the repo's default branch (a fix PR into a goal's branch
+  merges without it). `skippable = true` lets the agent pass it on that head with `tb step skip "<name>" --why
+  "<reason>"`: the reason goes on the task and shows in the PR bar. A step that isn't skippable, or a skip with no
+  reason, is refused.
 - A step passes once per task, unless it has `per_head = true` (below). Steps are read fresh, like hooks.json. A step that can't be done (no name; none of
   `prompt`, `run` or `owner`; an unknown key or `before`; a second one with the same name) is left out, and the
   others still apply. The board raises an alert naming it and why (key `steps:<name>`, also in `server.log`),
