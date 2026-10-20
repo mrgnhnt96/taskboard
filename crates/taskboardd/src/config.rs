@@ -16,6 +16,7 @@ pub struct FileConfig {
     pub data: Option<String>,
     pub page_url: Option<String>,
     pub midna: Option<String>,
+    pub midna_socket: Option<String>,
     pub midna_bundle: Option<String>,
     pub open_midna: Option<bool>,
     pub notify: Option<bool>,
@@ -686,6 +687,9 @@ pub struct Config {
     pub data: PathBuf,
     pub page_url: String,
     pub midna: PathBuf,
+    /// Midna's JSON-RPC socket, for calls Midna only takes from a trusted process (it checks the
+    /// socket's peer, so they can't go through its CLI).
+    pub midna_socket: PathBuf,
     pub midna_bundle: String,
     pub open_midna: bool,
     pub notify: bool,
@@ -853,6 +857,12 @@ impl Config {
                 .unwrap_or_else(|| data.join("statusline")),
             data,
             midna: expand_home(&env("TASKBOARD_MIDNA").or(f.midna.clone()).unwrap_or_else(|| "~/.local/bin/midna".into())),
+            midna_socket: env("TASKBOARD_MIDNA_SOCKET")
+                .or(f.midna_socket.clone())
+                .or_else(|| env("MIDNA_SOCKET"))
+                .or_else(|| env("MIDNA_HOME").map(|h| format!("{h}/midnad.sock")))
+                .map(|p| expand_home(&p))
+                .unwrap_or_else(|| expand_home("~/Library/Application Support/com.mrgnhnt.midna/midnad.sock")),
             midna_bundle: f.midna_bundle.clone().unwrap_or_else(|| "com.mrgnhnt.midna".into()),
             open_midna: f.open_midna.unwrap_or(true),
             notify: f.notify.unwrap_or(true),
@@ -916,6 +926,7 @@ impl Config {
         c.open_midna = false;
         c.notify = false;
         c.midna = data.join("no-midna");
+        c.midna_socket = data.join("no-midna.sock");
         c.questions.screen = false;
         c.backlog.ai = false;
         c.pr.watch = false;

@@ -117,6 +117,55 @@ pub fn call_exe(exe: &Path, method: &str, params: &Value, timeout: f64) -> MResu
     }
 }
 
+/// Why Midna's socket turned a call down: its JSON-RPC error code (`midna_proto::error`) and message.
+#[derive(Debug)]
+pub enum RpcError {
+    /// Nothing listens on the socket (Midna isn't running).
+    Down(String),
+    Refused { code: i64, message: String },
+}
+
+pub const RPC_UNKNOWN_METHOD: i64 = -32601;
+pub const RPC_HUMAN_ONLY: i64 = 2;
+pub const RPC_NOT_FOUND: i64 = 3;
+pub const RPC_CONFLICT: i64 = 4;
+
+/// Calls Midna over its JSON-RPC socket (newline-delimited JSON-RPC 2.0), as this process. Midna checks
+/// a trusted client (`agents.trusted_clients`) on the socket's peer, so a call that needs that trust
+/// can't go through the CLI.
+pub fn rpc(sock: &Path, method: &str, params: &Value, timeout: f64) -> std::result::Result<Value, RpcError> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut s = std::os::unix::net::UnixStream::connect(sock).map_err(|e| RpcError::Down(format!("Midna isn't running ({}: {e})", sock.display())))?;
+    let t = Some(Duration::from_secs_f64(timeout));
+    let refused = |m: String| RpcError::Refused { code: 0, message: m };
+    let _ = s.set_read_timeout(t);
+    let _ = s.set_write_timeout(t);
+    let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    s.write_all(format!("{req}\n").as_bytes()).map_err(|e| refused(format!("Couldn't send {method} to Midna: {e}")))?;
+    let mut lines = BufReader::new(s);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match lines.read_line(&mut line) {
+            Ok(0) => return Err(refused(format!("Midna closed the connection before answering {method}"))),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                return Err(refused(format!("Midna didn't answer {method} within {} seconds", timeout as i64)));
+            }
+            Err(e) => return Err(refused(format!("Couldn't read Midna's answer to {method}: {e}"))),
+            Ok(_) => {}
+        }
+        // Notifications (no id) and anything else share the connection; only our id answers.
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
+        if v["id"] != json!(1) {
+            continue;
+        }
+        if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
+            return Err(RpcError::Refused { code: e["code"].as_i64().unwrap_or(0), message: e["message"].as_str().unwrap_or("Midna refused").to_string() });
+        }
+        return Ok(v["result"].clone());
+    }
+}
+
 /// The notification kind the board's notifications go as (their `category`).
 pub const NOTIFY_KIND: &str = "board";
 

@@ -3,8 +3,8 @@
 //! each with the one signal it needs, under today's numbers and a project switch.
 //!
 //! What each part shows is worked out by the pure `*_vm` functions; the render code only lays it
-//! out. The page is read-only: an answer, a signal (Restart, Start, Open PR, Continue, Open
-//! terminal) or a dismiss is all it sends. An item opens in place; its title links to its page.
+//! out. The page is read-only: an answer, a picker's choices (pressed through Midna), a signal
+//! (Restart, Start, Open PR, Continue, Open terminal) or a dismiss is all it sends. An item opens in place; its title links to its page.
 use crate::app::{MainWindow, Page};
 use crate::fmt::{self, arr, b, i, obj, opt_s, s};
 use crate::theme::Theme;
@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{Value, json};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const PAGE_X: f32 = 36.;
 const PROJECT_FILTER: &str = "home-project";
@@ -23,6 +23,8 @@ const PROJECT_FILTER: &str = "home-project";
 thread_local! {
     /// Items opened or shut against their default (a question starts open, the rest shut).
     static FLIPPED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// A picker's choices so far by task ref, (question, option), until Send.
+    static PICKED: RefCell<HashMap<String, Vec<(usize, usize)>>> = RefCell::new(HashMap::new());
 }
 
 // ================================================================== view models
@@ -111,7 +113,7 @@ pub struct Ask {
     pub help: Vec<String>,
     /// What a task waiting on your answer asks (its card's `ask`), question by question.
     pub asks: Vec<AskQuestion>,
-    /// The asks are Claude's picker, answered in its terminal; otherwise each option answers in a click.
+    /// The asks are Claude's picker, pressed through Midna; otherwise each option answers in a click.
     pub picker: bool,
 }
 
@@ -121,6 +123,8 @@ pub struct AskQuestion {
     pub question: String,
     /// (label, what it means)
     pub options: Vec<(String, String)>,
+    /// A picker question that takes several options.
+    pub multi: bool,
 }
 
 /// A card's `ask` (`tb question --option`, or Claude's picker): its questions and options.
@@ -131,7 +135,8 @@ fn asks_of(card: &Value) -> (Vec<AskQuestion>, bool) {
         .iter()
         .map(|q| AskQuestion {
             question: if qs.len() > 1 { s(q, "question").to_string() } else { String::new() },
-            options: arr(q, "options").iter().map(|o| (s(o, "label").to_string(), s(o, "description").to_string())).filter(|(l, _)| !l.is_empty()).collect(),
+            options: arr(q, "options").iter().map(|o| (s(o, "label").to_string(), s(o, "description").to_string())).collect(),
+            multi: b(q, "multi"),
         })
         .collect();
     (asks, b(ask, "picker"))
@@ -531,6 +536,52 @@ fn answer(m: &mut MainWindow, r: &str, text: &str, cx: &mut Context<MainWindow>)
     });
 }
 
+/// A picker with one single-select question answers in a click; otherwise its options toggle
+/// and Send answers.
+fn one_click(asks: &[AskQuestion]) -> bool {
+    asks.len() == 1 && !asks[0].multi
+}
+
+/// `picked` with option `o` of question `q` toggled; a single-select question keeps one choice.
+fn toggle_pick(asks: &[AskQuestion], picked: &[(usize, usize)], q: usize, o: usize) -> Vec<(usize, usize)> {
+    let mut out = picked.to_vec();
+    if let Some(i) = out.iter().position(|&p| p == (q, o)) {
+        out.remove(i);
+        return out;
+    }
+    if !asks.get(q).is_some_and(|x| x.multi) {
+        out.retain(|&(x, _)| x != q);
+    }
+    out.push((q, o));
+    out
+}
+
+/// The pick endpoint's answers, question by question, once every question has a choice.
+fn pick_answers(asks: &[AskQuestion], picked: &[(usize, usize)]) -> Option<Vec<Vec<usize>>> {
+    let answers: Vec<Vec<usize>> = (0..asks.len())
+        .map(|q| {
+            let mut v: Vec<usize> = picked.iter().filter(|p| p.0 == q).map(|p| p.1).collect();
+            v.sort_unstable();
+            v
+        })
+        .collect();
+    answers.iter().all(|v| !v.is_empty()).then_some(answers)
+}
+
+fn picked(r: &str) -> Vec<(usize, usize)> {
+    PICKED.with(|p| p.borrow().get(r).cloned().unwrap_or_default())
+}
+
+/// Answer Claude's picker through Midna: `POST /tasks/:id/pick`.
+fn pick(m: &mut MainWindow, r: &str, answers: Vec<Vec<usize>>, cx: &mut Context<MainWindow>) {
+    let r = r.to_string();
+    m.post(format!("tasks/{r}/pick"), json!({"answers": answers}), cx, move |m, _, cx| {
+        PICKED.with(|p| p.borrow_mut().remove(&r));
+        let note = sent_note(m.state()).to_string();
+        sent(m, note, cx);
+    });
+}
+
 fn is_open(a: &Ask) -> bool {
     a.answer != FLIPPED.with(|f| f.borrow().contains(&a.key()))
 }
@@ -763,38 +814,59 @@ fn item(t: &Theme, a: &Ask, cx: &mut Context<MainWindow>) -> Div {
         let r = a.task.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
         let act = a.act.clone().filter(|x| matches!(x, Act::Focus(_) | Act::AskAgain(_))).unwrap_or_else(|| Act::Focus(r.clone()));
         let focus = kit::btn(t, id("focus"), act.label()).on_click(cx.listener(move |m, _, _, cx| run_act(m, &act, cx)));
-        // An option answers in one click; a picker's options only say what it asks, and are
-        // answered in the terminal. The alert's suggested answers answer like options.
-        let mut n = 0;
-        let mut option = |label: &str, desc: &str| {
-            n += 1;
-            let head = if a.picker {
-                div().flex_none().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(label.to_string())
-            } else {
-                let (r, text) = (r.clone(), label.to_string());
-                div().flex_none().child(kit::btn(t, id(&format!("opt-{n}")), label.to_string()).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &text, cx))))
+        // An option answers in one click, and so does a picker's when it asks one single-select
+        // question; otherwise its options toggle and Send presses them. The alert's suggested
+        // answers answer like options.
+        let chosen = picked(&r);
+        let one = one_click(&a.asks);
+        let mut option = |label: &str, desc: &str, qo: Option<(usize, usize)>| {
+            let n = qo.map_or_else(|| label.to_string(), |(q, o)| format!("{q}-{o}"));
+            let (r, text) = (r.clone(), label.to_string());
+            let head = match qo {
+                Some((_, o)) if a.picker && one => kit::btn(t, id(&format!("pick-{n}")), text).on_click(cx.listener(move |m, _, _, cx| pick(m, &r, vec![vec![o]], cx))),
+                Some((q, o)) if a.picker => {
+                    let asks = a.asks.clone();
+                    let b = kit::btn(t, id(&format!("pick-{n}")), text).on_click(cx.listener(move |_, _, _, cx| {
+                        let next = toggle_pick(&asks, &picked(&r), q, o);
+                        PICKED.with(|p| p.borrow_mut().insert(r.clone(), next));
+                        cx.notify();
+                    }));
+                    if chosen.contains(&(q, o)) { b.border_color(t.warn).bg(t.warn_soft).font_weight(FontWeight::SEMIBOLD) } else { b }
+                }
+                _ => kit::btn(t, id(&format!("opt-{n}")), text.clone()).on_click(cx.listener(move |m, _, _, cx| answer(m, &r, &text, cx))),
             };
             div()
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .child(head)
+                .child(div().flex_none().child(head))
                 .when(!desc.is_empty(), |d| d.child(div().min_w_0().text_size(px(13.)).text_color(t.text_2).child(desc.to_string())))
         };
         let mut rows = Vec::new();
-        for q in &a.asks {
-            if !q.question.is_empty() {
-                rows.push(div().pt(px(4.)).text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(q.question.clone()));
+        for (q, x) in a.asks.iter().enumerate() {
+            if !x.question.is_empty() {
+                rows.push(div().pt(px(4.)).text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.text).child(x.question.clone()));
             }
-            rows.extend(q.options.iter().map(|(l, d)| option(l, d)));
+            rows.extend(x.options.iter().enumerate().filter(|(_, (l, _))| !l.is_empty()).map(|(o, (l, d))| option(l, d, Some((q, o)))));
         }
         if a.asks.is_empty() {
-            rows.extend(a.actions.iter().map(|(l, _)| option(l, "")));
+            rows.extend(a.actions.iter().map(|(l, _)| option(l, "", None)));
         }
+        let send = (a.picker && !one).then(|| {
+            let answers = pick_answers(&a.asks, &chosen);
+            let b = kit::btn_primary(t, id("pick-send"), "Send");
+            match answers {
+                Some(answers) => {
+                    let r = r.clone();
+                    b.on_click(cx.listener(move |m, _, _, cx| pick(m, &r, answers.clone(), cx)))
+                }
+                None => b.opacity(0.5).cursor_default(),
+            }
+        });
         card = card.child(
             body.child(div().text_size(px(15.)).text_color(t.warn_text).child(a.text.clone()))
                 .when(!rows.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).children(rows)))
-                .child(div().flex().items_center().gap(px(8.)).child(focus)),
+                .child(div().flex().items_center().gap(px(8.)).children(send).child(focus)),
         );
     } else {
         let dismiss_btn = a.dismiss.then(|| {
@@ -914,6 +986,25 @@ mod tests {
             }
         }
         base
+    }
+
+    #[test]
+    fn a_picker_question_card_picks_one_choice_per_question() {
+        let (asks, picker) = asks_of(&card(json!({"ask": {"picker": true, "questions": [
+            {"question": "Pick a fruit", "multi": false, "options": [{"label": "Apple", "description": "Red"}, {"label": "Pear"}]},
+            {"question": "Pick sizes", "multi": true, "options": [{"label": "S"}, {"label": "M"}, {"label": "L"}]}]}})));
+        assert!(picker && !one_click(&asks));
+        assert!(asks[1].multi);
+        let mut p = Vec::new();
+        for (q, o) in [(0, 0), (0, 1), (1, 2), (1, 0)] {
+            p = toggle_pick(&asks, &p, q, o);
+        }
+        assert_eq!(p, vec![(0, 1), (1, 2), (1, 0)], "a single-select question keeps its last choice");
+        assert_eq!(pick_answers(&asks, &p), Some(vec![vec![1], vec![0, 2]]));
+        p = toggle_pick(&asks, &p, 0, 1);
+        assert_eq!(pick_answers(&asks, &p), None, "Send waits for a choice per question");
+        let (one, _) = asks_of(&card(json!({"ask": {"picker": true, "questions": [{"question": "Pick a fruit", "multi": false, "options": [{"label": "Apple"}]}]}})));
+        assert!(one_click(&one), "one single-select question answers in a click");
     }
 
     #[test]

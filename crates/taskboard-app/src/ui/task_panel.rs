@@ -290,6 +290,37 @@ pub fn act(m: &mut MainWindow, a: &Act, cx: &mut Context<MainWindow>) {
         }
         // One of a `tb question`'s options, sent as the answer.
         "answer-opt" => run(m, a, tp("/answer"), json!({"text": a.arg, "when": "now"}), |m, _| sent(m), cx),
+        // A picker choice toggled, kept with the drafts until Send.
+        "pick-opt" => {
+            let k = format!("pick:{id}");
+            let ask = m.data.task.as_ref().map(|t| t["ask"].clone()).unwrap_or_default();
+            ui(|u| {
+                let next = view::toggle_pick(u.drafts.get(&k).map_or("", String::as_str), &a.arg, &ask);
+                u.drafts.insert(k, next)
+            });
+            cx.notify();
+        }
+        // The picker answered through Midna: one option's index, or the choices toggled so far.
+        "pick" => {
+            let k = format!("pick:{id}");
+            let answers = if a.arg.is_empty() {
+                let ask = m.data.task.as_ref().map(|t| t["ask"].clone()).unwrap_or_default();
+                json!(ui(|u| view::pick_answers(u.drafts.get(&k).map_or("", String::as_str), &ask)))
+            } else {
+                json!([[a.arg.parse::<usize>().unwrap_or(0)]])
+            };
+            run(
+                m,
+                a,
+                tp("/pick"),
+                json!({ "answers": answers }),
+                move |m, _| {
+                    ui(|u| u.drafts.remove(&k));
+                    sent(m)
+                },
+                cx,
+            );
+        }
         "requeue" => run(m, a, tp("/requeue"), json!({}), |_, _| "Back in the queue".into(), cx),
         "pr-reviewed" => run(m, a, tp("/pr/reviewed"), json!({}), |_, _| "Marked reviewed".into(), cx),
         // No group: the row itself turns to "created" when the task reloads; a failure is a toast.
@@ -1872,8 +1903,11 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
         Look::Soft => soft(t, id, label),
         Look::SoftSmall => sm(soft(t, id, label)),
         Look::Danger => danger(t, id, label),
-        // `.opt`: 30px, the banner's line around a deeper tint.
-        Look::Opt => raw(t, id, label).h(px(30.)).px(px(12.)).rounded(px(7.)).border_color(t.warn_line).bg(t.card).text_color(t.warn_text).hover(|d| d.border_color(t.warn)),
+        // `.opt`: 30px, the banner's line around a deeper tint; `.opt.on` takes the banner's color.
+        Look::Opt { on } => {
+            let b = raw(t, id, label).h(px(30.)).px(px(12.)).rounded(px(7.)).border_color(t.warn_line).bg(t.card).text_color(t.warn_text).hover(|d| d.border_color(t.warn));
+            if on { b.border_color(t.warn).bg(t.warn_soft).font_weight(FontWeight::SEMIBOLD) } else { b }
+        }
         // `.write`: a link with the open-elsewhere icon after it.
         Look::Out => {
             let c = t.warn;

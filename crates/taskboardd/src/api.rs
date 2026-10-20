@@ -223,6 +223,7 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("POST", ["tasks", id, "queue"]) => patch_task(app, tid(id)?, &json!({"status": "queued"})),
         ("POST", ["tasks", id, "start"]) => start(app, tid(id)?, query, body),
         ("POST", ["tasks", id, "answer"]) => answer(app, tid(id)?, body),
+        ("POST", ["tasks", id, "pick"]) => pick(app, tid(id)?, body),
         ("POST", ["tasks", id, "step"]) => owner_step(app, tid(id)?, body),
         ("POST", ["tasks", id, "did"]) => owner_did(app, tid(id)?, query, body),
         ("POST", ["tasks", id, "detach"]) => detach(app, tid(id)?),
@@ -1499,6 +1500,56 @@ fn answer(app: &App, id: i64, body: &Value) -> Result<Value> {
             }
         }
         Ok(())
+    })?;
+    task_detail(app, id)
+}
+
+/// The daemon's code-signing identifier, which Midna's `agents.trusted_clients` names to let it answer pickers.
+const TRUSTED_CLIENT_ID: &str = "com.mrgnhnt.taskboard.daemon";
+/// Midna presses the picker's keys and waits for it to close, which takes a few seconds.
+const PICK_TIMEOUT: f64 = 60.0;
+
+/// The owner's click on Claude's picker: Midna answers it in the task's terminal
+/// (`session.answer_question`), with `{"answers": [[option index, ...] per question]}`. The task stays
+/// waiting until the picker closes (`hook.ask_done`).
+fn pick(app: &App, id: i64, body: &Value) -> Result<Value> {
+    let t = board::get_task(app, id)?;
+    if !crate::ask::is_picker(&t) {
+        return err(409, format!("The picker closed: {} isn't waiting on it any more.", rf("task", id)));
+    }
+    let (answers, text) = crate::ask::picks(&t, body.get("answers").unwrap_or(&Value::Null))?;
+    let Some(s) = board::live_session(app, &t)? else {
+        return err(409, format!("{}'s terminal is gone, so its picker is too.", rf("task", id)));
+    };
+    let params = json!({"id": s.v("id"), "answers": answers});
+    match midna::rpc(&app.cfg.midna_socket, "session.answer_question", &params, PICK_TIMEOUT) {
+        Ok(_) => {}
+        Err(midna::RpcError::Down(m)) => return err(503, m),
+        Err(midna::RpcError::Refused { code: midna::RPC_UNKNOWN_METHOD, .. }) => {
+            return err(501, "Update Midna: this version can't answer Claude's picker. Answer it in the terminal.");
+        }
+        Err(midna::RpcError::Refused { code: midna::RPC_HUMAN_ONLY, .. }) => {
+            return err(403, format!("Midna only lets a trusted app answer the picker. Add {TRUSTED_CLIENT_ID} to Midna's agents.trusted_clients setting, or answer it in the terminal."));
+        }
+        Err(midna::RpcError::Refused { code: midna::RPC_NOT_FOUND, .. }) => {
+            return err(409, format!("{}'s terminal is gone, so its picker is too.", rf("task", id)));
+        }
+        Err(midna::RpcError::Refused { code: midna::RPC_CONFLICT, message }) => return err(409, format!("Midna didn't answer the picker: {message}")),
+        Err(midna::RpcError::Refused { message, .. }) => return err(400, message),
+    }
+    app.db.tx(|| {
+        let t = board::get_task(app, id)?;
+        let mut ctx = board::task_context(&t);
+        let mut entry = format!("“{text}” ({})", local_clock(None));
+        if let Some(q) = t.s("question").filter(|q| !q.is_empty()) {
+            entry = format!("{} → {entry}", clip(q, 160));
+        }
+        let mut list = str_list(ctx.get("answers"));
+        list.push(entry);
+        ctx.insert("answers".into(), json!(list));
+        board::save_context(app, id, &ctx, false)?;
+        board::update_task(app, id, fields!["answered_at" => now_iso()])?;
+        board::log_event(app, id, OWNER, "answer", &format!("Answered: {text}"))
     })?;
     task_detail(app, id)
 }
