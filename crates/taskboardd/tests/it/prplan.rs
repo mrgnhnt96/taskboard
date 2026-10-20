@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
-use taskboardd::util::{parse_iso, PrLink, Row, RowExt};
+use taskboardd::util::{jdumps, parse_iso, PrLink, Row, RowExt};
 use taskboardd::{board, handoff, midna, p, prflow, progress, reports, stack, steps};
 
 struct Board {
@@ -209,6 +209,24 @@ fn a_stacked_pr_waits_on_its_base_then_is_pointed_at_main() {
     let rec = jrec(&t);
     assert_eq!(prflow::phase_of(&b.app, &t, &rec), "waits");
     assert_eq!(prflow::label("waits"), "Waits on base");
+
+    // The bar says what the base is at, and links its running build.
+    let set = |id: i64, phase: &str, flow: Value| board::update_task(&b.app, id, vec![("pr_phase", json!(phase)), ("pr_flow", json!(jdumps(&flow)))]).unwrap();
+    let was = |id: i64| vec![("pr_phase", b.row(id).v("pr_phase")), ("pr_flow", b.row(id).v("pr_flow"))];
+    let (was_child, was_parent) = (was(child), was(parent));
+    set(child, "waits", json!({"rec": {"state": "OPEN", "checks": []}}));
+    let checks = json!([{"name": "build", "state": "passed", "url": "https://ci/1"}, {"name": "e2e", "state": "running", "url": "https://ci/2"},
+                        {"name": "lint", "state": "passed"}]);
+    set(parent, "checks", json!({"rec": {"state": "OPEN", "checks": checks}}));
+    let bar = b.card(child)["pr"]["bar"].clone();
+    assert_eq!(bar["waits_on_base"], json!({"ref": format!("T{parent}"), "line": format!("T{parent}'s checks running, 2 of 3 passed"), "url": "https://ci/2"}), "{bar}");
+    assert_eq!(bar["checks"], "none_yet", "no builds while it waits isn't 'not needed': {bar}");
+    set(parent, "review", json!({"rec": {"state": "OPEN", "checks": checks}}));
+    let wb = &b.card(child)["pr"]["bar"]["waits_on_base"];
+    assert_eq!(wb["line"], format!("T{parent} waiting on your review"), "{wb}");
+    assert!(wb["url"].as_str().unwrap().ends_with("/12"), "the base's PR: {wb}");
+    board::update_task(&b.app, child, was_child).unwrap();
+    board::update_task(&b.app, parent, was_parent).unwrap();
 
     // The parent merges: the child's PR goes into main and may merge.
     b.post(&format!("/tasks/T{parent}/pr/merged"), json!({}));

@@ -210,6 +210,39 @@ pub fn stack_hold(app: &App, t: &Row) -> Result<Option<String>> {
     }))
 }
 
+/// What a tail-merge PR in phase `waits` is waiting on: the base's own state ("T3's checks running,
+/// 2 of 5 passed"), and where to watch it (its newest build while checks run, else its PR).
+pub fn base_hold(app: &App, t: &Row) -> Result<Option<Value>> {
+    let Some(p) = parent(app, t)? else { return Ok(None) };
+    let r = rf("task", p.id());
+    let rec = jloads_obj(p.s("pr_flow")).get("rec").cloned().unwrap_or(json!({}));
+    let checks = rec["checks"].as_array().cloned().unwrap_or_default();
+    let count = |st: &str| checks.iter().filter(|c| c["state"] == st).count();
+    let phase = p.s("pr_phase").unwrap_or("");
+    let line = match phase {
+        _ if p.i("pr_num").is_none() => format!("{r} has no PR yet"),
+        "checks" if checks.is_empty() => format!("{r}'s checks haven't started"),
+        "checks" => format!("{r}'s checks running, {} of {} passed", count("passed"), checks.len()),
+        "fix" => format!("{r}'s checks failed ({}), being fixed", count("failed")),
+        "lens" => format!("{r} in lens review"),
+        "ask" => format!("{r} waiting for reviewers to be asked"),
+        "review" if prflow::awaiting_owner(&p) => format!("{r} waiting on your review"),
+        "review" | "rereview" => format!("{r} waiting on review"),
+        "comments" => format!("{r}'s review comments being addressed"),
+        "steps" => format!("{r} waiting on its merge steps"),
+        "merge" => format!("{r} merging"),
+        "waits" => format!("{r} waiting on its own base"),
+        "stack" => format!("{r} waiting on its stack"),
+        "" => format!("{r}'s PR being read"),
+        other => format!("{r}: {}", prflow::label(other)),
+    };
+    let url = match phase {
+        "checks" | "fix" => crate::prbar::build_url(&rec, p.s("pr_url")),
+        _ => p.v("pr_url"),
+    };
+    Ok(Some(json!({"ref": r, "line": line, "url": url})))
+}
+
 /// What the app and `tb` show about the PR a task stacks on.
 pub fn card(app: &App, t: &Row) -> Result<Value> {
     let Some(p) = parent(app, t)? else { return Ok(Value::Null) };

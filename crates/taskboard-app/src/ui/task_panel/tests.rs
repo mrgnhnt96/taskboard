@@ -625,6 +625,14 @@ fn the_stack_card_says_how_it_merges_and_the_parent_waits_on_its_stack() {
     assert!(tail.contains("Stacks on T3 PR #12 Tail merge") && tail.contains("Merged Waits on base"), "{tail}");
     let head = panel_text(with_bar(json!({"stacks_on": so("head")}), json!({"phase": "merge", "label": "Merging"}), "approved"), json!({}));
     assert!(head.contains("Stacks on T3 PR #12 Head merge") && !head.contains("Waits on base"), "{head}");
+    // What the base is at, and the Merge step to its running build; no builds yet isn't "Not needed".
+    let wb = json!({"ref": "T3", "line": "T3's checks running, 2 of 5 passed", "url": "https://ci.example/7"});
+    let bar = json!({"stacks_on": so("tail"), "waits_on_base": wb, "checks": "none_yet"});
+    let task = with_bar(bar.clone(), json!({"phase": "waits", "label": "Waits on base"}), "approved");
+    let text = panel_text(task.clone(), json!({}));
+    assert!(text.contains("Merged Waits on T3") && text.contains("T3's checks running, 2 of 5 passed") && text.contains("Checks None yet"), "{text}");
+    let merge = view::pr_steps_full(&task["pr"], &bar).pop().unwrap();
+    assert!(format!("{:?}", merge.link).contains("https://ci.example/7"), "{:?}", merge.link);
     let why = "T5's PR #14 head-merges into it and has to merge first";
     let parent = panel_text(with_bar(json!({"waits_on_stack": why}), json!({"phase": "stack", "label": "Waits on stack"}), "approved"), json!({}));
     assert!(parent.contains("Merged Waits on stack") && parent.contains(why), "{parent}");

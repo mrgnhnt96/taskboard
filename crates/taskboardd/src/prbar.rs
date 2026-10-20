@@ -39,6 +39,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     let head = rec["head"].as_str().unwrap_or("");
     let skipped = prflow::checks_skipped(&f, &rec);
     let failing = !prflow::failing(&f, &rec).is_empty();
+    let waits = t.s("pr_phase") == Some("waits");
     let cleared = !prflow::not_ours(&f, &rec).is_null() && !failing && rec["failed"].as_array().is_some_and(|a| !a.is_empty());
     // Skipped (a hook, or `tb pr skip-checks` for builds that didn't fail) is told apart from failures
     // cleared as not this PR's, which come with proof.
@@ -47,7 +48,8 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
     } else if skipped.is_some() && (!failing || prflow::skip_hides_failures(&f, &rec)) {
         "skipped"
     } else if rec["checks"].as_array().map(|a| a.is_empty()).unwrap_or(false) && rec.get("state").is_some() {
-        "not_needed"
+        // A PR into its base's branch may only get builds once it moves to the main branch.
+        if waits { "none_yet" } else { "not_needed" }
     } else {
         ""
     };
@@ -103,7 +105,7 @@ pub fn bar(app: &App, t: &Row) -> Result<Value> {
         "need": prflow::approvals_needed(app, t),
         "new_comments": new_comments,
         "comments_url": comments_url,
-        "waits_on_base": t.s("pr_phase") == Some("waits"),
+        "waits_on_base": if waits { json!(stack::base_hold(app, t)?) } else { Value::Null },
         "stacks_on": stack::card(app, t)?,
         "waits_on_stack": if t.s("pr_phase") == Some("stack") { json!(stack::stack_hold(app, t)?) } else { Value::Null },
         "retargeted": f.get("retargeted").cloned().unwrap_or(Value::Null),
