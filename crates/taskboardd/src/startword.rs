@@ -1471,12 +1471,11 @@ static ITEM_REF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\b[Bb](?:[ \t]?[-‐‑–—−][ \t]?|[ \t]*#[ \t]*|[ \t]+)?(\d+)\b").unwrap());
 
 /// `text` with backlog item `i.item` named as the task made from it, so "start B12" and "/start B12"
-/// read as "start T30" for that task. Other items stay as they are.
+/// read as "start T30" for that task. Every other item reads as `T0`, a task that isn't one, so "start
+/// B11 and B12" is still a list of tasks.
 pub fn item_as_task(text: &str, i: ItemTask) -> String {
     ITEM_REF_RE
-        .replace_all(text, |c: &regex::Captures| {
-            if c[1].parse::<i64>().ok() == Some(i.item) { format!("T{}", i.task) } else { c[0].to_string() }
-        })
+        .replace_all(text, |c: &regex::Captures| format!("T{}", if c[1].parse::<i64>().ok() == Some(i.item) { i.task } else { 0 }))
         .into_owned()
 }
 
@@ -3819,3 +3818,4 @@ mod tests {
         assert!(approves("lgtm, merge it"));
     }
 }
+
