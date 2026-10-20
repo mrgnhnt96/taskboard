@@ -2089,6 +2089,9 @@ fn print_pr_status(t: &str, v: &Value) {
                 if let Some(e) = f["error"].as_str() {
                     out(&format!("      couldn't read its steps: {e}"));
                 }
+                if let Some(e) = f["tests_error"].as_str() {
+                    out(&format!("      couldn't read its tests: {e}"));
+                }
             }
         }
     }

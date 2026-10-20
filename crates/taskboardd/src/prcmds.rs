@@ -604,6 +604,9 @@ pub fn status(app: &App, id: i64) -> Result<Value> {
                         Ok(fl) => {
                             row["steps"] = json!(fl.steps);
                             row["tests"] = json!(fl.tests);
+                            if let Some(e) = &fl.tests_error {
+                                row["tests_error"] = json!(e);
+                            }
                             mine = Some(fl);
                         }
                         Err(e) => row["error"] = json!(e),
@@ -777,7 +780,7 @@ mod tests {
     use crate::prhost::ci::Failures;
 
     fn fl(steps: &[&str], tests: &[&str]) -> Failures {
-        Failures { steps: steps.iter().map(|s| s.to_string()).collect(), tests: tests.iter().map(|s| s.to_string()).collect() }
+        Failures { steps: steps.iter().map(|s| s.to_string()).collect(), tests: tests.iter().map(|s| s.to_string()).collect(), ..Default::default() }
     }
 
     #[test]

@@ -21,6 +21,8 @@ use crate::config::PrProject;
 pub struct Failures {
     pub steps: Vec<String>,
     pub tests: Vec<String>,
+    /// Why its failed tests couldn't be read, when its steps could.
+    pub tests_error: Option<String>,
 }
 
 /// One CI system the board can ask about a failed check.
@@ -72,7 +74,8 @@ pub fn provider_for(app: &App, project: &PrProject, check: &Check) -> HostResult
         }
         Some(Kind::Azure) => {
             let (_, token) = crate::accounts::ci_token(app)
-                .ok_or_else(|| format!("no Azure DevOps token: store one with tb ci-token set (or set ${})", app.cfg.pr.azure_token_env))?;
+                // An agent can't use a token from the owner's shell (the daemon, started by launchd, doesn't see it).
+                .ok_or_else(|| "no Azure DevOps token: the owner stores one with tb ci-token set".to_string())?;
             Some(Box::new(AzurePipelines { http: Box::new(BasicHttp::for_service("Azure DevOps", "", &token)) }))
         }
     })
@@ -88,7 +91,7 @@ impl CiProvider for GithubActions {
     }
     fn failures(&self, pr: &PrRef, _head: &str, check: &Check) -> HostResult<Failures> {
         let run = github::run_id(check.url.as_deref().unwrap_or("")).ok_or_else(|| "its link isn't a GitHub Actions run".to_string())?;
-        Ok(Failures { steps: self.host.run_failures(&pr.repo, &run)?, tests: vec![] })
+        Ok(Failures { steps: self.host.run_failures(&pr.repo, &run)?, ..Default::default() })
     }
 }
 
@@ -103,7 +106,7 @@ impl CiProvider for BitbucketPipelines {
     fn failures(&self, pr: &PrRef, _head: &str, check: &Check) -> HostResult<Failures> {
         let build = bitbucket::pipeline_build(check.url.as_deref().unwrap_or("")).ok_or_else(|| "its link isn't a Pipelines run".to_string())?;
         let (steps, tests) = self.host.pipeline_failures(&pr.repo, build)?;
-        Ok(Failures { steps, tests })
+        Ok(Failures { steps, tests, ..Default::default() })
     }
 }
 
@@ -124,7 +127,7 @@ impl CiProvider for AzurePipelines {
     }
     fn failures(&self, _pr: &PrRef, _head: &str, check: &Check) -> HostResult<Failures> {
         let (base, id) = azure_build(check.url.as_deref().unwrap_or("")).ok_or_else(|| "its link isn't an Azure Pipelines build".to_string())?;
-        let tl = self.http.call("GET", &format!("{base}/_apis/build/builds/{id}/timeline?api-version=7.1"), None)?;
+        let tl = self.http.call("GET", &format!("{base}/_apis/build/builds/{id}/timeline?api-version=7.1"), None).map_err(|e| azure_error(e, "the build's steps", "Build (read)"))?;
         let mut steps = vec![];
         for r in tl["records"].as_array().cloned().unwrap_or_default() {
             if r["type"] != "Task" || r["result"] != "failed" {
@@ -137,6 +140,17 @@ impl CiProvider for AzurePipelines {
                 None => name,
             });
         }
+        // Test results need their own scope: a token without it still shows the steps.
+        let (tests, tests_error) = match self.failed_tests(&base, &id) {
+            Ok(t) => (t, None),
+            Err(e) => (vec![], Some(azure_error(e, "the build's test results", "Test Management (read)"))),
+        };
+        Ok(Failures { steps, tests, tests_error })
+    }
+}
+
+impl AzurePipelines {
+    fn failed_tests(&self, base: &str, id: &str) -> HostResult<Vec<String>> {
         let mut tests = vec![];
         let runs = self.http.call("GET", &format!("{base}/_apis/test/runs?buildUri=vstfs:///Build/Build/{id}&api-version=7.1"), None)?;
         for run in runs["value"].as_array().cloned().unwrap_or_default() {
@@ -146,8 +160,17 @@ impl CiProvider for AzurePipelines {
                 res["value"].as_array().cloned().unwrap_or_default().iter().filter_map(|t| t["automatedTestName"].as_str().or(t["testCaseTitle"].as_str()).map(|s| s.to_string())),
             );
         }
-        Ok(Failures { steps, tests })
+        Ok(tests)
     }
+}
+
+/// An Azure DevOps refusal, saying what was being read; a 401 or 403 also names the scope the CI token
+/// needs for it, as Azure answers 401 to a token without that scope.
+fn azure_error(e: String, what: &str, scope: &str) -> String {
+    if e.contains("answered 401") || e.contains("answered 403") {
+        return format!("{e} reading {what}: the CI token needs {scope} (tb ci-token set stores a new one)");
+    }
+    format!("{e} reading {what}")
 }
 
 /// A project's own command (`failures_cmd`).
@@ -185,7 +208,7 @@ pub fn parse_command_output(out: &str) -> Failures {
     if let Ok(v) = serde_json::from_str::<Value>(out.trim()) {
         if v.is_object() {
             let list = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
-            return Failures { steps: list("steps"), tests: list("tests") };
+            return Failures { steps: list("steps"), tests: list("tests"), ..Default::default() };
         }
     }
     let mut f = Failures::default();
@@ -223,15 +246,15 @@ mod tests {
 
     #[test]
     fn reads_a_command_s_json_or_lines() {
-        assert_eq!(parse_command_output(r#"{"steps": ["build"], "tests": ["a::b"]}"#), Failures { steps: vec!["build".into()], tests: vec!["a::b".into()] });
-        assert_eq!(parse_command_output("Run tests\ntest: login works\n\n"), Failures { steps: vec!["Run tests".into()], tests: vec!["login works".into()] });
+        assert_eq!(parse_command_output(r#"{"steps": ["build"], "tests": ["a::b"]}"#), Failures { steps: vec!["build".into()], tests: vec!["a::b".into()], ..Default::default() });
+        assert_eq!(parse_command_output("Run tests\ntest: login works\n\n"), Failures { steps: vec!["Run tests".into()], tests: vec!["login works".into()], ..Default::default() });
     }
 
     #[test]
     fn a_command_gets_the_check_in_its_environment() {
         let pr = PrRef { host: "bitbucket".into(), repo: "w/r".into(), num: 4, url: "u".into() };
         let f = CommandCi { cmd: "echo \"$TB_CHECK on $TB_HEAD\"; echo test: $TB_PR_NUM".into() }.failures(&pr, "abc", &check("x")).unwrap();
-        assert_eq!(f, Failures { steps: vec!["ci on abc".into()], tests: vec!["4".into()] });
+        assert_eq!(f, Failures { steps: vec!["ci on abc".into()], tests: vec!["4".into()], ..Default::default() });
         assert!(CommandCi { cmd: "echo nope >&2; exit 3".into() }.failures(&pr, "abc", &check("x")).unwrap_err().contains("nope"));
     }
 
@@ -264,5 +287,25 @@ mod tests {
         assert_eq!(f.steps, vec!["Run tests: exit 1".to_string()]);
         assert_eq!(f.tests, vec!["Suite.login".to_string(), "logout".to_string()]);
         assert!(calls.lock()[0].starts_with("https://dev.azure.com/org/Proj/_apis/build/builds/55/timeline"));
+    }
+
+    struct NoTestScope;
+    impl Http for NoTestScope {
+        fn call(&self, _m: &str, url: &str, _b: Option<&Value>) -> HostResult<Value> {
+            if url.contains("/_apis/test/") {
+                return Err("Azure DevOps answered 401".into());
+            }
+            Ok(json!({"records": [{"type": "Task", "name": "Run tests", "result": "failed"}]}))
+        }
+    }
+
+    #[test]
+    fn an_azure_token_without_test_scope_still_reads_the_steps() {
+        let pr = PrRef { host: "github".into(), repo: "a/b".into(), num: 1, url: String::new() };
+        let f = AzurePipelines { http: Box::new(NoTestScope) }.failures(&pr, "h", &check("https://dev.azure.com/org/Proj/_build/results?buildId=55")).unwrap();
+        assert_eq!(f.steps, vec!["Run tests".to_string()]);
+        assert!(f.tests.is_empty());
+        let e = f.tests_error.unwrap();
+        assert!(e.contains("answered 401 reading the build's test results") && e.contains("Test Management (read)"), "{e}");
     }
 }
