@@ -1,5 +1,6 @@
 //! A queued start waits only while its project has as many busy terminals as it may
-//! (`[terminals] project_max`, or `tb project set --max-terminals`), and its card says so.
+//! (`[terminals] project_max`, or `tb project set --max-terminals`), and any task start waits while the
+//! board runs as many task terminals as it may (`[terminals] global_max`, or `tb terminals --max`); its card says so.
 
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use taskboardd::api::{self, Query};
 use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::RowExt;
-use taskboardd::{jobs, midna, runner};
+use taskboardd::{board, fields, jobs, midna, runner};
 
 struct Board {
     app: Arc<App>,
@@ -46,8 +47,11 @@ impl Board {
         midna::sync(&self.app, &sessions, &[]).unwrap();
     }
     fn queued_task(&self) -> i64 {
-        let goal = self.post("/goals", json!({"name": "Work", "project": "webapp", "max_terminals": 4}))["id"].as_i64().unwrap();
-        let id = self.post("/tasks", json!({"title": "Fix it", "detail": "Do it.", "project": "webapp", "ships_pr": false, "goal_id": goal}))["id"]
+        self.queued_task_in("webapp")
+    }
+    fn queued_task_in(&self, project: &str) -> i64 {
+        let goal = self.post("/goals", json!({"name": "Work", "project": project, "max_terminals": 4}))["id"].as_i64().unwrap();
+        let id = self.post("/tasks", json!({"title": "Fix it", "detail": "Do it.", "project": project, "ships_pr": false, "goal_id": goal}))["id"]
             .as_i64()
             .unwrap();
         runner::start_queued(&self.app).unwrap();
@@ -106,11 +110,11 @@ fn a_cap_is_a_count_from_one() {
     assert_eq!(e.status, 400);
 }
 
-#[test]
-fn a_sixteenth_busy_terminal_waits_across_projects() {
+/// A board over four projects with `n` working tasks in `alpha`, each in its own idle terminal, and one
+/// more busy terminal in each project that isn't a task's.
+fn board_with_tasks(n: usize) -> (Board, Vec<i64>) {
     let dir = tempfile::tempdir().unwrap();
     let app = App::for_tests(Config::for_tests(dir.path()));
-    assert_eq!(app.cfg.terminals.global_max, 15);
     let names = ["alpha", "bravo", "charlie", "delta"];
     let roots: Vec<String> = names
         .iter()
@@ -123,23 +127,61 @@ fn a_sixteenth_busy_terminal_waits_across_projects() {
     let projects: Vec<Value> = names.iter().zip(&roots).map(|(n, r)| json!({"name": n, "path": r})).collect();
     app.db.set_setting("midna_projects", Some(&Value::Array(projects).to_string())).unwrap();
     let b = Board { app, repo: roots[3].clone(), _dir: dir };
-    let busy = |per: [usize; 4]| {
-        let sessions: Vec<Value> = roots
-            .iter()
-            .zip(per)
-            .flat_map(|(r, n)| (0..4).map(move |i| (r, i, if i < n { "working" } else { "idle" })))
-            .map(|(r, i, state)| json!({"id": format!("{r}-{i}"), "name": "Term", "agent": "claude", "cwd": r, "status": {"state": state}}))
-            .collect();
-        midna::sync(&b.app, &sessions, &[]).unwrap();
-    };
-    busy([4, 4, 4, 3]);
-    let goal = b.post("/goals", json!({"name": "Work", "project": "delta", "max_terminals": 4}))["id"].as_i64().unwrap();
-    let t = b.post("/tasks", json!({"title": "Fix it", "detail": "Do it.", "project": "delta", "ships_pr": false, "goal_id": goal}))["id"].as_i64().unwrap();
-    runner::start_queued(&b.app).unwrap();
-    assert_eq!(b.get(&format!("tasks/T{t}"))["waiting"], "Waits for a free terminal: 15 of 15 busy across the board");
+    let mut sessions: Vec<Value> = roots
+        .iter()
+        .map(|r| json!({"id": format!("{r}-own"), "name": "Mine", "agent": "claude", "cwd": r, "status": {"state": "working"}}))
+        .collect();
+    sessions.extend((0..n).map(|i| json!({"id": format!("t{i}"), "name": "Task", "agent": "claude", "cwd": roots[0], "status": {"state": "idle"}})));
+    midna::sync(&b.app, &sessions, &[]).unwrap();
+    let tasks = (0..n)
+        .map(|i| {
+            let id = b.post("/tasks", json!({"title": format!("Work {i}"), "detail": "Do it.", "project": "alpha", "ships_pr": false}))["id"].as_i64().unwrap();
+            board::update_task(&b.app, id, fields!["status" => "working", "session_id" => format!("t{i}")]).unwrap();
+            id
+        })
+        .collect();
+    (b, tasks)
+}
+
+#[test]
+fn the_board_runs_eight_task_terminals_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::for_tests(Config::for_tests(dir.path()));
+    assert_eq!(app.cfg.terminals.global_max, 8);
+}
+
+#[test]
+fn a_start_over_the_board_cap_waits_for_a_free_slot() {
+    let (b, tasks) = board_with_tasks(2);
+    let out = b.post("terminals", json!({"max_terminals": 2}));
+    assert_eq!((out["max_terminals"].as_i64(), out["running"].as_i64()), (Some(2), Some(2)), "the busy terminals that aren't tasks' don't count");
+    let t = b.queued_task_in("delta");
+    assert_eq!(b.get(&format!("tasks/T{t}"))["waiting"], "Waits for a free slot: 2 of 2 task terminals running across the board");
     assert!(!b.takes_start(), "delta has room, the board doesn't");
 
-    busy([4, 4, 3, 3]);
+    board::update_task(&b.app, tasks[0], fields!["status" => "done"]).unwrap();
     assert!(b.get(&format!("tasks/T{t}"))["waiting"].is_null());
-    assert!(b.takes_start(), "a terminal freed up elsewhere");
+    assert!(b.takes_start(), "a slot freed up");
+    assert_eq!(b.get("terminals")["running"], 2, "the start being opened holds its slot");
+}
+
+#[test]
+fn the_board_cap_holds_a_start_in_a_new_terminal_too() {
+    let (b, _) = board_with_tasks(2);
+    b.post("terminals", json!({"max_terminals": "2"}));
+    let id = b.post("/tasks", json!({"title": "Now", "detail": "Do it.", "project": "delta", "ships_pr": false}))["id"].as_i64().unwrap();
+    let from_app: Query = [(api::FROM.to_string(), "app".to_string())].into_iter().collect();
+    api::dispatch(&b.app, "POST", &format!("/tasks/T{id}/start"), &from_app, &json!({"mode": "new"})).unwrap();
+    assert!(!b.takes_start());
+
+    let out = b.post("terminals", json!({"max_terminals": "default"}));
+    assert_eq!((out["max_terminals"].as_i64(), out["max_terminals_set"].is_null()), (Some(8), true));
+    assert!(b.takes_start());
+}
+
+#[test]
+fn the_board_cap_is_a_count_from_one() {
+    let (b, _) = board_with_tasks(0);
+    let e = api::dispatch(&b.app, "POST", "terminals", &Query::new(), &json!({"max_terminals": 0})).unwrap_err();
+    assert_eq!(e.status, 400);
 }

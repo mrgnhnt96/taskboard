@@ -444,6 +444,12 @@ pub fn dispatch(app: &App, method: &str, path: &str, query: &Query, body: &Value
         ("GET", ["keep-awake"]) => keep_awake::call(app, None),
         ("POST", ["keep-awake"]) => keep_awake::call(app, Some(body)),
         ("GET", ["usage"]) => Ok(usage::state(app)),
+        ("GET", ["terminals"]) => crate::dispatch::terminals_state(app),
+        ("POST", ["terminals"]) => {
+            crate::dispatch::set_board_max(app, body)?;
+            app.notify_jobs();
+            crate::dispatch::terminals_state(app)
+        }
         ("GET", ["status-bar"]) => Ok(crate::statusbar::state(app)),
         ("POST", ["status-bar"]) => {
             crate::statusbar::set(app, body)?;

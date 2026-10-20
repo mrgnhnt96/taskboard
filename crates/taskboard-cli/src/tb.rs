@@ -486,6 +486,12 @@ enum Cmd {
         #[arg(long, value_parser = ["off", "clear"])]
         today: Option<String>,
     },
+    /// Show or change how many task terminals run at once across the board; tasks over it wait for a free slot
+    Terminals {
+        /// A count from 1 to 50, or default (config.toml's [terminals] global_max)
+        #[arg(long)]
+        max: Option<String>,
+    },
     /// Show or change what Midna's status bar shows of a terminal's task: its goal, and the titles
     StatusBar {
         /// The task's goal before it
@@ -6109,6 +6115,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 };
                 out(&format!("{} · {floor}", if st["mode"] == "always" { "Always during the hours" } else { "Only while agents have work" }));
             }
+            Ok(0)
+        }
+        Cmd::Terminals { max } => {
+            let v = match max {
+                Some(m) => c.call("POST", "/terminals", Some(json!({"max_terminals": m})))?,
+                None => c.call("GET", "/terminals", None)?,
+            };
+            out(v["line"].as_str().unwrap_or(""));
             Ok(0)
         }
         Cmd::StatusBar { goal, title, reset } => {

@@ -267,7 +267,7 @@ refuse_message = "The board doesn't take {ext} files as attachments: publish it 
 [terminals]
 background = ["jira_desk"]           # example: ["jira_desk", "plan"]
 project_max = 5                      # a queued task opens its terminal while fewer of its project's terminals are busy (tb project set --max-terminals)
-global_max = 15                      # and while fewer than this many terminals are busy across every project
+global_max = 8                       # a task opens its terminal while fewer task terminals run across every project (tb terminals --max)
 
 # The model each task's terminal starts with (`--model`, unless its flags name one). A task picks
 # small or large at planning (tb task new --model small), or names a model outright.

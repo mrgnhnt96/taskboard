@@ -579,12 +579,13 @@ pub struct TerminalsConfig {
     /// A queued task opens its terminal only while fewer than this many of its project's terminals are busy
     /// (`tb project set <name> --max-terminals` changes it for one project).
     pub project_max: i64,
-    /// A queued task opens its terminal only while fewer than this many terminals are busy across every project.
+    /// A task opens its terminal only while fewer than this many task terminals run across every project
+    /// (`tb terminals --max` changes it on the board).
     pub global_max: i64,
 }
 
 pub const PROJECT_MAX_TERMINALS: i64 = 5;
-pub const GLOBAL_MAX_TERMINALS: i64 = 15;
+pub const GLOBAL_MAX_TERMINALS: i64 = 8;
 
 impl Default for TerminalsConfig {
     fn default() -> Self {
