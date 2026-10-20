@@ -633,7 +633,10 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
     };
     if m.task_panel.r != r {
         m.task_panel = State { r: r.clone(), ..Default::default() };
-        ui(|u| u.term_menu = false);
+        ui(|u| {
+            u.term_menu = false;
+            u.tl_open.clear();
+        });
         // Dev: `TASKBOARD_TAB=what|context|log` opens the panel on that tab (screenshots).
         if let (Ok(want), Some(Panel::Task { tab: cur, .. })) = (std::env::var("TASKBOARD_TAB"), m.panel.as_mut()) {
             if *cur == TaskTab::Overview {
@@ -644,6 +647,20 @@ fn body(m: &mut MainWindow, t: &Theme, window: &mut Window, cx: &mut Context<Mai
                     _ => TaskTab::Overview,
                 };
             }
+        }
+        // Dev: `TASKBOARD_TL=started,result:0` opens those timeline steps (screenshots).
+        if let Ok(want) = std::env::var("TASKBOARD_TL") {
+            ui(|u| {
+                for w in want.split(',') {
+                    match w.trim() {
+                        "started" => u.tl_open.insert(view::TlStep::Started),
+                        r => match r.strip_prefix("result:").and_then(|i| i.parse().ok()) {
+                            Some(i) => u.tl_open.insert(view::TlStep::Result(i)),
+                            None => false,
+                        },
+                    };
+                }
+            });
         }
     }
     let _ = tab;
@@ -920,6 +937,7 @@ impl Draw<'_> {
             St::TlH => d.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD),
             St::TlS => d.text_size(px(12.)).text_color(t.muted),
             St::TlText => d.text_size(px(13.)).line_height(relative(1.5)).text_color(t.text),
+            St::DetText => d.py(px(8.)).text_size(px(13.)).line_height(relative(1.5)).text_color(t.text_2),
             St::Count => d.flex_none().px(px(7.)).rounded_full().bg(t.col).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.muted),
             St::JiraChip => {
                 let (key, rest) = s.split_once(' ').map(|(k, r)| (k.to_string(), Some(r.to_string()))).unwrap_or((s.to_string(), None));
@@ -944,6 +962,9 @@ impl Draw<'_> {
             K::Tline => self.c_tline(m, n, boxed, cx),
             K::TlNode { st, card } => self.c_tl_node(m, n, st, card, true, boxed, cx),
             K::TlHead => self.c_tl_head(m, n, boxed, cx),
+            K::TlStep { step, open } => self.c_tl_step(m, n, step, open, boxed, cx),
+            K::DetTerm { live } => self.c_det_term(m, n, live, boxed, cx),
+            K::DetRow => self.c_det_row(m, n, boxed, cx),
             K::TlActs => self.c_tl_acts(m, n, boxed, cx),
             K::TermMenu => self.c_term_menu(m, n, boxed, cx),
             K::MenuItem { danger } => self.c_menu_item(n, danger, cx),
@@ -994,6 +1015,8 @@ impl Draw<'_> {
                 div().flex().items_center().gap(px(8.)).w_full().px(px(12.)).py(px(7.)).rounded(px(8.)).bg(bg).border_1().border_color(line).text_color(fg).text_size(px(13.))
             }
             K::KvRow => div().flex().gap(px(12.)),
+            // `.det`: a finished step's detail, under its head.
+            K::Det => div().flex().flex_col().mt(px(8.)).px(px(12.)).py(px(4.)).rounded(px(9.)).bg(t.col).border_1().border_color(t.border).text_size(px(13.)),
             // `.meta-row`: 140px name, value, 32px remove.
             K::MetaRow => div().flex().items_center().gap(px(8.)),
             // `.log`
@@ -1290,6 +1313,76 @@ impl Draw<'_> {
             .gap(px(8.))
             .children(kids)
             .children(at.map(|s| div().ml_auto().text_size(px(12.)).text_color(t.faint).whitespace_nowrap().child(s)))
+            .into_any_element()
+    }
+
+    /// `.sb`: a finished step's head as a button, its chevron at the far end; the detail below when open.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn c_tl_step(&mut self, m: &MainWindow, n: &Node, step: view::TlStep, open: bool, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let hover = t.panel_2;
+        let toggle = cx.listener(move |_, _, _, cx| {
+            ui(|u| {
+                if !u.tl_open.remove(&step) {
+                    u.tl_open.insert(step);
+                }
+            });
+            cx.notify();
+        });
+        let head = self.kid(m, n, 0, boxed, cx);
+        let button = div()
+            .id(self.id("step"))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .mx(px(-8.))
+            .px(px(8.))
+            .py(px(5.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .hover(move |d| d.bg(hover))
+            .on_click(toggle)
+            .child(div().flex_1().min_w_0().children(head))
+            .child(div().flex_none().w(px(14.)).flex().justify_center().child(chevron(open, if open { t.muted } else { t.faint })));
+        let detail = if open { self.kid(m, n, 1, boxed, cx) } else { None };
+        div().flex().flex_col().min_w_0().child(button).children(detail).into_any_element()
+    }
+
+    /// `.dr`: one of the task's terminals, a dot (filled while it's the live one) before its name.
+    #[inline(never)]
+    fn c_det_term(&mut self, m: &MainWindow, n: &Node, live: bool, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let first = self.path.last() == Some(&0);
+        let mut kids = self.kids(m, n, boxed, cx).into_iter();
+        let dot = div().flex_none().size(px(8.)).rounded_full();
+        let dot = if live { dot.bg(t.accent) } else { dot.border_1().border_color(t.faint) };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .py(px(9.))
+            .when(!first, |d| d.border_t_1().border_color(t.panel_2))
+            .when(!live, |d| d.text_color(t.muted))
+            .child(div().flex_none().w(px(10.)).flex().justify_center().child(dot))
+            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().children(kids.next()))
+            .children(kids)
+            .into_any_element()
+    }
+
+    /// `.kv`: an 84px label, then its value.
+    #[inline(never)]
+    fn c_det_row(&mut self, m: &MainWindow, n: &Node, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+        let t = self.t;
+        let first = self.path.last() == Some(&0);
+        let mut kids = self.kids(m, n, boxed, cx).into_iter();
+        div()
+            .flex()
+            .gap(px(10.))
+            .py(px(7.))
+            .when(!first, |d| d.border_t_1().border_color(t.panel_2))
+            .child(div().flex_none().w(px(84.)).children(kids.next()))
+            .child(div().flex_1().min_w_0().children(kids))
             .into_any_element()
     }
 
@@ -1773,6 +1866,7 @@ fn button(t: &Theme, id: SharedString, label: &str, look: Look) -> Stateful<Div>
             Icon::Back => icon_btn(t, id, 36., 8., paint(Ic::Back, 16., 2.2, t.muted)),
             Icon::Remove => icon_btn(t, id, 32., 7., paint(Ic::X, 16., 2.2, t.muted)),
             Icon::More => icon_btn(t, id, 24., 6., paint(Ic::More, 16., 0., t.muted)),
+            Icon::Focus => icon_btn(t, id, 26., 6., paint(Ic::Focus, 14., 2., t.muted)),
         },
     }
 }
@@ -1784,6 +1878,8 @@ enum Ic {
     X,
     Back,
     More,
+    /// Open in another window: a box with an arrow out of its corner.
+    Focus,
     Check,
     Clock,
     Comment,
@@ -1844,6 +1940,11 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
                     for x in [5., 12., 19.] {
                         fill_dot((x, 12.), 1.8, window);
                     }
+                }
+                Ic::Focus => {
+                    line(&[(10., 5.), (5., 5.), (5., 19.), (19., 19.), (19., 14.)], window);
+                    line(&[(13., 5.), (19., 5.), (19., 11.)], window);
+                    line(&[(19., 5.), (11., 13.)], window);
                 }
                 Ic::Check => line(&[(5., 12.5), (9.5, 17.), (19., 7.5)], window),
                 Ic::Clock => {

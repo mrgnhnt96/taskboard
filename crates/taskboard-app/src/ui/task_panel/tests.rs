@@ -37,6 +37,7 @@ fn ui_from(v: &Value) -> Ui {
         att_edit: v["att_edit"].as_str().map(str::to_string),
         att_drop: v["att_drop"].as_bool().unwrap_or(false),
         term_menu: v["term_menu"].as_bool().unwrap_or(false),
+        tl_open: v["tl_open"].as_array().map(|a| a.iter().filter_map(tl_step).collect()).unwrap_or_default(),
     }
 }
 
@@ -770,4 +771,78 @@ fn a_fetched_handoff_is_out_of_date_once_the_task_moves_on() {
         moved[k] = v;
         assert_ne!(handoff_stamp(&moved), same, "a new {k} fetches the handoff again");
     }
+}
+
+fn tl_step(v: &Value) -> Option<view::TlStep> {
+    match v.as_str()? {
+        "started" => Some(view::TlStep::Started),
+        s => s.strip_prefix("result:")?.parse().ok().map(view::TlStep::Result),
+    }
+}
+
+fn every(n: &view::Node, f: &mut impl FnMut(&view::Node)) {
+    f(n);
+    if let view::Node::El { kids, .. } = n {
+        kids.iter().for_each(|k| every(k, f));
+    }
+}
+
+fn two_terminals() -> Value {
+    json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp", "started_at": "2026-01-05T14:00:00Z",
+           "session": {"id": "s2", "status": "working"},
+           "terminals": [{"id": "s2", "name": "T7 Second go", "status": "working", "background": null, "at": "2026-01-05T15:14:00Z"},
+                         {"id": "s1", "name": "T7 First go", "status": "gone", "background": null, "at": "2026-01-05T14:02:00Z"}],
+           "context": {"where": {"branch": "feat/t7-progress", "uncommitted": 3}},
+           "log": [{"kind": "commit", "at": "2026-01-05T15:52:00Z", "text": "wip"}]})
+}
+
+#[::core::prelude::v1::test]
+fn the_started_step_shows_its_terminals_only_when_opened() {
+    let task = two_terminals();
+    let shut = panel_text(task.clone(), json!({}));
+    assert!(!shut.contains("First go") && !shut.contains("feat/t7-progress"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["started"]}})));
+    let closed = crate::fmt::hhmm("2026-01-05T15:14:00Z");
+    assert!(text.contains("T7 Second go Working"), "{text}");
+    assert!(text.contains(&format!("T7 First go Closed {closed}")), "{text}");
+    let last = crate::fmt::hhmm("2026-01-05T15:52:00Z");
+    assert!(text.contains(&format!("Branch feat/t7-progress Changes 3 files not committed · last commit {last}")), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn the_live_terminal_has_a_focus_button() {
+    let tree = tree(&json!({"task": two_terminals(), "state": {}, "ui": {"tl_open": ["started"]}}));
+    let mut tips = Vec::new();
+    every(&tree, &mut |n| {
+        if let view::Node::Btn { act, tip: Some(tip), .. } = n {
+            tips.push(format!("{} {tip}", act.act));
+        }
+    });
+    assert_eq!(tips.iter().filter(|t| *t == "focus Focus in Midna").count(), 1, "{tips:?}");
+}
+
+#[::core::prelude::v1::test]
+fn a_step_result_opens_to_its_full_note_and_what_it_ran_on() {
+    let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
+                      "devices": {"lent_labels": ["Android emulator"]},
+                      "step_results": [{"name": "Verify numbers", "headline": "No findings", "note": "Checked the totals after teardown.", "open": 0,
+                                        "head": "4e1a9c2f00", "at": "2026-01-05T12:00:00Z", "findings": []}]});
+    let shut = panel_text(task.clone(), json!({}));
+    assert!(shut.contains("Verify numbers No findings") && !shut.contains("Checked the totals"), "{shut}");
+    let text = view::text(&tree(&json!({"task": task, "state": {}, "ui": {"tl_open": ["result:0"]}})));
+    assert!(text.contains("Checked the totals after teardown. Ran on Android emulator · commit 4e1a9c2"), "{text}");
+}
+
+#[::core::prelude::v1::test]
+fn a_step_with_nothing_more_to_show_does_not_open() {
+    let task = json!({"ref": "T7", "id": 7, "title": "x", "status": "working", "project": "webapp",
+                      "step_results": [{"name": "Lint", "headline": "Passed", "open": 0, "at": "2026-01-05T12:00:00Z", "findings": []}]});
+    let tree = tree(&json!({"task": task, "state": {}, "ui": {}}));
+    let mut steps = 0;
+    every(&tree, &mut |n| {
+        if let view::Node::El { k: view::K::TlStep { step: view::TlStep::Result(_), .. }, .. } = n {
+            steps += 1;
+        }
+    });
+    assert_eq!(steps, 0);
 }

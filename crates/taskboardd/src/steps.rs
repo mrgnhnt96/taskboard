@@ -1043,7 +1043,7 @@ fn round_card(st: &Step, round: &Round, all: &[Round], triage: &[Value], head: O
     json!({
         "name": st.name, "bar": if st.bar.is_empty() { Value::Null } else { json!(st.bar) },
         "at": round.at, "head": round.head, "passed": round.passed, "stale": stale,
-        "verdict": round.data["result"]["verdict"], "headline": headline(round, &fs),
+        "verdict": round.data["result"]["verdict"], "headline": headline(round, &fs), "note": round.data["note"],
         "open": fs.iter().filter(|f| finding_open(f)).count(), "findings": fs,
         "rounds": all.iter().filter(|r| r.key == k).count(),
     })

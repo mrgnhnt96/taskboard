@@ -63,6 +63,8 @@ pub enum Icon {
     Back,
     More,
     Remove,
+    /// Focus the terminal in Midna (a box with an arrow out of it).
+    Focus,
 }
 
 /// How a plain link looks (`.goal-name`, `.jkey`, `.term-link`, `.att-name`, `.att-src.g`…).
@@ -148,6 +150,8 @@ pub enum St {
     TlS,
     /// What a timeline stop says (`.tl-text`): its summary, or the latest line.
     TlText,
+    /// What an opened stop says (`.det p`): a step's result.
+    DetText,
 }
 
 /// Containers (the web's layout elements).
@@ -198,6 +202,14 @@ pub enum K {
     TlNode { st: TlSt, card: bool },
     /// A stop's name, subline and time.
     TlHead,
+    /// A finished stop that opens in place: its head, then what it shows once open.
+    TlStep { step: TlStep, open: bool },
+    /// What an opened stop shows (`.det`).
+    Det,
+    /// One of the task's terminals in Started's detail (`.dr`): its name, then its state; `live` for the one it's in.
+    DetTerm { live: bool },
+    /// A row of an opened stop (`.kv`): its label, then its value.
+    DetRow,
     /// Focus in Midna and the ⋯ menu.
     TlActs,
     /// The terminal's ⋯ menu.
@@ -206,6 +218,14 @@ pub enum K {
     MenuItem { danger: bool },
     /// The views at the panel's foot: What to do, Context, Full log.
     Foot,
+}
+
+/// A finished timeline stop that opens in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TlStep {
+    Started,
+    /// The nth of the task's `step_results`.
+    Result(usize),
 }
 
 /// A timeline stop's dot (`.n-*`).
@@ -318,6 +338,8 @@ pub struct Ui {
     pub att_drop: bool,
     /// The now stop's ⋯ terminal menu is open.
     pub term_menu: bool,
+    /// The finished timeline stops opened in place.
+    pub tl_open: HashSet<TlStep>,
 }
 
 impl Ui {
@@ -864,9 +886,9 @@ fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
     let status = s(t, "status");
     let mut nodes = Vec::new();
     if opt_s(t, "started_at").is_some() && !matches!(status, "queued" | "planned") {
-        nodes.push(started_node(t));
+        nodes.push(started_node(c, t));
     }
-    nodes.extend(arr(t, "step_results").iter().map(|x| result_node(c, x)));
+    nodes.extend(arr(t, "step_results").iter().enumerate().map(|(ix, x)| result_node(c, t, ix, x)));
     if status == "done" {
         nodes.push(done_node(c, t));
     }
@@ -877,8 +899,20 @@ fn timeline(c: &Ctx, t: &Value) -> Vec<Node> {
     vec![el(K::Tline, nodes)]
 }
 
+/// A finished stop's head, opening in place onto `detail`; just the head when there's nothing to show.
+fn tl_step(c: &Ctx, step: TlStep, head: Node, detail: Vec<Node>) -> Node {
+    if detail.is_empty() {
+        return head;
+    }
+    el(K::TlStep { step, open: c.ui.tl_open.contains(&step) }, vec![head, el(K::Det, detail)])
+}
+
+fn det_row(label: &str, value: Node) -> Node {
+    el(K::DetRow, vec![txt(label, St::LrowKey), value])
+}
+
 /// `startedNode(t)`: "In Midna 3 · 2 closed earlier".
-fn started_node(t: &Value) -> Node {
+fn started_node(c: &Ctx, t: &Value) -> Node {
     let name = obj(t, "session").and_then(|x| opt_s(x, "name")).or(opt_s(t, "who"));
     let cur = field(&t["session"], "id");
     let closed = arr(t, "terminals").iter().filter(|x| !js_eq(field(x, "id"), cur) && opt_s(x, "status").is_none_or(|st| st == "gone")).count();
@@ -887,11 +921,73 @@ fn started_node(t: &Value) -> Node {
     if closed > 0 {
         sub.push(format!("{closed} closed earlier"));
     }
-    tl_node(TlSt::Done, tl_head(tl_name("Started"), &sub.join(" · "), &fmt::hhmm(s(t, "started_at"))), vec![], false)
+    let head = tl_head(tl_name("Started"), &sub.join(" · "), &fmt::hhmm(s(t, "started_at")));
+    tl_node(TlSt::Done, tl_step(c, TlStep::Started, head, started_detail(c, t)), vec![], false)
+}
+
+/// Started, opened: the task's terminals (the one it's in with its state and Focus, earlier ones
+/// when they closed), its branch and what isn't committed.
+fn started_detail(c: &Ctx, t: &Value) -> Vec<Node> {
+    let r = rf(t, "T");
+    let cur = field(&t["session"], "id");
+    let terms = arr(t, "terminals");
+    let mut out: Vec<Node> = terms
+        .iter()
+        .enumerate()
+        .map(|(ix, x)| {
+            let live = cur.is_some() && js_eq(field(x, "id"), cur) && session_live(t);
+            let mut kids = vec![txt(s(x, "name"), St::Plain)];
+            if live {
+                kids.push(term_state(x));
+                kids.push(c.btn("", Act::new("focus", "", &r, format!("manage:{r}")), Look::Icon(Icon::Focus), false, Some("Focus in Midna")));
+            } else if opt_s(x, "status").is_none_or(|st| st == "gone") {
+                // Newest first: an earlier terminal closed when the next one took the task.
+                let closed = ix.checked_sub(1).and_then(|n| opt_s(&terms[n], "at")).map(fmt::hhmm).filter(|h| !h.is_empty());
+                kids.push(txt(closed.map_or("Closed".to_string(), |h| format!("Closed {h}")), St::Time));
+            } else {
+                kids.push(term_state(x));
+            }
+            el(K::DetTerm { live }, kids)
+        })
+        .collect();
+    let w = &t["context"]["where"];
+    if let Some(br) = opt_s(w, "branch") {
+        out.push(det_row("Branch", txt(br, St::Mono)));
+    }
+    let mut changes = Vec::new();
+    match &w["uncommitted"] {
+        Value::Null => {}
+        Value::Number(n) if n.as_f64() == Some(0.) => changes.push("Nothing uncommitted".to_string()),
+        v => changes.push(format!("{} not committed", uncommitted(v))),
+    }
+    let last = arr(t, "log").iter().filter(|e| s(e, "kind") == "commit").map(|e| s(e, "at")).max().map(fmt::hhmm).filter(|h| !h.is_empty());
+    if let Some(h) = last {
+        changes.push(format!("{} {h}", if changes.is_empty() { "Last commit" } else { "last commit" }));
+    }
+    if !changes.is_empty() {
+        out.push(det_row("Changes", txt(changes.join(" · "), St::Plain)));
+    }
+    out
+}
+
+/// A terminal's state: what's running in its background, else its status.
+fn term_state(x: &Value) -> Node {
+    let st = s(x, "status");
+    if !x["background"].is_null() {
+        return pill(fmt::background_label(&x["background"]), Tone::Working);
+    }
+    let label = match st {
+        "working" => "Working",
+        "waiting" => "Waiting",
+        "needs" => "Needs you",
+        "offline" => "Offline",
+        _ => "Idle",
+    };
+    pill(label, st_tone(st))
 }
 
 /// A step that ran a round (`step_results`): its headline, and its findings in a fold.
-fn result_node(c: &Ctx, x: &Value) -> Node {
+fn result_node(c: &Ctx, t: &Value, ix: usize, x: &Value) -> Node {
     let open = x["open"].as_i64().unwrap_or(0);
     let mut body = Vec::new();
     if b(x, "stale") {
@@ -902,7 +998,24 @@ fn result_node(c: &Ctx, x: &Value) -> Node {
         let summary = if open > 0 { format!("{} · Findings ›", fmt::plural(open, "open finding", "open findings")) } else { "Findings ›".to_string() };
         body.push(fold(Fold::Findings, c.fold_open(Fold::Findings, true), txt(summary, St::Small), vec![el(K::List, findings.iter().map(finding_item).collect())]));
     }
-    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at"))), body, false)
+    let head = tl_head(tl_name(s(x, "name")), s(x, "headline"), &fmt::hhmm(s(x, "at")));
+    tl_node(if open > 0 { TlSt::Warn } else { TlSt::Done }, tl_step(c, TlStep::Result(ix), head, result_detail(t, x)), body, false)
+}
+
+/// A step result, opened: what came of it and what it ran on (the task's devices, the commit).
+fn result_detail(t: &Value, x: &Value) -> Vec<Node> {
+    let mut out = Vec::new();
+    if let Some(note) = opt_s(x, "note").filter(|n| *n != s(x, "headline")) {
+        out.push(txt(note, St::DetText));
+    }
+    let mut on: Vec<String> = lent_devices(t).into_iter().map(str::to_string).collect();
+    if let Some(h) = opt_s(x, "head") {
+        on.push(format!("commit {}", h.chars().take(7).collect::<String>()));
+    }
+    if !on.is_empty() {
+        out.push(det_row("Ran on", txt(on.join(" · "), St::Plain)));
+    }
+    out
 }
 
 /// `doneNode(t)`: Done or Failed, with its summary.
@@ -1776,17 +1889,24 @@ fn origin_row(t: &Value) -> Option<Node> {
     Some(el(K::KvRow, vec![txt("From", St::LrowKey), value]))
 }
 
+/// The devices lent to it, each with its kind and target ("dev-a (Android emulator, emulator-5554)")
+/// when the board gives them.
+fn lent_devices(t: &Value) -> Vec<&str> {
+    let d = &t["devices"];
+    let lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
+    if !lent.is_empty() {
+        return lent;
+    }
+    arr(d, "lent").iter().filter_map(|x| x.as_str()).collect()
+}
+
 /// The devices it has (or asks for) and its bits, as Context rows. A backend bit not made yet has
 /// "Mark created" (the owner's word that it's made in the flag tool, as on the goal page).
 fn pool_rows(c: &Ctx, t: &Value) -> Vec<Node> {
     let r = rf(t, "T");
     let mut out = vec![];
     let d = &t["devices"];
-    // Each with its kind and target ("dev-a (Android emulator, emulator-5554)") when the board gives them.
-    let mut lent: Vec<&str> = arr(d, "lent_labels").iter().filter_map(|x| x.as_str()).collect();
-    if lent.is_empty() {
-        lent = arr(d, "lent").iter().filter_map(|x| x.as_str()).collect();
-    }
+    let lent = lent_devices(t);
     let devices = if !lent.is_empty() { Some(lent.join(", ")) } else { opt_s(d, "needs_text").map(|n| format!("Needs {n}")) };
     if let Some(v) = devices {
         out.push(el(K::KvRow, vec![txt("Devices", St::LrowKey), txt(v, St::Plain)]));
@@ -2252,7 +2372,7 @@ fn walk_acts(n: &Node, out: &mut Vec<String>) {
 /// The kids the reader sees: a closed fold shows only its summary.
 pub fn shown(n: &Node) -> impl Iterator<Item = &Node> {
     let (kids, closed): (&[Node], bool) = match n {
-        Node::El { k: K::Fold(_, open), kids, .. } => (kids, !open),
+        Node::El { k: K::Fold(_, open) | K::TlStep { open, .. }, kids, .. } => (kids, !open),
         Node::El { kids, .. } => (kids, false),
         _ => (&[], false),
     };
