@@ -1243,6 +1243,9 @@ enum GoalCmd {
         /// Start each task in its own git worktree, detached at this branch (like origin/main); off for the shared folder
         #[arg(long, value_name = "BASE|off")]
         worktrees: Option<String>,
+        /// Where its tasks on auto work: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks per task)
+        #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
+        lane: Option<String>,
         /// Queue its planned tasks to run (and unpause it), when the owner says so
         #[arg(long)]
         run: bool,
@@ -1363,6 +1366,9 @@ enum TaskCmd {
         /// Nothing else in its goal runs while it does (board: nothing else on the board)
         #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
         alone: Option<String>,
+        /// Where it works: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks; `tb planning` lists the rules)
+        #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
+        lane: Option<String>,
         /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
@@ -1435,6 +1441,9 @@ enum TaskCmd {
         /// Nothing else in its goal runs while it does (board: nothing else on the board); none to run alongside others
         #[arg(long, num_args = 0..=1, default_missing_value = "goal", value_parser = ["goal", "board", "none"])]
         alone: Option<String>,
+        /// Where it works: shared (the shared checkout), slot (a worktree from the pool), alone, or auto (the board picks)
+        #[arg(long, value_parser = ["shared", "slot", "alone", "auto"])]
+        lane: Option<String>,
         /// A Jira key to link, `new` for a new ticket, or `none` for no ticket
         #[arg(long)]
         jira: Option<String>,
@@ -2470,9 +2479,14 @@ fn midna_pin_args(session: Option<&str>, r: &str, title: &str) -> Option<Vec<Str
     Some(vec!["links".into(), "add".into(), format!("taskboard://{kind}/{r}"), "--title".into(), title])
 }
 
-/// "holds local-core" and "runs alone in its goal".
+/// "works in a worktree slot", "holds local-core" and "runs alone in its goal".
 fn lock_bits(t: &Value) -> Vec<String> {
     let mut bits = vec![];
+    match t["lane"]["set"].as_str() {
+        Some("shared") => bits.push("works in the shared checkout".into()),
+        Some("slot") => bits.push("works in a worktree slot".into()),
+        _ => {}
+    }
     if let Some(l) = t["locks"].as_array().filter(|a| !a.is_empty()) {
         bits.push(format!("holds {}", l.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")));
     }
@@ -2480,6 +2494,17 @@ fn lock_bits(t: &Value) -> Vec<String> {
         bits.push(alone_text(a).into());
     }
     bits
+}
+
+/// A goal's lane line for `tb goal show`; None on auto, where the board picks per task.
+/// The goal's lane line for `tb goal show`; nothing on auto.
+fn lane_text(lane: &str) -> Option<&'static str> {
+    match lane {
+        "slot" => Some("Lane: slot. Its tasks work in worktree slots from the pool."),
+        "shared" => Some("Lane: shared. Its tasks work in the shared checkout."),
+        "alone" => Some("Lane: alone. Each task runs with nothing else in the goal beside it."),
+        _ => None,
+    }
 }
 
 fn alone_text(scope: &str) -> &'static str {
@@ -2589,6 +2614,9 @@ fn planning_cmd(c: &Ctx, project: Option<String>) -> Result<i32, String> {
     out(&format!("Slice goals into tasks by {whose}{path}:\n{}", v["text"].as_str().unwrap_or("").trim()));
     if let Some(m) = models_line(&v["models"]) {
         out(&format!("\n{m}"));
+    }
+    if let Some(l) = v["lanes"].as_str() {
+        out(&format!("\nLanes, where each task works while its wave mates run:\n{l}"));
     }
     let lessons: Vec<&str> = v["lessons"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
     if !lessons.is_empty() {
@@ -3170,6 +3198,9 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
     if let Some(m) = model_line(v) {
         lines.push(m);
     }
+    if let Some(l) = task_lane_line(v) {
+        lines.push(l);
+    }
     for (label, key) in [("Detail", "detail"), ("Summary", "summary")] {
         let block = indented(label, v[key].as_str().unwrap_or(""));
         if !block.is_empty() {
@@ -3183,6 +3214,18 @@ fn task_show_lines(v: &Value, n: usize) -> Vec<String> {
         lines.extend(log);
     }
     lines
+}
+
+/// "Lane: slot (its goal's)": where the task works and why; nothing when it's in the shared checkout by default.
+fn task_lane_line(v: &Value) -> Option<String> {
+    let lane = v["lane"]["lane"].as_str()?;
+    let from = match v["lane"]["from"].as_str() {
+        Some("goal") => " (its goal's)",
+        Some("auto") if lane == "shared" => return None,
+        Some("auto") => " (the board's pick)",
+        _ => "",
+    };
+    Some(format!("Lane: {lane}{from}"))
 }
 
 /// "Model: small (sonnet)": the task's model and what its terminal runs; nothing when neither is known.
@@ -4139,6 +4182,9 @@ fn goal_lines(g: &Value) -> Vec<String> {
         if g["run_in_order"] == true { "in order" } else { "in any order" },
         g["max_terminals"]
     ));
+    if let Some(l) = lane_text(g["lane"].as_str().unwrap_or("auto")) {
+        lines.push(l.into());
+    }
     let own: Vec<String> = g["devices"]["devices"]
         .as_array()
         .into_iter()
@@ -5335,7 +5381,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, run, deprioritize, prioritize, area, devices, after } => {
+            GoalCmd::Set { goal, name, outcome, tldr, paused, in_order, max_terminals, epic, product, worktrees, lane, run, deprioritize, prioritize, area, devices, after } => {
                 let g = goal_ref(&goal)?;
                 let mut b = json!({});
                 if let Some(x) = name {
@@ -5364,6 +5410,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = worktrees {
                     b["worktree_base"] = json!(x);
+                }
+                if let Some(x) = lane {
+                    b["lane"] = json!(x);
                 }
                 if let Some(x) = area {
                     b["area"] = json!(x);
@@ -5561,7 +5610,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             Ok(0)
         }
         Cmd::Task { action } => match action {
-            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, human, not_backlog } => {
+            TaskCmd::New { title, issue, detail, goal, also, wave, files, project, planned, here, next, now, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, stack_on, stack_merge, pr, no_pr, area, model, human, not_backlog } => {
                 if wave.is_some() && goal.is_none() {
                     return Err("--wave needs --goal: waves are a goal's".into());
                 }
@@ -5607,6 +5656,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(a) = alone {
                     body["alone"] = json!(a);
+                }
+                if let Some(l) = lane {
+                    body["lane"] = json!(l);
                 }
                 if let Some(m) = model {
                     body["model"] = json!(m);
@@ -5657,7 +5709,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 Ok(0)
             }
-            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area, model, project } => {
+            TaskCmd::Set { task, title, detail, goal, also, not_also, wave, priority, waits_for, lock, alone, lane, jira, ticket_summary, ticket_text, devices, bits, not_bits, stack_on, stack_merge, pr, status, merged_note, area, model, project } => {
                 let t = task_ref(&task)?;
                 let mut b = json!({});
                 if let Some(x) = title {
@@ -5689,6 +5741,9 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 }
                 if let Some(x) = alone {
                     b["alone"] = json!(x);
+                }
+                if let Some(x) = lane {
+                    b["lane"] = json!(x);
                 }
                 if let Some(x) = model {
                     b["model"] = json!(x);
@@ -7042,6 +7097,25 @@ mod tests {
         assert_eq!(model_line(&json!({"model": "haiku", "model_runs": "haiku"})).as_deref(), Some("Model: haiku"));
         assert_eq!(model_line(&json!({"model": null, "model_runs": "opus"})).as_deref(), Some("Model: default (opus)"));
         assert_eq!(model_line(&json!({"model": null, "model_runs": null})), None);
+    }
+
+    #[test]
+    fn lane_flags_parse_and_show() {
+        let lane = |args: &[&str]| match Cli::try_parse_from(args).unwrap().cmd {
+            Cmd::Task { action: TaskCmd::New { lane, .. } | TaskCmd::Set { lane, .. } } => lane,
+            Cmd::Goal { action: GoalCmd::Set { lane, .. } } => lane,
+            _ => panic!("{args:?}"),
+        };
+        assert_eq!(lane(&["tb", "task", "new", "Pen", "--lane", "slot"]).as_deref(), Some("slot"));
+        assert_eq!(lane(&["tb", "task", "set", "T3", "--lane", "auto"]).as_deref(), Some("auto"));
+        assert_eq!(lane(&["tb", "goal", "set", "G1", "--lane", "shared"]).as_deref(), Some("shared"));
+        assert_eq!(lane(&["tb", "task", "new", "Pen"]), None);
+        assert!(Cli::try_parse_from(["tb", "task", "set", "T3", "--lane", "sideways"]).is_err());
+        assert_eq!(task_lane_line(&json!({"lane": {"lane": "slot", "from": "goal"}})).as_deref(), Some("Lane: slot (its goal's)"));
+        assert_eq!(task_lane_line(&json!({"lane": {"lane": "slot", "from": "auto"}})).as_deref(), Some("Lane: slot (the board's pick)"));
+        assert_eq!(task_lane_line(&json!({"lane": {"lane": "shared", "from": "task"}})).as_deref(), Some("Lane: shared"));
+        assert_eq!(task_lane_line(&json!({"lane": {"lane": "shared", "from": "auto"}})), None);
+        assert_eq!(lane_text("auto"), None);
     }
 
     #[test]

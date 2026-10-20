@@ -2,7 +2,8 @@
 //! board; a task that runs alone waits until its goal (or the board) is quiet, then nothing else in that
 //! scope starts until it's done. A task holds its locks while it's active: working or needing the owner
 //! (not a failed start), or queued with a start job. A task whose goal makes worktrees also waits for a
-//! slot from the pool when it's full (`slots.rs`); each held slot shows as the lock `wt:slot-<n>`.
+//! slot from the pool when it's full (`slots.rs`); each held slot shows as the lock `wt:slot-<n>`. A task
+//! in a goal on the `alone` lane (`worklane.rs`) runs alone in its goal unless it names its own lane.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -118,9 +119,20 @@ fn refs_text(ts: &[&Row]) -> String {
     }
 }
 
+/// The task with `alone` set to the scope it runs alone in, its goal's `alone` lane included.
+fn scoped(app: &App, t: &Row) -> Result<Row> {
+    let mut t = t.clone();
+    t.insert("alone".into(), json!(crate::worklane::alone_scope(app, &t)?));
+    Ok(t)
+}
+
+/// Tasks that may run alone: their own `alone`, or a goal on the `alone` lane.
+const MAY_RUN_ALONE: &str = "(alone IS NOT NULL OR goal_id IN (SELECT id FROM goals WHERE lane = 'alone'))";
+
 /// Why a lock or a task running alone holds this task back.
 pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
-    let others = active(app, t.id())?;
+    let others = active(app, t.id())?.iter().map(|x| scoped(app, x)).collect::<Result<Vec<_>>>()?;
+    let t = &scoped(app, t)?;
     let mine = names(t);
     for x in &others {
         if let Some(held) = names(x).into_iter().find(|n| mine.contains(n)) {
@@ -148,9 +160,13 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
 fn alone_ahead(app: &App, t: &Row) -> Result<Option<Row>> {
     let mine = start_order(t);
     for x in app.db.q(
-        "SELECT * FROM tasks WHERE status = 'queued' AND alone IS NOT NULL AND id != ? AND session_id IS NULL AND start_job IS NULL",
+        &format!("SELECT * FROM tasks WHERE status = 'queued' AND {MAY_RUN_ALONE} AND id != ? AND session_id IS NULL AND start_job IS NULL"),
         p![t.id()],
     )? {
+        let x = scoped(app, &x)?;
+        if x.s("alone").is_none() {
+            continue;
+        }
         if start_order(&x) < mine && covers(&x, t) && ready_but_for_others(app, &x)? {
             return Ok(Some(x));
         }
@@ -178,10 +194,10 @@ fn ready_but_for_others(app: &App, t: &Row) -> Result<bool> {
 /// `GET /locks`: each lock, the task holding it and those waiting or planned; tasks that run alone.
 pub fn overview(app: &App) -> Result<Value> {
     let rows = app.db.q(
-        "SELECT * FROM tasks WHERE status IN ('planned', 'queued', 'working', 'needs') \
-         AND ((locks IS NOT NULL AND locks != '') OR alone IS NOT NULL) ORDER BY id",
+        &format!("SELECT * FROM tasks WHERE status IN ('planned', 'queued', 'working', 'needs') \
+         AND ((locks IS NOT NULL AND locks != '') OR {MAY_RUN_ALONE}) ORDER BY id"),
         p![],
-    )?;
+    )?.iter().map(|t| scoped(app, t)).collect::<Result<Vec<_>>>()?;
     let holding: Vec<i64> = active(app, 0)?.iter().map(|x| x.id()).collect();
     let mut by_name: Vec<Value> = vec![];
     for t in &rows {

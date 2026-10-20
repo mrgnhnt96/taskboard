@@ -166,6 +166,12 @@ CREATE TRIGGER IF NOT EXISTS sessions_status_at_new AFTER INSERT ON sessions
   BEGIN UPDATE sessions SET status_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END;
 "#;
 
+/// Goals that made worktrees before lanes take the slot lane, and tasks that ran alone the alone lane.
+const BACKFILL_LANES: &str = r#"
+UPDATE goals SET lane = 'slot' WHERE lane IS NULL AND COALESCE(worktree_base, '') != '';
+UPDATE tasks SET lane = 'alone' WHERE lane IS NULL AND alone IS NOT NULL;
+"#;
+
 /// Tasks from before `task_states` existed get their start and their current status, so the Days
 /// page can draw them.
 const BACKFILL_STATES: &str = r#"
@@ -276,6 +282,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("tasks", "model", "TEXT"),
     // `human` for a task only the owner can do (`tb task new --human`, `human.rs`); null for an agent's.
     ("tasks", "kind", "TEXT"),
+    // Where the task or goal works (`worklane.rs`): shared, slot, alone or auto; null is auto.
+    ("tasks", "lane", "TEXT"),
+    ("goals", "lane", "TEXT"),
 ];
 
 fn add_columns(conn: &Connection, added: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
@@ -373,6 +382,7 @@ impl Db {
         conn.execute_batch(crate::review::SCHEMA)?;
         add_columns(&conn, crate::review::ADDED)?;
         conn.execute_batch(BACKFILL_STATES)?;
+        conn.execute_batch(BACKFILL_LANES)?;
         Ok(Db { inner: ReentrantMutex::new(Inner { conn: RefCell::new(conn), depth: Cell::new(0) }) })
     }
 

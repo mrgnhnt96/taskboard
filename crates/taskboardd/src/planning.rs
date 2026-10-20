@@ -37,6 +37,15 @@ pub const BUILT_IN: &str = "\
 - Head merge a stack when the pieces only make sense together (a migration and the code that needs it, a feature that's half there until the last PR) or main would be in a state you wouldn't ship between them: each PR merges into the one below it, review stays small, and main gets it all in one merge.
 - Set the mode with --stack-merge and say it in the tasks' detail.";
 
+/// Where each task works while its wave mates run (`worklane.rs`): sent with whatever rules are in force,
+/// since an owner's planning file says how to slice work, not how the board places it.
+pub const LANE_RULES: &str = "\
+- shared: works in the project's shared checkout, beside the others; fits small tasks whose files no wave mate touches.
+- slot: works in a worktree slot from the board's pool, on its own branch; fits tasks whose files overlap a wave mate's.
+- alone: runs with nothing else in its goal beside it (--alone board: nothing else on the board).
+- auto (the default): a slot when a wave runs it beside others and either side plans no files or their files overlap; else shared. A goal's lane (tb goal set G<n> --lane, or --worktrees, which is slot) is what its tasks on auto take.
+- Give a task's files in its wave (\"title::detail::<wave>::::src/a.rs\") so auto can tell; set a lane with \"::lane=<lane>\" after a --task, tb task new|set --lane, or tb goal set --lane.";
+
 /// The built-in rule for each task's model, added to [`BUILT_IN`] while `[models]` is on.
 pub const MODEL_RULE: &str = "\
 - Give each task a model: --model small (or \"::model=small\" on a --task) for mechanical, single-file or copy work; --model large for design, cross-crate or risky work. Unsure: large.";
@@ -97,7 +106,7 @@ pub fn get(app: &App, query: &Query) -> Result<Value> {
     let m = &app.cfg.models;
     let models = m.enabled.then(|| json!({"small": m.resolve(Some("small")), "large": m.resolve(Some("large")), "default": m.resolve(None)}));
     Ok(json!({"project": project, "from": p.from, "path": p.path, "text": p.text, "skipped": p.skipped,
-              "lessons": crate::lessons::lines(&lessons), "models": models}))
+              "lessons": crate::lessons::lines(&lessons), "models": models, "lanes": LANE_RULES}))
 }
 
 /// The rules in force for a project's goals (its own file, else the board's, else the built-in ones)

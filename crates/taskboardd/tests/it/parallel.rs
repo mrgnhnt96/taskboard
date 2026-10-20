@@ -897,3 +897,113 @@ fn review_fixes_reclaim_a_slot_on_the_pushed_branch() {
     assert_eq!(git(Path::new(&slot(&b, 2)), &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/one");
     assert!(b.card(one)["log"].to_string().contains(&format!("Made worktree slot-2 at {}, on its branch feature/one", slot(&b, 2))), "{}", b.card(one)["log"]);
 }
+
+fn lane(b: &Board, t: i64) -> (String, String) {
+    let l = &b.card(t)["lane"];
+    (l["lane"].as_str().unwrap().to_string(), l["from"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn a_lane_on_the_task_or_its_goal_says_where_it_starts() {
+    let b = new_board();
+    let head = git_repo(&b);
+    let g = b.side_by_side();
+    let in_slot = b.task("In a slot", json!({"goal_id": g, "lane": "slot"}));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(in_slot).st("cwd"), slot(&b, 1), "a slot without a goal base starts at the default branch");
+    assert_eq!(git(Path::new(&slot(&b, 1)), &["rev-parse", "HEAD"]), head);
+    assert!(b.start_job(in_slot).st("prompt").contains("Lane: slot (it's set on the task)"), "{}", b.start_job(in_slot).st("prompt"));
+
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "origin/main"}));
+    assert_eq!(b.get(&format!("goals/G{g}"))["lane"], "slot", "--worktrees puts the goal on the slot lane");
+    let shared = b.task("Shared", json!({"goal_id": g, "lane": "shared"}));
+    let auto = b.task("Auto", json!({"goal_id": g}));
+    assert_eq!(lane(&b, auto), ("slot".into(), "goal".into()));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.start_job(shared).st("cwd"), b.repo(), "its own lane wins over the goal's");
+    assert_eq!(b.start_job(auto).st("cwd"), slot(&b, 2));
+
+    b.post(&format!("goals/G{g}"), json!({"lane": "shared"}));
+    assert_eq!(b.get(&format!("goals/G{g}"))["lane"], "shared");
+    b.post(&format!("goals/G{g}"), json!({"worktree_base": "off"}));
+    assert_eq!(b.get(&format!("goals/G{g}"))["lane"], "shared", "turning worktrees off leaves a lane set by hand");
+    let (code, msg) = b.post_err(&format!("goals/G{g}"), json!({"lane": "sideways"}));
+    assert_eq!(code, 400);
+    assert!(msg.contains("isn't a lane"), "{msg}");
+}
+
+#[test]
+fn auto_takes_a_slot_when_wave_mates_overlap_or_list_no_files() {
+    let b = new_board();
+    git_repo(&b);
+    let g = b.side_by_side();
+    let r = b.report(
+        "tb.propose",
+        "s1",
+        json!({"goal": format!("G{g}"), "tasks": [
+            "Apart A::x::1::::src/a.rs", "Apart B::x::1::::src/b.rs",
+            "Over C::x::2::::src/c.rs", "Over D::x::2::::src/c.rs, src/d.rs",
+            "Bare E::x::3", "Listed F::x::3::::src/f.rs",
+            "Pinned G::x::4::lane=shared", "Pinned H::x::4::::src/h.rs::lane=slot",
+        ]}),
+    );
+    let ids: Vec<i64> =
+        r["created"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().trim_start_matches('T').parse().unwrap()).collect();
+    let picks: Vec<(String, String)> = ids.iter().map(|t| lane(&b, *t)).collect();
+    let auto = |l: &str| (l.to_string(), "auto".to_string());
+    let own = |l: &str| (l.to_string(), "task".to_string());
+    assert_eq!(picks, [auto("shared"), auto("shared"), auto("slot"), auto("slot"), auto("slot"), auto("slot"), own("shared"), own("slot")]);
+    let warnings = r["warnings"].to_string();
+    assert!(warnings.contains(&format!("Wave 3 runs tasks side by side, and T{} plans no files", ids[4])), "{warnings}");
+    assert!(!warnings.contains("Wave 4") && !warnings.contains("Wave 1"), "{warnings}");
+}
+
+#[test]
+fn auto_stays_in_the_shared_checkout_outside_a_wave_or_a_git_checkout() {
+    let b = new_board();
+    let g = b.side_by_side();
+    let r = b.report("tb.propose", "s1", json!({"goal": format!("G{g}"), "tasks": ["One::x::1", "Two::x::1"]}));
+    let t: i64 = r["created"][0].as_str().unwrap()[1..].parse().unwrap();
+    assert_eq!(lane(&b, t), ("shared".into(), "auto".into()), "no git checkout: no pool to borrow from");
+    let loose = b.task("Loose", json!({"goal_id": g}));
+    assert_eq!(lane(&b, loose), ("shared".into(), "auto".into()));
+}
+
+#[test]
+fn alone_is_the_alone_lane() {
+    let b = new_board();
+    let g = b.side_by_side();
+    let t = b.task("Alone", json!({"goal_id": g, "alone": "goal"}));
+    assert_eq!(b.card(t)["lane"]["set"], "alone");
+    b.post(&format!("tasks/T{t}"), json!({"lane": "shared"}));
+    assert!(b.card(t)["alone"].is_null(), "another lane takes it off running alone");
+    b.post(&format!("tasks/T{t}"), json!({"lane": "alone"}));
+    assert_eq!(b.card(t)["alone"], "goal");
+    b.post(&format!("tasks/T{t}"), json!({"alone": "none"}));
+    assert_eq!(b.card(t)["lane"]["set"], "auto");
+    let (code, _) = b.post_err(&format!("tasks/T{t}"), json!({"lane": "slot", "alone": "goal"}));
+    assert_eq!(code, 400);
+
+    b.post(&format!("goals/G{g}"), json!({"lane": "alone"}));
+    let (one, two) = (b.task("One", json!({"goal_id": g})), b.task("Two", json!({"goal_id": g})));
+    runner::start_queued(&b.app).unwrap();
+    assert_eq!(b.started(), [t], "on the goal's alone lane, one runs at a time");
+    assert!(b.start_job(t).st("prompt").contains("runs alone in its goal"), "{}", b.start_job(t).st("prompt"));
+    assert!(![one, two].iter().any(|x| b.started().contains(x)));
+}
+
+#[test]
+fn an_older_board_puts_worktree_goals_and_alone_tasks_on_their_lanes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.db");
+    let db = taskboardd::db::Db::open(&path).unwrap();
+    db.x("INSERT INTO goals(name, worktree_base) VALUES ('Old', 'origin/main'), ('Plain', NULL)", p![]).unwrap();
+    db.x("INSERT INTO tasks(title, alone) VALUES ('Old', 'board'), ('Plain', NULL)", p![]).unwrap();
+    drop(db);
+    let db = taskboardd::db::Db::open(&path).unwrap();
+    let lanes = |table: &str| -> Vec<Option<String>> {
+        db.q(&format!("SELECT lane FROM {table} ORDER BY id"), p![]).unwrap().iter().map(|r| r.s("lane").map(str::to_string)).collect()
+    };
+    assert_eq!(lanes("goals"), [Some("slot".into()), None]);
+    assert_eq!(lanes("tasks"), [Some("alone".into()), None]);
+}
