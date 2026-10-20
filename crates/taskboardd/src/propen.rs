@@ -361,6 +361,22 @@ fn git(dir: &str, args: &[&str], timeout: f64) -> std::result::Result<(bool, Str
     }
 }
 
+/// The checkout's HEAD while it's a branch of its own with commits `<remote>/<base>` doesn't have:
+/// work that still needs its PR. It reads only local refs, so a hook can wait for it.
+pub fn unshipped_head(cfg: &PrBodyConfig, dir: &str, base: &str) -> Option<String> {
+    let (ok, branch, _) = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], 2.0).ok()?;
+    if !ok || branch.is_empty() || branch == "HEAD" || branch == base {
+        return None;
+    }
+    let base_ref = format!("{}/{base}", cfg.remote);
+    let (ok, past, _) = git(dir, &["rev-list", "--count", "HEAD", "--not", &base_ref], 2.0).ok()?;
+    if !ok || past.parse::<i64>().ok()? == 0 {
+        return None;
+    }
+    let (ok, head, _) = git(dir, &["rev-parse", "HEAD"], 2.0).ok()?;
+    ok.then_some(head)
+}
+
 /// The branch, ready for a PR into `base`: checked out, pushed as it is, rebased on the remote base
 /// with no merge commits. The branch's name, or why not.
 pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::Result<String, String> {

@@ -428,6 +428,39 @@ fn evidence_goes_under_the_context_section() {
 }
 
 #[test]
+fn the_owners_turn_that_leaves_committed_work_without_a_pr_is_told_to_ship_it() {
+    let b = new_board();
+    let repo = git_repo(&b);
+    let id = b.task("Add passkeys", json!({}));
+    b.take(id);
+    let stop = |msg: &str| b.report("hook.stop", json!({"cwd": b.repo(), "last_message": msg})).unwrap();
+    let ships = |out: &Value| out["deliver"]["text"].as_str().is_some_and(|t| t.contains("tb submit"));
+
+    assert!(!ships(&stop("Looked around.")), "nothing committed past main yet");
+
+    git(&repo, &["switch", "-q", "-c", "feat/passkeys"]);
+    std::fs::write(repo.join("passkeys"), "on\n").unwrap();
+    git(&repo, &["add", "passkeys"]);
+    git(&repo, &["commit", "-q", "-m", "Add passkeys"]);
+    assert!(!ships(&stop("Done. Should I open the PR?")), "a turn that asks the owner waits for them");
+    board::update_task(&b.app, id, vec![("status", json!("working"))]).unwrap();
+    let out = stop("The changes are on feat/passkeys.");
+    assert!(ships(&out), "{out}");
+    assert!(b.report("hook.stop", json!({"cwd": b.repo(), "last_message": "Still here.", "stop_hook_active": true})).unwrap()["deliver"].is_null());
+    assert!(!ships(&stop("Waiting on you to look first.")), "once per commit");
+
+    std::fs::write(repo.join("passkeys"), "off\n").unwrap();
+    git(&repo, &["commit", "-q", "-am", "Tweak"]);
+    assert!(ships(&stop("Tweaked it.")), "a new commit is told again");
+
+    std::fs::write(repo.join("passkeys"), "on\n").unwrap();
+    git(&repo, &["commit", "-q", "-am", "Tweak back"]);
+    b.link(id, 5, "feat/passkeys");
+    board::update_task(&b.app, id, vec![("status", json!("working"))]).unwrap();
+    assert!(!ships(&stop("Pushed.")), "it has its PR");
+}
+
+#[test]
 fn a_failed_fetch_shows_all_of_gits_error() {
     let b = new_board();
     let repo = git_repo(&b);

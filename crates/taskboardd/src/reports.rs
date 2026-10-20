@@ -39,6 +39,8 @@ pub struct Report<'a> {
     pub at: String,
     pub waiting_on_background: bool,
     pub stalled: bool,
+    /// The head of the task's branch, committed but with no PR yet, when the owner's own turn left it so.
+    pub unshipped: Option<String>,
     pub screened: Option<Value>,
     /// Background commands still running in the transcript, read before the transaction.
     pub background: transcript::Background,
@@ -74,6 +76,7 @@ impl<'a> Report<'a> {
             at,
             waiting_on_background: false,
             stalled: false,
+            unshipped: None,
             screened: None,
             background: transcript::Background::default(),
             turn_files: vec![],
@@ -636,6 +639,9 @@ fn on_stop(r: &mut Report) -> Result<Value> {
     r.stalled = stalled(r, &t)?;
     let reply_end = { let end = r.b("last_message_end"); if end.trim().is_empty() { r.b("last_message") } else { end } };
     let asked = ends_on_question(&reply_end).filter(|_| !r.spooled && t.s("status") == Some("working"));
+    if asked.is_some() || idle_on(r, &t)? != Some(false) {
+        r.unshipped = None;
+    }
     if let (Some(asked), Some(sid)) = (asked, r.sid.clone()) {
         // The turn ended by asking the owner something in its reply: it's waiting, not stalled.
         r.stalled = false;
@@ -1007,15 +1013,52 @@ fn nudge(r: &Report) -> Result<Option<Value>> {
     deliver::take(r.app, r.sid(), &r.event)
 }
 
-fn stalled(r: &Report, t: &Row) -> Result<bool> {
+/// The terminal on `t` stopped with nothing left running in it: whether the board sent the turn's prompt.
+fn idle_on(r: &Report, t: &Row) -> Result<Option<bool>> {
     if t.s("status") != Some("working") || t.b("lost") || as_bool(r.body.get("stop_hook_active"), false) {
-        return Ok(false);
+        return Ok(None);
     }
-    let Some(s) = board::get_session(r.app, r.sid())? else { return Ok(false) };
-    if !s.b("board_prompt") || t.s("session_id") != r.sid() {
-        return Ok(false);
+    let Some(s) = board::get_session(r.app, r.sid())? else { return Ok(None) };
+    if t.s("session_id") != r.sid() || r.background.total() != 0 {
+        return Ok(None);
     }
-    Ok(r.background.total() == 0)
+    Ok(Some(s.b("board_prompt")))
+}
+
+fn stalled(r: &Report, t: &Row) -> Result<bool> {
+    Ok(idle_on(r, t)? == Some(true))
+}
+
+fn ship_text(app: &App, task: &str) -> String {
+    let owner = &app.cfg.owner;
+    format!(
+        "[task-board] You ended your turn with {task}'s work committed on its branch but no PR. Don't leave it for \
+         {owner} to ask: if the change is done, rebase onto the base, run the tests that cover it, push, and \
+         tb submit \"<summary>\" --pr-body <file> (read pr.md); the board takes the PR to merge. If it isn't done, \
+         carry on with it. If you're waiting on {owner} (they asked to look first, or you need their answer), say so \
+         in one line and end your turn."
+    )
+}
+
+/// Tells the owner's terminal once per commit to ship the work it left on its branch.
+fn ship_nudge(r: &Report, head: &str) -> Result<Option<Value>> {
+    let Some(t) = r.task()? else { return Ok(None) };
+    let mut ctx = board::task_context(&t);
+    ctx.insert("ship_nudged".into(), json!(head));
+    board::save_context(r.app, t.id(), &ctx, false)?;
+    deliver::add(r.app, "ship", &ship_text(r.app, &rf("task", t.id())), t.id(), None, None)?;
+    deliver::take(r.app, r.sid(), &r.event)
+}
+
+/// The head of the task's branch when it has commits its base doesn't and no PR, read before the
+/// transaction since it runs git.
+fn unshipped(r: &Report, t: &Row) -> Option<String> {
+    if has(t.s("pr_url")) || !projects::task_ships_pr(r.app, t).unwrap_or(false) {
+        return None;
+    }
+    let base = steps::real_base(r.app, t).ok()?;
+    let head = crate::propen::unshipped_head(&r.app.cfg.pr_body, r.cwd.as_deref()?, &base)?;
+    (board::task_context(t).get("ship_nudged").and_then(|v| v.as_str()) != Some(head.as_str())).then_some(head)
 }
 
 fn on_pre_compact(r: &mut Report) -> Result<Value> {
@@ -3178,6 +3221,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             }
         }
     }
+    if r.event == "hook.stop" && !spooled && !as_bool(r.body.get("stop_hook_active"), false) {
+        r.unshipped = r.task().ok().flatten().and_then(|t| unshipped(&r, &t));
+    }
     if r.event == "tb.question" && !spooled {
         let t = r.task().ok().flatten();
         r.screened = screen::question(app, t.as_ref(), &one_line(&r.b("text"), 2000));
@@ -3241,6 +3287,9 @@ pub fn handle(app: &App, body: Value, spooled: bool) -> Result<Value> {
             let mut handed = deliver::take(app, r.sid(), &r.event)?;
             if handed.is_none() && r.stalled {
                 handed = nudge(&r)?;
+            }
+            if let (None, Some(head)) = (&handed, r.unshipped.clone()) {
+                handed = ship_nudge(&r, &head)?;
             }
             if let Some(h) = handed {
                 out["deliver"] = h;
