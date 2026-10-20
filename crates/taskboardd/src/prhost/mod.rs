@@ -123,6 +123,10 @@ pub struct Reviewer {
     /// is for the PR's latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changes_at: Option<String>,
+    /// Every id the host knows them by, when it has more than one (Bitbucket's `{uuid}` and
+    /// `account_id`): the board renames `user` to the one the project's roster has.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
 }
 
 /// A conversation on the PR: a review thread, a plain comment, a review's summary, or a PR task.
@@ -261,7 +265,7 @@ impl Record {
             .map(|r| {
                 let state = s(r, "state");
                 let changes_at = if state == "changes" { opt(r, "at") } else { None };
-                Reviewer { user: s(r, "who"), name: s(r, "who"), state, requested: true, changes_at }
+                Reviewer { user: s(r, "who"), name: s(r, "who"), state, requested: true, changes_at, ids: vec![] }
             })
             .collect();
         let threads: Vec<Thread> = list(ev, "threads")
@@ -547,7 +551,7 @@ impl PrHost for FakeHost {
         for u in users {
             match r.reviewers.iter_mut().find(|x| &x.user == u) {
                 Some(x) => x.requested = true,
-                None => r.reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true, changes_at: None }),
+                None => r.reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true, ..Default::default() }),
             }
         }
         Ok(())
@@ -562,7 +566,7 @@ impl PrHost for FakeHost {
     fn remove_reviewers(&self, _pr: &PrRef, users: &[String]) -> HostResult<()> {
         self.log(format!("remove {}", users.join(",")));
         let keeps = self.keeps.lock().clone();
-        self.rec.lock().reviewers.retain(|r| !users.contains(&r.user) || keeps.contains(&r.user));
+        self.rec.lock().reviewers.retain(|r| !users.iter().any(|u| *u == r.user || r.ids.contains(u)) || keeps.contains(&r.user));
         Ok(())
     }
     fn merge(&self, _pr: &PrRef, opts: &MergeOpts) -> HostResult<()> {

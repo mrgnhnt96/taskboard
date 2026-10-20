@@ -479,13 +479,13 @@ pub fn summarize(d: &Value, threads: &Value) -> Record {
                 x.state = state.into();
                 x.changes_at = mine;
             }
-            None => reviewers.push(Reviewer { name: user.clone(), user, state: state.into(), requested: false, changes_at: mine }),
+            None => reviewers.push(Reviewer { name: user.clone(), user, state: state.into(), requested: false, changes_at: mine, ..Default::default() }),
         }
     }
     for u in &requested {
         match reviewers.iter_mut().find(|x| &x.user == u) {
             Some(x) => x.requested = true,
-            None => reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true, changes_at: None }),
+            None => reviewers.push(Reviewer { user: u.clone(), name: u.clone(), state: "pending".into(), requested: true, ..Default::default() }),
         }
     }
     let approvals = reviewers.iter().filter(|r| r.state == "approved").count() as i64;

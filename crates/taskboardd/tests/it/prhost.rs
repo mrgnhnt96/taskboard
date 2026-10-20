@@ -75,7 +75,7 @@ fn check(name: &str, state: &str) -> Check {
 }
 
 fn reviewer(user: &str, state: &str) -> Reviewer {
-    Reviewer { user: user.into(), name: user.to_uppercase(), state: state.into(), requested: true, changes_at: None }
+    Reviewer { user: user.into(), name: user.to_uppercase(), state: state.into(), requested: true, changes_at: None, ..Default::default() }
 }
 
 fn thread(id: &str, last: &str) -> Thread {
