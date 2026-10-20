@@ -732,6 +732,23 @@ fn an_attachment_keeps_a_summary_set_when_attached_or_edited() {
 }
 
 #[test]
+fn the_goal_lists_every_task_attachment_next_to_its_own() {
+    let b = new_board();
+    let g = b.post("/goals", json!({"name": "Docs", "project": "webapp"}))["id"].as_i64().unwrap();
+    let one = b.post("/tasks", json!({"title": "One", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    let two = b.post("/tasks", json!({"title": "Two", "detail": "Do it.", "project": "webapp", "goal_id": g}))["id"].as_i64().unwrap();
+    let other = b.post("/tasks", json!({"title": "Elsewhere", "detail": "Do it.", "project": "webapp"}))["id"].as_i64().unwrap();
+    b.post(&format!("/goals/G{g}/attachments"), json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc"}));
+    b.post(&format!("/tasks/T{two}/attachments"), json!({"url": "~/after.png", "title": "After", "kind": "evidence"}));
+    b.post(&format!("/tasks/T{one}/attachments"), json!({"url": "~/before.png", "title": "Before", "kind": "evidence"}));
+    b.post(&format!("/tasks/T{other}/attachments"), json!({"url": "~/x.png", "title": "Not this goal's", "kind": "evidence"}));
+    let gd = b.get(&format!("/goals/G{g}"));
+    let titles = |k: &str| gd[k].as_array().unwrap().iter().map(|a| (a["title"].as_str().unwrap().to_string(), a["task"].as_str().map(String::from))).collect::<Vec<_>>();
+    assert_eq!(titles("attachments"), vec![("Spec".into(), None)], "the goal's own list is unchanged");
+    assert_eq!(titles("task_attachments"), vec![("Before".into(), Some(format!("T{one}"))), ("After".into(), Some(format!("T{two}")))], "in task order, each with its task");
+}
+
+#[test]
 fn a_queued_task_moved_into_a_goal_becomes_planned_and_the_run_picks_it_up() {
     let b = new_board();
     let gid = b.post("/goals", json!({"name": "Checkout", "project": "webapp", "outcome": "people can pay"}))["id"].as_i64().unwrap();

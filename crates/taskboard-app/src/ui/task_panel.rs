@@ -19,6 +19,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 pub use view::{Act, Go, Node};
+pub(crate) use view::{ATT_KINDS, att_file_type};
 use view::{BoxTone, Dot, Fold, Icon, K, LinkLook, Look, St, StepSt, TlSt, Tone};
 
 /// How long an inline note stays (`setNote`: 5 s, errors 15 s).
@@ -2144,12 +2145,12 @@ fn att_tint(t: &Theme, kind: &str) -> (Hsla, Hsla) {
     }
 }
 
-fn att_icon(kind: &'static str, color: Hsla) -> impl IntoElement {
+pub(crate) fn att_icon(kind: &'static str, color: Hsla) -> impl IntoElement {
     paint(Ic::Att(kind), 14., 1.6, color)
 }
 
 /// The `<details>` marker: a 6px chevron, right when shut, down when open.
-fn chevron(open: bool, color: Hsla) -> impl IntoElement {
+pub(crate) fn chevron(open: bool, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |b, _, window, _| {

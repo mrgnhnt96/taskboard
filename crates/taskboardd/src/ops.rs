@@ -431,11 +431,13 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
     let g = board::get_goal(app, id)?;
     let d = board::goal_dict(app, &g)?;
     let mut tasks = vec![];
+    let mut task_attachments = vec![];
     for (i, t) in board::goal_tasks(app, id)?.iter().enumerate() {
         let mut c = board::task_card(app, t)?;
         c["n"] = json!(i + 1);
         c["detail"] = t.v("detail");
         tasks.push(c);
+        task_attachments.extend(board::attachments(app, Some(t.id()), None)?);
     }
     let mut backlog = vec![];
     for b in app.db.q("SELECT * FROM issues WHERE goal_id = ? AND state != 'drop' ORDER BY created_at DESC, id DESC", p![id])? {
@@ -457,6 +459,7 @@ pub fn goal_detail(app: &App, id: i64) -> Result<Value> {
             "notes": board::goal_notes(app, id)?.iter().map(board::goal_note_dict).collect::<Vec<_>>(),
             "backlog": backlog,
             "attachments": board::attachments(app, None, Some(id))?,
+            "task_attachments": task_attachments,
             "bits": crate::bits::goal_card(app, id)?,
             "devices": crate::devices::goal_card(app, id)?,
         }),
