@@ -159,6 +159,7 @@ fn pr_stage(stage: &Value) -> (&'static str, &'static str, &'static str) {
     match stage["phase"].as_str().unwrap_or("") {
         "checks" => ("Checks running", "accent", "pr"),
         "fix" => ("Checks failed", "err", "pr"),
+        "rebase" => ("Conflicts", "err", "pr"),
         "comments" => ("Comments", "accent", "pr"),
         "merge" => ("Ready to merge", "ok", "pr"),
         _ => ("In review", "accent", "pr"),

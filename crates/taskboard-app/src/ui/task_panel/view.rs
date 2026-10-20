@@ -475,7 +475,7 @@ fn pr_stopped(t: &Value) -> Option<&Value> {
 fn stage_tone(phase: &str) -> Tone {
     match phase {
         "checks" => Tone::Queued,
-        "fix" => Tone::Failed,
+        "fix" | "rebase" => Tone::Failed,
         "lens" | "ask" | "review" | "rereview" => Tone::Review,
         "comments" => Tone::Needs,
         "merge" => Tone::Working,
@@ -1807,7 +1807,7 @@ fn pr_nodes(c: &Ctx, t: &Value) -> Vec<Node> {
     body.extend(bar.map(reviewer_rows).unwrap_or_default());
     body.extend(bar.and_then(|bar| comments_line(p, bar)));
     // `prBar`
-    if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "comments" | "merge" | "ask")) {
+    if let Some(stage) = obj(p, "stage").filter(|st| pr_open(p) && matches!(s(st, "phase"), "fix" | "rebase" | "comments" | "merge" | "ask")) {
         let stopped = obj(stage, "stopped").is_some();
         // The banner up top says it stopped; the warn dot marks the stage.
         let mut kids = vec![Node::Dot(if stopped { Dot::Warn } else { Dot::Accent }), txt(or_empty(&stage["label"]), St::Plain)];

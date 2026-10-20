@@ -10,7 +10,7 @@ use taskboardd::app::App;
 use taskboardd::config::{Config, PrProject, RebasePolicy};
 use taskboardd::prhost::{self, Check, FakeHost, Record, Reviewer, Thread};
 use taskboardd::util::{now_ts, RowExt};
-use taskboardd::{board, midna, prflow, reports};
+use taskboardd::{board, midna, p, prflow, reports};
 
 struct Board {
     app: Arc<App>,
@@ -441,7 +441,7 @@ fn a_new_push_waits_for_the_checks_its_last_push_posted() {
     assert!(e.contains("checks that posted on the last push haven't posted on this one: build, e2e (it waits up to 90 min for them)"), "{e}");
     h.rec.lock().checks.push(check("build", "passed"));
     poll(&b);
-    assert_eq!(b.phase(id), "checks", "e2e still to post on h2");
+    assert_eq!(b.phase(id), "merge", "every check h2 posted passed, so e2e (only from the last push) gets just the short wait");
     // A third push: h2 is now the last push that posted, so only build is waited on.
     {
         let mut r = h.rec.lock();
@@ -577,7 +577,7 @@ fn status_shows_failed_steps_base_failures_reviewers_threads_and_what_blocks_the
     assert_eq!(live["approvals"], json!({"have": 1, "need": 2}));
     assert_eq!(live["open_threads"][0]["id"], "1");
     let blockers: Vec<&str> = live["blockers"].as_array().unwrap().iter().filter_map(|x| x.as_str()).collect();
-    assert_eq!(blockers, vec!["checks failed: e2e", "R asked for changes", "1 thread open"]);
+    assert_eq!(blockers, vec!["it conflicts with its base branch main: rebase onto it and push first", "checks failed: e2e", "R asked for changes", "1 thread open"]);
     assert_eq!(v["watched"], true);
 }
 
@@ -913,4 +913,148 @@ fn a_merge_step_holds_only_the_merge_until_it_passes_on_the_head() {
     step_report(&b, id, json!({"name": "Release note", "head": "def5678"})).unwrap();
     b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
     assert_eq!(b.phase(id), "merged");
+}
+
+/// The board's PR visits for a task, oldest first: each one's prompt.
+fn wakes(b: &Board, id: i64) -> Vec<String> {
+    let rows = b.app.db.q("SELECT * FROM jobs WHERE kind = 'agent' AND purpose = 'pr' AND task_id = ? ORDER BY id", p![id]).unwrap();
+    rows.iter().map(|r| board::job_args(r).st("prompt")).collect()
+}
+
+fn visits_done(b: &Board, id: i64) {
+    b.app.db.x("UPDATE jobs SET state = 'done' WHERE purpose = 'pr' AND task_id = ?", p![id]).unwrap();
+}
+
+fn conflicting(mut rec: Record) -> Record {
+    rec.mergeable = json!("CONFLICTING");
+    rec
+}
+
+#[test]
+fn a_green_approved_pr_that_conflicts_goes_to_rebase_not_merge() {
+    let b = board_with(|c| {
+        c.pr.wake = true;
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, conflicting(rec));
+    poll(&b);
+    assert_eq!(b.phase(id), "rebase");
+    let w = wakes(&b, id);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("It conflicts with its base branch main") && w[0].contains("git push --force-with-lease") && w[0].contains("pr wait"), "{}", w[0]);
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("it conflicts with its base branch main"), "{e}");
+    assert!(!h.calls().iter().any(|c| c.starts_with("merge ")), "{:?}", h.calls());
+    // One conflict wakes once.
+    visits_done(&b, id);
+    poll(&b);
+    assert_eq!(wakes(&b, id).len(), 1, "the same conflict doesn't wake again");
+    // The base moves on and still conflicts: that's a new conflict.
+    h.rec.lock().base_head = "b2".into();
+    poll(&b);
+    assert_eq!(wakes(&b, id).len(), 2, "a new base wakes it again");
+    // The rebased push merges cleanly.
+    visits_done(&b, id);
+    {
+        let mut r = h.rec.lock();
+        r.head = "h2".into();
+        r.mergeable = json!("MERGEABLE");
+    }
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+}
+
+#[test]
+fn a_conflict_goes_to_rebase_with_the_review_step_off() {
+    let b = board_with(|_| {});
+    let id = b.pr_task(BB);
+    let h = fake(&b, conflicting(green()));
+    b.post("/projects/webapp", json!({"review": "off", "agents_merge": "on"}));
+    poll(&b);
+    assert_eq!(b.phase(id), "rebase");
+    h.rec.lock().mergeable = json!("MERGEABLE");
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+}
+
+#[test]
+fn a_conflict_while_waiting_on_a_reviewer_wakes_the_agent() {
+    let b = board_with(|c| c.pr.wake = true);
+    let id = b.pr_task(BB);
+    let h = fake(&b, green());
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+    assert!(wakes(&b, id).is_empty());
+    h.rec.lock().mergeable = json!("CONFLICTING");
+    poll(&b);
+    assert_eq!(b.phase(id), "rebase");
+    assert_eq!(wakes(&b, id).len(), 1);
+}
+
+#[test]
+fn a_conflict_doesnt_ask_for_a_rebase_when_the_policy_is_never() {
+    let b = board_with(|c| c.pr.rebase = RebasePolicy::Never);
+    let id = b.pr_task(BB);
+    fake(&b, conflicting(green()));
+    poll(&b);
+    assert_eq!(b.phase(id), "review");
+}
+
+#[test]
+fn a_merge_the_host_refuses_for_a_conflict_goes_to_rebase() {
+    let b = board_with(|c| {
+        c.pr.wake = true;
+        c.pr.agents_merge = Some(true);
+    });
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    visits_done(&b, id);
+    *h.merge_error.lock() = Some("Pull Request is not mergeable: the merge commit cannot be cleanly created".into());
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("can't merge: it conflicts with its base branch main"), "{e}");
+    assert_eq!(b.phase(id), "rebase", "not merge retries");
+    assert!(b.flow(id).get("merge_tries").is_none());
+    let w = wakes(&b, id);
+    assert!(w.last().unwrap().contains("It conflicts with its base branch main"), "{w:?}");
+    // The host's record still can't tell, but the refusal stands for this head and base.
+    poll(&b);
+    assert_eq!(b.phase(id), "rebase");
+    *h.merge_error.lock() = None;
+    h.rec.lock().head = "h2".into();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge", "the rebased push can merge again");
+}
+
+#[test]
+fn a_check_only_an_earlier_push_posted_holds_the_pr_only_for_the_short_wait() {
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.push(check("pages", "passed"));
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    // The new push posts build but no longer runs pages.
+    {
+        let mut r = h.rec.lock();
+        r.head = "h2".into();
+        r.checks = vec![check("build", "passed")];
+    }
+    poll(&b);
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 3600.0, "h2": now_ts() - 5.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "within the short wait");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("checks that posted on the last push haven't posted on this one: pages (it waits up to 15 min for them)"), "{e}");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 3600.0, "h2": now_ts() - 16.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge", "not the full 90 min");
 }
