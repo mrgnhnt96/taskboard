@@ -612,11 +612,12 @@ fn links_owner(app: &App) -> &'static str {
     if app.cfg.page_url.starts_with("taskboard-dev:") { "Taskboard Dev" } else { "Taskboard" }
 }
 
-/// The refs that become links in agent terminals, each opening this build's own page for it.
+/// The refs that become links in agent terminals, each opening this build's own page for it. A human
+/// task's H<n> opens as its T<n>. J, L, Q and M refs have no page in the app, so they stay text.
 pub fn link_patterns(app: &App) -> Vec<String> {
-    [("T", "task"), ("G", "goal"), ("B", "issue"), ("R", "release")]
+    [(r"(T\d+)", "task/$1"), (r"H(\d+)", "task/T$1"), (r"(G\d+)", "goal/$1"), (r"(B\d+)", "issue/$1"), (r"(R\d+)", "release/$1"), (r"(I\d+)", "idea/$1")]
         .iter()
-        .map(|(letter, page)| format!(r"\b({letter}\d+)\b = {} agents", dispatch::page_link(app, &format!("{page}/$1"))))
+        .map(|(re, page)| format!(r"\b{re}\b = {} agents", dispatch::page_link(app, page)))
         .collect()
 }
 
@@ -638,7 +639,7 @@ fn register_links(app: &App) {
         match call_timeout(app, "links.patterns.register", json!({"owner": links_owner(app), "patterns": link_patterns(app)}), 5.0) {
             Ok(_) => true,
             Err(MidnaError::Refused(e)) if e.contains("unknown method") => {
-                app.info("midna: it doesn't take link patterns yet (links.patterns.register); T, G, B and R refs stay plain text there");
+                app.info("midna: it doesn't take link patterns yet (links.patterns.register); T, H, G, B, R and I refs stay plain text there");
                 true
             }
             Err(e) => {
@@ -926,16 +927,18 @@ mod tests {
             link_patterns(&app),
             [
                 r"\b(T\d+)\b = taskboard://task/$1 agents",
+                r"\bH(\d+)\b = taskboard://task/T$1 agents",
                 r"\b(G\d+)\b = taskboard://goal/$1 agents",
                 r"\b(B\d+)\b = taskboard://issue/$1 agents",
                 r"\b(R\d+)\b = taskboard://release/$1 agents",
+                r"\b(I\d+)\b = taskboard://idea/$1 agents",
             ]
         );
         let mut cfg = crate::config::Config::for_tests(dir.path());
         cfg.page_url = "taskboard-dev://".into();
         let app = App::for_tests(cfg);
         assert_eq!(links_owner(&app), "Taskboard Dev");
-        assert_eq!(link_patterns(&app)[2], r"\b(B\d+)\b = taskboard-dev://issue/$1 agents");
+        assert_eq!(link_patterns(&app)[3], r"\b(B\d+)\b = taskboard-dev://issue/$1 agents");
     }
 
     #[test]
