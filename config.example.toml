@@ -249,6 +249,7 @@ compact_window = 150000              # tokens: Claude compacts a board terminal'
 cold_idle_mins = 60                  # a conversation idle longer is compacted before it's resumed or sent anything
 warm_tokens = 60000                  # a task or PR conversation resumes only under this many tokens…
 warm_idle_mins = 60                  # …and idle under this long; otherwise it starts fresh from the handoff
+max_compactions = 3                  # a task terminal that has compacted this often carries on in a fresh one from its handoff
 # Generated files, marked `-diff` in a block the board keeps in each active project's (and
 # worktree's) .git/info/attributes, so agents' diffs skip them. `tb limits --generated` changes them.
 generated = []                       # example: ["*.g.dart", "*.freezed.dart", "Cargo.lock"]

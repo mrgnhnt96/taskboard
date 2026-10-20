@@ -207,6 +207,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("goals", "setup", "TEXT"),
     ("tasks", "jira_none", "INT DEFAULT 0"),
     ("sessions", "compacting_at", "TEXT"),
+    // How many times the terminal's conversation has compacted (`[limits] max_compactions`).
+    ("sessions", "compactions", "INT DEFAULT 0"),
     ("goal_waves", "held_at", "TEXT"),
     // Stacked PRs (`--stack-on T<n>`): the task whose PR this one's builds on.
     ("tasks", "pr_after", "INT"),
