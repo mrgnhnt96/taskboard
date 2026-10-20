@@ -1949,6 +1949,22 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_projects_page_loads_its_goals_details(cx: &mut gpui_kit::TestAppContext) {
+        let (w, _rec) = window(cx);
+        w.update(cx, |m: &mut MainWindow, _, cx| m.go(Page::Projects, cx)).unwrap();
+        settle(cx);
+        w.update(cx, |m: &mut MainWindow, _, _| {
+            let wanted = ui::projects::wanted(&m.projects, m.state(), &m.data.goals);
+            assert!(!wanted.is_empty(), "the picked project has open goals");
+            for r in &wanted {
+                assert!(m.projects.details.contains_key(r), "{r} landed for the Projects page");
+                assert!(!m.goals.details.contains_key(r), "{r} stays out of the Goals page's details");
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn cmd_left_leaves_a_task_for_the_page_it_was_opened_from(cx: &mut gpui_kit::TestAppContext) {
         let (w, _rec) = window(cx);
         w.update(cx, |m: &mut MainWindow, _, cx| {
