@@ -394,6 +394,70 @@ fn a_pr_with_no_checks_moves_on_to_review_once_the_grace_runs_out_without_anothe
     assert_eq!(b.flow(id)["checked_at"], read_at, "the last read's time stays");
 }
 
+#[test]
+fn tb_pr_merge_waits_while_no_check_has_posted_within_the_grace() {
+    // #491: with no expected checks set, an empty record held the stage but not the merge.
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.clear();
+    rec.reviewers = vec![reviewer("a", "approved")];
+    fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "checks");
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("no checks have posted on this push yet (waits up to 15 min)"), "{e}");
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 16.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}
+
+#[test]
+fn a_new_push_waits_for_the_checks_its_last_push_posted() {
+    // #491: a push with no checks yet isn't one that needs none when the last push posted some.
+    let b = board_with(|c| c.pr.agents_merge = Some(true));
+    let id = b.pr_task(BB);
+    let mut rec = green();
+    rec.checks.push(check("e2e", "passed"));
+    rec.reviewers = vec![reviewer("a", "approved")];
+    let h = fake(&b, rec);
+    poll(&b);
+    assert_eq!(b.phase(id), "merge");
+    {
+        let mut r = h.rec.lock();
+        r.head = "h2".into();
+        r.checks.clear();
+    }
+    poll(&b);
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 3600.0, "h2": now_ts() - 20.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "past the no-checks grace, still within the expected wait");
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!(live["expected"]["source"], "earlier");
+    assert_eq!(live["expected_missing"], json!(["build", "e2e"]));
+    let e = b.try_post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true})).unwrap_err();
+    assert!(e.contains("checks that posted on the last push haven't posted on this one: build, e2e (it waits up to 90 min for them)"), "{e}");
+    h.rec.lock().checks.push(check("build", "passed"));
+    poll(&b);
+    assert_eq!(b.phase(id), "checks", "e2e still to post on h2");
+    // A third push: h2 is now the last push that posted, so only build is waited on.
+    {
+        let mut r = h.rec.lock();
+        r.head = "h3".into();
+        r.checks.clear();
+    }
+    poll(&b);
+    let live = b.get(&format!("/tasks/T{id}/pr"), &[("full", "1")])["live"].clone();
+    assert_eq!(live["expected_missing"], json!(["build"]));
+    prflow::merge_flow(&b.app, id, vec![("head_at", json!({"h1": now_ts() - 3.0 * 3600.0, "h2": now_ts() - 2.0 * 3600.0, "h3": now_ts() - 91.0 * 60.0}))]).unwrap();
+    poll(&b);
+    assert_eq!(b.phase(id), "merge", "the expected wait ran out");
+    b.post(&format!("/tasks/T{id}/pr/merge"), json!({"agent": true}));
+    assert_eq!(b.phase(id), "merged");
+}
+
 /// An `expected_cmd` that answers by head (h1: build and E2E; h2: none; h3: can't tell; h4: fails) and
 /// counts its runs in `runs`.
 fn expected_cmd_board() -> (Board, tempfile::TempDir) {

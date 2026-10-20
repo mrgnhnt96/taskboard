@@ -2014,6 +2014,7 @@ fn print_pr_status(t: &str, v: &Value) {
     let from = match e["source"].as_str() {
         Some("command") => " (from expected_cmd)",
         Some("list") => " (from the project's expected list)",
+        Some("earlier") => " (posted on an earlier push)",
         _ => "",
     };
     match e["checks"].as_array() {
