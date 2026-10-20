@@ -2,7 +2,9 @@
 //! `<repo>/.claude/worktrees/T<n>`, detached at that base (a stacked task: at its parent's branch).
 //! The worktree is made before the start, outside any transaction; one that can't be made fails the
 //! start with the usual retries. Once the task is finished (failed, no open PR) and its terminal is
-//! gone, the board removes the worktree, or keeps it when it has uncommitted changes.
+//! gone, the board removes the worktree, or keeps it when it has uncommitted changes. Worktrees the
+//! agents made themselves (any other `git worktree list` entry) are matched to their task by path,
+//! branch or folder name and removed by the same rules; one no task claims is listed on its project.
 
 use std::path::Path;
 
@@ -17,7 +19,11 @@ use crate::{board, p, projects};
 static BASE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$").unwrap());
 const FETCH_SECS: f64 = 300.0;
 const GIT_SECS: f64 = 120.0;
+static TASK_IN_BRANCH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[/_-])t(\d+)(?:[/_-]|$)").unwrap());
+static TASK_IN_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[_-])t(\d+)$").unwrap());
 const WORKTREES: &str = "/.claude/worktrees/";
+/// The other worktrees each pass kept, by path: why, or `no task` (`others`).
+const SEEN: &str = "worktrees_seen";
 
 /// A goal's worktree base from a body: a branch or `origin/<branch>`; off or none clears it.
 pub fn clean_base(value: Option<&Value>) -> Result<Option<String>> {
@@ -193,7 +199,167 @@ pub fn clean_up(app: &App) -> Result<Vec<i64>> {
         note(app, &t, "worktree_removed", Some(&format!("Removed its worktree at {path}")))?;
         removed.push(t.id());
     }
+    removed.extend(others(app)?);
     Ok(removed)
+}
+
+/// One `git worktree list --porcelain` entry.
+struct Entry {
+    path: String,
+    branch: Option<String>,
+    locked: bool,
+    gone: bool,
+}
+
+fn entries(repo: &str) -> Option<Vec<Entry>> {
+    let r = git(repo, &["worktree", "list", "--porcelain"], GIT_SECS);
+    if r.code != 0 {
+        return None;
+    }
+    let mut all: Vec<Entry> = vec![];
+    for line in r.out.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            all.push(Entry { path: path.to_string(), branch: None, locked: false, gone: false });
+        } else if let Some(e) = all.last_mut() {
+            match line.split_once(' ').map(|(k, _)| k).unwrap_or(line) {
+                "branch" => e.branch = line.strip_prefix("branch ").map(|b| b.trim_start_matches("refs/heads/").to_string()),
+                "locked" => e.locked = true,
+                "prunable" => e.gone = true,
+                _ => {}
+            }
+        }
+    }
+    Some(all)
+}
+
+/// A path with its links resolved (git lists `/private/var/…` for `/var/…`), through its deepest
+/// folder that's there.
+fn real(path: &str) -> String {
+    let path = Path::new(path);
+    for up in path.ancestors() {
+        if let Ok(r) = std::fs::canonicalize(up) {
+            let rest = path.strip_prefix(up).unwrap_or(Path::new(""));
+            return r.join(rest).to_string_lossy().trim_end_matches('/').to_string();
+        }
+    }
+    path.to_string_lossy().trim_end_matches('/').to_string()
+}
+
+fn inside(path: &str, dir: &str) -> bool {
+    if path.is_empty() || dir.is_empty() {
+        return false;
+    }
+    let (path, dir) = (real(path), real(dir));
+    path == dir || path.starts_with(&format!("{dir}/"))
+}
+
+/// The task an agent's worktree belongs to: one whose recorded worktree is in it or whose branch it
+/// has, else the `t<n>` in its branch or folder name when T<n> is this project's.
+fn task_of(app: &App, project: &str, repo: &str, e: &Entry, tasks: &[Row]) -> Result<Option<Row>> {
+    let here = tasks.iter().find(|t| {
+        let ctx = board::task_context(t);
+        let w = ctx.get("where");
+        let wt = w.and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).unwrap_or("");
+        let branch = w.and_then(|w| w.get("branch")).and_then(|v| v.as_str()).unwrap_or("");
+        inside(wt, &e.path) || (!branch.is_empty() && e.branch.as_deref() == Some(branch))
+    });
+    if let Some(t) = here {
+        return Ok(Some(t.clone()));
+    }
+    let name = Path::new(&e.path).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let num = e.branch.as_deref().and_then(|b| TASK_IN_BRANCH.captures(b)).or_else(|| TASK_IN_FOLDER.captures(name)).and_then(|c| c[1].parse::<i64>().ok());
+    let Some(t) = board::find_task(app, num)? else { return Ok(None) };
+    let ours = t.s("project") == Some(project) || t.s("repo_path").map(|r| real(r) == real(repo)).unwrap_or(false);
+    Ok(ours.then_some(t))
+}
+
+/// Why the agent's worktree at `path` stays, or None when it can go.
+fn keep_why(app: &App, t: &Row, e: &Entry) -> Result<Option<String>> {
+    if t.s("status") != Some("done") {
+        return Ok(Some("its task is still active".into()));
+    }
+    if !finished(app, t)? {
+        return Ok(Some(if board::pr_still_open(t) { "its PR is still open" } else { "its PR isn't linked yet" }.into()));
+    }
+    let open = app.db.q("SELECT project_path FROM sessions WHERE status IS NOT 'gone' AND project_path IS NOT NULL", p![])?;
+    if terminal_open(app, t)? || open.iter().any(|s| inside(s.st("project_path").as_str(), &e.path)) {
+        return Ok(Some("a terminal is still open in it".into()));
+    }
+    if e.locked {
+        return Ok(Some("it's locked".into()));
+    }
+    let status = git(&e.path, &["status", "--porcelain"], GIT_SECS);
+    if status.code != 0 || !status.out.trim().is_empty() {
+        return Ok(Some("it has uncommitted changes".into()));
+    }
+    Ok(None)
+}
+
+/// The worktrees agents made in each project's repo: removes those of finished tasks the way
+/// `clean_up` does, and remembers why each other one stays (saying so once, on its task's timeline
+/// and in the daemon log) and which match no task (`stray`). Never the main checkout.
+fn others(app: &App) -> Result<Vec<i64>> {
+    let mut removed = vec![];
+    let before = jloads_obj(app.db.get_setting(SEEN)?.as_deref());
+    let mut seen = serde_json::Map::new();
+    for p in projects::list_projects(app)? {
+        let (Some(name), Some(repo)) = (p["name"].as_str(), p["path"].as_str()) else { continue };
+        if !Path::new(repo).is_dir() {
+            continue;
+        }
+        let Some(list) = entries(repo) else { continue };
+        let Some(main) = list.first().map(|e| e.path.clone()) else { continue };
+        let tasks = app.db.q("SELECT * FROM tasks WHERE project = ? OR repo_path = ?", p![name, repo])?;
+        let made: Vec<String> = tasks.iter().filter_map(|t| board::task_context(t).s("worktree_made").map(real)).collect();
+        let mut pruned = false;
+        for e in list.iter().skip(1).filter(|e| !e.gone && real(&e.path) != real(&main) && real(&e.path) != real(repo)) {
+            // The board's own are the pass above's.
+            if made.contains(&real(&e.path)) {
+                continue;
+            }
+            let Some(t) = task_of(app, name, repo, e, &tasks)? else {
+                if before.get(&e.path).is_none() {
+                    app.info(format!("worktrees: {} in {name} matches no task; left for the owner", e.path));
+                }
+                seen.insert(e.path.clone(), json!({"project": name, "why": "no task"}));
+                continue;
+            };
+            let why = match keep_why(app, &t, e)? {
+                Some(why) => why,
+                None => {
+                    let r = git(repo, &["worktree", "remove", &e.path], GIT_SECS);
+                    if r.code == 0 {
+                        board::log_event(app, t.id(), board::BOARD, "midna", &format!("Removed its worktree at {}", e.path))?;
+                        app.info(format!("worktrees: removed {} ({})", e.path, rf("task", t.id())));
+                        removed.push(t.id());
+                        pruned = true;
+                        continue;
+                    }
+                    format!("git couldn't remove it: {}", last_line(&r.err))
+                }
+            };
+            if before.get(&e.path).and_then(|v| v["why"].as_str()) != Some(why.as_str()) {
+                app.info(format!("worktrees: kept {} ({}): {why}", e.path, rf("task", t.id())));
+                if t.s("status") == Some("done") {
+                    board::log_event(app, t.id(), board::BOARD, "midna", &format!("Left its worktree at {}: {why}", e.path))?;
+                }
+            }
+            seen.insert(e.path.clone(), json!({"project": name, "task": t.id(), "why": why}));
+        }
+        if pruned {
+            git(repo, &["worktree", "prune"], GIT_SECS);
+        }
+    }
+    if Value::Object(seen.clone()) != Value::Object(before) {
+        app.db.set_setting(SEEN, Some(&Value::Object(seen).to_string()))?;
+    }
+    Ok(removed)
+}
+
+/// The project's worktrees the last pass matched to no task, for the owner to look at.
+pub fn stray(app: &App, project: &str) -> Result<Vec<String>> {
+    let seen = jloads_obj(app.db.get_setting(SEEN)?.as_deref());
+    Ok(seen.iter().filter(|(_, v)| v["project"] == project && v["why"] == "no task").map(|(k, _)| k.clone()).collect())
 }
 
 fn note(app: &App, t: &Row, key: &str, text: Option<&str>) -> Result<()> {

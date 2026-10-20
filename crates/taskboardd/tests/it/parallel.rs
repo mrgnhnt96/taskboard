@@ -353,6 +353,59 @@ fn a_pr_task_keeps_its_worktree_until_its_pr_is_linked_and_finished() {
 }
 
 #[test]
+fn worktrees_agents_made_are_matched_to_their_task_and_removed_by_the_same_rules() {
+    let b = new_board();
+    git_repo(&b);
+    let repo = b.repo();
+    let dir = b.dir.path().to_string_lossy().to_string();
+    let add = |path: &str, branch: Option<&str>| match branch {
+        Some(br) => git(Path::new(&repo), &["worktree", "add", "-q", "-b", br, path]),
+        None => git(Path::new(&repo), &["worktree", "add", "-q", "--detach", path]),
+    };
+    let [by_branch, by_folder, by_where, active, dirty, pr_open] = ["By branch", "By folder", "By where", "Active", "Dirty", "PR open"].map(|t| b.task(t, json!({})));
+    let wt = |n: &str| format!("{dir}/{n}");
+    add(&wt("webapp-fix"), Some(&format!("feat/t{by_branch}-thing")));
+    add(&wt(&format!("webapp-t{by_folder}")), None);
+    add(&wt("elsewhere"), Some("misc"));
+    add(&wt(&format!("webapp-t{active}")), None);
+    add(&wt(&format!("webapp-t{dirty}")), None);
+    add(&wt(&format!("webapp-t{pr_open}")), None);
+    add(&wt("scratch"), Some("spike"));
+    std::fs::write(Path::new(&wt(&format!("webapp-t{dirty}"))).join("left"), "x\n").unwrap();
+    let ctx = json!({"where": {"worktree": format!("{}/sub", wt("elsewhere"))}}).to_string();
+    b.app.db.x("UPDATE tasks SET context = ? WHERE id = ?", p![ctx, by_where]).unwrap();
+    for t in [by_branch, by_folder, by_where, dirty, pr_open] {
+        b.app.db.x("UPDATE tasks SET status = 'done', session_id = NULL WHERE id = ?", p![t]).unwrap();
+    }
+    b.app.db.x("UPDATE tasks SET pr_num = 4, pr_repo = 'acme/webapp', pr_state = 'OPEN', pr_phase = 'review' WHERE id = ?", p![pr_open]).unwrap();
+
+    let mut removed = worktrees::clean_up(&b.app).unwrap();
+    removed.sort();
+    assert_eq!(removed, vec![by_branch, by_folder, by_where]);
+    for gone in [wt("webapp-fix"), wt(&format!("webapp-t{by_folder}")), wt("elsewhere")] {
+        assert!(!Path::new(&gone).exists(), "{gone}");
+    }
+    for kept in [wt(&format!("webapp-t{active}")), wt(&format!("webapp-t{dirty}")), wt(&format!("webapp-t{pr_open}")), wt("scratch"), repo.clone()] {
+        assert!(Path::new(&kept).exists(), "{kept}");
+    }
+    assert_eq!(git(Path::new(&repo), &["worktree", "list"]).lines().count(), 5, "the main checkout and the four kept");
+    let log = b.card(by_branch)["log"].to_string();
+    assert!(log.contains("Removed its worktree at ") && log.contains("/webapp-fix"), "{log}");
+    let dirty_log = b.card(dirty)["log"].to_string();
+    assert!(dirty_log.contains("it has uncommitted changes"), "{dirty_log}");
+    assert!(b.card(pr_open)["log"].to_string().contains("its PR is still open"));
+    assert!(!b.card(active)["log"].to_string().contains("Left its worktree"), "an active task's timeline stays quiet");
+    let stray = &b.get("projects")["projects"][0]["stray_worktrees"];
+    assert_eq!(stray.as_array().unwrap().len(), 1, "{stray}");
+    assert!(stray[0].as_str().unwrap().ends_with("/scratch"), "{stray}");
+
+    assert!(worktrees::clean_up(&b.app).unwrap().is_empty());
+    assert_eq!(b.card(dirty)["log"].to_string().matches("it has uncommitted changes").count(), dirty_log.matches("it has uncommitted changes").count(), "it says why once");
+    b.app.db.x("UPDATE tasks SET pr_state = 'MERGED', pr_phase = 'merged' WHERE id = ?", p![pr_open]).unwrap();
+    assert_eq!(worktrees::clean_up(&b.app).unwrap(), vec![pr_open], "once its PR is merged");
+}
+
+#[test]
 fn a_stacked_task_starts_from_its_parent_s_branch_where_it_exists() {
     let b = new_board();
     git_repo(&b);

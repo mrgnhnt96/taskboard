@@ -433,6 +433,8 @@ pub fn describe(app: &App, p: &Value) -> Result<Value> {
     o.insert("release_tags".into(), json!(crate::release_tags::pattern(app, name)?));
     o.insert("release_script".into(), json!(crate::releases::script(app, name)?));
     o.insert("waits_on".into(), json!(waits_on(app, name)));
+    // Worktrees of its repo that the clean-up matched to no task (`worktrees::others`).
+    o.insert("stray_worktrees".into(), json!(crate::worktrees::stray(app, name)?));
     // lens's review at `tb submit`, only where lens is installed.
     if crate::lens::bin(app).is_some() {
         o.insert("lens".into(), json!(crate::lens::on(app, Some(name))));
