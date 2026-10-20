@@ -1033,11 +1033,12 @@ function banner(t, alert) {
       <div class="row">${btn('New Midna terminal', 'start', { id: r, arg: 'new', cls: 'primary', grp: act })}${btn('Queue in Midna', 'start', { id: r, arg: 'queue', grp: act })}${note(act)}</div>`;
   } else if (t.status === 'needs') {
     const grp = 'ask:' + r;
-    // Its terminal when it has one; otherwise a new one, picking up from its handoff.
-    const write = sessionLive(t) ? { id: r, grp } : { id: r, arg: 'fresh', grp };
+    // Its terminal when it has one; a question with none reopens one that asks it again; otherwise a new one, picking up from its handoff.
+    const focus = sessionLive(t) || !!t.question;
+    const write = focus ? { id: r, grp } : { id: r, arg: 'fresh', grp };
     inner = `<p class="banner-text">${esc(t.question || t.latest || 'It’s waiting for you in Midna.')}</p>
       ${askOptions(t.ask, r)}
-      <div class="row"><button type="button" class="write" data-act="${sessionLive(t) ? 'focus' : 'resume'}" data-id="${esc(r)}"${write.arg ? ` data-arg="${write.arg}"` : ''} data-grp="${esc(grp)}">Write an answer${ICON.ext}</button>${note(grp)}</div>`;
+      <div class="row"><button type="button" class="write" data-act="${focus ? 'focus' : 'resume'}" data-id="${esc(r)}"${write.arg ? ` data-arg="${write.arg}"` : ''} data-grp="${esc(grp)}">Write an answer${ICON.ext}</button>${note(grp)}</div>`;
   } else if (prStopped(t)) {
     const st = t.pr.stage;
     const k = 'answer:' + r;

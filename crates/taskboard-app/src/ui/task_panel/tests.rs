@@ -130,13 +130,27 @@ fn a_card_shows_until_the_task_answers() {
 }
 
 #[::core::prelude::v1::test]
+fn a_stuck_working_task_shows_the_stuck_banner() {
+    let text = |task: Value| json!(view::text(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
+    let stuck = json!({"why": "Waits on a y/n prompt", "tail": "Continue? (y/n)"});
+    let t = text(json!({"ref": "T5", "id": 5, "status": "working", "stuck": stuck}));
+    assert!(t.contains("may be stuck") && t.contains("Waits on a y/n prompt"), "{t}");
+    // A question outranks it: one banner per task.
+    let t = text(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "stuck": stuck}));
+    assert!(!t.contains("may be stuck") && t.contains("Q?"), "{t}");
+    let t = text(json!({"ref": "T5", "id": 5, "status": "working"}));
+    assert!(!t.contains("may be stuck"), "{t}");
+}
+
+#[::core::prelude::v1::test]
 fn write_an_answer_opens_its_terminal_or_a_new_one() {
     let acts = |task: Value| json!(view::acts(&tree(&json!({"state": {}, "task": task, "tab": "overview"})))).to_string();
-    // No terminal: a new one picks up from its handoff.
+    // No terminal but a question: focus reopens one that asks it again, keeping the question.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Add the generated patterns?"}));
-    assert!(a.contains("\"resume:fresh\"") && !a.contains("\"focus\"") && !a.contains("\"answer\""), "{a}");
+    assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");
+    // No terminal and nothing asked: a new one picks up from its handoff.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "attention"}));
-    assert!(a.contains("\"resume:fresh\""), "{a}");
+    assert!(a.contains("\"resume:fresh\"") && !a.contains("\"focus\""), "{a}");
     // With its terminal open, the terminal is the action.
     let a = acts(json!({"ref": "T5", "id": 5, "status": "needs", "needs_reason": "question", "question": "Q?", "session": {"status": "idle"}}));
     assert!(a.contains("\"focus\"") && !a.contains("\"resume") && !a.contains("\"answer\""), "{a}");

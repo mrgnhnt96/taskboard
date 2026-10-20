@@ -1222,8 +1222,12 @@ fn banner(c: &Ctx, t: &Value, alert: Option<&Value>) -> Option<Node> {
         let mut bx = vec![txt(opt_s(t, "question").or(opt_s(t, "latest")).unwrap_or("It’s waiting for you in Midna."), St::BannerText)];
         bx.extend(ask_options(c, &t["ask"], &r, &grp));
         let mut row = step_btns(c, t, &r, &grp);
-        // Its terminal when it has one; otherwise a new one, picking up from its handoff.
-        let write = if session_live(t) { Act::new("focus", "", &r, &grp) } else { Act::new("resume", "fresh", &r, &grp) };
+        // Its terminal when it has one; a question with none reopens one that asks it again; otherwise a new one, picking up from its handoff.
+        let write = if session_live(t) || opt_s(t, "question").is_some_and(|q| !q.is_empty()) {
+            Act::new("focus", "", &r, &grp)
+        } else {
+            Act::new("resume", "fresh", &r, &grp)
+        };
         row.push(c.btn("Write an answer", write, Look::Out, false, None));
         row.extend(c.note(&grp));
         bx.push(el(K::Row, row));
