@@ -814,7 +814,7 @@ not silent) and answer as the old board did.
 
 | Path | Body | Notes |
 |---|---|---|
-| `POST /master-builds` | `{pipeline, build_id, url, sha, state, ts, last_green}` | A default-branch build started or finished. The project is `project` (if given), else the repo in `url` (or `repo`) matched to a project's repo or name, else `pipeline` as a project's name, else the only watched project. Its branch is read now, as `POST /master/check` does, so a red build opens its break at once. The build goes into the break's `evidence.build` (`{pipeline, build_id, url, sha, state, ts, last_green, at}`) while it's of the head read, and a failing check without a link gets its `url`. Notes the event as `last_event.kind: "master-build"`. A v1 stream `build` on a watched project's repo and branch does the same (STREAM.md). **Response:** `{ok, project: str\|null, checked: bool, break: break\|null, why?}` (`break`: the project's open one). |
+| `POST /master-builds` | `{pipeline, build_id, url, sha, state, ts, last_green}` | A default-branch build started or finished. The project is `project` (if given), else the repo in `url` (or `repo`) matched to a project's repo or name, else `pipeline` as a project's name, else the only watched project. Its branch is read now, as `POST /master/check` does, and the build counts as its pipeline's red or green on its `sha` (any commit, not only the head), so a red build opens its break at once. The build goes into the break's `evidence.build` (`{pipeline, build_id, url, sha, state, ts, last_green, at}`) while it's of the newest red commit, and a failing check without a link gets its `url`. Notes the event as `last_event.kind: "master-build"`. A v1 stream `build` on a watched project's repo and branch does the same (STREAM.md). **Response:** `{ok, project: str\|null, checked: bool, break: break\|null, why?}` (`break`: the project's open one). |
 | `POST /pr-builds/event` | `{repo, branch, pr?, sha?, host?}` | A push to, or a PR opened or updated on, one of the owner's branches: `POST /prs/event` with `kind: "build"`, `mine: true`, `num: pr`, `head: sha`, `state: "started"`, `source: "pr-builds"`. While PR builds are stopped its builds are cancelled, with the follow-up sweeps. **Response:** as `POST /prs/event`. |
 | `GET /master-breaks?limit=20` | | **Response:** `{breaks: [break]}`: the open breaks, then the closed ones, each newest first, at most `limit` (1–500) in all. |
 | `GET /master-breaks/:ref` | | As `GET /master/:ref`. |
@@ -827,15 +827,19 @@ verdict_at, proof: [url], task: {ref, title, status}|null, opened_at, closed_at,
 open ones that are `ours`: the app's one "Master is red" banner line each, with Open T<n> for the fix task (the app
 doesn't show the break's urgent alert as a row of its own beside it).
 
-A failed check on the branch's head opens a break; a head whose checks all passed closes it. Suspects are the commits
-since the last green head the board saw: the whole `green..head` range from the host (GitHub's compare, Bitbucket's
+A red build on the branch opens a break, or keeps one open: a failed check on the head, or a posted build on any commit
+newer than its pipeline's last green. Builds are kept per pipeline (a check's name, a build's `pipeline`), so a red stays
+until that pipeline passes at or after its commit; another pipeline's green or a head still running doesn't close the
+break. A head whose checks all passed does clear the reds that came from head checks (one that didn't run again, like a
+path-filtered workflow), but not a posted pipeline's. `last_head` is the newest red commit. Suspects are the commits from it back to the last green head the board saw:
+the whole `green..red` range from the host (GitHub's compare, Bitbucket's
 `commits?exclude=`) when it's further back than the `commits` read, every commit read when the board never saw it
 green; each `ours` when its author's email is in `owner_emails`.
 No suspect of the owner's: `not_ours`. Otherwise a headless `claude -p` decides from the evidence (`[master]
 fault_check`), or without it: every suspect the owner's makes it `ours`, else `unsure`. Only `ours` gets a fix task
 (high priority, with a new Jira ticket when Jira is on (`[master] fix_ticket`), started at once in a new terminal
 (`[master] start_fix`; when it can't start it waits in the queue)) and an urgent alert keyed `master:M<n>`; it repeats outside the work hours and clears when the
-branch is green. A new head brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
+branch is green. A newer red commit brings new suspects and decides again (unless a person set the verdict); `unsure` is decided
 again after `recheck_mins`; a fix task that finished while the branch is still red raises the alert again.
 A fix already in flight on the same project and branch covers an `ours` break (its own task first, then the other
 breaks'), so no new fix task starts: the task isn't done, or its PR is still open, or its PR merged after the failing
