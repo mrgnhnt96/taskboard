@@ -1659,7 +1659,11 @@ fn resume(app: &App, id: i64, body: &Value) -> Result<Value> {
             if !text.contains(&marker) {
                 text = format!("{marker}\n{text}");
             }
-            runner::start_task(app, &t, "new", None, Some(text), None, cwd)?;
+            let jid = runner::start_task(app, &t, "new", None, Some(text), None, cwd)?;
+            // The owner pressed Open new terminal to answer it, so it comes to the front once open.
+            if ask.is_some() {
+                app.db.x("UPDATE jobs SET args = json_set(args, '$.focus', json('true')) WHERE id = ?", p![jid])?;
+            }
             if finish.is_some() {
                 board::log_event(app, id, OWNER, "handoff", "Asked a new terminal to check the work shipped and mark it done")?;
             } else if ask.is_some() {
