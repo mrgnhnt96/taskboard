@@ -1313,7 +1313,7 @@ fn blocked_row(c: &Ctx, t: &Value) -> Option<Node> {
     let mut body = Vec::new();
     for x in bs {
         let br = or_empty(&x["ref"]);
-        body.push(el(K::Line, vec![c.btn(&br, Act::new("open-task", "", &br, ""), Look::Ref, false, None), status_pill(x)]));
+        body.push(el(K::Row, vec![c.btn(&br, Act::new("open-task", "", &br, ""), Look::Ref, false, None), status_pill(x)]));
         body.push(txt(or_empty(&x["title"]), St::Plain));
     }
     Some(lrow("Blocked by", body))
@@ -1603,7 +1603,7 @@ fn stacks_line(c: &Ctx, so: &Value) -> Node {
         Some("tail") => kids.push(txt_tip("Tail merge", St::Small, format!("Its PR moves to the main branch once {r}'s merges"))),
         _ => {}
     }
-    el(K::Line, kids)
+    el(K::Row, kids)
 }
 
 /// "2 new comments ›" by the reviewer rows while the Review step shows the review instead (changes asked,
@@ -1649,7 +1649,7 @@ fn reviewer_rows(bar: &Value) -> Vec<Node> {
             if let Some(u) = opt_s(r, "url").filter(|u| is_web(u)) {
                 kids.push(Node::Link { s: "Open ›".into(), go: Go::Url(u.to_string()), tip: None, look: LinkLook::Small });
             }
-            Some(el(K::Line, kids))
+            Some(el(K::Row, kids))
         })
         .collect()
 }
