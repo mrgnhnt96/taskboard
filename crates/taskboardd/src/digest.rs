@@ -140,7 +140,7 @@ fn send(app: &App, rows: &[Value], sent_at: &str) {
     };
     let sent_at = sent_at.to_string();
     std::thread::spawn(move || {
-        if midna::call_exe(&midna, "notify.send", &params, 30.0).is_err() || !wait {
+        if midna::notify_send(&midna, &params).is_err() || !wait {
             return;
         }
         if let Some(w) = Waiter::start(waiters, KEY, &sent_at, NOTIFICATION_ID) {

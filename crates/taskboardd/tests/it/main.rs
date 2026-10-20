@@ -47,6 +47,7 @@ mod merged_note;
 mod models;
 mod multi_project_goals;
 mod midna_sync;
+mod notify_kind;
 mod oct8;
 mod outside_work;
 mod owner_review;

@@ -117,6 +117,27 @@ pub fn call_exe(exe: &Path, method: &str, params: &Value, timeout: f64) -> MResu
     }
 }
 
+/// The notification kind the board's notifications go as (their `category`).
+pub const NOTIFY_KIND: &str = "board";
+
+/// Sends a notification (`notify.send`). Midna refuses a category it has no kind for, so when the board's
+/// kind isn't there (a Midna that never had it, or the owner removed it) it adds the kind and sends again.
+pub fn notify_send(exe: &Path, params: &Value) -> MResult<Value> {
+    match call_exe(exe, "notify.send", params, CALL_TIMEOUT) {
+        Err(MidnaError::Refused(m)) if m.contains(&format!("no kind `{NOTIFY_KIND}`")) => {
+            // Another send may have added it meanwhile; the second send says whether it's there.
+            let _ = call_exe(
+                exe,
+                "notify.kinds.add",
+                &json!({"key": NOTIFY_KIND, "label": "Task board", "description": "Starts to approve, alerts, digests and reviews from the task board"}),
+                CALL_TIMEOUT,
+            );
+            call_exe(exe, "notify.send", params, CALL_TIMEOUT)
+        }
+        r => r,
+    }
+}
+
 pub fn call(app: &App, method: &str, params: Value) -> MResult<Value> {
     call_timeout(app, method, params, CALL_TIMEOUT)
 }
