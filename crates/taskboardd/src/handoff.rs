@@ -295,11 +295,12 @@ fn attachments_block(app: &App, t: &Row, g: Option<&Row>) -> Result<Vec<String>>
         .take(12)
         .map(|a| {
             format!(
-                "- {}{}: {} {}",
+                "- {}{}: {} {}{}",
                 label(a["kind"].as_str().unwrap_or("")),
                 if a["goal"].is_string() { " (goal)" } else { "" },
                 a["title"].as_str().unwrap_or(""),
-                a["url"].as_str().unwrap_or("")
+                a["url"].as_str().unwrap_or(""),
+                a["summary"].as_str().map(|s| format!(" — {s}")).unwrap_or_default()
             )
         })
         .collect();

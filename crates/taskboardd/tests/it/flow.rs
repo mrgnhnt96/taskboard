@@ -709,6 +709,29 @@ fn tb_moves_issues_by_ref_and_unattaches_by_link() {
 }
 
 #[test]
+fn an_attachment_keeps_a_summary_set_when_attached_or_edited() {
+    let b = new_board();
+    b.post("/goals", json!({"name": "Docs", "project": "webapp"}));
+    let a = b.report("tb.attach", "s1", json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc", "summary": "  The  login\nflow, end to end ", "goal": "G1"}))["attachment"].clone();
+    assert_eq!(a["summary"], "The login flow, end to end", "stored as one line");
+    let summary = |b: &Board| b.get("/goals/G1")["attachments"][0]["summary"].clone();
+    // Attaching it again without one keeps it; with one replaces it.
+    b.report("tb.attach", "s1", json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc", "goal": "G1"}));
+    assert_eq!(summary(&b), "The login flow, end to end");
+    b.post("/goals/G1/attachments", json!({"url": "https://example.com/spec", "title": "Spec", "kind": "doc", "summary": "Sign-in only"}));
+    assert_eq!(summary(&b), "Sign-in only");
+    let id = a["id"].as_i64().unwrap();
+    assert_eq!(b.post(&format!("/attachments/{id}"), json!({"summary": "Sign-in and sign-out"}))["summary"], "Sign-in and sign-out");
+    // An edit that leaves it out keeps it; a blank one clears it.
+    b.post(&format!("/attachments/{id}"), json!({"title": "Login spec"}));
+    assert_eq!(summary(&b), "Sign-in and sign-out");
+    assert!(b.post(&format!("/attachments/{id}"), json!({"summary": " "}))["summary"].is_null());
+    // None given: null in the JSON.
+    b.report("tb.attach", "s1", json!({"url": "~/notes.pdf", "title": "Notes", "goal": "G1"}));
+    assert!(b.get("/goals/G1")["attachments"][1]["summary"].is_null());
+}
+
+#[test]
 fn a_queued_task_moved_into_a_goal_becomes_planned_and_the_run_picks_it_up() {
     let b = new_board();
     let gid = b.post("/goals", json!({"name": "Checkout", "project": "webapp", "outcome": "people can pay"}))["id"].as_i64().unwrap();

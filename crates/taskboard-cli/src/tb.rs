@@ -429,6 +429,9 @@ enum Cmd {
         kind: String,
         #[arg(long)]
         title: Option<String>,
+        /// A line on what it is, shown under its title on the board
+        #[arg(long)]
+        summary: Option<String>,
         #[arg(long)]
         goal: Option<String>,
         #[command(flatten)]
@@ -6039,11 +6042,11 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 format!("Removed {} from {}.", v["removed"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }
-        Cmd::Attach { url, kind, title, goal, t } => {
+        Cmd::Attach { url, kind, title, summary, goal, t } => {
             let goal = goal.map(|g| goal_ref(&g)).transpose()?;
             let url = attach_target(&url, &c.cwd)?;
             let needs = goal.is_none();
-            c.run_report("tb.attach", json!({"url": url, "kind": kind, "title": title, "goal": goal}), t.task, needs, |v| {
+            c.run_report("tb.attach", json!({"url": url, "kind": kind, "title": title, "summary": summary, "goal": goal}), t.task, needs, |v| {
                 format!("Attached {} to {}.", v["attachment"]["title"].as_str().unwrap_or("it"), v["goal"].as_str().or(v["task"].as_str()).unwrap_or("the task"))
             })
         }

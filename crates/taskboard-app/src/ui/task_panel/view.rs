@@ -681,8 +681,9 @@ fn goal_chip(t: &Value) -> Option<Node> {
     Some(Node::Link { s: words.join(" · "), go: Go::Goal(gr), tip: Some(tip), look: LinkLook::Chip })
 }
 
-/// `dropItem(a)`: one attachment in the Attached dropdown.
-fn drop_item(a: &Value) -> Node {
+/// `dropItem(a)`: one attachment in the Attached dropdown; its summary, when it has one, rides
+/// last for the hover card.
+pub fn drop_item(a: &Value) -> Node {
     let kind = ATT_KINDS.iter().find(|k| **k == s(a, "kind")).copied().unwrap_or("other");
     let title = or_empty(&a["title"]);
     let name = match att_href(a) {
@@ -699,7 +700,9 @@ fn drop_item(a: &Value) -> Node {
         .into_iter()
         .map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)]))
         .collect();
-    el(K::DropItem(kind, icon), vec![name, txt(meta.join(" · "), St::Small), el(K::Kv, rows)])
+    let mut kids = vec![name, txt(meta.join(" · "), St::Small), el(K::Kv, rows)];
+    kids.extend(opt_s(a, "summary").map(|x| txt(x, St::Small)));
+    el(K::DropItem(kind, icon), kids)
 }
 
 /// The hover card under an attachment's title: where it lives, what it is, who added it when.

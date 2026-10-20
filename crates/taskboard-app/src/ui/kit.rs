@@ -364,6 +364,7 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 
 struct CardTip {
     title: SharedString,
+    summary: Option<String>,
     rows: Vec<(String, String)>,
 }
 
@@ -392,14 +393,16 @@ impl Render for CardTip {
             .text_size(px(12.))
             .font_family(t.ui_font.clone())
             .child(div().pb(px(4.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.title.clone()))
+            .children(self.summary.clone().map(|s| div().mt(px(-4.)).pb(px(4.)).text_color(t.text_2).child(s)))
             .children(rows)
     }
 }
 
-/// A hover card: a title over label · value rows (`.tooltip(card_tip(…))`).
-pub fn card_tip(title: impl Into<SharedString>, rows: Vec<(String, String)>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+/// A hover card: a title, an optional summary line under it, then label · value rows
+/// (`.tooltip(card_tip(…))`).
+pub fn card_tip(title: impl Into<SharedString>, summary: Option<String>, rows: Vec<(String, String)>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let title = title.into();
-    move |_, cx| cx.new(|_| CardTip { title: title.clone(), rows: rows.clone() }).into()
+    move |_, cx| cx.new(|_| CardTip { title: title.clone(), summary: summary.clone(), rows: rows.clone() }).into()
 }
 
 // ------------------------------------------------------------------ line icons

@@ -518,6 +518,21 @@ fn attachment_icons_follow_the_file_type() {
     assert_eq!(t("/Users/me/thing.xyz"), None);
 }
 
+#[test]
+fn an_attachment_summary_rides_last_in_its_dropdown_item() {
+    use super::view::Node;
+    let last = |a: Value| match view::drop_item(&a) {
+        Node::El { kids, .. } if kids.len() == 4 => match &kids[3] {
+            Node::Text { s, .. } => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let a = json!({"id": 1, "kind": "doc", "title": "Spec", "url": "https://example.com/spec", "summary": "The login flow"});
+    assert_eq!(last(a).as_deref(), Some("The login flow"));
+    assert_eq!(last(json!({"id": 1, "kind": "doc", "title": "Spec", "url": "https://example.com/spec", "summary": null})), None);
+}
+
 #[gpui_kit::test]
 fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;
