@@ -395,9 +395,18 @@ fn other_tasks(app: &App, t: &Row) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The worktree the board made for the task, the locks it holds, and whether it runs alone.
+/// The worktree slot or worktree the board gave the task, the locks it holds, and whether it runs alone.
 fn worktree_and_lock_lines(t: &Row, ctx: &Row) -> Vec<String> {
     let mut lines = vec![];
+    if let Some(slot) = ctx.s("worktree_slot").filter(|s| !s.is_empty()) {
+        let name = slot.rsplit('/').next().unwrap_or(slot);
+        let base = ctx.s("worktree_base").map(|b| format!(", detached at {b}")).unwrap_or_default();
+        lines.push(format!(
+            "The board gave the task the worktree {name} from its pool: {slot}{base}. Work there and make the task's branch \
+             in it with git switch -c <branch>; don't make another worktree. Its builds go in {slot}/target, kept for \
+             the next task that takes it."
+        ));
+    }
     if let Some(made) = ctx.s("worktree_made").filter(|m| !m.is_empty()) {
         if ctx.get("worktree_removed").is_none() {
             let base = ctx.s("worktree_base").map(|b| format!(", detached at {b}")).unwrap_or_default();

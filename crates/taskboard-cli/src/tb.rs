@@ -1683,6 +1683,21 @@ enum ProjectCmd {
         /// Busy terminals the project may have before its queued tasks wait for one to free up (default: config.toml's [terminals] project_max)
         #[arg(long = "max-terminals")]
         max_terminals: Option<String>,
+        /// Worktree slots its pool keeps however idle (default: config.toml's [worktrees] min_slots)
+        #[arg(long = "min-slots")]
+        min_slots: Option<String>,
+        /// Worktree slots its pool grows to before a task waits for one (default: config.toml's [worktrees] max_slots)
+        #[arg(long = "max-slots")]
+        max_slots: Option<String>,
+        /// Days a slot sits idle before its build output is cleared (default: config.toml's [worktrees] idle_trim_days)
+        #[arg(long = "idle-trim-days")]
+        idle_trim_days: Option<String>,
+        /// Days a slot sits idle before it's removed (default: config.toml's [worktrees] idle_remove_days)
+        #[arg(long = "idle-remove-days")]
+        idle_remove_days: Option<String>,
+        /// Free disk in GB below which idle slots are cleared sooner (default: config.toml's [worktrees] low_disk_gb)
+        #[arg(long = "low-disk-gb")]
+        low_disk_gb: Option<String>,
         /// Other projects whose tasks this project's tasks may wait for (tb wait-for), comma-separated; one way only (none: only its own)
         #[arg(long = "waits-on")]
         waits_on: Option<String>,
@@ -6214,6 +6229,15 @@ fn project_line(p: &Value) -> String {
         .filter_map(|(k, label)| r[*k].as_bool().map(|on| format!(" · {label} {}", if on { "on" } else { "off" })))
         .collect();
     let terminals = p["max_terminals"].as_i64().map(|n| format!(" · up to {n} busy terminals")).unwrap_or_default();
+    let slots = if p["worktrees"]["set"].as_object().is_some_and(|s| !s.is_empty()) {
+        let w = &p["worktrees"];
+        format!(
+            " · {}–{} worktree slots, idle ones cleared after {} days and removed after {} (sooner under {} GB free)",
+            w["min_slots"], w["max_slots"], w["idle_trim_days"], w["idle_remove_days"], w["low_disk_gb"]
+        )
+    } else {
+        String::new()
+    };
     let tags = p["release_tags"].as_str().map(|t| format!(", cut by tags {t}")).unwrap_or_default()
         + &p["release_script"].as_str().map(|s| format!(", release script {s}")).unwrap_or_default();
     let releases = match p["releases"].as_bool() {
@@ -6232,7 +6256,7 @@ fn project_line(p: &Value) -> String {
         .map(|a| a.iter().filter_map(|w| w.as_str()).map(|w| format!("\n  Worktree no task claims (left for you): {w}")).collect())
         .unwrap_or_default();
     format!(
-        "{} · PR flow {} · {} · {remote}{terminals}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
+        "{} · PR flow {} · {} · {remote}{terminals}{slots}{releases}{lens}{waits_on}{approvals}{expected}{switches}{gaps}{stray}",
         p["name"].as_str().unwrap_or(""),
         p["pr_flow"].as_str().unwrap_or("auto"),
         if p["ships_prs"] == true { "work ends in PRs" } else { "no PRs" }
@@ -6297,8 +6321,23 @@ fn project_cmd(c: &Ctx, action: ProjectCmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, waits_on, releases, lens, release_tags, release_script } => {
+        ProjectCmd::Set { name, pr_flow, approvals, expected_check, expected_wait, ask_stage, swap, review, agents_merge, owner_review, max_terminals, min_slots, max_slots, idle_trim_days, idle_remove_days, low_disk_gb, waits_on, releases, lens, release_tags, release_script } => {
             let mut body = project_rules(approvals, expected_check, expected_wait)?;
+            for (key, flag, v) in [
+                ("min_slots", "--min-slots", min_slots),
+                ("max_slots", "--max-slots", max_slots),
+                ("idle_trim_days", "--idle-trim-days", idle_trim_days),
+                ("idle_remove_days", "--idle-remove-days", idle_remove_days),
+                ("low_disk_gb", "--low-disk-gb", low_disk_gb),
+            ] {
+                let Some(v) = v else { continue };
+                let v = if v.trim().eq_ignore_ascii_case("default") {
+                    Value::Null
+                } else {
+                    json!(v.trim().parse::<i64>().map_err(|_| format!("{flag} takes a number or default, not “{v}”"))?)
+                };
+                body.insert(key.into(), v);
+            }
             if let Some(w) = waits_on {
                 body.insert("waits_on".into(), json!(w));
             }

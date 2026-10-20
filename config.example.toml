@@ -282,8 +282,19 @@ fresh_pr_visits = true               # those visits start a fresh, short convers
 # Cargo builds in the board's terminals and the worktree subagents they start (Rust repos only),
 # so many worktree agents don't each cold-build the project with every core at once.
 [builds]
-shared_target = true                 # CARGO_TARGET_DIR = the main checkout's target/, shared by its worktrees; builds take turns and reuse each other
+shared_target = true                 # CARGO_TARGET_DIR = the main checkout's target/, shared by its worktrees (a pool slot keeps its own target/); builds take turns and reuse each other
 jobs = 4                             # CARGO_BUILD_JOBS per terminal; 0 leaves cargo's default (every core)
+
+# The worktree slot pool. A goal set with --worktrees starts each task in a reusable worktree at
+# <repo>/.claude/worktrees/slot-<n>: the free one used last (its build is warmest), else a new one up to
+# max_slots; past that the task waits for a slot (tb locks lists them as wt:slot-<n>). tb project set
+# --min-slots and the rest change these for one project.
+[worktrees]
+min_slots = 2                        # slots the pool keeps however idle
+max_slots = 10                       # slots the pool grows to before a task waits for one
+idle_trim_days = 2                   # days idle before a slot's build output is cleared
+idle_remove_days = 7                 # days idle before a slot is removed (never below min_slots)
+low_disk_gb = 50                     # free disk (GB) below which idle slots are cleared sooner
 
 # The comment guard: agents may not add code comments. A PreToolUse hook refuses an Edit, Write,
 # MultiEdit or NotebookEdit that adds one, and the board refuses the PR, `tb pr wait` and `tb submit`

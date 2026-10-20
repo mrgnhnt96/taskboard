@@ -86,6 +86,7 @@ pub mod setup;
 pub mod shared;
 pub mod review;
 pub mod review_fixes;
+pub mod slots;
 pub mod spans;
 pub mod tidy;
 pub mod stack;

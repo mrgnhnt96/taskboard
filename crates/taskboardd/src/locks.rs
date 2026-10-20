@@ -1,7 +1,8 @@
 //! Named locks and tasks that run alone. Tasks that name the same lock never run together, across the
 //! board; a task that runs alone waits until its goal (or the board) is quiet, then nothing else in that
 //! scope starts until it's done. A task holds its locks while it's active: working or needing the owner
-//! (not a failed start), or queued with a start job.
+//! (not a failed start), or queued with a start job. A task whose goal makes worktrees also waits for a
+//! slot from the pool when it's full (`slots.rs`); each held slot shows as the lock `wt:slot-<n>`.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -140,7 +141,7 @@ pub fn blocker(app: &App, t: &Row) -> Result<Option<String>> {
     if let Some(first) = alone_ahead(app, t)? {
         return Ok(Some(format!("Waits for {} to run alone first", rf("task", first.id()))));
     }
-    Ok(None)
+    crate::slots::blocker(app, t)
 }
 
 /// A queued task that runs alone, ahead of this one in start order and ready but for the others.
@@ -199,6 +200,7 @@ pub fn overview(app: &App) -> Result<Value> {
             }
         }
     }
+    by_name.extend(crate::slots::held_locks(app)?);
     by_name.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     let alone: Vec<Value> = rows
         .iter()

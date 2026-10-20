@@ -1,8 +1,9 @@
-//! A git worktree per task. A goal with a `worktree_base` (like `origin/main`) starts each task in
-//! `<repo>/.claude/worktrees/T<n>`, detached at that base (a stacked task: at its parent's branch).
-//! The worktree is made before the start, outside any transaction; one that can't be made fails the
-//! start with the usual retries. Once the task is finished (failed, no open PR) and its terminal is
-//! gone, the board removes the worktree, or keeps it when it has uncommitted changes. Worktrees the
+//! A git worktree per task. A goal with a `worktree_base` (like `origin/main`) starts each task in a
+//! slot from the pool (`slots.rs`), detached at that base (a stacked task: at its parent's branch).
+//! The slot is claimed before the start, outside any transaction; one that can't be had fails the
+//! start with the usual retries. A task started before the pool keeps its `<repo>/.claude/worktrees/T<n>`:
+//! once the task is finished (failed, no open PR) and its terminal is gone, the board removes that
+//! worktree, or keeps it when it has uncommitted changes. Worktrees the
 //! agents made themselves (any other `git worktree list` entry) are matched to their task by path,
 //! branch or folder name and removed by the same rules; one no task claims is listed on its project.
 
@@ -18,7 +19,7 @@ use crate::{board, p, projects};
 
 static BASE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$").unwrap());
 const FETCH_SECS: f64 = 300.0;
-const GIT_SECS: f64 = 120.0;
+pub(crate) const GIT_SECS: f64 = 120.0;
 static TASK_IN_BRANCH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[/_-])t(\d+)(?:[/_-]|$)").unwrap());
 static TASK_IN_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[_-])t(\d+)$").unwrap());
 const WORKTREES: &str = "/.claude/worktrees/";
@@ -41,13 +42,13 @@ pub fn clean_base(value: Option<&Value>) -> Result<Option<String>> {
     Ok(Some(v))
 }
 
-struct Git {
-    code: i32,
-    out: String,
-    err: String,
+pub(crate) struct Git {
+    pub code: i32,
+    pub out: String,
+    pub err: String,
 }
 
-fn git(path: &str, args: &[&str], timeout: f64) -> Git {
+pub(crate) fn git(path: &str, args: &[&str], timeout: f64) -> Git {
     let Some(bin) = crate::proc::which("git") else { return Git { code: 1, out: String::new(), err: "git isn't installed".into() } };
     let mut all: Vec<String> = vec!["-C".into(), path.into()];
     all.extend(args.iter().map(|a| a.to_string()));
@@ -58,7 +59,7 @@ fn git(path: &str, args: &[&str], timeout: f64) -> Git {
     }
 }
 
-fn last_line(text: &str) -> String {
+pub(crate) fn last_line(text: &str) -> String {
     text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("no output").to_string()
 }
 
@@ -77,30 +78,48 @@ fn goal_base(app: &App, t: &Row) -> Result<Option<String>> {
     Ok(board::find_goal(app, t.i("goal_id"))?.and_then(|g| g.s("worktree_base").filter(|b| !b.is_empty()).map(|b| b.to_string())))
 }
 
-fn existing(t: &Row) -> Option<String> {
+/// The task's recorded worktree that's there; a slot only while the task still holds it.
+fn existing(app: &App, t: &Row) -> Result<Option<String>> {
     let ctx = board::task_context(t);
     let wt = ctx.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let made = ctx.s("worktree_made").map(|s| s.to_string());
-    [wt, made].into_iter().flatten().find(|p| Path::new(p).is_dir())
+    for p in [wt, made].into_iter().flatten().filter(|p| Path::new(p).is_dir()) {
+        if !crate::slots::is_slot(&p) || crate::slots::holds(app, t, &p)? {
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
 }
 
 /// The task's worktree when its goal makes them and it's already there (no git).
 pub fn made(app: &App, t: &Row) -> Result<Option<String>> {
-    Ok(if goal_base(app, t)?.is_some() { existing(t) } else { None })
+    if goal_base(app, t)?.is_none() {
+        return Ok(None);
+    }
+    existing(app, t)
+}
+
+/// The repo a task would take a slot of: when its goal makes worktrees and the folder is known.
+pub fn slot_repo(app: &App, t: &Row) -> Result<Option<String>> {
+    if goal_base(app, t)?.is_none() {
+        return Ok(None);
+    }
+    Ok(repo_of(app, t)?.filter(|r| Path::new(r).is_dir()))
 }
 
 /// Makes the task's worktree if its goal asks for one; its folder, or None for the shared folder.
 pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
     let Some(base) = goal_base(app, t)? else { return Ok(None) };
-    if let Some(have) = existing(t) {
+    if let Some(have) = existing(app, t)? {
         return Ok(Some(have));
     }
     let Some(repo) = repo_of(app, t)?.filter(|r| Path::new(r).is_dir()) else {
         return err(409, format!("The board doesn't know the folder for the project “{}”, so it can't make a worktree.", t.st("project")));
     };
+    // A task started before the slot pool keeps its own worktree.
     let path = folder(&repo, t);
     if Path::new(&path).is_dir() {
-        record(app, t, &path, None)?;
+        record(app, t, &path)?;
         return Ok(Some(path));
     }
     let remote = git(&repo, &["remote", "get-url", "origin"], GIT_SECS).code == 0;
@@ -116,13 +135,7 @@ pub fn ensure(app: &App, t: &Row) -> Result<Option<String>> {
         Some(b) => stack_start(&repo, &b, remote).unwrap_or(base),
         None => base,
     };
-    let r = crate::progress::waiting("git worktree add", crate::progress::WAITING_EVERY, || git(&repo, &["worktree", "add", "--detach", &path, &start], GIT_SECS));
-    if r.code != 0 {
-        return err(409, format!("Couldn't make its worktree from {start}: {}", last_line(&r.err)));
-    }
-    crate::progress::stage(&format!("Made its worktree from {start}"));
-    record(app, t, &path, Some(&start))?;
-    Ok(Some(path))
+    crate::slots::claim(app, t, &repo, &start).map(Some)
 }
 
 /// Where a stacked task starts: its parent's branch on the remote, else the local one; None when
@@ -135,22 +148,15 @@ fn stack_start(repo: &str, branch: &str, remote: bool) -> Option<String> {
     has(&format!("refs/heads/{branch}")).then(|| branch.to_string())
 }
 
-fn record(app: &App, t: &Row, path: &str, start: Option<&str>) -> Result<()> {
+fn record(app: &App, t: &Row, path: &str) -> Result<()> {
     app.db.tx(|| {
         let mut ctx = board::task_context(&board::get_task(app, t.id())?);
         let mut w = ctx.get("where").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         w.insert("worktree".into(), json!(path));
         ctx.insert("where".into(), Value::Object(w));
         ctx.insert("worktree_made".into(), json!(path));
-        if let Some(s) = start {
-            ctx.insert("worktree_base".into(), json!(s));
-        }
         board::save_context(app, t.id(), &ctx, false)?;
-        let text = match start {
-            Some(s) => format!("Made its worktree from {s} at {path}"),
-            None => format!("Starts in its worktree at {path}"),
-        };
-        board::log_event(app, t.id(), board::BOARD, "midna", &text)?;
+        board::log_event(app, t.id(), board::BOARD, "midna", &format!("Starts in its worktree at {path}"))?;
         Ok(())
     })
 }
@@ -167,7 +173,7 @@ fn finished(app: &App, t: &Row) -> Result<bool> {
     Ok(!t.st("no_pr").trim().is_empty() || !crate::projects::task_ships_pr(app, t)?)
 }
 
-fn terminal_open(app: &App, t: &Row) -> Result<bool> {
+pub(crate) fn terminal_open(app: &App, t: &Row) -> Result<bool> {
     Ok(board::get_session(app, t.s("session_id"))?.map(|s| s.s("status") != Some("gone")).unwrap_or(false))
 }
 
@@ -234,7 +240,7 @@ fn entries(repo: &str) -> Option<Vec<Entry>> {
 
 /// A path with its links resolved (git lists `/private/var/…` for `/var/…`), through its deepest
 /// folder that's there.
-fn real(path: &str) -> String {
+pub(crate) fn real(path: &str) -> String {
     let path = Path::new(path);
     for up in path.ancestors() {
         if let Ok(r) = std::fs::canonicalize(up) {
@@ -313,8 +319,8 @@ fn others(app: &App) -> Result<Vec<i64>> {
         let made: Vec<String> = tasks.iter().filter_map(|t| board::task_context(t).s("worktree_made").map(real)).collect();
         let mut pruned = false;
         for e in list.iter().skip(1).filter(|e| !e.gone && real(&e.path) != real(&main) && real(&e.path) != real(repo)) {
-            // The board's own are the pass above's.
-            if made.contains(&real(&e.path)) {
+            // The board's own are the pass above's; the pool's slots stay.
+            if made.contains(&real(&e.path)) || crate::slots::is_slot(&e.path) {
                 continue;
             }
             let Some(t) = task_of(app, name, repo, e, &tasks)? else {
@@ -386,6 +392,10 @@ pub fn root_of(path: Option<&str>) -> Option<String> {
 /// Another open task whose worktree this path is in (its PR still open, if it's done).
 pub fn owner(app: &App, path: &str, t: &Row) -> Result<Option<Row>> {
     let Some(root) = root_of(Some(path)) else { return Ok(None) };
+    // A slot is its holder's, whoever had it before.
+    if crate::slots::is_slot(&root) {
+        return crate::slots::held_by_other(app, &root, t);
+    }
     let mine = board::task_context(t);
     if root_of(mine.get("where").and_then(|w| w.get("worktree")).and_then(|v| v.as_str())).as_deref() == Some(root.as_str()) {
         return Ok(None);

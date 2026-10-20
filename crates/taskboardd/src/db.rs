@@ -141,6 +141,11 @@ CREATE INDEX IF NOT EXISTS events_at ON events(at);
 CREATE TABLE IF NOT EXISTS start_misses(
   id INTEGER PRIMARY KEY, at TEXT, ref TEXT, session_id TEXT, session_name TEXT, prompt TEXT);
 
+-- The worktree slot pool (`slots.rs`): each repo's reusable worktrees, and the task that last took each.
+CREATE TABLE IF NOT EXISTS worktree_slots(
+  id INTEGER PRIMARY KEY, repo TEXT NOT NULL, n INT NOT NULL, path TEXT NOT NULL, project TEXT,
+  task_id INT, made_at TEXT, used_at TEXT, seq INT NOT NULL DEFAULT 0, UNIQUE(repo, n));
+
 -- Every change of a task's status, for the Days page's timeline (`days.rs`). A trigger, so no
 -- path that moves a task can forget it. Every status change goes through `board::update_task`,
 -- which stamps `updated_at`.
