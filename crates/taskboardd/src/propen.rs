@@ -378,15 +378,28 @@ pub fn unshipped_head(cfg: &PrBodyConfig, dir: &str, base: &str) -> Option<Strin
 }
 
 /// The branch, ready for a PR into `base`: checked out, pushed as it is, rebased on the remote base
-/// with no merge commits. The branch's name, or why not.
-pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::Result<String, String> {
+/// with no merge commits. `given` (tb submit --branch) is a pushed branch the checkout needn't be on:
+/// its remote copy is checked instead. The branch's name, or why not.
+pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str, given: Option<&str>) -> std::result::Result<String, String> {
     let remote = &cfg.remote;
-    let (ok, branch, _) = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], 10.0)?;
-    if !ok || branch.is_empty() || branch == "HEAD" {
-        return Err("This checkout isn't on a branch: make the task's branch (git switch -c <branch>) and push it.".into());
-    }
+    let branch = match given {
+        Some(b) if b.starts_with('-') || b.contains("..") || b.chars().any(char::is_whitespace) => return Err(format!("{b} isn't a branch name.")),
+        Some(b) => b.to_string(),
+        None => {
+            let (ok, branch, _) = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], 10.0)?;
+            if !ok || branch.is_empty() || branch == "HEAD" {
+                return Err("This checkout isn't on a branch: make the task's branch (git switch -c <branch>) and push it.".into());
+            }
+            branch
+        }
+    };
     if branch == base {
-        return Err(format!("This is {base} itself: the PR needs the task's own branch (git switch -c <branch>)."));
+        return Err(match given {
+            Some(_) => format!("{base} is the base itself: --branch names the task's own branch, pushed off {remote}/{base}."),
+            None => format!(
+                "This is {base} itself: the PR needs the task's own branch (git switch -c <branch>), or push the task's commits to a branch and run tb submit --branch <branch>."
+            ),
+        });
     }
     let fetching = format!("git fetch {remote}");
     let (ok, _, _) = crate::progress::waiting(&fetching, crate::progress::WAITING_EVERY, || git(dir, &["fetch", remote, base, &branch], 120.0))?;
@@ -399,21 +412,25 @@ pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::R
         }
     }
     crate::progress::stage(&format!("Fetched {remote}"));
-    let (_, head, _) = git(dir, &["rev-parse", "HEAD"], 10.0)?;
-    let (pushed, there, _) = git(dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/{remote}/{branch}")], 10.0)?;
+    let pushed_ref = format!("refs/remotes/{remote}/{branch}");
+    let (pushed, there, _) = git(dir, &["rev-parse", "--verify", "-q", &pushed_ref], 10.0)?;
     if !pushed {
         return Err(format!("{branch} isn't pushed: git push -u {remote} {branch}, then run tb submit again."));
     }
-    if there != head {
-        return Err(format!("{remote}/{branch} isn't this commit: push it (git push --force-with-lease after a rebase), then run tb submit again."));
+    if given.is_none() {
+        let (_, head, _) = git(dir, &["rev-parse", "HEAD"], 10.0)?;
+        if there != head {
+            return Err(format!("{remote}/{branch} isn't this commit: push it (git push --force-with-lease after a rebase), then run tb submit again."));
+        }
     }
     if cfg.rebased {
+        let tip = tip(remote, given);
         let base_ref = format!("{remote}/{base}");
-        let (on_top, _, _) = git(dir, &["merge-base", "--is-ancestor", &base_ref, "HEAD"], 10.0)?;
+        let (on_top, _, _) = git(dir, &["merge-base", "--is-ancestor", &base_ref, &tip], 10.0)?;
         if !on_top {
             return Err(format!("{branch} isn't rebased on {base_ref}: git rebase {base_ref}, push with --force-with-lease, then run tb submit again."));
         }
-        let (_, merges, _) = git(dir, &["rev-list", "--merges", &format!("{base_ref}..HEAD")], 10.0)?;
+        let (_, merges, _) = git(dir, &["rev-list", "--merges", &format!("{base_ref}..{tip}")], 10.0)?;
         if !merges.is_empty() {
             return Err(format!(
                 "{branch} has {} on top of {base_ref}: rebase instead (git rebase {base_ref}), push with --force-with-lease, then run tb submit again.",
@@ -422,6 +439,11 @@ pub fn check_branch(cfg: &PrBodyConfig, dir: &str, base: &str) -> std::result::R
         }
     }
     Ok(branch)
+}
+
+/// The commit the PR is opened from: the checkout's HEAD, or the remote copy of a `--branch`.
+fn tip(remote: &str, given: Option<&str>) -> String {
+    given.map_or_else(|| "HEAD".to_string(), |b| format!("refs/remotes/{remote}/{b}"))
 }
 
 fn where_str(t: &Row, key: &str) -> Option<String> {
@@ -439,21 +461,25 @@ fn dir_for(t: &Row, cwd: &str) -> Option<String> {
 }
 
 /// Why `branch` (in `dir`, going into `base`) isn't this task's to open a PR from: it has nothing on
-/// top of the base, this task committed on another branch, or another live task committed on it.
-fn not_ours(app: &App, t: &Row, dir: &str, base: &str, branch: &str) -> Result<Option<String>> {
+/// top of the base, this task committed on another branch, or another live task committed on it. A
+/// `given` branch is the agent's word for where the work is, even when it committed elsewhere (on the
+/// base in a shared checkout it couldn't switch).
+fn not_ours(app: &App, t: &Row, dir: &str, base: &str, branch: &str, given: Option<&str>) -> Result<Option<String>> {
     let remote = &app.cfg.pr_body.remote;
-    let (_, ahead, _) = git(dir, &["rev-list", "--count", &format!("{remote}/{base}..HEAD")], 10.0).map_err(|e| ApiError::new(409, e))?;
+    let range = format!("{remote}/{base}..{}", tip(remote, given));
+    let (_, ahead, _) = git(dir, &["rev-list", "--count", &range], 10.0).map_err(|e| ApiError::new(409, e))?;
     if ahead.trim() == "0" {
         return Ok(Some(format!("{branch} has no commits on top of {remote}/{base}: commit the task's work on its branch, push it, then run tb submit again.")));
     }
     let mine = where_str(t, "committed_branch");
-    if let Some(b) = mine.as_deref().filter(|b| *b != branch) {
+    if let Some(b) = mine.as_deref().filter(|b| *b != branch && given.is_none()) {
         return Ok(Some(format!(
-            "T{} committed its work on {b}, but {dir} is on {branch}: switch that checkout back to {b} (or run tb submit from the worktree that has it), then run tb submit again.",
+            "T{} committed its work on {b}, but {dir} is on {branch}: switch that checkout back to {b} (or run tb submit from the worktree that has it), \
+             or push the work to its own branch and run tb submit --branch <branch>, then run tb submit again.",
             t.id()
         )));
     }
-    if mine.is_some() {
+    if mine.as_deref() == Some(branch) {
         return Ok(None);
     }
     let rows = app.db.q(
@@ -501,7 +527,7 @@ fn already_open(app: &App, t: &Row, dir: &str, branch: &str, e: &str) -> Option<
 
 /// Opens the task's PR from `--pr-body`: the description checked, the branch checked, the PR opened on
 /// the host. Its link, or a refusal for the agent.
-pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Result<PrLink> {
+pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str, given_branch: Option<&str>) -> Result<PrLink> {
     let cfg = &app.cfg.pr_body;
     let problems = body_problems(cfg, body);
     if !problems.is_empty() {
@@ -513,8 +539,8 @@ pub fn open(app: &App, t: &Row, cwd: &str, body: &str, given_title: &str) -> Res
     let Some(dir) = dir_for(t, cwd) else { return err(409, "The board can't find this task's checkout to open the PR from.") };
     let base = steps::real_base(app, t)?;
     crate::progress::stage("Checked the PR description");
-    let branch = check_branch(cfg, &dir, &base).map_err(|e| ApiError::new(409, e))?;
-    if let Some(why) = not_ours(app, t, &dir, &base, &branch)? {
+    let branch = check_branch(cfg, &dir, &base, given_branch).map_err(|e| ApiError::new(409, e))?;
+    if let Some(why) = not_ours(app, t, &dir, &base, &branch, given_branch)? {
         return err(409, why);
     }
     crate::progress::stage(&format!("{branch} is pushed and up to date with {base}"));
@@ -549,12 +575,23 @@ pub fn before_done(app: &App, body: &mut Value, t: Option<&Row>) -> Result<()> {
     if !body_str(body, "pr").is_empty() {
         return err(400, "Give either --pr (a PR you opened) or --pr-body (the board opens it), not both.");
     }
-    let head = body["git"]["sha"].as_str().filter(|h| !h.is_empty());
+    let branch = body_str(body, "pr_branch");
+    let branch = Some(branch.trim()).filter(|b| !b.is_empty());
+    // A --branch's steps are judged on its pushed tip, not the checkout's HEAD.
+    let pushed = branch.and_then(|b| {
+        let dir = dir_for(t, &body_str(body, "cwd"))?;
+        let (ok, sha, _) = git(&dir, &["rev-parse", "--verify", "-q", &tip(&app.cfg.pr_body.remote, Some(b))], 10.0).ok()?;
+        ok.then_some(sha)
+    });
+    let head = match branch {
+        Some(_) => pushed.as_deref(),
+        None => body["git"]["sha"].as_str().filter(|h| !h.is_empty()),
+    };
     let left = steps::missing_at(app, t, &[steps::Before::Pr, steps::Before::Done], head)?;
     if !left.is_empty() {
         return err(409, steps::refusal_at(app, t, "opening the PR", &left, head));
     }
-    let pr = open(app, t, &body_str(body, "cwd"), &text, &body_str(body, "pr_title"))?;
+    let pr = open(app, t, &body_str(body, "cwd"), &text, &body_str(body, "pr_title"), branch)?;
     app.db.tx(|| {
         let t = board::get_task(app, t.id())?;
         crate::prflow::link_pr(app, &t, &pr, board::BOARD)?;

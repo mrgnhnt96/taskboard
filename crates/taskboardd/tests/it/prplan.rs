@@ -734,6 +734,51 @@ fn tasks_sharing_a_checkout_open_prs_from_their_own_branches() {
     assert!(why.contains(&format!("fix/axe already has an open PR #78 (https://github.com/acme/webapp/pull/78), T{bb}'s")), "{why}");
 }
 
+/// A task that committed on main in a shared checkout it can't switch pushes its work to a branch off
+/// origin/main and names it with --branch: the PR opens from that branch and the checkout stays put.
+#[test]
+fn a_pushed_branch_named_with_branch_opens_the_pr_without_switching() {
+    let b = new_board();
+    let repo = git_repo(&b);
+    let cwd = repo.to_string_lossy().to_string();
+    midna::sync(&b.app, &[json!({"id": "s1", "name": "s1", "agent": "claude", "cwd": cwd, "status": {"state": "working"}})], &[]).unwrap();
+    let report = |extra: Value| {
+        let mut body = extra;
+        body["session"] = json!("s1");
+        body["claude_session"] = json!("c-s1");
+        b.report("tb.done", body)
+    };
+    let id = b.task("Fix the guard", json!({}));
+    b.report("tb.take", json!({"task": format!("T{id}"), "session": "s1", "claude_session": "c-s1"})).unwrap();
+    std::fs::write(repo.join("guard.txt"), "x\n").unwrap();
+    git(&repo, &["add", "guard.txt"]);
+    git(&repo, &["commit", "-q", "-m", "guard"]);
+    let sha = git(&repo, &["rev-parse", "HEAD"]);
+    b.report("hook.commit", json!({"session": "s1", "claude_session": "c-s1", "cwd": cwd, "command": "git commit -m guard", "git": {"branch": "main", "sha": sha}}))
+        .unwrap();
+
+    let (code, why) = report(json!({"summary": "Guard", "pr_body": BODY, "cwd": cwd})).unwrap_err();
+    assert_eq!(code, 409);
+    assert!(why.contains("tb submit --branch"), "on main, the refusal names --branch: {why}");
+    let (_, why) = report(json!({"summary": "Guard", "pr_body": BODY, "cwd": cwd, "pr_branch": "fix/guard"})).unwrap_err();
+    assert!(why.contains("fix/guard isn't pushed"), "{why}");
+    let (_, why) = report(json!({"summary": "Guard", "pr_body": BODY, "cwd": cwd, "pr_branch": "main"})).unwrap_err();
+    assert!(why.contains("main is the base itself"), "{why}");
+    let (_, why) = report(json!({"summary": "Guard", "pr_body": BODY, "cwd": cwd, "pr_branch": "--upload-pack=x"})).unwrap_err();
+    assert!(why.contains("isn't a branch name"), "{why}");
+
+    // Pushed straight from main's commit, without switching the checkout.
+    git(&repo, &["push", "-q", "origin", "HEAD:refs/heads/fix/guard"]);
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    let v = report(json!({"summary": "Guard", "pr_body": BODY, "cwd": cwd, "pr_branch": "fix/guard", "git": {"branch": "main"}})).unwrap();
+    assert_eq!(v["pr_url"], "https://github.com/acme/webapp/pull/77", "{v}");
+    let log = std::fs::read_to_string(b.dir.path().join("gh.log")).unwrap();
+    assert!(log.contains("--head fix/guard"), "{log}");
+    assert_eq!(git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]), "main", "the checkout wasn't switched");
+    assert_eq!(b.row(id).i("pr_num"), Some(77));
+}
+
 #[test]
 fn a_change_from_a_terminal_is_credited_to_that_terminal() {
     let b = new_board();

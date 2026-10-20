@@ -1395,7 +1395,9 @@ refs, `forbid` patterns), the before-the-PR and before-done steps, and the branc
 title after the ticket key and a `## Context` section (the ticket, the PR it stacks on, the evidence and results: web
 links, and local files by name; then the design links under **Design**), links it and finishes. Errors come back as 400/409 with what
 to fix; nothing is spooled. It opens on GitHub or Bitbucket Cloud by the checkout's remote, through the `prhost` interface (`propen::host`; a remote naming neither falls back to `gh pr create`); `propen::host` is the one place that talks to the
-host. `tb pr body-check FILE` runs the description check alone.
+host. `tb pr body-check FILE` runs the description check alone. `--branch BRANCH` (`pr_branch`) opens the PR from that
+pushed branch instead of the checkout's own: `<remote>/BRANCH` is checked (rebased, no merge commits, the steps judged on
+its tip) and the checkout can stay on another branch, for a task in a shared checkout it can't switch.
 
 **Steps with rounds** (`[[steps]]`): `per_head = true` passes only for the head commit it ran on (`GET
 /steps?head=<sha>` judges `done` on that commit; the `PreToolUse` hook also holds `git push` to an open PR until

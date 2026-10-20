@@ -467,7 +467,7 @@ fn a_failed_fetch_shows_all_of_gits_error() {
     git(&repo, &["remote", "set-url", "origin", &b.dir.path().join("nowhere.git").to_string_lossy()]);
     let cfg = taskboardd::config::PrBodyConfig::default();
     git(&repo, &["switch", "-q", "-c", "feat/x"]);
-    let e = taskboardd::propen::check_branch(&cfg, &repo.to_string_lossy(), "main").unwrap_err();
+    let e = taskboardd::propen::check_branch(&cfg, &repo.to_string_lossy(), "main", None).unwrap_err();
     assert!(e.starts_with("git fetch origin main failed:\n"), "{e}");
     assert!(e.lines().count() > 2, "every line git said: {e}");
 }
