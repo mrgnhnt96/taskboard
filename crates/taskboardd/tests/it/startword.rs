@@ -1681,3 +1681,22 @@ fn the_start_command_and_a_trailing_go_always_count() {
     b.typed(&format!("/start G{g}"));
     assert!(b.tb_run(g).is_ok());
 }
+
+#[test]
+fn a_goal_run_now_on_the_owners_word_runs_outside_the_hours() {
+    use chrono::Datelike;
+    let b = board();
+    let days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    let today = days[chrono::Local::now().weekday().num_days_from_monday() as usize];
+    let others: Vec<&str> = days.into_iter().filter(|d| *d != today).collect();
+    b.app.db.set_setting("work_hours", Some(&json!({"on": true, "start": "09:00", "end": "17:00", "days": others}).to_string())).unwrap();
+    let g = b.goal();
+    let other = b.goal();
+    b.planned(g);
+    b.said(&format!("run G{g} now"));
+    // What `tb start G<g> --now` sends from terminal s1.
+    let v = api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({"via_session": "s1", "now": true})).unwrap();
+    assert!(v["hours_until"].as_str().is_some_and(|s| !s.is_empty()), "{v}");
+    assert!(taskboardd::hours::goal_open(&b.app, Some(&board::get_goal(&b.app, g).unwrap())));
+    assert!(!taskboardd::hours::goal_open(&b.app, Some(&board::get_goal(&b.app, other).unwrap())), "only that goal runs");
+}

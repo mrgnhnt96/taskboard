@@ -1394,9 +1394,9 @@ pub fn start_from_notification(app: &App, id: i64, mode: &str, session_id: Optio
 
 /// The owner's Run from a start ask's notification: the board's Run, which outside the work hours queues the
 /// goal's tasks for when they open.
-pub fn run_goal_from_notification(app: &App, id: i64) -> Result<Value> {
+pub fn run_goal_from_notification(app: &App, id: i64, now: bool) -> Result<Value> {
     let query: Query = [(FROM.to_string(), "app".to_string())].into_iter().collect();
-    let d = run_goal(app, id, &query, &json!({}))?;
+    let d = run_goal(app, id, &query, &json!({"now": now}))?;
     app.db.tx(|| board::add_goal_note(app, id, "decision", &format!("Started by {} from a notification", app.cfg.owner), None, false, None))?;
     Ok(d)
 }

@@ -152,6 +152,9 @@ enum Cmd {
         /// Queue the task to start once its project has a free terminal (tb project set --max-terminals), instead of now in a new terminal
         #[arg(long)]
         queue: bool,
+        /// Run the goal outside work hours, until they open (the board's Start now). Goals only
+        #[arg(long, conflicts_with = "queue")]
+        now: bool,
     },
     /// This terminal's task
     Status {
@@ -5123,7 +5126,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             Ok(0)
         }
-        Cmd::Start { task, queue } => {
+        Cmd::Start { task, queue, now } => {
             if task.trim().starts_with(['G', 'g']) {
                 let g = goal_ref(&task)?;
                 if queue {
@@ -5132,10 +5135,14 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
                 if c.session.is_empty() {
                     return Err(goal_run_needs_terminal("tb start", &g));
                 }
-                let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session})))?;
+                let v = c.call("POST", &format!("/goals/{g}/run"), Some(json!({"via_session": c.session, "now": now})))?;
                 let n = v["queued_now"].as_i64().unwrap_or(0);
-                out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.", if n == 1 { "" } else { "s" }));
+                let until = v["hours_until"].as_str().filter(|_| now).map(|at| format!(" It runs outside work hours until they open ({}).", taskboardd::hours::say_when(at))).unwrap_or_default();
+                out(&format!("{g} runs: queued {n} planned task{}. The board starts them in their waves.{until}", if n == 1 { "" } else { "s" }));
                 return Ok(0);
+            }
+            if now {
+                return Err(format!("--now only applies to a goal (tb start G<n> --now). Start {} without it.", task.trim()));
             }
             let item = task.trim().starts_with(['B', 'b']);
             if item && c.session.is_empty() {
@@ -7761,6 +7768,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tb", "backlog", "task", "B3", "--here", "--next", "--now"]).is_err());
         assert_eq!(issue_refs(&["b4".into(), "B5".into(), "B4".into()]).unwrap(), vec!["B4", "B5"]);
         assert!(Cli::try_parse_from(["tb", "hours", "--alert-every", "10"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "start", "G1", "--now"]).is_ok());
+        assert!(Cli::try_parse_from(["tb", "start", "G1", "--now", "--queue"]).is_err());
         assert!(Cli::try_parse_from(["tb", "review", "--week", "last"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "review", "T12"]).is_ok());
         assert!(Cli::try_parse_from(["tb", "review", "--list", "--week", "last"]).is_err());

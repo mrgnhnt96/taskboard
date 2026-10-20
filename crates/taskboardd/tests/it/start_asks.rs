@@ -274,3 +274,25 @@ fn a_start_on_the_owners_word_is_no_miss() {
     let v = api::dispatch(&b.app, "GET", "/start-misses", &Query::new(), &json!({})).unwrap();
     assert_eq!(v["misses"], json!([]));
 }
+
+#[test]
+fn a_refused_goal_run_now_runs_now_from_the_notification() {
+    use chrono::Datelike;
+    let b = board();
+    let days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    let today = days[chrono::Local::now().weekday().num_days_from_monday() as usize];
+    let others: Vec<&str> = days.into_iter().filter(|d| *d != today).collect();
+    b.app.db.set_setting("work_hours", Some(&json!({"on": true, "start": "09:00", "end": "17:00", "days": others}).to_string())).unwrap();
+    let g = api::dispatch(&b.app, "POST", "/goals", &Query::new(), &json!({"name": "Settings", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    let id = b.task("Chips");
+    board::update_task(&b.app, id, vec![("status", json!("planned")), ("goal_id", json!(g))]).unwrap();
+    b.said("hmm");
+    // `tb start G<n> --now` with no word in this terminal.
+    api::dispatch(&b.app, "POST", &format!("/goals/G{g}/run"), &Query::new(), &json!({"via_session": "s1", "now": true})).unwrap_err();
+    let body = start_params(&b.app, &format!("G{g}"), &start_asks(&b.app))["body"].as_str().unwrap().to_string();
+    assert!(body.contains("Outside work hours: Start runs it now, until they open"), "{body}");
+
+    answer_start(&b.app, &format!("G{g}"), &tap("Start")).unwrap();
+    assert!(!board::get_goal(&b.app, g).unwrap().st("hours_until").is_empty());
+    assert!(taskboardd::hours::goal_open(&b.app, Some(&board::get_goal(&b.app, g).unwrap())));
+}
