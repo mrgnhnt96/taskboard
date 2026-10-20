@@ -71,6 +71,10 @@ impl Board {
     }
     /// The tab statuses queued for Midna since the last look.
     fn tabs(&self) -> Vec<(String, &'static str)> {
+        self.queued().into_iter().map(|(sid, t, _)| (sid, t)).collect()
+    }
+    /// The tab statuses queued since the last look, with what each is waiting on.
+    fn queued(&self) -> Vec<(String, &'static str, Option<String>)> {
         self.app.shared.lock().midna_tabs.drain(..).collect()
     }
     fn set(&self, id: i64, f: Vec<(&str, Value)>) {
@@ -173,12 +177,17 @@ fn calls(b: &Board, method: &str) -> Vec<Value> {
 #[test]
 fn queued_tabs_go_to_midna_as_status_labels() {
     let b = new_board(true);
-    midna::set_tab(&b.app, "s1", "question");
-    midna::set_tab(&b.app, "s2", "clear");
+    midna::set_tab(&b.app, "s1", "question", Some("T1 · Login: Which login page?".into()));
+    midna::set_tab(&b.app, "s3", "in_review", None);
+    midna::set_tab(&b.app, "s2", "clear", None);
     midna::send_tabs(&b.app);
     assert_eq!(
         calls(&b, "session.set_status"),
-        vec![json!({"id": "s1", "label": "Question", "color": "amber", "base": "needs_you", "clear_on": "prompt"})]
+        vec![
+            json!({"id": "s1", "label": "Question", "color": "amber", "base": "needs_you", "clear_on": "prompt",
+                   "detail": "T1 · Login: Which login page?"}),
+            json!({"id": "s3", "label": "In review", "color": "purple", "base": "done", "clear_on": "prompt"}),
+        ]
     );
     assert_eq!(calls(&b, "session.clear_status"), vec![json!({"id": "s2"})]);
     assert!(calls(&b, "agent.hook").is_empty());
@@ -265,4 +274,30 @@ fn a_pr_visit_sets_the_visiting_terminal_and_a_stop_to_ask_is_a_question() {
     assert_eq!(b.tabs(), tab("v1", "in_review"));
     b.set(id, fields!["pr_flow" => json!({"session": "v1", "stopped": {"asked": true}}).to_string()]);
     assert_eq!(b.tabs(), tab("v1", "question"));
+}
+
+/// What the queued tab statuses are waiting on, in order.
+fn details(b: &Board) -> Vec<Option<String>> {
+    b.queued().into_iter().map(|(_, _, d)| d).collect()
+}
+
+#[test]
+fn a_needs_you_tab_says_what_it_waits_on() {
+    let b = new_board(true);
+    let id = b.task_on("s1", "Login");
+    b.report("tb.question", "s1", json!({"text": "Which login page?"})).unwrap();
+    assert_eq!(details(&b), vec![Some(format!("T{id} · Login: Which login page?"))]);
+    b.report("tb.withdraw", "s1", json!({"why": "Found it"})).unwrap();
+    assert_eq!(details(&b), vec![None], "a clear has nothing to say");
+
+    b.post("/alerts", json!({"text": "The build server is down", "task": format!("T{id}")}));
+    assert_eq!(details(&b), vec![Some(format!("T{id} · Login: The build server is down"))]);
+    b.post("/alerts", json!({"text": "Disk is nearly full", "session": "s1"}));
+    assert_eq!(details(&b), vec![Some("Disk is nearly full".into())], "an alert with no task is its own text");
+
+    b.set(id, fields!["status" => "done", "pr_num" => 9, "pr_state" => "OPEN", "pr_phase" => "checks",
+                      "pr_flow" => json!({"session": "v1"}).to_string()]);
+    assert_eq!(details(&b), vec![None], "in review needs nothing from you");
+    b.set(id, fields!["pr_flow" => json!({"session": "v1", "stopped": {"asked": true, "message": "Squash the commits?"}}).to_string()]);
+    assert_eq!(details(&b), vec![Some(format!("T{id} · Login: asked on PR #9: Squash the commits?"))]);
 }

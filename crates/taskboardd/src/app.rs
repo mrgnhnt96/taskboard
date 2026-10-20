@@ -33,8 +33,9 @@ pub struct Shared {
     pub midna_links: Option<(Instant, Option<String>)>,
     /// The Midna run (pid and start) rid of the tab-status triggers older boards kept there.
     pub midna_old_triggers: Option<String>,
-    /// Tab statuses waiting to go to Midna: each terminal and what its tab shows (`midna::set_tab`).
-    pub midna_tabs: VecDeque<(String, &'static str)>,
+    /// Tab statuses waiting to go to Midna: each terminal, what its tab shows and what it's waiting
+    /// on, if anything (`midna::set_tab`).
+    pub midna_tabs: VecDeque<(String, &'static str, Option<String>)>,
     pub recent_reports: VecDeque<String>,
     pub recent_set: HashSet<String>,
     pub prs_checked_at: Option<String>,
