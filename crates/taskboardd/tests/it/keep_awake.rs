@@ -108,6 +108,54 @@ fn changing_the_work_hours_gives_them_to_midna() {
 }
 
 #[test]
+fn extra_hours_run_past_midnight_for_agents_and_keep_awake() {
+    let (app, dir) = board(&format!("echo '{STATUS}'"));
+    keep_awake::sync(&app);
+    let post = |b: Value| api::dispatch(&app, "POST", "/hours", &Query::new(), &b).map_err(|e| (e.status, e.message));
+    post(json!({"on": true, "start": "08:00", "end": "17:00", "days": "daily"})).unwrap();
+
+    // For a while: from now, and Midna gets the end as a time (past midnight when it's tomorrow's).
+    let before = chrono::Local::now().naive_local() + chrono::Duration::hours(8);
+    let v = post(json!({"for": "8h"})).unwrap();
+    let after = chrono::Local::now().naive_local() + chrono::Duration::hours(8);
+    let ends: Vec<String> = [before, after].iter().map(|t| t.format("%Y-%m-%dT%H:%M").to_string()).collect();
+    assert!(ends.contains(&v["until"].as_str().unwrap().to_string()), "{v}");
+    assert_eq!(v["open"], json!(true), "the extra hours start now");
+    let today = sets(dir.path()).last().unwrap()["today"].clone();
+    assert_eq!(today["on"], json!(true));
+    assert_eq!(today["until"].as_str().unwrap(), &v["until"].as_str().unwrap()[11..]);
+    assert!(v["line"].as_str().unwrap().contains("agents start until"), "{v}");
+    let end = v["line"].as_str().unwrap().split("until ").nth(1).unwrap();
+    assert!(end.ends_with("am") || end.ends_with("pm") || end.ends_with("today"), "12-hour times: {v}");
+
+    // Until a time that has passed today: tomorrow's.
+    let now = chrono::Local::now().naive_local();
+    let past = now - chrono::Duration::minutes(2);
+    if past.date() == now.date() {
+        let v = post(json!({"until": past.format("%H:%M").to_string()})).unwrap();
+        let tomorrow = (now + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        assert!(v["until"].as_str().unwrap().starts_with(&tomorrow), "{v}");
+        assert_eq!(v["today_until"], json!(null), "not a time today");
+        assert_eq!(sets(dir.path()).last().unwrap()["today"]["until"], json!(past.format("%H:%M").to_string()));
+        // The app's today_until still only takes a time later today.
+        let (code, msg) = post(json!({"today_until": past.format("%H:%M").to_string()})).unwrap_err();
+        assert_eq!(code, 400);
+        assert!(msg.contains("already passed today"), "{msg}");
+    }
+
+    let (code, msg) = post(json!({"for": "25h"})).unwrap_err();
+    assert_eq!(code, 400);
+    assert!(msg.contains("24 hours"), "{msg}");
+    let (code, _) = post(json!({"for": "soon"})).unwrap_err();
+    assert_eq!(code, 400);
+
+    // Off: the usual hours again, for both.
+    let v = post(json!({"until": "off"})).unwrap();
+    assert_eq!(v["until"], json!(null));
+    assert_eq!(sets(dir.path()).last().unwrap()["today"], json!("clear"));
+}
+
+#[test]
 fn a_sync_puts_drifted_hours_back_once_a_minute() {
     let (app, dir) = board(&format!("echo '{STATUS}'"));
     api::dispatch(&app, "POST", "/hours", &Query::new(), &json!({"on": true, "start": "08:00", "end": "17:00", "days": "mon-fri"})).unwrap();

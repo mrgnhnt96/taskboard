@@ -2743,15 +2743,21 @@ fn backlog_bulk(app: &App, body: &Value) -> Result<Value> {
 }
 
 fn set_hours(app: &App, body: &Value) -> Result<Value> {
-    app.db.tx(|| {
+    let extra = app.db.tx(|| {
         hours::set(app, body)?;
-        if body.get("today_until").is_some() {
-            hours::set_today_until(app, &body_str(body, "today_until"))?;
-        }
-        Ok(())
+        // Extra hours: a time later today (the app), the next time it's a time (past midnight), or how long.
+        let extra = if body.get("today_until").is_some() {
+            Some(hours::set_today_until(app, &body_str(body, "today_until"))?)
+        } else if body.get("until").is_some() {
+            Some(hours::set_until(app, &body_str(body, "until"))?)
+        } else if body.get("for").is_some() {
+            Some(hours::set_for(app, &body_str(body, "for"))?)
+        } else {
+            None
+        };
+        Ok(extra)
     })?;
-    let today = body.get("today_until").map(|_| hours::today_until(app, &hours::now_local()));
-    keep_awake::follow_hours(app, today);
+    keep_awake::follow_hours(app, extra.map(|x| x.map(|x| x.until.format("%H:%M").to_string())));
     Ok(hours::state(app))
 }
 
