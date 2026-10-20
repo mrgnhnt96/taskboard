@@ -101,6 +101,10 @@ enum Cmd {
         /// The PR's title with --pr-body (default: the task's title, after its ticket key)
         #[arg(long = "title", requires = "pr_body")]
         pr_title: Option<String>,
+        /// With --pr-body: open the PR from this pushed branch instead of the checkout's own (a checkout
+        /// another task is busy in can stay where it is)
+        #[arg(long = "branch", value_name = "BRANCH", requires = "pr_body")]
+        pr_branch: Option<String>,
         /// It finishes without the PR it was meant to open, and why
         #[arg(long = "no-pr", value_name = "WHY")]
         no_pr: Option<String>,
@@ -5064,7 +5068,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
         Cmd::Withdraw { why, t } => c.run_report("tb.withdraw", json!({"why": why}), t.task, true, |v| {
             format!("Withdrew the question on {}; it's no longer waiting on {}.", v["task"].as_str().unwrap_or("the task"), c.cfg.owner)
         }),
-        Cmd::Submit { summary, pr, pr_body, pr_title, no_pr, no_evidence, no_lens, merged_note, human, t } => {
+        Cmd::Submit { summary, pr, pr_body, pr_title, pr_branch, no_pr, no_evidence, no_lens, merged_note, human, t } => {
             let mut f = json!({"summary": summary, "pr": pr, "human": human, "no_pr": no_pr, "no_evidence": no_evidence, "no_lens": no_lens, "merged_note": merged_note});
             let Some(file) = pr_body else {
                 // The board runs the task.finishing hooks and checks the diff before it answers.
@@ -5083,6 +5087,7 @@ fn run_cmd(c: &Ctx, cmd: Cmd) -> Result<i32, String> {
             }
             f["pr_body"] = json!(text);
             f["pr_title"] = json!(pr_title);
+            f["pr_branch"] = json!(pr_branch);
             // Not spooled: the PR opens now or not at all. On the progress stream: the board fetches,
             // checks the branch, opens the PR and runs the finishing hooks, a stage at a time.
             let task = t.task.map(|x| task_ref(&x)).transpose()?;

@@ -403,6 +403,7 @@ bar = "Review"        # its name in the app's PR bar
   Bitbucket), once each, on the board's next PR refresh.
 - `tb submit "<summary>" --pr-body FILE [--title "…"]`: the board checks the description (`[pr_body]`), the steps and
   the branch (pushed, rebased on the remote base, no merge commits), then opens the PR itself and finishes.
+  `--branch <branch>` opens it from that pushed branch instead, without the checkout being on it.
 
 ## `tb hooks`
 
