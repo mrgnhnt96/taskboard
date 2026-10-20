@@ -185,6 +185,39 @@ fn an_unnamed_ask_is_for_the_terminals_own_task() {
 }
 
 #[test]
+fn a_task_made_here_is_what_the_turn_made() {
+    let b = board();
+    let mine = api::dispatch(&b.app, "POST", "/tasks", &Query::new(), &json!({"title": "Mine", "project": "webapp"})).unwrap()["id"].as_i64().unwrap();
+    b.app.db.x("UPDATE tasks SET session_id = 's1', status = 'working' WHERE id = ?", p![mine]).unwrap();
+    b.said("create a new task to fix the footer and start it");
+    let v = b.report("tb.new_task", json!({"title": "Fix the footer", "here": true, "line": "next"}));
+    let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
+    assert!(b.tb_start(id).unwrap()["starting"] == true);
+
+    // Taken on this terminal at once: the word counts, and the refusal says where it already runs.
+    b.app.db.x("UPDATE tasks SET session_id = NULL, status = 'done' WHERE id = ?", p![mine]).unwrap();
+    b.said("create a new task to fix the header and start it");
+    let v = b.report("tb.new_task", json!({"title": "Fix the header", "here": true}));
+    let id: i64 = v["created"][0].as_str().unwrap().trim_start_matches('T').parse().unwrap();
+    let (code, why) = b.tb_start(id).unwrap_err();
+    assert_eq!(code, 409, "{why}");
+    assert!(why.contains("already on Term"), "{why}");
+}
+
+#[test]
+fn an_ask_naming_two_backlog_items_starts_both() {
+    let b = board();
+    let item = |title: &str| api::dispatch(&b.app, "POST", "/backlog", &Query::new(), &json!({"title": title, "project": "webapp", "kind": "bug"})).unwrap()["id"].as_i64().unwrap();
+    let (i1, i2) = (item("Footer"), item("Header"));
+    b.said(&format!("Start B{i1} and B{i2}"));
+    for i in [i1, i2] {
+        let v = api::dispatch(&b.app, "POST", "/backlog/bulk", &Query::new(), &json!({"action": "task", "ids": [format!("B{i}")], "where": "goal", "pickup": {"mode": "manual"}})).unwrap();
+        let id: i64 = v["tasks"][0]["ref"].as_str().unwrap().trim_start_matches('T').parse().unwrap();
+        assert!(b.tb_start(id).unwrap()["starting"] == true, "B{i}");
+    }
+}
+
+#[test]
 fn a_later_prompt_that_takes_the_start_back_wins() {
     let b = board();
     let id = b.new_task();

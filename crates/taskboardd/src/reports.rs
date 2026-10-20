@@ -2820,6 +2820,7 @@ fn new_task_here(r: &mut Report, title: &str, issue: Option<&Row>) -> Result<Val
     };
     let c = ops::new_task(app, &fields, &name, Some(&how))?;
     let t = board::get_task(app, c["id"].as_i64().unwrap_or(0))?;
+    crate::startword::note_made(app, &sid, t.id())?;
     if let Some(b) = issue {
         let text = format!("Taken as {} on {name}. Its handoff starts with this report and snapshot.", rf("task", t.id()));
         crate::api::issue_tasked(app, b.id(), t.id(), &name, &text)?;
