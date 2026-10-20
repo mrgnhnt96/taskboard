@@ -1012,7 +1012,7 @@ impl Draw<'_> {
             K::Banner(tone) => self.c_banner(m, n, tone, cx),
             K::Top => self.c_top(m, n, boxed, cx),
             K::Head => self.c_head(m, n, boxed, cx),
-            K::DropItem(kind) => self.c_drop_item(m, n, kind, boxed, cx),
+            K::DropItem(kind, icon) => self.c_drop_item(m, n, kind, icon, boxed, cx),
             K::Tabs => self.c_tabs(m, n, boxed, cx),
             K::Lrow => self.c_lrow(m, n, boxed, cx),
             K::Steps => self.c_steps(m, n, boxed, cx),
@@ -1212,9 +1212,10 @@ impl Draw<'_> {
             .into_any_element()
     }
 
-    /// `.att-drop .item`: the kind's tile, the title over kind · ref · age; the whole row opens it.
+    /// `.att-drop .item`: the kind's tile (drawn as the file's type), the title over kind · ref ·
+    /// age; the whole row opens it, and hovering shows where it lives and who added it.
     #[inline(never)]
-    fn c_drop_item(&mut self, m: &MainWindow, n: &Node, kind: &'static str, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
+    fn c_drop_item(&mut self, m: &MainWindow, n: &Node, kind: &'static str, icon: &'static str, boxed: Option<BoxTone>, cx: &mut Context<MainWindow>) -> AnyElement {
         let t = self.t;
         let Node::El { kids, .. } = n else { return div().into_any_element() };
         let (title, href) = match kids.first() {
@@ -1226,6 +1227,19 @@ impl Draw<'_> {
             Some(Node::Text { s, .. }) => s.clone(),
             _ => String::new(),
         };
+        let rows: Vec<(String, String)> = match kids.get(2) {
+            Some(Node::El { kids, .. }) => kids
+                .iter()
+                .filter_map(|r| match r {
+                    Node::El { kids, .. } => match (kids.first(), kids.get(1)) {
+                        (Some(Node::Text { s: k, .. }), Some(Node::Text { s: v, .. })) => Some((k.clone(), v.clone())),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let (fg, bg) = att_tint(t, kind);
         let tint = t.tint;
         let row = div()
@@ -1236,7 +1250,8 @@ impl Draw<'_> {
             .p(px(6.))
             .rounded(px(7.))
             .hover(move |d| d.bg(tint))
-            .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(kind, fg)))
+            .tooltip(kit::card_tip(title.clone(), rows))
+            .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(bg).flex().items_center().justify_center().child(att_icon(icon, fg)))
             .child(
                 div()
                     .flex()
@@ -2059,6 +2074,46 @@ fn paint(ic: Ic, size: f32, stroke: f32, color: Hsla) -> impl IntoElement {
                         line(&[(2.5, 13.5), (13.5, 13.5)], window);
                         line(&[(3.5, 10.5), (6.5, 7.5), (9., 9.5), (13., 5.)], window);
                         line(&[(10., 5.), (13., 5.), (13., 8.)], window);
+                    }
+                    "video" => {
+                        line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)], window);
+                        line(&[(6.5, 5.8), (10.5, 8.), (6.5, 10.2), (6.5, 5.8)], window);
+                    }
+                    "image" => {
+                        line(&[(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5), (2.5, 2.5)], window);
+                        arc((10.3, 5.7), 1.4, 0., 360., window);
+                        line(&[(2.5, 12.), (6.5, 8.), (10., 11.5), (11.5, 10.), (13.5, 12.)], window);
+                    }
+                    "audio" => {
+                        line(&[(6.5, 11.5), (6.5, 3.5), (12.5, 2.5), (12.5, 10.)], window);
+                        arc((5., 11.5), 1.5, 0., 360., window);
+                        arc((11., 10.), 1.5, 0., 360., window);
+                    }
+                    "pdf" => {
+                        line(&[(4., 2.5), (9.5, 2.5), (12., 5.), (12., 13.5), (4., 13.5), (4., 2.5)], window);
+                        line(&[(2.5, 7.5), (9.5, 7.5), (9.5, 11.), (2.5, 11.), (2.5, 7.5)], window);
+                    }
+                    "sheet" => {
+                        line(&[(2.5, 2.5), (13.5, 2.5), (13.5, 13.5), (2.5, 13.5), (2.5, 2.5)], window);
+                        line(&[(2.5, 6.2), (13.5, 6.2)], window);
+                        line(&[(2.5, 9.8), (13.5, 9.8)], window);
+                        line(&[(6.2, 2.5), (6.2, 13.5)], window);
+                    }
+                    "archive" => {
+                        line(&[(2., 2.5), (14., 2.5), (14., 5.5), (2., 5.5), (2., 2.5)], window);
+                        line(&[(3., 5.5), (3., 13.5), (13., 13.5), (13., 5.5)], window);
+                        line(&[(6.5, 8.5), (9.5, 8.5)], window);
+                    }
+                    "code" => {
+                        line(&[(5., 4.5), (1.8, 8.), (5., 11.5)], window);
+                        line(&[(11., 4.5), (14.2, 8.), (11., 11.5)], window);
+                        line(&[(9.3, 3.), (6.7, 13.)], window);
+                    }
+                    "text" => {
+                        line(&[(2.5, 3.5), (13.5, 3.5)], window);
+                        line(&[(2.5, 6.5), (13.5, 6.5)], window);
+                        line(&[(2.5, 9.5), (13.5, 9.5)], window);
+                        line(&[(2.5, 12.5), (9., 12.5)], window);
                     }
                     _ => {
                         arc((10.3, 5.7), 2.5, -145., 55., window);

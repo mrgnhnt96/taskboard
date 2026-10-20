@@ -175,8 +175,9 @@ pub enum K {
     Head,
     /// The Attached chip's dropdown.
     Drop,
-    /// A dropdown row: kind, then the title (a link when it opens), then "Kind · ref · age".
-    DropItem(&'static str),
+    /// A dropdown row: kind and icon (the file's type, else the kind), then the title (a link
+    /// when it opens), "Kind · ref · age", and the hover card's rows (a `Kv`).
+    DropItem(&'static str, &'static str),
     Tabs,
     Body,
     /// `.box` in a tone: ask (warn), lost / failed (down), done (up), info.
@@ -691,7 +692,85 @@ fn drop_item(a: &Value) -> Node {
     let mut meta = vec![att_kind_label(kind).to_string()];
     meta.extend(opt_s(a, "task").or(opt_s(a, "goal")).map(str::to_string));
     meta.extend(opt_s(a, "at").map(fmt::ago));
-    el(K::DropItem(kind), vec![name, txt(meta.join(" · "), St::Small)])
+    let url = s(a, "url");
+    let ftype = att_file_type(url);
+    let icon = ftype.as_ref().map_or(kind, |(t, _)| *t);
+    let rows: Vec<Node> = att_hover_rows(a, kind, ftype)
+        .into_iter()
+        .map(|(k, v)| el(K::KvRow, vec![txt(k, St::LrowKey), txt(v, St::Plain)]))
+        .collect();
+    el(K::DropItem(kind, icon), vec![name, txt(meta.join(" · "), St::Small), el(K::Kv, rows)])
+}
+
+/// The hover card under an attachment's title: where it lives, what it is, who added it when.
+fn att_hover_rows(a: &Value, kind: &str, ftype: Option<(&'static str, String)>) -> Vec<(&'static str, String)> {
+    let url = s(a, "url");
+    let mut rows = Vec::new();
+    if is_web(url) {
+        rows.push(("Link", url.to_string()));
+    } else if !url.is_empty() {
+        let p = url.trim_end_matches('/');
+        match p.rsplit_once('/') {
+            Some((dir, file)) => {
+                rows.push(("File", file.to_string()));
+                if !dir.is_empty() {
+                    rows.push(("Folder", fmt::short_path(dir)));
+                }
+            }
+            None => rows.push(("File", p.to_string())),
+        }
+    }
+    if let Some((t, ext)) = ftype {
+        rows.push(("Type", format!("{} · {}", att_type_label(t), ext.to_uppercase())));
+    }
+    rows.push(("Kind", att_kind_label(kind).to_string()));
+    if let Some(r) = opt_s(a, "task").or(opt_s(a, "goal")) {
+        rows.push(("On", r.to_string()));
+    }
+    let when = opt_s(a, "at").and_then(fmt::parse).map(|t| fmt::local(t).format("%b %-d, %Y, %-I:%M %p").to_string());
+    let added = [opt_s(a, "added_by").map(str::to_string), when].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    if !added.is_empty() {
+        rows.push(("Added", added));
+    }
+    rows
+}
+
+/// What an attachment's file is, from its extension, and that extension: picks its icon in the
+/// dropdown. None for a page, a folder, or a file of no type we draw.
+pub fn att_file_type(url: &str) -> Option<(&'static str, String)> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    // A link's host isn't a file name: only its path counts.
+    let path = if is_web(path) { path.splitn(4, '/').nth(3)? } else { path };
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let ext = name.rsplit_once('.').filter(|(stem, _)| !stem.is_empty())?.1.to_ascii_lowercase();
+    let t = match ext.as_str() {
+        "mp4" | "mov" | "m4v" | "webm" | "mkv" | "avi" => "video",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "svg" | "bmp" | "tif" | "tiff" => "image",
+        "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" => "audio",
+        "pdf" => "pdf",
+        "csv" | "tsv" | "xls" | "xlsx" | "numbers" => "sheet",
+        "zip" | "tar" | "gz" | "tgz" | "xz" | "7z" | "rar" => "archive",
+        "rs" | "dart" | "js" | "ts" | "tsx" | "jsx" | "py" | "go" | "swift" | "kt" | "java" | "rb" | "sh" | "json"
+        | "yaml" | "yml" | "toml" | "html" | "css" | "sql" | "diff" | "patch" => "code",
+        "md" | "txt" | "log" | "rtf" | "doc" | "docx" => "text",
+        _ => return None,
+    };
+    Some((t, ext))
+}
+
+/// A file type's name in the hover card.
+pub fn att_type_label(t: &str) -> &'static str {
+    match t {
+        "video" => "Video",
+        "image" => "Image",
+        "audio" => "Audio",
+        "pdf" => "PDF",
+        "sheet" => "Spreadsheet",
+        "archive" => "Archive",
+        "code" => "Code",
+        "text" => "Text",
+        _ => "File",
+    }
 }
 
 /// `taskPanel()`.
@@ -2515,12 +2594,14 @@ fn walk_acts(n: &Node, out: &mut Vec<String>) {
 
 /// The kids the reader sees: a closed fold shows only its summary.
 pub fn shown(n: &Node) -> impl Iterator<Item = &Node> {
-    let (kids, closed): (&[Node], bool) = match n {
-        Node::El { k: K::Fold(_, open) | K::TlStep { open, .. }, kids, .. } => (kids, !open),
-        Node::El { kids, .. } => (kids, false),
-        _ => (&[], false),
+    let (kids, take): (&[Node], usize) = match n {
+        Node::El { k: K::Fold(_, open) | K::TlStep { open, .. }, kids, .. } => (kids, if *open { usize::MAX } else { 1 }),
+        // A dropdown row's hover card shows only while it's hovered.
+        Node::El { k: K::DropItem(..), kids, .. } => (kids, 2),
+        Node::El { kids, .. } => (kids, usize::MAX),
+        _ => (&[], usize::MAX),
     };
-    kids.iter().take(if closed { 1 } else { usize::MAX })
+    kids.iter().take(take)
 }
 
 #[cfg(test)]

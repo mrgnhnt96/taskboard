@@ -504,6 +504,20 @@ fn header_chips_drop_the_attachments_and_open_the_project(cx: &mut gpui_kit::Tes
     .unwrap();
 }
 
+#[test]
+fn attachment_icons_follow_the_file_type() {
+    let t = |u: &str| view::att_file_type(u).map(|(t, ext)| format!("{t} {ext}"));
+    assert_eq!(t("/Users/me/shots/after_home_top.MOV").as_deref(), Some("video mov"));
+    assert_eq!(t("~/shots/before.png").as_deref(), Some("image png"));
+    assert_eq!(t("https://example.com/r/report.pdf?dl=1").as_deref(), Some("pdf pdf"));
+    assert_eq!(t("/tmp/out.tar.gz").as_deref(), Some("archive gz"));
+    // A page, a host that looks like a file, a dotfile and an unknown extension: the kind's icon.
+    assert_eq!(t("https://claude.ai/code/artifact/0b1c"), None);
+    assert_eq!(t("https://install.sh"), None);
+    assert_eq!(t("/Users/me/.env"), None);
+    assert_eq!(t("/Users/me/thing.xyz"), None);
+}
+
 #[gpui_kit::test]
 fn back_from_a_link_walks_the_history(cx: &mut gpui_kit::TestAppContext) {
     use crate::app::Page;
