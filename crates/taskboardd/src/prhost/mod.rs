@@ -19,6 +19,7 @@
 //! | [`remove_reviewers`](PrHost::remove_reviewers) | `DELETE pulls/{n}/requested_reviewers` | `PUT` the PR without them |
 //! | [`replace_reviewer`](PrHost::replace_reviewer) | request the new one, then remove the old | the same |
 //! | [`merge`](PrHost::merge) (closing the source branch) | `gh pr merge --<strategy> --delete-branch` | `POST …/merge` with `close_source_branch` |
+//! | [`close`](PrHost::close) without merging (the branch stays) | `gh pr close [--comment]` | a comment, then `POST …/decline` |
 //! | [`retarget`](PrHost::retarget) the base | `gh pr edit --base` | `PUT` the PR's `destination` |
 //! | [`open`](PrHost::open) a PR from a pushed branch | `POST repos/{repo}/pulls` | `POST …/pullrequests` (with `close_source_branch`) |
 //! | [`description`](PrHost::description) / [`set_description`](PrHost::set_description) | `GET` / `PATCH repos/{repo}/pulls/{n}` | `GET` / `PUT` the PR's `description` |
@@ -401,6 +402,9 @@ pub trait PrHost: Send + Sync {
         self.remove_reviewers(pr, &[old.to_string()])
     }
     fn merge(&self, pr: &PrRef, opts: &MergeOpts) -> HostResult<()>;
+    /// Closes the PR without merging it (Bitbucket declines it), leaving its branch; `comment`, when
+    /// given, is posted on it first.
+    fn close(&self, pr: &PrRef, comment: Option<&str>) -> HostResult<()>;
     fn retarget(&self, pr: &PrRef, base: &str) -> HostResult<()>;
     /// Opens a PR in `repo` from the pushed `branch` into `base`; the new PR.
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef>;
@@ -582,6 +586,11 @@ impl PrHost for FakeHost {
             return Err(e);
         }
         self.rec.lock().state = "MERGED".into();
+        Ok(())
+    }
+    fn close(&self, _pr: &PrRef, comment: Option<&str>) -> HostResult<()> {
+        self.log(format!("close{}", comment.map(|c| format!(": {c}")).unwrap_or_default()));
+        self.rec.lock().state = if self.host == "bitbucket" { "DECLINED" } else { "CLOSED" }.into();
         Ok(())
     }
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, _body: &str) -> HostResult<PrRef> {

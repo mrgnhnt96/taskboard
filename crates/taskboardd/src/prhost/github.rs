@@ -228,6 +228,14 @@ impl PrHost for GithubHost {
         self.gh(args).map(|_| ())
     }
 
+    fn close(&self, pr: &PrRef, comment: Option<&str>) -> HostResult<()> {
+        let mut args = s(&["pr", "close", &pr.num.to_string(), "-R", &pr.repo]);
+        if let Some(c) = comment.filter(|c| !c.trim().is_empty()) {
+            args.extend(s(&["--comment", c]));
+        }
+        self.gh(args).map(|_| ())
+    }
+
     fn open(&self, repo: &str, base: &str, branch: &str, title: &str, body: &str) -> HostResult<PrRef> {
         let v = self.api("POST", &format!("repos/{repo}/pulls"), &[("title", title), ("head", branch), ("base", base), ("body", body)])?;
         let num = v["number"].as_i64().ok_or_else(|| "GitHub didn't say which PR it opened".to_string())?;
