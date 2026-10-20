@@ -10,7 +10,7 @@ use taskboardd::app::App;
 use taskboardd::config::Config;
 use taskboardd::util::Row;
 use taskboardd::util::RowExt;
-use taskboardd::{board, fields, midna, reports, waitsfor};
+use taskboardd::{board, fields, midna, p, reports, waitsfor};
 
 struct Board {
     app: Arc<App>,
@@ -89,8 +89,14 @@ fn a_goal_that_isnt_running_still_gets_planned_tasks() {
     for id in t2 {
         board::update_task(&b.app, id, fields!["status" => "done"]).unwrap();
     }
+    assert_eq!(b.app.db.q1("SELECT * FROM goals WHERE id = ?", p![g2]).unwrap().unwrap().s("ran_at"), None, "finishing clears the run");
     let r = b.report("tb.new_task", json!({"goal": format!("G{g2}"), "title": "Afterthought"}));
     assert_eq!(r["status"], "planned");
+
+    // Starting that one task later doesn't make the finished run running again.
+    board::update_task(&b.app, ids(&r)[0], fields!["status" => "working"]).unwrap();
+    let r = b.report("tb.propose", json!({"goal": format!("G{g2}"), "tasks": ["Another::found later"]}));
+    assert_eq!(r["why"], format!("planned: G{g2} isn't running"));
 }
 
 #[test]
